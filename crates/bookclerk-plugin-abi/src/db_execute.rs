@@ -1,9 +1,8 @@
 //! Typed Cap'n database data-plane (`ExecuteRequest` / `ExecuteReply`) and
 //! control-plane (`DbCapabilities`) mirrors of `plugin.capnp`.
 //!
-//! Hosts call `DatabaseSession.capabilities` and
-//! `DatabaseSession.executeAtomic`. The `bookclerk.capabilities` /
-//! `bookclerk.atomic` sentinels route these calls through the SeaORM proxy.
+//! Hosts call `AdapterDatabaseSession.capabilities` and
+//! `AdapterDatabaseSession.execute`. Granted job SQL uses `GuestDatabase.execute`.
 
 use std::collections::HashSet;
 
@@ -493,7 +492,7 @@ impl ExecuteReply {
     }
 }
 
-/// Semantic SQL-contract advertisement (`DatabaseSession.capabilities`).
+/// Semantic SQL-contract advertisement (`AdapterDatabaseSession.capabilities`).
 ///
 /// Bootstrap metadata (`sql_family`, `diagnostic_engine`, SeaORM `dialect`) is
 /// negotiated separately via [`DbBootstrap`] — not on this typed capability plane.

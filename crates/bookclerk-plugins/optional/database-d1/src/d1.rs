@@ -4,7 +4,7 @@
 //! Autocommit statements use the documented `{ "sql", "params" }` REST body.
 //! Interactive `BEGIN` is rejected: Time Travel is not a substitute for rollback, and
 //! mid-transaction SeaORM reads cannot be satisfied without committing.
-//! Atomic library operations use [`D1Proxy::run_atomic`], which sends
+//! Atomic library operations use [`D1Proxy::run_typed_atomic`], which sends
 //! `{ "batch": [...] }` (a real SQL transaction) with control flow
 //! encoded in SQL and a durable `operationId` receipt.
 
@@ -866,7 +866,11 @@ fn is_binary_column(column: &str) -> bool {
     BINARY_COLUMNS.contains(&column)
 }
 
-/// Maps a D1 JSON cell back to a SeaORM [`Value`], decoding `b64:` or known binary columns.
+/// Maps a D1 JSON cell back to a SeaORM [`Value`].
+///
+/// `b64:` decoding applies only to known blob columns (`ciphertext`,
+/// `kdf_salt`, `cipher_nonce`, `vector`). Ordinary TEXT stays a string even
+/// when it starts with a decodable `b64:` prefix.
 ///
 /// String and blob cells larger than [`MAX_SCALAR_BYTES`] are rejected before
 /// clone or base64 decode.
@@ -887,14 +891,13 @@ fn json_to_sea_value(v: &JsonValue, column: &str) -> std::result::Result<Value, 
             }
         }
         JsonValue::String(s) => {
-            // Decode b64:-prefixed strings or known binary columns.
-            if let Some(bytes) = b64_string_to_bytes(s) {
-                if bytes.len() > MAX_SCALAR_BYTES as usize {
-                    return Err(oversized_cell_err(column, bytes.len()));
-                }
-                return Ok(Value::Bytes(Some(bytes)));
-            }
             if is_binary_column(column) {
+                if let Some(bytes) = b64_string_to_bytes(s) {
+                    if bytes.len() > MAX_SCALAR_BYTES as usize {
+                        return Err(oversized_cell_err(column, bytes.len()));
+                    }
+                    return Ok(Value::Bytes(Some(bytes)));
+                }
                 // Legacy: try base64 without prefix (shouldn't happen with new writes).
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(s.as_bytes()) {
                     if bytes.len() > MAX_SCALAR_BYTES as usize {
@@ -902,6 +905,7 @@ fn json_to_sea_value(v: &JsonValue, column: &str) -> std::result::Result<Value, 
                     }
                     return Ok(Value::Bytes(Some(bytes)));
                 }
+                return Ok(Value::Bytes(Some(s.as_bytes().to_vec())));
             }
             Ok(Value::String(Some(s.clone())))
         }
@@ -990,11 +994,76 @@ mod tests {
     fn named_plan(
         operation_id: &str,
         operation: bookclerk_library::DbAtomicParams,
-    ) -> bookclerk_db_exec::DbAtomicRequest {
+    ) -> bookclerk_plugin_abi::ExecuteRequest {
         let now = chrono::Utc::now().to_rfc3339();
         bookclerk_library::compile_named_request(operation_id, &operation, &now)
             .expect("compile named atomic request")
-            .into_request(operation_id)
+            .into_typed_request(operation_id)
+    }
+
+    async fn run_named_atomic(
+        proxy: &D1Proxy,
+        req: bookclerk_plugin_abi::ExecuteRequest,
+    ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, sea_orm::DbErr> {
+        proxy
+            .run_typed_atomic(
+                &req,
+                bookclerk_plugin_abi::GuestReceiptPersist::default(),
+                &[],
+            )
+            .await
+    }
+
+    fn typed_sql_req(
+        op: &str,
+        statements: Vec<(&str, bookclerk_plugin_sdk::DbPlanStatementKind)>,
+        deadline_unix_ms: u64,
+    ) -> bookclerk_plugin_abi::ExecuteRequest {
+        use bookclerk_plugin_abi::{DbPlanStatementKind, DbResultSelection, TypedDbStatement};
+        bookclerk_plugin_abi::ExecuteRequest {
+            operation_id: op.into(),
+            request_hash: String::new(),
+            statements: statements
+                .into_iter()
+                .map(|(sql, kind)| TypedDbStatement {
+                    sql: sql.into(),
+                    parameters: vec![],
+                    kind,
+                    max_rows: 0,
+                    result_selection: if kind == DbPlanStatementKind::Execute {
+                        DbResultSelection::AffectedRows
+                    } else {
+                        DbResultSelection::Rows
+                    },
+                })
+                .collect(),
+            deadline_unix_ms,
+        }
+    }
+
+    fn is_declared_type_query(body: &JsonValue) -> bool {
+        body["batch"].as_array().is_some_and(|batch| {
+            !batch.is_empty()
+                && batch.iter().all(|stmt| {
+                    stmt["sql"]
+                        .as_str()
+                        .is_some_and(|sql| sql.to_ascii_lowercase().contains("pragma_table_info"))
+                })
+        })
+    }
+
+    fn atomic_http_batches(queries: &[JsonValue]) -> Vec<&JsonValue> {
+        queries
+            .iter()
+            .filter(|q| !is_declared_type_query(q))
+            .collect()
+    }
+
+    fn request_is_declared_types(request: &wiremock::Request) -> bool {
+        std::str::from_utf8(&request.body)
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains("pragma_table_info")
     }
 
     fn query_ok() -> ResponseTemplate {
@@ -1273,8 +1342,9 @@ mod tests {
             .await;
 
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
-        let _ = proxy
-            .run_atomic(named_plan(
+        let _ = run_named_atomic(
+            &proxy,
+            named_plan(
                 "op-redeem",
                 DbAtomicParams::RedeemClaimTicket {
                     token_hash: "ticket".into(),
@@ -1286,8 +1356,9 @@ mod tests {
                     new_password_hash: Some("hash".into()),
                     password_fingerprint: Some("fp".into()),
                 },
-            ))
-            .await;
+            ),
+        )
+        .await;
 
         let queries: Vec<JsonValue> = server
             .received_requests()
@@ -1297,8 +1368,9 @@ mod tests {
             .filter(|r| r.url.path().ends_with("/query"))
             .map(|r| serde_json::from_slice(&r.body).unwrap())
             .collect();
-        assert_eq!(queries.len(), 1);
-        let batch = queries[0]["batch"]
+        let atomic = atomic_http_batches(&queries);
+        assert_eq!(atomic.len(), 1, "{queries:?}");
+        let batch = atomic[0]["batch"]
             .as_array()
             .expect("atomic execute must use the documented { batch: [...] } envelope");
         assert!(
@@ -1327,8 +1399,9 @@ mod tests {
             .await;
 
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
-        let _ = proxy
-            .run_atomic(named_plan(
+        let _ = run_named_atomic(
+            &proxy,
+            named_plan(
                 "op-totp",
                 DbAtomicParams::ConfirmTotpEnrollment {
                     user_id: 7,
@@ -1343,8 +1416,9 @@ mod tests {
                     kdf_p_cost: None,
                     created_at: "2024-06-01T00:00:00Z".into(),
                 },
-            ))
-            .await;
+            ),
+        )
+        .await;
 
         let queries: Vec<JsonValue> = server
             .received_requests()
@@ -1354,8 +1428,9 @@ mod tests {
             .filter(|r| r.url.path().ends_with("/query"))
             .map(|r| serde_json::from_slice(&r.body).unwrap())
             .collect();
-        assert_eq!(queries.len(), 1);
-        let batch = queries[0]["batch"]
+        let atomic = atomic_http_batches(&queries);
+        assert_eq!(atomic.len(), 1, "{queries:?}");
+        let batch = atomic[0]["batch"]
             .as_array()
             .expect("atomic execute must use the documented { batch: [...] } envelope");
         assert!(
@@ -1371,7 +1446,7 @@ mod tests {
         assert!(sql.contains("encrypted_secrets"), "{sql}");
         assert!(sql.contains("totp_enabled"), "{sql}");
         assert!(sql.contains("db_atomic_receipts"), "{sql}");
-        let body = serde_json::to_string(&queries[0]).unwrap();
+        let body = serde_json::to_string(atomic[0]).unwrap();
         assert!(
             !body.contains("$sea_null"),
             "D1 HTTP params must flatten typed nulls to JSON null: {body}"
@@ -1390,14 +1465,16 @@ mod tests {
             .await;
 
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
-        let _ = proxy
-            .run_atomic(named_plan(
+        let _ = run_named_atomic(
+            &proxy,
+            named_plan(
                 "op-take",
                 DbAtomicParams::TakeOidcRpState {
                     state_hash: "abc".into(),
                 },
-            ))
-            .await;
+            ),
+        )
+        .await;
 
         let queries: Vec<JsonValue> = server
             .received_requests()
@@ -1407,8 +1484,9 @@ mod tests {
             .filter(|r| r.url.path().ends_with("/query"))
             .map(|r| serde_json::from_slice(&r.body).unwrap())
             .collect();
-        assert_eq!(queries.len(), 1);
-        let batch = queries[0]["batch"]
+        let atomic = atomic_http_batches(&queries);
+        assert_eq!(atomic.len(), 1, "{queries:?}");
+        let batch = atomic[0]["batch"]
             .as_array()
             .expect("atomic execute must use the documented { batch: [...] } envelope");
         let sql: String = batch
@@ -1433,6 +1511,9 @@ mod tests {
         }
         impl Respond for FirstMangledThenOk {
             fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if request_is_declared_types(request) {
+                    return d1_success_for_batch_request(request);
+                }
                 if self.hits.fetch_add(1, Ordering::SeqCst) == 0 {
                     ResponseTemplate::new(200).set_body_string("{\"success\":")
                 } else {
@@ -1450,14 +1531,16 @@ mod tests {
             .await;
 
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
-        let result = proxy
-            .run_atomic(named_plan(
+        let result = run_named_atomic(
+            &proxy,
+            named_plan(
                 "op-retry",
                 DbAtomicParams::TakeOidcRpState {
                     state_hash: "abc".into(),
                 },
-            ))
-            .await;
+            ),
+        )
+        .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
@@ -1474,6 +1557,9 @@ mod tests {
         }
         impl Respond for FirstIncompleteThenOk {
             fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if request_is_declared_types(request) {
+                    return d1_success_for_batch_request(request);
+                }
                 if self.hits.fetch_add(1, Ordering::SeqCst) == 0 {
                     incomplete_batch_ok()
                 } else {
@@ -1491,14 +1577,16 @@ mod tests {
             .await;
 
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
-        let result = proxy
-            .run_atomic(named_plan(
+        let result = run_named_atomic(
+            &proxy,
+            named_plan(
                 "op-incomplete",
                 DbAtomicParams::TakeOidcRpState {
                     state_hash: "abc".into(),
                 },
-            ))
-            .await;
+            ),
+        )
+        .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
@@ -1515,6 +1603,9 @@ mod tests {
         }
         impl Respond for TwoIncompleteThenOk {
             fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if request_is_declared_types(request) {
+                    return d1_success_for_batch_request(request);
+                }
                 if self.hits.fetch_add(1, Ordering::SeqCst) < 2 {
                     incomplete_batch_ok()
                 } else {
@@ -1540,11 +1631,11 @@ mod tests {
         );
         // Inner loop retries twice on incomplete 2xx, then succeeds on the third
         // attempt with the same operation_id (the outer caller also reuses it).
-        let result = proxy.run_atomic(req.clone()).await;
+        let result = run_named_atomic(&proxy, req.clone()).await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(hits.load(Ordering::SeqCst), 3);
 
-        let replay = proxy.run_atomic(req).await.unwrap();
+        let replay = run_named_atomic(&proxy, req).await.unwrap();
         assert_eq!(replay.operation_id, "op-outer");
         assert!(hits.load(Ordering::SeqCst) >= 4);
     }
@@ -1561,6 +1652,9 @@ mod tests {
         }
         impl Respond for ThreeIncompleteThenOk {
             fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if request_is_declared_types(request) {
+                    return d1_success_for_batch_request(request);
+                }
                 if self.hits.fetch_add(1, Ordering::SeqCst) < 3 {
                     incomplete_batch_ok()
                 } else {
@@ -1584,11 +1678,11 @@ mod tests {
                 state_hash: "abc".into(),
             },
         );
-        let first = proxy.run_atomic(req.clone()).await;
+        let first = run_named_atomic(&proxy, req.clone()).await;
         assert!(first.is_err(), "three incomplete 2xx exhaust inner retries");
         assert_eq!(hits.load(Ordering::SeqCst), 3);
 
-        let recovered = proxy.run_atomic(req).await;
+        let recovered = run_named_atomic(&proxy, req).await;
         assert!(recovered.is_ok(), "{recovered:?}");
         assert_eq!(hits.load(Ordering::SeqCst), 4);
     }
@@ -1604,7 +1698,10 @@ mod tests {
             hits: Arc<AtomicUsize>,
         }
         impl Respond for Always400 {
-            fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+            fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if request_is_declared_types(request) {
+                    return d1_success_for_batch_request(request);
+                }
                 self.hits.fetch_add(1, Ordering::SeqCst);
                 ResponseTemplate::new(400)
                     .set_body_string("{\"success\":false,\"errors\":[\"bad\"]}")
@@ -1620,15 +1717,17 @@ mod tests {
             .await;
 
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
-        let err = proxy
-            .run_atomic(named_plan(
+        let err = run_named_atomic(
+            &proxy,
+            named_plan(
                 "op-400",
                 DbAtomicParams::TakeOidcRpState {
                     state_hash: "abc".into(),
                 },
-            ))
-            .await
-            .unwrap_err();
+            ),
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("D1 HTTP 400"), "{err}");
         assert!(!crate::atomic::is_ambiguous_d1(&err), "{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -1646,6 +1745,9 @@ mod tests {
         }
         impl Respond for First503ThenOk {
             fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                if request_is_declared_types(request) {
+                    return d1_success_for_batch_request(request);
+                }
                 if self.hits.fetch_add(1, Ordering::SeqCst) == 0 {
                     ResponseTemplate::new(503)
                         .insert_header("Retry-After", "0")
@@ -1665,14 +1767,16 @@ mod tests {
             .await;
 
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
-        let result = proxy
-            .run_atomic(named_plan(
+        let result = run_named_atomic(
+            &proxy,
+            named_plan(
                 "op-503",
                 DbAtomicParams::TakeOidcRpState {
                     state_hash: "abc".into(),
                 },
-            ))
-            .await;
+            ),
+        )
+        .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
@@ -1724,6 +1828,14 @@ mod tests {
             "SELECT * FROM (SELECT id FROM t) AS _bookclerk_page LIMIT 11 OFFSET 0"
         ));
         assert!(!sql_is_bookclerk_page("SELECT 1"));
+    }
+
+    #[test]
+    fn json_to_sea_value_keeps_decodable_b64_text_unless_blob_column() {
+        let text = json_to_sea_value(&JsonValue::String("b64:YWJj".into()), "note").unwrap();
+        assert_eq!(text, Value::String(Some("b64:YWJj".into())));
+        let blob = json_to_sea_value(&JsonValue::String("b64:AA==".into()), "ciphertext").unwrap();
+        assert_eq!(blob, Value::Bytes(Some(vec![0])));
     }
 
     #[test]
@@ -2208,32 +2320,21 @@ mod tests {
             .run_batch(&[("CREATE TABLE t (k TEXT PRIMARY KEY)".into(), Vec::new())])
             .await
             .unwrap();
-        let req = bookclerk_db_exec::DbAtomicRequest {
-            operation_id: "dup".into(),
-            request_hash: None,
-            plan: Some(bookclerk_db_exec::DbAtomicPlan {
-                statements: vec![
-                    bookclerk_db_exec::DbPlanStatement {
-                        sql: "INSERT INTO t (k) VALUES ('a')".into(),
-                        binds: vec![],
-                        kind: bookclerk_plugin_sdk::DbPlanStatementKind::Execute,
-                        max_rows: 0,
-                    },
-                    bookclerk_db_exec::DbPlanStatement {
-                        sql: "INSERT INTO t (k) VALUES ('a')".into(),
-                        binds: vec![],
-                        kind: bookclerk_plugin_sdk::DbPlanStatementKind::Execute,
-                        max_rows: 0,
-                    },
-                ],
-                outcome_index: 0,
-                payload_index: None,
-                prior_receipt_index: None,
-                receipt_select_index: None,
-            }),
-            deadline_unix_ms: None,
-        };
-        let err = proxy.run_atomic(req).await.unwrap_err();
+        let req = typed_sql_req(
+            "dup",
+            vec![
+                (
+                    "INSERT INTO t (k) VALUES ('a')",
+                    bookclerk_plugin_sdk::DbPlanStatementKind::Execute,
+                ),
+                (
+                    "INSERT INTO t (k) VALUES ('a')",
+                    bookclerk_plugin_sdk::DbPlanStatementKind::Execute,
+                ),
+            ],
+            0,
+        );
+        let err = run_named_atomic(&proxy, req).await.unwrap_err();
         let mapped = crate::atomic::plugin_error_from_d1(err);
         assert_eq!(
             mapped.code,
@@ -2249,24 +2350,15 @@ mod tests {
             bookclerk_library::AtomicInterruptPhase::BeforeBegin,
             bookclerk_library::AtomicInterruptKind::Cancel,
         );
-        let req = bookclerk_db_exec::DbAtomicRequest {
-            operation_id: "c".into(),
-            request_hash: None,
-            plan: Some(bookclerk_db_exec::DbAtomicPlan {
-                statements: vec![bookclerk_db_exec::DbPlanStatement {
-                    sql: "SELECT 1".into(),
-                    binds: vec![],
-                    kind: bookclerk_plugin_sdk::DbPlanStatementKind::Select,
-                    max_rows: 0,
-                }],
-                outcome_index: 0,
-                payload_index: None,
-                prior_receipt_index: None,
-                receipt_select_index: None,
-            }),
-            deadline_unix_ms: None,
-        };
-        let err = proxy.run_atomic(req).await.unwrap_err();
+        let req = typed_sql_req(
+            "c",
+            vec![(
+                "SELECT 1",
+                bookclerk_plugin_sdk::DbPlanStatementKind::Select,
+            )],
+            0,
+        );
+        let err = run_named_atomic(&proxy, req).await.unwrap_err();
         assert!(err.to_string().contains("cancelled"), "{err}");
     }
 
@@ -2277,24 +2369,15 @@ mod tests {
             bookclerk_library::AtomicInterruptPhase::AroundCommit,
             bookclerk_library::AtomicInterruptKind::Cancel,
         );
-        let req = bookclerk_db_exec::DbAtomicRequest {
-            operation_id: "c2".into(),
-            request_hash: None,
-            plan: Some(bookclerk_db_exec::DbAtomicPlan {
-                statements: vec![bookclerk_db_exec::DbPlanStatement {
-                    sql: "SELECT 1".into(),
-                    binds: vec![],
-                    kind: bookclerk_plugin_sdk::DbPlanStatementKind::Select,
-                    max_rows: 0,
-                }],
-                outcome_index: 0,
-                payload_index: None,
-                prior_receipt_index: None,
-                receipt_select_index: None,
-            }),
-            deadline_unix_ms: None,
-        };
-        let err = proxy.run_atomic(req).await.unwrap_err();
+        let req = typed_sql_req(
+            "c2",
+            vec![(
+                "SELECT 1",
+                bookclerk_plugin_sdk::DbPlanStatementKind::Select,
+            )],
+            0,
+        );
+        let err = run_named_atomic(&proxy, req).await.unwrap_err();
         assert!(crate::atomic::is_ambiguous_d1(&err), "{err}");
     }
 
@@ -2310,24 +2393,15 @@ mod tests {
             .mount(&server)
             .await;
         let proxy = D1Proxy::new(server.uri(), "acct".into(), "dbid".into(), "token".into());
-        let req = bookclerk_db_exec::DbAtomicRequest {
-            operation_id: "t".into(),
-            request_hash: None,
-            plan: Some(bookclerk_db_exec::DbAtomicPlan {
-                statements: vec![bookclerk_db_exec::DbPlanStatement {
-                    sql: "SELECT 1".into(),
-                    binds: vec![],
-                    kind: bookclerk_plugin_sdk::DbPlanStatementKind::Select,
-                    max_rows: 0,
-                }],
-                outcome_index: 0,
-                payload_index: None,
-                prior_receipt_index: None,
-                receipt_select_index: None,
-            }),
-            deadline_unix_ms: None,
-        };
-        let err = proxy.run_atomic(req).await.unwrap_err();
+        let req = typed_sql_req(
+            "t",
+            vec![(
+                "SELECT 1",
+                bookclerk_plugin_sdk::DbPlanStatementKind::Select,
+            )],
+            0,
+        );
+        let err = run_named_atomic(&proxy, req).await.unwrap_err();
         let mapped = crate::atomic::plugin_error_from_d1(err);
         assert_eq!(
             mapped.code,
@@ -2348,24 +2422,15 @@ mod tests {
                     .unwrap();
             }
         }
-        let req = bookclerk_db_exec::DbAtomicRequest {
-            operation_id: "row-cap".into(),
-            request_hash: None,
-            plan: Some(bookclerk_db_exec::DbAtomicPlan {
-                statements: vec![bookclerk_db_exec::DbPlanStatement {
-                    sql: "SELECT x FROM rowcap".into(),
-                    binds: vec![],
-                    kind: bookclerk_plugin_sdk::DbPlanStatementKind::Select,
-                    max_rows: 0,
-                }],
-                outcome_index: 0,
-                payload_index: None,
-                prior_receipt_index: None,
-                receipt_select_index: None,
-            }),
-            deadline_unix_ms: None,
-        };
-        let err = proxy.run_atomic(req).await.unwrap_err();
+        let req = typed_sql_req(
+            "row-cap",
+            vec![(
+                "SELECT x FROM rowcap",
+                bookclerk_plugin_sdk::DbPlanStatementKind::Select,
+            )],
+            0,
+        );
+        let err = run_named_atomic(&proxy, req).await.unwrap_err();
         assert!(
             err.to_string().contains("maxResultRows"),
             "row cap must fail closed: {err}"
@@ -2410,15 +2475,15 @@ mod tests {
             now,
         )
         .unwrap();
-        let req = compiled.clone().into_request("d1-enq");
-        let first = proxy.run_atomic(req).await.expect("first atomic");
+        let req = compiled.clone().into_typed_request("d1-enq");
+        let first = run_named_atomic(&proxy, req).await.expect("first atomic");
         let interpreted =
-            bookclerk_library::interpret_exec(&compiled.plan, &first, &compiled.expected_hash);
+            bookclerk_library::interpret_typed_exec(&compiled, &first, &compiled.expected_hash);
         assert_eq!(interpreted.status, bookclerk_library::atomic_status::OK);
-        let replay_req = compiled.clone().into_request("d1-enq");
-        let replay = proxy.run_atomic(replay_req).await.expect("replay");
+        let replay_req = compiled.clone().into_typed_request("d1-enq");
+        let replay = run_named_atomic(&proxy, replay_req).await.expect("replay");
         let replayed =
-            bookclerk_library::interpret_exec(&compiled.plan, &replay, &compiled.expected_hash);
+            bookclerk_library::interpret_typed_exec(&compiled, &replay, &compiled.expected_hash);
         assert!(replayed.replayed, "same operationId must replay");
     }
 
@@ -2583,27 +2648,21 @@ mod tests {
             .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or(0)
             .saturating_add(80);
-        let req = bookclerk_db_exec::DbAtomicRequest {
-            operation_id: "op-dl".into(),
-            request_hash: None,
-            plan: Some(bookclerk_db_exec::DbAtomicPlan {
-                statements: vec![bookclerk_db_exec::DbPlanStatement {
-                    sql: "SELECT 1 AS n".into(),
-                    binds: vec![],
-                    kind: bookclerk_plugin_sdk::DbPlanStatementKind::Select,
-                    max_rows: 0,
-                }],
-                outcome_index: 0,
-                payload_index: None,
-                prior_receipt_index: None,
-                receipt_select_index: None,
-            }),
-            deadline_unix_ms: Some(deadline),
-        };
-        let err = tokio::time::timeout(std::time::Duration::from_secs(3), proxy.run_atomic(req))
-            .await
-            .expect("run_atomic must return when the deadline elapses")
-            .expect_err("held HTTP slot must expire the deadline");
+        let req = typed_sql_req(
+            "op-dl",
+            vec![(
+                "SELECT 1 AS n",
+                bookclerk_plugin_sdk::DbPlanStatementKind::Select,
+            )],
+            deadline,
+        );
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            run_named_atomic(&proxy, req),
+        )
+        .await
+        .expect("run_typed_atomic must return when the deadline elapses")
+        .expect_err("held HTTP slot must expire the deadline");
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("deadline"),
@@ -2651,31 +2710,21 @@ mod tests {
         b.expect("independent proxy 2 schema");
     }
 
-    fn select_one_req(op: &str) -> bookclerk_db_exec::DbAtomicRequest {
-        bookclerk_db_exec::DbAtomicRequest {
-            operation_id: op.into(),
-            request_hash: None,
-            plan: Some(bookclerk_db_exec::DbAtomicPlan {
-                statements: vec![bookclerk_db_exec::DbPlanStatement {
-                    sql: "SELECT 1 AS n".into(),
-                    binds: vec![],
-                    kind: bookclerk_plugin_sdk::DbPlanStatementKind::Select,
-                    max_rows: 0,
-                }],
-                outcome_index: 0,
-                payload_index: None,
-                prior_receipt_index: None,
-                receipt_select_index: None,
-            }),
-            deadline_unix_ms: None,
-        }
+    fn select_one_req(op: &str) -> bookclerk_plugin_abi::ExecuteRequest {
+        typed_sql_req(
+            op,
+            vec![(
+                "SELECT 1 AS n",
+                bookclerk_plugin_sdk::DbPlanStatementKind::Select,
+            )],
+            0,
+        )
     }
 
     async fn oversized_after_commit(status: u16) -> sea_orm::DbErr {
         let (_server, proxy, _conn, _interrupt, _drop, oversized) = executing_proxy().await;
         oversized.store(status, std::sync::atomic::Ordering::SeqCst);
-        proxy
-            .run_atomic(select_one_req(&format!("big-{status}")))
+        run_named_atomic(&proxy, select_one_req(&format!("big-{status}")))
             .await
             .expect_err("oversized post-commit body must fail")
     }

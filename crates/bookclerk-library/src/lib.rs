@@ -101,12 +101,11 @@ pub use secrets::{
 pub use session_client::{classify_session_client, SessionClientInfo};
 pub use sql_plan::{
     authorize_guest_typed_request, authorize_typed_request, compile_claim_event_delivery,
-    compile_named_request, execute_guest_atomic_with, execute_plan_on, execute_plan_on_capped,
-    execute_request_from_atomic, execute_statements_on, execute_statements_on_session,
-    interpret_exec, interpret_plan, plan_exec_from_execute_reply, proxy_read_kind,
-    proxy_write_kind, validate_atomic_request, validate_exec_result, validate_execute_reply,
-    validate_execute_request, validate_plan, validate_proven_execute_request,
-    wake_page_for_max_binds, AtomicSession, CompiledAtomic,
+    compile_named_request, execute_compiled_on, execute_compiled_on_capped,
+    execute_guest_atomic_with, execute_typed_on, execute_typed_on_session, interpret_typed_exec,
+    proxy_read_kind, proxy_write_kind, validate_execute_reply, validate_execute_request,
+    validate_plan, validate_proven_execute_request, wake_page_for_max_binds, AtomicSelection,
+    AtomicSession, CompiledAtomic,
 };
 pub use store::{
     event_outbox::prepare_publish_domain_event, fallback_work_key, inject_dispatch_page_failures,

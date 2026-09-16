@@ -101,7 +101,8 @@ clients cannot complete `/oidc/authorize` or `/oidc/token`.
 
 ### Existing rows
 
-Migration V19 adds `enabled` (default 1) and `plugin_id`. Rows with
+The greenfield `oidc_clients` table includes `enabled` (default 1) and
+`plugin_id`. Rows with
 `client_id = 'audiobookshelf'` are stamped `plugin_id = 'audiobookshelf'` so
 their redirects become host-managed. Existing rows stay **enabled** so
 already-working ABS SSO is not silently turned off; only **new** plugin

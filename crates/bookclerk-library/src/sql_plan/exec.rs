@@ -1,92 +1,86 @@
-//! Run a generic [`DbAtomicPlan`] on a SeaORM connection (one native transaction).
+//! Run a typed [`ExecuteRequest`] on a SeaORM connection (one native transaction).
 
-use super::host_ir::{DbAtomicPlan, DbPlanExecResult};
+use bookclerk_db_exec::{ExecCaps, GuestReceiptPersist};
+use bookclerk_plugin_abi::ExecuteRequest;
 
 use crate::atomic_ops::DbAtomicResult;
 use crate::error::{LibraryError, Result};
-use crate::sql_plan::interpret::interpret_exec;
+use crate::sql_plan::interpret::interpret_typed_exec;
+use crate::sql_plan::CompiledAtomic;
 
 pub use bookclerk_db_exec::AtomicSession;
 
-/// Executes `plan` as one transaction and interprets receipt/outcome rows.
+/// Executes a compiled named atomic as one transaction and interprets the reply.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when a statement fails. Application statuses
 /// are returned as [`DbAtomicResult`], not errors.
-pub async fn execute_plan_on(
+pub async fn execute_compiled_on(
     db: &sea_orm::DatabaseConnection,
-    plan: &DbAtomicPlan,
-    expected_hash: &str,
-    operation_id: &str,
+    compiled: CompiledAtomic,
     timing_source: &str,
 ) -> Result<DbAtomicResult> {
-    execute_plan_on_capped(db, plan, expected_hash, operation_id, timing_source, 0).await
+    execute_compiled_on_capped(db, compiled, timing_source, 0).await
 }
 
-/// Like [`execute_plan_on`], failing when a statement returns more than `max_result_rows`.
+/// Like [`execute_compiled_on`], failing when a statement returns more than `max_result_rows`.
 ///
 /// `max_result_rows` of `0` means unlimited.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when a statement fails or exceeds the row cap.
-pub async fn execute_plan_on_capped(
+pub async fn execute_compiled_on_capped(
     db: &sea_orm::DatabaseConnection,
-    plan: &DbAtomicPlan,
-    expected_hash: &str,
-    operation_id: &str,
+    compiled: CompiledAtomic,
     timing_source: &str,
     max_result_rows: u32,
 ) -> Result<DbAtomicResult> {
-    let exec =
-        execute_statements_on(db, plan, operation_id, timing_source, max_result_rows).await?;
-    Ok(interpret_exec(plan, &exec, expected_hash))
+    let hash = compiled.expected_hash.clone();
+    let reply = execute_typed_on(db, &compiled.request, timing_source, max_result_rows).await?;
+    Ok(interpret_typed_exec(&compiled, &reply, &hash))
 }
 
-/// Executes `plan` as one transaction and returns generic statement results.
+/// Executes a typed request as one transaction.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when a statement fails.
-pub async fn execute_statements_on(
+pub async fn execute_typed_on(
     db: &sea_orm::DatabaseConnection,
-    plan: &DbAtomicPlan,
-    operation_id: &str,
+    req: &ExecuteRequest,
     timing_source: &str,
     max_result_rows: u32,
-) -> Result<DbPlanExecResult> {
-    bookclerk_db_exec::execute_statements_on_session(
+) -> Result<bookclerk_plugin_abi::ExecuteReply> {
+    execute_typed_on_session(
         db,
-        plan,
-        operation_id,
+        req,
         timing_source,
         max_result_rows,
-        AtomicSession::default().with_type_env(crate::migrations::host_sql_type_env()),
+        AtomicSession::default(),
     )
     .await
-    .map_err(LibraryError::from_db_err)
 }
 
-/// [`execute_statements_on`] with session cancel / deadline checks.
+/// [`execute_typed_on`] with session cancel / deadline checks.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Orm`] when a statement fails or the session is interrupted.
-pub async fn execute_statements_on_session(
+pub async fn execute_typed_on_session(
     db: &sea_orm::DatabaseConnection,
-    plan: &DbAtomicPlan,
-    operation_id: &str,
+    req: &ExecuteRequest,
     timing_source: &str,
     max_result_rows: u32,
     session: AtomicSession,
-) -> Result<DbPlanExecResult> {
-    bookclerk_db_exec::execute_statements_on_session(
+) -> Result<bookclerk_plugin_abi::ExecuteReply> {
+    bookclerk_db_exec::execute_typed_on_session(
         db,
-        plan,
-        operation_id,
+        req,
+        GuestReceiptPersist::default(),
         timing_source,
-        max_result_rows,
+        ExecCaps::from(max_result_rows),
         session.with_type_env(crate::migrations::host_sql_type_env()),
     )
     .await

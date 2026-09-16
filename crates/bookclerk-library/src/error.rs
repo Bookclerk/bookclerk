@@ -5,17 +5,9 @@ use thiserror::Error;
 /// Result alias for [`LibraryError`].
 pub type Result<T> = std::result::Result<T, LibraryError>;
 
-/// Failures from library store, migrations, secrets, or config.
+/// Failures from library store, schema apply, secrets, or config.
 #[derive(Debug, Error)]
 pub enum LibraryError {
-    /// Low-level `rusqlite` failure (legacy paths still using the C API).
-    #[error("database error: {0}")]
-    Db(#[from] rusqlite::Error),
-
-    /// Schema migration failure from `rusqlite_migration`.
-    #[error("migration error: {0}")]
-    Migrate(#[from] rusqlite_migration::Error),
-
     /// SeaORM / database-plugin failure (`DbErr`).
     #[error("ORM / database plugin error: {0}")]
     Orm(#[from] sea_orm::DbErr),

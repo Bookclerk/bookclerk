@@ -1,6 +1,6 @@
 //! Neutral SQL executor for Bookclerk database guests.
 //!
-//! Hosts compile domain work into a generic [`host_ir::DbAtomicPlan`].
+//! Hosts compile domain work into a typed [`bookclerk_plugin_abi::ExecuteRequest`].
 //! This crate runs those statements as one native transaction and records
 //! fail-closed begin/commit faults. It must not import Bookclerk entities or
 //! host domain planners. Postgres adapters lower host-schema packs and binding
@@ -16,7 +16,6 @@ mod b64;
 mod classify;
 mod exec;
 pub mod guest_receipt;
-pub mod host_ir;
 mod json_bridge;
 mod lower;
 pub mod proxy_txn;
@@ -57,8 +56,8 @@ pub use classify::{
     classify_db_err, classify_db_err_message, is_schema_apply_retryable, DbErrorClass,
 };
 pub use exec::{
-    cap_query_sql, encoded_proxy_row_len, execute_statements_on, execute_statements_on_session,
-    json_cell_utf8_len, note_encoded_result_bytes, sea_value_to_json, AtomicSession, ExecCaps,
+    cap_query_sql, encoded_proxy_row_len, json_cell_utf8_len, note_encoded_result_bytes,
+    sea_value_to_json, AtomicSession, ExecCaps,
 };
 pub use guest_receipt::{
     guest_receipt_applied_stmt, guest_receipt_finalize_stmts, is_guest_receipt_result_lost,
@@ -68,12 +67,7 @@ pub use guest_receipt::{
     GUEST_RECEIPT_STATUS_APPLIED, GUEST_RECEIPT_STATUS_CLAIMED, GUEST_RECEIPT_STATUS_OK,
     GUEST_RECEIPT_STUB_SUFFIX, GUEST_RECEIPT_WRAP_PREFIX, GUEST_RECEIPT_WRITE_GATE,
 };
-pub use host_ir::{
-    sea_null, sea_null_kind, DbAtomicPlan, DbAtomicRequest, DbAtomicTiming, DbPlanExecResult,
-    DbPlanStatement, DbPlanStmtExecResult, DB_ATOMIC_SENTINEL, DB_CAPABILITIES_SENTINEL,
-    SEA_NULL_KEY,
-};
-pub use json_bridge::{db_value_from_json, db_value_to_json};
+pub use json_bridge::{db_value_from_b64_json, db_value_from_json, db_value_to_json};
 pub use lower::{
     lower_canonical_ddl_to_postgres, lower_canonical_sql, lower_canonical_sql_typed,
     lower_canonical_to_postgres,
@@ -90,8 +84,9 @@ pub use proxy_txn::{
 pub use schema_postgres::{
     binding_companions, collapse_companion_groups, collapse_host_schema_results,
     expand_binding_execute_request, expand_host_schema_batch, expand_host_schema_execute_request,
-    is_host_schema_version_marker, lower_binding_ddl_execute_request,
-    lower_binding_sql_for_backend, schema_sql_for_backend, split_schema_statements,
+    expand_host_schema_execute_request_grouped, is_host_schema_version_marker,
+    lower_binding_ddl_execute_request, lower_binding_sql_for_backend, schema_sql_for_backend,
+    split_schema_statements,
 };
 pub use typed::{
     db_value_from_sea, db_value_to_sea, execute_typed_envelope, execute_typed_on_session,

@@ -106,9 +106,8 @@ pub struct JobHandlerContext {
     pub output: Box<dyn Destination>,
     /// Progress sink (durable job row).
     pub progress: Box<dyn ProgressSink>,
-    /// Unused in production. Jobs never inject the host library as guest SQL;
-    /// durable plugin state uses [`Self::databases`]. Kept so older guests
-    /// that still read this field see `None` instead of a library session.
+    /// Always `None`. Jobs never receive the host library as guest SQL;
+    /// durable plugin state uses [`Self::databases`].
     pub database: Option<Box<dyn GuestDatabase>>,
     /// Named plugin-owned database bindings: isolated
     /// databases from `plugin.toml` `capabilities.bindings.databases`,

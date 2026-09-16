@@ -41,8 +41,8 @@ daemon/CLI:
 
 - Entity / `ActiveModel` workflow closest to Prisma Client usage patterns.
 - Same `DatabaseConnection` for local SQLite and D1 (proxy).
-- Migrations and schema stay SQL-first (compatible with existing
-  `library.db` files) while queries move onto typed entities over time.
+- Schema stays SQL-first (one greenfield version-1 pack) while queries
+  use typed entities.
 
 ### `libsqlite3` alignment note
 
@@ -52,8 +52,8 @@ link two `links = "sqlite3"` crates in one binary.
 
 Bookclerk therefore:
 
-- Pins workspace `rusqlite` to **0.37** and `rusqlite_migration` to **2.3** so
-  they share `libsqlite3-sys` 0.35 with a single SQLite link.
+- Pins workspace `rusqlite` to **0.37** so it shares `libsqlite3-sys` 0.35
+  with a single SQLite link.
 - Vendors `audible-rs` under [`third_party/audible-rs`](../third_party/audible-rs)
   (see `BOOKCLERK_PATCH.md` there). The plugin uses audible-rs as a library
   (`default-features = false`); its optional `cli` feature still pins
@@ -235,7 +235,7 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   `passwordRequired`, `notFound`, and `idempotencyConflict`. Consume-once ops
   use `DELETE … RETURNING` so a missing or expired row cannot be observed
   twice. After `openSession` the host calls typed
-  `DatabaseSession.capabilities`. Schema selection uses `pragmaUserVersion` /
+  `AdapterDatabaseSession.capabilities`. Schema selection uses `pragmaUserVersion` /
   `schemaMigrations` / `atomicSchemaBatch`, not `sqlFamily`. D1 reports
   `atomicSchemaBatch: true` and `maxBinds: 100`. The host stores the
   negotiated `DbCapabilities` and rejects plans that exceed `maxStatements`,
@@ -260,7 +260,7 @@ avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
   or HTTP return is `unavailable` (ambiguous).
 - Schema versions are **host-owned**. After `db.connect` and capability
   negotiation the host reads the current version and sends remaining DDL as
-  generic execute (D1 V27 stays one host-compiled `{ "batch": [...] }`).
+  generic execute (one host-compiled `{ "batch": [...] }` on D1).
   Guests connect and ping only.
 
 ### Boundary: core vs database plugins
@@ -308,88 +308,46 @@ Admin→Owner upgrade; testing and development hosts should recreate
 
 ### Single greenfield schema
 
-Bookclerk is mostly greenfield: [`migrations.rs`](../crates/bookclerk-library/src/migrations.rs)
-exposes `latest_schema_sqlite()` as the canonical base DDL, and
-[`schema_postgres.rs`](../crates/bookclerk-db-exec/src/schema_postgres.rs)
-holds the Postgres adapter-edge pack (`latest_schema_postgres()` /
-`migration_sql_postgres`). Canonical SQLite also keeps a short ordered list
-(`migration_sql`) so additive columns (e.g. Discover preference fields on
-`user_preferences`) can bump `PRAGMA user_version` / `schema_migrations`
-without wiping data. Base
-statements use `CREATE TABLE/INDEX IF NOT EXISTS`. Tables:
-`accounts`, `books`, `ignored_titles`, `saved_filters`, `portal_identities`,
-`claim_tickets`, `portal_sessions`, `account_links`, `works`, `work_editions`,
+Bookclerk is greenfield: [`migrations.rs`](../crates/bookclerk-library/src/migrations.rs)
+exposes `latest_schema_sqlite()` as the current library DDL, and
+[`latest_schema_postgres()`](../crates/bookclerk-library/src/migrations.rs)
+is that pack lowered at the adapter edge. Fresh databases apply one version-1
+plan (`host_migration_plan`). Statements use `CREATE TABLE/INDEX IF NOT EXISTS`.
+Changing the schema means editing that pack and recreating (or manually
+altering) an existing database (`cargo reset --yes` in development).
+
+Tables include: `accounts`, `books`, `ignored_titles`, `saved_filters`,
+`users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
+`operator_sessions`, `account_links`, `works`, `work_editions`,
 `listening_progress`, `title_requests`, `title_request_sources`, `embeddings`,
 `user_preferences`, `encrypted_secrets`, `jobs`, `job_temp_paths`,
-`domain_events`, `event_deliveries`, `event_subscriber_nodes`, `event_outbox_stats`.
-The `jobs` table is the durable daemon queue (see [jobs.md](jobs.md)); V12
-adds it for existing databases. V13 adds `jobs.lease_generation`, a partial
-unique index on active `dedup_key`s, `job_temp_paths.reserved_bytes`, and a
-unique `(job_id, path)` index so admission, claim, and scratch quota are
-atomic. V14 adds `job_queue_control`, a singleton row used to serialize
-admission and scratch-quota updates under PostgreSQL `READ COMMITTED`.
-V15 adds `users.last_seen_at`, a durable last-authenticated timestamp
-(backfilled from portal sessions, including expired) so User Management can
-tell never-signed-in invites from logged-out users.
-V16 adds `users.avatar_source` (`NULL`/`auto`, `monogram`, `gravatar`,
-`upload`, or `sso:{portal_identities.id}`) and `portal_identities.picture_url`
-for IdP-supplied avatars. Auto-resolve prefers a manual upload, then the
-last-used SSO picture, then Gravatar from the contact email, then the
-monogram.
-V17 adds `webauthn_credentials.name` (label chosen at passkey registration)
-and `users.totp_enabled` (confirmed authenticator-app TOTP). TOTP secrets are
-sealed in `encrypted_secrets` (`kind=totp`, `account_type=user`,
-`account_id` = user id, `name` = `pending` then `primary`).
-V20 adds `user_preferences.theme` (`system`, `light`, or `dark`; default
-`system`). The SPA follows the OS when `system` is set, falling back to the
-designed light theme when the OS hint is missing or not dark.
-V21 adds `domain_events` (immutable outbox envelopes) and `event_deliveries`
-(one fenced row per subscriber). Domain events are **not** job kinds; see
-[jobs.md](jobs.md). Duplicate publishes coalesce on
-`(account_id, source, event_type, dedup_key)`.
-Deliveries are idempotent on `(event_id, plugin_id)`.
-V22 adds `domain_events.ordering_key` so the producer FIFO key is stored on the
-envelope and copied verbatim onto each delivery.
-V23 adds `event_subscribers` (replaced in V24) plus
-`event_deliveries.cancel_requested` and `event_deliveries.resource_class`.
-Dispatchers match a live catalog, not this process’s loaded registry; workers
-still claim only locally loaded plugin ids.
-V24 replaces last-writer-wins `event_subscribers` with per-node
-`event_subscriber_nodes` (`node_id`, `plugin_id`, heartbeat) and adds
-`event_outbox_stats` for durable retry/suspend/dead-letter totals and
-dispatch/handler latency. Live dispatch unions enabled rows whose heartbeat is
-within 60 seconds. Parent events with no remaining deliveries are retained until
-`[events].retention_days`.
-V25 adds `domain_events.source` (producer plugin id; empty when unknown) and
-`event_deliveries.wake_event_type` / `wake_filter_json` for host-side
-wake-on-matching-event. Late-join uses a missing `(event_id, plugin_id)`
-anti-join instead of walking every retained dispatched event.
-V26 adds `domain_events.wake_pending` so event-triggered wake is replayable
-after a Duplicate publish or a crash between dispatch and wake. Wake scans are
-account-scoped (parent `domain_events.account_id`) and paged.
-V27 rebuilds uniqueness to `(account_id, source, event_type, dedup_key)`, adds
-claimed wake slices (`wake_lease_owner`, `wake_lease_expires_at`,
-`wake_cursor_at`, `wake_cursor_id`) so each dispatcher tick owns at most a
-bounded page of sleepers, and stores host-derived `event_deliveries.wake_grants_json`
-(schema versions + intersected filter). Publish is commit + notify; the
-dispatcher drains `wake_pending`. File SQLite applies V27 under
-`PRAGMA foreign_keys=OFF` (drop parent while the cascading child exists).
-D1 enforces FKs, so V27 is **not** the SQLite DROP-parent rebuild: the host
-applies versions 1–26 as autocommit execute, then V27 as one D1
-`{ "batch": [...] }` SQL transaction that rebuilds both tables, **drops
-`event_deliveries` then `domain_events`**, renames, recreates indexes, and
-inserts `schema_migrations` version 28 (frozen bookkeeping id; the extra V3
-portal migration means named V27 is not bookkeeping version 27). V28 adds
-`db_serialization_slots` for portable COUNT+mutate serialization (no
-PostgreSQL advisory locks). Wake
-registration (`wake_event_type` / `wake_filter_json` / `wake_grants_json`) is
-cleared when a matching event is accepted so retry is not re-woken. Wake
-page size is derived from the guest’s negotiated `maxBinds` (D1 is 100) minus
-the fenced UPDATE’s fixed binds. The sleeper
-UPDATE is one statement gated on `wake_pending = 1` and `wake_lease_owner`.
-Claim uses this node’s catalog (type + schema + filter) in **host** code;
-the atomic mutation is a compare-and-set on a concrete delivery id. Cluster
-dispatch still unions live nodes.
+`job_queue_control`, `domain_events`, `event_deliveries`,
+`event_subscriber_nodes`, `event_outbox_stats`, `db_atomic_receipts`,
+`db_serialization_slots`, `plugin_databases`.
+
+The `jobs` table is the durable daemon queue (see [jobs.md](jobs.md)).
+`job_queue_control` is a singleton row used to serialize admission and
+scratch-quota updates under PostgreSQL `READ COMMITTED`. `users.last_seen_at`
+is a durable last-authenticated timestamp. `users.avatar_source` is
+`NULL`/`auto`, `monogram`, `gravatar`, `upload`, or
+`sso:{portal_identities.id}`; `portal_identities.picture_url` stores
+IdP-supplied avatars. `webauthn_credentials.name` is the passkey label;
+`users.totp_enabled` is confirmed authenticator-app TOTP (secrets stay in
+`encrypted_secrets`). `user_preferences.theme` is `system`, `light`, or
+`dark`. `oidc_clients` include `enabled` and `plugin_id`.
+
+Domain events are **not** job kinds; see [jobs.md](jobs.md). Duplicate
+publishes coalesce on `(account_id, source, event_type, dedup_key)`.
+Deliveries are idempotent on `(event_id, plugin_id)`. `domain_events` stores
+producer `source`, `ordering_key`, `wake_pending`, claimed wake slices, and
+`dispatch_snapshot_json`. `event_deliveries` stores `wake_event_type` /
+`wake_filter_json` / `wake_grants_json`, `cancel_requested`, and
+`resource_class`. Live dispatch unions `event_subscriber_nodes` whose
+heartbeat is within 60 seconds. `db_serialization_slots` is portable
+COUNT+mutate serialization (no PostgreSQL advisory locks). Wake page size is
+derived from the guest’s negotiated `maxBinds` (D1 is 100) minus the fenced
+UPDATE’s fixed binds. Claim uses this node’s catalog in **host** code; the
+atomic mutation is a compare-and-set on a concrete delivery id.
 
 ## Encrypted secrets
 

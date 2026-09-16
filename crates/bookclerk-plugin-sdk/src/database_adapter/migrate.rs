@@ -1,39 +1,10 @@
-//! Generic SQL-string helpers for database guests.
+//! Generic SQL helpers for database guests.
 //!
-//! Guests may run host-provided SQL. They must not select Bookclerk schema
-//! versions or import `bookclerk_library::migrations`.
+//! Guests may run host-provided typed statements. They must not select
+//! Bookclerk schema versions or import `bookclerk_library::migrations`.
+//! Schema packs arrive as already-separate statements — do not split on `;`.
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, Value};
-
-/// Runs each non-empty statement on `db` in order (autocommit per statement).
-///
-/// # Errors
-///
-/// Returns the engine error when a statement fails.
-pub async fn execute_sql_scripts(
-    db: &DatabaseConnection,
-    statements: impl IntoIterator<Item = impl AsRef<str>>,
-) -> std::result::Result<(), DbErr> {
-    let backend = db.get_database_backend();
-    for sql in statements {
-        let sql = sql.as_ref().trim();
-        if sql.is_empty() {
-            continue;
-        }
-        db.execute_raw(Statement::from_string(backend, sql.to_string()))
-            .await?;
-    }
-    Ok(())
-}
-
-/// Splits a script on top-level `;` and drops empty fragments.
-///
-/// Semicolons inside quoted literals, comments, and parentheses are not
-/// statement boundaries (same tokenizer as host schema packs).
-#[must_use]
-pub fn split_sql_statements(sql: &str) -> Vec<String> {
-    bookclerk_plugin_abi::split_sql_statements(sql)
-}
+use sea_orm::Value;
 
 /// Typed SQL `NULL` for proxy columns so SeaORM `Option<T>` decoding works.
 ///

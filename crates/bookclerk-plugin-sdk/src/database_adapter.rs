@@ -15,7 +15,6 @@
 //! | Need | Entry point |
 //! | --- | --- |
 //! | Engine error → structured [`crate::PluginError`] | [`plugin_error_from_engine`], [`plugin_error_from_db_err`] |
-//! | Host-provided SQL scripts (no Bookclerk migrations) | [`execute_sql_scripts`] |
 //! | Typed SQL `NULL` for proxy row decode | [`typed_null`] |
 //!
 //! First-party platform database guests use the internal `bookclerk-db-guest`
@@ -26,4 +25,4 @@ pub mod errors;
 pub mod migrate;
 
 pub use errors::{plugin_error_from_db_err, plugin_error_from_engine};
-pub use migrate::{execute_sql_scripts, split_sql_statements, typed_null};
+pub use migrate::typed_null;

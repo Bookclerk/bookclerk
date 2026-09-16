@@ -1,27 +1,11 @@
 //! Generic D1 HTTP `batch()` executor for host-authored SQL plans.
 //!
-//! The guest does not parse Bookclerk operation names. The host compiles
-//! domain work into [`DbAtomicPlan`]; this module runs that list as one
-//! D1 `{ "batch": [...] }` SQL transaction and returns statement results.
+//! The guest does not parse Bookclerk operation names. Production and tests
+//! use [`D1Proxy::run_typed_atomic`] (`ExecuteRequest`).
 
 use std::time::Duration;
 
-use bookclerk_db_exec::{
-    sea_null_kind, DbAtomicPlan, DbAtomicRequest, DbAtomicTiming, DbPlanExecResult,
-    DbPlanStatementKind, DbPlanStmtExecResult,
-};
-
-/// Collapses adapter-private companions then host-schema pack extras.
-fn collapse_d1_wire(
-    wire_len: usize,
-    groups: &[usize],
-    statements: Vec<bookclerk_plugin_abi::StatementResult>,
-) -> Vec<bookclerk_plugin_abi::StatementResult> {
-    bookclerk_db_exec::collapse_host_schema_results(
-        wire_len,
-        bookclerk_db_exec::collapse_companion_groups(groups, statements),
-    )
-}
+use bookclerk_db_exec::DbPlanStatementKind;
 use bookclerk_plugin_abi::{
     lowered_statement_preflight_len_proven, DbCapabilities, D1_MAX_SQL_STATEMENT_BYTES,
 };
@@ -34,6 +18,14 @@ use sea_orm::DbErr;
 use serde_json::Value as JsonValue;
 
 use super::d1::D1Proxy;
+
+/// Collapses adapter-private companions (and host-schema identity extras).
+fn collapse_d1_wire(
+    groups: &[usize],
+    statements: Vec<bookclerk_plugin_abi::StatementResult>,
+) -> Vec<bookclerk_plugin_abi::StatementResult> {
+    bookclerk_db_exec::collapse_companion_groups(groups, statements)
+}
 
 /// One statement in a D1 HTTP batch body.
 pub(crate) type SqlStmt = (String, Vec<JsonValue>);
@@ -103,14 +95,6 @@ fn table_cache_key(name: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// True when every plan statement is a read (`Select`) — resubmitting after an
-/// ambiguous response cannot mutate state twice.
-fn plan_is_read_only(plan: &DbAtomicPlan) -> bool {
-    plan.statements
-        .iter()
-        .all(|s| matches!(s.kind, DbPlanStatementKind::Select))
-}
-
 /// True when every typed statement is a read (`Select`).
 fn typed_is_read_only(statements: &[TypedDbStatement]) -> bool {
     statements
@@ -118,92 +102,14 @@ fn typed_is_read_only(statements: &[TypedDbStatement]) -> bool {
         .all(|s| matches!(s.kind, DbPlanStatementKind::Select))
 }
 
-impl D1Proxy {
-    /// Runs a host-authored plan as one D1 HTTP batch (one SQL transaction).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the plan is missing, HTTP fails, or the batch
-    /// response is malformed.
-    pub async fn run_atomic(
-        &self,
-        req: DbAtomicRequest,
-    ) -> std::result::Result<DbPlanExecResult, DbErr> {
-        let started = std::time::Instant::now();
-        check_d1_session(
-            bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
-            req.deadline_unix_ms,
-        )?;
-        let plan = req.plan.clone().ok_or_else(|| {
-            DbErr::Custom("atomic execute requires a host-authored executePlan".into())
-        })?;
-        if plan.statements.iter().any(|s| sql_is_ddl(&s.sql)) {
-            self.clear_table_types();
-        }
-        reject_unbounded_returning(&plan)?;
-        // D1 `batch()` makes each attempt atomic, not retries across attempts.
-        // Resubmitting a possibly-committed mutation is exactly-once only when
-        // the plan is receipt-gated (replay detects the prior commit) or the
-        // batch cannot mutate at all.
-        let retry_safe = plan.prior_receipt_index.is_some() || plan_is_read_only(&plan);
-        let d1_caps = DbCapabilities::advertised_d1();
-        let cap = d1_caps.max_result_rows;
-        let statements: Vec<SqlStmt> = plan
-            .statements
-            .iter()
-            .map(|s| {
-                let sql = if s.kind.wrap_select_limit() {
-                    bookclerk_db_exec::cap_query_sql(&s.sql, cap)
-                } else {
-                    s.sql.clone()
-                };
-                let sql =
-                    bookclerk_db_exec::lower_canonical_sql(sea_orm::DatabaseBackend::Sqlite, &sql);
-                ensure_d1_physical_sql(&sql)?;
-                Ok((sql, d1_wire_binds(&s.binds)))
-            })
-            .collect::<Result<Vec<_>, DbErr>>()?;
-        let mut last_err = None;
-        for attempt in 0..ATOMIC_HTTP_ATTEMPTS {
-            check_d1_session(
-                bookclerk_db_exec::AtomicInterruptPhase::BeforeBegin,
-                req.deadline_unix_ms,
-            )?;
-            let timeout = d1_http_timeout(req.deadline_unix_ms)?;
-            let raw = match self.run_batch_with_timeout(&statements, timeout).await {
-                Ok(value) => {
-                    check_d1_session(
-                        bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
-                        req.deadline_unix_ms,
-                    )?;
-                    value
-                }
-                Err(err)
-                    if err.is_retryable() && retry_safe && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
-                {
-                    sleep_before_d1_retry_bounded(attempt, err.retry_after(), req.deadline_unix_ms)
-                        .await?;
-                    last_err = Some(DbErr::from(err));
-                    continue;
-                }
-                Err(err) => return Err(err.into()),
-            };
-            match parse_generic_batch(&plan, &raw, req.operation_id.clone(), started) {
-                Ok(result) => return Ok(result),
-                Err(err)
-                    if is_ambiguous_d1(&err)
-                        && retry_safe
-                        && attempt + 1 < ATOMIC_HTTP_ATTEMPTS =>
-                {
-                    sleep_before_d1_retry_bounded(attempt, None, req.deadline_unix_ms).await?;
-                    last_err = Some(err);
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        Err(last_err.unwrap_or_else(|| ambiguous_d1("exhausted retries")))
-    }
+/// True when the batch includes host `db_atomic_receipts` gating (named atomics).
+fn typed_is_receipt_gated(statements: &[TypedDbStatement]) -> bool {
+    statements
+        .iter()
+        .any(|s| s.sql.to_ascii_lowercase().contains("db_atomic_receipts"))
+}
 
+impl D1Proxy {
     /// Runs a typed [`ExecuteRequest`] as one D1 HTTP batch.
     ///
     /// [`DbValue::Bytes`] parameters are stored as true BLOBs: the placeholder
@@ -237,17 +143,17 @@ impl D1Proxy {
         // pack for the SQLite family and collapses results back to the wire
         // request shape after parsing.
         let wire_len = req.statements.len();
-        let expanded = bookclerk_db_exec::expand_host_schema_execute_request(
-            sea_orm::DatabaseBackend::Sqlite,
-            req,
-        );
+        let (expanded, schema_groups) =
+            bookclerk_db_exec::expand_host_schema_execute_request_grouped(
+                sea_orm::DatabaseBackend::Sqlite,
+                req,
+            );
         let host_schema = expanded
             .statements
             .last()
             .is_some_and(|s| bookclerk_db_exec::is_host_schema_version_marker(&s.sql));
         let (expanded, companion_groups) = if host_schema {
-            let n = expanded.statements.len();
-            (expanded, vec![1usize; n])
+            (expanded, schema_groups)
         } else {
             bookclerk_db_exec::expand_binding_execute_request(
                 sea_orm::DatabaseBackend::Sqlite,
@@ -263,7 +169,9 @@ impl D1Proxy {
         // exactly-once only when the request is receipt-gated (replay detects
         // the prior commit) or provably read-only. An unwrapped mutation must
         // surface the ambiguity instead of resubmitting.
-        let retry_safe = !guest_receipt.is_absent() || typed_is_read_only(&req.statements);
+        let retry_safe = !guest_receipt.is_absent()
+            || typed_is_read_only(&req.statements)
+            || typed_is_receipt_gated(&req.statements);
         let d1_caps = DbCapabilities::advertised_d1();
         let cap = d1_caps.max_result_rows;
         if (!guest_receipt.is_absent() || !proofs.is_empty()) && proofs.len() != wire_len {
@@ -401,8 +309,7 @@ impl D1Proxy {
                 Ok(mut reply) => {
                     self.normalize_reply_from_declared(req, &mut reply, timeout)
                         .await?;
-                    reply.statements =
-                        collapse_d1_wire(wire_len, &companion_groups, reply.statements);
+                    reply.statements = collapse_d1_wire(&companion_groups, reply.statements);
                     if !guest_receipt.is_absent() {
                         // Guest-receipt finalize needs statement results, so D1 runs a
                         // follow-up HTTP batch after the main batch commits. Same-batch
@@ -564,7 +471,7 @@ impl D1Proxy {
         let mut out = vec![StatementResult::from_affected(0)];
         out.extend(std::mem::take(&mut reply.statements));
         bookclerk_db_exec::pad_skipped_guest_results(&mut out, req.statements.len());
-        reply.statements = collapse_d1_wire(wire_len, companion_groups, out);
+        reply.statements = collapse_d1_wire(companion_groups, out);
         Ok(reply)
     }
 
@@ -585,7 +492,7 @@ impl D1Proxy {
         timeout: Duration,
         deadline: Option<u64>,
         started: std::time::Instant,
-        wire_len: usize,
+        _wire_len: usize,
         companion_groups: &[usize],
         guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
         cap: u32,
@@ -641,7 +548,7 @@ impl D1Proxy {
         reply.statements = assembled;
         self.normalize_reply_from_declared(req, &mut reply, timeout)
             .await?;
-        reply.statements = collapse_d1_wire(wire_len, companion_groups, reply.statements);
+        reply.statements = collapse_d1_wire(companion_groups, reply.statements);
         let finalize = bookclerk_db_exec::guest_receipt_finalize_stmts(
             &reply,
             usize::try_from(guest_receipt.guest_statement_len).unwrap_or(usize::MAX),
@@ -983,20 +890,6 @@ fn wrap_bytes_placeholders(sql: &str, params: &[DbValue]) -> String {
     out
 }
 
-/// D1 HTTP params are untyped JSON; typed `$sea_null` objects become SQL NULL.
-fn d1_wire_binds(binds: &[JsonValue]) -> Vec<JsonValue> {
-    binds
-        .iter()
-        .map(|v| {
-            if sea_null_kind(v).is_some() {
-                JsonValue::Null
-            } else {
-                v.clone()
-            }
-        })
-        .collect()
-}
-
 /// Waits before a D1 retry, honoring `Retry-After` or a capped exponential backoff.
 async fn sleep_before_d1_retry_bounded(
     attempt: usize,
@@ -1075,40 +968,6 @@ fn permanent_http_status(err: &DbErr) -> Option<u16> {
 /// Builds a [`DbErr`] whose message marks the batch as possibly already committed.
 fn ambiguous_d1(msg: impl std::fmt::Display) -> DbErr {
     DbErr::Custom(format!("D1 ambiguous response: {msg}"))
-}
-
-/// Fails closed on DML `RETURNING` that D1 HTTP cannot prove is at most one row.
-///
-/// Cloudflare commits the batch before JSON is parsed. `Returning` requires a
-/// host-IR `maxRows = 1`. Top-level `;` (multi-statement SQL) and multi-tuple
-/// `VALUES` are rejected before HTTP.
-fn reject_unbounded_returning(plan: &DbAtomicPlan) -> std::result::Result<(), DbErr> {
-    let cap = DbCapabilities::advertised_d1().max_result_rows;
-    for (i, stmt) in plan.statements.iter().enumerate() {
-        if sql_has_top_level_semicolon(&stmt.sql) {
-            return Err(DbErr::Custom(format!(
-                "D1 statement {i} contains multiple SQL statements; maxResultRows is {cap}"
-            )));
-        }
-        let looks_returning = matches!(stmt.kind, DbPlanStatementKind::Returning);
-        if !looks_returning {
-            continue;
-        }
-        if stmt.max_rows != 1 {
-            return Err(DbErr::Custom(format!(
-                "D1 statement {i} Returning is not proven bounded; maxResultRows is {cap}"
-            )));
-        }
-        if has_top_level_keyword(&stmt.sql, "VALUES") {
-            let tuples = count_top_level_values_tuples(&stmt.sql);
-            if tuples != 1 {
-                return Err(DbErr::Custom(format!(
-                    "D1 statement {i} Returning VALUES is not a single tuple ({tuples}); maxResultRows is {cap}"
-                )));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Fails closed on DML `RETURNING` that D1 HTTP cannot prove is at most one row.
@@ -1788,132 +1647,6 @@ fn d1_sql_duration_us(raw: &JsonValue) -> Option<u64> {
     any.then_some((ms * 1000.0) as u64)
 }
 
-/// Parses a D1 batch for a host-authored [`DbAtomicPlan`].
-fn parse_generic_batch(
-    plan: &DbAtomicPlan,
-    value: &JsonValue,
-    operation_id: String,
-    started: std::time::Instant,
-) -> std::result::Result<DbPlanExecResult, DbErr> {
-    let statements = parse_batch_results(plan, value)?;
-    if statements.len() != plan.statements.len() {
-        return Err(ambiguous_d1(format!(
-            "expected {} statement results, got {}",
-            plan.statements.len(),
-            statements.len()
-        )));
-    }
-    let cap = usize::try_from(DbCapabilities::advertised_d1().max_result_rows).unwrap_or(1_000);
-    for (i, stmt) in statements.iter().enumerate() {
-        if stmt.rows.len() > cap {
-            return Err(ambiguous_d1(format!(
-                "D1 statement {i} returned {} rows; maxResultRows is {cap}",
-                stmt.rows.len()
-            )));
-        }
-    }
-    let db_execution_us = d1_sql_duration_us(value);
-    let result = DbPlanExecResult {
-        operation_id,
-        statements,
-        timing: Some(DbAtomicTiming {
-            attempt_elapsed_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
-            db_execution_us,
-            db_timing_source: db_execution_us.map(|_| "d1_sql_duration".into()),
-        }),
-    };
-    let atomic_cap =
-        usize::try_from(DbCapabilities::advertised_d1().max_atomic_result_bytes).unwrap_or(0);
-    if atomic_cap > 0 {
-        let used = serde_json::to_vec(&result)
-            .map(|b| b.len())
-            .unwrap_or(usize::MAX);
-        if used > atomic_cap {
-            return Err(ambiguous_d1(format!(
-                "atomic result is {used} bytes; maxAtomicResultBytes is {atomic_cap}"
-            )));
-        }
-    }
-    Ok(result)
-}
-
-/// Parses the D1 `result` array; a `success: false` entry is a hard statement failure.
-fn parse_batch_results(
-    plan: &DbAtomicPlan,
-    value: &JsonValue,
-) -> std::result::Result<Vec<DbPlanStmtExecResult>, DbErr> {
-    let Some(arr) = value.get("result").and_then(JsonValue::as_array) else {
-        return Err(ambiguous_d1("batch response missing result array"));
-    };
-    let caps = DbCapabilities::advertised_d1();
-    let row_cap = usize::try_from(caps.max_result_rows).unwrap_or(1_000);
-    let result_cap = usize::try_from(caps.max_result_bytes).unwrap_or(usize::MAX);
-    let cell_cap = usize::try_from(caps.max_cell_bytes).unwrap_or(usize::MAX);
-    let mut out = Vec::with_capacity(arr.len());
-    for (i, entry) in arr.iter().enumerate() {
-        if entry.get("success").and_then(JsonValue::as_bool) == Some(false) {
-            return Err(DbErr::Custom(format!(
-                "D1 batch statement {i} failed: {entry}"
-            )));
-        }
-        let raw_rows = entry
-            .get("results")
-            .and_then(JsonValue::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let mut rows = Vec::new();
-        let mut used = 0usize;
-        for row in raw_rows {
-            if caps.max_cell_bytes > 0 {
-                if let JsonValue::Object(map) = row {
-                    for (name, cell) in map {
-                        let n = bookclerk_db_exec::json_cell_utf8_len(cell);
-                        if n > cell_cap {
-                            return Err(ambiguous_d1(format!(
-                                "D1 statement {i} column `{name}` is {n} bytes; maxCellBytes is {}",
-                                caps.max_cell_bytes
-                            )));
-                        }
-                    }
-                }
-            }
-            if caps.max_result_bytes > 0 {
-                used = used.saturating_add(row.to_string().len());
-                if used > result_cap {
-                    return Err(ambiguous_d1(format!(
-                        "D1 statement {i} result is {used} bytes; maxResultBytes is {}",
-                        caps.max_result_bytes
-                    )));
-                }
-            }
-            rows.push(row.clone());
-            if rows.len() > row_cap {
-                break;
-            }
-        }
-        let changes = entry
-            .get("meta")
-            .and_then(|m| m.get("changes"))
-            .and_then(JsonValue::as_u64)
-            .unwrap_or(0);
-        let kind = plan
-            .statements
-            .get(i)
-            .map(|s| s.kind)
-            .unwrap_or(DbPlanStatementKind::Returning);
-        let rows_affected = match kind {
-            DbPlanStatementKind::Select => 0,
-            DbPlanStatementKind::Returning => u64::try_from(rows.len()).unwrap_or(u64::MAX),
-            DbPlanStatementKind::Execute => changes,
-        };
-        out.push(DbPlanStmtExecResult {
-            rows,
-            rows_affected,
-        });
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1942,6 +1675,33 @@ mod tests {
             &[1, 1],
         )
         .expect_err("misaligned sidecar");
+    }
+
+    fn typed_stmt(sql: &str, kind: DbPlanStatementKind, max_rows: u32) -> TypedDbStatement {
+        TypedDbStatement {
+            sql: sql.into(),
+            parameters: vec![],
+            kind,
+            max_rows,
+            result_selection: if kind == DbPlanStatementKind::Execute {
+                DbResultSelection::AffectedRows
+            } else {
+                DbResultSelection::Rows
+            },
+        }
+    }
+
+    fn typed_req(op: &str, statements: Vec<TypedDbStatement>) -> ExecuteRequest {
+        ExecuteRequest {
+            operation_id: op.into(),
+            request_hash: String::new(),
+            statements,
+            deadline_unix_ms: 0,
+        }
+    }
+
+    fn typed_select(sql: &str) -> ExecuteRequest {
+        typed_req("d1", vec![typed_stmt(sql, DbPlanStatementKind::Select, 8)])
     }
 
     #[test]
@@ -2032,53 +1792,32 @@ mod tests {
 
     #[test]
     fn missing_result_array_is_ambiguous() {
-        let plan = DbAtomicPlan {
-            statements: vec![],
-            outcome_index: 0,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
-        };
+        let req = typed_req("op-1", vec![]);
         let started = std::time::Instant::now();
-        let err = parse_generic_batch(&plan, &json!({}), "op-1".into(), started).unwrap_err();
+        let err = parse_typed_batch(&req, &json!({}), started).unwrap_err();
         assert!(is_ambiguous_d1(&err), "{err}");
     }
 
     #[test]
     fn statement_failure_is_not_ambiguous() {
-        let plan = DbAtomicPlan {
-            statements: vec![bookclerk_db_exec::DbPlanStatement {
-                sql: "INSERT INTO t (k) VALUES ('a')".into(),
-                binds: vec![],
-                kind: DbPlanStatementKind::Execute,
-                max_rows: 0,
-            }],
-            outcome_index: 0,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
-        };
+        let req = typed_req(
+            "op-fail",
+            vec![typed_stmt(
+                "INSERT INTO t (k) VALUES ('a')",
+                DbPlanStatementKind::Execute,
+                0,
+            )],
+        );
         let value = json!({
             "result": [{ "success": false, "error": "constraint" }]
         });
-        let err = parse_batch_results(&plan, &value).unwrap_err();
+        let err = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap_err();
         assert!(!is_ambiguous_d1(&err), "{err}");
     }
 
     #[test]
     fn parse_caps_result_rows() {
-        let plan = DbAtomicPlan {
-            statements: vec![bookclerk_db_exec::DbPlanStatement {
-                sql: "SELECT 1".into(),
-                binds: vec![],
-                kind: bookclerk_plugin_sdk::DbPlanStatementKind::Select,
-                max_rows: 0,
-            }],
-            outcome_index: 0,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
-        };
+        let req = typed_select("SELECT 1");
         let mut rows = Vec::new();
         for i in 0..1_050 {
             rows.push(json!({ "n": i }));
@@ -2087,7 +1826,7 @@ mod tests {
             "result": [{ "success": true, "results": rows, "meta": { "changes": 0 } }]
         });
         let started = std::time::Instant::now();
-        let err = parse_generic_batch(&plan, &value, "op-cap".into(), started).unwrap_err();
+        let err = parse_typed_batch(&req, &value, started).unwrap_err();
         assert!(
             err.to_string().contains("maxResultRows"),
             "D1 must fail closed on over-cap rows: {err}"
@@ -2099,31 +1838,16 @@ mod tests {
         let at_cap = json!({
             "result": [{ "success": true, "results": rows[..1000].to_vec(), "meta": { "changes": 0 } }]
         });
-        let exec = parse_generic_batch(&plan, &at_cap, "op-cap-ok".into(), started).unwrap();
+        let exec = parse_typed_batch(&req, &at_cap, started).unwrap();
         assert_eq!(exec.statements[0].rows.len(), 1_000);
-    }
-
-    fn stmt(sql: &str, kind: DbPlanStatementKind) -> bookclerk_db_exec::DbPlanStatement {
-        bookclerk_db_exec::DbPlanStatement::new(sql, vec![], kind)
-    }
-
-    fn plan_of(sql: &str, kind: DbPlanStatementKind) -> DbAtomicPlan {
-        DbAtomicPlan {
-            statements: vec![stmt(sql, kind)],
-            outcome_index: 0,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
-        }
     }
 
     #[test]
     fn host_insert_returning_is_proven_single_row() {
         let sql = "INSERT OR IGNORE INTO event_deliveries (id) \
              SELECT ? WHERE EXISTS (SELECT 1 FROM domain_events WHERE id = ?) RETURNING id";
-        let mut plan = plan_of(sql, DbPlanStatementKind::Returning);
-        plan.statements[0].max_rows = 1;
-        reject_unbounded_returning(&plan).unwrap();
+        reject_unbounded_returning_typed(&[typed_stmt(sql, DbPlanStatementKind::Returning, 1)])
+            .unwrap();
     }
 
     #[test]
@@ -2131,7 +1855,8 @@ mod tests {
         let sql = "WITH RECURSIVE t(id) AS (SELECT 0 UNION ALL SELECT id+1 FROM t WHERE id < 5) \
              INSERT INTO vec_ret_ins (id) SELECT id FROM t RETURNING id";
         let err =
-            reject_unbounded_returning(&plan_of(sql, DbPlanStatementKind::Returning)).unwrap_err();
+            reject_unbounded_returning_typed(&[typed_stmt(sql, DbPlanStatementKind::Returning, 0)])
+                .unwrap_err();
         assert!(err.to_string().contains("maxResultRows"), "{err}");
         assert!(!is_ambiguous_d1(&err), "{err}");
     }
@@ -2139,9 +1864,9 @@ mod tests {
     #[test]
     fn multi_values_returning_is_not_proven() {
         let sql = "INSERT INTO t(id) VALUES (1),(2) RETURNING id";
-        let mut plan = plan_of(sql, DbPlanStatementKind::Returning);
-        plan.statements[0].max_rows = 1;
-        let err = reject_unbounded_returning(&plan).unwrap_err();
+        let err =
+            reject_unbounded_returning_typed(&[typed_stmt(sql, DbPlanStatementKind::Returning, 1)])
+                .unwrap_err();
         assert!(err.to_string().contains("VALUES"), "{err}");
         assert!(err.to_string().contains("maxResultRows"), "{err}");
         assert_eq!(count_top_level_values_tuples(sql), 2);
@@ -2151,23 +1876,9 @@ mod tests {
     fn semicolon_joined_sql_is_rejected() {
         let sql = "INSERT INTO t(id) VALUES (1); INSERT INTO t(id) VALUES (2)";
         let err =
-            reject_unbounded_returning(&plan_of(sql, DbPlanStatementKind::Execute)).unwrap_err();
+            reject_unbounded_returning_typed(&[typed_stmt(sql, DbPlanStatementKind::Execute, 0)])
+                .unwrap_err();
         assert!(err.to_string().contains("multiple SQL statements"), "{err}");
-    }
-
-    fn typed_select(sql: &str) -> ExecuteRequest {
-        ExecuteRequest {
-            operation_id: "d1".into(),
-            request_hash: String::new(),
-            statements: vec![TypedDbStatement {
-                sql: sql.into(),
-                parameters: vec![],
-                kind: DbPlanStatementKind::Select,
-                max_rows: 8,
-                result_selection: DbResultSelection::Rows,
-            }],
-            deadline_unix_ms: 0,
-        }
     }
 
     #[test]
@@ -2233,19 +1944,22 @@ mod tests {
     #[test]
     fn text_starting_with_b64_stays_text() {
         let req = typed_select("SELECT note FROM books");
-        let value = json!({
-            "result": [{
-                "success": true,
-                "results": [{ "note": "b64:not-bytes" }],
-                "meta": { "changes": 0 }
-            }]
-        });
-        let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
-        assert_eq!(
-            reply.statements[0].rows[0].values[0],
-            DbValue::Text("b64:not-bytes".into())
-        );
-        assert_eq!(reply.statements[0].columns[0].db_type, DbType::Text);
+        for note in ["b64:not-bytes", "b64:YWJj"] {
+            let value = json!({
+                "result": [{
+                    "success": true,
+                    "results": [{ "note": note }],
+                    "meta": { "changes": 0 }
+                }]
+            });
+            let reply = parse_typed_batch(&req, &value, std::time::Instant::now()).unwrap();
+            assert_eq!(
+                reply.statements[0].rows[0].values[0],
+                DbValue::Text(note.into()),
+                "{note}"
+            );
+            assert_eq!(reply.statements[0].columns[0].db_type, DbType::Text);
+        }
     }
 
     #[test]

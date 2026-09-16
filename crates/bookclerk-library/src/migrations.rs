@@ -1,13 +1,12 @@
 //! Greenfield schema for the Bookclerk library DB.
 //!
-//! Fresh databases apply a single version-1 DDL via [`migration_sql`] (SQLite
-//! `PRAGMA user_version` / canonical plan). Adapters lower canonical DDL at the
-//! execution edge (see [`bookclerk_db_exec::expand_host_schema_batch`]).
-//! [`latest_schema_sqlite`] / [`latest_schema_postgres`] expose greenfield DDL
-//! for introspection. Base DDL uses `CREATE TABLE IF NOT EXISTS` /
-//! `CREATE INDEX IF NOT EXISTS`.
+//! Fresh databases apply a single version-1 DDL via [`host_migration_plan`].
+//! Adapters lower canonical DDL at the execution edge (see
+//! [`bookclerk_db_exec::expand_host_schema_batch`]).
+//! [`latest_schema_sqlite`] / [`latest_schema_postgres`] expose that same
+//! current-schema pack. Statements use `CREATE TABLE IF NOT EXISTS` /
+//! `CREATE INDEX IF NOT EXISTS`. There is no incremental V2–V29 chain.
 
-use rusqlite_migration::{Migrations, M};
 use std::sync::OnceLock;
 
 /// Final SQLite DDL for a fresh Bookclerk library database.
@@ -116,23 +115,33 @@ const SQLITE_SCHEMA: &str = r#"
         role TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         display_name TEXT,
+        login_name TEXT,
+        email TEXT,
         password_hash TEXT,
         security_version INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        last_seen_at TEXT,
+        avatar_source TEXT,
+        totp_enabled INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
     CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name ON users(login_name);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
     CREATE TABLE IF NOT EXISTS portal_identities (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         provider TEXT NOT NULL,
         external_user_id TEXT NOT NULL,
         label TEXT,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL,
+        picture_url TEXT,
         UNIQUE(provider, external_user_id)
     );
+    CREATE INDEX IF NOT EXISTS idx_portal_identities_user ON portal_identities(user_id);
 
     CREATE TABLE IF NOT EXISTS claim_tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +163,10 @@ const SQLITE_SCHEMA: &str = r#"
         identity_id INTEGER NOT NULL,
         expires_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        user_agent TEXT,
+        device_type TEXT,
+        client_label TEXT,
+        last_used_at TEXT,
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
     );
 
@@ -164,7 +177,12 @@ const SQLITE_SCHEMA: &str = r#"
         token_hash TEXT NOT NULL UNIQUE,
         expires_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        last_used_at TEXT
+        last_used_at TEXT,
+        elevated_from_user_id INTEGER,
+        impersonating_user_id INTEGER,
+        user_agent TEXT,
+        device_type TEXT,
+        client_label TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_operator_sessions_hash ON operator_sessions(token_hash);
@@ -191,6 +209,7 @@ const SQLITE_SCHEMA: &str = r#"
     );
 
     CREATE INDEX IF NOT EXISTS idx_account_links_account ON account_links(account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(account_id);
 
     CREATE TABLE IF NOT EXISTS works (
         id TEXT PRIMARY KEY,
@@ -338,6 +357,7 @@ const SQLITE_SCHEMA: &str = r#"
         discover_sort_dir TEXT NOT NULL DEFAULT 'desc',
         discover_language TEXT,
         discover_excluded_sources_json TEXT NOT NULL DEFAULT '[]',
+        theme TEXT NOT NULL DEFAULT 'system',
         updated_at TEXT NOT NULL,
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE
     );
@@ -368,68 +388,7 @@ const SQLITE_SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_encrypted_secrets_kind ON encrypted_secrets(kind);
     CREATE INDEX IF NOT EXISTS idx_encrypted_secrets_account ON encrypted_secrets(account_id);
     CREATE INDEX IF NOT EXISTS idx_encrypted_secrets_account_type ON encrypted_secrets(account_type);
-    "#;
 
-/// Additive migration: durable hashed operator sessions (#117).
-///
-/// Existing installs already applied greenfield v1; this version creates the
-/// table when missing. Fresh databases also create it via [`SQLITE_SCHEMA`] /
-// (`IF NOT EXISTS` keeps the double apply safe).
-const MIGRATION_V2_OPERATOR_SESSIONS_SQLITE: &str = r#"
-    CREATE TABLE IF NOT EXISTS operator_sessions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_hash TEXT NOT NULL UNIQUE,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        last_used_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_operator_sessions_hash ON operator_sessions(token_hash);
-"#;
-
-/// Additive migration: first-party `users` + bridge column on portal identities (#117).
-///
-/// Data backfill (portal row → member user, prefs subject remap) runs in
-/// [`crate::LibraryStore::ensure_users_bridged`] after DDL apply.
-const MIGRATION_V3_USERS_SQLITE: &str = r#"
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        role TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        display_name TEXT,
-        password_hash TEXT,
-        security_version INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
-    CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
-"#;
-
-/// SQLite cannot add a FK column in one statement portably; add nullable `user_id`
-/// then index. Existing rows are bridged in Rust.
-const MIGRATION_V3_PORTAL_USER_ID_SQLITE: &str = r#"
-    ALTER TABLE portal_identities ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
-    CREATE INDEX IF NOT EXISTS idx_portal_identities_user ON portal_identities(user_id);
-"#;
-
-/// Additive migration: elevate / impersonate metadata + security audit (#117 Phase 2).
-const MIGRATION_V4_ELEVATE_AUDIT_SQLITE: &str = r#"
-    ALTER TABLE operator_sessions ADD COLUMN elevated_from_user_id INTEGER;
-    ALTER TABLE operator_sessions ADD COLUMN impersonating_user_id INTEGER;
-    CREATE TABLE IF NOT EXISTS security_audit_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        at TEXT NOT NULL,
-        actor TEXT NOT NULL,
-        action TEXT NOT NULL,
-        detail_json TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_security_audit_at ON security_audit_events(at);
-"#;
-
-/// Additive migration: local login_name + user invites (#117 Phase 3).
-const MIGRATION_V5_PROVISIONING_SQLITE: &str = r#"
-    ALTER TABLE users ADD COLUMN login_name TEXT;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name ON users(login_name);
     CREATE TABLE IF NOT EXISTS user_invites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         token_hash TEXT NOT NULL UNIQUE,
@@ -442,17 +401,18 @@ const MIGRATION_V5_PROVISIONING_SQLITE: &str = r#"
         created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_user_invites_hash ON user_invites(token_hash);
-"#;
 
-/// Additive migration: OIDC authorization server tables (#117 Phase 4).
-const MIGRATION_V6_OIDC_SQLITE: &str = r#"
     CREATE TABLE IF NOT EXISTS oidc_clients (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_id TEXT NOT NULL UNIQUE,
         client_secret_hash TEXT,
         redirect_uris_json TEXT NOT NULL,
         name TEXT,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        issue_refresh_token INTEGER NOT NULL DEFAULT 1,
+        allowed_scopes_json TEXT NOT NULL DEFAULT '["openid","profile","email"]',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        plugin_id TEXT
     );
     CREATE TABLE IF NOT EXISTS oidc_auth_codes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -479,35 +439,7 @@ const MIGRATION_V6_OIDC_SQLITE: &str = r#"
         created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_oidc_refresh_hash ON oidc_refresh_tokens(token_hash);
-"#;
 
-/// Exclusive account_links: one portal identity per store account (#117 Phase 5).
-const MIGRATION_V7_EXCLUSIVE_LINKS_SQLITE: &str = r#"
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(account_id);
-"#;
-
-/// Additive migration: session client metadata for operator/portal session lists.
-///
-/// Plain `ADD COLUMN` (no `IF NOT EXISTS`): the SQLite build bundled with
-/// `rusqlite` rejects `ADD COLUMN IF NOT EXISTS` (`near "EXISTS": syntax error`).
-const MIGRATION_V8_SESSION_CLIENT_SQLITE: &str = r#"
-    ALTER TABLE operator_sessions ADD COLUMN user_agent TEXT;
-    ALTER TABLE operator_sessions ADD COLUMN device_type TEXT;
-    ALTER TABLE operator_sessions ADD COLUMN client_label TEXT;
-    ALTER TABLE portal_sessions ADD COLUMN user_agent TEXT;
-    ALTER TABLE portal_sessions ADD COLUMN device_type TEXT;
-    ALTER TABLE portal_sessions ADD COLUMN client_label TEXT;
-    ALTER TABLE portal_sessions ADD COLUMN last_used_at TEXT;
-"#;
-
-/// Optional contact email on first-party users (invites / notifications).
-const MIGRATION_V9_USER_EMAIL_SQLITE: &str = r#"
-    ALTER TABLE users ADD COLUMN email TEXT;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
-"#;
-
-/// OIDC RP login state + WebAuthn credentials / challenges.
-const MIGRATION_V10_SSO_WEBAUTHN_SQLITE: &str = r#"
     CREATE TABLE IF NOT EXISTS oidc_rp_states (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         state_hash TEXT NOT NULL UNIQUE,
@@ -524,6 +456,7 @@ const MIGRATION_V10_SSO_WEBAUTHN_SQLITE: &str = r#"
         user_id INTEGER NOT NULL,
         credential_id TEXT NOT NULL UNIQUE,
         passkey_json TEXT NOT NULL,
+        name TEXT,
         created_at TEXT NOT NULL,
         last_used_at TEXT
     );
@@ -539,10 +472,167 @@ const MIGRATION_V10_SSO_WEBAUTHN_SQLITE: &str = r#"
     );
     CREATE INDEX IF NOT EXISTS idx_oidc_rp_states_expires ON oidc_rp_states(expires_at);
     CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_expires ON webauthn_challenges(expires_at);
-"#;
 
-/// Durable atomic receipts (idempotent replay after a lost response).
-const MIGRATION_V11_ATOMIC_RECEIPTS_SQLITE: &str = r#"
+    CREATE TABLE IF NOT EXISTS db_atomic_receipts (
+        operation_id TEXT PRIMARY KEY NOT NULL,
+        operation_kind TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        payload TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consume_key TEXT UNIQUE
+    );
+    CREATE INDEX IF NOT EXISTS idx_db_atomic_receipts_expires ON db_atomic_receipts(expires_at);
+
+    CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL,
+        state TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        resource_class TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        progress TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        run_after TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        dedup_key TEXT NOT NULL,
+        error_kind TEXT,
+        error_message TEXT,
+        cancel_requested INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        lease_generation INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(resource_class, state, run_after, priority);
+    CREATE INDEX IF NOT EXISTS idx_jobs_dedup ON jobs(dedup_key, state);
+    CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedup_active
+        ON jobs(dedup_key) WHERE state IN ('pending', 'running');
+    CREATE TABLE IF NOT EXISTS job_temp_paths (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        reserved_bytes INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_job_temp_paths_job ON job_temp_paths(job_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_temp_paths_job_path
+        ON job_temp_paths(job_id, path);
+    CREATE TABLE IF NOT EXISTS job_queue_control (
+        id INTEGER PRIMARY KEY CHECK (id = 1)
+    );
+    INSERT OR IGNORE INTO job_queue_control (id) VALUES (1);
+
+    CREATE TABLE IF NOT EXISTS domain_events (
+        id TEXT PRIMARY KEY NOT NULL,
+        event_type TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        occurred_at TEXT NOT NULL,
+        account_id TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        correlation_id TEXT NOT NULL DEFAULT '',
+        causation_id TEXT NOT NULL DEFAULT '',
+        dedup_key TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        ordering_key TEXT NOT NULL DEFAULT '',
+        dispatch_state TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        wake_pending INTEGER NOT NULL DEFAULT 1,
+        wake_lease_owner TEXT,
+        wake_lease_expires_at TEXT,
+        wake_cursor_at TEXT NOT NULL DEFAULT '',
+        wake_cursor_id TEXT NOT NULL DEFAULT '',
+        dispatch_snapshot_json TEXT NOT NULL DEFAULT '',
+        UNIQUE(account_id, source, event_type, dedup_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch ON domain_events(dispatch_state, created_at);
+    CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch_created ON domain_events(dispatch_state, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_domain_events_wake_pending ON domain_events(created_at, id) WHERE wake_pending = 1;
+    CREATE TABLE IF NOT EXISTS event_deliveries (
+        id TEXT PRIMARY KEY NOT NULL,
+        event_id TEXT NOT NULL,
+        plugin_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 8,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        lease_generation INTEGER NOT NULL DEFAULT 0,
+        run_after TEXT NOT NULL,
+        invocation_sequence INTEGER NOT NULL DEFAULT 0,
+        resume_pending INTEGER NOT NULL DEFAULT 0,
+        checkpoint_json TEXT,
+        checkpoint_schema_version INTEGER NOT NULL DEFAULT 0,
+        ordering_key TEXT NOT NULL DEFAULT '',
+        outcome TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        cancel_requested INTEGER NOT NULL DEFAULT 0,
+        resource_class TEXT NOT NULL DEFAULT 'network',
+        wake_event_type TEXT NOT NULL DEFAULT '',
+        wake_filter_json TEXT NOT NULL DEFAULT '',
+        wake_grants_json TEXT NOT NULL DEFAULT '',
+        UNIQUE(event_id, plugin_id),
+        FOREIGN KEY(event_id) REFERENCES domain_events(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_event_deliveries_claim ON event_deliveries(state, run_after, created_at);
+    CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_order ON event_deliveries(plugin_id, ordering_key, created_at);
+    CREATE INDEX IF NOT EXISTS idx_event_deliveries_state ON event_deliveries(state);
+    CREATE INDEX IF NOT EXISTS idx_event_deliveries_wake ON event_deliveries(state, wake_event_type);
+    CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_running ON event_deliveries(plugin_id, state);
+
+    CREATE TABLE IF NOT EXISTS event_subscriber_nodes (
+        node_id TEXT NOT NULL,
+        plugin_id TEXT NOT NULL,
+        subscriptions_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        heartbeat_at TEXT NOT NULL,
+        PRIMARY KEY (node_id, plugin_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_event_subscriber_nodes_heartbeat
+        ON event_subscriber_nodes(heartbeat_at);
+    CREATE TABLE IF NOT EXISTS event_outbox_stats (
+        id INTEGER PRIMARY KEY NOT NULL,
+        retries_total INTEGER NOT NULL DEFAULT 0,
+        suspensions_total INTEGER NOT NULL DEFAULT 0,
+        dead_letters_total INTEGER NOT NULL DEFAULT 0,
+        dispatch_latency_ms_sum INTEGER NOT NULL DEFAULT 0,
+        dispatch_count INTEGER NOT NULL DEFAULT 0,
+        handler_latency_ms_sum INTEGER NOT NULL DEFAULT 0,
+        handler_count INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO event_outbox_stats (
+        id, retries_total, suspensions_total, dead_letters_total,
+        dispatch_latency_ms_sum, dispatch_count, handler_latency_ms_sum, handler_count
+    ) VALUES (1, 0, 0, 0, 0, 0, 0, 0);
+
+    CREATE TABLE IF NOT EXISTS db_serialization_slots (
+        slot_key TEXT PRIMARY KEY NOT NULL,
+        bump INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS plugin_databases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plugin_id TEXT NOT NULL,
+        binding TEXT NOT NULL,
+        backend_kind TEXT NOT NULL,
+        unit_ref TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(plugin_id, binding)
+    );
+    CREATE INDEX IF NOT EXISTS idx_plugin_databases_plugin ON plugin_databases(plugin_id);
+    "#;
+
+/// Durable atomic receipts for isolated plugin binding databases.
+const BINDING_RECEIPTS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS db_atomic_receipts (
         operation_id TEXT PRIMARY KEY NOT NULL,
         operation_kind TEXT NOT NULL,
@@ -581,373 +671,6 @@ const BINDING_SQL_CATALOG_SQLITE: &str = r#"
     );
 "#;
 
-/// Durable daemon job queue and associated scratch-path ledger (SQLite).
-const MIGRATION_V12_JOBS_SQLITE: &str = r#"
-    CREATE TABLE IF NOT EXISTS jobs (
-        id TEXT PRIMARY KEY NOT NULL,
-        kind TEXT NOT NULL,
-        state TEXT NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 0,
-        resource_class TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        progress TEXT,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        max_attempts INTEGER NOT NULL DEFAULT 3,
-        run_after TEXT NOT NULL,
-        lease_owner TEXT,
-        lease_expires_at TEXT,
-        dedup_key TEXT NOT NULL,
-        error_kind TEXT,
-        error_message TEXT,
-        cancel_requested INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        started_at TEXT,
-        finished_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(resource_class, state, run_after, priority);
-    CREATE INDEX IF NOT EXISTS idx_jobs_dedup ON jobs(dedup_key, state);
-    CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
-    CREATE TABLE IF NOT EXISTS job_temp_paths (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT NOT NULL,
-        path TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_job_temp_paths_job ON job_temp_paths(job_id);
-"#;
-
-/// Lease generation, active-key uniqueness, and reserved scratch bytes (SQLite).
-const MIGRATION_V13_JOB_FENCE_SQLITE: &str = r#"
-    ALTER TABLE jobs ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedup_active
-        ON jobs(dedup_key) WHERE state IN ('pending', 'running');
-    ALTER TABLE job_temp_paths ADD COLUMN reserved_bytes INTEGER NOT NULL DEFAULT 0;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_temp_paths_job_path
-        ON job_temp_paths(job_id, path);
-"#;
-
-/// Singleton row that serializes admission and quota updates (SQLite).
-const MIGRATION_V14_JOB_QUEUE_CONTROL_SQLITE: &str = r#"
-    CREATE TABLE IF NOT EXISTS job_queue_control (
-        id INTEGER PRIMARY KEY CHECK (id = 1)
-    );
-    INSERT OR IGNORE INTO job_queue_control (id) VALUES (1);
-"#;
-
-/// Durable `users.last_seen_at` for presence after logout (SQLite).
-///
-/// Backfills from any portal session (including expired) so existing accounts
-/// that have signed in are not treated as never-seen.
-const MIGRATION_V15_USER_LAST_SEEN_SQLITE: &str = r#"
-    ALTER TABLE users ADD COLUMN last_seen_at TEXT;
-    UPDATE users SET last_seen_at = (
-        SELECT MAX(COALESCE(ps.last_used_at, ps.created_at))
-        FROM portal_sessions ps
-        INNER JOIN portal_identities pi ON pi.id = ps.identity_id
-        WHERE pi.user_id = users.id
-    )
-    WHERE last_seen_at IS NULL;
-"#;
-
-/// Profile picture choice plus IdP-supplied avatar URLs (SQLite).
-///
-/// `users.avatar_source` is `NULL`/`auto`, `monogram`, `gravatar`, `upload`, or
-/// `sso:{portal_identities.id}`. `portal_identities.picture_url` stores the last
-/// HTTPS picture from the identity provider.
-const MIGRATION_V16_AVATAR_SOURCE_SQLITE: &str = r#"
-    ALTER TABLE users ADD COLUMN avatar_source TEXT;
-    ALTER TABLE portal_identities ADD COLUMN picture_url TEXT;
-"#;
-
-/// Passkey display names plus a durable TOTP-enrolled flag on users.
-const MIGRATION_V17_PASSKEY_NAME_TOTP_SQLITE: &str = r#"
-    ALTER TABLE webauthn_credentials ADD COLUMN name TEXT;
-    ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
-"#;
-
-/// OIDC AS client token policy (refresh + allowed scopes).
-const MIGRATION_V18_OIDC_CLIENT_POLICY_SQLITE: &str = r#"
-    ALTER TABLE oidc_clients ADD COLUMN issue_refresh_token INTEGER NOT NULL DEFAULT 1;
-    ALTER TABLE oidc_clients ADD COLUMN allowed_scopes_json TEXT NOT NULL DEFAULT '["openid","profile","email"]';
-"#;
-
-/// OIDC client enable flag + plugin ownership (see docs/adr/plugin-oidc-clients.md).
-const MIGRATION_V19_OIDC_CLIENT_PLUGIN_SQLITE: &str = r#"
-    ALTER TABLE oidc_clients ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
-    ALTER TABLE oidc_clients ADD COLUMN plugin_id TEXT;
-    UPDATE oidc_clients SET plugin_id = 'audiobookshelf' WHERE client_id = 'audiobookshelf';
-"#;
-
-/// Appearance preference (`system` / `light` / `dark`) on user_preferences.
-const MIGRATION_V20_THEME_SQLITE: &str = r#"
-    ALTER TABLE user_preferences ADD COLUMN theme TEXT NOT NULL DEFAULT 'system';
-"#;
-
-/// Durable domain-event outbox + per-subscriber deliveries (SQLite).
-const MIGRATION_V21_EVENT_OUTBOX_SQLITE: &str = r#"
-    CREATE TABLE IF NOT EXISTS domain_events (
-        id TEXT PRIMARY KEY NOT NULL,
-        event_type TEXT NOT NULL,
-        schema_version INTEGER NOT NULL,
-        occurred_at TEXT NOT NULL,
-        account_id TEXT NOT NULL DEFAULT '',
-        correlation_id TEXT NOT NULL DEFAULT '',
-        causation_id TEXT NOT NULL DEFAULT '',
-        dedup_key TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        dispatch_state TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        UNIQUE(event_type, dedup_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch ON domain_events(dispatch_state, created_at);
-    CREATE TABLE IF NOT EXISTS event_deliveries (
-        id TEXT PRIMARY KEY NOT NULL,
-        event_id TEXT NOT NULL,
-        plugin_id TEXT NOT NULL,
-        idempotency_key TEXT NOT NULL UNIQUE,
-        state TEXT NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        max_attempts INTEGER NOT NULL DEFAULT 8,
-        lease_owner TEXT,
-        lease_expires_at TEXT,
-        lease_generation INTEGER NOT NULL DEFAULT 0,
-        run_after TEXT NOT NULL,
-        invocation_sequence INTEGER NOT NULL DEFAULT 0,
-        resume_pending INTEGER NOT NULL DEFAULT 0,
-        checkpoint_json TEXT,
-        checkpoint_schema_version INTEGER NOT NULL DEFAULT 0,
-        ordering_key TEXT NOT NULL DEFAULT '',
-        outcome TEXT,
-        error_message TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(event_id, plugin_id),
-        FOREIGN KEY(event_id) REFERENCES domain_events(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_claim ON event_deliveries(state, run_after, created_at);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_order ON event_deliveries(plugin_id, ordering_key, created_at);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_state ON event_deliveries(state);
-"#;
-
-/// Persist producer FIFO keys on the outbox envelope (SQLite).
-const MIGRATION_V22_EVENT_ORDERING_SQLITE: &str = r#"
-    ALTER TABLE domain_events ADD COLUMN ordering_key TEXT NOT NULL DEFAULT '';
-"#;
-
-/// Cluster subscriber catalog plus delivery cancel/resource-class columns (SQLite).
-const MIGRATION_V23_EVENT_CATALOG_SQLITE: &str = r#"
-    ALTER TABLE event_deliveries ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE event_deliveries ADD COLUMN resource_class TEXT NOT NULL DEFAULT 'network';
-    CREATE TABLE IF NOT EXISTS event_subscribers (
-        plugin_id TEXT PRIMARY KEY NOT NULL,
-        subscriptions_json TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        updated_at TEXT NOT NULL
-    );
-"#;
-
-/// Per-node live catalog + durable outbox counters (SQLite).
-const MIGRATION_V24_EVENT_NODES_SQLITE: &str = r#"
-    CREATE TABLE IF NOT EXISTS event_subscriber_nodes (
-        node_id TEXT NOT NULL,
-        plugin_id TEXT NOT NULL,
-        subscriptions_json TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        heartbeat_at TEXT NOT NULL,
-        PRIMARY KEY (node_id, plugin_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_event_subscriber_nodes_heartbeat
-        ON event_subscriber_nodes(heartbeat_at);
-    CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch_created
-        ON domain_events(dispatch_state, created_at, id);
-    CREATE TABLE IF NOT EXISTS event_outbox_stats (
-        id INTEGER PRIMARY KEY NOT NULL,
-        retries_total INTEGER NOT NULL DEFAULT 0,
-        suspensions_total INTEGER NOT NULL DEFAULT 0,
-        dead_letters_total INTEGER NOT NULL DEFAULT 0,
-        dispatch_latency_ms_sum INTEGER NOT NULL DEFAULT 0,
-        dispatch_count INTEGER NOT NULL DEFAULT 0,
-        handler_latency_ms_sum INTEGER NOT NULL DEFAULT 0,
-        handler_count INTEGER NOT NULL DEFAULT 0
-    );
-    INSERT OR IGNORE INTO event_outbox_stats (
-        id, retries_total, suspensions_total, dead_letters_total,
-        dispatch_latency_ms_sum, dispatch_count, handler_latency_ms_sum, handler_count
-    ) VALUES (1, 0, 0, 0, 0, 0, 0, 0);
-    DROP TABLE IF EXISTS event_subscribers;
-"#;
-
-/// Producer `source` on the envelope plus wake-on-event delivery columns (SQLite).
-const MIGRATION_V25_EVENT_SOURCE_WAKE_SQLITE: &str = r#"
-    ALTER TABLE domain_events ADD COLUMN source TEXT NOT NULL DEFAULT '';
-    ALTER TABLE event_deliveries ADD COLUMN wake_event_type TEXT NOT NULL DEFAULT '';
-    ALTER TABLE event_deliveries ADD COLUMN wake_filter_json TEXT NOT NULL DEFAULT '';
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_wake
-        ON event_deliveries(state, wake_event_type);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_running
-        ON event_deliveries(plugin_id, state);
-"#;
-
-/// Durable wake replay flag so Duplicate publish and dispatcher crashes retry.
-const MIGRATION_V26_WAKE_PENDING_SQLITE: &str = r#"
-    ALTER TABLE domain_events ADD COLUMN wake_pending INTEGER NOT NULL DEFAULT 1;
-    CREATE INDEX IF NOT EXISTS idx_domain_events_wake_pending
-        ON domain_events(created_at, id) WHERE wake_pending = 1;
-"#;
-
-/// Tenant/producer dedup, claimed wake slices, and host-derived wake grants (SQLite family).
-///
-/// Rebuilds `domain_events` and `event_deliveries` in FK-safe order (child copy,
-/// parent copy, drop child, drop parent, rename). File SQLite applies this under
-/// `PRAGMA foreign_keys=OFF`; D1 / [`HostSchemaKind::AtomicBatchMarker`] apply
-/// the same text as one atomic batch per plan version.
-const MIGRATION_V27_DEDUP_WAKE_CLAIM_SQLITE: &str = r#"
-    CREATE TABLE domain_events_v27 (
-        id TEXT PRIMARY KEY NOT NULL,
-        event_type TEXT NOT NULL,
-        schema_version INTEGER NOT NULL,
-        occurred_at TEXT NOT NULL,
-        account_id TEXT NOT NULL DEFAULT '',
-        source TEXT NOT NULL DEFAULT '',
-        correlation_id TEXT NOT NULL DEFAULT '',
-        causation_id TEXT NOT NULL DEFAULT '',
-        dedup_key TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        ordering_key TEXT NOT NULL DEFAULT '',
-        dispatch_state TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        wake_pending INTEGER NOT NULL DEFAULT 1,
-        wake_lease_owner TEXT,
-        wake_lease_expires_at TEXT,
-        wake_cursor_at TEXT NOT NULL DEFAULT '',
-        wake_cursor_id TEXT NOT NULL DEFAULT '',
-        UNIQUE(account_id, source, event_type, dedup_key)
-    );
-    INSERT INTO domain_events_v27 (
-        id, event_type, schema_version, occurred_at, account_id, source,
-        correlation_id, causation_id, dedup_key, payload, ordering_key,
-        dispatch_state, created_at, wake_pending
-    ) SELECT
-        id, event_type, schema_version, occurred_at, account_id, source,
-        correlation_id, causation_id, dedup_key, payload, ordering_key,
-        dispatch_state, created_at, wake_pending
-    FROM domain_events;
-    CREATE TABLE event_deliveries_v27 (
-        id TEXT PRIMARY KEY NOT NULL,
-        event_id TEXT NOT NULL,
-        plugin_id TEXT NOT NULL,
-        idempotency_key TEXT NOT NULL UNIQUE,
-        state TEXT NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        max_attempts INTEGER NOT NULL DEFAULT 8,
-        lease_owner TEXT,
-        lease_expires_at TEXT,
-        lease_generation INTEGER NOT NULL DEFAULT 0,
-        run_after TEXT NOT NULL,
-        invocation_sequence INTEGER NOT NULL DEFAULT 0,
-        resume_pending INTEGER NOT NULL DEFAULT 0,
-        checkpoint_json TEXT,
-        checkpoint_schema_version INTEGER NOT NULL DEFAULT 0,
-        ordering_key TEXT NOT NULL DEFAULT '',
-        outcome TEXT,
-        error_message TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        cancel_requested INTEGER NOT NULL DEFAULT 0,
-        resource_class TEXT NOT NULL DEFAULT 'network',
-        wake_event_type TEXT NOT NULL DEFAULT '',
-        wake_filter_json TEXT NOT NULL DEFAULT '',
-        wake_grants_json TEXT NOT NULL DEFAULT '',
-        UNIQUE(event_id, plugin_id),
-        FOREIGN KEY(event_id) REFERENCES domain_events_v27(id) ON DELETE CASCADE
-    );
-    INSERT INTO event_deliveries_v27 (
-        id, event_id, plugin_id, idempotency_key, state, attempt_count,
-        max_attempts, lease_owner, lease_expires_at, lease_generation, run_after,
-        invocation_sequence, resume_pending, checkpoint_json,
-        checkpoint_schema_version, ordering_key, outcome, error_message,
-        created_at, updated_at, cancel_requested, resource_class,
-        wake_event_type, wake_filter_json, wake_grants_json
-    ) SELECT
-        id, event_id, plugin_id, idempotency_key, state, attempt_count,
-        max_attempts, lease_owner, lease_expires_at, lease_generation, run_after,
-        invocation_sequence, resume_pending, checkpoint_json,
-        checkpoint_schema_version, ordering_key, outcome, error_message,
-        created_at, updated_at, cancel_requested, resource_class,
-        wake_event_type, wake_filter_json, ''
-    FROM event_deliveries;
-    DROP TABLE event_deliveries;
-    DROP TABLE domain_events;
-    ALTER TABLE domain_events_v27 RENAME TO domain_events;
-    ALTER TABLE event_deliveries_v27 RENAME TO event_deliveries;
-    CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch ON domain_events(dispatch_state, created_at);
-    CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch_created ON domain_events(dispatch_state, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_domain_events_wake_pending ON domain_events(created_at, id) WHERE wake_pending = 1;
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_claim ON event_deliveries(state, run_after, created_at);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_order ON event_deliveries(plugin_id, ordering_key, created_at);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_state ON event_deliveries(state);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_wake ON event_deliveries(state, wake_event_type);
-    CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_running ON event_deliveries(plugin_id, state);
-"#;
-
-/// Portable COUNT+mutate serialization slots (replaces advisory locks).
-const MIGRATION_V28_SERIALIZATION_SLOTS_SQLITE: &str = r#"
-    CREATE TABLE IF NOT EXISTS db_serialization_slots (
-        slot_key TEXT PRIMARY KEY NOT NULL,
-        bump INTEGER NOT NULL DEFAULT 0
-    );
-"#;
-
-/// Frozen subscriber snapshot so paged dispatch receipts stay stable.
-const MIGRATION_V29_DISPATCH_SNAPSHOT_SQLITE: &str = r#"
-    ALTER TABLE domain_events ADD COLUMN dispatch_snapshot_json TEXT NOT NULL DEFAULT '';
-"#;
-
-/// Ordered migration list for local SQLite files (`PRAGMA user_version`).
-#[must_use]
-pub fn migration_sql() -> &'static [&'static str] {
-    &[
-        SQLITE_SCHEMA,
-        MIGRATION_V2_OPERATOR_SESSIONS_SQLITE,
-        MIGRATION_V3_USERS_SQLITE,
-        MIGRATION_V3_PORTAL_USER_ID_SQLITE,
-        MIGRATION_V4_ELEVATE_AUDIT_SQLITE,
-        MIGRATION_V5_PROVISIONING_SQLITE,
-        MIGRATION_V6_OIDC_SQLITE,
-        MIGRATION_V7_EXCLUSIVE_LINKS_SQLITE,
-        MIGRATION_V8_SESSION_CLIENT_SQLITE,
-        MIGRATION_V9_USER_EMAIL_SQLITE,
-        MIGRATION_V10_SSO_WEBAUTHN_SQLITE,
-        MIGRATION_V11_ATOMIC_RECEIPTS_SQLITE,
-        MIGRATION_V12_JOBS_SQLITE,
-        MIGRATION_V13_JOB_FENCE_SQLITE,
-        MIGRATION_V14_JOB_QUEUE_CONTROL_SQLITE,
-        MIGRATION_V15_USER_LAST_SEEN_SQLITE,
-        MIGRATION_V16_AVATAR_SOURCE_SQLITE,
-        MIGRATION_V17_PASSKEY_NAME_TOTP_SQLITE,
-        MIGRATION_V18_OIDC_CLIENT_POLICY_SQLITE,
-        MIGRATION_V19_OIDC_CLIENT_PLUGIN_SQLITE,
-        MIGRATION_V20_THEME_SQLITE,
-        MIGRATION_V21_EVENT_OUTBOX_SQLITE,
-        MIGRATION_V22_EVENT_ORDERING_SQLITE,
-        MIGRATION_V23_EVENT_CATALOG_SQLITE,
-        MIGRATION_V24_EVENT_NODES_SQLITE,
-        MIGRATION_V25_EVENT_SOURCE_WAKE_SQLITE,
-        MIGRATION_V26_WAKE_PENDING_SQLITE,
-        MIGRATION_V27_DEDUP_WAKE_CLAIM_SQLITE,
-        MIGRATION_V28_SERIALIZATION_SLOTS_SQLITE,
-        MIGRATION_V29_DISPATCH_SNAPSHOT_SQLITE,
-    ]
-}
-
-/// SQLite-family migration steps before the V27 FK-safe rebuild (through wake-pending).
-///
-/// Legacy helper for tests and isolation checks; the host applies
-/// [`host_migration_plan`] for every marker kind.
-const D1_PRE_V27_STEPS: usize = 27;
-
 /// One host-owned schema version in the canonical Bookclerk migration plan.
 ///
 /// Marker capabilities ([`crate::HostSchemaKind`]) choose only how each version
@@ -962,25 +685,6 @@ pub struct HostMigrationStep {
     pub canonical: &'static str,
 }
 
-/// Canonical DDL for the plugin-database registry (V2).
-///
-/// One row per provisioned `(plugin_id, binding)` unit: `backend_kind` is the
-/// adapter family that provisioned it (`sqlite`, `postgres`, `d1`), and
-/// `unit_ref` the backend-native unit (file path, schema name, or D1
-/// database id).
-const MIGRATION_V2_PLUGIN_DATABASES: &str = r#"
-    CREATE TABLE IF NOT EXISTS plugin_databases (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        plugin_id TEXT NOT NULL,
-        binding TEXT NOT NULL,
-        backend_kind TEXT NOT NULL,
-        unit_ref TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        UNIQUE(plugin_id, binding)
-    );
-    CREATE INDEX IF NOT EXISTS idx_plugin_databases_plugin ON plugin_databases(plugin_id);
-"#;
-
 /// Canonical bootstrap DDL applied inside every isolated plugin binding
 /// database at first open.
 ///
@@ -990,44 +694,25 @@ const MIGRATION_V2_PLUGIN_DATABASES: &str = r#"
 #[must_use]
 pub fn binding_bootstrap_sql() -> &'static str {
     static SQL: OnceLock<&'static str> = OnceLock::new();
-    SQL.get_or_init(|| {
-        format!("{MIGRATION_V11_ATOMIC_RECEIPTS_SQLITE}\n{BINDING_SQL_CATALOG_SQLITE}").leak()
-    })
+    SQL.get_or_init(|| format!("{BINDING_RECEIPTS_SQL}\n{BINDING_SQL_CATALOG_SQLITE}").leak())
 }
 
 /// Column types implied by canonical host library DDL.
 #[must_use]
 pub fn host_sql_type_env() -> bookclerk_plugin_abi::SqlTypeEnv {
-    bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(greenfield_baseline_canonical())
+    bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(latest_schema_sqlite())
 }
 
 /// Returns the canonical host migration plan shared by every marker kind.
+///
+/// Version 1 is the current flattened library schema (including
+/// `plugin_databases`). There are no historical incremental versions.
 #[must_use]
 pub fn host_migration_plan() -> Vec<HostMigrationStep> {
-    vec![
-        HostMigrationStep {
-            version: 1,
-            canonical: greenfield_baseline_canonical(),
-        },
-        HostMigrationStep {
-            version: 2,
-            canonical: MIGRATION_V2_PLUGIN_DATABASES,
-        },
-    ]
-}
-
-/// Concatenated canonical sqlite-shaped baseline DDL (greenfield squash).
-pub(crate) fn greenfield_baseline_canonical() -> &'static str {
-    static BASELINE: OnceLock<&'static str> = OnceLock::new();
-    BASELINE.get_or_init(|| migration_sql().join("\n").leak())
-}
-
-/// Canonical SQLite-shaped DDL for `step` (never backend-selected at the host).
-///
-/// Adapters lower this at execution via [`bookclerk_db_exec::expand_host_schema_batch`].
-#[must_use]
-pub fn host_migration_sql(_backend: sea_orm::DbBackend, step: &HostMigrationStep) -> &'static str {
-    step.canonical
+    vec![HostMigrationStep {
+        version: 1,
+        canonical: latest_schema_sqlite(),
+    }]
 }
 
 /// Final PostgreSQL DDL for a fresh Bookclerk library database.
@@ -1044,222 +729,48 @@ pub fn latest_schema_postgres() -> String {
         .join(";\n")
 }
 
-/// SQLite DDL through the step before the V27 rebuild (legacy test helper).
-#[cfg(test)]
-#[must_use]
-pub fn migration_sql_d1() -> &'static [&'static str] {
-    &migration_sql()[..D1_PRE_V27_STEPS]
-}
-
-/// Additive sqlite steps after the V27 rebuild (serialization slots, dispatch snapshot).
-#[cfg(test)]
-#[must_use]
-pub fn migration_sql_d1_post_v27() -> &'static [&'static str] {
-    &migration_sql()[D1_PRE_V27_STEPS + 1..]
-}
-
-/// Collects canonical SQLite DDL for `steps` (shared plan, not a D1-only pack).
-#[must_use]
-pub fn host_migration_sqlite_steps(steps: &[HostMigrationStep]) -> Vec<&'static str> {
-    steps.iter().map(|step| step.canonical).collect()
-}
-
-/// `schema_migrations.version` / plan step for the V27 FK-safe rebuild.
-///
-/// Bookkeeping version 28 (extra V3 portal step in the chain). Legacy D1
-/// deployments may already record this version from the pre-unification batch
-/// path; see TODO(#squash) on host schema apply for a greenfield baseline.
-#[must_use]
-pub fn migration_v27_schema_version() -> i64 {
-    i64::try_from(D1_PRE_V27_STEPS + 1).expect("V27 version fits i64")
-}
-
-/// One-transaction D1 V27: rebuild both tables, drop child then parent, record 27.
-///
-/// Callers must run these statements as a single D1 `{ "batch": [...] }` (one
-/// SQL transaction) and must not send them through statement-by-statement
-/// `execute_raw`. The version row is the last statement so it appears only if
-/// the whole batch committed.
-#[cfg(test)]
-#[must_use]
-pub fn migration_v27_d1_statements() -> &'static [&'static str] {
-    &[
-        r#"CREATE TABLE domain_events_v27 (
-        id TEXT PRIMARY KEY NOT NULL,
-        event_type TEXT NOT NULL,
-        schema_version INTEGER NOT NULL,
-        occurred_at TEXT NOT NULL,
-        account_id TEXT NOT NULL DEFAULT '',
-        source TEXT NOT NULL DEFAULT '',
-        correlation_id TEXT NOT NULL DEFAULT '',
-        causation_id TEXT NOT NULL DEFAULT '',
-        dedup_key TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        ordering_key TEXT NOT NULL DEFAULT '',
-        dispatch_state TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        wake_pending INTEGER NOT NULL DEFAULT 1,
-        wake_lease_owner TEXT,
-        wake_lease_expires_at TEXT,
-        wake_cursor_at TEXT NOT NULL DEFAULT '',
-        wake_cursor_id TEXT NOT NULL DEFAULT '',
-        UNIQUE(account_id, source, event_type, dedup_key)
-    )"#,
-        r#"INSERT INTO domain_events_v27 (
-        id, event_type, schema_version, occurred_at, account_id, source,
-        correlation_id, causation_id, dedup_key, payload, ordering_key,
-        dispatch_state, created_at, wake_pending
-    ) SELECT
-        id, event_type, schema_version, occurred_at, account_id, source,
-        correlation_id, causation_id, dedup_key, payload, ordering_key,
-        dispatch_state, created_at, wake_pending
-    FROM domain_events"#,
-        r#"CREATE TABLE event_deliveries_v27 (
-        id TEXT PRIMARY KEY NOT NULL,
-        event_id TEXT NOT NULL,
-        plugin_id TEXT NOT NULL,
-        idempotency_key TEXT NOT NULL UNIQUE,
-        state TEXT NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        max_attempts INTEGER NOT NULL DEFAULT 8,
-        lease_owner TEXT,
-        lease_expires_at TEXT,
-        lease_generation INTEGER NOT NULL DEFAULT 0,
-        run_after TEXT NOT NULL,
-        invocation_sequence INTEGER NOT NULL DEFAULT 0,
-        resume_pending INTEGER NOT NULL DEFAULT 0,
-        checkpoint_json TEXT,
-        checkpoint_schema_version INTEGER NOT NULL DEFAULT 0,
-        ordering_key TEXT NOT NULL DEFAULT '',
-        outcome TEXT,
-        error_message TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        cancel_requested INTEGER NOT NULL DEFAULT 0,
-        resource_class TEXT NOT NULL DEFAULT 'network',
-        wake_event_type TEXT NOT NULL DEFAULT '',
-        wake_filter_json TEXT NOT NULL DEFAULT '',
-        wake_grants_json TEXT NOT NULL DEFAULT '',
-        UNIQUE(event_id, plugin_id),
-        FOREIGN KEY(event_id) REFERENCES domain_events_v27(id) ON DELETE CASCADE
-    )"#,
-        r#"INSERT INTO event_deliveries_v27 (
-        id, event_id, plugin_id, idempotency_key, state, attempt_count,
-        max_attempts, lease_owner, lease_expires_at, lease_generation, run_after,
-        invocation_sequence, resume_pending, checkpoint_json,
-        checkpoint_schema_version, ordering_key, outcome, error_message,
-        created_at, updated_at, cancel_requested, resource_class,
-        wake_event_type, wake_filter_json, wake_grants_json
-    ) SELECT
-        id, event_id, plugin_id, idempotency_key, state, attempt_count,
-        max_attempts, lease_owner, lease_expires_at, lease_generation, run_after,
-        invocation_sequence, resume_pending, checkpoint_json,
-        checkpoint_schema_version, ordering_key, outcome, error_message,
-        created_at, updated_at, cancel_requested, resource_class,
-        wake_event_type, wake_filter_json, ''
-    FROM event_deliveries"#,
-        "DROP TABLE event_deliveries",
-        "DROP TABLE domain_events",
-        "ALTER TABLE domain_events_v27 RENAME TO domain_events",
-        "ALTER TABLE event_deliveries_v27 RENAME TO event_deliveries",
-        "CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch ON domain_events(dispatch_state, created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch_created ON domain_events(dispatch_state, created_at, id)",
-        "CREATE INDEX IF NOT EXISTS idx_domain_events_wake_pending ON domain_events(created_at, id) WHERE wake_pending = 1",
-        "CREATE INDEX IF NOT EXISTS idx_event_deliveries_claim ON event_deliveries(state, run_after, created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_order ON event_deliveries(plugin_id, ordering_key, created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_event_deliveries_state ON event_deliveries(state)",
-        "CREATE INDEX IF NOT EXISTS idx_event_deliveries_wake ON event_deliveries(state, wake_event_type)",
-        "CREATE INDEX IF NOT EXISTS idx_event_deliveries_plugin_running ON event_deliveries(plugin_id, state)",
-    ]
-}
-
-/// D1 `{ "batch": [...] }` statements for V27, including the version row.
-#[cfg(test)]
-#[must_use]
-pub fn migration_v27_d1_batch() -> Vec<String> {
-    let mut stmts: Vec<String> = migration_v27_d1_statements()
-        .iter()
-        .map(|sql| (*sql).to_string())
-        .collect();
-    stmts.push(format!(
-        "INSERT INTO schema_migrations (version) VALUES ({})",
-        migration_v27_schema_version()
-    ));
-    stmts
-}
-
-/// SQLite schema migrations (single greenfield schema).
-///
-/// Built from [`migration_sql`].
-#[must_use]
-pub fn migrations() -> Migrations<'static> {
-    Migrations::new(migration_sql().iter().map(|sql| M::up(sql)).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
 
-    fn apply_d1_through_v26(conn: &Connection) {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)",
-        )
-        .unwrap();
-        for (idx, sql) in migration_sql_d1().iter().enumerate() {
-            conn.execute_batch(sql).unwrap();
-            conn.execute(
-                "INSERT INTO schema_migrations (version) VALUES (?1)",
-                rusqlite::params![i64::try_from(idx + 1).unwrap()],
-            )
-            .unwrap();
-        }
+    fn apply_greenfield(conn: &Connection) {
+        conn.execute_batch(latest_schema_sqlite()).unwrap();
     }
 
-    fn apply_d1_v27_batch(conn: &Connection) {
-        let mut sql = String::from("BEGIN;\n");
-        for stmt in migration_v27_d1_batch() {
-            sql.push_str(&stmt);
-            sql.push_str(";\n");
-        }
-        sql.push_str("COMMIT;");
-        conn.execute_batch(&sql).unwrap();
-    }
-
-    #[test]
-    fn d1_v27_batch_preserves_deliveries_with_foreign_keys_on() {
-        let conn = Connection::open_in_memory().unwrap();
-        apply_d1_through_v26(&conn);
-        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        conn.execute(
-            "INSERT INTO domain_events (
+    const EVENT_INSERT: &str = "INSERT INTO domain_events (
                 id, event_type, schema_version, occurred_at, account_id, source,
                 correlation_id, causation_id, dedup_key, payload, ordering_key,
                 dispatch_state, created_at, wake_pending
             ) VALUES (
-                'evt-1', 'book_acquired', 1, '2026-01-01T00:00:00+00:00', 'acct',
-                'audible', '', '', 'book_acquired:u1', '{}', '', 'dispatched',
+                ?1, 'book_acquired', 1, '2026-01-01T00:00:00+00:00', ?2,
+                'audible', '', '', ?3, '{}', '', 'dispatched',
                 '2026-01-01T00:00:00+00:00', 1
-            )",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO event_deliveries (
+            )";
+
+    const DELIVERY_INSERT: &str = "INSERT INTO event_deliveries (
                 id, event_id, plugin_id, idempotency_key, state, attempt_count,
                 max_attempts, run_after, invocation_sequence, resume_pending,
                 checkpoint_schema_version, ordering_key, created_at, updated_at,
                 cancel_requested, resource_class, wake_event_type, wake_filter_json
             ) VALUES (
-                'evt-1:echo', 'evt-1', 'echo', 'evt-1:echo', 'pending', 0, 8,
+                ?1, ?2, 'echo', ?1, 'pending', 0, 8,
                 '2026-01-01T00:00:00+00:00', 0, 0, 0, '', '2026-01-01T00:00:00+00:00',
                 '2026-01-01T00:00:00+00:00', 0, 'network', '', ''
-            )",
-            [],
+            )";
+
+    #[test]
+    fn greenfield_preserves_deliveries_with_foreign_keys_on() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_greenfield(&conn);
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        conn.execute(
+            EVENT_INSERT,
+            rusqlite::params!["evt-1", "acct", "book_acquired:u1"],
         )
         .unwrap();
-
-        apply_d1_v27_batch(&conn);
+        conn.execute(DELIVERY_INSERT, rusqlite::params!["evt-1:echo", "evt-1"])
+            .unwrap();
 
         let deliveries: i64 = conn
             .query_row("SELECT COUNT(*) FROM event_deliveries", [], |r| r.get(0))
@@ -1273,64 +784,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(grants, "");
-        let version: i64 = conn
-            .query_row(
-                "SELECT version FROM schema_migrations WHERE version = ?1",
-                [migration_v27_schema_version()],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(version, migration_v27_schema_version());
 
         conn.execute(
-            "INSERT INTO domain_events (
-                id, event_type, schema_version, occurred_at, account_id, source,
-                correlation_id, causation_id, dedup_key, payload, ordering_key,
-                dispatch_state, created_at, wake_pending
-            ) VALUES (
-                'evt-2', 'book_acquired', 1, '2026-01-01T00:00:00+00:00', 'other',
-                'audible', '', '', 'book_acquired:u1', '{}', '', 'pending',
-                '2026-01-01T00:00:00+00:00', 1
-            )",
-            [],
+            EVENT_INSERT,
+            rusqlite::params!["evt-2", "other", "book_acquired:u1"],
         )
         .unwrap();
         let dup = conn.execute(
-            "INSERT INTO domain_events (
-                id, event_type, schema_version, occurred_at, account_id, source,
-                correlation_id, causation_id, dedup_key, payload, ordering_key,
-                dispatch_state, created_at, wake_pending
-            ) VALUES (
-                'evt-3', 'book_acquired', 1, '2026-01-01T00:00:00+00:00', 'acct',
-                'audible', '', '', 'book_acquired:u1', '{}', '', 'pending',
-                '2026-01-01T00:00:00+00:00', 1
-            )",
-            [],
+            EVENT_INSERT,
+            rusqlite::params!["evt-3", "acct", "book_acquired:u1"],
         );
-        assert!(dup.is_err(), "namespaced unique must hold after D1 V27");
+        assert!(
+            dup.is_err(),
+            "namespaced unique must hold on the greenfield schema"
+        );
     }
 
     #[test]
-    fn host_migration_plan_is_single_baseline_containing_legacy_steps() {
+    fn host_migration_plan_is_one_current_schema_version() {
         let plan = host_migration_plan();
+        assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].version, 1);
-        let canonical = plan[0].canonical;
-        for step in migration_sql() {
-            assert!(
-                canonical.contains(step),
-                "baseline must include legacy step fragment"
-            );
-        }
-        // V2: plugin-database registry.
-        assert_eq!(plan[1].version, 2);
-        assert!(plan[1].canonical.contains("plugin_databases"));
+        assert_eq!(plan[0].canonical, SQLITE_SCHEMA);
+        assert!(plan[0].canonical.contains("plugin_databases"));
+        assert!(plan[0].canonical.contains("dispatch_snapshot_json"));
+        assert!(plan[0].canonical.contains("db_serialization_slots"));
+        assert!(!plan[0].canonical.contains("domain_events_v27"));
+        assert!(!plan[0].canonical.contains("ALTER TABLE"));
     }
 
     #[test]
     fn postgres_lowering_of_baseline_is_mechanically_complete() {
         let lowered = latest_schema_postgres();
-        // No SQLite-isms may survive the mechanical lowering; the CI Postgres
-        // sidecar applies this exact output (`postgres_test_store`).
         for token in [
             "AUTOINCREMENT",
             " INTEGER",
@@ -1350,37 +835,36 @@ mod tests {
         );
         assert!(lowered.contains(" BYTEA"), "blob columns");
         assert!(lowered.contains(" DOUBLE PRECISION"), "real columns");
-        // The greenfield V27 rebuild stays mechanically executable on
-        // Postgres (empty tables: create + copy + drop + rename).
-        assert!(lowered.contains("ALTER TABLE domain_events_v27 RENAME TO domain_events"));
         assert!(lowered.contains("UNIQUE(account_id, source, event_type, dedup_key)"));
-        // Word-boundary safety: string literals stay untouched.
         assert!(lowered.contains(r#"'["openid","profile","email"]'"#));
+        assert!(!lowered.contains("domain_events_v27"));
     }
 
     #[test]
-    fn d1_v27_batch_is_noop_when_version_row_exists() {
-        let conn = Connection::open_in_memory().unwrap();
-        apply_d1_through_v26(&conn);
-        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        apply_d1_v27_batch(&conn);
-        let before: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-                [migration_v27_schema_version()],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(before, 1);
-        // Re-run is skipped when the version row exists (crash-safe: the row
-        // only appears if the whole batch committed).
-        assert_eq!(migration_sql_d1().len(), D1_PRE_V27_STEPS);
-        assert_eq!(migration_sql_d1_post_v27().len(), 2);
-        assert_eq!(
-            migration_v27_d1_batch().last().map(String::as_str),
-            Some("INSERT INTO schema_migrations (version) VALUES (28)")
+    fn greenfield_event_deliveries_enforce_foreign_keys() {
+        let canonical = latest_schema_sqlite();
+        assert!(
+            canonical.contains("UNIQUE(account_id, source, event_type, dedup_key)"),
+            "baseline must include namespaced domain_events uniqueness"
         );
-        assert_eq!(migration_v27_schema_version(), 28);
+        assert!(
+            canonical
+                .contains("FOREIGN KEY(event_id) REFERENCES domain_events(id) ON DELETE CASCADE"),
+            "baseline must include event_deliveries FK onto domain_events"
+        );
+        assert!(
+            !canonical.contains("domain_events_v27"),
+            "current schema must not replay the V27 rebuild"
+        );
+
+        let conn = Connection::open_in_memory().unwrap();
+        apply_greenfield(&conn);
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let orphan = conn.execute(DELIVERY_INSERT, rusqlite::params!["orphan:echo", "missing"]);
+        assert!(
+            orphan.is_err(),
+            "orphan event_deliveries rows must fail under PRAGMA foreign_keys=ON"
+        );
     }
 
     #[test]
@@ -1393,16 +877,11 @@ mod tests {
         );
         assert!(
             env.column_type("portal_identities", "user_id").is_some(),
-            "ALTER ADD COLUMN user_id must land in the host type env"
+            "user_id must land in the host type env"
         );
-        assert!(
-            env.has_table("domain_events"),
-            "rebuild RENAME must restore domain_events"
-        );
-        assert!(
-            !env.has_table("domain_events_v27"),
-            "v27 rebuild table must be renamed away"
-        );
+        assert!(env.has_table("domain_events"));
+        assert!(!env.has_table("domain_events_v27"));
+        assert!(env.has_table("plugin_databases"));
         let req = bookclerk_plugin_abi::ExecuteRequest {
             operation_id: "host-order".into(),
             request_hash: String::new(),
@@ -1423,7 +902,7 @@ mod tests {
             proofs[0]
         );
         let mut working = env.clone();
-        for stmt in bookclerk_db_exec::split_schema_statements(greenfield_baseline_canonical()) {
+        for stmt in bookclerk_db_exec::split_schema_statements(latest_schema_sqlite()) {
             bookclerk_plugin_abi::apply_schema_sql_to_env(&mut working, &stmt);
             if bookclerk_plugin_abi::statement_is_ddl(&stmt) {
                 continue;

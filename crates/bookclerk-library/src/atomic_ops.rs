@@ -1,10 +1,10 @@
 //! Host-owned named atomic operations and interpreted results.
 //!
-//! Database guests execute generic [`crate::sql_plan::DbAtomicPlan`]
-//! statements and return [`crate::sql_plan::DbPlanExecResult`]. The host
+//! Database guests execute typed [`bookclerk_plugin_abi::ExecuteRequest`]
+//! batches and return [`bookclerk_plugin_abi::ExecuteReply`]. The host
 //! compiles [`DbAtomicParams`] and interprets [`DbAtomicResult`].
 
-use crate::sql_plan::DbAtomicTiming;
+use bookclerk_plugin_abi::DbTiming;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -311,7 +311,7 @@ pub struct DbAtomicResult {
     pub receipt_created_at: Option<String>,
     /// Handler/engine timing. Not hashed for idempotency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timing: Option<DbAtomicTiming>,
+    pub timing: Option<DbTiming>,
 }
 
 impl DbAtomicResult {

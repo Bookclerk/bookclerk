@@ -1,7 +1,6 @@
 //! Typed adapter conformance (`ExecuteRequest` / `ExecuteReply`).
 //!
-//! [`run_typed_request_vectors`] is the #178 admission path for database plugins.
-//! Legacy JSON [`super::vectors::run_request_vectors`] remains for the atomic bridge.
+//! [`super::typed_vectors::run_typed_request_vectors`] is the #178 admission path for database plugins.
 
 use std::future::Future;
 
@@ -9,7 +8,7 @@ use bookclerk_db_exec::{AtomicSession, ExecCaps};
 use bookclerk_plugin_abi::{DbCapabilities, ExecuteReply, ExecuteRequest};
 use sea_orm::DatabaseConnection;
 
-use super::{validate_execute_reply, vectors};
+use super::{validate_execute_reply, CONTRACT_VECTOR_ROW_CAP};
 
 /// Runs the shared contract suite through a typed `ExecuteRequest` callback.
 ///
@@ -48,34 +47,30 @@ pub async fn run_typed_conn_vectors(
     let db = db.clone();
     let timing = timing.to_string();
     let connect_for_run = connect.clone();
-    run_typed_contract_vectors(
-        connect,
-        vectors::CONTRACT_VECTOR_ROW_CAP,
-        move |typed, cap| {
-            let db = db.clone();
-            let timing = timing.clone();
-            let connect = connect_for_run.clone();
-            async move {
-                let mut caps = ExecCaps::from_capabilities(&connect);
-                if cap > 0 {
-                    caps.max_result_rows = cap;
-                }
-                let reply = bookclerk_db_exec::execute_typed_on_session(
-                    &db,
-                    &typed,
-                    bookclerk_db_exec::GuestReceiptPersist::default(),
-                    &timing,
-                    caps,
-                    AtomicSession::from_deadline(None)
-                        .with_type_env(crate::migrations::host_sql_type_env()),
-                )
-                .await
-                .map_err(|err| err.to_string())?;
-                validate_execute_reply(&typed, &reply, &connect).map_err(|err| err.to_string())?;
-                Ok(reply)
+    run_typed_contract_vectors(connect, CONTRACT_VECTOR_ROW_CAP, move |typed, cap| {
+        let db = db.clone();
+        let timing = timing.clone();
+        let connect = connect_for_run.clone();
+        async move {
+            let mut caps = ExecCaps::from_capabilities(&connect);
+            if cap > 0 {
+                caps.max_result_rows = cap;
             }
-        },
-    )
+            let reply = bookclerk_db_exec::execute_typed_on_session(
+                &db,
+                &typed,
+                bookclerk_db_exec::GuestReceiptPersist::default(),
+                &timing,
+                caps,
+                AtomicSession::from_deadline(None)
+                    .with_type_env(crate::migrations::host_sql_type_env()),
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+            validate_execute_reply(&typed, &reply, &connect).map_err(|err| err.to_string())?;
+            Ok(reply)
+        }
+    })
     .await;
 }
 

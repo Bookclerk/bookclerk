@@ -606,9 +606,10 @@ fn catalog_cell_i64(v: Option<&DbValue>) -> Option<i64> {
 
 /// Host-authored bootstrap request creating binding-local receipt tables.
 fn binding_bootstrap_request(owner: &str, binding: &str) -> ExecuteRequest {
-    let statements = bookclerk_db_exec::split_schema_statements(
+    let statements = bookclerk_plugin_abi::sql_v1_pack_statements(
         bookclerk_library::migrations::binding_bootstrap_sql(),
     )
+    .expect("binding bootstrap packs")
     .into_iter()
     .map(|sql| TypedDbStatement {
         sql,
@@ -1010,7 +1011,7 @@ impl RpcDatabaseProxy {
     }
 
     /// Validates `req` against negotiated caps, stamps the host request hash,
-    /// then sends `executeAtomic`.
+    /// then sends typed `execute`.
     ///
     /// Guest-supplied statement kinds are replaced with host-authored kinds
     /// derived from the SQL. After validation the host stamps the canonical
@@ -1021,7 +1022,7 @@ impl RpcDatabaseProxy {
     ///
     /// Returns a plugin ABI `invalid_params` error when the request exceeds
     /// negotiated caps or the retry hash does not match, and a plugin error
-    /// when `executeAtomic` fails.
+    /// when typed `execute` fails.
     async fn execute_typed_validated(
         &self,
         mut req: ExecuteRequest,
@@ -1187,14 +1188,14 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
 
 /// Host [`AtomicTxnBackend`] that runs named security ops as one guest atomic batch.
 struct RpcAtomicBackend {
-    /// Cap'n Proto session used for a single `bookclerk.atomic` query per operation.
+    /// Cap'n Proto session used for a single typed `execute` per operation.
     session: Arc<PluginSession>,
     /// Full negotiated capabilities used to reject oversized plans before RPC.
     caps: DbCapabilities,
 }
 
 impl RpcAtomicBackend {
-    /// Sends one `bookclerk.atomic` query; ambiguous transport maps to [`LibraryError::Unavailable`].
+    /// Sends one typed `execute` batch; ambiguous transport maps to [`LibraryError::Unavailable`].
     async fn call(
         &self,
         params: bookclerk_library::DbAtomicParams,
@@ -1203,7 +1204,7 @@ impl RpcAtomicBackend {
         self.call_with_id(operation_id, params).await
     }
 
-    /// Sends `bookclerk.atomic` with a caller-chosen idempotency key (replay-safe claims).
+    /// Sends typed `execute` with a caller-chosen idempotency key (replay-safe claims).
     async fn call_with_id(
         &self,
         operation_id: String,
@@ -1219,13 +1220,13 @@ impl RpcAtomicBackend {
     ///
     /// # Errors
     ///
-    /// Returns when validation, `executeAtomic`, or result interpretation fails.
+    /// Returns when validation, typed `execute`, or result interpretation fails.
     async fn send_compiled(
         &self,
         compiled: bookclerk_library::CompiledAtomic,
         operation_id: String,
     ) -> bookclerk_library::Result<bookclerk_library::DbAtomicResult> {
-        bookclerk_library::validate_plan(&compiled.plan, &self.caps)?;
+        bookclerk_library::validate_plan(&compiled, &self.caps)?;
         let deadline_unix_ms = unix_now_ms().saturating_add(120_000);
         let mut typed = compiled.clone().into_typed_request(operation_id.clone());
         typed.deadline_unix_ms = deadline_unix_ms;
@@ -1244,16 +1245,9 @@ impl RpcAtomicBackend {
             result = self.session.db_execute_request(typed, Arc::clone(&cancel)) => match result {
                 Ok(reply) => {
                     bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)?;
-                    let exec = bookclerk_library::plan_exec_from_execute_reply(reply);
-                    bookclerk_library::validate_exec_result(
-                        &compiled.plan,
-                        &exec,
-                        &self.caps,
-                        &operation_id,
-                    )?;
-                    Ok(bookclerk_library::interpret_exec(
-                        &compiled.plan,
-                        &exec,
+                    Ok(bookclerk_library::interpret_typed_exec(
+                        &compiled,
+                        &reply,
                         &compiled.expected_hash,
                     ))
                 }
@@ -1309,7 +1303,7 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Runs host DDL as one `bookclerk.atomic` batch (D1 V27).
+/// Runs host DDL as one typed `execute` batch.
 async fn exec_host_ddl_batch(
     session: &PluginSession,
     caps: &DbCapabilities,
@@ -2252,7 +2246,7 @@ mod tests {
 
     #[test]
     fn omitted_rows_affected_fails_deserialize() {
-        let err = serde_json::from_str::<bookclerk_db_exec::DbPlanStmtExecResult>(r#"{"rows":[]}"#)
+        let err = serde_json::from_str::<bookclerk_plugin_abi::StatementResult>(r#"{"rows":[]}"#)
             .unwrap_err();
         assert!(
             err.to_string().contains("rowsAffected") || err.to_string().contains("missing field"),

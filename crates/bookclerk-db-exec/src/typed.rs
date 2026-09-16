@@ -1,4 +1,4 @@
-//! Native [`ExecuteRequest`] execution (no JSON `DbAtomicRequest` conversion).
+//! Native [`ExecuteRequest`] execution.
 //!
 //! [`DbValue::Text`] stays a string even when the payload starts with `b64:`.
 //! [`DbValue::Bytes`] maps to SeaORM bytes. Typed nulls use the matching
@@ -37,7 +37,7 @@ use crate::proxy_txn::{
     consume_savepoint_rollback_injection, is_txn_broken, note_commit_failed,
     suspend_execute_row_cap, take_txn_fault, with_exec_budget, AtomicInterruptPhase, ExecBudget,
 };
-use crate::schema_postgres::expand_host_schema_execute_request;
+use crate::schema_postgres::expand_host_schema_execute_request_grouped;
 use crate::{
     cap_query_sql, record_query_rows_seen, set_positional_result_columns,
     take_positional_result_columns,
@@ -497,7 +497,57 @@ fn proofs_for_request(
         ));
     }
     let env = type_env_with_bookkeeping(catalog);
-    typecheck_execute_request_proofs(req, &env).map_err(|err| DbErr::Custom(err.to_string()))
+    proofs_for_host_plan(req, &env)
+}
+
+/// Host plans may include already-lowered schema companions (`PRAGMA`,
+/// `CREATE FUNCTION`, …) and greenfield DDL. Those get a hash-bound empty
+/// proof. Canonical DML is typed against the merged schema in statement order.
+///
+/// # Errors
+///
+/// Returns [`DbErr::Custom`] when typecheck fails or a statement yields no proof.
+fn proofs_for_host_plan(
+    req: &ExecuteRequest,
+    env: &SqlTypeEnv,
+) -> Result<Vec<ResolvedStatement>, DbErr> {
+    let mut working = env.clone();
+    let mut proofs = Vec::with_capacity(req.statements.len());
+    for stmt in &req.statements {
+        let sql = stmt.sql.trim();
+        if host_adapter_private_sql(sql) || bookclerk_plugin_abi::statement_is_ddl(sql) {
+            apply_schema_sql_to_env(&mut working, sql);
+            proofs.push(ResolvedStatement::bound_empty(sql));
+            continue;
+        }
+        let one = ExecuteRequest {
+            operation_id: req.operation_id.clone(),
+            request_hash: req.request_hash.clone(),
+            deadline_unix_ms: req.deadline_unix_ms,
+            statements: vec![stmt.clone()],
+        };
+        let mut typed = typecheck_execute_request_proofs(&one, &working)
+            .map_err(|err| DbErr::Custom(err.to_string()))?;
+        proofs.push(typed.pop().ok_or_else(|| {
+            DbErr::Custom("host SQL typecheck returned no proof for a statement".into())
+        })?);
+    }
+    Ok(proofs)
+}
+
+fn host_adapter_private_sql(sql: &str) -> bool {
+    let t = sql.trim();
+    let u = t.to_ascii_uppercase();
+    crate::is_host_schema_version_marker(t)
+        || u.starts_with("PRAGMA ")
+        || u.starts_with("SET LOCAL ")
+        || u.starts_with("CREATE OR REPLACE FUNCTION")
+        || u.starts_with("CREATE FUNCTION")
+        || u.starts_with("CREATE TRIGGER")
+        || u.starts_with("DROP FUNCTION")
+        || u.starts_with("DROP TRIGGER")
+        || u.starts_with("ALTER TABLE")
+        || u.starts_with("DO $")
 }
 
 fn type_env_with_bookkeeping(catalog: &SqlTypeEnv) -> SqlTypeEnv {
@@ -1752,9 +1802,8 @@ where
     let backend = ConnectionTrait::get_database_backend(db);
     // Host schema batches travel canonical; this adapter edge lowers/splits
     // them for the live backend and collapses the results back to the wire
-    // request shape below.
-    let wire_len = req.statements.len();
-    let req = expand_host_schema_execute_request(backend, req);
+    // request shape below. Proofs are checked against the wire SQL first.
+    let (req, schema_groups) = expand_host_schema_execute_request_grouped(backend, req);
     let canonical_sqls: Vec<String> = req.statements.iter().map(|s| s.sql.clone()).collect();
     // Binding CREATE/DROP stays canonical on the wire; Postgres adapters
     // lower types/`AUTOINCREMENT` here (not in `lower_canonical_sql`).
@@ -1936,7 +1985,8 @@ where
             break;
         }
     }
-    let statements = crate::schema_postgres::collapse_host_schema_results(wire_len, statements);
+    let statements =
+        crate::schema_postgres::collapse_host_schema_results(&schema_groups, statements);
     if let Some(then) = then {
         let partial = ExecuteReply {
             operation_id: req.operation_id.clone(),

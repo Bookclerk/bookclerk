@@ -25,8 +25,6 @@ base64.workspace = true
 hex.workspace = true
 sha2.workspace = true
 hmac.workspace = true
-rusqlite.workspace = true
-rusqlite_migration.workspace = true
 sea-orm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -37,6 +35,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
+rusqlite.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

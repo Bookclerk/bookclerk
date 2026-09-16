@@ -31,7 +31,6 @@ pub fn author_surface(
 
 /// The `database_adapter` helper modules stay on the author surface.
 pub fn author_helpers(engine_error: &str) -> PluginError {
-    let _ = migrate::split_sql_statements("SELECT 1;");
     let _ = migrate::typed_null(Some("INTEGER"), "id");
     errors::plugin_error_from_engine(engine_error)
 }

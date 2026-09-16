@@ -25,7 +25,6 @@ members = [
     "crates/bookclerk-sandbox",
     "crates/bookclerk-search",
     "crates/bookclerk-source",
-    "crates/bookclerk-sql-frontend-spike",
     "crates/bookclerk-storage",
     "crates/bookclerk-tray",
     "crates/bookclerk-workerd",
@@ -132,7 +131,6 @@ tower-http = { version = "0.7", features = ["trace", "fs", "normalize-path"] }
 # (rusqlite 0.40 needs ^0.38 and cannot coexist in one binary). Vendored audible-rs
 # under third_party/ matches this pin on its optional `cli` feature.
 rusqlite = { version = "0.37", features = ["bundled", "column_decltype", "hooks"] }
-rusqlite_migration = "2.3"
 sea-orm = { version = "2.0.0", default-features = false, features = [
     "macros",
     "with-chrono",

@@ -150,11 +150,10 @@ impl AtomicTxnBackend for InProcessSqliteAtomic {
         )
         .map_err(LibraryError::Orm)?;
         crate::validate_plan(
-            &compiled.plan,
+            &compiled,
             &bookclerk_plugin_abi::DbCapabilities::advertised_sqlite(),
         )?;
-        let result =
-            execute_db_atomic(&self.db, compiled.into_request(operation_id.to_string())).await?;
+        let result = execute_db_atomic(&self.db, compiled).await?;
         if result.status == atomic_status::NOT_FOUND {
             return Err(LibraryError::NotFound(format!("event {event_id}")));
         }
@@ -195,8 +194,7 @@ impl AtomicTxnBackend for InProcessSqliteAtomic {
             &now,
         )
         .map_err(LibraryError::Orm)?;
-        let result =
-            execute_db_atomic(&self.db, compiled.into_request(operation_id.to_string())).await?;
+        let result = execute_db_atomic(&self.db, compiled).await?;
         if result.status == atomic_status::EMPTY {
             return Ok(None);
         }

@@ -8,7 +8,18 @@ use base64::Engine;
 use sea_orm::{from_query_result_to_proxy_row, DatabaseBackend, Statement, Value};
 use serde_json::Value as JsonValue;
 
-pub(crate) use bookclerk_db_exec::{sea_null, SEA_NULL_KEY};
+/// JSON object key for a typed SQL null (`{"$sea_null": "Bytes"}`).
+///
+/// This encoding is private to the in-process SeaORM session worker. It is
+/// not the host IR / plugin ABI wire format.
+const SEA_NULL_KEY: &str = "$sea_null";
+
+/// Wire JSON for a typed null bind of SeaORM `kind`.
+fn sea_null(kind: &str) -> JsonValue {
+    let mut map = serde_json::Map::new();
+    map.insert(SEA_NULL_KEY.into(), JsonValue::String(kind.to_string()));
+    JsonValue::Object(map)
+}
 
 /// SQL text, JSON-encoded binds, and optional txn id for the session worker.
 #[derive(Debug, Clone)]

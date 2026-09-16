@@ -81,9 +81,7 @@ pub enum DbConnectParams {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         binding: Option<String>,
         /// Isolated PostgreSQL database for a binding open (created if missing).
-        /// Older hosts sent this as `schema` (a schema on the library DB);
-        /// decode still accepts that wire name.
-        #[serde(default, skip_serializing_if = "Option::is_none", alias = "schema")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         database: Option<String>,
     },
 }
@@ -226,13 +224,13 @@ mod host_tests {
     }
 
     #[test]
-    fn postgres_binding_accepts_legacy_schema_wire_name() {
+    fn postgres_binding_uses_database_wire_name() {
         let v = serde_json::json!({
             "backend": "postgres",
             "pluginDataDir": "/tmp/p",
             "url": "postgres://localhost/library",
             "binding": "DB",
-            "schema": "pb_echo_db"
+            "database": "pb_echo_db"
         });
         let params: DbConnectParams = serde_json::from_value(v).unwrap();
         match params {
@@ -241,6 +239,23 @@ mod host_tests {
             } => {
                 assert_eq!(binding.as_deref(), Some("DB"));
                 assert_eq!(database.as_deref(), Some("pb_echo_db"));
+            }
+            other => panic!("expected postgres params, got {other:?}"),
+        }
+        let rejected = serde_json::json!({
+            "backend": "postgres",
+            "pluginDataDir": "/tmp/p",
+            "url": "postgres://localhost/library",
+            "binding": "DB",
+            "schema": "pb_echo_db"
+        });
+        let params: DbConnectParams = serde_json::from_value(rejected).unwrap();
+        match params {
+            DbConnectParams::Postgres { database, .. } => {
+                assert_eq!(
+                    database, None,
+                    "unreleased schema wire name must not decode"
+                );
             }
             other => panic!("expected postgres params, got {other:?}"),
         }

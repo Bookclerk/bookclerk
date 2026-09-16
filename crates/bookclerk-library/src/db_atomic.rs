@@ -5,7 +5,7 @@
 //! transaction and is not part of the request hash.
 
 use crate::atomic_ops::{atomic_status, DbAtomicParams, DbAtomicResult};
-use crate::sql_plan::DbAtomicRequest;
+use crate::sql_plan::CompiledAtomic;
 use chrono::{DateTime, Utc};
 use sea_orm::{DatabaseConnection, DbBackend};
 use serde_json::Value as JsonValue;
@@ -16,7 +16,7 @@ use crate::models::{PortalIdentity, UserRecord};
 use crate::secrets::EncryptedSecretRecord;
 use crate::{bytes_to_b64_string, SessionClientInfo};
 
-/// Runs a host-authored generic plan as one native SQL transaction.
+/// Runs a compiled named atomic as one native SQL transaction.
 ///
 /// # Errors
 ///
@@ -24,19 +24,13 @@ use crate::{bytes_to_b64_string, SessionClientInfo};
 /// (`lastOwner`, `empty`, …) are returned as [`DbAtomicResult`], not errors.
 pub async fn execute_db_atomic(
     db: &DatabaseConnection,
-    req: DbAtomicRequest,
+    compiled: CompiledAtomic,
 ) -> Result<DbAtomicResult> {
     let timing_source = match db.get_database_backend() {
         DbBackend::Postgres => "postgres_txn",
         _ => "sqlite_txn",
     };
-    let plan = req.plan.as_ref().ok_or_else(|| {
-        LibraryError::Other(anyhow::anyhow!(
-            "atomic execute requires a host-authored executePlan"
-        ))
-    })?;
-    let hash = req.request_hash.as_deref().unwrap_or("");
-    crate::sql_plan::execute_plan_on(db, plan, hash, &req.operation_id, timing_source).await
+    crate::sql_plan::execute_compiled_on(db, compiled, timing_source).await
 }
 
 /// Compiles `params` and runs the plan as one native SQL transaction.
@@ -52,7 +46,7 @@ pub async fn execute_named_atomic(
     let now = Utc::now().to_rfc3339();
     let compiled = crate::sql_plan::compile_named_request(operation_id, params, &now)
         .map_err(LibraryError::Orm)?;
-    execute_db_atomic(db, compiled.into_request(operation_id)).await
+    execute_db_atomic(db, compiled).await
 }
 
 /// Compiles a named op with a stable consume-once / library operation id.

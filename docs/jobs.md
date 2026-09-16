@@ -13,7 +13,7 @@ typed host plans on the library.
 
 This is not a general pub/sub bus. Domain events such as `book_acquired` /
 plugin `onEvent` stay **off** `JobKind`. They use a durable outbox
-(`domain_events` + `event_deliveries` + `event_subscriber_nodes`, schema V27) with
+(`domain_events` + `event_deliveries` + `event_subscriber_nodes`) with
 the same fenced-lease pattern as jobs. Acquire success publishes
 `book_acquired` with producer `source` on the envelope. Each host heartbeats discovered (config-enabled, even if spawn
 failed) and loaded integrations into a **per-node** catalog keyed by

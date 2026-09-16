@@ -3,15 +3,12 @@
 //! **Admission (#178):** database plugins must pass
 //! [`super::typed_vectors::run_typed_request_vectors`] with a callback that
 //! executes native [`ExecuteRequest`] / [`ExecuteReply`] (Cap'n Proto on the wire).
-//! [`super::vectors::run_conn_vectors`] and
-//! [`super::vectors::run_request_vectors`] remain for the legacy JSON
-//! [`DbAtomicRequest`] bridge and in-process sqlite/postgres hosts.
 
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
 
 use super::{
-    compile_named_request, execute_plan_on, execute_statements_on_session,
-    vectors::CONTRACT_VECTOR_ROW_CAP, AtomicSession,
+    compile_named_request, execute_compiled_on, execute_typed_on_session, AtomicSession,
+    CONTRACT_VECTOR_ROW_CAP,
 };
 use bookclerk_plugin_abi::DbCapabilities;
 use std::path::PathBuf;
@@ -54,10 +51,34 @@ fn named(id: &'static str, params: DbAtomicParams) -> NamedOp {
     NamedOp { id, params }
 }
 
-#[tokio::test]
-async fn shared_vectors_on_sqlite() {
-    let db = mem_db().await;
-    super::vectors::run_conn_vectors(&db, DbCapabilities::advertised_sqlite(), "sqlite_txn").await;
+fn typed_stmt(
+    sql: impl Into<String>,
+    kind: bookclerk_plugin_abi::DbPlanStatementKind,
+) -> bookclerk_plugin_abi::TypedDbStatement {
+    use bookclerk_plugin_abi::{DbResultSelection, TypedDbStatement};
+    TypedDbStatement {
+        sql: sql.into(),
+        parameters: vec![],
+        kind,
+        max_rows: 0,
+        result_selection: if kind == bookclerk_plugin_abi::DbPlanStatementKind::Execute {
+            DbResultSelection::AffectedRows
+        } else {
+            DbResultSelection::Rows
+        },
+    }
+}
+
+fn typed_req(
+    op: &str,
+    statements: Vec<bookclerk_plugin_abi::TypedDbStatement>,
+) -> bookclerk_plugin_abi::ExecuteRequest {
+    bookclerk_plugin_abi::ExecuteRequest {
+        operation_id: op.into(),
+        request_hash: String::new(),
+        statements,
+        deadline_unix_ms: 0,
+    }
 }
 
 #[tokio::test]
@@ -69,17 +90,6 @@ async fn typed_shared_vectors_on_sqlite() {
         "sqlite_txn",
     )
     .await;
-}
-
-#[tokio::test]
-#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
-async fn postgres_shared_vectors() {
-    if !postgres_conformance_enabled() {
-        return;
-    }
-    let db = postgres_migrated_db().await;
-    super::vectors::run_conn_vectors(&db, DbCapabilities::advertised_postgres(), "postgres_txn")
-        .await;
 }
 
 #[tokio::test]
@@ -105,22 +115,14 @@ async fn sqlite_recursive_cte_honors_deadline() {
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
         .saturating_add(80);
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "WITH RECURSIVE t(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM t WHERE x < 200000000) SELECT COUNT(*) AS n FROM t".into(),
-            binds: vec![],
-            kind: crate::sql_plan::DbPlanStatementKind::Returning,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let err = super::execute_statements_on_session(
+    let plan = vec![{
+        let mut s = typed_stmt("WITH RECURSIVE t(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM t WHERE x < 200000000) SELECT COUNT(*) AS n FROM t", bookclerk_plugin_abi::DbPlanStatementKind::Returning);
+        s.max_rows = 0;
+        s
+    }];
+    let err = super::execute_typed_on_session(
         &db,
-        &plan,
-        "op-deadline",
+        &typed_req("op-deadline", plan),
         "sqlite_txn",
         0,
         super::AtomicSession::from_deadline(Some(deadline)),
@@ -159,19 +161,15 @@ async fn sqlite_query_stops_after_cap_plus_one() {
         .await
         .unwrap();
     }
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "SELECT x FROM rowcap_probe".into(),
-            binds: vec![],
-            kind: crate::sql_plan::DbPlanStatementKind::Returning,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let err = super::execute_statements_on(&db, &plan, "op-early", "sqlite_txn", 5)
+    let plan = vec![{
+        let mut s = typed_stmt(
+            "SELECT x FROM rowcap_probe",
+            bookclerk_plugin_abi::DbPlanStatementKind::Returning,
+        );
+        s.max_rows = 0;
+        s
+    }];
+    let err = super::execute_typed_on(&db, &typed_req("op-early", plan), "sqlite_txn", 5)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("maxResultRows"), "{err}");
@@ -212,42 +210,31 @@ async fn concurrent_attempts_keep_independent_deadlines_and_caps() {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
-    let cte = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "WITH RECURSIVE t(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM t WHERE x < 200000000) SELECT COUNT(*) AS n FROM t".into(),
-            binds: vec![],
-            kind: crate::sql_plan::DbPlanStatementKind::Returning,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let select = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "SELECT x FROM rowcap_probe".into(),
-            binds: vec![],
-            kind: crate::sql_plan::DbPlanStatementKind::Returning,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let deadline = execute_statements_on_session(
+    let cte = vec![{
+        let mut s = typed_stmt("WITH RECURSIVE t(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM t WHERE x < 200000000) SELECT COUNT(*) AS n FROM t", bookclerk_plugin_abi::DbPlanStatementKind::Returning);
+        s.max_rows = 0;
+        s
+    }];
+    let select = vec![{
+        let mut s = typed_stmt(
+            "SELECT x FROM rowcap_probe",
+            bookclerk_plugin_abi::DbPlanStatementKind::Returning,
+        );
+        s.max_rows = 0;
+        s
+    }];
+    let deadline_req = typed_req("op-conc-deadline", cte);
+    let cap_req = typed_req("op-conc-cap", select);
+    let deadline = execute_typed_on_session(
         &db_deadline,
-        &cte,
-        "op-conc-deadline",
+        &deadline_req,
         "sqlite_txn",
         0,
         AtomicSession::from_deadline(Some(now.saturating_add(80))),
     );
-    let cap = execute_statements_on_session(
+    let cap = execute_typed_on_session(
         &db_cap,
-        &select,
-        "op-conc-cap",
+        &cap_req,
         "sqlite_txn",
         5,
         AtomicSession::from_deadline(Some(now.saturating_add(60_000))),
@@ -287,26 +274,14 @@ async fn plan_commit_inserts_receipt() {
         },
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
-    let result = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        "conf-enq",
-        "sqlite_txn",
-    )
-    .await
-    .unwrap();
+    let result = execute_compiled_on(&db, compiled.clone(), "sqlite_txn")
+        .await
+        .unwrap();
     assert_eq!(result.status, atomic_status::OK);
     assert!(!result.replayed);
-    let replay = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        "conf-enq",
-        "sqlite_txn",
-    )
-    .await
-    .unwrap();
+    let replay = execute_compiled_on(&db, compiled.clone(), "sqlite_txn")
+        .await
+        .unwrap();
     assert!(replay.replayed, "same operationId must replay the receipt");
     assert_eq!(replay.status, atomic_status::OK);
 }
@@ -327,15 +302,9 @@ async fn plan_hash_conflict_is_idempotency_conflict() {
         },
     );
     let compiled = compile_named_request(first.id, &first.params, now).unwrap();
-    execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        "conf-conflict",
-        "sqlite_txn",
-    )
-    .await
-    .unwrap();
+    execute_compiled_on(&db, compiled.clone(), "sqlite_txn")
+        .await
+        .unwrap();
     let second = named(
         "conf-conflict",
         DbAtomicParams::EnqueueJob {
@@ -348,42 +317,32 @@ async fn plan_hash_conflict_is_idempotency_conflict() {
         },
     );
     let other = compile_named_request(second.id, &second.params, now).unwrap();
-    let result = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &other.expected_hash,
-        "conf-conflict",
-        "sqlite_txn",
-    )
-    .await
-    .unwrap();
+    let result = execute_compiled_on(&db, other, "sqlite_txn").await.unwrap();
     assert_eq!(result.status, atomic_status::IDEMPOTENCY_CONFLICT);
 }
 
 #[tokio::test]
 async fn unique_constraint_on_generic_insert_is_engine_error() {
     let db = mem_db().await;
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![
-            crate::sql_plan::DbPlanStatement {
-                sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup', 0)".into(),
-                binds: vec![],
-                kind: crate::sql_plan::DbPlanStatementKind::Execute,
-                max_rows: 0,
-            },
-            crate::sql_plan::DbPlanStatement {
-                sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup', 1)".into(),
-                binds: vec![],
-                kind: crate::sql_plan::DbPlanStatementKind::Execute,
-                max_rows: 0,
-            },
-        ],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let err = execute_plan_on(&db, &plan, "hash", "op-unique", "sqlite_txn")
+    let plan = vec![
+        {
+            let mut s = typed_stmt(
+                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup', 0)",
+                bookclerk_plugin_abi::DbPlanStatementKind::Execute,
+            );
+            s.max_rows = 0;
+            s
+        },
+        {
+            let mut s = typed_stmt(
+                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup', 1)",
+                bookclerk_plugin_abi::DbPlanStatementKind::Execute,
+            );
+            s.max_rows = 0;
+            s
+        },
+    ];
+    let err = super::execute_typed_on(&db, &typed_req("op-unique", plan.clone()), "sqlite_txn", 0)
         .await
         .unwrap_err();
     let msg = err.to_string().to_lowercase();
@@ -396,29 +355,29 @@ async fn unique_constraint_on_generic_insert_is_engine_error() {
 #[tokio::test]
 async fn failed_statement_rolls_back_earlier_inserts() {
     let db = mem_db().await;
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![
-            crate::sql_plan::DbPlanStatement {
-                sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('rb', 0)".into(),
-                binds: vec![],
-                kind: crate::sql_plan::DbPlanStatementKind::Execute,
-                max_rows: 0,
-            },
-            crate::sql_plan::DbPlanStatement {
-                sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('rb', 1)".into(),
-                binds: vec![],
-                kind: crate::sql_plan::DbPlanStatementKind::Execute,
-                max_rows: 0,
-            },
-        ],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    assert!(execute_plan_on(&db, &plan, "hash", "op-rb", "sqlite_txn")
-        .await
-        .is_err());
+    let plan = vec![
+        {
+            let mut s = typed_stmt(
+                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('rb', 0)",
+                bookclerk_plugin_abi::DbPlanStatementKind::Execute,
+            );
+            s.max_rows = 0;
+            s
+        },
+        {
+            let mut s = typed_stmt(
+                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('rb', 1)",
+                bookclerk_plugin_abi::DbPlanStatementKind::Execute,
+            );
+            s.max_rows = 0;
+            s
+        },
+    ];
+    assert!(
+        super::execute_typed_on(&db, &typed_req("op-rb", plan.clone()), "sqlite_txn", 0)
+            .await
+            .is_err()
+    );
     let rows: Vec<sea_orm::QueryResult> = sea_orm::ConnectionTrait::query_all_raw(
         &db,
         sea_orm::Statement::from_string(
@@ -437,29 +396,38 @@ async fn failed_statement_rolls_back_earlier_inserts() {
 #[tokio::test]
 async fn conditional_update_zero_rows_is_ok_execute() {
     let db = mem_db().await;
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![
-            crate::sql_plan::DbPlanStatement {
-                sql: "UPDATE db_serialization_slots SET bump = 1 WHERE slot_key = 'missing'".into(),
-                binds: vec![],
-                kind: crate::sql_plan::DbPlanStatementKind::Execute,
-                max_rows: 0,
-            },
-            crate::sql_plan::DbPlanStatement {
-                sql: "SELECT 'ok' AS status".into(),
-                binds: vec![],
-                kind: crate::sql_plan::DbPlanStatementKind::Returning,
-                max_rows: 0,
-            },
-        ],
-        outcome_index: 1,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let result = execute_plan_on(&db, &plan, "hash", "op-cond", "sqlite_txn")
+    let plan = vec![
+        {
+            let mut s = typed_stmt(
+                "UPDATE db_serialization_slots SET bump = 1 WHERE slot_key = 'missing'",
+                bookclerk_plugin_abi::DbPlanStatementKind::Execute,
+            );
+            s.max_rows = 0;
+            s
+        },
+        {
+            let mut s = typed_stmt(
+                "SELECT 'ok' AS status",
+                bookclerk_plugin_abi::DbPlanStatementKind::Returning,
+            );
+            s.max_rows = 0;
+            s
+        },
+    ];
+    let reply = super::execute_typed_on(&db, &typed_req("op-cond", plan.clone()), "sqlite_txn", 0)
         .await
         .unwrap();
+    let compiled = super::CompiledAtomic {
+        request: typed_req("op-cond", plan),
+        selection: super::AtomicSelection {
+            outcome_index: 1,
+            payload_index: None,
+            prior_receipt_index: None,
+            receipt_select_index: None,
+        },
+        expected_hash: "hash".into(),
+    };
+    let result = super::interpret_typed_exec(&compiled, &reply, "hash");
     assert_eq!(result.status, atomic_status::OK);
 }
 
@@ -479,19 +447,13 @@ async fn timing_receipt_shape_is_uniform() {
         },
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
-    let result = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        "conf-timing",
-        "sqlite_txn",
-    )
-    .await
-    .unwrap();
+    let result = execute_compiled_on(&db, compiled.clone(), "sqlite_txn")
+        .await
+        .unwrap();
     let timing = result.timing.expect("timing");
     assert!(timing.attempt_elapsed_us > 0);
-    assert_eq!(timing.db_timing_source.as_deref(), Some("sqlite_txn"));
-    assert!(timing.db_execution_us.is_some());
+    assert_eq!(timing.db_timing_source, "sqlite_txn");
+    assert!(timing.db_execution_us > 0);
 }
 
 #[tokio::test]
@@ -533,7 +495,7 @@ fn postgres_renderer_lowers_canonical_placeholders() {
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
     let joined = compiled
-        .plan
+        .request
         .statements
         .iter()
         .map(|s| s.sql.as_str())
@@ -544,7 +506,7 @@ fn postgres_renderer_lowers_canonical_placeholders() {
         "host compiler must emit canonical SQL, not $n:\n{joined}"
     );
     let mut lowered_any = false;
-    for stmt in &compiled.plan.statements {
+    for stmt in &compiled.request.statements {
         if stmt.sql.contains('?') {
             let lowered = bookclerk_db_exec::lower_canonical_to_postgres(&stmt.sql);
             assert!(
@@ -581,25 +543,13 @@ async fn postgres_plan_receipt_replay() {
         },
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
-    let first = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        "pg-conf-enq",
-        "postgres_txn",
-    )
-    .await
-    .unwrap();
+    let first = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
+        .await
+        .unwrap();
     assert_eq!(first.status, atomic_status::OK);
-    let replay = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        "pg-conf-enq",
-        "postgres_txn",
-    )
-    .await
-    .unwrap();
+    let replay = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
+        .await
+        .unwrap();
     assert!(replay.replayed);
 }
 
@@ -678,15 +628,9 @@ async fn postgres_claim_malformed_json_is_quarantined() {
         },
     );
     let compiled = compile_named_request(req.id, &req.params, now).unwrap();
-    let result = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        "pg-claim-poison",
-        "postgres_txn",
-    )
-    .await
-    .expect("malformed payload must not abort the claim batch");
+    let result = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
+        .await
+        .expect("malformed payload must not abort the claim batch");
     assert_eq!(result.status, atomic_status::OK);
     let rows = sea_orm::ConnectionTrait::query_all_raw(
         &db,
@@ -735,206 +679,19 @@ fn enqueue_scan(id: &'static str, account: &str) -> NamedOp {
     )
 }
 
-fn d1_json_to_rusqlite(v: &serde_json::Value) -> rusqlite::types::Value {
-    if crate::sql_plan::sea_null_kind(v).is_some() {
-        return rusqlite::types::Value::Null;
-    }
-    match v {
-        serde_json::Value::Null => rusqlite::types::Value::Null,
-        serde_json::Value::Bool(b) => rusqlite::types::Value::Integer(i64::from(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                rusqlite::types::Value::Integer(i)
-            } else if let Some(u) = n.as_u64() {
-                rusqlite::types::Value::Integer(i64::try_from(u).unwrap_or(i64::MAX))
-            } else {
-                rusqlite::types::Value::Real(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => rusqlite::types::Value::Text(s.clone()),
-        other => rusqlite::types::Value::Text(other.to_string()),
-    }
-}
-
-/// Executes sqlite-dialect plan SQL in one rusqlite transaction (D1 bind flattening).
-fn d1_compat_execute(
-    conn: &rusqlite::Connection,
-    plan: &crate::sql_plan::DbAtomicPlan,
-    operation_id: &str,
-) -> crate::sql_plan::DbPlanExecResult {
-    const D1_BIND_CAP: usize = 100;
-    let txn = conn.unchecked_transaction().unwrap();
-    let mut statements = Vec::new();
-    for stmt in &plan.statements {
-        assert!(
-            stmt.binds.len() <= D1_BIND_CAP,
-            "D1 bind cap is {D1_BIND_CAP}, got {}",
-            stmt.binds.len()
-        );
-        let binds: Vec<rusqlite::types::Value> =
-            stmt.binds.iter().map(d1_json_to_rusqlite).collect();
-        let mut prepared = txn.prepare(&stmt.sql).unwrap();
-        let col_count = prepared.column_count();
-        let names: Vec<String> = prepared
-            .column_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let mut rows = Vec::new();
-        let engine_changes = if col_count == 0 {
-            u64::try_from(
-                prepared
-                    .execute(rusqlite::params_from_iter(binds.iter()))
-                    .unwrap(),
-            )
-            .unwrap_or(0)
-        } else {
-            let mut query = prepared
-                .query(rusqlite::params_from_iter(binds.iter()))
-                .unwrap();
-            while let Some(row) = query.next().unwrap() {
-                let mut obj = serde_json::Map::new();
-                for (i, name) in names.iter().enumerate() {
-                    let val = row.get_ref(i).unwrap();
-                    let json = match val {
-                        rusqlite::types::ValueRef::Null => serde_json::Value::Null,
-                        rusqlite::types::ValueRef::Integer(n) => serde_json::Value::from(n),
-                        rusqlite::types::ValueRef::Real(n) => serde_json::Value::from(n),
-                        rusqlite::types::ValueRef::Text(t) => {
-                            serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
-                        }
-                        rusqlite::types::ValueRef::Blob(_) => serde_json::Value::Null,
-                    };
-                    obj.insert(name.clone(), json);
-                }
-                rows.push(serde_json::Value::Object(obj));
-                if rows.len() > 1_000 {
-                    panic!("D1-compat query exceeded maxResultRows 1000");
-                }
-            }
-            0
-        };
-        let rows_affected = match stmt.kind {
-            crate::sql_plan::DbPlanStatementKind::Select => 0,
-            crate::sql_plan::DbPlanStatementKind::Returning => {
-                u64::try_from(rows.len()).unwrap_or(0)
-            }
-            crate::sql_plan::DbPlanStatementKind::Execute => engine_changes,
-        };
-        statements.push(crate::sql_plan::DbPlanStmtExecResult {
-            rows,
-            rows_affected,
-        });
-    }
-    txn.commit().unwrap();
-    crate::sql_plan::DbPlanExecResult {
-        operation_id: operation_id.into(),
-        statements,
-        timing: Some(crate::sql_plan::DbAtomicTiming {
-            attempt_elapsed_us: 1,
-            db_execution_us: Some(1),
-            db_timing_source: Some("d1_compat_rusqlite".into()),
-        }),
-    }
-}
-
-fn d1_compat_mem() -> rusqlite::Connection {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    for sql in crate::migrations::migration_sql() {
-        conn.execute_batch(sql).unwrap();
-    }
-    conn
-}
-
-#[test]
-fn d1_compat_plan_commit_and_replay() {
-    let conn = d1_compat_mem();
-    let now = "2024-06-01T00:00:00Z";
-    let op = enqueue_scan("d1-conf-enq", "a");
-    let compiled = compile_named_request(op.id, &op.params, now).unwrap();
-    let exec = d1_compat_execute(&conn, &compiled.plan, op.id);
-    let first = super::interpret_exec(&compiled.plan, &exec, &compiled.expected_hash);
-    assert_eq!(first.status, atomic_status::OK);
-    assert!(!first.replayed);
-    let exec = d1_compat_execute(&conn, &compiled.plan, op.id);
-    let replay = super::interpret_exec(&compiled.plan, &exec, &compiled.expected_hash);
-    assert!(replay.replayed);
-    assert_eq!(replay.status, atomic_status::OK);
-}
-
-#[test]
-fn d1_compat_hash_conflict_is_idempotency_conflict() {
-    let conn = d1_compat_mem();
-    let now = "2024-06-01T00:00:00Z";
-    let first = enqueue_scan("d1-conflict", "a");
-    let compiled = compile_named_request(first.id, &first.params, now).unwrap();
-    let _ = d1_compat_execute(&conn, &compiled.plan, first.id);
-    let second = enqueue_scan("d1-conflict", "other");
-    let other = compile_named_request(second.id, &second.params, now).unwrap();
-    let exec = d1_compat_execute(&conn, &compiled.plan, first.id);
-    let result = super::interpret_exec(&compiled.plan, &exec, &other.expected_hash);
-    assert_eq!(result.status, atomic_status::IDEMPOTENCY_CONFLICT);
-}
-
-#[test]
-fn d1_compat_unique_constraint_is_engine_error() {
-    let conn = d1_compat_mem();
-    conn.execute(
-        "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup', 0)",
-        [],
-    )
-    .unwrap();
-    let err = conn
-        .execute(
-            "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('dup', 1)",
-            [],
-        )
-        .unwrap_err();
-    let msg = err.to_string().to_lowercase();
-    assert!(
-        msg.contains("unique") || msg.contains("constraint"),
-        "{err}"
-    );
-}
-
-#[test]
-fn d1_compat_rejects_more_than_100_binds() {
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "SELECT 1".into(),
-            binds: vec![serde_json::json!(1); 101],
-            kind: crate::sql_plan::DbPlanStatementKind::Returning,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let conn = d1_compat_mem();
-    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        d1_compat_execute(&conn, &plan, "op");
-    }));
-    assert!(panicked.is_err(), "D1 bind cap 100 must fail closed");
-}
-
 #[tokio::test]
 async fn plan_cancel_hook_aborts_before_commit() {
     let db = mem_db().await;
     crate::inject_commit_failures(1);
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('cancel', 0)".into(),
-            binds: vec![],
-            kind: crate::sql_plan::DbPlanStatementKind::Execute,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let err = execute_plan_on(&db, &plan, "hash", "op-cancel", "sqlite_txn")
+    let plan = vec![{
+        let mut s = typed_stmt(
+            "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('cancel', 0)",
+            bookclerk_plugin_abi::DbPlanStatementKind::Execute,
+        );
+        s.max_rows = 0;
+        s
+    }];
+    let err = super::execute_typed_on(&db, &typed_req("op-cancel", plan.clone()), "sqlite_txn", 0)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("commit failed"), "{err}");
@@ -965,24 +722,16 @@ async fn execute_caps_collected_rows_at_max_result_rows() {
         .await
         .unwrap();
     }
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'cap-%' ORDER BY slot_key"
-                .into(),
-            binds: vec![],
-            kind: crate::sql_plan::DbPlanStatementKind::Returning,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let exec = super::execute_statements_on(&db, &plan, "op-cap", "sqlite_txn", 5)
+    let plan = vec![{
+        let mut s = typed_stmt("SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'cap-%' ORDER BY slot_key", bookclerk_plugin_abi::DbPlanStatementKind::Returning);
+        s.max_rows = 0;
+        s
+    }];
+    let exec = super::execute_typed_on(&db, &typed_req("op-cap", plan.clone()), "sqlite_txn", 5)
         .await
         .unwrap();
     assert_eq!(exec.statements[0].rows.len(), 5);
-    let err = super::execute_statements_on(&db, &plan, "op-cap-over", "sqlite_txn", 2)
+    let err = super::execute_typed_on(&db, &typed_req("op-cap-over", plan), "sqlite_txn", 2)
         .await
         .unwrap_err();
     assert!(
@@ -1001,25 +750,13 @@ async fn postgres_plan_commit_inserts_receipt() {
     let now = "2024-06-01T00:00:00Z";
     let op = enqueue_scan("pg-conf-enq-2", "pg");
     let compiled = compile_named_request(op.id, &op.params, now).unwrap();
-    let first = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        op.id,
-        "postgres_txn",
-    )
-    .await
-    .unwrap();
+    let first = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
+        .await
+        .unwrap();
     assert_eq!(first.status, atomic_status::OK);
-    let replay = execute_plan_on(
-        &db,
-        &compiled.plan,
-        &compiled.expected_hash,
-        op.id,
-        "postgres_txn",
-    )
-    .await
-    .unwrap();
+    let replay = execute_compiled_on(&db, compiled.clone(), "postgres_txn")
+        .await
+        .unwrap();
     assert!(replay.replayed);
 }
 
@@ -1028,23 +765,26 @@ async fn postgres_plan_commit_inserts_receipt() {
 async fn postgres_plan_exceeds_max_binds_is_rejected() {
     let mut caps = bookclerk_plugin_abi::DbCapabilities::advertised_postgres();
     caps.max_binds = 2;
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "SELECT $1, $2, $3".into(),
-            binds: vec![
-                serde_json::json!(1),
-                serde_json::json!(2),
-                serde_json::json!(3),
-            ],
-            kind: crate::sql_plan::DbPlanStatementKind::Returning,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
+    let compiled = super::CompiledAtomic {
+        request: typed_req(
+            "over-binds",
+            vec![{
+                let mut s = typed_stmt(
+                    "SELECT ?, ?, ?",
+                    bookclerk_plugin_abi::DbPlanStatementKind::Returning,
+                );
+                s.parameters = vec![
+                    bookclerk_plugin_abi::DbValue::Int64(1),
+                    bookclerk_plugin_abi::DbValue::Int64(2),
+                    bookclerk_plugin_abi::DbValue::Int64(3),
+                ];
+                s
+            }],
+        ),
+        selection: super::AtomicSelection::default(),
+        expected_hash: String::new(),
     };
-    let err = super::validate_plan(&plan, &caps).unwrap_err();
+    let err = super::validate_plan(&compiled, &caps).unwrap_err();
     assert!(err.to_string().contains("maxBinds"), "{err}");
 }
 
@@ -1068,24 +808,21 @@ async fn postgres_execute_caps_collected_rows() {
         .await
         .unwrap();
     }
-    let plan = crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: "SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'pg-cap-%' ORDER BY slot_key"
-                .into(),
-            binds: vec![],
-            kind: crate::sql_plan::DbPlanStatementKind::Returning,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    };
-    let exec = super::execute_statements_on(&db, &plan, "op-pg-cap", "postgres_txn", 5)
-        .await
-        .unwrap();
+    let plan = vec![{
+        let mut s = typed_stmt("SELECT slot_key FROM db_serialization_slots WHERE slot_key LIKE 'pg-cap-%' ORDER BY slot_key", bookclerk_plugin_abi::DbPlanStatementKind::Returning);
+        s.max_rows = 0;
+        s
+    }];
+    let exec = super::execute_typed_on(
+        &db,
+        &typed_req("op-pg-cap", plan.clone()),
+        "postgres_txn",
+        5,
+    )
+    .await
+    .unwrap();
     assert_eq!(exec.statements[0].rows.len(), 5);
-    let err = super::execute_statements_on(&db, &plan, "op-pg-cap-over", "postgres_txn", 2)
+    let err = super::execute_typed_on(&db, &typed_req("op-pg-cap-over", plan), "postgres_txn", 2)
         .await
         .unwrap_err();
     assert!(
@@ -1114,21 +851,15 @@ async fn host_applies_schema_to_unmigrated_sqlite() {
     assert_eq!(rows.len(), 1);
 }
 
-fn interrupt_plan(slot: &str) -> crate::sql_plan::DbAtomicPlan {
-    crate::sql_plan::DbAtomicPlan {
-        statements: vec![crate::sql_plan::DbPlanStatement {
-            sql: format!(
-                "INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('{slot}', 0)"
-            ),
-            binds: vec![],
-            kind: crate::sql_plan::DbPlanStatementKind::Execute,
-            max_rows: 0,
-        }],
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
-    }
+fn interrupt_plan(slot: &str) -> Vec<bookclerk_plugin_abi::TypedDbStatement> {
+    vec![{
+        let mut s = typed_stmt(
+            format!("INSERT INTO db_serialization_slots (slot_key, bump) VALUES ('{slot}', 0)"),
+            bookclerk_plugin_abi::DbPlanStatementKind::Execute,
+        );
+        s.max_rows = 0;
+        s
+    }]
 }
 
 async fn slot_missing(db: &sea_orm::DatabaseConnection, key: &str) -> bool {
@@ -1152,10 +883,9 @@ async fn plan_cancel_before_begin_does_not_commit() {
         crate::AtomicInterruptPhase::BeforeBegin,
         crate::AtomicInterruptKind::Cancel,
     );
-    let err = super::execute_statements_on(
+    let err = super::execute_typed_on(
         &db,
-        &interrupt_plan("c-before"),
-        "op-c-before",
+        &typed_req("op-c-before", interrupt_plan("c-before")),
         "sqlite_txn",
         0,
     )
@@ -1172,10 +902,9 @@ async fn plan_cancel_during_statements_rolls_back() {
         crate::AtomicInterruptPhase::BetweenStatements,
         crate::AtomicInterruptKind::Cancel,
     );
-    let err = super::execute_statements_on(
+    let err = super::execute_typed_on(
         &db,
-        &interrupt_plan("c-during"),
-        "op-c-during",
+        &typed_req("op-c-during", interrupt_plan("c-during")),
         "sqlite_txn",
         0,
     )
@@ -1192,10 +921,9 @@ async fn plan_cancel_around_commit_is_unavailable() {
         crate::AtomicInterruptPhase::AroundCommit,
         crate::AtomicInterruptKind::Cancel,
     );
-    let err = super::execute_statements_on(
+    let err = super::execute_typed_on(
         &db,
-        &interrupt_plan("c-commit"),
-        "op-c-commit",
+        &typed_req("op-c-commit", interrupt_plan("c-commit")),
         "sqlite_txn",
         0,
     )
@@ -1212,10 +940,9 @@ async fn plan_deadline_before_begin() {
         crate::AtomicInterruptPhase::BeforeBegin,
         crate::AtomicInterruptKind::Deadline,
     );
-    let err = super::execute_statements_on(
+    let err = super::execute_typed_on(
         &db,
-        &interrupt_plan("d-before"),
-        "op-d-before",
+        &typed_req("op-d-before", interrupt_plan("d-before")),
         "sqlite_txn",
         0,
     )
@@ -1236,10 +963,9 @@ async fn postgres_plan_cancel_before_begin() {
         crate::AtomicInterruptPhase::BeforeBegin,
         crate::AtomicInterruptKind::Cancel,
     );
-    let err = super::execute_statements_on(
+    let err = super::execute_typed_on(
         &db,
-        &interrupt_plan("pg-c-before"),
-        "op-pg-c-before",
+        &typed_req("op-pg-c-before", interrupt_plan("pg-c-before")),
         "postgres_txn",
         0,
     )
@@ -1259,10 +985,9 @@ async fn postgres_plan_cancel_during_statements() {
         crate::AtomicInterruptPhase::BetweenStatements,
         crate::AtomicInterruptKind::Cancel,
     );
-    let err = super::execute_statements_on(
+    let err = super::execute_typed_on(
         &db,
-        &interrupt_plan("pg-c-during"),
-        "op-pg-c-during",
+        &typed_req("op-pg-c-during", interrupt_plan("pg-c-during")),
         "postgres_txn",
         0,
     )
@@ -1300,10 +1025,9 @@ async fn postgres_plan_cancel_around_commit_is_unavailable() {
         crate::AtomicInterruptPhase::AroundCommit,
         crate::AtomicInterruptKind::Cancel,
     );
-    let err = super::execute_statements_on(
+    let err = super::execute_typed_on(
         &db,
-        &interrupt_plan("pg-c-commit"),
-        "op-pg-c-commit",
+        &typed_req("op-pg-c-commit", interrupt_plan("pg-c-commit")),
         "postgres_txn",
         0,
     )

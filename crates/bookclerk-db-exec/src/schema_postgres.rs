@@ -14,12 +14,19 @@ use sea_orm::DatabaseBackend;
 /// SQL text for one host-schema statement on the live connection backend.
 ///
 /// SQLite-family backends return the canonical statement unchanged; Postgres
-/// applies the mechanical DDL lowering.
+/// applies the mechanical DDL lowering. Unknown SeaORM backends fail closed.
+///
+/// # Panics
+///
+/// Panics when `backend` is not SQLite or PostgreSQL. `DatabaseBackend` is
+/// non-exhaustive; BookclerkSQL adapters do not implement other SeaORM
+/// families.
 #[must_use]
 pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<'_, str> {
     match backend {
         DatabaseBackend::Postgres => Cow::Owned(crate::lower_canonical_ddl_to_postgres(canonical)),
-        _ => Cow::Borrowed(canonical),
+        DatabaseBackend::Sqlite => Cow::Borrowed(canonical),
+        other => panic!("BookclerkSQL adapters do not support SeaORM backend {other:?}"),
     }
 }
 
@@ -28,12 +35,20 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 /// Hosts emit canonical SQLite-shaped `CREATE`/`DROP`. Postgres adapters
 /// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here; SQLite/D1 leave the
 /// statement unchanged. DML stays for [`crate::lower_canonical_sql`].
+///
+/// # Panics
+///
+/// Panics when `backend` is not SQLite or PostgreSQL. `DatabaseBackend` is
+/// non-exhaustive; BookclerkSQL adapters do not implement other SeaORM
+/// families.
 #[must_use]
 pub fn lower_binding_sql_for_backend(backend: DatabaseBackend, sql: &str) -> Cow<'_, str> {
-    if backend == DatabaseBackend::Postgres && bookclerk_plugin_abi::statement_is_ddl(sql) {
-        Cow::Owned(crate::lower::rewrite_canonical_ddl_types_for_postgres(sql))
-    } else {
-        Cow::Borrowed(sql)
+    match backend {
+        DatabaseBackend::Postgres if bookclerk_plugin_abi::statement_is_ddl(sql) => {
+            Cow::Owned(crate::lower::rewrite_canonical_ddl_types_for_postgres(sql))
+        }
+        DatabaseBackend::Postgres | DatabaseBackend::Sqlite => Cow::Borrowed(sql),
+        other => panic!("BookclerkSQL adapters do not support SeaORM backend {other:?}"),
     }
 }
 
@@ -82,10 +97,19 @@ pub fn split_schema_statements(sql: &str) -> Vec<String> {
 
 /// Expands `[canonical_ddl, version_marker, …]` at the adapter execution edge.
 ///
-/// Host schema orchestration sends unsplit canonical DDL plus a version marker;
-/// adapters lower the canonical pack for the live backend before execution.
+/// Each pack entry is split with the SQL-v1 lexer, then lowered. Adapters may
+/// insert identity companions; they do not use `str::split(';')`.
 #[must_use]
 pub fn expand_host_schema_batch(backend: DatabaseBackend, batch: &[String]) -> Option<Vec<String>> {
+    expand_host_schema_batch_grouped(backend, batch).map(|(stmts, _)| stmts)
+}
+
+/// [`expand_host_schema_batch`] plus per-original-statement expansion counts.
+#[must_use]
+pub fn expand_host_schema_batch_grouped(
+    backend: DatabaseBackend,
+    batch: &[String],
+) -> Option<(Vec<String>, Vec<usize>)> {
     if batch.len() < 2 {
         return None;
     }
@@ -93,10 +117,13 @@ pub fn expand_host_schema_batch(backend: DatabaseBackend, batch: &[String]) -> O
     if !is_host_schema_version_marker(version) {
         return None;
     }
-    // Split first, lower per statement: statement-shaped rewrites such as
-    // `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING` anchor on the statement
-    // head. Every non-marker entry is a canonical pack (quote-aware split).
+    // Identity companions are adapter-private plpgsql (`$bookclerk_ident$`).
+    // Re-running this expander would SQL-v1-split those bodies on `;`.
+    if batch.iter().any(|sql| sql.contains("$bookclerk_ident$")) {
+        return None;
+    }
     let mut stmts: Vec<String> = Vec::new();
+    let mut groups: Vec<usize> = Vec::new();
     for canonical in &batch[..batch.len() - 1] {
         for stmt in split_schema_statements(canonical) {
             let lowered = schema_sql_for_backend(backend, &stmt).into_owned();
@@ -105,12 +132,14 @@ pub fn expand_host_schema_batch(backend: DatabaseBackend, batch: &[String]) -> O
             } else {
                 Vec::new()
             };
+            groups.push(1usize.saturating_add(companions.len()));
             stmts.push(lowered);
             stmts.extend(companions);
         }
     }
     stmts.push(version.clone());
-    Some(stmts)
+    groups.push(1);
+    Some((stmts, groups))
 }
 
 /// Postgres-only companion DDL: transactional identity counter + BEFORE INSERT trigger.
@@ -300,22 +329,32 @@ fn is_safe_ident(s: &str) -> bool {
 }
 
 /// Expands a typed host schema batch at the adapter execution edge.
+///
+/// Returns the expanded request and per-original-statement expansion counts
+/// (identity when the batch is not a host schema apply unit).
 #[must_use]
 pub fn expand_host_schema_execute_request(
     backend: DatabaseBackend,
     req: &ExecuteRequest,
 ) -> ExecuteRequest {
+    expand_host_schema_execute_request_grouped(backend, req).0
+}
+
+/// [`expand_host_schema_execute_request`] plus collapse groups.
+#[must_use]
+pub fn expand_host_schema_execute_request_grouped(
+    backend: DatabaseBackend,
+    req: &ExecuteRequest,
+) -> (ExecuteRequest, Vec<usize>) {
     let batch: Vec<String> = req.statements.iter().map(|s| s.sql.clone()).collect();
-    let Some(expanded) = expand_host_schema_batch(backend, &batch) else {
-        return req.clone();
+    let Some((expanded, groups)) = expand_host_schema_batch_grouped(backend, &batch) else {
+        return (req.clone(), vec![1usize; req.statements.len()]);
     };
-    // Rebuild even when the statement count is unchanged: per-statement
-    // lowering may have rewritten SQL without splitting the pack further.
     if expanded == batch {
-        return req.clone();
+        return (req.clone(), groups);
     }
     let Some(template) = req.statements.first().cloned() else {
-        return req.clone();
+        return (req.clone(), groups);
     };
     let marker_template = req
         .statements
@@ -336,39 +375,22 @@ pub fn expand_host_schema_execute_request(
             stmt
         })
         .collect();
-    ExecuteRequest {
-        statements,
-        ..req.clone()
-    }
+    (
+        ExecuteRequest {
+            statements,
+            ..req.clone()
+        },
+        groups,
+    )
 }
 
-/// Collapses statement results for an adapter-expanded host-schema request
-/// back to the original wire request shape.
-///
-/// The canonical pack (statement 0) reports the summed `rowsAffected` of its
-/// expanded statements; trailing statements (version marker, …) map
-/// one-to-one, so the reply stays positional against the request the host
-/// actually sent.
+/// Collapses adapter-expanded host-schema results using per-statement groups.
 #[must_use]
 pub fn collapse_host_schema_results(
-    original_len: usize,
+    groups: &[usize],
     results: Vec<bookclerk_plugin_abi::StatementResult>,
 ) -> Vec<bookclerk_plugin_abi::StatementResult> {
-    if original_len == 0 || results.len() <= original_len {
-        return results;
-    }
-    let tail = original_len - 1;
-    let pack_len = results.len() - tail;
-    let pack_affected: u64 = results[..pack_len]
-        .iter()
-        .map(|r| r.rows_affected)
-        .fold(0, u64::saturating_add);
-    let mut out = Vec::with_capacity(original_len);
-    out.push(bookclerk_plugin_abi::StatementResult::from_affected(
-        pack_affected,
-    ));
-    out.extend(results.into_iter().skip(pack_len));
-    out
+    collapse_companion_groups(groups, results)
 }
 
 #[cfg(test)]
@@ -385,13 +407,12 @@ mod tests {
             StatementResult::from_affected(3),
             StatementResult::from_affected(1),
         ];
-        let out = collapse_host_schema_results(2, results);
+        let out = collapse_host_schema_results(&[3, 1], results);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].rows_affected, 6, "pack sums expanded statements");
+        assert_eq!(out[0].rows_affected, 1, "first of CREATE + companions");
         assert_eq!(out[1].rows_affected, 1, "marker maps one-to-one");
-        // No-op when the adapter did not expand.
         let same = collapse_host_schema_results(
-            2,
+            &[1, 1],
             vec![
                 StatementResult::from_affected(4),
                 StatementResult::from_affected(1),
@@ -427,6 +448,10 @@ mod tests {
         assert_eq!(
             expanded.last().map(String::as_str),
             Some("INSERT INTO schema_migrations (version) VALUES (1)")
+        );
+        assert!(
+            expand_host_schema_batch(DatabaseBackend::Postgres, &expanded).is_none(),
+            "already-expanded identity companions must not be packed again"
         );
     }
 

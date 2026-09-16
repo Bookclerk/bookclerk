@@ -1,7 +1,7 @@
 //! Atomic library operations for named security commands.
 //!
 //! Hosts compile domain ops into a generic SQL plan and send it as one
-//! `bookclerk.atomic` query. Database guests run that batch as one SQL
+//! typed `execute` batch. Database guests run that batch as one SQL
 //! transaction (D1 HTTP `batch()`, SQLite/Postgres `BEGIN`) and must not
 //! parse Bookclerk operation names. Receipts live in host-authored SQL
 //! against `db_atomic_receipts`. Host-private interactive transactions

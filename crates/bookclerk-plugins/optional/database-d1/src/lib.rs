@@ -2,7 +2,7 @@
 //!
 //! Alternate `[database]` backend for remote D1. Hosts call [`open`] after
 //! operator config supplies account/database credentials; see `docs/database.md`.
-//! Atomic library writes use [`D1Proxy::run_atomic`] rather than
+//! Atomic library writes use [`D1Proxy::run_typed_atomic`] rather than
 //! interactive `BEGIN`.
 
 pub mod atomic;

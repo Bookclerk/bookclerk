@@ -1,9 +1,9 @@
 //! Host-owned SQL atomic plans for database plugins.
 //!
-//! The library compiles Bookclerk domain operations into a generic
-//! [`crate::sql_plan::host_ir::DbAtomicPlan`]. Database guests execute the
-//! statements as one transaction and return rows; they must not parse
-//! domain operation names.
+//! The library compiles Bookclerk domain operations into a typed
+//! [`bookclerk_plugin_abi::ExecuteRequest`] plus host-only
+//! [`AtomicSelection`] indexes. Database guests execute the statements as
+//! one transaction and return a typed [`bookclerk_plugin_abi::ExecuteReply`].
 
 #[cfg(test)]
 mod conformance;
@@ -15,96 +15,69 @@ mod named;
 mod reply;
 mod slots;
 mod typed_vectors;
-pub mod vectors;
 mod vectors_typed;
+
+/// Injected `maxResultRows` for conn-vector row-cap cases (sqlite / postgres).
+pub(crate) const CONTRACT_VECTOR_ROW_CAP: u32 = 5;
 
 use bookclerk_plugin_abi::{encoded_execute_request_bytes, DbCapabilities, ExecuteRequest};
 
 pub use bookclerk_plugin_abi::DbPlanStatementKind;
-pub use host_ir::{
-    atomic_from_execute_request, execute_request_from_atomic, plan_exec_from_execute_reply,
-    sea_null, sea_null_kind, DbAtomicPlan, DbAtomicRequest, DbAtomicTiming, DbPlanExecResult,
-    DbPlanStatement, DbPlanStmtExecResult, DB_ATOMIC_SENTINEL, DB_CAPABILITIES_SENTINEL,
-    SEA_NULL_KEY,
-};
+pub use host_ir::AtomicSelection;
 
 pub use exec::{
-    execute_plan_on, execute_plan_on_capped, execute_statements_on, execute_statements_on_session,
+    execute_compiled_on, execute_compiled_on_capped, execute_typed_on, execute_typed_on_session,
     AtomicSession,
 };
 pub(crate) use guest_receipt::{unwrap_guest_typed_reply, wrap_guest_typed_request};
-pub use interpret::{
-    interpret_exec, interpret_plan, interpret_typed_exec, validate_exec_result, PlanStmtResult,
-};
+pub use interpret::{interpret_typed_exec, PlanStmtResult};
 pub use named::{compile_claim_event_delivery, compile_named_request};
 pub use reply::validate_execute_reply;
 pub use slots::{event_inflight_slot, lock_serialization_slot, JOB_QUEUE_SLOT};
 pub use typed_vectors::{run_typed_conn_vectors, run_typed_request_vectors};
 pub use vectors_typed::run_typed_contract_vectors;
 
-/// Compiled plan plus the hash stored on the receipt.
+/// Compiled typed request plus host result-selection indexes.
 #[derive(Debug, Clone)]
 pub struct CompiledAtomic {
-    /// Wire plan executed by the guest.
-    pub plan: DbAtomicPlan,
+    /// Typed request executed by the guest.
+    pub request: ExecuteRequest,
+    /// Host indexes used to interpret the typed reply.
+    pub selection: AtomicSelection,
     /// SHA-256 hex compared on receipt replay.
     pub expected_hash: String,
 }
 
 impl CompiledAtomic {
-    /// Envelope sent on `bookclerk.atomic`.
+    /// Typed [`ExecuteRequest`] for adapter `execute` (Cap'n data plane).
     #[must_use]
-    pub fn into_request(self, operation_id: impl Into<String>) -> DbAtomicRequest {
-        DbAtomicRequest::with_plan(operation_id, self.expected_hash, self.plan)
-    }
-
-    /// Typed [`ExecuteRequest`] for adapter conformance (`executeAtomic`).
-    ///
-    /// # Panics
-    ///
-    /// Panics when a plan bind is outside the universal [`bookclerk_plugin_abi::DbValue`] domain.
-    #[must_use]
-    pub fn into_typed_request(self, operation_id: impl Into<String>) -> ExecuteRequest {
-        let statements = self
-            .plan
-            .statements
-            .iter()
-            .map(|stmt| {
-                crate::sql_plan::host_ir::typed_statement_from_plan(stmt)
-                    .expect("contract vector bind must be a DbValue")
-            })
-            .collect();
-        ExecuteRequest {
-            operation_id: operation_id.into(),
-            request_hash: self.expected_hash,
-            statements,
-            deadline_unix_ms: 0,
-        }
+    pub fn into_typed_request(mut self, operation_id: impl Into<String>) -> ExecuteRequest {
+        self.request.operation_id = operation_id.into();
+        self.request
     }
 }
 
-/// Rejects a plan that exceeds negotiated guest limits or has out-of-range selectors.
+/// Rejects a compiled plan that exceeds negotiated guest limits or has
+/// out-of-range selectors.
 ///
 /// # Errors
 ///
 /// Returns [`crate::LibraryError::Other`] when the plan cannot be sent.
-pub fn validate_plan(plan: &DbAtomicPlan, caps: &DbCapabilities) -> crate::error::Result<()> {
-    let n_stmt = u32::try_from(plan.statements.len()).unwrap_or(u32::MAX);
-    if caps.max_statements > 0 && n_stmt > caps.max_statements {
-        return Err(crate::LibraryError::Other(anyhow::anyhow!(
-            "atomic plan has {n_stmt} statements; guest maxStatements is {}",
-            caps.max_statements
-        )));
-    }
-    let stmt_len = plan.statements.len();
-    let mut selectors = vec![("outcomeIndex", plan.outcome_index)];
-    if let Some(idx) = plan.payload_index {
+pub fn validate_plan(compiled: &CompiledAtomic, caps: &DbCapabilities) -> crate::error::Result<()> {
+    validate_selection(&compiled.selection, compiled.request.statements.len())?;
+    validate_execute_request(&compiled.request, caps)
+}
+
+/// Rejects result-selection indexes that fall outside the statement list.
+fn validate_selection(selection: &AtomicSelection, stmt_len: usize) -> crate::error::Result<()> {
+    let mut selectors = vec![("outcomeIndex", selection.outcome_index)];
+    if let Some(idx) = selection.payload_index {
         selectors.push(("payloadIndex", idx));
     }
-    if let Some(idx) = plan.prior_receipt_index {
+    if let Some(idx) = selection.prior_receipt_index {
         selectors.push(("priorReceiptIndex", idx));
     }
-    if let Some(idx) = plan.receipt_select_index {
+    if let Some(idx) = selection.receipt_select_index {
         selectors.push(("receiptSelectIndex", idx));
     }
     for (name, idx) in selectors {
@@ -114,36 +87,12 @@ pub fn validate_plan(plan: &DbAtomicPlan, caps: &DbCapabilities) -> crate::error
             )));
         }
     }
-    for (i, stmt) in plan.statements.iter().enumerate() {
-        let n_binds = u32::try_from(stmt.binds.len()).unwrap_or(u32::MAX);
-        if caps.max_binds > 0 && n_binds > caps.max_binds {
-            return Err(crate::LibraryError::Other(anyhow::anyhow!(
-                "atomic plan statement {i} has {n_binds} binds; guest maxBinds is {}",
-                caps.max_binds
-            )));
-        }
-        if caps.max_payload_bytes > 0 {
-            let binds_len = serde_json::to_vec(&stmt.binds)
-                .map(|b| b.len())
-                .unwrap_or(0);
-            let payload = stmt.sql.len().saturating_add(binds_len);
-            let cap = usize::try_from(caps.max_payload_bytes).unwrap_or(usize::MAX);
-            if payload > cap {
-                return Err(crate::LibraryError::Other(anyhow::anyhow!(
-                    "atomic plan statement {i} encoded payload is {payload} bytes; guest maxPayloadBytes is {}",
-                    caps.max_payload_bytes
-                )));
-            }
-        }
-    }
     Ok(())
 }
 
 /// Rejects a typed [`ExecuteRequest`] that exceeds negotiated guest limits.
 ///
-/// `maxRequestBytes` is measured against the Cap'n-encoded [`ExecuteRequest`]
-/// that will be sent, not the JSON [`DbAtomicRequest`] envelope used by the
-/// in-process sentinel path.
+/// `maxRequestBytes` is measured against the Cap'n-encoded [`ExecuteRequest`].
 ///
 /// # Errors
 ///
@@ -345,37 +294,6 @@ pub fn authorize_guest_typed_request(
     authorize_typed_request(req, caps)
 }
 
-/// Rejects a plan or encoded [`DbAtomicRequest`] that exceeds negotiated guest limits.
-///
-/// # Errors
-///
-/// Returns [`crate::LibraryError::Other`] when the request cannot be sent.
-pub fn validate_atomic_request(
-    req: &DbAtomicRequest,
-    caps: &DbCapabilities,
-) -> crate::error::Result<()> {
-    if let Some(plan) = &req.plan {
-        validate_plan(plan, caps)?;
-    } else {
-        return Err(crate::LibraryError::Other(anyhow::anyhow!(
-            "atomic execute requires a host-authored executePlan"
-        )));
-    }
-    let cap = atomic_request_cap_bytes(caps);
-    if cap == 0 {
-        return Ok(());
-    }
-    let bytes = serde_json::to_vec(req)
-        .map(|b| b.len())
-        .unwrap_or(usize::MAX);
-    if bytes > cap {
-        return Err(crate::LibraryError::Other(anyhow::anyhow!(
-            "atomic request is {bytes} bytes; guest maxRequestBytes is {cap}"
-        )));
-    }
-    Ok(())
-}
-
 /// Byte budget for one encoded request (`0` = skip the check).
 fn atomic_request_cap_bytes(caps: &DbCapabilities) -> usize {
     if caps.max_request_bytes == 0 {
@@ -393,31 +311,6 @@ fn atomic_request_cap_bytes(caps: &DbCapabilities) -> usize {
 pub fn wake_page_for_max_binds(max_binds: u32) -> u64 {
     const FIXED: u32 = 4;
     u64::from(max_binds.saturating_sub(FIXED).clamp(8, 256))
-}
-
-/// Converts an internal statement list into the wire plan.
-fn wire_plan(
-    statements: Vec<named::SqlStmt>,
-    outcome_index: usize,
-    payload_index: Option<usize>,
-    prior_receipt_index: Option<usize>,
-    receipt_select_index: Option<usize>,
-) -> DbAtomicPlan {
-    DbAtomicPlan {
-        statements: statements
-            .into_iter()
-            .map(|stmt| DbPlanStatement {
-                sql: stmt.sql,
-                binds: stmt.binds,
-                kind: stmt.kind,
-                max_rows: stmt.max_rows,
-            })
-            .collect(),
-        outcome_index: u32::try_from(outcome_index).unwrap_or(0),
-        payload_index: payload_index.and_then(|i| u32::try_from(i).ok()),
-        prior_receipt_index: prior_receipt_index.and_then(|i| u32::try_from(i).ok()),
-        receipt_select_index: receipt_select_index.and_then(|i| u32::try_from(i).ok()),
-    }
 }
 
 /// Host-authored statement shape for the wire `kind` field.
@@ -463,9 +356,10 @@ pub fn proxy_write_kind(sql: &str) -> bookclerk_plugin_abi::DbPlanStatementKind 
 #[cfg(test)]
 mod limits_tests {
     use super::{
-        validate_atomic_request, validate_execute_request, validate_plan, DbAtomicPlan,
-        DbAtomicRequest, DbCapabilities, DbPlanStatement, DbPlanStatementKind,
+        validate_execute_request, validate_plan, AtomicSelection, CompiledAtomic, DbCapabilities,
+        DbPlanStatementKind, ExecuteRequest,
     };
+    use bookclerk_plugin_abi::{DbResultSelection, DbValue, TypedDbStatement};
 
     fn tiny_caps() -> DbCapabilities {
         let mut caps = DbCapabilities::advertised_sqlite();
@@ -475,56 +369,76 @@ mod limits_tests {
         caps
     }
 
-    fn stmt(sql: &str, binds: Vec<serde_json::Value>) -> DbPlanStatement {
-        DbPlanStatement::new(sql, binds, DbPlanStatementKind::Returning)
+    fn compiled(statements: Vec<TypedDbStatement>, outcome_index: u32) -> CompiledAtomic {
+        CompiledAtomic {
+            request: ExecuteRequest {
+                operation_id: "op".into(),
+                request_hash: String::new(),
+                statements,
+                deadline_unix_ms: 0,
+            },
+            selection: AtomicSelection {
+                outcome_index,
+                payload_index: None,
+                prior_receipt_index: None,
+                receipt_select_index: None,
+            },
+            expected_hash: String::new(),
+        }
+    }
+
+    fn stmt(sql: &str, parameters: Vec<DbValue>) -> TypedDbStatement {
+        TypedDbStatement {
+            sql: sql.into(),
+            parameters,
+            kind: DbPlanStatementKind::Select,
+            max_rows: 0,
+            result_selection: DbResultSelection::Rows,
+        }
     }
 
     #[test]
     fn validate_plan_rejects_too_many_statements() {
-        let plan = DbAtomicPlan {
-            statements: vec![
+        let plan = compiled(
+            vec![
                 stmt("SELECT 1", vec![]),
                 stmt("SELECT 2", vec![]),
                 stmt("SELECT 3", vec![]),
             ],
-            outcome_index: 0,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
-        };
+            0,
+        );
         let err = validate_plan(&plan, &tiny_caps()).unwrap_err();
         assert!(err.to_string().contains("maxStatements"), "{err}");
     }
 
     #[test]
     fn validate_plan_rejects_too_many_binds() {
-        let plan = DbAtomicPlan {
-            statements: vec![stmt(
+        let plan = compiled(
+            vec![stmt(
                 "SELECT ?, ?, ?",
-                vec![
-                    serde_json::json!(1),
-                    serde_json::json!(2),
-                    serde_json::json!(3),
-                ],
+                vec![DbValue::Int64(1), DbValue::Int64(2), DbValue::Int64(3)],
             )],
-            outcome_index: 0,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
-        };
+            0,
+        );
         let err = validate_plan(&plan, &tiny_caps()).unwrap_err();
         assert!(err.to_string().contains("maxBinds"), "{err}");
     }
 
     #[test]
+    fn advertised_d1_rejects_more_than_max_binds() {
+        let caps = DbCapabilities::advertised_d1();
+        let binds = vec![DbValue::Int64(1); (caps.max_binds as usize) + 1];
+        let plan = compiled(vec![stmt("SELECT 1", binds)], 0);
+        let err = validate_plan(&plan, &caps).unwrap_err();
+        assert!(err.to_string().contains("maxBinds"), "{err}");
+    }
+
+    #[test]
     fn validate_plan_rejects_payload_bytes() {
-        let plan = DbAtomicPlan {
-            statements: vec![stmt("SELECT ?", vec![serde_json::json!("x".repeat(200))])],
-            outcome_index: 0,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
-        };
+        let plan = compiled(
+            vec![stmt("SELECT ?", vec![DbValue::Text("x".repeat(200))])],
+            0,
+        );
         let err = validate_plan(&plan, &tiny_caps()).unwrap_err();
         assert!(err.to_string().contains("maxPayloadBytes"), "{err}");
     }
@@ -548,32 +462,27 @@ mod limits_tests {
         .unwrap();
         let mut caps = DbCapabilities::advertised_sqlite();
         caps.max_statements = 40;
-        let err = validate_plan(&compiled.plan, &caps).unwrap_err();
+        let err = validate_plan(&compiled, &caps).unwrap_err();
         assert!(err.to_string().contains("maxStatements"), "{err}");
         assert!(
-            compiled.plan.statements.len() > 40,
+            compiled.request.statements.len() > 40,
             "planner must emit inserts for every subscriber, not take(24)"
         );
     }
 
     #[test]
-    fn validate_atomic_request_rejects_oversized_envelope() {
-        let plan = DbAtomicPlan {
+    fn validate_execute_request_rejects_oversized_envelope() {
+        let typed = ExecuteRequest {
+            operation_id: "op".into(),
+            request_hash: "abc".into(),
             statements: vec![stmt(&format!("SELECT '{}'", "x".repeat(5000)), vec![])],
-            outcome_index: 0,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
+            deadline_unix_ms: 0,
         };
         let mut caps = DbCapabilities::advertised_sqlite();
         caps.max_payload_bytes = 1_048_576;
         caps.max_request_bytes = 4_096;
         caps.max_atomic_result_bytes = 4_096;
         caps.max_result_bytes = 4_096;
-        let req = DbAtomicRequest::with_plan("op", "abc", plan);
-        let err = validate_atomic_request(&req, &caps).unwrap_err();
-        assert!(err.to_string().contains("maxRequestBytes"), "{err}");
-        let typed = super::host_ir::execute_request_from_atomic(&req).unwrap();
         let err = validate_execute_request(&typed, &caps).unwrap_err();
         assert!(err.to_string().contains("maxRequestBytes"), "{err}");
         let mut typed = typed;
@@ -716,13 +625,7 @@ mod limits_tests {
 
     #[test]
     fn validate_plan_rejects_out_of_range_selector() {
-        let plan = DbAtomicPlan {
-            statements: vec![stmt("SELECT 1", vec![])],
-            outcome_index: 3,
-            payload_index: None,
-            prior_receipt_index: None,
-            receipt_select_index: None,
-        };
+        let plan = compiled(vec![stmt("SELECT 1", vec![])], 3);
         let err = validate_plan(&plan, &DbCapabilities::advertised_sqlite()).unwrap_err();
         assert!(err.to_string().contains("outcomeIndex"), "{err}");
     }

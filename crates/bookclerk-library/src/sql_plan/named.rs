@@ -5,7 +5,9 @@
 //! Consume-once ops use `DELETE … RETURNING`. Receipt wrapping is host SQL.
 
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
-use bookclerk_plugin_abi::DbPlanStatementKind;
+use bookclerk_plugin_abi::{
+    DbPlanStatementKind, DbResultSelection, DbType, DbValue, ExecuteRequest, TypedDbStatement,
+};
 use sea_orm::DbErr;
 use serde_json::Value as JsonValue;
 
@@ -14,15 +16,15 @@ use crate::atomic_ops::DbAtomicResult;
 #[cfg(test)]
 use serde_json::json;
 
-use super::{wire_plan, CompiledAtomic};
+use super::{AtomicSelection, CompiledAtomic};
 
 /// One statement in a planned batch (SQL, binds, and structural kind).
 #[derive(Clone, Debug)]
 pub(crate) struct SqlStmt {
     /// Dialect-neutral SQL text.
     pub sql: String,
-    /// Ordered JSON binds.
-    pub binds: Vec<JsonValue>,
+    /// Ordered typed binds.
+    pub binds: Vec<DbValue>,
     /// Host-authored kind; adapters must not reparse SQL.
     pub kind: DbPlanStatementKind,
     /// Proven row upper bound (`0` = unproven). Host `Returning` is `1`.
@@ -87,16 +89,7 @@ pub fn compile_named_request(
     let expected_hash = inner.expected_hash.clone().unwrap_or_default();
     // Canonical Bookclerk SQL (`?` placeholders, SQLite-shaped helpers).
     // Adapters lower placeholders and functions at execute time.
-    Ok(CompiledAtomic {
-        plan: wire_plan(
-            inner.statements,
-            inner.outcome_index,
-            inner.payload_index,
-            inner.prior_receipt_index,
-            inner.receipt_select_index,
-        ),
-        expected_hash,
-    })
+    Ok(compiled_from_inner(operation_id, inner, expected_hash))
 }
 
 /// Compiles a host-side CAS claim for one pending `event_deliveries` row.
@@ -149,16 +142,7 @@ pub fn compile_claim_event_delivery(
         expires_at: receipt_expiry(now),
     };
     let wrapped = wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan);
-    Ok(CompiledAtomic {
-        plan: wire_plan(
-            wrapped.statements,
-            wrapped.outcome_index,
-            wrapped.payload_index,
-            wrapped.prior_receipt_index,
-            wrapped.receipt_select_index,
-        ),
-        expected_hash: request_hash,
-    })
+    Ok(compiled_from_inner(operation_id, wrapped, request_hash))
 }
 
 /// SHA-256 hex of the idempotency-relevant fields of `op`, mapped to [`DbErr`].
@@ -441,8 +425,49 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
     }
 }
 
-/// Pairs SQL text with JSON binds and a structural kind.
-fn sql(text: &str, params: Vec<JsonValue>) -> SqlStmt {
+/// Typed [`ExecuteRequest`] plus domain result-selection indexes.
+fn compiled_from_inner(
+    operation_id: &str,
+    inner: AtomicPlan,
+    expected_hash: String,
+) -> CompiledAtomic {
+    let statements = inner
+        .statements
+        .into_iter()
+        .map(|stmt| TypedDbStatement {
+            sql: stmt.sql,
+            parameters: stmt.binds,
+            kind: stmt.kind,
+            max_rows: stmt.max_rows,
+            result_selection: match stmt.kind {
+                DbPlanStatementKind::Execute => DbResultSelection::AffectedRows,
+                _ => DbResultSelection::Rows,
+            },
+        })
+        .collect();
+    CompiledAtomic {
+        request: ExecuteRequest {
+            operation_id: operation_id.to_string(),
+            request_hash: expected_hash.clone(),
+            statements,
+            deadline_unix_ms: 0,
+        },
+        selection: AtomicSelection {
+            outcome_index: u32::try_from(inner.outcome_index).unwrap_or(0),
+            payload_index: inner.payload_index.and_then(|i| u32::try_from(i).ok()),
+            prior_receipt_index: inner
+                .prior_receipt_index
+                .and_then(|i| u32::try_from(i).ok()),
+            receipt_select_index: inner
+                .receipt_select_index
+                .and_then(|i| u32::try_from(i).ok()),
+        },
+        expected_hash,
+    }
+}
+
+/// Pairs SQL text with typed binds and a structural kind.
+fn sql(text: &str, params: Vec<DbValue>) -> SqlStmt {
     let sql = text.to_string();
     let kind = authored_kind(&sql);
     let max_rows = proven_max_rows(kind, &sql);
@@ -707,37 +732,49 @@ fn where_or_and(sql: &str) -> &'static str {
     }
 }
 
-/// JSON number bind for a signed 64-bit integer column.
-fn j_i64(n: i64) -> JsonValue {
-    JsonValue::from(n)
+/// Integer bind for a signed 64-bit column.
+fn j_i64(n: i64) -> DbValue {
+    DbValue::Int64(n)
 }
 
-/// JSON string bind; the value is copied into the batch body.
-fn j_str(s: &str) -> JsonValue {
-    JsonValue::String(s.to_string())
+/// Text bind. Contents stay [`DbValue::Text`] even when they start with `b64:`.
+fn j_str(s: &str) -> DbValue {
+    DbValue::Text(s.to_string())
 }
 
-/// JSON string bind, or JSON null when the optional value is absent.
-fn j_opt_str(s: Option<&str>) -> JsonValue {
+/// Text bind, or an untyped SQL null when the optional value is absent.
+fn j_opt_str(s: Option<&str>) -> DbValue {
     match s {
-        Some(v) => JsonValue::String(v.to_string()),
-        None => JsonValue::Null,
+        Some(v) => j_str(v),
+        None => DbValue::Null(DbType::Unspecified),
     }
 }
 
-/// JSON number bind, or a typed BigInt null when the optional value is absent.
-fn j_opt_i64(n: Option<i64>) -> JsonValue {
+/// Integer bind, or a typed Int64 null when the optional value is absent.
+fn j_opt_i64(n: Option<i64>) -> DbValue {
     match n {
-        Some(v) => JsonValue::from(v),
-        None => crate::sql_plan::sea_null("BigInt"),
+        Some(v) => DbValue::Int64(v),
+        None => DbValue::Null(DbType::Int64),
     }
 }
 
-/// JSON `b64:` blob bind, or a typed Bytes null when the optional value is absent.
-fn j_opt_blob(s: Option<&str>) -> JsonValue {
+/// Blob bind: decode a `b64:`-prefixed string to [`DbValue::Bytes`].
+///
+/// Used only for BLOB columns (`ciphertext`, `kdf_salt`, `cipher_nonce`). A
+/// missing or invalid `b64:` prefix is treated as the raw octet string so the
+/// column never silently becomes text.
+fn j_blob(s: &str) -> DbValue {
+    match crate::b64_string_to_bytes(s) {
+        Some(bytes) => DbValue::Bytes(bytes),
+        None => DbValue::Bytes(s.as_bytes().to_vec()),
+    }
+}
+
+/// Blob bind, or a typed Bytes null when the optional value is absent.
+fn j_opt_blob(s: Option<&str>) -> DbValue {
     match s {
-        Some(v) => JsonValue::String(v.to_string()),
-        None => crate::sql_plan::sea_null("Bytes"),
+        Some(v) => j_blob(v),
+        None => DbValue::Null(DbType::Bytes),
     }
 }
 
@@ -997,7 +1034,7 @@ fn wrap_status_op(plan: AtomicPlan, ctx: &ReceiptCtx, payload: PayloadKind) -> A
 }
 
 /// Execute-kind statement from already-owned SQL text.
-fn exec_sql(sql: String, binds: Vec<JsonValue>) -> SqlStmt {
+fn exec_sql(sql: String, binds: Vec<DbValue>) -> SqlStmt {
     SqlStmt {
         sql,
         binds,
@@ -1097,7 +1134,7 @@ fn wrap_consume(
     kind: &str,
     table: &str,
     where_sql: &str,
-    where_params: Vec<JsonValue>,
+    where_params: Vec<DbValue>,
     consume_key: String,
     ok_json: &str,
     now: &str,
@@ -1185,7 +1222,7 @@ fn last_owner_sql() -> &'static str {
 }
 
 /// Bind parameters for [`last_owner_sql`], which references `user_id` twice.
-fn last_owner_params(user_id: i64) -> Vec<JsonValue> {
+fn last_owner_params(user_id: i64) -> Vec<DbValue> {
     vec![j_i64(user_id), j_i64(user_id)]
 }
 
@@ -1198,7 +1235,7 @@ fn allow_mutate_sql() -> String {
 }
 
 /// Bind parameters for [`allow_mutate_sql`]: user id plus the last-owner pair.
-fn allow_mutate_params(user_id: i64) -> Vec<JsonValue> {
+fn allow_mutate_params(user_id: i64) -> Vec<DbValue> {
     let mut p = vec![j_i64(user_id)];
     p.extend(last_owner_params(user_id));
     p
@@ -1486,7 +1523,7 @@ fn plan_confirm_totp_enrollment(
                 vec![
                     j_str(&account_id),
                     j_str(format),
-                    j_str(ciphertext),
+                    j_blob(ciphertext),
                     j_opt_str(kdf_algorithm),
                     j_opt_blob(kdf_salt),
                     j_opt_i64(kdf_m_cost),
@@ -1655,7 +1692,7 @@ fn plan_redeem_claim(
                     now_v.clone(),
                     token.clone(),
                     now_v.clone(),
-                    JsonValue::from(password_provided),
+                    DbValue::Int64(password_provided),
                 ],
             ),
             sql(
@@ -1672,7 +1709,7 @@ fn plan_redeem_claim(
                 vec![
                     token.clone(),
                     now_v.clone(),
-                    JsonValue::from(password_provided),
+                    DbValue::Int64(password_provided),
                 ],
             ),
             sql(
@@ -1688,7 +1725,7 @@ fn plan_redeem_claim(
                 vec![
                     j_opt_str(new_password_hash),
                     now_v.clone(),
-                    JsonValue::from(password_provided),
+                    DbValue::Int64(password_provided),
                     token.clone(),
                     now_v.clone(),
                 ],
@@ -1743,7 +1780,7 @@ fn plan_redeem_claim(
                     now_v.clone(),
                     token.clone(),
                     now_v.clone(),
-                    JsonValue::from(password_provided),
+                    DbValue::Int64(password_provided),
                 ],
             ),
             sql(
@@ -2886,20 +2923,14 @@ mod tests {
         plan_atomic(&req.operation_id, &req.operation, now)
     }
 
-    fn assert_host_plan_typechecks(plan: &crate::sql_plan::DbAtomicPlan) {
+    fn assert_host_plan_typechecks(compiled: &CompiledAtomic) {
         let env = crate::migrations::host_sql_type_env();
-        for (i, stmt) in plan.statements.iter().enumerate() {
-            let req = bookclerk_plugin_abi::ExecuteRequest {
-                operation_id: "t".into(),
-                request_hash: String::new(),
-                deadline_unix_ms: 0,
-                statements: vec![bookclerk_plugin_abi::TypedDbStatement {
-                    sql: stmt.sql.clone(),
-                    parameters: Vec::new(),
-                    kind: stmt.kind,
-                    max_rows: 0,
-                    result_selection: bookclerk_plugin_abi::DbResultSelection::Discard,
-                }],
+        for (i, stmt) in compiled.request.statements.iter().enumerate() {
+            let req = ExecuteRequest {
+                operation_id: compiled.request.operation_id.clone(),
+                request_hash: compiled.request.request_hash.clone(),
+                deadline_unix_ms: compiled.request.deadline_unix_ms,
+                statements: vec![stmt.clone()],
             };
             bookclerk_plugin_abi::typecheck_execute_request_proofs(&req, &env)
                 .unwrap_or_else(|err| panic!("stmt {i}: {err}\n{}", stmt.sql));
@@ -2907,9 +2938,8 @@ mod tests {
     }
 
     fn migrate(conn: &Connection) {
-        for sql in crate::migrations::migration_sql() {
-            conn.execute_batch(sql).unwrap();
-        }
+        conn.execute_batch(crate::migrations::latest_schema_sqlite())
+            .unwrap();
     }
 
     #[test]
@@ -2924,7 +2954,7 @@ mod tests {
         )
         .unwrap();
         let update = compiled
-            .plan
+            .request
             .statements
             .iter()
             .find(|s| s.sql.contains("SET password_hash"))
@@ -2949,13 +2979,13 @@ mod tests {
             update.sql
         );
         let insert_idx = compiled
-            .plan
+            .request
             .statements
             .iter()
             .position(|s| s.sql.contains("INSERT INTO db_atomic_receipts"))
             .unwrap();
         let update_idx = compiled
-            .plan
+            .request
             .statements
             .iter()
             .position(|s| s.sql.contains("SET password_hash"))
@@ -2964,7 +2994,7 @@ mod tests {
             update_idx < insert_idx,
             "receipt insert must follow domain writes"
         );
-        assert_host_plan_typechecks(&compiled.plan);
+        assert_host_plan_typechecks(&compiled);
     }
 
     #[test]
@@ -2976,19 +3006,19 @@ mod tests {
         )
         .unwrap();
         let snapshot_idx = compiled
-            .plan
+            .request
             .statements
             .iter()
             .position(|s| s.sql.contains("UPDATE db_serialization_slots SET bump"))
             .expect("outcome snapshot");
         let delete_idx = compiled
-            .plan
+            .request
             .statements
             .iter()
             .position(|s| s.sql.contains("DELETE FROM users WHERE id"))
             .expect("user delete");
         let insert_idx = compiled
-            .plan
+            .request
             .statements
             .iter()
             .position(|s| s.sql.contains("INSERT INTO db_atomic_receipts"))
@@ -3002,13 +3032,13 @@ mod tests {
             "receipt insert must follow domain writes"
         );
         assert!(
-            compiled.plan.statements[insert_idx]
+            compiled.request.statements[insert_idx]
                 .sql
                 .contains("FROM db_serialization_slots"),
             "receipt must use the pre-write snapshot: {}",
-            compiled.plan.statements[insert_idx].sql
+            compiled.request.statements[insert_idx].sql
         );
-        assert_host_plan_typechecks(&compiled.plan);
+        assert_host_plan_typechecks(&compiled);
     }
 
     #[test]
@@ -3023,7 +3053,7 @@ mod tests {
             "2024-06-01T00:00:00Z",
         )
         .unwrap();
-        assert_host_plan_typechecks(&compiled.plan);
+        assert_host_plan_typechecks(&compiled);
     }
 
     #[test]
@@ -3043,7 +3073,7 @@ mod tests {
             "2024-06-01T00:00:00Z",
         )
         .unwrap();
-        assert_host_plan_typechecks(&compiled.plan);
+        assert_host_plan_typechecks(&compiled);
     }
 
     #[test]
@@ -3101,7 +3131,7 @@ mod tests {
         )
         .unwrap();
         let insert = compiled
-            .plan
+            .request
             .statements
             .iter()
             .find(|s| s.sql.contains("INSERT") && s.sql.to_ascii_uppercase().contains("RETURNING"))
@@ -3215,30 +3245,14 @@ mod tests {
         );
     }
 
-    fn json_to_rusqlite(v: &JsonValue) -> rusqlite::types::Value {
-        if crate::sql_plan::sea_null_kind(v).is_some() {
-            return rusqlite::types::Value::Null;
-        }
+    fn db_value_to_rusqlite(v: &DbValue) -> rusqlite::types::Value {
         match v {
-            JsonValue::Null => rusqlite::types::Value::Null,
-            JsonValue::Bool(b) => rusqlite::types::Value::Integer(i64::from(*b)),
-            JsonValue::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    rusqlite::types::Value::Integer(i)
-                } else if let Some(f) = n.as_f64() {
-                    rusqlite::types::Value::Real(f)
-                } else {
-                    rusqlite::types::Value::Text(n.to_string())
-                }
-            }
-            JsonValue::String(s) => {
-                if let Some(bytes) = crate::b64_string_to_bytes(s) {
-                    rusqlite::types::Value::Blob(bytes)
-                } else {
-                    rusqlite::types::Value::Text(s.clone())
-                }
-            }
-            other => rusqlite::types::Value::Text(other.to_string()),
+            DbValue::Null(_) => rusqlite::types::Value::Null,
+            DbValue::Boolean(b) => rusqlite::types::Value::Integer(i64::from(*b)),
+            DbValue::Int64(n) => rusqlite::types::Value::Integer(*n),
+            DbValue::Float64(n) => rusqlite::types::Value::Real(*n),
+            DbValue::Text(s) => rusqlite::types::Value::Text(s.clone()),
+            DbValue::Bytes(b) => rusqlite::types::Value::Blob(b.clone()),
         }
     }
 
@@ -3247,7 +3261,7 @@ mod tests {
         let mut results = Vec::new();
         for stmt in &plan.statements {
             let binds: Vec<rusqlite::types::Value> =
-                stmt.binds.iter().map(json_to_rusqlite).collect();
+                stmt.binds.iter().map(db_value_to_rusqlite).collect();
             let mut prepared = txn.prepare(&stmt.sql).unwrap();
             let col_count = prepared.column_count();
             let names: Vec<String> = prepared
@@ -4015,21 +4029,17 @@ mod tests {
             compile_named_request(&req.operation_id, &req.operation, "2024-06-01T00:00:00Z")
                 .unwrap();
         let insert = compiled
-            .plan
+            .request
             .statements
             .iter()
             .find(|s| s.sql.contains("INSERT INTO encrypted_secrets"))
             .expect("totp plan inserts encrypted_secrets");
-        assert_eq!(insert.binds[4], json!({ "$sea_null": "Bytes" }));
-        assert_eq!(insert.binds[5], json!({ "$sea_null": "BigInt" }));
-        assert_eq!(insert.binds[6], json!({ "$sea_null": "BigInt" }));
-        assert_eq!(insert.binds[7], json!({ "$sea_null": "BigInt" }));
-        assert!(insert.binds[2]
-            .as_str()
-            .is_some_and(|s| s.starts_with("b64:")));
-        assert!(insert.binds[9]
-            .as_str()
-            .is_some_and(|s| s.starts_with("b64:")));
+        assert_eq!(insert.parameters[4], DbValue::Null(DbType::Bytes));
+        assert_eq!(insert.parameters[5], DbValue::Null(DbType::Int64));
+        assert_eq!(insert.parameters[6], DbValue::Null(DbType::Int64));
+        assert_eq!(insert.parameters[7], DbValue::Null(DbType::Int64));
+        assert!(matches!(&insert.parameters[2], DbValue::Bytes(_)));
+        assert!(matches!(&insert.parameters[9], DbValue::Bytes(_)));
         assert!(
             insert.sql.contains('?') && !insert.sql.contains('$'),
             "host compiler must emit canonical SQL, not $n:\n{}",
@@ -4040,6 +4050,52 @@ mod tests {
             lowered.contains("$5"),
             "adapter lowering must number blob binds:\n{lowered}"
         );
+        assert_host_plan_typechecks(&compiled);
+    }
+
+    #[test]
+    fn text_binds_keep_decodable_b64_prefix_as_text() {
+        let req = test_req(
+            DbAtomicParams::PublishDomainEvent {
+                id: "evt-b64-text".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "b64:YWJj".into(),
+                payload: "{}".into(),
+                ordering_key: String::new(),
+            },
+            "evt-b64-text",
+        );
+        let compiled =
+            compile_named_request(&req.operation_id, &req.operation, "2024-06-01T00:00:00Z")
+                .unwrap();
+        let insert = compiled
+            .request
+            .statements
+            .iter()
+            .find(|s| s.sql.contains("INSERT INTO domain_events"))
+            .expect("publish plan inserts domain_events");
+        assert!(
+            insert
+                .parameters
+                .iter()
+                .any(|p| *p == DbValue::Text("b64:YWJj".into())),
+            "TEXT dedup_key must stay text even with a decodable b64: prefix: {:?}",
+            insert.parameters
+        );
+        assert!(
+            !insert
+                .parameters
+                .iter()
+                .any(|p| matches!(p, DbValue::Bytes(b) if b == b"abc")),
+            "TEXT dedup_key must not be inferred as bytes: {:?}",
+            insert.parameters
+        );
+        assert_host_plan_typechecks(&compiled);
     }
 
     fn seed_totp_secret(conn: &Connection, user_id: i64, name: &str) {
@@ -4637,21 +4693,21 @@ mod tests {
     ) -> DbAtomicResult {
         let plan = AtomicPlan {
             statements: compiled
-                .plan
+                .request
                 .statements
                 .iter()
                 .map(|s| SqlStmt {
                     sql: s.sql.clone(),
-                    binds: s.binds.clone(),
+                    binds: s.parameters.clone(),
                     kind: s.kind,
                     max_rows: s.max_rows,
                 })
                 .collect(),
-            outcome_index: compiled.plan.outcome_index as usize,
-            payload_index: compiled.plan.payload_index.map(|i| i as usize),
+            outcome_index: compiled.selection.outcome_index as usize,
+            payload_index: compiled.selection.payload_index.map(|i| i as usize),
             consume_once: None,
-            receipt_select_index: compiled.plan.receipt_select_index.map(|i| i as usize),
-            prior_receipt_index: compiled.plan.prior_receipt_index.map(|i| i as usize),
+            receipt_select_index: compiled.selection.receipt_select_index.map(|i| i as usize),
+            prior_receipt_index: compiled.selection.prior_receipt_index.map(|i| i as usize),
             expected_hash: Some(compiled.expected_hash.clone()),
         };
         run_plan(conn, &plan)

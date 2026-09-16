@@ -9,25 +9,27 @@
 //! backend chooses adapter-edge lowering via
 //! [`bookclerk_db_exec::expand_host_schema_batch`] at execution time.
 //!
-//! TODO(#squash): collapse the long migration chain to a single baseline version.
+//! Version 1 is the current flattened library schema (including
+//! `plugin_databases`). There is no incremental V2–V29 chain.
 
 use std::collections::HashSet;
 use std::future::Future;
 use std::time::Duration;
 
-use bookclerk_plugin_abi::DbPlanStatementKind;
+use bookclerk_plugin_abi::{
+    DbPlanStatementKind, DbResultSelection, ExecuteRequest, TypedDbStatement,
+};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 
 use crate::error::{LibraryError, Result};
 use crate::migrations::{host_migration_plan, HostMigrationStep};
-use crate::sql_plan::{execute_statements_on, DbAtomicPlan, DbPlanStatement};
+use crate::sql_plan::execute_typed_on;
 
 /// Timing label for host schema apply (not an adapter identity).
 const SCHEMA_TXN_TIMING: &str = "schema_txn";
 
 /// Canonical schema apply batch: host DDL followed by the version marker.
 ///
-/// Production and test-only executors must consume this same representation.
 /// Adapters lower and split the pack at execution
 /// ([`bookclerk_db_exec::expand_host_schema_batch`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +66,7 @@ impl SchemaBatch {
 /// Which versioning mechanic the host should use.
 ///
 /// Flags choose **how** versions are stored and applied, not which SQL pack
-/// to emit. Canonical Bookclerk SQL is [`crate::migrations::migration_sql`].
+/// to emit. Canonical Bookclerk SQL is [`crate::migrations::host_migration_plan`].
 /// Adapters lower canonical DDL for the live connection backend at execution
 /// (see [`bookclerk_db_exec::expand_host_schema_batch`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,7 +343,7 @@ async fn apply_sqlite_user_version(db: &DatabaseConnection) -> Result<()> {
     exec_sql(db, backend, "PRAGMA foreign_keys = OFF").await?;
     let steps = host_migration_plan();
     for step in &steps {
-        apply_one_sqlite_version(db, backend, step.version, step.canonical).await?;
+        apply_one_sqlite_version(db, step.version, step.canonical).await?;
     }
     exec_sql(db, backend, "PRAGMA foreign_keys = ON").await?;
     Ok(())
@@ -350,7 +352,6 @@ async fn apply_sqlite_user_version(db: &DatabaseConnection) -> Result<()> {
 /// Applies one file-SQLite version, recovering when a peer committed DDL first.
 async fn apply_one_sqlite_version(
     db: &DatabaseConnection,
-    backend: DbBackend,
     version: i64,
     schema: &str,
 ) -> Result<()> {
@@ -363,7 +364,6 @@ async fn apply_one_sqlite_version(
         let batch = SchemaBatch::with_pragma_marker(schema, version);
         match run_atomic_ddl(
             db,
-            backend,
             SCHEMA_TXN_TIMING,
             &format!("migrate-sqlite-{version}"),
             batch.statements,
@@ -450,7 +450,6 @@ async fn apply_one_schema_migration(
         let batch = SchemaBatch::with_row_marker(schema, version);
         match run_atomic_ddl(
             db,
-            backend,
             timing,
             &format!("migrate-{timing}-{version}"),
             batch.statements,
@@ -524,7 +523,6 @@ async fn ensure_schema_migrations(db: &DatabaseConnection, backend: DbBackend) -
 /// Runs `stmts` as one generic atomic execute plan (version marker last).
 async fn run_atomic_ddl(
     db: &DatabaseConnection,
-    backend: DbBackend,
     timing: &str,
     operation_id: &str,
     stmts: Vec<String>,
@@ -532,18 +530,23 @@ async fn run_atomic_ddl(
     if stmts.is_empty() {
         return Ok(());
     }
-    let stmts = bookclerk_db_exec::expand_host_schema_batch(backend, &stmts).unwrap_or(stmts);
-    let plan = DbAtomicPlan {
+    // Canonical pack + marker; `execute_typed_on` expands companions once.
+    let req = ExecuteRequest {
+        operation_id: operation_id.to_string(),
+        request_hash: String::new(),
+        deadline_unix_ms: 0,
         statements: stmts
             .into_iter()
-            .map(|sql| DbPlanStatement::new(sql, Vec::new(), DbPlanStatementKind::Execute))
+            .map(|sql| TypedDbStatement {
+                sql,
+                parameters: Vec::new(),
+                kind: DbPlanStatementKind::Execute,
+                max_rows: 0,
+                result_selection: DbResultSelection::AffectedRows,
+            })
             .collect(),
-        outcome_index: 0,
-        payload_index: None,
-        prior_receipt_index: None,
-        receipt_select_index: None,
     };
-    execute_statements_on(db, &plan, operation_id, timing, 0).await?;
+    execute_typed_on(db, &req, timing, 0).await?;
     Ok(())
 }
 
@@ -610,18 +613,14 @@ mod tests {
     }
 
     #[test]
-    fn host_migration_plan_starts_with_greenfield_baseline() {
-        use crate::migrations::{
-            greenfield_baseline_canonical, host_migration_plan, migration_sql,
-        };
+    fn host_migration_plan_is_current_schema() {
+        use crate::migrations::{host_migration_plan, latest_schema_sqlite};
         let plan = host_migration_plan();
+        assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].version, 1);
-        assert_eq!(plan[0].canonical, greenfield_baseline_canonical());
-        assert!(plan[0].canonical.contains(migration_sql()[0]));
-        // Versions are contiguous starting at 1.
-        for (i, step) in plan.iter().enumerate() {
-            assert_eq!(step.version, i as i64 + 1);
-        }
+        assert_eq!(plan[0].canonical, latest_schema_sqlite());
+        assert!(plan[0].canonical.contains("plugin_databases"));
+        assert!(!plan[0].canonical.contains("domain_events_v27"));
     }
 
     #[test]
@@ -679,16 +678,7 @@ mod tests {
         let db_batch = db.clone();
         apply_host_schema_with_batch(&db, HostSchemaKind::AtomicBatchMarker, move |stmts| {
             let db_batch = db_batch.clone();
-            async move {
-                run_atomic_ddl(
-                    &db_batch,
-                    db_batch.get_database_backend(),
-                    "sqlite_txn",
-                    "atomic-batch",
-                    stmts,
-                )
-                .await
-            }
+            async move { run_atomic_ddl(&db_batch, "sqlite_txn", "atomic-batch", stmts).await }
         })
         .await
         .expect("atomic batch schema");
