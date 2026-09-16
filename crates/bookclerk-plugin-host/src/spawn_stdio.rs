@@ -16,22 +16,29 @@ use crate::consent::{inject_workerd_grant_env, spawn_config_for_grant, spawn_gra
 use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
 use crate::spawn_plan::{
-    SpawnPlan, NATIVE_BACKEND_ENV, NESTED_JAIL_BIN_ENV, NESTED_NATIVE_JAIL_ENV, WORKERD_BIN_ENV,
+    SpawnPlan, NATIVE_BACKEND_ENV, NESTED_JAIL_BIN_ENV, NESTED_JAIL_ENFORCEMENT_ENV,
+    NESTED_NATIVE_JAIL_ENV, WORKERD_BIN_ENV,
 };
+#[cfg(windows)]
+use crate::spawn_plan::{NESTED_AC_PROFILE_ENV, NESTED_AC_SID_ENV};
 use crate::{PluginError, Result};
 
 /// Jailed plugin child with stdio pipes (describe not yet called).
 pub(crate) struct SpawnedStdio {
-    /// Plugin id from the manifest.
+    /// Provenance-qualified PluginKey (canonical text).
     pub id: String,
+    /// Manifest display alias (`plugin.toml` `id`).
+    pub alias: String,
     /// Child process; killed on drop of the session that owns it.
     pub child: Child,
     /// Guest stdin (host writes RPC / capnp).
     pub stdin: ChildStdin,
     /// Guest stdout (host reads RPC / capnp).
     pub stdout: ChildStdout,
-    /// Covering operator grant.
+    /// Covering **effective** grant (persisted ∩ overlays).
     pub grant: PluginGrant,
+    /// Persisted operator grant before host overlays.
+    pub persisted_grant: PluginGrant,
     /// Spawn config JSON or destination context extras.
     pub spawn_config: Value,
     /// Guest HOME / data directory.
@@ -41,9 +48,16 @@ pub(crate) struct SpawnedStdio {
     /// AppContainer package SID.
     #[cfg(windows)]
     pub package_sid: Option<String>,
-    /// Host-owned AppContainer profile.
+    /// Host-owned AppContainer profile. Held so Drop does not tear down the
+    /// jail while the vat thread still owns this guest.
     #[cfg(windows)]
+    #[allow(dead_code)]
     pub appcontainer: Option<bookclerk_sandbox::spawn::AppContainerSession>,
+    /// Nested Deny AppContainer for the native backend. Held for the same
+    /// lifetime as [`Self::appcontainer`].
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    pub nested_appcontainer: Option<bookclerk_sandbox::spawn::AppContainerSession>,
     /// Last lines of guest stderr (workerd + native child), for spawn failures.
     pub stderr_tail: Arc<Mutex<VecDeque<String>>>,
     /// Files dir used to re-read `plugin-grants.json` before returning a session.
@@ -66,10 +80,14 @@ pub(crate) async fn spawn_stdio_guest(
     config_table: Value,
     extra_env: &[(&str, std::ffi::OsString)],
 ) -> Result<SpawnedStdio> {
-    let id = plugin.manifest.id.clone();
-    let grant = spawn_grant(&config.paths().files_dir, plugin)?;
+    let id = plugin.plugin_key().canonical().to_string();
+    let alias = plugin.manifest.id.clone();
+    let persisted_grant = spawn_grant(&config.paths().files_dir, plugin)?;
+    let grant = effective_spawn_grant(&persisted_grant, plugin, config);
     let spawn_config = spawn_config_for_grant(&grant, config_table);
     let jail = GuestJail::plan(config, plugin, plan)?;
+    #[cfg(windows)]
+    let mut nested_appcontainer = None;
 
     let mut cmd = match &jail.start {
         Start::Confined { launcher, .. } => {
@@ -117,14 +135,47 @@ pub(crate) async fn spawn_stdio_guest(
         inject_workerd_grant_env(&mut cmd, &grant);
         if let Some(backend) = &plan.native_backend {
             cmd.env(NATIVE_BACKEND_ENV, backend);
-            // Isolation::Required (and any other confined start) nested-jails
-            // the native backend. Isolation::Off keeps ambient AF_INET so the
-            // postgres LIKE CI vector is unchanged on this branch.
-            if matches!(&jail.start, Start::Confined { .. }) {
-                cmd.env(NESTED_NATIVE_JAIL_ENV, "1");
-            }
+            // Nested Deny is independent of the outer launcher jail. Isolation::Off
+            // still fronts native guests with workerd; ambient AF_INET stays denied
+            // when bookclerk-jail is beside the launcher.
             if let Some(jail_bin) = plan.nested_jail_helper() {
                 cmd.env(NESTED_JAIL_BIN_ENV, jail_bin);
+            }
+            #[cfg(not(windows))]
+            cmd.env(NESTED_NATIVE_JAIL_ENV, "1");
+            #[cfg(windows)]
+            {
+                let label = format!("native-behind-workerd:{alias}");
+                match bookclerk_sandbox::spawn::AppContainerSession::create(&label) {
+                    Ok(session) => {
+                        cmd.env(NESTED_NATIVE_JAIL_ENV, "1");
+                        cmd.env(NESTED_AC_PROFILE_ENV, session.profile_name());
+                        cmd.env(NESTED_AC_SID_ENV, session.package_sid());
+                        nested_appcontainer = Some(session);
+                    }
+                    Err(err) => {
+                        let required = matches!(
+                            &jail.start,
+                            Start::Confined { spec, .. }
+                                if spec.enforcement == bookclerk_sandbox::Enforcement::Required
+                        );
+                        if required {
+                            return Err(PluginError::message(format!(
+                                "could not pre-create nested AppContainer for `{alias}`: {err}"
+                            )));
+                        }
+                        tracing::warn!(
+                            error = %err,
+                            "could not pre-create nested AppContainer; native guest will not \
+                             get nested Deny (OAuth and SOCKET_PROXY need the Package SID)"
+                        );
+                    }
+                }
+            }
+            if let Start::Confined { spec, .. } = &jail.start {
+                if spec.enforcement == bookclerk_sandbox::Enforcement::Required {
+                    cmd.env(NESTED_JAIL_ENFORCEMENT_ENV, "required");
+                }
             }
         }
         // The launcher resolves `workerd` beside itself unless told otherwise;
@@ -166,17 +217,24 @@ pub(crate) async fn spawn_stdio_guest(
 
     Ok(SpawnedStdio {
         id,
+        alias,
         child,
         stdin,
         stdout,
         grant,
+        persisted_grant,
         spawn_config,
         data: jail.data,
         scratch: jail.scratch,
         #[cfg(windows)]
-        package_sid: jail.package_sid,
+        package_sid: nested_appcontainer
+            .as_ref()
+            .map(|s| s.package_sid().to_string())
+            .or(jail.package_sid),
         #[cfg(windows)]
         appcontainer: jail.appcontainer,
+        #[cfg(windows)]
+        nested_appcontainer,
         stderr_tail,
         files_dir: config.paths().files_dir.clone(),
     })
@@ -238,6 +296,46 @@ pub(crate) fn with_spawn_detail(err: PluginError, extra: String) -> PluginError 
             PluginError::from_abi(Some(&code), format!("{message}; {extra}"))
         }
         other => PluginError::message(format!("{other}; {extra}")),
+    }
+}
+
+/// Applies host-implied network overlays to a persisted spawn grant.
+pub(crate) fn effective_spawn_grant(
+    persisted: &PluginGrant,
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+) -> PluginGrant {
+    let mut grant = persisted.clone();
+    crate::consent::overlay_host_implied_network(
+        &mut grant,
+        plugin,
+        config,
+        &overlay_discovered_plugins(config, plugin),
+    );
+    grant
+}
+
+/// Occupancy list used to uniquify host overlays, always including `plugin`.
+///
+/// Must **not** call [`crate::discover_plugins`]: that re-hashes every staged
+/// payload (debug guest binaries are hundreds of MiB) on each spawn.
+pub(crate) fn overlay_discovered_plugins(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+) -> Vec<DiscoveredPlugin> {
+    match crate::discover::discover_occupancy_plugins(config) {
+        Ok(mut list) => {
+            list.retain(|found| found.root != plugin.root);
+            list.push(plugin.clone());
+            list
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "overlay occupancy scan failed; skipping host-implied network overlay"
+            );
+            Vec::new()
+        }
     }
 }
 

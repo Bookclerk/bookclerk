@@ -369,24 +369,26 @@ class Bindings(TypedDict):
             party host-managed adapters receive host-private connect params in `config`;
             third-party adapters receive this typed bootstrap (and an empty `config`).
         events: `EVENTS`: outbox publisher; null unless `[[events.producers]]` is
-            granted.
+            granted. Null when the guest does not export this capability.
         databases: Named plugin-owned `[[databases]]` bindings: each entry is an
             isolated database provisioned by the active adapter, separate from the
             Bookclerk library and from every other plugin. Empty when the manifest
             declares none.
-        cancel: Host cancellation for the whole invocation (fence / lease loss).
+        cancel: Host cancellation for the whole invocation (fence / lease loss). Null
+            when the guest does not export this capability.
         storage: `WORK_FS`: host-granted object storage for durable plugin files (work
             filesystem); null unless `[work_fs]` is granted. Job input/output travel on
-            `JobRunner.job(controller)`, never here.
+            `JobRunner.job(controller)`, never here. Null when the guest does not export
+            this capability.
     """
 
     config: ExtensibleConfig
     secrets: ExtensibleConfig
     adapter: DatabaseAdapterConfig
-    events: EventPublisher
+    events: NotRequired[EventPublisher | None]
     databases: list[NamedDatabase]
-    cancel: Cancellation
-    storage: Destination
+    cancel: NotRequired[Cancellation | None]
+    storage: NotRequired[Destination | None]
 
 
 class Entrypoints(TypedDict):
@@ -395,24 +397,30 @@ class Entrypoints(TypedDict):
     refuses an entrypoint the manifest or operator grant did not allow.
 
     Attributes:
-        eventConsumer: `[[events.consumers]]` trigger: `event(batch)` handler.
-        jobRunner: `[triggers] jobs` trigger: `job(controller)` handler.
-        storefront: `storefront` entrypoint.
-        storage: `storage` entrypoint.
-        databaseAdapter: `databaseAdapter` entrypoint.
-        remoteLibrary: `remoteLibrary` entrypoint.
-        cli: `cli` entrypoint.
-        oidc: `oidc` entrypoint.
+        eventConsumer: `[[events.consumers]]` trigger: `event(batch)` handler. Null when
+            the guest does not export this capability.
+        jobRunner: `[triggers] jobs` trigger: `job(controller)` handler. Null when the
+            guest does not export this capability.
+        storefront: `storefront` entrypoint. Null when the guest does not export this
+            capability.
+        storage: `storage` entrypoint. Null when the guest does not export this
+            capability.
+        databaseAdapter: `databaseAdapter` entrypoint. Null when the guest does not
+            export this capability.
+        remoteLibrary: `remoteLibrary` entrypoint. Null when the guest does not export
+            this capability.
+        cli: `cli` entrypoint. Null when the guest does not export this capability.
+        oidc: `oidc` entrypoint. Null when the guest does not export this capability.
     """
 
-    eventConsumer: EventConsumer
-    jobRunner: JobRunner
-    storefront: ContentSource
-    storage: Destination
-    databaseAdapter: Database
-    remoteLibrary: RemoteLibrary
-    cli: PluginCli
-    oidc: Oidc
+    eventConsumer: NotRequired[EventConsumer | None]
+    jobRunner: NotRequired[JobRunner | None]
+    storefront: NotRequired[ContentSource | None]
+    storage: NotRequired[Destination | None]
+    databaseAdapter: NotRequired[Database | None]
+    remoteLibrary: NotRequired[RemoteLibrary | None]
+    cli: NotRequired[PluginCli | None]
+    oidc: NotRequired[Oidc | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -867,17 +875,20 @@ class JobController(TypedDict):
 
     Attributes:
         invocation: Durable command envelope.
-        input: Job input objects.
-        output: Job output object store.
-        progress: Progress reporter (host coalesces frequent updates).
-        cancel: Host cancellation probe for this job (fence / lease).
+        input: Job input objects. Null when the guest does not export this capability.
+        output: Job output object store. Null when the guest does not export this
+            capability.
+        progress: Progress reporter (host coalesces frequent updates). Null when the
+            guest does not export this capability.
+        cancel: Host cancellation probe for this job (fence / lease). Null when the
+            guest does not export this capability.
     """
 
     invocation: JobInvocation
-    input: Source
-    output: Destination
-    progress: ProgressSink
-    cancel: Cancellation
+    input: NotRequired[Source | None]
+    output: NotRequired[Destination | None]
+    progress: NotRequired[ProgressSink | None]
+    cancel: NotRequired[Cancellation | None]
 
 
 class HeadOk(TypedDict):
@@ -967,11 +978,12 @@ class GetOk(TypedDict):
 
     Attributes:
         meta: Object metadata.
-        body: Streamed object bytes.
+        body: Streamed object bytes. Null when the guest does not export this
+            capability.
     """
 
     meta: ObjectMetadata
-    body: ByteSource
+    body: NotRequired[ByteSource | None]
 
 
 class GetReplyOk(TypedDict):
@@ -1164,11 +1176,12 @@ class OpenOk(TypedDict):
 
     Attributes:
         meta: Object metadata.
-        body: Streamed object bytes.
+        body: Streamed object bytes. Null when the guest does not export this
+            capability.
     """
 
     meta: ObjectMetadata
-    body: ByteSource
+    body: NotRequired[ByteSource | None]
 
 
 class OpenReplyOk(TypedDict):
@@ -1614,10 +1627,11 @@ class NamedDatabase(TypedDict):
     Attributes:
         name: Binding name from `plugin.toml` `[[databases]]`.
         database: Isolated typed SQL session for this binding (plugin-owned schema).
+            Null when the guest does not export this capability.
     """
 
     name: str
-    database: GuestDatabase
+    database: NotRequired[GuestDatabase | None]
 
 
 class ContentSource(Protocol):
@@ -4105,6 +4119,17 @@ class Database(Protocol):
 
         Returns:
             ``AdapterSessionReply``
+        """
+        ...
+
+    async def drop_unit(self, unit_ref: str) -> EmptyReply:
+        """Physically drop one provisioned binding unit (`unitRef` is adapter-owned).
+
+        Args:
+            unit_ref: Adapter-native unit (sqlite path, postgres database, D1 name).
+
+        Returns:
+            ``EmptyReply``
         """
         ...
 

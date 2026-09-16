@@ -571,6 +571,13 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       // The session id is exported through the reply CapTable as `adapterSession`.
       ok: (value) => okValue(value as unknown as WireAdapterDatabaseSession),
     }),
+    dropUnit: spec<W.DatabaseDropUnitParams, W.DatabaseDropUnitResults["result"]>({
+      params: W.DatabaseDropUnitParamsCodec,
+      results: W.DatabaseDropUnitResultsCodec,
+      stub: "databaseAdapter",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "dropUnit", [String(p.unitRef ?? "")]),
+      ok: okEmpty,
+    }),
   },
   AdapterDatabaseSession: {
     capabilities: session(

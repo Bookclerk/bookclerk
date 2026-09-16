@@ -76,10 +76,14 @@ async fn spawn_local_guest(
     let config_json = toml_to_json(&toml::Value::Table(table));
     let root = resolved_local_output_root(config);
     let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
-    let extra_env = [(
-        "BOOKCLERK_OUTPUT_LOCAL_ROOT",
-        std::ffi::OsString::from(root.as_os_str()),
-    )];
+    let extra_env: Vec<(&str, std::ffi::OsString)> = if crate::is_first_party_local_output(plugin) {
+        vec![(
+            "BOOKCLERK_OUTPUT_LOCAL_ROOT",
+            std::ffi::OsString::from(root.as_os_str()),
+        )]
+    } else {
+        Vec::new()
+    };
     let session = Arc::new(
         PluginSession::spawn_for_account_with_env(
             plugin,

@@ -11,9 +11,9 @@ use bookclerk_plugin_catalog::{
 use bookclerk_plugin_host::{
     consent_request, consent_summary, host_target_triple,
     install_from_manifest_with_configured_aliases, install_local_archive_with_configured_aliases,
-    require_grant, search_crates_io, CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin,
-    Entrypoint, PluginFamily, PluginGrantStore, PluginSession, CRATE_NAME_PREFIX,
-    HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+    occupancy_spec, plugin_matches_occupancy, require_grant, search_crates_io, CliInvokeParams,
+    CliInvokeResult, CliSchema, DiscoveredPlugin, Entrypoint, PluginFamily, PluginGrantStore,
+    PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
@@ -865,16 +865,53 @@ async fn run_doctor(
 #[derive(Debug, Serialize)]
 /// One `plugins db list` row from the `plugin_databases` registry.
 struct PluginDbListItem {
-    /// Owning plugin id.
+    /// Owning plugin PluginKey.
     plugin_id: String,
     /// Binding name from `plugin.toml` `capabilities.bindings.databases`.
     binding: String,
-    /// Adapter family that provisioned the unit (`sqlite`, `postgres`, `d1`).
+    /// Adapter PluginKey that provisioned the unit.
+    adapter_plugin_key: String,
+    /// Diagnostic adapter family (`sqlite`, `postgres`, `d1`).
     backend_kind: String,
     /// Backend-native unit: file path, Postgres database name, or D1 database name.
     unit_ref: String,
     /// RFC 3339 provisioning time.
     created_at: String,
+}
+
+/// Registry rows for `spec`: canonical PluginKey, or an alias unique within
+/// this host plugin namespace (`$FILES_DIR`).
+///
+/// A parseable PluginKey is an exact registry lookup. A bare alias resolves
+/// through discovery to exactly one PluginKey. Leftover alias-era rows keyed
+/// by the bare alias are listed only when nothing is installed under that
+/// alias.
+async fn plugin_db_rows_for_spec(
+    store: &bookclerk_library::LibraryStore,
+    config: &Config,
+    spec: Option<&str>,
+) -> anyhow::Result<Vec<bookclerk_library::PluginDatabaseRecord>> {
+    match spec.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(store.list_plugin_databases(None).await?),
+        Some(spec) if bookclerk_plugin_catalog::PluginKey::parse(spec).is_ok() => {
+            Ok(store.list_plugin_databases(Some(spec)).await?)
+        }
+        Some(alias) => {
+            let plugins = bookclerk_plugin_host::discover_plugins(config)?;
+            match bookclerk_plugin_host::resolve_plugin_ref(&plugins, alias) {
+                Ok(plugin) => Ok(store
+                    .list_plugin_databases(Some(plugin.plugin_key().canonical()))
+                    .await?),
+                Err(_) => {
+                    let all = store.list_plugin_databases(None).await?;
+                    Ok(all
+                        .into_iter()
+                        .filter(|row| row.plugin_id.eq_ignore_ascii_case(alias))
+                        .collect())
+                }
+            }
+        }
+    }
 }
 
 /// Lists or drops isolated plugin database bindings via the registry.
@@ -886,12 +923,13 @@ async fn run_plugin_db(
     let store = crate::registry::open_library(config).await?;
     match command {
         PluginDbCommand::List { plugin } => {
-            let rows = store.list_plugin_databases(plugin.as_deref()).await?;
+            let rows = plugin_db_rows_for_spec(&store, config, plugin.as_deref()).await?;
             let items: Vec<PluginDbListItem> = rows
                 .into_iter()
                 .map(|r| PluginDbListItem {
                     plugin_id: r.plugin_id,
                     binding: r.binding,
+                    adapter_plugin_key: r.adapter_plugin_key,
                     backend_kind: r.backend_kind,
                     unit_ref: r.unit_ref,
                     created_at: r.created_at,
@@ -904,9 +942,10 @@ async fn run_plugin_db(
                 }
                 for item in &items {
                     println!(
-                        "{}/{}: backend={} unit={} created={}",
+                        "{}/{}: adapter={} backend={} unit={} created={}",
                         item.plugin_id,
                         item.binding,
+                        item.adapter_plugin_key,
                         item.backend_kind,
                         item.unit_ref,
                         item.created_at
@@ -919,7 +958,7 @@ async fn run_plugin_db(
             binding,
             yes,
         } => {
-            let rows = store.list_plugin_databases(Some(&plugin)).await?;
+            let rows = plugin_db_rows_for_spec(&store, config, Some(&plugin)).await?;
             let rows: Vec<_> = rows
                 .into_iter()
                 .filter(|r| binding.as_deref().is_none_or(|b| r.binding == b))
@@ -939,7 +978,7 @@ async fn run_plugin_db(
             for row in &rows {
                 bookclerk_plugin_host::ExternalDatabase::drop_provisioned_unit(
                     config,
-                    &row.backend_kind,
+                    &row.adapter_plugin_key,
                     &row.unit_ref,
                 )
                 .await
@@ -948,8 +987,12 @@ async fn run_plugin_db(
                     .remove_plugin_databases(&row.plugin_id, Some(&row.binding))
                     .await?;
                 println!(
-                    "deleted {}/{} ({} {})",
-                    row.plugin_id, row.binding, row.backend_kind, row.unit_ref
+                    "deleted {}/{} (adapter {} backend {} {})",
+                    row.plugin_id,
+                    row.binding,
+                    row.adapter_plugin_key,
+                    row.backend_kind,
+                    row.unit_ref
                 );
             }
             Ok(())
@@ -1398,12 +1441,16 @@ fn set_plugin_enabled(
     let multi_family = families.len() > 1;
     for family in families {
         match family {
-            PluginFamily::Source => cfg.sources.set_enabled(&plugin.manifest.id, enabled),
-            PluginFamily::Integration => cfg.integrations.set_enabled(&plugin.manifest.id, enabled),
-            PluginFamily::Output if plugin.manifest.id == "s3" => {
+            PluginFamily::Source => {
+                cfg.sources.set_enabled(&plugin.manifest.id, enabled);
+            }
+            PluginFamily::Integration => {
+                cfg.integrations.set_enabled(&plugin.manifest.id, enabled);
+            }
+            PluginFamily::Output if bookclerk_plugin_host::is_first_party_s3_output(&plugin) => {
                 cfg.output.s3.enabled = enabled;
             }
-            PluginFamily::Output if plugin.manifest.id == "local" => {
+            PluginFamily::Output if bookclerk_plugin_host::is_first_party_local_output(&plugin) => {
                 cfg.output.local.enabled = enabled;
             }
             PluginFamily::Output => {
@@ -1420,8 +1467,9 @@ fn set_plugin_enabled(
             }
             PluginFamily::Database => {
                 if enabled {
-                    cfg.database.plugin = plugin.manifest.id.clone();
-                } else if matches_plugin_id(&plugin.manifest.id, &config.database.plugin) {
+                    // Occupancy PluginKey is stamped below via
+                    // `stamp_occupancy_plugin_key`.
+                } else if occupies_database_slot(&plugin, &config.database.plugin) {
                     anyhow::bail!(
                         "cannot disable the active database plugin `{}`; \
                          enable another backend first with `bookclerk plugins enable <id>`",
@@ -1440,6 +1488,10 @@ fn set_plugin_enabled(
             }
         }
     }
+    if enabled {
+        bookclerk_plugin_host::stamp_occupancy_plugin_key(&mut cfg, &plugin)
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
+    }
     let path = cfg.paths().config_file.clone();
     cfg.write_toml_file(&path)?;
     let payload = json!({
@@ -1457,9 +1509,16 @@ fn set_plugin_enabled(
     })
 }
 
-/// Case-insensitive equality between a manifest id and the active `[database].plugin`.
-fn matches_plugin_id(manifest_id: &str, active: &str) -> bool {
-    manifest_id.eq_ignore_ascii_case(active)
+/// True when `plugin` occupies `[database].plugin`.
+///
+/// An empty active slot means no database backend is selected — do not fall
+/// back to the candidate's own alias (that would mark every adapter enabled).
+fn occupies_database_slot(plugin: &DiscoveredPlugin, active: &str) -> bool {
+    let active = active.trim();
+    if active.is_empty() {
+        return false;
+    }
+    plugin_matches_occupancy(plugin, active)
 }
 
 /// Discovers plugins and returns the one whose manifest id matches, or errors if missing.
@@ -1477,15 +1536,39 @@ fn is_enabled(config: &Config, plugin: &DiscoveredPlugin) -> bool {
         .families()
         .into_iter()
         .any(|family| match family {
-            PluginFamily::Source => config.sources.is_enabled(&plugin.manifest.id),
-            PluginFamily::Integration => config.integrations.is_enabled(&plugin.manifest.id),
-            PluginFamily::Output if plugin.manifest.id == "s3" => config.output.s3.enabled,
-            PluginFamily::Output if plugin.manifest.id == "local" => config.output.local.enabled,
+            PluginFamily::Source => {
+                config.sources.is_enabled(plugin.alias())
+                    && plugin_matches_occupancy(
+                        plugin,
+                        occupancy_spec(config.sources.occupancy(plugin.alias()), plugin.alias()),
+                    )
+            }
+            PluginFamily::Integration => {
+                config.integrations.is_enabled(plugin.alias())
+                    && plugin_matches_occupancy(
+                        plugin,
+                        occupancy_spec(
+                            config.integrations.occupancy(plugin.alias()),
+                            plugin.alias(),
+                        ),
+                    )
+            }
+            PluginFamily::Output if bookclerk_plugin_host::is_first_party_s3_output(plugin) => {
+                config.output.s3.enabled
+                    && plugin_matches_occupancy(
+                        plugin,
+                        occupancy_spec(&config.output.s3.plugin, "s3"),
+                    )
+            }
+            PluginFamily::Output if bookclerk_plugin_host::is_first_party_local_output(plugin) => {
+                config.output.local.enabled
+                    && plugin_matches_occupancy(
+                        plugin,
+                        occupancy_spec(&config.output.local.plugin, "local"),
+                    )
+            }
             PluginFamily::Output => false,
-            PluginFamily::Database => config
-                .database
-                .plugin
-                .eq_ignore_ascii_case(&plugin.manifest.id),
+            PluginFamily::Database => occupies_database_slot(plugin, &config.database.plugin),
         })
 }
 

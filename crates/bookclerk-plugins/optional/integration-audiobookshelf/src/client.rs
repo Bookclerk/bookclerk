@@ -3,7 +3,7 @@
 //! Contract pin: see `openapi/PIN.md` in this plugin package.
 
 use bookclerk_integrations::{ExternalUser, IntegrationError, Result};
-use reqwest::StatusCode;
+use bookclerk_plugin_sdk::http::{Client as HttpClient, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -14,7 +14,7 @@ const PROVIDER: &str = "audiobookshelf";
 #[derive(Clone)]
 pub struct AbsApiClient {
     /// Shared HTTP client for ABS REST calls.
-    http: reqwest::Client,
+    http: HttpClient,
     /// Scheme+host with no trailing slash (required; empty is rejected in `new`).
     base_url: String,
     /// Bearer API token sent on authenticated routes.
@@ -35,7 +35,7 @@ impl AbsApiClient {
             ));
         }
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: HttpClient::new(),
             base_url: base,
             api_key: api_key.into(),
         })
@@ -226,7 +226,7 @@ impl AbsApiClient {
     }
 
     /// Decodes a successful JSON body; non-2xx becomes [`IntegrationError::api`].
-    async fn json<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result<T> {
+    async fn json<T: for<'de> Deserialize<'de>>(resp: Response) -> Result<T> {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
@@ -245,7 +245,7 @@ impl AbsApiClient {
     }
 
     /// Accepts 200/204 with no body; any other status becomes [`IntegrationError::api`].
-    async fn ok_empty(resp: reqwest::Response) -> Result<()> {
+    async fn ok_empty(resp: Response) -> Result<()> {
         let status = resp.status();
         if status == StatusCode::OK || status == StatusCode::NO_CONTENT {
             return Ok(());

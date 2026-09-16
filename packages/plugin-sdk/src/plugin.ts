@@ -1756,7 +1756,7 @@ function freshSessionId(): string {
  * the retained {@link AdapterDatabaseSession}; `close` releases the entry.
  */
 export class DatabaseAdapterEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
-  static override bookclerkMethods = Object.freeze(["openSession"]);
+  static override bookclerkMethods = Object.freeze(["openSession", "dropUnit"]);
 
   /**
    * Opens a session. Sessions cannot survive suspension.
@@ -1768,11 +1768,21 @@ export class DatabaseAdapterEntrypoint<Env extends BookclerkEnv = BookclerkEnv> 
   }
 
   /**
-   * Adapter dispatch: `openSession` → session id; `session` → call on a
-   * retained session (`args` = `[id, method, ...params]`).
+   * Physically drops one provisioned binding unit.
+   *
+   * @param _unitRef - Adapter-native unit identity.
+   * @returns Resolves when the unit is dropped.
+   */
+  dropUnit(_unitRef: string): Promise<void> {
+    return Promise.reject(unsupported("dropUnit"));
+  }
+
+  /**
+   * Adapter dispatch: `openSession` → session id; `dropUnit`; `session` → call
+   * on a retained session (`args` = `[id, method, ...params]`).
    *
    * @param context - Granted bindings for this invocation.
-   * @param method - `openSession` or `session`.
+   * @param method - `openSession`, `dropUnit`, or `session`.
    * @param args - Method arguments.
    * @returns Session id for `openSession`, else the session method result.
    * @internal
@@ -1786,6 +1796,12 @@ export class DatabaseAdapterEntrypoint<Env extends BookclerkEnv = BookclerkEnv> 
       const id = freshSessionId();
       ADAPTER_SESSIONS.set(id, session);
       return id;
+    }
+    if (method === "dropUnit") {
+      applyInvocationEnv(this, context);
+      this.invocation = invocationOf(context);
+      await this.dropUnit(String(args[0] ?? ""));
+      return undefined;
     }
     if (method === "session") {
       const [id, sessionMethod, ...params] = args;

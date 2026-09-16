@@ -431,6 +431,12 @@ pub struct OutputLocalConfig {
     /// When true, write acquired media under [`Self::root`] (default true).
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Occupant PluginKey (or alias) for the local destination guest.
+    ///
+    /// Empty means the `local` alias, which the host accepts only when exactly
+    /// one discovered install uses that id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub plugin: String,
     /// Root directory for acquired audiobooks.
     pub root: PathBuf,
     /// Optional key prefix under [`Self::root`] (trailing slash optional).
@@ -444,6 +450,7 @@ impl Default for OutputLocalConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            plugin: String::new(),
             root: PathBuf::from("Audiobooks"),
             prefix: String::new(),
             naming: DestinationNaming::default(),
@@ -467,6 +474,12 @@ impl Default for OutputLocalConfig {
 pub struct OutputS3Config {
     /// When true, write acquired media to the configured S3/MinIO bucket (default false).
     pub enabled: bool,
+    /// Occupant PluginKey (or alias) for the S3 destination guest.
+    ///
+    /// Empty means the `s3` alias, which the host accepts only when exactly one
+    /// discovered install uses that id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub plugin: String,
     /// Destination bucket name (required when [`Self::enabled`] is true).
     pub bucket: String,
     /// Key prefix under the bucket (trailing slash optional; default `library/`).
@@ -486,6 +499,7 @@ impl Default for OutputS3Config {
     fn default() -> Self {
         Self {
             enabled: false,
+            plugin: String::new(),
             bucket: String::new(),
             prefix: String::from("library/"),
             region: String::from("us-east-1"),

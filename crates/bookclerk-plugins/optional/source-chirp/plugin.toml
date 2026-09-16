@@ -9,10 +9,12 @@ entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "outbound"
-# GraphQL API + storefront. Cover/media download URLs come from the API
-# (often CDN hosts); redirects after an allowed initial host do not need
-# re-approval. Add CDN wildcards only when those hosts are used as initial
-# request targets.
+tcp = [
+    { host = "*.chirpbooks.com", ports = [443] },
+]
+# GraphQL API, listen-api, and storefront subdomains. Cover/media URLs from
+# the API that land on a different CDN still need a matching `tcp` grant
+# (operator additions). Fetch `domains` are workerd-only.
 
 [vars]
 

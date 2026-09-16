@@ -13,26 +13,9 @@ name = "bookclerk"
 path = "src/main.rs"
 
 [features]
-# Hosts default to external guests only (stage under plugins/ or set
-# BOOKCLERK_PLUGIN_DIRS). Enable `bundled-plugins` to link storefronts
-# in-process for faster local iteration without staging binaries.
+# Hosts load storefronts only as staged external guests (plugins/ or
+# BOOKCLERK_PLUGIN_DIRS). There is no in-process product plugin path.
 default = []
-bundled-plugins = [
-    "bookclerk-plugin-source-audible",
-    "bookclerk-plugin-source-libro",
-    "bookclerk-plugin-source-chirp",
-    "bookclerk-plugin-source-graphicaudio",
-    "bookclerk-plugin-integration-audiobookshelf",
-]
-bookclerk-plugin-source-audible = ["bookclerk-plugin-host/bookclerk-plugin-source-audible"]
-bookclerk-plugin-source-libro = ["bookclerk-plugin-host/bookclerk-plugin-source-libro"]
-bookclerk-plugin-source-chirp = ["bookclerk-plugin-host/bookclerk-plugin-source-chirp"]
-bookclerk-plugin-source-graphicaudio = [
-    "bookclerk-plugin-host/bookclerk-plugin-source-graphicaudio",
-]
-bookclerk-plugin-integration-audiobookshelf = [
-    "bookclerk-plugin-host/bookclerk-plugin-integration-audiobookshelf",
-]
 
 [dependencies]
 anyhow.workspace = true
@@ -41,7 +24,6 @@ bookclerk-config.workspace = true
 bookclerk-enrich.workspace = true
 bookclerk-acquire.workspace = true
 bookclerk-library.workspace = true
-bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 bookclerk-media.workspace = true
 bookclerk-migrate.workspace = true
 bookclerk-naming.workspace = true

@@ -2361,6 +2361,10 @@ struct DbCapabilitiesReply {
 interface Database {
   # Open one adapter session (capability negotiation + typed execute).
   openSession @0 () -> (result :AdapterSessionReply);
+  # Physically drop one provisioned binding unit (`unitRef` is adapter-owned).
+  dropUnit @1 (
+      unitRef :Text  # Adapter-native unit (sqlite path, postgres database, D1 name).
+  ) -> (result :EmptyReply);
 }
 
 # Adapter-private identity high-water (sqlite_sequence / bookclerk_identity).

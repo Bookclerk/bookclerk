@@ -12,7 +12,10 @@
 //! Play Store APK — not a hard lock. When Libro.fm ships `v13` (etc.), the
 //! probe reports drift and the sync PR rewrites these constants.
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use bookclerk_plugin_sdk::http::header::{
+    HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT,
+};
+use bookclerk_plugin_sdk::http::{Client as HttpClient, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{LibroError, Result};
@@ -81,7 +84,7 @@ pub const CLIENT_ID: &str = "";
 #[derive(Debug, Clone)]
 pub struct LibroClient {
     /// Shared HTTP client (timeouts/tests override via [`LibroClient::with_http`]).
-    http: reqwest::Client,
+    http: HttpClient,
     /// API origin without a trailing slash (default [`DEFAULT_BASE_URL`]).
     base_url: String,
     /// Bearer token stored after login; required for authenticated routes.
@@ -100,7 +103,7 @@ impl LibroClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
-            http: reqwest::Client::new(),
+            http: HttpClient::new(),
             base_url,
             access_token: None,
         }
@@ -108,7 +111,7 @@ impl LibroClient {
 
     /// Override the HTTP client (tests / custom timeouts).
     #[must_use]
-    pub fn with_http(mut self, http: reqwest::Client) -> Self {
+    pub fn with_http(mut self, http: HttpClient) -> Self {
         self.http = http;
         self
     }
@@ -137,7 +140,7 @@ impl LibroClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
-            reqwest::header::ACCEPT,
+            bookclerk_plugin_sdk::http::header::ACCEPT,
             HeaderValue::from_static("application/json"),
         );
         headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
@@ -311,7 +314,7 @@ impl LibroClient {
     }
 
     /// Decodes a JSON body, or maps HTTP / `{error,message}` payloads to [`LibroError`].
-    async fn json_or_error<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result<T> {
+    async fn json_or_error<T: for<'de> Deserialize<'de>>(resp: Response) -> Result<T> {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {

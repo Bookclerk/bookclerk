@@ -54,6 +54,7 @@ reqwest = { version = "0.13", features = ["json", "form", "cookies", "stream", "
 hyper = { version = "1.10", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+bookclerk-plugin-sdk = { path = "../../crates/bookclerk-plugin-sdk", default-features = false, features = ["http"] }
 regex = "1.12"
 url = "2.5"
 roxmltree = "0.21"  # read-only DASH MPD parsing (Widevine, AUD-56)

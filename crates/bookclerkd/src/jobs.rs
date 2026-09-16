@@ -250,25 +250,28 @@ pub const JOB_SUSPENDED_DETAIL_PREFIX: &str = "suspended until ";
 ///
 /// These are plugin-owned units, not the host job queue. `jobs` stays on the
 /// library; guests never receive SQL against it. Reads the stored operator
-/// grant (`database:<NAME>` entries) and asks the active database adapter to
-/// open (provisioning on first use) one isolated session per binding. Fails
-/// closed: a granted binding that cannot be provisioned fails the job rather
-/// than running without isolation.
+/// grant by the session's canonical PluginKey (`database:<NAME>` entries)
+/// and asks the active database adapter to open (provisioning on first use)
+/// one isolated session per binding. Fails closed: a missing PluginKey
+/// grant, or a granted binding that cannot be provisioned, fails the job
+/// rather than running without isolation or inheriting another plugin's grant.
 async fn open_granted_binding_databases(
     state: &AppState,
-    plugin_id: &str,
     library: &bookclerk_library::LibraryStore,
     owner: &bookclerk_plugin_host::PluginSession,
 ) -> anyhow::Result<Vec<(String, bookclerk_plugin_host::GuestDatabaseFactory)>> {
+    let plugin_key = owner.id();
     let config = state.config.read().await.clone();
     let files_dir = config.paths().files_dir.clone();
     let names = {
         let store = bookclerk_plugin_host::PluginGrantStore::load(&files_dir)
             .map_err(|err| anyhow::anyhow!("plugin grant store could not be loaded: {err}"))?;
-        store
-            .get(plugin_id)
-            .map(bookclerk_plugin_host::granted_database_bindings)
-            .unwrap_or_default()
+        let grant = store.get_by_plugin_key(plugin_key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "plugin `{plugin_key}` has no PluginKey grant; database bindings will not open"
+            )
+        })?;
+        bookclerk_plugin_host::granted_database_bindings(grant)
     };
     if names.is_empty() {
         return Ok(Vec::new());
@@ -276,12 +279,12 @@ async fn open_granted_binding_databases(
     let registry = state.database_registry.read().await;
     let Some(active) = registry.active() else {
         anyhow::bail!(
-            "plugin `{plugin_id}` has granted database bindings {names:?} but no active \
+            "plugin `{plugin_key}` has granted database bindings {names:?} but no active \
              database plugin is loaded"
         );
     };
     active
-        .open_binding_databases(&config, library, plugin_id, &names, owner)
+        .open_binding_databases(&config, library, plugin_key, &names, owner)
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))
 }
@@ -336,7 +339,7 @@ pub async fn run_plugin_copy(
     let cancel = ctx
         .map(|c| std::sync::Arc::clone(&c.cancel))
         .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-    let databases = open_granted_binding_databases(state, plugin_id, &library, &session).await?;
+    let databases = open_granted_binding_databases(state, &library, &session).await?;
     let outcome = tokio::select! {
         () = async {
             loop {

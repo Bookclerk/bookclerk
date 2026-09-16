@@ -3,9 +3,9 @@
 //! Credentials are opaque JSON (`authfile_b64`, optional `widevine_b64`). The
 //! host seals them; this module never opens the library DB.
 //!
-//! Note: audible-rs opens HTTP sockets directly under coarse jail outbound
-//! (`NetPolicy::Outbound` / `OutboundListen` with oauth). Native plugins omit
-//! `capabilities.network.domains` (hostname allowlists are workerd-only).
+//! Note: native HTTP uses `bookclerk_plugin_sdk::http` (CONNECT through the
+//! workerd socket proxy). Nested jail is `NetPolicy::Deny`. OAuth listen is
+//! host-owned (`callback_ipc`); the guest does not bind TCP.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -146,7 +146,7 @@ pub async fn guest_login_start(params: &LoginParams) -> Result<(String, String)>
 async fn register_after_login(
     login: audible_rs::auth::login::ServerLogin,
 ) -> Result<Authenticator> {
-    let http = reqwest::Client::builder()
+    let http = audible_rs::HttpClient::builder()
         .connect_timeout(Duration::from_secs(30))
         .build()
         .map_err(|err| AudibleError::Auth(err.to_string()))?;

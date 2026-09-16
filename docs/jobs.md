@@ -17,7 +17,8 @@ plugin `event(batch)` stay **off** `JobKind`. They use a durable outbox
 the same fenced-lease pattern as jobs. Acquire success publishes
 `book_acquired` with producer `source` on the envelope. Each host heartbeats discovered (config-enabled, even if spawn
 failed) and loaded integrations into a **per-node** catalog keyed by
-`(node_id, plugin_id)` and does **not** delete other nodes’ rows. The process
+`(node_id, PluginKey)` (`plugin_id` stores the canonical PluginKey, not the
+display alias) and does **not** delete other nodes’ rows. The process
 resolves `event_node_id` once at event-runtime start (best-effort file under
 the files dir) and reuses that in-memory id on every heartbeat. Dispatch uses
 the live union (any enabled node whose heartbeat is within 60s). Optional
@@ -29,7 +30,7 @@ the catalog heartbeat) and continues when either undispatched remain or
 paged 200, restricted to the retention window — an unchanged catalog with no
 missing pairs does a bounded empty `SELECT` and zero dispatch writes. D1
 dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
-`reconcile-{event_id}-{plugin_id}`). Each VPS claims only plugin ids loaded on
+`reconcile-{event_id}-{plugin_id}`). Each VPS claims only PluginKeys loaded on
 that process **and** only events its own node catalog matches (type, schema
 version, filter). `[events.concurrency]` is both the local worker count **and** the
 cluster-wide max `running` deliveries per `(plugin_id, resource_class)`
@@ -174,7 +175,7 @@ this queue.
   cancel without that flag is treated as fence loss and ignored.
 - Event delivery workers use the same 60s lease and `lease/3` heartbeat
   during `event(batch)`. Fence loss cancels the guest RPC and ignores the
-  result. Claims are restricted to plugin ids loaded on this process;
+  result. Claims are restricted to PluginKeys loaded on this process;
   releasing an unexecuted claim does not consume `attempt_count`.
   Expired-lease reclaim restores `resume_pending` when a checkpoint exists
   so a crash during resume does not burn an attempt.

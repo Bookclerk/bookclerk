@@ -1,5 +1,6 @@
 //! Error types for the Chirp content source.
 
+use bookclerk_plugin_sdk::http::Error as HttpError;
 use thiserror::Error;
 
 /// Result alias for Chirp auth, sync, and download operations.
@@ -67,8 +68,8 @@ impl ChirpError {
     }
 }
 
-impl From<reqwest::Error> for ChirpError {
-    fn from(err: reqwest::Error) -> Self {
+impl From<HttpError> for ChirpError {
+    fn from(err: HttpError) -> Self {
         Self::Api(err.to_string())
     }
 }

@@ -39,6 +39,16 @@ async fn connect_from_bindings(values: &BindingValues) -> Result<(), PluginError
     Ok(())
 }
 
+fn postgres_url_from_values(values: &BindingValues) -> Result<String, PluginError> {
+    let params = connect_params_from_bindings(values)?;
+    let DbConnectParams::Postgres { url, .. } = params else {
+        return Err(PluginError::invalid_params(
+            "postgres guest received non-postgres database bindings",
+        ));
+    };
+    Ok(url)
+}
+
 /// Opens a dedicated per-binding connection when the bindings target a named
 /// plugin database binding.
 async fn binding_from_values(
@@ -92,13 +102,18 @@ impl PluginWorker for PostgresRoot {
         bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
         let values = bindings.values();
+        let admin_url = postgres_url_from_values(&values)?;
         let database: Box<dyn Database> = if let Some(conn) = binding_from_values(&values).await? {
             Box::new(PostgresDatabase {
                 dedicated: Some(conn),
+                admin_url,
             })
         } else {
             connect_from_bindings(&values).await?;
-            Box::new(PostgresDatabase { dedicated: None })
+            Box::new(PostgresDatabase {
+                dedicated: None,
+                admin_url,
+            })
         };
         Ok(Entrypoints {
             database_adapter: Some(database),
@@ -111,6 +126,7 @@ impl PluginWorker for PostgresRoot {
 /// connection for named plugin database bindings.
 struct PostgresDatabase {
     dedicated: Option<sea_orm::DatabaseConnection>,
+    admin_url: String,
 }
 
 #[async_trait(?Send)]
@@ -119,6 +135,12 @@ impl Database for PostgresDatabase {
         Ok(Box::new(PostgresSession {
             dedicated: self.dedicated.clone(),
         }))
+    }
+
+    async fn drop_unit(&self, unit_ref: &str) -> Result<(), PluginError> {
+        bookclerk_plugin_database_postgres::drop_binding(&self.admin_url, unit_ref)
+            .await
+            .map_err(|e| PluginError::internal(e.to_string()))
     }
 
     fn host_session(&self) -> Option<Box<dyn HostAdapterDatabaseSession>> {

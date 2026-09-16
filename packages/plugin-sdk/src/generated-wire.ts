@@ -170,7 +170,7 @@ export interface DestinationGetResults {
  */
 export interface DestinationPutParams {
   key: string;
-  body: T.ByteSource;
+  body?: T.ByteSource | null;
   options: T.WriteOptions;
 }
 
@@ -802,6 +802,24 @@ export interface DatabaseOpenSessionParams {
  */
 export interface DatabaseOpenSessionResults {
   result: T.AdapterSessionReply;
+}
+
+/**
+ * Params envelope of `Database.dropUnit`.
+ *
+ * @internal
+ */
+export interface DatabaseDropUnitParams {
+  unitRef: string;
+}
+
+/**
+ * Results envelope of `Database.dropUnit`.
+ *
+ * @internal
+ */
+export interface DatabaseDropUnitResults {
+  result: T.EmptyReply;
 }
 
 /**
@@ -1544,7 +1562,9 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (v.adapter != null) {
       DatabaseAdapterConfigCodec.write(s.initStruct(2, 1, 4), v.adapter, caps);
     }
-    s.setCap(3, caps.exportCap(v.events));
+    if (v.events != null) {
+      s.setCap(3, caps.exportCap(v.events));
+    }
     {
       const list = v.databases ?? [];
       const items = s.initStructList(4, list.length, 0, 2);
@@ -1552,19 +1572,33 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
         NamedDatabaseCodec.write(items[i]!, list[i]!, caps);
       }
     }
-    s.setCap(5, caps.exportCap(v.cancel));
-    s.setCap(6, caps.exportCap(v.storage));
+    if (v.cancel != null) {
+      s.setCap(5, caps.exportCap(v.cancel));
+    }
+    if (v.storage != null) {
+      s.setCap(6, caps.exportCap(v.storage));
+    }
   },
   read(s, caps) {
-    return {
+    const out: T.Bindings = {
       config: ExtensibleConfigCodec.read(s.getStruct(0, 1, 2), caps),
       secrets: ExtensibleConfigCodec.read(s.getStruct(1, 1, 2), caps),
       adapter: DatabaseAdapterConfigCodec.read(s.getStruct(2, 1, 4), caps),
-      events: caps.importCap(s.getCapIndex(3)) as T.EventPublisher,
       databases: s.getStructList(4, 0, 2).map((item) => NamedDatabaseCodec.read(item, caps)),
-      cancel: caps.importCap(s.getCapIndex(5)) as T.Cancellation,
-      storage: caps.importCap(s.getCapIndex(6)) as T.Destination,
     };
+    const eventsValue = caps.importCap(s.getCapIndex(3)) as T.EventPublisher;
+    if (!(eventsValue == null)) {
+      out.events = eventsValue;
+    }
+    const cancelValue = caps.importCap(s.getCapIndex(5)) as T.Cancellation;
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    const storageValue = caps.importCap(s.getCapIndex(6)) as T.Destination;
+    if (!(storageValue == null)) {
+      out.storage = storageValue;
+    }
+    return out;
   },
 };
 
@@ -1577,26 +1611,67 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
   pointerCount: 8,
   write(s, v, caps) {
-    s.setCap(0, caps.exportCap(v.eventConsumer));
-    s.setCap(1, caps.exportCap(v.jobRunner));
-    s.setCap(2, caps.exportCap(v.storefront));
-    s.setCap(3, caps.exportCap(v.storage));
-    s.setCap(4, caps.exportCap(v.databaseAdapter));
-    s.setCap(5, caps.exportCap(v.remoteLibrary));
-    s.setCap(6, caps.exportCap(v.cli));
-    s.setCap(7, caps.exportCap(v.oidc));
+    if (v.eventConsumer != null) {
+      s.setCap(0, caps.exportCap(v.eventConsumer));
+    }
+    if (v.jobRunner != null) {
+      s.setCap(1, caps.exportCap(v.jobRunner));
+    }
+    if (v.storefront != null) {
+      s.setCap(2, caps.exportCap(v.storefront));
+    }
+    if (v.storage != null) {
+      s.setCap(3, caps.exportCap(v.storage));
+    }
+    if (v.databaseAdapter != null) {
+      s.setCap(4, caps.exportCap(v.databaseAdapter));
+    }
+    if (v.remoteLibrary != null) {
+      s.setCap(5, caps.exportCap(v.remoteLibrary));
+    }
+    if (v.cli != null) {
+      s.setCap(6, caps.exportCap(v.cli));
+    }
+    if (v.oidc != null) {
+      s.setCap(7, caps.exportCap(v.oidc));
+    }
   },
   read(s, caps) {
-    return {
-      eventConsumer: caps.importCap(s.getCapIndex(0)) as T.EventConsumer,
-      jobRunner: caps.importCap(s.getCapIndex(1)) as T.JobRunner,
-      storefront: caps.importCap(s.getCapIndex(2)) as T.ContentSource,
-      storage: caps.importCap(s.getCapIndex(3)) as T.Destination,
-      databaseAdapter: caps.importCap(s.getCapIndex(4)) as T.Database,
-      remoteLibrary: caps.importCap(s.getCapIndex(5)) as T.RemoteLibrary,
-      cli: caps.importCap(s.getCapIndex(6)) as T.PluginCli,
-      oidc: caps.importCap(s.getCapIndex(7)) as T.Oidc,
+    const out: T.Entrypoints = {
     };
+    const eventConsumerValue = caps.importCap(s.getCapIndex(0)) as T.EventConsumer;
+    if (!(eventConsumerValue == null)) {
+      out.eventConsumer = eventConsumerValue;
+    }
+    const jobRunnerValue = caps.importCap(s.getCapIndex(1)) as T.JobRunner;
+    if (!(jobRunnerValue == null)) {
+      out.jobRunner = jobRunnerValue;
+    }
+    const storefrontValue = caps.importCap(s.getCapIndex(2)) as T.ContentSource;
+    if (!(storefrontValue == null)) {
+      out.storefront = storefrontValue;
+    }
+    const storageValue = caps.importCap(s.getCapIndex(3)) as T.Destination;
+    if (!(storageValue == null)) {
+      out.storage = storageValue;
+    }
+    const databaseAdapterValue = caps.importCap(s.getCapIndex(4)) as T.Database;
+    if (!(databaseAdapterValue == null)) {
+      out.databaseAdapter = databaseAdapterValue;
+    }
+    const remoteLibraryValue = caps.importCap(s.getCapIndex(5)) as T.RemoteLibrary;
+    if (!(remoteLibraryValue == null)) {
+      out.remoteLibrary = remoteLibraryValue;
+    }
+    const cliValue = caps.importCap(s.getCapIndex(6)) as T.PluginCli;
+    if (!(cliValue == null)) {
+      out.cli = cliValue;
+    }
+    const oidcValue = caps.importCap(s.getCapIndex(7)) as T.Oidc;
+    if (!(oidcValue == null)) {
+      out.oidc = oidcValue;
+    }
+    return out;
   },
 };
 
@@ -2155,19 +2230,40 @@ export const JobControllerCodec: StructCodec<T.JobController> = {
     if (v.invocation != null) {
       JobInvocationCodec.write(s.initStruct(0, 3, 8), v.invocation, caps);
     }
-    s.setCap(1, caps.exportCap(v.input));
-    s.setCap(2, caps.exportCap(v.output));
-    s.setCap(3, caps.exportCap(v.progress));
-    s.setCap(4, caps.exportCap(v.cancel));
+    if (v.input != null) {
+      s.setCap(1, caps.exportCap(v.input));
+    }
+    if (v.output != null) {
+      s.setCap(2, caps.exportCap(v.output));
+    }
+    if (v.progress != null) {
+      s.setCap(3, caps.exportCap(v.progress));
+    }
+    if (v.cancel != null) {
+      s.setCap(4, caps.exportCap(v.cancel));
+    }
   },
   read(s, caps) {
-    return {
+    const out: T.JobController = {
       invocation: JobInvocationCodec.read(s.getStruct(0, 3, 8), caps),
-      input: caps.importCap(s.getCapIndex(1)) as T.Source,
-      output: caps.importCap(s.getCapIndex(2)) as T.Destination,
-      progress: caps.importCap(s.getCapIndex(3)) as T.ProgressSink,
-      cancel: caps.importCap(s.getCapIndex(4)) as T.Cancellation,
     };
+    const inputValue = caps.importCap(s.getCapIndex(1)) as T.Source;
+    if (!(inputValue == null)) {
+      out.input = inputValue;
+    }
+    const outputValue = caps.importCap(s.getCapIndex(2)) as T.Destination;
+    if (!(outputValue == null)) {
+      out.output = outputValue;
+    }
+    const progressValue = caps.importCap(s.getCapIndex(3)) as T.ProgressSink;
+    if (!(progressValue == null)) {
+      out.progress = progressValue;
+    }
+    const cancelValue = caps.importCap(s.getCapIndex(4)) as T.Cancellation;
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    return out;
   },
 };
 
@@ -2283,13 +2379,19 @@ export const GetOkCodec: StructCodec<T.GetOk> = {
     if (v.meta != null) {
       ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
     }
-    s.setCap(1, caps.exportCap(v.body));
+    if (v.body != null) {
+      s.setCap(1, caps.exportCap(v.body));
+    }
   },
   read(s, caps) {
-    return {
+    const out: T.GetOk = {
       meta: ObjectMetadataCodec.read(s.getStruct(0, 1, 4), caps),
-      body: caps.importCap(s.getCapIndex(1)) as T.ByteSource,
     };
+    const bodyValue = caps.importCap(s.getCapIndex(1)) as T.ByteSource;
+    if (!(bodyValue == null)) {
+      out.body = bodyValue;
+    }
+    return out;
   },
 };
 
@@ -2519,13 +2621,19 @@ export const OpenOkCodec: StructCodec<T.OpenOk> = {
     if (v.meta != null) {
       ObjectMetadataCodec.write(s.initStruct(0, 1, 4), v.meta, caps);
     }
-    s.setCap(1, caps.exportCap(v.body));
+    if (v.body != null) {
+      s.setCap(1, caps.exportCap(v.body));
+    }
   },
   read(s, caps) {
-    return {
+    const out: T.OpenOk = {
       meta: ObjectMetadataCodec.read(s.getStruct(0, 1, 4), caps),
-      body: caps.importCap(s.getCapIndex(1)) as T.ByteSource,
     };
+    const bodyValue = caps.importCap(s.getCapIndex(1)) as T.ByteSource;
+    if (!(bodyValue == null)) {
+      out.body = bodyValue;
+    }
+    return out;
   },
 };
 
@@ -2719,7 +2827,9 @@ export const AdapterSessionReplyCodec: StructCodec<T.AdapterSessionReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
+        if (v.value != null) {
+          s.setCap(0, caps.exportCap(v.value));
+        }
         break;
       case "err":
         s.setUint16(0, 1);
@@ -2756,7 +2866,9 @@ export const GuestDatabaseReplyCodec: StructCodec<T.GuestDatabaseReply> = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
+        if (v.value != null) {
+          s.setCap(0, caps.exportCap(v.value));
+        }
         break;
       case "err":
         s.setUint16(0, 1);
@@ -2791,13 +2903,19 @@ export const NamedDatabaseCodec: StructCodec<T.NamedDatabase> = {
   pointerCount: 2,
   write(s, v, caps) {
     s.setText(0, v.name ?? "");
-    s.setCap(1, caps.exportCap(v.database));
+    if (v.database != null) {
+      s.setCap(1, caps.exportCap(v.database));
+    }
   },
   read(s, caps) {
-    return {
+    const out: T.NamedDatabase = {
       name: s.getText(0),
-      database: caps.importCap(s.getCapIndex(1)) as T.GuestDatabase,
     };
+    const databaseValue = caps.importCap(s.getCapIndex(1)) as T.GuestDatabase;
+    if (!(databaseValue == null)) {
+      out.database = databaseValue;
+    }
+    return out;
   },
 };
 
@@ -6631,17 +6749,23 @@ export const DestinationPutParamsCodec: StructCodec<DestinationPutParams> = {
   pointerCount: 3,
   write(s, v, caps) {
     s.setText(0, v.key ?? "");
-    s.setCap(1, caps.exportCap(v.body));
+    if (v.body != null) {
+      s.setCap(1, caps.exportCap(v.body));
+    }
     if (v.options != null) {
       WriteOptionsCodec.write(s.initStruct(2, 2, 3), v.options, caps);
     }
   },
   read(s, caps) {
-    return {
+    const out: DestinationPutParams = {
       key: s.getText(0),
-      body: caps.importCap(s.getCapIndex(1)) as T.ByteSource,
       options: WriteOptionsCodec.read(s.getStruct(2, 2, 3), caps),
     };
+    const bodyValue = caps.importCap(s.getCapIndex(1)) as T.ByteSource;
+    if (!(bodyValue == null)) {
+      out.body = bodyValue;
+    }
+    return out;
   },
 };
 
@@ -8069,6 +8193,46 @@ export const DatabaseOpenSessionResultsCodec: StructCodec<DatabaseOpenSessionRes
   read(s, caps) {
     return {
       result: AdapterSessionReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Database.dropUnit` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DatabaseDropUnitParamsCodec: StructCodec<DatabaseDropUnitParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.unitRef ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      unitRef: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Database.dropUnit` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DatabaseDropUnitResultsCodec: StructCodec<DatabaseDropUnitResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

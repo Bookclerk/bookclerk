@@ -2,28 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://bookclerk.dev/schemas/plugin-toml.json",
   "title": "BookclerkPluginToml",
-  "description": "Install descriptor for a Bookclerk plugin (plugin.toml). Keys use TOML/snake_case naming. capabilities.network.domains is workerd-only (hostname allowlist for isolate fetch()). Native guests omit domains and declare capabilities.network.tcp for mediated connect(); ambient AF_INET is denied.",
+  "description": "Install descriptor for a Bookclerk plugin (plugin.toml), api_version = 3. Keys use TOML/snake_case. There is no plugin `kind`; handler family is derived from entrypoints and triggers. The `id` is a display/CLI alias, not a globally unique security identity. Durable identity is the host-computed provenance-qualified PluginKey. capabilities.network.domains is workerd-only (hostname allowlist for isolate fetch()). Native guests omit domains and declare capabilities.network.tcp for mediated connect(); ambient AF_INET is denied.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["api_version", "id", "kind", "capabilities"],
+  "required": ["api_version", "id", "capabilities"],
   "properties": {
-    "api_version": { "type": "integer", "enum": [2] },
+    "api_version": { "type": "integer", "enum": [3] },
     "id": {
       "type": "string",
       "minLength": 2,
       "maxLength": 32,
       "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
-      "description": "Globally unique across kinds. Lowercase letters, digits, and single underscores only (2–32 chars); no leading/trailing or doubled `_`."
+      "description": "Display / CLI alias. Not globally unique and not a privilege. Lowercase letters, digits, and single underscores only (2–32 chars); no leading/trailing or doubled `_`. When two installs share an alias, address them with a provenance-qualified PluginKey."
     },
     "name": { "type": "string" },
-    "kind": {
-      "type": "string",
-      "enum": ["source", "integration", "output", "database"]
-    },
     "version": { "type": "string" },
     "logo": {
       "type": "string",
-      "description": "Optional Settings/UI logo: https:// or http:// URL (browser loads directly), or a relative image path under the plugin install root (host serves via GET /api/plugins/{kind}/{id}/logo). Embedded paths must not contain '..' and must end with .png/.jpg/.jpeg/.gif/.webp/.svg/.ico."
+      "description": "Optional Settings/UI logo: https:// or http:// URL (browser loads directly), or a relative image path under the plugin install root (host serves via GET /api/plugins/{id}/logo when the alias is unambiguous). Embedded paths must not contain '..' and must end with .png/.jpg/.jpeg/.gif/.webp/.svg/.ico."
     },
     "runtime": {
       "type": "string",
@@ -35,11 +31,38 @@
       "type": "array",
       "items": { "type": "string" }
     },
+    "entrypoints": {
+      "type": "array",
+      "description": "Named capabilities this plugin exports from PluginWorker.open.",
+      "items": {
+        "type": "string",
+        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc"]
+      }
+    },
     "workerd": { "$ref": "#/$defs/WorkerdRuntime" },
     "modules": {
       "type": "array",
       "items": { "$ref": "#/$defs/ModuleSpec" }
     },
+    "triggers": { "$ref": "#/$defs/Triggers" },
+    "events": { "$ref": "#/$defs/Events" },
+    "databases": {
+      "type": "array",
+      "description": "Named plugin-owned database bindings (Workers-style).",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/DatabaseBinding" }
+    },
+    "vars": {
+      "type": "object",
+      "description": "Operator config binding defaults (`CONFIG`). An empty table still declares the binding."
+    },
+    "secrets": { "$ref": "#/$defs/NamedBinding" },
+    "kv_namespaces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/NamedBinding" }
+    },
+    "work_fs": { "$ref": "#/$defs/NamedBinding" },
+    "oauth": { "$ref": "#/$defs/NamedBinding" },
     "capabilities": { "$ref": "#/$defs/Capabilities" },
     "cli": { "$ref": "#/$defs/CliSchema" },
     "oidc": { "$ref": "#/$defs/OidcManifest" }
@@ -116,10 +139,7 @@
       "additionalProperties": false,
       "required": ["network"],
       "properties": {
-        "network": { "$ref": "#/$defs/NetworkCapabilities" },
-        "bindings": { "$ref": "#/$defs/BindingCapabilities" },
-        "methods": { "$ref": "#/$defs/MethodCapabilities" },
-        "events": { "$ref": "#/$defs/EventCapabilities" }
+        "network": { "$ref": "#/$defs/NetworkCapabilities" }
       }
     },
     "NetworkCapabilities": {
@@ -130,7 +150,7 @@
         "mode": { "type": "string", "enum": ["deny", "outbound"] },
         "domains": {
           "type": "array",
-          "description": "Workerd-only: initial-request host allowlist for isolate egress. Forbidden on runtime=native.",
+          "description": "Workerd-only: initial-request host allowlist for isolate egress. Forbidden on runtime=native. The operator may add destinations beyond this list; the guest cannot.",
           "items": { "type": "string", "minLength": 1 }
         },
         "tcp": {
@@ -162,44 +182,31 @@
         }
       }
     },
-    "BindingCapabilities": {
+    "Triggers": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "config": { "type": "boolean" },
-        "secrets": { "type": "boolean" },
-        "plugin_kv": { "type": "boolean" },
-        "work_fs": { "type": "boolean" },
-        "oauth": { "type": "boolean" },
-        "databases": {
+        "jobs": {
           "type": "array",
-          "description": "Named plugin-owned database bindings (Workers-style). Each name binds an isolated database provisioned by the active adapter.",
-          "maxItems": 8,
-          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "maxLength": 32 }
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     },
-    "MethodCapabilities": {
+    "Events": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "list": {
+        "consumers": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": { "$ref": "#/$defs/EventConsumer" }
+        },
+        "producers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/EventProducer" }
         }
       }
     },
-    "EventCapabilities": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "subscriptions": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/EventSubscription" }
-        }
-      }
-    },
-    "EventSubscription": {
+    "EventConsumer": {
       "type": "object",
       "additionalProperties": false,
       "required": ["type"],
@@ -216,7 +223,40 @@
         },
         "supports_suspend": { "type": "boolean", "default": false },
         "resource_class": { "type": "string", "enum": ["network"], "default": "network" },
-        "filter": { "type": "object" }
+        "filter": { "type": "object" },
+        "max_retries": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "EventProducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "binding": { "type": "string", "minLength": 1 }
+      }
+    },
+    "DatabaseBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding"],
+      "properties": {
+        "binding": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "maxLength": 32
+        }
+      }
+    },
+    "NamedBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "binding": { "type": "string", "minLength": 1 }
       }
     },
     "WorkerdRuntime": {

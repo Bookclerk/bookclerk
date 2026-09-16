@@ -13,7 +13,7 @@ anyhow.workspace = true
 chrono.workspace = true
 bookclerk-config.workspace = true
 bookclerk-library.workspace = true
-bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
+bookclerk-plugin-host.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -25,6 +25,7 @@ tar.workspace = true
 flate2.workspace = true
 
 [dev-dependencies]
+bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

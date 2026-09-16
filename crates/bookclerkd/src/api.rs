@@ -501,10 +501,14 @@ struct PluginGrantView {
     tcp: Vec<TcpGrantView>,
     /// Operator-added TCP grants.
     operator_added_tcp: Vec<TcpGrantView>,
+    /// Operator-denied TCP grants still listed by the manifest.
+    operator_denied_tcp: Vec<TcpGrantView>,
     /// Effective address-space CIDRs.
     address_cidrs: Vec<String>,
     /// Operator-added CIDRs.
     operator_added_cidrs: Vec<String>,
+    /// Operator-denied CIDRs still listed by the manifest.
+    operator_denied_cidrs: Vec<String>,
     /// Undeclared public redirect permission.
     allow_undeclared_public_redirects: bool,
     /// SHA-256 of persisted operator consent (no host overlays).
@@ -577,8 +581,14 @@ impl PluginGrantView {
                 .iter()
                 .map(TcpGrantView::from)
                 .collect(),
+            operator_denied_tcp: grant
+                .operator_denied_tcp
+                .iter()
+                .map(TcpGrantView::from)
+                .collect(),
             address_cidrs: grant.address_cidrs.iter().cloned().collect(),
             operator_added_cidrs: grant.operator_added_cidrs.iter().cloned().collect(),
+            operator_denied_cidrs: grant.operator_denied_cidrs.iter().cloned().collect(),
             allow_undeclared_public_redirects: grant.allow_undeclared_public_redirects,
             grant_revision: bookclerk_plugin_host::grant_revision(grant),
             authority_revision: bookclerk_plugin_host::authority_revision(grant),
@@ -1243,6 +1253,24 @@ pub async fn start_integration_watchers(state: &AppState) {
     }
 }
 
+/// Fingerprint of host-owned database connect settings (occupancy + URLs).
+fn database_connect_fingerprint(cfg: &Config) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}",
+        cfg.database.plugin,
+        cfg.database.postgres.url.as_deref().unwrap_or(""),
+        cfg.database
+            .postgres
+            .url_file
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        cfg.database.d1.api_base,
+        cfg.database.d1.account_id,
+        cfg.database.d1.database_id
+    )
+}
+
 /// Reload `config.toml` from disk and publish a complete candidate runtime.
 ///
 /// Auth is always rebuilt and swapped **before** listen rebind notification so a
@@ -1254,14 +1282,14 @@ pub async fn reload_daemon_config(state: &AppState) -> anyhow::Result<String> {
 
 /// Like [`reload_daemon_config`] when the caller already holds `reload_lock`.
 pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Result<String> {
-    let (files_dir, config_path, old_listen, old_db_plugin, old_auth_enabled, old_token) = {
+    let (files_dir, config_path, old_listen, old_db_fingerprint, old_auth_enabled, old_token) = {
         let cfg = state.config.read().await;
         let auth = state.auth.read().await;
         (
             cfg.paths().files_dir.clone(),
             cfg.paths().config_file.clone(),
             cfg.daemon.listen.clone(),
-            cfg.database.plugin.clone(),
+            database_connect_fingerprint(&cfg),
             auth.enabled,
             auth.token.clone(),
         )
@@ -1273,7 +1301,7 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     new_cfg.warn_unsupported_options();
 
     // Build the full candidate before mutating live state.
-    let db_plugin_changed = !old_db_plugin.eq_ignore_ascii_case(&new_cfg.database.plugin);
+    let db_plugin_changed = old_db_fingerprint != database_connect_fingerprint(&new_cfg);
 
     let _job_runtime = if db_plugin_changed {
         Some(
@@ -1358,6 +1386,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         *state.config.write().await = new_cfg.clone();
     }
 
+    bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
+
     // Start watchers for the new integration set (awaited — no untracked race).
     start_integration_watchers(state).await;
     crate::event_worker::upsert_event_subscriber_catalog(state).await;
@@ -1375,10 +1405,7 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         new_cfg.auth_password().is_some()
     );
     if db_plugin_changed {
-        detail.push_str(&format!(
-            "; switched database plugin `{old_db_plugin}` → `{}`",
-            new_cfg.database.plugin
-        ));
+        detail.push_str("; database connect target updated");
     }
     if token_changed {
         detail.push_str("; operator auth runtime updated");
@@ -1816,7 +1843,7 @@ fn plugin_enabled(config: &Config, family: bookclerk_plugin_host::PluginFamily, 
         bookclerk_plugin_host::PluginFamily::Output if id == "local" => config.output.local.enabled,
         bookclerk_plugin_host::PluginFamily::Output => false,
         bookclerk_plugin_host::PluginFamily::Database => {
-            config.database.plugin.eq_ignore_ascii_case(id)
+            bookclerk_plugin_host::occupancy_matches_alias(config.database.plugin.trim(), id)
         }
     }
 }
@@ -2423,6 +2450,18 @@ fn plugin_settings_snapshot(
                     group.logo = Some(logo);
                 }
             }
+            if family == bookclerk_plugin_host::PluginFamily::Database {
+                let spec = config.database.plugin.trim();
+                let enabled = !spec.is_empty()
+                    && bookclerk_plugin_host::plugin_matches_occupancy(plugin, spec);
+                if let Some(option) = group
+                    .settings
+                    .iter_mut()
+                    .find(|option| option.key == format!("database.{}.enabled", plugin.alias()))
+                {
+                    option.value = enabled.to_string();
+                }
+            }
             group.plugin_key = Some(plugin.plugin_key().canonical().to_string());
             group.provenance = Some(plugin.identity.provenance.to_string());
             groups_by_key.insert(
@@ -2491,6 +2530,7 @@ async fn discover_plugins_for_settings(
 fn apply_database_enable_updates(
     config: &mut Config,
     updates: &[(String, String)],
+    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
 ) -> Result<(), String> {
     let mut enabled_targets = Vec::new();
     let mut disabled_targets = Vec::new();
@@ -2522,11 +2562,32 @@ fn apply_database_enable_updates(
     // Unchecking the active backend with no replacement clears `database.plugin`
     // so the prior plugin does not stay selected after save.
     for id in disabled_targets {
-        if config.database.plugin.eq_ignore_ascii_case(&id) {
+        if bookclerk_plugin_host::occupancy_names_alias(&config.database.plugin, &id, discovered) {
             config.database.plugin.clear();
             break;
         }
     }
+    Ok(())
+}
+
+/// Stamps PluginKey occupancy for newly enabled plugins, then upgrades unique aliases.
+///
+/// # Errors
+///
+/// Returns when an enable target cannot be resolved uniquely or occupancy
+/// cannot be written (unmapped output family).
+fn stamp_settings_occupancy(
+    cfg: &mut Config,
+    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
+    enabling: &[String],
+) -> Result<(), String> {
+    for plugin_id in enabling {
+        let plugin = bookclerk_plugin_host::resolve_plugin_ref(discovered, plugin_id)
+            .map_err(|err| err.to_string())?;
+        bookclerk_plugin_host::stamp_occupancy_plugin_key(cfg, plugin)
+            .map_err(|err| err.to_string())?;
+    }
+    bookclerk_plugin_host::upgrade_unique_alias_occupancy(cfg, discovered);
     Ok(())
 }
 
@@ -2584,9 +2645,10 @@ fn database_backends_requiring_grant(
             if id.is_empty() {
                 continue;
             }
-            if !current_database_plugin.eq_ignore_ascii_case(id) {
-                ids.push(id.to_string());
+            if bookclerk_plugin_host::occupancy_matches_alias(current_database_plugin, id) {
+                continue;
             }
+            ids.push(id.to_string());
             continue;
         }
         let Some(rest) = key.strip_prefix("database.") else {
@@ -2598,9 +2660,10 @@ fn database_backends_requiring_grant(
         if id.is_empty() || id.contains('.') || !setting_value_is_enabled(value) {
             continue;
         }
-        if !current_database_plugin.eq_ignore_ascii_case(id) {
-            ids.push(id.to_string());
+        if bookclerk_plugin_host::occupancy_matches_alias(current_database_plugin, id) {
+            continue;
         }
+        ids.push(id.to_string());
     }
     ids.sort();
     ids.dedup();
@@ -3137,21 +3200,27 @@ async fn patch_settings(
             enabling.push(id);
         }
     }
+    let discovered = discover_plugins_for_settings(
+        &Config::load(Some(files_dir.clone()), Some(config_path.clone())).map_err(|err| {
+            tracing::error!(error = %err, "failed to load config for consent check");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })?,
+    )
+    .await;
     if !enabling.is_empty() {
-        let discovered = discover_plugins_for_settings(
-            &Config::load(Some(files_dir.clone()), Some(config_path.clone())).map_err(|err| {
-                tracing::error!(error = %err, "failed to load config for consent check");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            })?,
-        )
-        .await;
         for plugin_id in &enabling {
-            let Some(plugin) = bookclerk_plugin_host::resolve_plugin_ref(&discovered, plugin_id)
-                .ok()
-                .or_else(|| discovered.iter().find(|p| p.manifest.id == *plugin_id))
-            else {
-                tracing::warn!(%plugin_id, "cannot enable undiscovered plugin");
-                return Err(StatusCode::BAD_REQUEST.into_response());
+            let plugin = match bookclerk_plugin_host::resolve_plugin_ref(&discovered, plugin_id) {
+                Ok(plugin) => plugin,
+                Err(err) => {
+                    let message = err.to_string();
+                    tracing::warn!(%plugin_id, error = %err, "cannot enable plugin");
+                    let status = if message.contains("ambiguous") {
+                        StatusCode::CONFLICT
+                    } else {
+                        StatusCode::BAD_REQUEST
+                    };
+                    return Err(status.into_response());
+                }
             };
             if let Err(err) = require_grant(&files_dir, plugin) {
                 let request = consent_request(&plugin.manifest, plugin.plugin_key());
@@ -3182,7 +3251,7 @@ async fn patch_settings(
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
     })?;
 
-    apply_database_enable_updates(&mut cfg, &updates).map_err(|err| {
+    apply_database_enable_updates(&mut cfg, &updates, &discovered).map_err(|err| {
         tracing::warn!(error = %err, "rejected database settings update");
         StatusCode::BAD_REQUEST.into_response()
     })?;
@@ -3197,6 +3266,11 @@ async fn patch_settings(
     // address cannot leave config.toml half-updated.
     if let Err(err) = validate_daemon_listen(&cfg) {
         tracing::warn!(error = %err, "rejected daemon.listen settings update");
+        return Err(StatusCode::BAD_REQUEST.into_response());
+    }
+
+    if let Err(err) = stamp_settings_occupancy(&mut cfg, &discovered, &enabling) {
+        tracing::warn!(error = %err, "cannot stamp occupancy for enable");
         return Err(StatusCode::BAD_REQUEST.into_response());
     }
 
@@ -3302,13 +3376,22 @@ async fn migrate_database(
             if body.apply && !body.dry_run {
                 let files_dir = cfg.paths().files_dir.clone();
                 let discovered = discover_plugins_for_settings(&cfg).await;
-                let Some(plugin) = discovered
-                    .iter()
-                    .find(|p| p.manifest.id.eq_ignore_ascii_case(&to_plugin))
-                else {
-                    tracing::warn!(%to_plugin, "cannot apply migrate to undiscovered database plugin");
-                    return Err(StatusCode::BAD_REQUEST);
-                };
+                let plugin =
+                    match bookclerk_plugin_host::resolve_plugin_ref(&discovered, &to_plugin) {
+                        Ok(plugin) => plugin,
+                        Err(err) => {
+                            tracing::warn!(
+                                %to_plugin,
+                                error = %err,
+                                "cannot apply migrate to database plugin"
+                            );
+                            return Err(if err.to_string().contains("ambiguous") {
+                                StatusCode::CONFLICT
+                            } else {
+                                StatusCode::BAD_REQUEST
+                            });
+                        }
+                    };
                 if let Err(err) = require_grant(&files_dir, plugin) {
                     tracing::warn!(
                         plugin = %to_plugin,
@@ -3317,7 +3400,11 @@ async fn migrate_database(
                     );
                     return Err(StatusCode::FORBIDDEN);
                 }
-                let path = apply_migrated_database_plugin(&state, to_plugin.clone()).await?;
+                let path = apply_migrated_database_plugin(
+                    &state,
+                    plugin.plugin_key().canonical().to_string(),
+                )
+                .await?;
                 message.push_str(&format!(
                     "; updated [database].plugin, wrote {}, and reloaded library connection",
                     path.display()
@@ -5057,9 +5144,9 @@ mod tests {
     use super::{
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_plugin_settings_group, current_settings_snapshot, database_backends_requiring_grant,
-        normalize_disabled_shelves, normalize_setting_value, title_id_candidates,
-        validate_daemon_listen, validate_daemon_listen_against_auth, InviteLinkError,
-        PluginGrantOverride,
+        normalize_disabled_shelves, normalize_setting_value, stamp_settings_occupancy,
+        title_id_candidates, validate_daemon_listen, validate_daemon_listen_against_auth,
+        InviteLinkError, PluginGrantOverride,
     };
     use bookclerk_config::{Config, ListenAddrs};
 
@@ -5378,6 +5465,28 @@ mod tests {
             "sqlite"
         )
         .is_empty());
+        assert!(database_backends_requiring_grant(
+            &[("database.sqlite.enabled".into(), "true".into())],
+            "platform:bookclerk/bookclerk-plugin-database-sqlite"
+        )
+        .is_empty());
+        assert_eq!(
+            database_backends_requiring_grant(
+                &[("database.plugin".into(), "d1".into())],
+                "platform:bookclerk/bookclerk-plugin-database-sqlite"
+            ),
+            vec!["d1".to_string()]
+        );
+        assert_eq!(
+            database_backends_requiring_grant(
+                &[(
+                    "database.plugin".into(),
+                    "platform:bookclerk/bookclerk-plugin-database-sqlite".into()
+                )],
+                "sqlite"
+            ),
+            vec!["platform:bookclerk/bookclerk-plugin-database-sqlite".to_string()]
+        );
     }
 
     #[test]
@@ -5513,12 +5622,17 @@ mod tests {
         apply_database_enable_updates(
             &mut cfg,
             &[("database.sqlite.enabled".into(), "false".into())],
+            &[],
         )
         .expect("disable");
         assert_eq!(cfg.database.plugin, "");
 
-        apply_database_enable_updates(&mut cfg, &[("database.d1.enabled".into(), "true".into())])
-            .expect("enable d1");
+        apply_database_enable_updates(
+            &mut cfg,
+            &[("database.d1.enabled".into(), "true".into())],
+            &[],
+        )
+        .expect("enable d1");
         assert_eq!(cfg.database.plugin, "d1");
 
         apply_database_enable_updates(
@@ -5527,8 +5641,69 @@ mod tests {
                 ("database.d1.enabled".into(), "false".into()),
                 ("database.postgres.enabled".into(), "true".into()),
             ],
+            &[],
         )
         .expect("switch");
+        assert_eq!(cfg.database.plugin, "postgres");
+    }
+
+    #[test]
+    fn database_enabled_toggle_follows_plugin_key_occupancy() {
+        let mut cfg = Config::default();
+        cfg.database.plugin = "platform:bookclerk/bookclerk-plugin-database-sqlite".into();
+        let sqlite = build_plugin_settings_group(
+            &cfg,
+            bookclerk_plugin_host::PluginFamily::Database,
+            "sqlite",
+            toml::Table::new(),
+        );
+        assert_eq!(
+            sqlite
+                .settings
+                .iter()
+                .find(|option| option.key == "database.sqlite.enabled")
+                .map(|option| option.value.as_str()),
+            Some("true"),
+            "first-party PluginKey occupancy must still show sqlite as enabled"
+        );
+        let postgres = build_plugin_settings_group(
+            &cfg,
+            bookclerk_plugin_host::PluginFamily::Database,
+            "postgres",
+            toml::Table::new(),
+        );
+        assert_eq!(
+            postgres
+                .settings
+                .iter()
+                .find(|option| option.key == "database.postgres.enabled")
+                .map(|option| option.value.as_str()),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn database_enable_updates_clear_plugin_key_occupancy() {
+        let mut cfg = Config::default();
+        cfg.database.plugin = "platform:bookclerk/bookclerk-plugin-database-sqlite".into();
+        apply_database_enable_updates(
+            &mut cfg,
+            &[("database.sqlite.enabled".into(), "false".into())],
+            &[],
+        )
+        .expect("disable keyed sqlite");
+        assert_eq!(cfg.database.plugin, "");
+    }
+
+    #[test]
+    fn stamp_settings_occupancy_fail_closed_when_missing() {
+        let mut cfg = Config::default();
+        cfg.database.plugin = "postgres".into();
+        let err = stamp_settings_occupancy(&mut cfg, &[], &["postgres".into()]).unwrap_err();
+        assert!(
+            err.contains("not installed") || err.contains("postgres"),
+            "{err}"
+        );
         assert_eq!(cfg.database.plugin, "postgres");
     }
 

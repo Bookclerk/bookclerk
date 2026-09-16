@@ -9,6 +9,8 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use bookclerk_library::LibraryStore;
+
 use crate::error::{MigrateError, Result};
 
 #[derive(Debug, Default)]
@@ -32,7 +34,7 @@ pub struct AccountsImportSummary {
 /// # Arguments
 ///
 /// * `path` - Filesystem path involved in this operation.
-/// * `dest_files_dir` - Filesystem path (`dest_files_dir`).
+/// * `store` - Destination library (opened by the caller through the adapter).
 /// * `force` - When true, overwrite or force a full remote rescan.
 /// * `skip_auth` - Boolean flag `skip_auth`.
 /// * `dry_run` - Boolean flag `dry_run`.
@@ -46,7 +48,7 @@ pub struct AccountsImportSummary {
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn import_accounts(
     path: &Path,
-    dest_files_dir: &Path,
+    store: &LibraryStore,
     _force: bool,
     _skip_auth: bool,
     dry_run: bool,
@@ -65,12 +67,6 @@ pub async fn import_accounts(
         .ok_or_else(|| {
             MigrateError::Accounts("expected Accounts array in AccountsSettings.json".into())
         })?;
-
-    let store = if dry_run {
-        bookclerk_plugin_database_sqlite::open_store_memory().await?
-    } else {
-        bookclerk_plugin_database_sqlite::open_store(&dest_files_dir.join("library.db")).await?
-    };
 
     let mut summary = AccountsImportSummary::default();
     let mut tokens_seen = 0usize;
@@ -174,7 +170,10 @@ mod tests {
         )
         .unwrap();
 
-        let summary = import_accounts(&path, dir.path(), false, false, false)
+        let dest = crate::store::DestStore::open(dir.path(), false)
+            .await
+            .unwrap();
+        let summary = import_accounts(&path, &dest.store, false, false, false)
             .await
             .unwrap();
         assert_eq!(summary.accounts, 1);

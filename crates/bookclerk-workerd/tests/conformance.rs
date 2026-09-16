@@ -5,9 +5,15 @@
 //!    (`local`, `sqlite`, Echo, and the `bookclerk-workerd-native-fixture` bin)
 //! 3. Direct Cap'n Proto (diagnostic transport) to the same native guests
 //!
-//! Storage, events, storefront + CLI, jobs, and the database adapter each
-//! run on every path their fixtures support; the storefront and job vectors
-//! are shared functions so the three transports cannot drift apart.
+//! Storage, events, storefront + CLI, jobs, the database adapter, and
+//! nullable `Entrypoints` (absent families stay null) each run on every path
+//! their fixtures support; the storefront and job vectors are shared functions
+//! so the three transports cannot drift apart.
+//!
+//! Capability-surface, network fetch/TCP, provenance, and grant-revision
+//! vectors live with the host (`bookclerk-plugin-host`,
+//! `bookclerk-plugin-catalog`) and the workerd connect gateway; this file
+//! keeps the guest-visible ABI honest across the three transports.
 //!
 //! Never set `BOOKCLERK_SKIP_WORKERD`. CI must ship `target/debug/workerd`.
 

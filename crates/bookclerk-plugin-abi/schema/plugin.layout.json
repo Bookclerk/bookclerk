@@ -2679,6 +2679,45 @@
         }
       ]
     },
+    "Database.dropUnit$Params": {
+      "name": "Database.dropUnit$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "unitRef",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Database.dropUnit$Results": {
+      "name": "Database.dropUnit$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "Database.openSession$Params": {
       "name": "Database.openSession$Params",
       "file": "plugin.capnp",
@@ -9888,6 +9927,12 @@
           "ordinal": 0,
           "params": "Database.openSession$Params",
           "results": "Database.openSession$Results"
+        },
+        {
+          "name": "dropUnit",
+          "ordinal": 1,
+          "params": "Database.dropUnit$Params",
+          "results": "Database.dropUnit$Results"
         }
       ]
     },

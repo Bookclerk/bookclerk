@@ -277,6 +277,7 @@ jobs:
           npm run test:db-value
           npm run test:plugin-migrations
           npm run test:entrypoints
+          npm run test:entrypoints-codec
 
       - name: Python plugin SDK tools conformance
         if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.python_sdk == 'true'
@@ -387,6 +388,7 @@ jobs:
           cargo clippy -p bookclerk-cli -p bookclerkd --no-default-features \
             --all-targets -- -D warnings
           ./scripts/check-store-free-hosts.sh
+          ./scripts/check-plugin-architecture.sh
 
       - name: Build app (platform + optional + examples)
         if: needs.plan.outputs.run_build_app == 'true'
@@ -584,6 +586,41 @@ jobs:
           cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
           -p bookclerk-jail -- --test-threads=1
 
+      - name: Install capnproto (Windows native gateway)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $url = "https://capnproto.org/capnproto-c++-win32-1.1.0.zip"
+          $zip = "$env:RUNNER_TEMP\capnproto.zip"
+          $expectedHash = "623b7525501d410e6479c8029eba265aa57ac8153c6fa09ab21a62f906b3e3f9"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          $actualHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            Write-Error "capnproto checksum mismatch. Expected $expectedHash, got $actualHash"
+            exit 1
+          }
+          Expand-Archive -Path $zip -DestinationPath "C:\capnproto" -Force
+          $toolsDir = "C:\capnproto\capnproto-tools-win32-1.1.0"
+          if (-not (Test-Path "$toolsDir\capnp.exe")) {
+            Write-Error "capnp.exe not found at $toolsDir"
+            Get-ChildItem -Path "C:\capnproto" -Recurse | Select-Object FullName
+            exit 1
+          }
+          echo $toolsDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Clippy native-behind-workerd Windows gateway
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy -p bookclerk-workerd --all-targets -- -D warnings
+          cargo clippy -p bookclerk-plugin-sdk --features http --all-targets -- -D warnings
+          cargo clippy -p bookclerk-plugin-host --lib -- -D warnings
+
+      - name: Test named-pipe SOCKET_PROXY
+        if: matrix.os == 'windows-latest'
+        run: cargo test -p bookclerk-workerd --lib
+
   tray:
     name: tray (${{ matrix.os }})
     needs: plan
@@ -695,7 +732,7 @@ jobs:
           # Production spawn always goes through bookclerk-workerd; the guest
           # binary alone is not enough after the mandatory front-door change
           # (mirrors the main Test job's PATH / BOOKCLERK_WORKERD_BIN setup).
-          cargo build -p bookclerk-plugin-database-postgres -p bookclerk-workerd
+          cargo build -p bookclerk-plugin-database-postgres -p bookclerk-workerd -p bookclerk-jail
           cargo ensure-workerd
           export PATH="${{ github.workspace }}/target/debug:$PATH"
           cargo test -p bookclerk-plugin-host --lib production_rpc_proxy_keeps_like_through_postgres_guest -- --ignored --nocapture

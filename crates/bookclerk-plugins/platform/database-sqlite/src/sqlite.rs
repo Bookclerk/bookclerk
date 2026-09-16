@@ -257,6 +257,33 @@ pub async fn open(path: &Path) -> std::result::Result<DatabaseConnection, DbErr>
     Ok(db)
 }
 
+/// Deletes a SQLite binding unit and journal sidecars. Missing files are success.
+///
+/// Called from the sqlite adapter's `Database.dropUnit` implementation so the
+/// host does not link this crate to unlink plugin-database files.
+///
+/// # Errors
+///
+/// Returns when a sidecar exists but cannot be removed.
+pub fn drop_unit_files(unit_ref: &str) -> std::result::Result<(), DbErr> {
+    if unit_ref.trim().is_empty() {
+        return Err(DbErr::Custom(
+            "sqlite dropUnit requires a non-empty unitRef path".into(),
+        ));
+    }
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let path = format!("{unit_ref}{suffix}");
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(DbErr::Custom(format!("could not delete {path}: {err}")));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Opens an in-memory SQLite database, applies host schema, and returns a SeaORM proxy.
 ///
 /// Intended for unit tests and dry-run paths (no durable file). Version
@@ -708,5 +735,22 @@ mod tests {
         assert!(body.len() <= 180);
         assert!(summary.is_char_boundary(body.len()));
         assert!(!body.is_empty());
+    }
+
+    #[test]
+    fn drop_unit_files_removes_db_and_sidecars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("binding.db");
+        std::fs::write(&path, b"sqlite").expect("db file");
+        let unit = path.display().to_string();
+        std::fs::write(format!("{unit}-wal"), b"wal").expect("wal");
+        std::fs::write(format!("{unit}-shm"), b"shm").expect("shm");
+        std::fs::write(format!("{unit}-journal"), b"j").expect("journal");
+        super::drop_unit_files(&unit).expect("drop sqlite unit");
+        assert!(!path.exists(), "binding file must be gone");
+        assert!(!std::path::Path::new(&format!("{unit}-wal")).exists());
+        assert!(!std::path::Path::new(&format!("{unit}-shm")).exists());
+        assert!(!std::path::Path::new(&format!("{unit}-journal")).exists());
+        super::drop_unit_files(&unit).expect("missing unit is success");
     }
 }

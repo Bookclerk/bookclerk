@@ -778,10 +778,20 @@ fn urlencoding_encode(s: &str) -> String {
     out
 }
 
+/// Durable OIDC ownership: PluginKey when present, otherwise the display alias.
+fn durable_oidc_owner(plugin_key: &str, alias: &str) -> String {
+    let key = plugin_key.trim();
+    if key.is_empty() {
+        alias.to_string()
+    } else {
+        key.to_string()
+    }
+}
+
 /// One plugin-owned OIDC client to materialize (from `oidcClients` or plugin.toml).
 #[derive(Debug, Clone)]
 struct PluginOidcSync {
-    /// Plugin id that owns this client.
+    /// Provenance-qualified PluginKey that owns this client (alias only for test doubles).
     plugin_id: String,
     /// OAuth `client_id`.
     client_id: String,
@@ -819,7 +829,7 @@ async fn collect_plugin_oidc_templates(state: &AppState) -> Vec<PluginOidcSync> 
     for plugin in discovered {
         for client in &plugin.manifest.oidc.clients {
             let sync = PluginOidcSync {
-                plugin_id: plugin.manifest.id.clone(),
+                plugin_id: plugin.plugin_key().canonical().to_string(),
                 client_id: client.client_id.clone(),
                 display_name: if client.display_name.trim().is_empty() {
                     client.client_id.clone()
@@ -844,7 +854,7 @@ async fn collect_plugin_oidc_templates(state: &AppState) -> Vec<PluginOidcSync> 
         };
         for client in clients {
             let sync = PluginOidcSync {
-                plugin_id: integration.id().to_string(),
+                plugin_id: durable_oidc_owner(integration.plugin_key(), integration.id()),
                 client_id: client.client_id.clone(),
                 display_name: if client.display_name.trim().is_empty() {
                     client.client_id.clone()
@@ -1598,6 +1608,15 @@ mod tests {
                 String::from("http://localhost:13378/auth/openid/callback"),
             ]
         );
+    }
+
+    #[test]
+    fn oidc_owner_prefers_plugin_key() {
+        assert_eq!(
+            durable_oidc_owner("path:file:///tmp/abs#audiobookshelf", "audiobookshelf"),
+            "path:file:///tmp/abs#audiobookshelf"
+        );
+        assert_eq!(durable_oidc_owner("", "audiobookshelf"), "audiobookshelf");
     }
 
     fn abs_oidc_sync() -> PluginOidcSync {

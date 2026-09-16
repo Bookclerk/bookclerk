@@ -17,6 +17,8 @@ pub mod granted;
 pub mod invoke;
 pub mod native_guest;
 pub mod pin;
+#[cfg(windows)]
+pub mod pipe_bind;
 pub mod socket_proxy;
 #[cfg(unix)]
 pub mod unix_bind;

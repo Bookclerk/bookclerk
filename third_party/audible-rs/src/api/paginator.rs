@@ -72,7 +72,7 @@ where
 async fn fetch_with_retry<'c, F>(
     make_request: &mut F,
     continuation: Option<&str>,
-) -> Result<reqwest::Response, ApiError>
+) -> Result<bookclerk_plugin_sdk::http::Response, ApiError>
 where
     F: FnMut(Option<&str>) -> RequestBuilder<'c>,
 {
@@ -108,11 +108,11 @@ where
     }
 }
 
-fn is_transient(error: &reqwest::Error) -> bool {
+fn is_transient(error: &crate::HttpError) -> bool {
     error.is_timeout() || error.is_connect() || error.is_request()
 }
 
-fn header(response: &reqwest::Response, name: &str) -> Option<String> {
+fn header(response: &bookclerk_plugin_sdk::http::Response, name: &str) -> Option<String> {
     response
         .headers()
         .get(name)
@@ -124,7 +124,7 @@ fn header(response: &reqwest::Response, name: &str) -> Option<String> {
 /// `from_secs_f64` conversion, which panics on huge values.
 const MAX_RETRY_AFTER_SECS: f64 = 60.0;
 
-fn retry_after(response: &reqwest::Response) -> Option<Duration> {
+fn retry_after(response: &bookclerk_plugin_sdk::http::Response) -> Option<Duration> {
     parse_retry_after(&header(response, "Retry-After")?)
 }
 

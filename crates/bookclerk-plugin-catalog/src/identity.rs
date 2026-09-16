@@ -128,22 +128,31 @@ pub fn is_platform_plugin_key(key: &PluginKey) -> bool {
     PLATFORM_ARTIFACTS.iter().any(|a| a.plugin_key() == *key)
 }
 
-/// True when `key` names a host-controlled first-party database adapter.
+/// Host-controlled first-party destination identities (`local`, `s3`).
 ///
-/// Matches exact package name on `platform:` or the canonical crates.io
-/// `cargo:` index. The live manifest alias is **not** consulted here; callers
-/// that inject host-private state must also require verified provenance and
-/// the expected alias on the discovered plugin. Path / npm / PyPI /
-/// third-party cargo indexes never inherit first-party behavior from an alias.
-#[must_use]
-pub fn is_first_party_database_adapter(key: &PluginKey) -> bool {
-    let package = key.package();
-    let spec = FIRST_PARTY_DATABASE_ADAPTERS
-        .iter()
-        .find(|a| a.package_name == package);
-    if spec.is_none() {
-        return false;
-    }
+/// Typed `[output.local]` / `[output.s3]` secrets and extra jail grants require
+/// this exact package on `platform:` or the canonical crates.io `cargo:` index
+/// **and** a verified artifact. A third-party tree that merely reuses the
+/// `local` / `s3` alias never matches. The live manifest alias is **not**
+/// consulted here.
+pub const FIRST_PARTY_DESTINATIONS: &[PlatformArtifact] = &[
+    PlatformArtifact {
+        package_name: "bookclerk-plugin-destination-local",
+        manifest_id: "local",
+        allowed_entrypoints: &["storage"],
+        allowed_bindings: &["config", "work_fs"],
+    },
+    PlatformArtifact {
+        package_name: "bookclerk-plugin-destination-s3",
+        manifest_id: "s3",
+        allowed_entrypoints: &["storage"],
+        allowed_bindings: &["config", "secrets"],
+    },
+];
+
+/// True when `key` is a host-controlled first-party package on `platform:` or
+/// the canonical crates.io `cargo:` index.
+fn first_party_scheme_ok(key: &PluginKey) -> bool {
     match key.scheme() {
         ProvenanceScheme::Platform => true,
         ProvenanceScheme::Cargo => key
@@ -151,6 +160,29 @@ pub fn is_first_party_database_adapter(key: &PluginKey) -> bool {
             .starts_with(&format!("cargo:{CRATES_IO_INDEX}#")),
         _ => false,
     }
+}
+
+/// True when `key` matches an exact package name in `table` on a first-party
+/// scheme. Path / npm / PyPI / third-party cargo indexes never inherit
+/// host-private behavior from an alias.
+fn first_party_named(key: &PluginKey, table: &[PlatformArtifact]) -> bool {
+    table.iter().any(|a| a.package_name == key.package()) && first_party_scheme_ok(key)
+}
+
+/// True when `key` names a host-controlled first-party database adapter.
+///
+/// Matches exact package name on `platform:` or the canonical crates.io
+/// `cargo:` index. Callers that inject host-private state must also require
+/// verified provenance and the expected alias on the discovered plugin.
+#[must_use]
+pub fn is_first_party_database_adapter(key: &PluginKey) -> bool {
+    first_party_named(key, FIRST_PARTY_DATABASE_ADAPTERS)
+}
+
+/// True when `key` names a host-controlled first-party destination (`local` / `s3`).
+#[must_use]
+pub fn is_first_party_destination(key: &PluginKey) -> bool {
+    first_party_named(key, FIRST_PARTY_DESTINATIONS)
 }
 
 /// Provenance scheme in a canonical [`PluginKey`].
@@ -553,6 +585,15 @@ impl PluginProvenance {
     pub fn grants_platform_defaults(self) -> bool {
         matches!(self, Self::PlatformBundled)
     }
+
+    /// True when discovery verified the installed payload against the host ledger.
+    ///
+    /// [`Self::PlatformBundled`] and [`Self::VerifiedInstalled`] qualify.
+    /// [`Self::LocalDevelopment`] (no receipt) and [`Self::Modified`] never do.
+    #[must_use]
+    pub fn is_verified_artifact(self) -> bool {
+        matches!(self, Self::PlatformBundled | Self::VerifiedInstalled)
+    }
 }
 
 impl fmt::Display for PluginProvenance {
@@ -827,6 +868,19 @@ mod tests {
         };
         let evil = PluginKey::from_coordinate(&other_reg, "sqlite").unwrap();
         assert!(!is_first_party_database_adapter(&evil));
+    }
+
+    #[test]
+    fn first_party_destination_requires_exact_package_not_alias() {
+        let local = PluginKey::platform("bookclerk-plugin-destination-local", "local").unwrap();
+        assert!(is_first_party_destination(&local));
+        let s3 = PluginKey::platform("bookclerk-plugin-destination-s3", "s3").unwrap();
+        assert!(is_first_party_destination(&s3));
+        let path = PluginKey::from_install_path(Path::new("/tmp/local"), "local").unwrap();
+        assert!(!is_first_party_destination(&path));
+        let npm = PackageCoordinate::parse("npm:bookclerk-plugin-destination-local@1.0.0").unwrap();
+        let npm_key = PluginKey::from_coordinate(&npm, "local").unwrap();
+        assert!(!is_first_party_destination(&npm_key));
     }
 
     #[test]

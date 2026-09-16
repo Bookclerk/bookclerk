@@ -1,10 +1,11 @@
 //! `bookclerk export` — native backup, Libation, library spreadsheet, Postgres.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bookclerk_config::Config;
 use bookclerk_migrate::{
-    export_libation, export_native, LibationExportOptions, NativeExportOptions,
+    export_libation, export_native, write_classic_storefront_file, LibationExportOptions,
+    LibationExportSummary, NativeExportOptions,
 };
 use clap::Subcommand;
 
@@ -115,18 +116,10 @@ pub async fn run(
                 dry_run,
             })
             .await?;
-            emit(format, &summary, || {
-                println!("dest\t{}", path.display());
-                println!("settings\t{}", summary.settings);
-                println!("accounts\t{}", summary.accounts);
-                println!("books\t{}", summary.books);
-                for w in &summary.warnings {
-                    eprintln!("warning: {w}");
-                }
-                if dry_run {
-                    eprintln!("dry-run: no files written");
-                }
-            })
+            if !dry_run {
+                write_classic_storefront_file(&config.paths().files_dir, &path).await?;
+            }
+            emit_libation_export(format, &path, &summary, dry_run)
         }
         ExportCommand::Library {
             path,
@@ -165,6 +158,30 @@ pub async fn run(
         }
         ExportCommand::Postgres { args } => copydb::run(args, config).await,
     }
+}
+
+/// Prints a Libation export summary without reading identity rows.
+fn emit_libation_export(
+    format: OutputFormat,
+    dest: &Path,
+    summary: &LibationExportSummary,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let n_storefronts = summary.storefronts;
+    let n_books = summary.books;
+    let notes = summary.warnings.clone();
+    emit(format, summary, || {
+        println!("dest\t{}", dest.display());
+        println!("settings\t{}", summary.settings);
+        println!("accounts\t{n_storefronts}");
+        println!("books\t{n_books}");
+        for note in &notes {
+            eprintln!("warning: {note}");
+        }
+        if dry_run {
+            eprintln!("dry-run: no files written");
+        }
+    })
 }
 
 /// Default postgres format for the redesigned CLI (native flat schema).

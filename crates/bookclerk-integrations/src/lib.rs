@@ -2,8 +2,7 @@
 //!
 //! Host binaries should depend on [`Integration`] / [`IntegrationRegistry`] only.
 //! First-party adapters (e.g. Audiobookshelf) live in
-//! `bookclerk-plugin-integration-*` crates and register via
-//! `bookclerk_plugin_host::register_builtin_integrations`.
+//! `bookclerk-plugin-integration-*` crates and run as staged external guests.
 
 mod brand;
 mod error;

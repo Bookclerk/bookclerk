@@ -47,7 +47,31 @@ impl IntegrationRegistry {
     /// `Some(...)` when found / applicable; otherwise `None`.
     #[must_use]
     pub fn get(&self, id: &str) -> Option<Arc<dyn Integration>> {
-        self.integrations.iter().find(|i| i.id() == id).cloned()
+        let mut matches = self.matches(id);
+        (matches.len() == 1).then(|| matches.remove(0))
+    }
+
+    /// Integrations whose PluginKey or display alias match `id`.
+    fn matches(&self, id: &str) -> Vec<Arc<dyn Integration>> {
+        let needle = id.trim();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let by_key: Vec<_> = self
+            .integrations
+            .iter()
+            .filter(|i| i.plugin_key() == needle)
+            .cloned()
+            .collect();
+        if !by_key.is_empty() {
+            return by_key;
+        }
+        let lower = needle.to_ascii_lowercase();
+        self.integrations
+            .iter()
+            .filter(|i| i.id().eq_ignore_ascii_case(&lower))
+            .cloned()
+            .collect()
     }
 
     /// Returns every registered integration in registration order.

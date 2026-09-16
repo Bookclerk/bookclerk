@@ -13,24 +13,8 @@ name = "bookclerkd"
 path = "src/main.rs"
 
 [features]
-# External guests only by default — see `bundled-plugins` on bookclerk-cli.
+# External guests only. Production hosts never link storefront crates.
 default = []
-bundled-plugins = [
-    "bookclerk-plugin-source-audible",
-    "bookclerk-plugin-source-libro",
-    "bookclerk-plugin-source-chirp",
-    "bookclerk-plugin-source-graphicaudio",
-    "bookclerk-plugin-integration-audiobookshelf",
-]
-bookclerk-plugin-source-audible = ["bookclerk-plugin-host/bookclerk-plugin-source-audible"]
-bookclerk-plugin-source-libro = ["bookclerk-plugin-host/bookclerk-plugin-source-libro"]
-bookclerk-plugin-source-chirp = ["bookclerk-plugin-host/bookclerk-plugin-source-chirp"]
-bookclerk-plugin-source-graphicaudio = [
-    "bookclerk-plugin-host/bookclerk-plugin-source-graphicaudio",
-]
-bookclerk-plugin-integration-audiobookshelf = [
-    "bookclerk-plugin-host/bookclerk-plugin-integration-audiobookshelf",
-]
 
 [dependencies]
 anyhow.workspace = true

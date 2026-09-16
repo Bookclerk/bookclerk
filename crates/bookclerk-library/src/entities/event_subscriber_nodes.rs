@@ -9,7 +9,7 @@ pub struct Model {
     /// Daemon node id (primary key part; files-dir UUID).
     #[sea_orm(primary_key, auto_increment = false)]
     pub node_id: String,
-    /// Subscriber plugin id (primary key part).
+    /// Subscriber plugin identity (canonical PluginKey).
     #[sea_orm(primary_key, auto_increment = false)]
     pub plugin_id: String,
     /// JSON array of catalog subscriptions (`type`, `schema_versions`, …).

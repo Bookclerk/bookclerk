@@ -32,10 +32,10 @@ pub use extract::{
     extract_archive, safe_join, sha256_bytes, sha256_file, MAX_ARCHIVE_BYTES, MAX_EXTRACTED_BYTES,
 };
 pub use identity::{
-    is_first_party_database_adapter, is_platform_plugin_key, platform_artifact, ArtifactIdentity,
-    PlatformArtifact, PluginInstallIdentity, PluginKey, PluginProvenance, ProvenanceScheme,
-    CRATES_IO_INDEX, FIRST_PARTY_DATABASE_ADAPTERS, PLATFORM_ARTIFACTS, PLATFORM_PRODUCT,
-    PLUGIN_KEY_FS_ID_HEX_CHARS,
+    is_first_party_database_adapter, is_first_party_destination, is_platform_plugin_key,
+    platform_artifact, ArtifactIdentity, PlatformArtifact, PluginInstallIdentity, PluginKey,
+    PluginProvenance, ProvenanceScheme, CRATES_IO_INDEX, FIRST_PARTY_DATABASE_ADAPTERS,
+    FIRST_PARTY_DESTINATIONS, PLATFORM_ARTIFACTS, PLATFORM_PRODUCT, PLUGIN_KEY_FS_ID_HEX_CHARS,
 };
 pub use install::{
     InstallOptions, InstallOutcome, Installer, DOWNLOAD_TIMEOUT, MAX_DOWNLOAD_BYTES,

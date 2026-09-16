@@ -11,6 +11,6 @@ pub const ID: &str = "sqlite";
 pub mod plugin;
 pub mod sqlite;
 
-pub use sqlite::{open, open_memory_unmigrated};
+pub use sqlite::{drop_unit_files, open, open_memory_unmigrated};
 #[cfg(feature = "host-helpers")]
 pub use sqlite::{open_memory, open_store, open_store_memory};

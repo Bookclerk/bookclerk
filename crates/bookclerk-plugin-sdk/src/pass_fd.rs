@@ -68,7 +68,7 @@ pub fn recv_passed_fd() -> Result<i32> {
 #[cfg(not(unix))]
 pub fn recv_passed_fd() -> Result<i32> {
     Err(SdkError::message(
-        "descriptor side channel is not supported on this platform".into(),
+        "descriptor side channel is not supported on this platform",
     ))
 }
 
@@ -88,12 +88,18 @@ pub fn recv_passed_fd() -> Result<i32> {
 #[must_use]
 pub fn fd_proc_path(fd: i32) -> PathBuf {
     #[cfg(target_os = "linux")]
-    let path = format!("/proc/self/fd/{fd}");
-    #[cfg(target_os = "macos")]
-    let path = format!("/dev/fd/{fd}");
-    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-    let path = format!("/dev/fd/{fd}");
-    PathBuf::from(path)
+    {
+        PathBuf::from(format!("/proc/self/fd/{fd}"))
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        PathBuf::from(format!("/dev/fd/{fd}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fd;
+        PathBuf::new()
+    }
 }
 
 #[cfg(unix)]

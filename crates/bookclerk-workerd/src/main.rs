@@ -7,8 +7,7 @@
 //!
 //! Under Linux Landlock `OutboundListen`, only `bind(port=0)` is allowed — the
 //! launcher binds the bridge RPC socket itself and passes it to workerd via
-//! `--socket-fd` (same inherited-FD pattern as the plugin fetch-directory
-//! channel). The adapter-private `GRANTED` capability channel uses a Linux
+//! `--socket-fd`. The adapter-private `GRANTED` capability channel uses a Linux
 //! abstract unix socket (or a relative `unix:granted.sock` under `$TMPDIR` on
 //! other Unix), or an already-bound loopback TCP listener on Windows
 //! (AppContainer-friendly).
@@ -16,8 +15,6 @@
 //! Author `modules/` stay in the read-only install root (Cap'n Proto
 //! `/modules/…` embeds + `--import-path`). `$TMPDIR` only holds generated
 //! bridge assets, config, and sockets.
-
-#![cfg_attr(unix, allow(unsafe_code))] // fcntl clear CLOEXEC for --socket-fd
 
 mod manifest_env;
 
@@ -317,7 +314,15 @@ async fn run_native_behind_workerd(
         }
         fds
     };
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let socket_proxy = {
+        let sid = std::env::var(bookclerk_workerd::native_guest::NESTED_AC_SID_ENV).ok();
+        bookclerk_workerd::pipe_bind::bind_socket_proxy(sid.as_deref())
+            .context("bind socket proxy named pipe")?
+    };
+    #[cfg(not(any(unix, windows)))]
+    let inherit_fds: Vec<i32> = Vec::new();
+    #[cfg(windows)]
     let inherit_fds: Vec<i32> = Vec::new();
 
     let mut guest_cmd = bookclerk_workerd::native_guest::native_guest_command(
@@ -327,6 +332,13 @@ async fn run_native_behind_workerd(
         &inherit_fds,
     )?;
     #[cfg(unix)]
+    {
+        guest_cmd.env(
+            bookclerk_workerd::socket_proxy::SOCKET_PROXY_ENV,
+            &socket_proxy.spec,
+        );
+    }
+    #[cfg(windows)]
     {
         guest_cmd.env(
             bookclerk_workerd::socket_proxy::SOCKET_PROXY_ENV,
@@ -427,6 +439,20 @@ async fn run_native_behind_workerd(
         )?;
         fence
     };
+    #[cfg(windows)]
+    let socket_fence = {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let fence = Arc::new(AtomicBool::new(false));
+        bookclerk_workerd::socket_proxy::spawn_windows(
+            socket_proxy.first,
+            socket_proxy.name,
+            socket_proxy.package_sid,
+            egress.policy().clone(),
+            Arc::clone(&fence),
+        )?;
+        fence
+    };
 
     let result = mediate_native(
         generated.listen.port(),
@@ -442,6 +468,8 @@ async fn run_native_behind_workerd(
     .await;
 
     #[cfg(unix)]
+    socket_fence.store(true, std::sync::atomic::Ordering::SeqCst);
+    #[cfg(windows)]
     socket_fence.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let _ = child.kill().await;
@@ -546,18 +574,7 @@ async fn mediate_bridge(
 /// Clears `FD_CLOEXEC` so workerd inherits the bound RPC listener via `--socket-fd`.
 fn clear_cloexec(listener: &std::net::TcpListener) -> Result<()> {
     use std::os::fd::AsRawFd;
-    let fd = listener.as_raw_fd();
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if flags < 0 {
-        bail!("F_GETFD failed: {}", std::io::Error::last_os_error());
-    }
-    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
-        bail!(
-            "F_SETFD clear CLOEXEC failed: {}",
-            std::io::Error::last_os_error()
-        );
-    }
-    Ok(())
+    bookclerk_workerd::unix_bind::clear_cloexec(listener.as_raw_fd()).map_err(anyhow::Error::from)
 }
 
 /// Forwards workerd stdout/stderr lines through tracing (JSON when the parent is bookclerkd).

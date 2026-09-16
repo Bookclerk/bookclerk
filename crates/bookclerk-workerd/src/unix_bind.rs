@@ -10,9 +10,12 @@
 //! absolute path.
 //!
 //! Linux GRANTED (workerd ↔ launcher) stays `unix-abstract:` — workerd is not
-//! inside the nested native Landlock domain. The native TCP proxy cannot: a
-//! pathname under `state_dir` named as `/proc/self/fd/{n}/sockets.sock` stays
-//! under `sun_path`; Isolation::Off guests inherit directory fd `{n}`.
+//! inside the nested native Landlock domain. The native TCP proxy cannot: Landlock
+//! ABI 6 `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET` (applied by every jail, including
+//! nested `NetPolicy::Deny`) refuses abstract connect to sockets created outside
+//! the guest's domain. Production `BOOKCLERK_SOCKET_PROXY` is therefore a
+//! pathname under `state_dir`, named as `/proc/self/fd/{n}/sockets.sock` so
+//! `sun_path` stays short; the nested jail inherits directory fd `{n}`.
 //! Other Unix: bind a pathname under `state_dir` and pass a **relative**
 //! `unix:granted.sock` to workerd (cwd is `state_dir`).
 //!
@@ -31,10 +34,10 @@ use rand::RngCore;
 #[cfg(not(target_os = "linux"))]
 use std::sync::Mutex;
 
-/// Prefix kept for SDK tests and non-Linux fallbacks.
+/// Prefix the native SDK still accepts for tests and non-Linux fallbacks.
 ///
 /// Production Linux `BOOKCLERK_SOCKET_PROXY` is a `/proc/self/fd/` pathname, not
-/// this prefix.
+/// this prefix: nested Landlock ABI 6 scopes abstract sockets out of the guest.
 pub const SOCKET_PROXY_ABSTRACT_PREFIX: &str = "abstract:";
 
 /// Bound native TCP proxy and the directory fd the nested guest must inherit.
@@ -287,12 +290,12 @@ mod tests {
         let proxy = bind_socket_proxy(dir.path()).expect("proxy");
         assert!(
             proxy.spec.starts_with("/proc/self/fd/"),
-            "BOOKCLERK_SOCKET_PROXY must be a /proc/self/fd pathname, got {}",
+            "nested Landlock scopes abstract sockets; BOOKCLERK_SOCKET_PROXY must be a /proc/self/fd pathname, got {}",
             proxy.spec
         );
         assert!(
             !proxy.spec.starts_with(SOCKET_PROXY_ABSTRACT_PREFIX),
-            "abstract SOCKET_PROXY is the wrong shape: {}",
+            "abstract SOCKET_PROXY is unreachable from nested Deny: {}",
             proxy.spec
         );
         assert!(

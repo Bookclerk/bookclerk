@@ -649,6 +649,7 @@ mod tests {
         assert_eq!(min_supported_schema_version(), None);
         assert!(!unreleased_sql().trim().is_empty());
         assert!(unreleased_sql().contains("plugin_databases"));
+        assert!(unreleased_sql().contains("adapter_plugin_key"));
         assert!(unreleased_sql().contains("dispatch_snapshot_json"));
         assert!(unreleased_sql().contains("bookclerk_slots"));
         assert_eq!(current_canonical_statements(), unreleased_statements());

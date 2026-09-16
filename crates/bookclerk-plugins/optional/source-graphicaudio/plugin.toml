@@ -9,6 +9,11 @@ entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "outbound"
+tcp = [
+    { host = "www.graphicaudio.net", ports = [443] },
+    { host = "media.graphicaudio.net", ports = [443] },
+    { host = "*.cloudfront.net", ports = [443] },
+]
 
 [vars]
 

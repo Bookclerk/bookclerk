@@ -9,6 +9,10 @@ entrypoints = ["databaseAdapter"]
 
 [capabilities.network]
 mode = "outbound"
+tcp = [{ host = "api.cloudflare.com", ports = [443] }]
+# Host spawn also overlays `[database.d1].api_base` when this guest is the
+# active database plugin. Nested jail denies ambient AF_INET; HTTP goes
+# through `bookclerk_plugin_sdk::http`.
 
 [vars]
 

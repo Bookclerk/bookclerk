@@ -9,8 +9,9 @@ entrypoints = ["remoteLibrary", "oidc"]
 
 [capabilities.network]
 mode = "outbound"
-# Self-hosted ABS: list your server hostname(s) here. www.audiobookshelf.org
-# alone is insufficient for talking to your library instance.
+# Self-hosted ABS: host spawn overlays `[integrations.audiobookshelf].base_url`
+# as TCP + loopback/private CIDRs. Extra hostnames can be added here or by the
+# operator. Nested jail denies ambient AF_INET; HTTP uses the SDK client.
 
 [vars]
 

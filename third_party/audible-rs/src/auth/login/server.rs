@@ -38,6 +38,8 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::api::locale::{self, Locale};
 use crate::auth::device::{Device, DeviceKind};
+use bookclerk_plugin_sdk::http::header::{self, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use url::Url;
 
 use super::internal::BROWSER_USER_AGENT;
 use super::{LoginError, Pkce, authorize_url, generate_frc, username_login_supported};
@@ -75,7 +77,7 @@ pub struct ServerLogin {
 
 /// The active sign-in session, created once the config form is submitted.
 struct ActiveSession {
-    upstream: reqwest::Client,
+    upstream: crate::HttpClient,
     /// `https://www.amazon.de` (or the Audible host for username login).
     amazon_base: String,
     locale: Locale,
@@ -258,18 +260,18 @@ impl LoginServer {
 /// cookies that suppress most captchas. Redirects are **not** followed — they
 /// are passed through to the browser (see [`proxy`]) so its address bar stays
 /// in sync and Amazon's multi-step pages keep resolving relative links.
-fn build_upstream_client(amazon_base: &str) -> Result<reqwest::Client, LoginError> {
-    let jar = Arc::new(reqwest::cookie::Jar::default());
-    if let Ok(base) = reqwest::Url::parse(&format!("{amazon_base}/")) {
+fn build_upstream_client(amazon_base: &str) -> Result<crate::HttpClient, LoginError> {
+    let jar = bookclerk_plugin_sdk::http::CookieJar::new();
+    if let Ok(base) = Url::parse(&format!("{amazon_base}/")) {
         for cookie in init_cookies() {
             jar.add_cookie_str(&cookie, &base);
         }
     }
-    Ok(reqwest::Client::builder()
+    Ok(crate::HttpClient::builder()
         .connect_timeout(crate::api::client::CONNECT_TIMEOUT)
         .user_agent(BROWSER_USER_AGENT)
         .cookie_provider(jar)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(bookclerk_plugin_sdk::http::redirect::Policy::none())
         .build()?)
 }
 
@@ -428,7 +430,7 @@ async fn start_session(
     let device_obj = Device::generate(device);
     let pkce = Pkce::generate();
     let authorize = authorize_url(&device_obj, &pkce, &locale, username);
-    let url = reqwest::Url::parse(&authorize).map_err(|_| LoginError::InvalidRedirect)?;
+    let url = Url::parse(&authorize).map_err(|_| LoginError::InvalidRedirect)?;
     let amazon_base = format!(
         "{}://{}",
         url.scheme(),
@@ -464,7 +466,7 @@ async fn proxy(
     parts: hyper::http::request::Parts,
     body: Incoming,
     state: &ProxyState,
-    upstream: &reqwest::Client,
+    upstream: &crate::HttpClient,
     amazon_base: &str,
 ) -> Result<Response<Full<Bytes>>, LoginError> {
     // The browser navigated to maplanding carrying the code — capture before
@@ -493,9 +495,9 @@ async fn proxy(
         .map_err(|error| LoginError::LoginFailed(format!("reading the browser request: {error}")))?
         .to_bytes();
 
-    let mut request = upstream
-        .request(parts.method, &upstream_url)
-        .headers(headers);
+    let method = bookclerk_plugin_sdk::http::Method::from_bytes(parts.method.as_str().as_bytes())
+        .unwrap_or(bookclerk_plugin_sdk::http::Method::GET);
+    let mut request = upstream.request(method, &upstream_url).headers(headers);
     if !body.is_empty() {
         request = request.body(body.to_vec());
     }
@@ -509,7 +511,7 @@ async fn proxy(
     if status.is_redirection() {
         let location = response
             .headers()
-            .get(reqwest::header::LOCATION)
+            .get(header::LOCATION)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         let Some(location) = location else {
@@ -536,7 +538,7 @@ async fn proxy(
 
     let content_type = response
         .headers()
-        .get(reqwest::header::CONTENT_TYPE)
+        .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_owned();
@@ -559,8 +561,8 @@ async fn proxy(
 
 /// Forwards the browser's request headers to Amazon, dropping ones that must be
 /// recomputed or that would leak the proxy/browser transport state.
-fn forward_headers(incoming: &hyper::HeaderMap) -> reqwest::header::HeaderMap {
-    let mut out = reqwest::header::HeaderMap::new();
+fn forward_headers(incoming: &hyper::HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::new();
     for (name, value) in incoming {
         let drop = matches!(
             name.as_str(),
@@ -577,8 +579,8 @@ fn forward_headers(incoming: &hyper::HeaderMap) -> reqwest::header::HeaderMap {
             continue;
         }
         if let (Ok(header_name), Ok(header_value)) = (
-            reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()),
-            reqwest::header::HeaderValue::from_bytes(value.as_bytes()),
+            HeaderName::from_bytes(name.as_str().as_bytes()),
+            HeaderValue::from_bytes(value.as_bytes()),
         ) {
             out.insert(header_name, header_value);
         }

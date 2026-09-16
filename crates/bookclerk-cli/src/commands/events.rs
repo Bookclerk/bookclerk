@@ -61,7 +61,7 @@ pub async fn run(
         }
         EventsCommand::Retry { id } => {
             let v = daemon_cmd::post_json_async(
-                &format!("{base}/api/events/deliveries/{id}/retry"),
+                &delivery_action_url(&base, &id, "retry"),
                 serde_json::json!({}),
                 token.as_deref(),
             )
@@ -72,7 +72,7 @@ pub async fn run(
         }
         EventsCommand::Ack { id } => {
             let v = daemon_cmd::post_json_async(
-                &format!("{base}/api/events/deliveries/{id}/acknowledge"),
+                &delivery_action_url(&base, &id, "acknowledge"),
                 serde_json::json!({}),
                 token.as_deref(),
             )
@@ -83,7 +83,7 @@ pub async fn run(
         }
         EventsCommand::Cancel { id } => {
             let v = daemon_cmd::post_json_async(
-                &format!("{base}/api/events/deliveries/{id}/cancel"),
+                &delivery_action_url(&base, &id, "cancel"),
                 serde_json::json!({}),
                 token.as_deref(),
             )
@@ -94,7 +94,7 @@ pub async fn run(
         }
         EventsCommand::Resume { id } => {
             let v = daemon_cmd::post_json_async(
-                &format!("{base}/api/events/deliveries/{id}/resume"),
+                &delivery_action_url(&base, &id, "resume"),
                 serde_json::json!({}),
                 token.as_deref(),
             )
@@ -140,6 +140,79 @@ fn print_deliveries(v: &Value) {
             row["state"].as_str().unwrap_or("-"),
             row["attemptCount"],
             row["errorMessage"].as_str().unwrap_or("")
+        );
+    }
+}
+
+/// `POST {base}/api/events/deliveries/{id}/{action}` with `{id}` as one path segment.
+///
+/// Delivery ids are `{event_id}:{plugin_id}`. Canonical PluginKey text uses `/`
+/// and `#`, which must not split the path or start a URL fragment.
+fn delivery_action_url(base: &str, id: &str, action: &str) -> String {
+    format!(
+        "{}/api/events/deliveries/{}/{action}",
+        base.trim_end_matches('/'),
+        encode_path_segment(id)
+    )
+}
+
+/// Percent-encode a single path segment the same way as JS `encodeURIComponent`.
+fn encode_path_segment(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_path_segment_matches_encode_uri_component() {
+        assert_eq!(encode_path_segment("plain"), "plain");
+        assert_eq!(
+            encode_path_segment("evt:platform:github.com/org/pkg#rev"),
+            "evt%3Aplatform%3Agithub.com%2Forg%2Fpkg%23rev"
+        );
+        assert_eq!(encode_path_segment("a b"), "a%20b");
+    }
+
+    #[test]
+    fn delivery_action_url_keeps_plugin_key_in_one_segment() {
+        let id = "11111111-1111-1111-1111-111111111111:platform:github.com/org/pkg";
+        let url = delivery_action_url("http://127.0.0.1:8787/", id, "retry");
+        assert_eq!(
+            url,
+            "http://127.0.0.1:8787/api/events/deliveries/11111111-1111-1111-1111-111111111111%3Aplatform%3Agithub.com%2Forg%2Fpkg/retry"
+        );
+        assert!(
+            !url.contains("/org/pkg/retry"),
+            "slash must not add path segments"
+        );
+        let hashed = delivery_action_url(
+            "http://127.0.0.1:8787",
+            "evt:registry:https://crates.io#bookclerk-plugin-echo",
+            "acknowledge",
+        );
+        assert!(
+            hashed.contains("%23bookclerk-plugin-echo/acknowledge"),
+            "hash must not start a URL fragment: {hashed}"
         );
     }
 }

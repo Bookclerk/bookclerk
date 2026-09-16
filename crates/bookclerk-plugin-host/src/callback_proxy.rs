@@ -129,6 +129,12 @@ async fn start_unix(
     })
 }
 
+/// Starts the Windows named-pipe OAuth callback forwarder.
+///
+/// # Errors
+///
+/// Returns when the pipe cannot be created or the AppContainer DACL cannot
+/// be applied.
 #[cfg(windows)]
 async fn start_windows(
     tcp: TcpListener,
@@ -146,7 +152,7 @@ async fn start_windows(
         .reject_remote_clients(true)
         .pipe_mode(PipeMode::Byte);
 
-    let mut server = if let Some(sid) = package_sid {
+    let server = if let Some(sid) = package_sid {
         // Package SID DACL + Low mandatory label so the AppContainer guest can
         // open the pipe; default CreateNamedPipe DACLs deny Package SIDs.
         let mut sec = bookclerk_sandbox::spawn::NamedPipeSecurity::for_app_container(sid)

@@ -9,6 +9,16 @@ entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "outbound"
+tcp = [
+    { host = "*.audible.com", ports = [443] },
+    { host = "*.amazon.com", ports = [443] },
+    { host = "*.media-amazon.com", ports = [443] },
+    { host = "*.amazonaws.com", ports = [443] },
+    { host = "api.audnex.us", ports = [443] },
+]
+# Native TCP via `bookclerk_plugin_sdk::http` / `connect`. Fetch `domains`
+# are workerd-only. CDNs and regional Amazon hosts match the wildcards;
+# operator additions can extend the set.
 
 [vars]
 

@@ -6,6 +6,7 @@
 //! No Audible account is required.
 
 use bookclerk_library::{LibraryStore, NewBook};
+use bookclerk_plugin_sdk::http::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{EnrichError, Result};
@@ -112,7 +113,7 @@ pub async fn lookup_by_metadata(
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn lookup_by_metadata_with_client(
-    http: &reqwest::Client,
+    http: &Client,
     query: &MatchQuery<'_>,
     region: &str,
     min_confidence: f64,
@@ -426,7 +427,7 @@ pub async fn enrichment_for_asin(asin: &str, region: &str) -> Result<Option<Enri
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn enrichment_for_asin_with_client(
-    http: &reqwest::Client,
+    http: &Client,
     asin: &str,
     region: &str,
 ) -> Result<Option<Enrichment>> {

@@ -498,7 +498,10 @@ async fn fetch_text(url: &str) -> Result<String> {
     let text = downloader::plain_http_client()
         .map_err(|err| AudibleError::Download(err.to_string()))?
         .get(url)
-        .header(reqwest::header::USER_AGENT, downloader::CENC_USER_AGENT)
+        .header(
+            bookclerk_plugin_sdk::http::header::USER_AGENT,
+            downloader::CENC_USER_AGENT,
+        )
         .send()
         .await
         .map_err(|err| AudibleError::Download(err.to_string()))?

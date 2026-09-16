@@ -26,7 +26,9 @@ pub struct Model {
     pub allowed_scopes_json: String,
     /// When non-zero, authorize and token endpoints accept this client.
     pub enabled: i64,
-    /// Plugin id that owns this client; `None` for operator-created clients.
+    /// Plugin identity that owns this client; `None` for operator-created
+    /// clients. Product guests store the canonical PluginKey (alias-era
+    /// rows are rewritten on the next heartbeat).
     pub plugin_id: Option<String>,
 }
 

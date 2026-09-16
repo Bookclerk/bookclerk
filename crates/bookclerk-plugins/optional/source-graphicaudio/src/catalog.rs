@@ -5,6 +5,7 @@
 
 use crate::error::{GraphicAudioError, Result};
 use crate::magento::{parse_html_fragment, DEFAULT_STORE_URL};
+use bookclerk_plugin_sdk::http::Client as HttpClient;
 
 /// Desktop Chrome User-Agent used for unauthenticated Magento catalog pages.
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
@@ -44,12 +45,12 @@ impl MagentoCatalogProduct {
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub fn catalog_http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::new())
+pub fn catalog_http_client() -> Result<HttpClient> {
+    Ok(HttpClient::new())
 }
 
 /// Fetch HTML from an absolute Magento URL.
-pub async fn fetch_catalog_html(http: &reqwest::Client, url: &str) -> Result<String> {
+pub async fn fetch_catalog_html(http: &HttpClient, url: &str) -> Result<String> {
     let resp = http
         .get(url)
         .header("user-agent", BROWSER_UA)
@@ -71,7 +72,7 @@ pub async fn fetch_catalog_html(http: &reqwest::Client, url: &str) -> Result<Str
 ///
 /// Returns an error when the operation fails.
 pub async fn fetch_product_by_id(
-    http: &reqwest::Client,
+    http: &HttpClient,
     store_base: &str,
     product_id: &str,
 ) -> Result<(String, Vec<MagentoCatalogProduct>, Option<String>)> {
@@ -92,7 +93,7 @@ pub async fn fetch_product_by_id(
 ///
 /// Returns an error when the operation fails.
 pub async fn search_catalog(
-    http: &reqwest::Client,
+    http: &HttpClient,
     store_base: &str,
     query: &str,
 ) -> Result<Vec<MagentoCatalogProduct>> {
@@ -105,7 +106,7 @@ pub async fn search_catalog(
 ///
 /// Returns an error when the operation fails.
 pub async fn search_catalog_page(
-    http: &reqwest::Client,
+    http: &HttpClient,
     store_base: &str,
     query: &str,
     page: u32,
@@ -158,7 +159,7 @@ pub async fn search_catalog_page(
 ///
 /// Returns an error when the operation fails.
 pub async fn fetch_series_page(
-    http: &reqwest::Client,
+    http: &HttpClient,
     series_url: &str,
 ) -> Result<Vec<MagentoCatalogProduct>> {
     let html = fetch_catalog_html(http, series_url).await?;
@@ -178,7 +179,7 @@ pub async fn fetch_series_page(
 ///
 /// Returns an error when the operation fails.
 pub async fn expand_from_product_id(
-    http: &reqwest::Client,
+    http: &HttpClient,
     store_base: Option<&str>,
     product_id: &str,
 ) -> Result<Vec<MagentoCatalogProduct>> {
@@ -202,7 +203,7 @@ pub async fn expand_from_product_id(
 ///
 /// Returns an error when the operation fails.
 pub async fn expand_from_search(
-    http: &reqwest::Client,
+    http: &HttpClient,
     store_base: Option<&str>,
     query: &str,
 ) -> Result<Vec<MagentoCatalogProduct>> {

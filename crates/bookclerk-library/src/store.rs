@@ -566,17 +566,29 @@ impl LibraryStore {
             .collect())
     }
 
+    /// Count library identity rows (SQL `COUNT`, not a full fetch).
+    ///
+    /// Same cardinality as [`Self::count_accounts`]. Prefer this when the caller
+    /// only needs a number for an operator-facing summary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn count_identities(&self) -> Result<i64> {
+        let count = accounts::Entity::find()
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(count as i64)
+    }
+
     /// Count account rows (SQL `COUNT`, not a full fetch).
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn count_accounts(&self) -> Result<i64> {
-        let count = accounts::Entity::find()
-            .count(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(count as i64)
+        self.count_identities().await
     }
 
     /// Resolve an account row by id or nickname (`label`), case-insensitive.
@@ -3258,7 +3270,10 @@ impl LibraryStore {
     /// New rows start **disabled**. Existing rows owned by the **same** plugin keep
     /// `enabled`, name, scopes, and secret. Collisions with custom (operator) clients
     /// or a different plugin's `client_id` are hard errors — this never mutates
-    /// an unowned row.
+    /// an unowned row. Alias-era rows (`plugin_id = "audiobookshelf"`) are rewritten
+    /// to the provenance-qualified PluginKey (`…#audiobookshelf`) on the next
+    /// heartbeat from that guest; a different PluginKey with the same alias
+    /// cannot take the client over.
     ///
     /// # Errors
     ///
@@ -3286,7 +3301,7 @@ impl LibraryStore {
                          plugin `{plugin_id}` cannot take it over"
                     )));
                 }
-                Some(owner) if owner != plugin_id => {
+                Some(owner) if !oidc_plugin_owner_matches(owner, plugin_id) => {
                     return Err(LibraryError::Conflict(format!(
                         "OIDC client_id `{client_id}` is owned by plugin `{owner}`, \
                          not `{plugin_id}`"
@@ -3304,6 +3319,9 @@ impl LibraryStore {
                 .ok_or_else(|| LibraryError::Other(anyhow::anyhow!("oidc client vanished")))?
                 .into();
             am.redirect_uris_json = Set(uris);
+            if existing.plugin_id.as_deref() != Some(plugin_id) {
+                am.plugin_id = Set(Some(plugin_id.to_string()));
+            }
             let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
             return Ok(oidc_client_from_model(model));
         }
@@ -6385,6 +6403,21 @@ pub fn fallback_work_key(
 /// Current UTC timestamp as RFC 3339 text for SeaORM `TEXT` columns.
 fn now_str() -> String {
     Utc::now().to_rfc3339()
+}
+
+/// True when `incoming` is the same OIDC owner as `stored`.
+///
+/// Exact match, or an alias-era row (`audiobookshelf`) rewritten to that
+/// plugin's PluginKey (`…#audiobookshelf`). A stored PluginKey never matches
+/// a different key through the alias fragment.
+fn oidc_plugin_owner_matches(stored: &str, incoming: &str) -> bool {
+    if stored == incoming {
+        return true;
+    }
+    let Some((_, alias)) = incoming.rsplit_once('#') else {
+        return false;
+    };
+    !stored.contains(':') && stored == alias
 }
 
 /// Default OpenID scopes granted to a new Bookclerk-as-IdP client.

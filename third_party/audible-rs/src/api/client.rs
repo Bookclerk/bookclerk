@@ -2,8 +2,8 @@
 //! `AuthMode::{Auto, Signing, Token, Cookies}`. Callers pass paths only;
 //! the host URL is built from the marketplace locale.
 //!
-//! One [`Client`] serves one account (one `reqwest::Client`, pooling and
-//! HTTP/2 multiplexing across all profiles and tasks, D11). The access
+//! One [`Client`] serves one account (one HTTP client, pooling across
+//! all profiles and tasks, D11). The access
 //! token is refreshed proactively at its expiry timestamp, serialized
 //! per account through a `tokio::sync::Mutex`, and written back to the
 //! auth file.
@@ -11,10 +11,13 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
-use reqwest::{Method, StatusCode, Url};
+use bookclerk_plugin_sdk::http::header::{
+    CONTENT_TYPE, COOKIE, HeaderMap, HeaderName, HeaderValue,
+};
+use bookclerk_plugin_sdk::http::{Client as HttpClient, Method, StatusCode};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::sync::Mutex;
+use url::Url;
 
 use crate::auth::signing::{HEADER_ADP_ALG, HEADER_ADP_SIGNATURE, HEADER_ADP_TOKEN, RequestSigner};
 use crate::auth::{AccountOrigin, AuthError, Authenticator, CookieFreshness, cookies};
@@ -105,7 +108,7 @@ pub enum ApiError {
     Auth(#[from] AuthError),
     /// The HTTP layer failed.
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] crate::HttpError),
     /// The request path is not a plain absolute path.
     #[error("invalid request path {0:?}: expected an absolute path like /1.0/library")]
     InvalidPath(String),
@@ -190,7 +193,7 @@ pub struct TokenStatus {
 
 /// API client for one account.
 pub struct Client {
-    http: reqwest::Client,
+    http: HttpClient,
     auth: Arc<Mutex<Authenticator>>,
     signer: Option<Arc<RequestSigner>>,
     origin: AccountOrigin,
@@ -249,7 +252,7 @@ impl ClientBuilder {
         let device_serial = self.auth.device_serial().map(str::to_owned);
 
         Ok(Client {
-            http: reqwest::Client::builder()
+            http: HttpClient::builder()
                 .user_agent(USER_AGENT)
                 .connect_timeout(CONNECT_TIMEOUT)
                 .read_timeout(READ_TIMEOUT)
@@ -409,7 +412,7 @@ impl Client {
                 let mut value = HeaderValue::from_str(&cookie_line)
                     .map_err(|_| ApiError::AuthModeUnavailable(AuthMode::Cookies))?;
                 value.set_sensitive(true);
-                headers.insert(reqwest::header::COOKIE, value);
+                headers.insert(COOKIE, value);
             }
         }
         Ok(headers)
@@ -419,7 +422,10 @@ impl Client {
     /// than the API — content delivery URLs from a license). Uses `Auto`
     /// auth; the caller adds a `Range` header and streams the response.
     /// This is internal download plumbing, not exposed to plugins.
-    pub async fn authed_get(&self, url: &str) -> Result<reqwest::RequestBuilder, ApiError> {
+    pub async fn authed_get(
+        &self,
+        url: &str,
+    ) -> Result<bookclerk_plugin_sdk::http::RequestBuilder, ApiError> {
         let parsed = Url::parse(url).map_err(|_| ApiError::InvalidPath(url.to_owned()))?;
         let path_and_query = match parsed.query() {
             Some(query) => format!("{}?{query}", parsed.path()),
@@ -842,7 +848,7 @@ impl RequestBuilder<'_> {
     }
 
     /// Applies auth and sends the request.
-    pub async fn send(mut self) -> Result<reqwest::Response, ApiError> {
+    pub async fn send(mut self) -> Result<bookclerk_plugin_sdk::http::Response, ApiError> {
         let locale = match &self.country_code {
             Some(code) => {
                 locale::find(code).ok_or_else(|| ApiError::UnknownLocale(code.clone()))?
@@ -938,7 +944,11 @@ impl RequestBuilder<'_> {
 
         let method = self.method.clone();
         let path = url.path().to_owned();
-        let mut request = self.client.http.request(self.method, url).headers(headers);
+        let mut request = self
+            .client
+            .http
+            .request(self.method.clone(), url.as_str())
+            .headers(headers);
         if let Some((bytes, content_type)) = body {
             request = request.header(CONTENT_TYPE, content_type).body(bytes);
         }
@@ -949,7 +959,6 @@ impl RequestBuilder<'_> {
             %method,
             path,
             status = %response.status(),
-            version = ?response.version(),
             elapsed_ms = started.elapsed().as_millis() as u64,
             amzn_request_id = %echoed_request_id(&response).unwrap_or(request_id),
             "API request finished"
@@ -968,7 +977,7 @@ fn new_request_id() -> String {
 /// The `x-amzn-requestid` a response carries (normally the echo of the id we
 /// sent), if any — worth quoting in error messages so a failure can be
 /// reported to Amazon with a concrete id.
-pub(crate) fn echoed_request_id(response: &reqwest::Response) -> Option<String> {
+pub(crate) fn echoed_request_id(response: &bookclerk_plugin_sdk::http::Response) -> Option<String> {
     response
         .headers()
         .get("x-amzn-requestid")

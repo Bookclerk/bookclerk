@@ -18,17 +18,17 @@ CIPHERS='^(aes|aes-gcm|cbc|ctr|aes-kw|widevine.*)$'
 
 status=0
 
-# Check the actual default feature set (empty today: external guests only).
+# Check the actual default feature set (empty: external guests only).
 # Do not pass --no-default-features — that would stop matching the packaged
-# default build if defaults ever gain features. In-process storefronts are an
-# explicit `bundled-plugins` opt-in (see cargo aliases / bookclerk-dev), not
-# part of the default host graph; SQLite and local output ship as staged guests.
+# default build if defaults ever gain features. Storefronts are staged guests;
+# SQLite, local output, and optional database adapters ship as staged guests.
+# Production hosts must not link adapter implementation crates for lowering.
 for host in bookclerk-cli bookclerkd; do
   tree="$(cargo tree -p "$host" --edges normal --prefix none --format '{lib}')"
 
-  stores="$(grep -E '^bookclerk_plugin_(source|integration)_' <<<"$tree" | sort -u || true)"
+  stores="$(grep -E '^bookclerk_plugin_(source|integration|destination|database)_' <<<"$tree" | sort -u || true)"
   if [[ -n "$stores" ]]; then
-    echo "FAIL: $host (default) still links store plugins:" >&2
+    echo "FAIL: $host (default) still links store/destination plugin crates:" >&2
     sed 's/^/  /' <<<"$stores" >&2
     status=1
   fi
@@ -43,14 +43,5 @@ for host in bookclerk-cli bookclerkd; do
 
   [[ $status -eq 0 ]] && echo "ok: $host (default) links no store and no cipher"
 done
-
-# Optional in-process bundle must still link Audible when explicitly requested.
-if ! cargo tree -p bookclerkd --features bundled-plugins --edges normal --prefix none --format '{lib}' \
-  | grep -q '^bookclerk_plugin_source_audible$'; then
-  echo "FAIL: bookclerkd --features bundled-plugins no longer links the Audible plugin." >&2
-  status=1
-else
-  echo "ok: bookclerkd --features bundled-plugins links Audible (opt-in in-process dev)"
-fi
 
 exit "$status"

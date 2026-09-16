@@ -19,6 +19,27 @@ db = [
     "dep:futures",
     "dep:uuid",
 ]
+# Native HTTPS through the workerd socket proxy (`connect()` + rustls).
+# Storefront / D1 / integration guests should enable this. Platform sqlite/local
+# leave it off.
+http = [
+    "dep:bytes",
+    "dep:cookie",
+    "dep:cookie_store",
+    "dep:futures",
+    "dep:http",
+    "dep:http-body",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:reqwest",
+    "dep:rustls",
+    "dep:serde_urlencoded",
+    "dep:tokio-rustls",
+    "dep:tower-service",
+    "dep:url",
+    "dep:webpki-roots",
+]
 # Author CLI (`bookclerk-plugin`) including workerd `smoke`. Guest plugins
 # should leave this off so they do not pull `bookclerk-workerd` / download deps.
 tools = ["dep:bookclerk-workerd"]
@@ -46,9 +67,24 @@ toml.workspace = true
 tracing.workspace = true
 ureq.workspace = true
 base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+cookie = { version = "0.18", optional = true }
+cookie_store = { version = "0.22", default-features = false, optional = true }
 futures = { workspace = true, optional = true }
+http = { version = "1", optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", default-features = false, features = ["http1", "client"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["client", "client-legacy", "http1", "tokio"], optional = true }
+reqwest = { workspace = true, optional = true, features = ["cookies", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12"], optional = true }
 sea-orm = { workspace = true, default-features = false, features = ["proxy"], optional = true }
+serde_urlencoded = { version = "0.7", optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"], optional = true }
+tower-service = { version = "0.3", optional = true }
+url = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
+webpki-roots = { version = "1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

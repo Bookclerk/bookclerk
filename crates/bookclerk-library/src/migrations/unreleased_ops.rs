@@ -719,6 +719,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         plugin_id TEXT NOT NULL,
         binding TEXT NOT NULL,
+        adapter_plugin_key TEXT NOT NULL,
         backend_kind TEXT NOT NULL,
         unit_ref TEXT NOT NULL,
         created_at TEXT NOT NULL,

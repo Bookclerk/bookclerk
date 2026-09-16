@@ -29,7 +29,7 @@ pub struct PluginDescribe {
     pub scalar_limits: ScalarLimitsDto,
     /// Typed capability declaration (entrypoints, event consumers/producers,
     /// jobs, database and named bindings). The host compares it with the
-    /// signed `plugin.toml` and the operator grant; widening is rejected.
+    /// verified `plugin.toml` and the operator grant; widening is rejected.
     #[serde(default)]
     pub capabilities: PluginCapabilities,
     /// Portal Accounts connect mode for storefronts.

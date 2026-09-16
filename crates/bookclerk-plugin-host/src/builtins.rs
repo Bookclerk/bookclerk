@@ -1,8 +1,8 @@
-//! In-process registration of first-party plugins (optional `bundled-plugins` feature).
+//! External-only source and integration loading.
 //!
-//! Hosts (`bookclerk` / `bookclerkd`) call these helpers instead of naming
-//! store crates. Default host builds do **not** enable this — use staged external
-//! guests from `plugins/` (see `docs/plugins.md`).
+//! Hosts (`bookclerk` / `bookclerkd`) discover staged guests under `plugins/`
+//! and talk to them through the workerd front door. Production hosts never
+//! link storefront or integration implementation crates in-process.
 
 use bookclerk_config::Config;
 use bookclerk_integrations::IntegrationRegistry;
@@ -10,43 +10,7 @@ use bookclerk_source::SourceRegistry;
 
 use crate::rpc_session::SessionServices;
 
-/// Register first-party content sources in-process when their Cargo features
-/// are enabled and the source is enabled in config.
-pub fn register_builtin_sources(config: &Config, registry: &mut SourceRegistry) {
-    #[cfg(feature = "bookclerk-plugin-source-audible")]
-    bookclerk_plugin_source_audible::register(registry, config);
-    #[cfg(feature = "bookclerk-plugin-source-libro")]
-    bookclerk_plugin_source_libro::register(registry, config);
-    #[cfg(feature = "bookclerk-plugin-source-graphicaudio")]
-    bookclerk_plugin_source_graphicaudio::register(registry, config);
-    #[cfg(feature = "bookclerk-plugin-source-chirp")]
-    bookclerk_plugin_source_chirp::register(registry, config);
-    let _ = (config, registry);
-}
-
-/// Register first-party integrations in-process when their Cargo features are
-/// enabled and the integration is enabled in config.
-///
-/// Misconfigured-but-enabled ABS is still registered so health/diagnose surface
-/// the error (same behavior as the former in-crate factory).
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub fn register_builtin_integrations(
-    config: &Config,
-    registry: &mut IntegrationRegistry,
-) -> crate::Result<()> {
-    #[cfg(feature = "bookclerk-plugin-integration-audiobookshelf")]
-    {
-        bookclerk_plugin_integration_audiobookshelf::register(registry, config)
-            .map_err(|e| crate::PluginError::message(e.to_string()))?;
-    }
-    let _ = (config, registry);
-    Ok(())
-}
-
-/// Built-in sources plus discovered external source plugins.
+/// Discovered external source plugins.
 ///
 /// `services` carries the host facilities external guests may receive as
 /// bindings (the `EVENTS` outbox); pass [`SessionServices::default`] when the
@@ -54,18 +18,17 @@ pub fn register_builtin_integrations(
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// Returns an error when discovery or guest spawn fails.
 pub async fn load_sources(
     config: &Config,
     services: &SessionServices,
 ) -> crate::Result<SourceRegistry> {
     let mut registry = SourceRegistry::new();
-    register_builtin_sources(config, &mut registry);
     crate::load_external_sources(config, &mut registry, services).await?;
     Ok(registry)
 }
 
-/// Built-in integrations plus discovered external integration plugins.
+/// Discovered external integration plugins.
 ///
 /// `services` carries the host facilities external guests may receive as
 /// bindings (the `EVENTS` outbox); pass [`SessionServices::default`] when the
@@ -73,13 +36,12 @@ pub async fn load_sources(
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// Returns an error when discovery or guest spawn fails.
 pub async fn load_integrations(
     config: &Config,
     services: &SessionServices,
 ) -> crate::Result<IntegrationRegistry> {
     let mut registry = IntegrationRegistry::new();
-    register_builtin_integrations(config, &mut registry)?;
     crate::load_external_integrations(config, &mut registry, services).await?;
     Ok(registry)
 }

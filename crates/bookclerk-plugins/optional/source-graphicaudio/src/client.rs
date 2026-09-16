@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
+use bookclerk_plugin_sdk::http::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
+use bookclerk_plugin_sdk::http::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{GraphicAudioError, Result};
@@ -29,7 +30,7 @@ const USER_AGENT_VALUE: &str = "okhttp/4.12.0 GraphicAudio/Bookclerk";
 #[derive(Debug, Clone)]
 pub struct GraphicAudioClient {
     /// HTTP client used for activation, catalog, and media downloads.
-    http: reqwest::Client,
+    http: HttpClient,
     /// API origin with no trailing slash (default [`DEFAULT_BASE_URL`]).
     base_url: String,
     /// Opaque activation token from login; sent as `Authorization` on authenticated calls.
@@ -48,7 +49,7 @@ impl GraphicAudioClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
-            http: reqwest::Client::new(),
+            http: HttpClient::new(),
             base_url,
             token: None,
         }
@@ -56,7 +57,7 @@ impl GraphicAudioClient {
 
     /// Override the HTTP client (tests / custom timeouts).
     #[must_use]
-    pub fn with_http(mut self, http: reqwest::Client) -> Self {
+    pub fn with_http(mut self, http: HttpClient) -> Self {
         self.http = http;
         self
     }
@@ -85,7 +86,7 @@ impl GraphicAudioClient {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
         headers.insert(
-            reqwest::header::ACCEPT,
+            bookclerk_plugin_sdk::http::header::ACCEPT,
             HeaderValue::from_static("application/json"),
         );
         if with_auth {

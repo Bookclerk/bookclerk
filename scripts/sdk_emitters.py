@@ -518,6 +518,11 @@ def field_is_optional(f: cs.Field) -> bool:
     return OPTIONAL_ANNOTATION in f.annotations
 
 
+def field_is_interface(f: cs.Field, res: Resolver) -> bool:
+    """Cap'n interface pointers are nullable; they are not `$optional` scalars."""
+    return res.kind_of(f.type) == "interface"
+
+
 def check_optional_fields(schema: cs.Schema) -> list[str]:
     """`$optional` is only meaningful on zero-defaulting scalars."""
     errors: list[str] = []
@@ -657,11 +662,17 @@ def emit_ts_generated(capnp_text: str) -> str:
                 lines.append(f"export interface {decl.name} {{")
                 for f in decl.fields:
                     fdoc = list(f.doc)
+                    is_iface = field_is_interface(f, res)
                     if field_is_optional(f):
                         fdoc.append("Omitted when absent (wire zero value).")
+                    if is_iface:
+                        fdoc.append("Null when the guest does not export this capability.")
                     lines.extend(_ts_doc(fdoc, "  "))
-                    opt = "?" if field_is_optional(f) else ""
-                    lines.append(f"  {f.name}{opt}: {ts_type(f.type, res)};")
+                    opt = "?" if field_is_optional(f) or is_iface else ""
+                    ty = ts_type(f.type, res)
+                    if is_iface:
+                        ty = f"{ty} | null"
+                    lines.append(f"  {f.name}{opt}: {ty};")
                 lines.append("}")
                 lines.append("")
         elif isinstance(decl, cs.Interface):
@@ -784,6 +795,8 @@ def emit_py_abi(capnp_text: str) -> str:
                         f.name,
                         [*f.doc, "Omitted when absent (wire zero value)."]
                         if field_is_optional(f)
+                        else [*f.doc, "Null when the guest does not export this capability."]
+                        if field_is_interface(f, res)
                         else f.doc,
                     )
                     for f in decl.fields
@@ -794,7 +807,10 @@ def emit_py_abi(capnp_text: str) -> str:
                     lines.append("    pass")
                 for f in decl.fields:
                     fty = py_type(f.type, res)
-                    if field_is_optional(f):
+                    is_iface = field_is_interface(f, res)
+                    if is_iface:
+                        fty = f"{fty} | None"
+                    if field_is_optional(f) or is_iface:
                         fty = f"NotRequired[{fty}]"
                     lines.append(f"    {f.name}: {fty}")
                 lines.append("")
@@ -879,6 +895,10 @@ class _Ctx:
         st = self.schema.struct(layout_name)
         return any(f.name == field and field_is_optional(f) for f in st.fields)
 
+    def omit_when_null(self, layout_name: str, field: dict[str, Any]) -> bool:
+        """True when a missing/null value should stay a null Cap'n pointer."""
+        return self.is_optional(layout_name, field["name"]) or field["type"]["kind"] == "interface"
+
     def codec_name_ts(self, struct: str) -> str:
         return f"{self.type_name(struct)}Codec"
 
@@ -929,7 +949,11 @@ def _ts_write_expr(ctx: _Ctx, ty: dict[str, Any], off: int, value: str, indent: 
             f"{indent}}}",
         ]
     if kind == "interface":
-        return [f"{indent}s.setCap({off}, caps.exportCap({value}));"]
+        return [
+            f"{indent}if ({value} != null) {{",
+            f"{indent}  s.setCap({off}, caps.exportCap({value}));",
+            f"{indent}}}",
+        ]
     if kind == "list":
         el = ty["element"]
         ek = el["kind"]
@@ -1016,8 +1040,10 @@ def _field_uses_caps(ty: dict[str, Any]) -> bool:
 
 
 def _ts_absent_check(ty: dict[str, Any], expr: str) -> str:
-    """TS expression that is true when a `$optional` wire value means absent."""
+    """TS expression that is true when a `$optional` / null-cap wire value means absent."""
     kind = ty["kind"]
+    if kind == "interface":
+        return f"{expr} == null"
     if kind == "text":
         return f'{expr} === ""'
     if kind == "data":
@@ -1028,8 +1054,10 @@ def _ts_absent_check(ty: dict[str, Any], expr: str) -> str:
 
 
 def _py_absent_check(ty: dict[str, Any], expr: str) -> str:
-    """Python expression that is true when a `$optional` wire value means absent."""
+    """Python expression that is true when a `$optional` / null-cap wire value means absent."""
     kind = ty["kind"]
+    if kind == "interface":
+        return f"{expr} is None"
     if kind == "text":
         return f'{expr} == ""'
     if kind == "data":
@@ -1117,10 +1145,12 @@ def _ts_struct_codec(ctx: _Ctx, layout_name: str) -> list[str]:
         out.append("  },")
         out.append("  read(s, caps) {")
         out.extend(caps_sink)
-        optional = [f for f in plain if ctx.is_optional(layout_name, f["name"])]
+        optional = [f for f in plain if ctx.omit_when_null(layout_name, f)]
         if plain:
             if optional:
-                out.append(f"    const out: T.{tname} = {{")
+                # Method envelopes live in this file, not in generated.ts (`T.`).
+                type_ref = tname if "$" in layout_name else f"T.{tname}"
+                out.append(f"    const out: {type_ref} = {{")
             else:
                 out.append("    return {")
             for f in plain:
@@ -1162,7 +1192,12 @@ def _ts_envelope_type(ctx: _Ctx, layout_name: str) -> list[str]:
         f"export interface {tname} {{",
     ]
     for f in sorted(st["fields"], key=lambda f: f["codeOrder"]):
-        out.append(f"  {f['name']}: {_ts_type_from_layout(ctx, f['type'])};")
+        ty = _ts_type_from_layout(ctx, f["type"])
+        optional = ctx.omit_when_null(layout_name, f)
+        if f["type"]["kind"] == "interface":
+            ty = f"{ty} | null"
+        opt = "?" if optional else ""
+        out.append(f"  {f['name']}{opt}: {ty};")
     out.append("}")
     out.append("")
     return out
@@ -1308,7 +1343,10 @@ def _py_write_expr(ctx: _Ctx, ty: dict[str, Any], off: int, value: str, indent: 
         dw, pc = ctx.struct_dims(ty["name"])
         return [f"{indent}{ctx.codec_name_py(ty['name'])}.write(s.init_struct({off}, {dw}, {pc}), {value}, caps)"]
     if kind == "interface":
-        return [f"{indent}s.set_cap({off}, caps.export_cap({value}))"]
+        return [
+            f"{indent}if {value} is not None:",
+            f"{indent}    s.set_cap({off}, caps.export_cap({value}))",
+        ]
     if kind == "list":
         el = ty["element"]
         ek = el["kind"]
@@ -1409,7 +1447,7 @@ def _py_struct_codec(ctx: _Ctx, layout_name: str) -> list[str]:
     else:
         body: list[str] = []
         for f in plain:
-            if ctx.is_optional(layout_name, f["name"]):
+            if ctx.omit_when_null(layout_name, f):
                 body.append(f'    if v.get("{f["name"]}") is not None:')
                 body.extend(
                     _py_write_expr(ctx, f["type"], f["offset"], f'v["{f["name"]}"]', "        ")
@@ -1438,7 +1476,7 @@ def _py_struct_codec(ctx: _Ctx, layout_name: str) -> list[str]:
                 )
         out.append(f'    raise ValueError(f"unknown {tname} union member: {{disc}}")')
     else:
-        optional = [f for f in plain if ctx.is_optional(layout_name, f["name"])]
+        optional = [f for f in plain if ctx.omit_when_null(layout_name, f)]
         if not plain:
             out.append("    return {}")
         else:

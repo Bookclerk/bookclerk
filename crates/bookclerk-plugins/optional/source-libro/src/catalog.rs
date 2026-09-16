@@ -3,6 +3,7 @@
 //! Mirrors former `bookclerk-discover` explore HTTP (no account required).
 //! This crate intentionally does **not** depend on `bookclerk-enrich`.
 
+use bookclerk_plugin_sdk::http::{Client as HttpClient, RequestBuilder};
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourcePurchaseHint,
 };
@@ -17,13 +18,13 @@ const PUBLIC_USER_AGENT: &str = concat!(
     env!("CARGO_PKG_VERSION")
 );
 
-/// Shared reqwest client for unauthenticated Libro.fm explore and product pages.
-fn public_http_client() -> reqwest::Client {
-    reqwest::Client::new()
+/// Shared HTTP client for unauthenticated Libro.fm explore and product pages.
+fn public_http_client() -> HttpClient {
+    HttpClient::new()
 }
 
 /// GET builder that attaches the browser-like UA Libro's WAF accepts.
-fn public_get(http: &reqwest::Client, url: impl Into<String>) -> reqwest::RequestBuilder {
+fn public_get(http: &HttpClient, url: impl Into<String>) -> RequestBuilder {
     http.get(url.into()).header("user-agent", PUBLIC_USER_AGENT)
 }
 
@@ -406,10 +407,7 @@ struct LibroDetailsData {
 }
 
 /// Fetches related audiobooks from explore details; empty on non-success HTTP.
-async fn libro_related(
-    http: &reqwest::Client,
-    isbn: &str,
-) -> bookclerk_source::Result<Vec<CatalogHit>> {
+async fn libro_related(http: &HttpClient, isbn: &str) -> bookclerk_source::Result<Vec<CatalogHit>> {
     let url = format!("https://libro.fm/explore/audiobook_details/{isbn}");
     let resp = public_get(http, &url)
         .send()
@@ -435,7 +433,7 @@ async fn libro_related(
 
 /// Loads one audiobook from explore details by ISBN digits (slug suffix stripped).
 async fn libro_explore_audiobook(
-    http: &reqwest::Client,
+    http: &HttpClient,
     isbn_or_slug: &str,
 ) -> bookclerk_source::Result<Option<CatalogHit>> {
     let isbn_key = isbn_or_slug
@@ -474,7 +472,7 @@ async fn libro_explore_audiobook(
 
 /// Scrapes the public product HTML page into a [`CatalogHit`] when the WAF allows it.
 async fn libro_product_html_hit(
-    http: &reqwest::Client,
+    http: &HttpClient,
     isbn_or_slug: &str,
 ) -> bookclerk_source::Result<Option<CatalogHit>> {
     let url = format!("https://libro.fm/audiobooks/{isbn_or_slug}");
@@ -927,7 +925,7 @@ fn price_fields_from_value(v: &Value) -> (Option<i64>, Option<String>, Option<St
 
 /// Resolves a purchase hint by searching title (and optional author) and taking the first ISBN.
 async fn libro_title_search(
-    http: &reqwest::Client,
+    http: &HttpClient,
     title: &str,
     author: Option<&str>,
 ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
@@ -959,7 +957,7 @@ async fn libro_title_search(
 
 /// Search Libro.fm: explore JSON first, then public HTML search.
 async fn libro_search_hits(
-    http: &reqwest::Client,
+    http: &HttpClient,
     query: &str,
     limit: usize,
     page: u32,
@@ -982,7 +980,7 @@ async fn libro_search_hits(
 
 /// Explore JSON search; errors on non-success HTTP so the caller can fall back to HTML.
 async fn libro_explore_json_search(
-    http: &reqwest::Client,
+    http: &HttpClient,
     query: &str,
     limit: usize,
     page: u32,
@@ -1019,7 +1017,7 @@ async fn libro_explore_json_search(
 
 /// Public HTML search fallback (page 1 only); empty on non-success HTTP.
 async fn libro_html_search(
-    http: &reqwest::Client,
+    http: &HttpClient,
     query: &str,
     limit: usize,
 ) -> bookclerk_source::Result<Vec<CatalogHit>> {

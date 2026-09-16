@@ -8,9 +8,9 @@
 //!   scratch under the guest `TMPDIR` (`…/plugin-state/<PluginKey fs-id>/tmp/fetch`)
 //! - seals login credentials via [`SourceScope`] (`provider = plugin id`)
 //! - loads those credentials for `scan` and `fetch_title` (plugin never opens the DB)
-//! - upserts scan book DTOs via [`SourceScope`] with `source` forced to the plugin id
+//! - upserts scan book DTOs via [`SourceScope`] with `source` forced to the plugin alias
 //!
-//! First-party in-process adapters use the same [`SourceScope`] boundary.
+//! External guests share the same [`SourceScope`] boundary.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -116,7 +116,14 @@ impl ExternalSource {
             bookclerk_plugin_sdk::PortalAuthMode::Password
             | bookclerk_plugin_sdk::PortalAuthMode::Unspecified => PortalAuthMode::Password,
         };
-        let aliases = leak_str_slice(&describe.aliases, &[]);
+        let mut alias_list = describe.aliases.clone();
+        if !alias_list
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(&plugin.manifest.id))
+        {
+            alias_list.push(plugin.manifest.id.clone());
+        }
+        let aliases = leak_str_slice(&alias_list, &[]);
         let password_env = describe
             .password_env_var
             .as_deref()
@@ -249,27 +256,43 @@ pub async fn load_external_sources(
     registry: &mut SourceRegistry,
     services: &SessionServices,
 ) -> Result<()> {
-    for plugin in crate::discover_plugins(config)? {
-        if !plugin
-            .manifest
-            .has_entrypoint(crate::Entrypoint::Storefront)
-        {
+    let plugins = crate::discover_plugins(config)?;
+    let storefronts: Vec<_> = plugins
+        .into_iter()
+        .filter(|plugin| {
+            plugin
+                .manifest
+                .has_entrypoint(crate::Entrypoint::Storefront)
+        })
+        .collect();
+    let aliases: std::collections::BTreeSet<String> = storefronts
+        .iter()
+        .map(|plugin| plugin.alias().to_ascii_lowercase())
+        .collect();
+    for alias in aliases {
+        if !config.sources.is_enabled(&alias) {
             continue;
         }
-        if !config.sources.is_enabled(&plugin.manifest.id) {
+        let spec = crate::occupancy_spec(config.sources.occupancy(&alias), &alias);
+        let Some(plugin) = crate::resolve_plugin_slot(&storefronts, spec)? else {
             continue;
-        }
-        if registry.get(&plugin.manifest.id).is_some() {
+        };
+        if registry.get(plugin.plugin_key().canonical()).is_some() {
             tracing::debug!(
-                id = %plugin.manifest.id,
+                plugin_key = %plugin.plugin_key().canonical(),
+                alias = %plugin.manifest.id,
                 path = %plugin.root.join("plugin.toml").display(),
-                "skipping external source — already registered in-process"
+                "skipping external source — PluginKey already registered"
             );
             continue;
         }
-        match ExternalSource::spawn_with(&plugin, config, services.clone()).await {
+        match ExternalSource::spawn_with(plugin, config, services.clone()).await {
             Ok(s) => {
-                tracing::info!(id = %plugin.manifest.id, "loaded external source plugin");
+                tracing::info!(
+                    id = %plugin.manifest.id,
+                    plugin_key = %plugin.plugin_key().canonical(),
+                    "loaded external source plugin"
+                );
                 registry.register(Arc::new(s));
             }
             Err(err) => {
@@ -283,6 +306,10 @@ pub async fn load_external_sources(
 #[async_trait]
 impl ContentSource for ExternalSource {
     fn id(&self) -> &str {
+        self.session.alias()
+    }
+
+    fn plugin_key(&self) -> &str {
         self.session.id()
     }
 

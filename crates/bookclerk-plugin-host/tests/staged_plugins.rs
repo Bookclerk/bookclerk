@@ -5,6 +5,7 @@
 //! - platform guests under `$BOOKCLERK_FILES_DIR/plugins/` (`cargo install-platform`)
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use bookclerk_config::{Config, Paths};
 use bookclerk_plugin_host::{
@@ -12,6 +13,11 @@ use bookclerk_plugin_host::{
     PluginSession, SearchCatalogParams, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use bookclerk_plugin_sdk::{CatalogField, CatalogSort, ListDealsParams};
+
+/// Per-plugin spawn/describe budget. A hung Cap'n Proto handshake must fail
+/// the job rather than stall `fmt / clippy / test` until the runner timeout.
+const STAGED_SPAWN_TIMEOUT: Duration = Duration::from_secs(45);
+const STAGED_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn artifacts_dir() -> Option<PathBuf> {
     std::env::var_os("BOOKCLERK_PLUGIN_ARTIFACTS").map(PathBuf::from)
@@ -51,7 +57,14 @@ async fn staged_first_party_plugins_describe() {
         ..Default::default()
     };
 
+    let discovered_at = Instant::now();
+    eprintln!("staged_plugins: discovering under FILES_DIR + PLUGIN_DIRS");
     let plugins = discover_plugins(&config).expect("discover");
+    eprintln!(
+        "staged_plugins: discovered {} plugins in {:?}",
+        plugins.len(),
+        discovered_at.elapsed()
+    );
     // External spawn requires covering grants (platform sqlite/local auto-grant;
     // optional/examples need an explicit approve snapshot for this smoke test).
     let mut grants = PluginGrantStore::load(&config.paths().files_dir).expect("load grants");
@@ -103,14 +116,39 @@ async fn staged_first_party_plugins_describe() {
         } else {
             OPERATOR_ACCOUNT
         };
-        let session =
-            PluginSession::spawn_for_account(plugin, &config, serde_json::json!({}), account)
-                .await
-                .unwrap_or_else(|e| panic!("spawn {}: {e}", plugin.manifest.id));
-        assert_eq!(session.id(), plugin.manifest.id);
-        let desc = session
-            .describe()
+        eprintln!(
+            "staged_plugins: spawn {} ({})",
+            plugin.manifest.id,
+            plugin.plugin_key().canonical()
+        );
+        let spawned_at = Instant::now();
+        let session = tokio::time::timeout(
+            STAGED_SPAWN_TIMEOUT,
+            PluginSession::spawn_for_account(plugin, &config, serde_json::json!({}), account),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "spawn {} timed out after {STAGED_SPAWN_TIMEOUT:?}",
+                plugin.manifest.id
+            )
+        })
+        .unwrap_or_else(|e| panic!("spawn {}: {e}", plugin.manifest.id));
+        eprintln!(
+            "staged_plugins: spawned {} in {:?}",
+            plugin.manifest.id,
+            spawned_at.elapsed()
+        );
+        assert_eq!(session.id(), plugin.plugin_key().canonical());
+        assert_eq!(session.alias(), plugin.manifest.id);
+        let desc = tokio::time::timeout(STAGED_RPC_TIMEOUT, session.describe())
             .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "describe {} timed out after {STAGED_RPC_TIMEOUT:?}",
+                    plugin.manifest.id
+                )
+            })
             .unwrap_or_else(|e| panic!("describe {}: {e}", plugin.manifest.id));
         assert_eq!(desc.api_version, 3);
         assert_eq!(desc.id, plugin.manifest.id);
@@ -123,15 +161,21 @@ async fn staged_first_party_plugins_describe() {
 
         {
             let health = if session.has_entrypoint(Entrypoint::Storefront) {
-                session
-                    .storefront(|stub| async move { stub.health().await })
-                    .await
-                    .ok()
+                tokio::time::timeout(
+                    STAGED_RPC_TIMEOUT,
+                    session.storefront(|stub| async move { stub.health().await }),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
             } else if session.has_entrypoint(Entrypoint::RemoteLibrary) {
-                session
-                    .remote_library(|stub| async move { stub.health().await })
-                    .await
-                    .ok()
+                tokio::time::timeout(
+                    STAGED_RPC_TIMEOUT,
+                    session.remote_library(|stub| async move { stub.health().await }),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
             } else {
                 None
             };
@@ -169,9 +213,13 @@ async fn staged_first_party_plugins_describe() {
                 command: "fetch-example".into(),
                 args: Default::default(),
             };
-            let result = session
-                .cli_invoke(params)
+            let result = tokio::time::timeout(STAGED_RPC_TIMEOUT, session.cli_invoke(params))
                 .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "echo_workerd_fetch fetch-example timed out after {STAGED_RPC_TIMEOUT:?}"
+                    )
+                })
                 .unwrap_or_else(|e| panic!("echo_workerd_fetch fetch-example must answer: {e}"));
             let allowed = result
                 .payload
@@ -207,19 +255,28 @@ async fn staged_first_party_plugins_describe() {
                 field: CatalogField::Any,
                 language: None,
             };
-            let hits = match session
-                .storefront(move |stub| async move { stub.search_catalog(params).await })
-                .await
+            let hits = match tokio::time::timeout(
+                STAGED_RPC_TIMEOUT,
+                session.storefront(move |stub| async move { stub.search_catalog(params).await }),
+            )
+            .await
             {
-                Ok(hits) => hits,
-                Err(e) if live_storefront_unavailable(&e) => {
+                Err(_) => {
+                    eprintln!(
+                        "{} search_catalog skipped (timed out after {STAGED_RPC_TIMEOUT:?})",
+                        plugin.manifest.id
+                    );
+                    continue;
+                }
+                Ok(Ok(hits)) => hits,
+                Ok(Err(e)) if live_storefront_unavailable(&e) => {
                     eprintln!(
                         "{} search_catalog skipped (live storefront unavailable): {e}",
                         plugin.manifest.id
                     );
                     continue;
                 }
-                Err(e) => panic!(
+                Ok(Err(e)) => panic!(
                     "{} search_catalog must succeed (empty ok): {e}",
                     plugin.manifest.id
                 ),
@@ -233,18 +290,24 @@ async fn staged_first_party_plugins_describe() {
         }
 
         if plugin.manifest.id == "chirp" {
-            let deals = match session
-                .storefront(|stub| async move {
+            let deals = match tokio::time::timeout(
+                STAGED_RPC_TIMEOUT,
+                session.storefront(|stub| async move {
                     stub.list_deals(ListDealsParams { limit: Some(1) }).await
-                })
-                .await
+                }),
+            )
+            .await
             {
-                Ok(deals) => deals,
-                Err(e) if live_storefront_unavailable(&e) => {
+                Err(_) => {
+                    eprintln!("chirp list_deals skipped (timed out after {STAGED_RPC_TIMEOUT:?})");
+                    continue;
+                }
+                Ok(Ok(deals)) => deals,
+                Ok(Err(e)) if live_storefront_unavailable(&e) => {
                     eprintln!("chirp list_deals skipped (live storefront unavailable): {e}");
                     continue;
                 }
-                Err(e) => panic!("chirp list_deals must succeed (empty ok): {e}"),
+                Ok(Err(e)) => panic!("chirp list_deals must succeed (empty ok): {e}"),
             };
             assert!(
                 deals.len() <= 1,
@@ -260,10 +323,39 @@ async fn staged_first_party_plugins_describe() {
 /// True when a staged-plugin smoke call failed because a live storefront was down.
 fn live_storefront_unavailable(err: &impl std::fmt::Display) -> bool {
     let msg = err.to_string().to_ascii_lowercase();
-    msg.contains("http status")
+    http_error_status(&msg)
         || msg.contains("timed out")
         || msg.contains("timeout")
         || msg.contains("connection refused")
         || msg.contains("dns error")
         || msg.contains("error sending request")
+}
+
+/// True when `msg` (already lowercased) reports an HTTP 4xx/5xx from reqwest or SDK HTTP.
+fn http_error_status(msg: &str) -> bool {
+    if msg.contains("http status") {
+        return true;
+    }
+    // SDK HTTP: `HTTP 500 Internal Server Error for {url}`
+    let Some(after) = msg.split("http ").nth(1) else {
+        return false;
+    };
+    after
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse::<u16>()
+        .is_ok_and(|code| (400..600).contains(&code))
+}
+
+#[test]
+fn live_storefront_unavailable_matches_sdk_http_status() {
+    assert!(live_storefront_unavailable(
+        &"internal: enrichment error: HTTP 500 Internal Server Error for https://api.audible.com/1.0/catalog/search"
+    ));
+    assert!(live_storefront_unavailable(&"http status 503"));
+    assert!(live_storefront_unavailable(&"GraphQL HTTP 403: forbidden"));
+    assert!(!live_storefront_unavailable(
+        &"audible search_catalog must succeed (empty ok)"
+    ));
 }

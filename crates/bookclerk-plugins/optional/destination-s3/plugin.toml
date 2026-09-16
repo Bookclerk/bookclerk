@@ -9,7 +9,12 @@ entrypoints = ["storage"]
 
 [capabilities.network]
 mode = "outbound"
-# Native: no `domains` (workerd-only). AWS SDK dials S3 under coarse jail outbound.
+tcp = [
+    { host = "*.amazonaws.com", ports = [443] },
+    { host = "*.amazonaws.com.cn", ports = [443] },
+]
+# Custom/MinIO endpoints are overlaid from `[output.s3].endpoint` at spawn.
+# Native TCP uses the SDK HTTP client (CONNECT through the workerd proxy).
 
 [vars]
 

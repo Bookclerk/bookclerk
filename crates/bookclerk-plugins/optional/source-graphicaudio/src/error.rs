@@ -1,5 +1,6 @@
 //! Error types for the GraphicAudio content source.
 
+use bookclerk_plugin_sdk::http::Error as HttpError;
 use thiserror::Error;
 
 /// Result alias for GraphicAudio auth, sync, and download operations.
@@ -67,8 +68,8 @@ impl GraphicAudioError {
     }
 }
 
-impl From<reqwest::Error> for GraphicAudioError {
-    fn from(err: reqwest::Error) -> Self {
+impl From<HttpError> for GraphicAudioError {
+    fn from(err: HttpError) -> Self {
         Self::Api(err.to_string())
     }
 }

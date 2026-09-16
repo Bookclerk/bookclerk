@@ -178,7 +178,7 @@ const INTERFACES: &[InterfaceEntry] = &[
     InterfaceEntry {
         id: <plugin_capnp::database::Client as HasTypeId>::TYPE_ID,
         name: "Database",
-        methods: &["openSession"],
+        methods: &["openSession", "dropUnit"],
     },
     InterfaceEntry {
         id: <plugin_capnp::adapter_database_session::Client as HasTypeId>::TYPE_ID,

@@ -6,6 +6,8 @@
 //! shape — the endpoint URL comes from the CLI. To swap in another provider
 //! (e.g. a user_id-based one), add a function here; callers only use `fetch_wvd`.
 
+use bookclerk_plugin_sdk::http::StatusCode;
+
 use crate::auth::signing::SignedHeaders;
 
 /// Errors of the remote CDM provisioning call.
@@ -13,14 +15,11 @@ use crate::auth::signing::SignedHeaders;
 pub enum ProviderError {
     /// The HTTP call to the provider endpoint failed.
     #[error("CDM provider request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] crate::HttpError),
     /// The provider answered with an error status; `snippet` is the start
     /// of its response body.
     #[error("CDM provider returned {status}: {snippet}")]
-    Status {
-        status: reqwest::StatusCode,
-        snippet: String,
-    },
+    Status { status: StatusCode, snippet: String },
 }
 
 /// Fetches a `.wvd` from a remote provider: POSTs the signed account-proof
@@ -40,7 +39,7 @@ pub async fn fetch_wvd(
     });
     // Timeouts match the API client (AUD-98) so an unreachable provider
     // endpoint fails fast instead of hanging.
-    let response = reqwest::Client::builder()
+    let response = crate::HttpClient::builder()
         .connect_timeout(crate::api::client::CONNECT_TIMEOUT)
         .read_timeout(crate::api::client::READ_TIMEOUT)
         .build()?

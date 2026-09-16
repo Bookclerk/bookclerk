@@ -110,13 +110,28 @@ payloads for several storefront / integration surfaces, and a reverse
    watcher compares grant revisions only and retries malformed files
    without mass-fencing.
 
+9. **Provenance-qualified identity.** Durable consent, sessions, plugin
+   state, and grants key on `PluginKey` (canonical provenance + package +
+   manifest id). Version and content hashes are `ArtifactIdentity`, not the
+   logical key. A bare `id = "sqlite"` confers no privilege; platform
+   defaults require host-stamped provenance plus matching content hashes.
+
+10. **No in-process product plugins.** `bookclerk` / `bookclerkd` /
+    `bookclerk-plugin-host` never link ordinary plugin implementation crates,
+    including `bookclerk-plugin-database-*`. Database adapters own physical
+    lowering behind `databaseAdapter` (`openSession`, `dropUnit`). Direct
+    host↔native Cap'n Proto remains `DirectNativeDiagnostic` only. CI
+    (`scripts/check-plugin-architecture.sh`) enforces this.
+
 ## Consequences
 
 - Daemon / CLI / UI group plugins by handler family, not `PluginKind`.
 - Echo examples and product guests are `api_version = 3` only.
 - CI fails on Cap'n schema drift (`scripts/gen-plugin-abi.py --check`),
-  author-surface leakage (`tools/author-surface-check`), and workerd pin /
-  bridge mirror drift (`scripts/sync-workerd-pin.py --check`).
+  author-surface leakage (`tools/author-surface-check`), workerd pin /
+  bridge mirror drift (`scripts/sync-workerd-pin.py --check`), store-free
+  hosts (`scripts/check-store-free-hosts.sh`), and architecture lints
+  (`scripts/check-plugin-architecture.sh`).
 - Docs: this ADR is the v3 decision record; [`plugins.md`](../plugins.md)
   is the author/operator handbook.
 

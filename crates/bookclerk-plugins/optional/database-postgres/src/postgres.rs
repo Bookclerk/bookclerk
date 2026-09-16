@@ -16,11 +16,47 @@ pub const MIN_POSTGRES_VERSION_NUM: u32 = MIN_POSTGRES_MAJOR * 10_000;
 /// Returns an error when the operation fails, the server is older than
 /// [`MIN_POSTGRES_MAJOR`], or the session encoding is not UTF8.
 pub async fn open(url: &str) -> std::result::Result<DatabaseConnection, DbErr> {
-    let db = Database::connect(url).await?;
+    let db = connect_engine(url).await?;
     db.ping().await?;
     require_postgres_readiness(&db).await?;
     tracing::debug!(plugin = "postgres", "opened library database");
     Ok(db)
+}
+
+/// SeaORM connect, rewritten through the workerd socket proxy when nested.
+async fn connect_engine(url: &str) -> std::result::Result<DatabaseConnection, DbErr> {
+    let url = crate::socket_mediate::mediated_connect_url(url).await?;
+    Database::connect(url).await
+}
+
+/// TCP host/port a Postgres URL would dial (`None` for Unix-socket URLs).
+///
+/// Query `host` / `hostaddr` / `port` override the URL authority. A `host`
+/// that starts with `/` is a libpq directory for `.s.PGSQL.{port}`.
+#[must_use]
+pub fn postgres_tcp_target(url: &str) -> Option<(String, u16)> {
+    let parsed = url::Url::parse(url).ok()?;
+    let mut host = parsed
+        .host_str()
+        .filter(|h| !h.is_empty())
+        .map(str::to_string);
+    let mut port = parsed.port().unwrap_or(5432);
+    let mut unix_socket = parsed
+        .host_str()
+        .is_some_and(|h| h.starts_with('/') || h.starts_with("%2F") || h.starts_with("%2f"));
+    for (key, value) in parsed.query_pairs() {
+        match &*key {
+            "host" if value.starts_with('/') => unix_socket = true,
+            "host" => host = Some(value.into_owned()),
+            "hostaddr" => host = Some(value.into_owned()),
+            "port" => port = value.parse().ok()?,
+            _ => {}
+        }
+    }
+    if unix_socket {
+        return None;
+    }
+    Some((host?, port))
 }
 
 /// Reject servers older than [`MIN_POSTGRES_MAJOR`] or without UTF8 encoding.
@@ -174,7 +210,7 @@ pub async fn open_binding(
             "invalid binding database name `{database}`"
         )));
     }
-    let admin = Database::connect(url).await?;
+    let admin = connect_engine(url).await?;
     if !binding_database_exists(&admin, database).await? {
         if let Err(err) = admin
             .execute_raw(Statement::from_string(
@@ -195,7 +231,7 @@ pub async fn open_binding(
         }
     }
     drop(admin);
-    let db = Database::connect(postgres_url_with_database(url, database)).await?;
+    let db = connect_engine(&postgres_url_with_database(url, database)).await?;
     db.ping().await?;
     require_postgres_readiness(&db).await?;
     tracing::debug!(plugin = "postgres", database, "opened binding database");
@@ -217,14 +253,14 @@ pub async fn open_binding_existing(
             "invalid binding database name `{database}`"
         )));
     }
-    let admin = Database::connect(url).await?;
+    let admin = connect_engine(url).await?;
     if !binding_database_exists(&admin, database).await? {
         return Err(DbErr::Custom(format!(
             "plugin database `{database}` does not exist (lookup-only; will not provision)"
         )));
     }
     drop(admin);
-    let db = Database::connect(postgres_url_with_database(url, database)).await?;
+    let db = connect_engine(&postgres_url_with_database(url, database)).await?;
     db.ping().await?;
     require_postgres_readiness(&db).await?;
     Ok(db)
@@ -245,7 +281,7 @@ pub async fn drop_binding(url: &str, database: &str) -> std::result::Result<(), 
             "invalid binding database name `{database}`"
         )));
     }
-    let admin = Database::connect(url).await?;
+    let admin = connect_engine(url).await?;
     let backend = admin.get_database_backend();
     let terminate = format!(
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
@@ -333,6 +369,30 @@ mod tests {
         assert_eq!(
             postgres_url_with_database("postgres://h/library?sslmode=require", "pb_echo_db"),
             "postgres://h/pb_echo_db?sslmode=require"
+        );
+    }
+
+    #[test]
+    fn postgres_tcp_target_from_ci_url() {
+        assert_eq!(
+            postgres_tcp_target("postgres://postgres:postgres@localhost:5432/postgres"),
+            Some(("localhost".into(), 5432))
+        );
+        assert_eq!(
+            postgres_tcp_target("postgres://user:pass@127.0.0.1/bookclerk"),
+            Some(("127.0.0.1".into(), 5432))
+        );
+        assert_eq!(
+            postgres_tcp_target("postgres://user@db.example.com:6543/db"),
+            Some(("db.example.com".into(), 6543))
+        );
+        assert_eq!(
+            postgres_tcp_target("postgres:///?host=/var/run/postgresql&port=5432"),
+            None
+        );
+        assert_eq!(
+            postgres_tcp_target("postgres://u@h/db?host=10.0.0.5&port=5433"),
+            Some(("10.0.0.5".into(), 5433))
         );
     }
 

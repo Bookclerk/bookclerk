@@ -38,9 +38,17 @@ pub struct CopyDbArgs {
 /// Opens the source SQLite read-only and writes the chosen schema to PostgreSQL.
 pub async fn run(args: CopyDbArgs, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths();
-    let source = args.source.unwrap_or_else(|| paths.library_db.clone());
-    // Ensure schema migrations (e.g. series_asin) are applied before export.
-    let _ = bookclerk_plugin_database_sqlite::open_store(&source).await?;
+    let source = args
+        .source
+        .clone()
+        .unwrap_or_else(|| paths.library_db.clone());
+    let mut cfg = config.clone();
+    if let Some(src) = &args.source {
+        cfg.database.sqlite.path = Some(src.clone());
+    }
+    // Apply host schema through the staged sqlite adapter (no in-process
+    // implementation-crate linkage).
+    let _ = bookclerk_plugin_host::open_library_store_for_plugin(&cfg, "sqlite").await?;
     let conn = Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let (mut client, connection) =
         tokio_postgres::connect(&args.connection, tokio_postgres::NoTls).await?;

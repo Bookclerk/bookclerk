@@ -2,12 +2,13 @@
 
 use std::path::Path;
 
+use bookclerk_plugin_sdk::http::Response;
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{GraphicAudioError, Result};
 
 /// Stream a successful HTTP response body to `path`.
-pub async fn response_to_path(mut resp: reqwest::Response, path: &Path) -> Result<()> {
+pub async fn response_to_path(mut resp: Response, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }

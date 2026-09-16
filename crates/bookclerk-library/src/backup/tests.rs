@@ -1753,7 +1753,13 @@ async fn library_only_restore_preserves_plugin_registry() {
         .unwrap();
     apply_host_schema(&db).await.unwrap();
     LibraryStore::from_connection(db.clone())
-        .record_plugin_database("demoplug", "notes", "sqlite", "/tmp/live.db")
+        .record_plugin_database(
+            "demoplug",
+            "notes",
+            "platform:bookclerk/bookclerk-plugin-database-sqlite",
+            "sqlite",
+            "/tmp/live.db",
+        )
         .await
         .unwrap();
     let state = current_schema_state(&db).await.unwrap();
@@ -1791,7 +1797,13 @@ async fn empty_included_plugin_backup_preserves_live_registry() {
     assert_eq!(outcome.manifest.units.len(), 1, "library unit only");
 
     LibraryStore::from_connection(db.clone())
-        .record_plugin_database("demoplug", "notes", "sqlite", "/tmp/after-backup.db")
+        .record_plugin_database(
+            "demoplug",
+            "notes",
+            "platform:bookclerk/bookclerk-plugin-database-sqlite",
+            "sqlite",
+            "/tmp/after-backup.db",
+        )
         .await
         .unwrap();
     restore_backup(&db, files.path(), &outcome.manifest.id, &restore_ok())
@@ -1866,7 +1878,13 @@ async fn include_plugin_databases_fails_closed_without_prepared_unit() {
         .unwrap();
     apply_host_schema(&db).await.unwrap();
     LibraryStore::from_connection(db.clone())
-        .record_plugin_database("demoplug", "notes", "sqlite", "/tmp/unused.db")
+        .record_plugin_database(
+            "demoplug",
+            "notes",
+            "platform:bookclerk/bookclerk-plugin-database-sqlite",
+            "sqlite",
+            "/tmp/unused.db",
+        )
         .await
         .unwrap();
     let state = current_schema_state(&db).await.unwrap();
@@ -1905,7 +1923,13 @@ async fn include_plugin_databases_captures_and_restores_plugin_unit() {
         .await
         .unwrap();
     LibraryStore::from_connection(db.clone())
-        .record_plugin_database("demoplug", "notes", "sqlite", "memory")
+        .record_plugin_database(
+            "demoplug",
+            "notes",
+            "platform:bookclerk/bookclerk-plugin-database-sqlite",
+            "sqlite",
+            "memory",
+        )
         .await
         .unwrap();
     let state = current_schema_state(&db).await.unwrap();
@@ -1935,7 +1959,13 @@ async fn include_plugin_databases_captures_and_restores_plugin_unit() {
         "included plugin DBs rebuild the registry; leftover source unit_ref must not remain"
     );
     LibraryStore::from_connection(db.clone())
-        .rebind_plugin_database("demoplug", "notes", "sqlite", "/tmp/target.db")
+        .rebind_plugin_database(
+            "demoplug",
+            "notes",
+            "platform:bookclerk/bookclerk-plugin-database-sqlite",
+            "sqlite",
+            "/tmp/target.db",
+        )
         .await
         .unwrap();
     let rebound = LibraryStore::from_connection(db.clone())
@@ -1990,11 +2020,23 @@ async fn include_plugin_databases_captures_two_bindings() {
     .unwrap();
     let store = LibraryStore::from_connection(db.clone());
     store
-        .record_plugin_database("demoplug", "notes", "sqlite", "memory-notes")
+        .record_plugin_database(
+            "demoplug",
+            "notes",
+            "platform:bookclerk/bookclerk-plugin-database-sqlite",
+            "sqlite",
+            "memory-notes",
+        )
         .await
         .unwrap();
     store
-        .record_plugin_database("demoplug", "cache", "sqlite", "memory-cache")
+        .record_plugin_database(
+            "demoplug",
+            "cache",
+            "platform:bookclerk/bookclerk-plugin-database-sqlite",
+            "sqlite",
+            "memory-cache",
+        )
         .await
         .unwrap();
     let state = current_schema_state(&db).await.unwrap();

@@ -5,7 +5,7 @@
 //! provisions the **target** adapter's unit (not the capture `unit_ref`) and
 //! does not run plugin-owned migrations.
 
-use bookclerk_config::{Config, DatabasePluginKind};
+use bookclerk_config::Config;
 use bookclerk_library::{
     restore_backup_unit, BackupRepository, BackupUnit, CanonicalRestoreKind, CanonicalRestoreOpts,
     LibraryStore, PluginDatabaseRecord, PreparedPluginUnit,
@@ -105,7 +105,7 @@ pub async fn restore_plugin_backup_units(
     if units.is_empty() {
         return Ok(());
     }
-    let kind = DatabasePluginKind::parse(&config.database.plugin);
+    let kind = ext.first_party_kind();
     let backend_kind = backup_adapter_id(&config.database.plugin);
     let store = LibraryStore::from_connection(library.clone());
     for (restored, prepared) in units.iter().enumerate() {
@@ -154,7 +154,13 @@ pub async fn restore_plugin_backup_units(
             ))
         })?;
         store
-            .rebind_plugin_database(plugin_id, binding, &backend_kind, &unit_ref)
+            .rebind_plugin_database(
+                plugin_id,
+                binding,
+                ext.adapter_plugin_key(),
+                &backend_kind,
+                &unit_ref,
+            )
             .await
             .map_err(|err| PluginError::message(err.to_string()))?;
     }

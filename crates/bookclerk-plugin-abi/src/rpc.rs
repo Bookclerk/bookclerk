@@ -2341,6 +2341,25 @@ impl database_capnp::Server for DatabaseServer {
         }
         Ok(())
     }
+
+    async fn drop_unit(
+        self: Rc<Self>,
+        params: database_capnp::DropUnitParams,
+        mut results: database_capnp::DropUnitResults,
+    ) -> capnp::Result<()> {
+        let unit_ref = params
+            .get()?
+            .get_unit_ref()
+            .ok()
+            .map(text_of)
+            .unwrap_or_default();
+        let mut result = results.get().init_result();
+        match self.inner.drop_unit(&unit_ref).await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
 }
 
 struct AdapterDatabaseSessionServer {
@@ -3564,6 +3583,18 @@ impl Database for DatabaseClient {
             })),
             adapter_session_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
+    }
+
+    async fn drop_unit(&self, unit_ref: &str) -> Result<()> {
+        let mut req = self.client.drop_unit_request();
+        req.get().set_unit_ref(unit_ref);
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        read_empty(result)
     }
 }
 

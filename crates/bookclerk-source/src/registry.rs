@@ -14,10 +14,10 @@ use crate::error::{Result, SourceError};
 use crate::traits::ContentSource;
 use crate::types::{ScanOptions, ScanSummary, SourceAccount};
 
-/// Maps source id → installed [`ContentSource`] implementations.
+/// Maps PluginKey → installed [`ContentSource`] implementations.
 #[derive(Clone, Default)]
 pub struct SourceRegistry {
-    /// Installed sources keyed by canonical plugin id (`audible`, `libro`, …).
+    /// Installed sources keyed by [`ContentSource::plugin_key`].
     sources: HashMap<String, Arc<dyn ContentSource>>,
 }
 
@@ -28,26 +28,39 @@ impl SourceRegistry {
         Self::default()
     }
 
-    /// Register (or replace) a source implementation.
+    /// Register (or replace) a source implementation by PluginKey.
     pub fn register(&mut self, source: Arc<dyn ContentSource>) {
-        let id = source.id().to_string();
-        self.sources.insert(id, source);
+        let key = source.plugin_key().to_string();
+        self.sources.insert(key, source);
     }
 
-    /// Look up a source by canonical id or alias.
+    /// Look up a source by PluginKey, or by its installation-unique display alias.
+    ///
+    /// Multiple alias hits fail closed (invalid installation state).
     #[must_use]
     pub fn get(&self, id_or_alias: &str) -> Option<Arc<dyn ContentSource>> {
-        let needle = id_or_alias.trim().to_ascii_lowercase();
-        if let Some(s) = self.sources.get(&needle) {
-            return Some(s.clone());
+        let mut matches = self.matches(id_or_alias);
+        (matches.len() == 1).then(|| matches.remove(0))
+    }
+
+    /// Sources whose PluginKey, display alias, or extra aliases match `id_or_alias`.
+    fn matches(&self, id_or_alias: &str) -> Vec<Arc<dyn ContentSource>> {
+        let needle = id_or_alias.trim();
+        if needle.is_empty() {
+            return Vec::new();
         }
+        if let Some(s) = self.sources.get(needle) {
+            return vec![s.clone()];
+        }
+        let lower = needle.to_ascii_lowercase();
         self.sources
             .values()
-            .find(|s| {
-                s.id().eq_ignore_ascii_case(&needle)
-                    || s.aliases().iter().any(|a| a.eq_ignore_ascii_case(&needle))
+            .filter(|s| {
+                s.id().eq_ignore_ascii_case(&lower)
+                    || s.aliases().iter().any(|a| a.eq_ignore_ascii_case(&lower))
             })
             .cloned()
+            .collect()
     }
 
     /// Look up a source or return [`crate::SourceError::Api`] when missing.
@@ -56,9 +69,20 @@ impl SourceRegistry {
     ///
     /// Returns an API error when `id_or_alias` is not registered.
     pub fn require(&self, id_or_alias: &str) -> Result<Arc<dyn ContentSource>> {
-        self.get(id_or_alias).ok_or_else(|| {
-            SourceError::api(format!("content source `{id_or_alias}` is not registered"))
-        })
+        let mut matches = self.matches(id_or_alias);
+        match matches.len() {
+            1 => Ok(matches.remove(0)),
+            0 => Err(SourceError::api(format!(
+                "content source `{id_or_alias}` is not registered"
+            ))),
+            _ => {
+                let keys: Vec<_> = matches.iter().map(|s| s.plugin_key().to_string()).collect();
+                Err(SourceError::api(format!(
+                    "plugin alias `{id_or_alias}` is ambiguous; use a provenance-qualified PluginKey. candidates: {}",
+                    keys.join(", ")
+                )))
+            }
+        }
     }
 
     /// Resolve a needle to the canonical plugin id when registered.

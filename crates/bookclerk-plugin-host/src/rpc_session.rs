@@ -18,8 +18,8 @@ use bookclerk_config::Config;
 use bookclerk_plugin_abi::HostAdapterDatabaseSession;
 use bookclerk_plugin_sdk::{
     connect_plugin, negotiate_rpc_features, BindingValues, ByteRange as AbiByteRange, Cancellation,
-    CopyResult, Destination, DomainEvent, EventConsumer, EventPublisher, EventResult, HostBindings,
-    Invocation, JobInvocation, JobInvocationLease, ListOptions, ObjectMetadata, Oidc,
+    CopyResult, Database, Destination, DomainEvent, EventConsumer, EventPublisher, EventResult,
+    HostBindings, Invocation, JobInvocation, JobInvocationLease, ListOptions, ObjectMetadata, Oidc,
     OidcClientTemplate, OpenedEntrypoints, PluginCli, PluginClient, PluginDescribe, PutResult,
     ReadResult, ScalarLimits, Source, StreamCopySpec, WriteOptions, FEATURE_SCALAR_LIMITS,
     FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
@@ -201,6 +201,12 @@ enum Work {
     /// host-private connect params, taking the `databaseAdapter` entrypoint.
     DbOpen {
         values: BindingValues,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// `Database.dropUnit` on a dedicated adapter open (no session retained).
+    DbDropUnit {
+        values: BindingValues,
+        unit_ref: String,
         reply: oneshot::Sender<Result<()>>,
     },
     DbBegin {
@@ -399,6 +405,23 @@ impl ExecutorIdentity {
         }
     }
 
+    /// Folds overlay-relevant host config into [`Self::configuration_revision`].
+    ///
+    /// Changing a Postgres URL / D1 API origin / S3 endpoint / Audiobookshelf
+    /// URL must not reuse a session that was spawned under the old overlay.
+    #[must_use]
+    pub fn with_overlay_config(mut self, config: &Config) -> Self {
+        let digest = crate::consent::host_overlay_config_digest(config);
+        if !digest.is_empty() {
+            if self.configuration_revision.is_empty() {
+                self.configuration_revision = digest;
+            } else {
+                self.configuration_revision = format!("{}:{digest}", self.configuration_revision);
+            }
+        }
+        self
+    }
+
     /// Fills persisted [`Self::grant_revision`] and effective
     /// [`Self::authority_revision`] from a grant snapshot.
     ///
@@ -506,8 +529,10 @@ impl SessionServices {
 pub struct PluginSession {
     /// Work queue into the vat thread.
     tx: mpsc::UnboundedSender<Work>,
-    /// Plugin id.
+    /// Provenance-qualified PluginKey (canonical text).
     id: String,
+    /// Manifest display alias (`plugin.toml` `id`).
+    alias: String,
     /// Guest data directory.
     data: std::path::PathBuf,
     /// Instance key `(plugin_id, account_id)`.
@@ -626,7 +651,7 @@ impl PluginSession {
         let spawned =
             crate::spawn_stdio::spawn_stdio_guest(plugin, &plan, config, config_table, extra_env)
                 .await?;
-        Self::connect_spawned(spawned, plugin, &plan, account_id, services).await
+        Self::connect_spawned(spawned, plugin, &plan, account_id, services, config).await
     }
 
     /// Connects Cap'n Proto over the spawned stdio and negotiates `describe`.
@@ -636,9 +661,11 @@ impl PluginSession {
         plan: &SpawnPlan,
         account_id: &str,
         services: SessionServices,
+        config: &Config,
     ) -> Result<Self> {
         let manifest = plugin.manifest.clone();
         let id = spawned.id.clone();
+        let alias = spawned.alias.clone();
         let data = spawned.data.clone();
         let scratch = spawned.scratch.clone();
         let grant = spawned.grant.clone();
@@ -653,7 +680,14 @@ impl PluginSession {
         let guest_pid = spawned.child.id();
         let instance_key = plugin_instance_key(&id, account_id);
         let identity = ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
-            .with_grant_revision(&grant);
+            .with_overlay_config(config)
+            .with_persisted_and_effective(&spawned.persisted_grant, &spawned.grant);
+        if identity.grant_revision.is_empty() {
+            return Err(PluginError::message(format!(
+                "plugin `{}` spawn is missing an authority revision",
+                plugin.plugin_key().canonical()
+            )));
+        }
         let files_dir = spawned.files_dir.clone();
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) =
@@ -676,11 +710,13 @@ impl PluginSession {
             )));
         }
         match crate::consent::spawn_grant(&files_dir, plugin) {
-            Ok(fresh)
-                if crate::authority::authority_revision(&fresh) == identity.authority_revision => {}
-            Ok(_) => {
-                let _ = tx.send(Work::Shutdown);
-                return Err(crate::authority::fenced_error());
+            Ok(fresh) => {
+                let effective = crate::spawn_stdio::effective_spawn_grant(&fresh, plugin, config);
+                if crate::authority::authority_revision(&effective) == identity.authority_revision {
+                } else {
+                    let _ = tx.send(Work::Shutdown);
+                    return Err(crate::authority::fenced_error());
+                }
             }
             Err(err) => {
                 let _ = tx.send(Work::Shutdown);
@@ -699,6 +735,7 @@ impl PluginSession {
         Ok(Self {
             tx,
             id,
+            alias,
             data,
             instance_key,
             account_id: account_id.to_string(),
@@ -752,10 +789,16 @@ impl PluginSession {
         self.features.iter().any(|f| f == FEATURE_STORAGE_COPY)
     }
 
-    /// Plugin id.
+    /// Provenance-qualified PluginKey (canonical text).
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Manifest display / CLI alias (`plugin.toml` `id`).
+    #[must_use]
+    pub fn alias(&self) -> &str {
+        &self.alias
     }
 
     /// Guest data directory.
@@ -1142,6 +1185,25 @@ impl PluginSession {
     /// exports no `databaseAdapter`.
     pub async fn db_open(&self, values: BindingValues) -> Result<()> {
         self.call(|reply| Work::DbOpen { values, reply }).await
+    }
+
+    /// Physically drops one provisioned binding unit via `Database.dropUnit`.
+    ///
+    /// Opens the adapter factory with `values` (library connect params) and
+    /// does not retain a session. Used by `plugins db drop`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when `open` / `dropUnit` fails or the guest
+    /// exports no `databaseAdapter`.
+    pub async fn db_drop_unit(&self, values: BindingValues, unit_ref: &str) -> Result<()> {
+        let unit_ref = unit_ref.to_string();
+        self.call(|reply| Work::DbDropUnit {
+            values,
+            unit_ref,
+            reply,
+        })
+        .await
     }
 
     /// Opens an isolated adapter session for one named plugin database binding.
@@ -2171,6 +2233,18 @@ fn vat_thread(
                                 db_host_session = Some(handle.host);
                                 db_txn = None;
                                 Ok(())
+                            }
+                            .await;
+                            let _ = reply.send(out);
+                        }
+                        Work::DbDropUnit {
+                            values,
+                            unit_ref,
+                            reply,
+                        } => {
+                            let out = async {
+                                let db = open_database_adapter(&client, &account_id, values).await?;
+                                db.drop_unit(&unit_ref).await.map_err(map_abi)
                             }
                             .await;
                             let _ = reply.send(out);

@@ -16,7 +16,9 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, SdkError};
-use crate::pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL_ENV};
+use crate::pass_fd::PLUGIN_FD_CHANNEL_ENV;
+#[cfg(unix)]
+use crate::pass_fd::{fd_proc_path, recv_passed_fd};
 use crate::protocol::FetchTitleParams;
 
 /// An open fetch work directory received from the host for one `fetchTitle` call.
@@ -57,12 +59,20 @@ impl FetchWorkDir {
     /// [`recv_passed_fd`] fails, or when FD → path mapping fails on this OS.
     pub fn open(params: &FetchTitleParams) -> Result<Self> {
         if std::env::var(PLUGIN_FD_CHANNEL_ENV).is_ok() {
-            let fd = recv_passed_fd()?;
-            return owned_fd_path(fd).map(|(owned, path)| Self {
-                #[cfg(unix)]
-                _fd: Some(owned),
-                path,
-            });
+            #[cfg(unix)]
+            {
+                let fd = recv_passed_fd()?;
+                return owned_fd_path(fd).map(|(owned, path)| Self {
+                    _fd: Some(owned),
+                    path,
+                });
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(SdkError::message(
+                    "descriptor side channel is not supported on this platform",
+                ));
+            }
         }
         Ok(Self {
             #[cfg(unix)]
@@ -124,12 +134,20 @@ impl UploadFile {
     /// available, or when receiving/mapping the FD fails.
     pub fn open(local_path: Option<&str>) -> Result<Self> {
         if std::env::var(PLUGIN_FD_CHANNEL_ENV).is_ok() {
-            let fd = recv_passed_fd()?;
-            return owned_fd_path(fd).map(|(owned, path)| Self {
-                #[cfg(unix)]
-                _fd: Some(owned),
-                path,
-            });
+            #[cfg(unix)]
+            {
+                let fd = recv_passed_fd()?;
+                return owned_fd_path(fd).map(|(owned, path)| Self {
+                    _fd: Some(owned),
+                    path,
+                });
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(SdkError::message(
+                    "descriptor side channel is not supported on this platform",
+                ));
+            }
         }
         let path = local_path
             .filter(|s| !s.is_empty())
@@ -216,11 +234,4 @@ fn owned_fd_path(fd: i32) -> Result<(std::os::fd::OwnedFd, PathBuf)> {
     let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
     let path = fd_proc_path(owned.as_raw_fd());
     Ok((owned, path))
-}
-
-#[cfg(not(unix))]
-fn owned_fd_path(_fd: i32) -> Result<((), PathBuf)> {
-    Err(SdkError::message(
-        "descriptor side channel is not supported on this platform".into(),
-    ))
 }

@@ -1,8 +1,9 @@
 //! Host-mediated TCP proxy for native-behind-workerd guests.
 //!
 //! Native plugins must not open ambient `AF_INET` sockets. They speak HTTP
-//! CONNECT to this Unix (or loopback) listener; the launcher applies the same
-//! [`EgressPolicy`] as workerd `fetch()`/`connect()` and splices bytes.
+//! CONNECT to this Unix-domain (or Windows named-pipe) listener; the launcher
+//! applies the same [`EgressPolicy`] as workerd `fetch()`/`connect()` and
+//! splices bytes.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -63,13 +64,11 @@ pub fn spawn_unix(
     Ok(())
 }
 
-#[cfg(unix)]
-async fn handle_client(
-    stream: tokio::net::UnixStream,
-    policy: EgressPolicy,
-    fence: Arc<AtomicBool>,
-) -> Result<()> {
-    let (reader, mut writer) = stream.into_split();
+async fn handle_client<S>(stream: S, policy: EgressPolicy, fence: Arc<AtomicBool>) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
@@ -98,17 +97,12 @@ tcp connect is not in capabilities.network.tcp",
             .await?;
         bail!("tcp grant denied for {host}:{port}");
     }
-    let addrs = tokio::net::lookup_host((host.as_str(), port))
+    let mut addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
         .await
-        .with_context(|| format!("resolve {host}"))?;
-    let mut chosen: Option<std::net::SocketAddr> = None;
-    for addr in addrs {
-        if policy.allows_ip(addr.ip()) {
-            chosen = Some(addr);
-            break;
-        }
-    }
-    let Some(dest) = chosen else {
+        .with_context(|| format!("resolve {host}"))?
+        .filter(|addr| policy.allows_ip(addr.ip()))
+        .collect();
+    if addrs.is_empty() {
         writer
             .write_all(
                 b"HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n\
@@ -116,16 +110,94 @@ resolved address is outside the granted address space",
             )
             .await?;
         bail!("no allowed address for {host}:{port}");
+    }
+    // `localhost` often resolves `::1` first. CI Postgres (and many operator
+    // hosts) listen IPv4-only; dialing only the first allowed address then RST
+    // the Unix client, which sqlx reports as "Connection reset by peer".
+    addrs.sort_by_key(std::net::SocketAddr::is_ipv6);
+    let mut last_err: Option<std::io::Error> = None;
+    let mut upstream = None;
+    for dest in addrs {
+        match TcpStream::connect(dest).await {
+            Ok(stream) => {
+                upstream = Some(stream);
+                break;
+            }
+            Err(err) => last_err = Some(err),
+        }
+    }
+    let Some(mut upstream) = upstream else {
+        let detail = last_err
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "no addresses".into());
+        writer
+            .write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n\
+could not dial an allowed address",
+            )
+            .await?;
+        bail!("dial {host}:{port}: {detail}");
     };
-    let mut upstream = TcpStream::connect(dest)
-        .await
-        .with_context(|| format!("dial {dest}"))?;
     writer
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await?;
     writer.flush().await?;
-    let mut client = reader.into_inner().reunite(writer)?;
+    let reader = reader.into_inner();
+    let mut client = reader.unsplit(writer);
     splice(&mut client, &mut upstream, &fence).await
+}
+
+/// Serve HTTP CONNECT on a Windows named pipe until the task is cancelled.
+///
+/// `first` is the instance created before the nested guest was spawned so
+/// `BOOKCLERK_SOCKET_PROXY` is connectable immediately.
+///
+/// # Errors
+///
+/// Returns an error only if the accept task cannot be spawned (it does not).
+#[cfg(windows)]
+pub fn spawn_windows(
+    first: tokio::net::windows::named_pipe::NamedPipeServer,
+    name: String,
+    package_sid: String,
+    policy: EgressPolicy,
+    fence: Arc<AtomicBool>,
+) -> Result<()> {
+    tokio::spawn(async move {
+        let mut server = first;
+        loop {
+            if fence.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Err(err) = server.connect().await {
+                tracing::debug!(error = %err, "socket proxy pipe connect failed");
+                break;
+            }
+            let connected = server;
+            match crate::pipe_bind::create_pipe(&name, &package_sid, false) {
+                Ok(next) => server = next,
+                Err(err) => {
+                    tracing::debug!(error = %err, "socket proxy next pipe instance failed");
+                    let policy = policy.clone();
+                    let fence = Arc::clone(&fence);
+                    tokio::spawn(async move {
+                        if let Err(err) = handle_client(connected, policy, fence).await {
+                            tracing::debug!(error = %err, "socket proxy session ended");
+                        }
+                    });
+                    break;
+                }
+            }
+            let policy = policy.clone();
+            let fence = Arc::clone(&fence);
+            tokio::spawn(async move {
+                if let Err(err) = handle_client(connected, policy, fence).await {
+                    tracing::debug!(error = %err, "socket proxy session ended");
+                }
+            });
+        }
+    });
+    Ok(())
 }
 
 fn parse_connect(request: &str) -> Result<(String, u16)> {
@@ -218,7 +290,9 @@ pub fn resolved_addresses_denied(policy: &EgressPolicy, ips: &[IpAddr]) -> bool 
 mod tests {
     use super::*;
     use bookclerk_plugin_manifest::{NetworkMode, TcpGrant};
+    #[cfg(unix)]
     use std::time::Duration as StdDuration;
+    #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn tcp_policy(host: &str, port: u16, cidrs: &[&str]) -> EgressPolicy {
@@ -278,6 +352,7 @@ mod tests {
         assert!(!policy.allows_tcp("api.example.com", 443));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn proxy_denies_unapproved_connect_without_dialing() {
         let dir = tempfile::tempdir().unwrap();
@@ -298,6 +373,7 @@ mod tests {
         fence.store(true, Ordering::SeqCst);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn proxy_echoes_approved_connect_and_fences() {
         let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -335,6 +411,7 @@ mod tests {
         fence.store(true, Ordering::SeqCst);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn idle_connect_terminates_when_fenced_without_further_rpc() {
         let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -376,6 +453,45 @@ mod tests {
         assert_eq!(n, 0, "fenced idle CONNECT must EOF without another RPC");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn proxy_dials_ipv4_when_localhost_has_no_ipv6_listener() {
+        let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = echo.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = echo.accept().await.unwrap();
+            let mut buf = [0_u8; 32];
+            let n = s.read(&mut buf).await.unwrap();
+            s.write_all(&buf[..n]).await.unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("proxy.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let policy = tcp_policy("localhost", port, &["127.0.0.1/32", "::1/128"]);
+        let fence = Arc::new(AtomicBool::new(false));
+        spawn_unix(listener, policy, Arc::clone(&fence)).unwrap();
+        let mut client = tokio::net::UnixStream::connect(&sock).await.unwrap();
+        let req = format!("CONNECT localhost:{port} HTTP/1.1\r\n\r\n");
+        client.write_all(req.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        let mut tmp = [0_u8; 1];
+        loop {
+            client.read_exact(&mut tmp).await.unwrap();
+            head.push(tmp[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&head);
+        assert!(text.contains("200"), "{text}");
+        client.write_all(b"ping").await.unwrap();
+        let mut buf = vec![0_u8; 16];
+        let n = client.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ping");
+        fence.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn proxy_denies_private_ip_without_cidr_even_with_tcp_host() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,9 +1,8 @@
-//! Audiobookshelf integration plugin: in-process
-//! [`bookclerk_integrations::Integration`] + Workers RPC guest.
+//! Audiobookshelf integration plugin: Workers RPC guest plus the
+//! [`bookclerk_integrations::Integration`] trait used by the guest binary.
 //!
-//! Host binaries should register via [`register`] through
-//! `bookclerk_plugin_host::register_builtin_integrations` (feature-gated), not by
-//! depending on this crate directly.
+//! Hosts load this package as a staged external guest. Do not link this crate
+//! into `bookclerk` / `bookclerkd` for in-process execution.
 
 mod brand;
 mod client;

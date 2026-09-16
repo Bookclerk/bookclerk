@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine as _;
+use bookclerk_plugin_sdk::http::header::{CONTENT_TYPE, RANGE, USER_AGENT};
+use bookclerk_plugin_sdk::http::{Method, StatusCode};
 use futures::StreamExt as _;
 #[cfg(feature = "cli")]
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use reqwest::Method;
-use reqwest::header::{CONTENT_TYPE, RANGE};
 use tokio::io::AsyncWriteExt as _;
 
 use crate::api::client::{ApiError, AuthMode, Client, echoed_request_id};
@@ -39,13 +39,13 @@ pub enum DownloadError {
     Api(#[from] ApiError),
     /// The HTTP transfer failed.
     #[error("download transfer failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] crate::HttpError),
     /// Filesystem access failed.
     #[error("download IO failed: {0}")]
     Io(#[from] std::io::Error),
     /// The server answered with a non-success status.
     #[error("download failed with HTTP status {0}")]
-    Status(reqwest::StatusCode),
+    Status(StatusCode),
     /// The response Content-Type did not match the expected type(s). `message`
     /// is empty or a `: <body snippet>` for a text-like body (an HTML/JSON error
     /// page); a binary/media body is not echoed.
@@ -150,8 +150,8 @@ pub const CENC_USER_AGENT: &str =
 /// the CENC content download and the MPD/text fetch — which 403 on the API
 /// client's `Accept-Encoding: gzip, br`. Without the timeouts a stalled
 /// connection (worst case a multi-GB CENC transfer) would hang forever.
-pub fn plain_http_client() -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
+pub fn plain_http_client() -> Result<crate::HttpClient, crate::HttpError> {
+    crate::HttpClient::builder()
         .no_gzip()
         .no_brotli()
         .no_deflate()
@@ -188,7 +188,7 @@ pub async fn download_cenc_to_file(
         |offset| async move {
             Ok(plain_http_client()?
                 .get(url)
-                .header(reqwest::header::USER_AGENT, CENC_USER_AGENT)
+                .header(USER_AGENT, CENC_USER_AGENT)
                 .header(RANGE, format!("bytes={offset}-")))
         },
     )
@@ -242,7 +242,9 @@ async fn stream_to_file<Fut>(
     build_request: impl Fn(u64) -> Fut,
 ) -> Result<(DownloadOutcome, PathBuf), DownloadError>
 where
-    Fut: std::future::Future<Output = Result<reqwest::RequestBuilder, DownloadError>>,
+    Fut: std::future::Future<
+            Output = Result<bookclerk_plugin_sdk::http::RequestBuilder, DownloadError>,
+        >,
 {
     // `force` re-downloads from scratch, ignoring an existing complete
     // file and any partial — used by `--force`/`--relicense`. The check
@@ -320,7 +322,7 @@ where
     let mut response = build_request(offset).await?.send().await?;
     let mut status = response.status();
 
-    if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+    if status == StatusCode::RANGE_NOT_SATISFIABLE {
         // A 416 only proves the partial is at/past the remote EOF, not
         // that its bytes are the file's. With the expected size known
         // this point is only reached on an inconsistency (a complete
@@ -343,11 +345,11 @@ where
     let content_length = response.content_length();
 
     let mut append = offset > 0;
-    if status == reqwest::StatusCode::OK {
+    if status == StatusCode::OK {
         // Server ignored the range: restart from scratch.
         append = false;
         offset = 0;
-    } else if status != reqwest::StatusCode::PARTIAL_CONTENT && !status.is_success() {
+    } else if status != StatusCode::PARTIAL_CONTENT && !status.is_success() {
         return Err(DownloadError::Status(status));
     }
 
@@ -529,7 +531,7 @@ fn is_text_like(content_type: &str) -> bool {
 /// quoted in the message); a legitimate-but-mistyped media body is binary and
 /// possibly huge, so it is neither read nor echoed — just the type is reported.
 async fn content_type_error(
-    response: reqwest::Response,
+    response: bookclerk_plugin_sdk::http::Response,
     got: &str,
     expected: &[&str],
 ) -> DownloadError {
@@ -690,7 +692,7 @@ mod tests {
 
     #[test]
     fn decode_annotations_treats_no_annotations_as_none() {
-        use reqwest::StatusCode;
+        use StatusCode;
         // 404: the title has no annotations.
         assert!(matches!(
             decode_annotations(StatusCode::NOT_FOUND, b""),
@@ -962,7 +964,7 @@ mod tests {
         // would silently switch annotations to the access token and every
         // fetch would 403 at runtime — this assertion turns that drift into
         // a test failure instead.
-        let base = reqwest::Url::parse(ANNOTATION_BASE).expect("ANNOTATION_BASE is a valid URL");
+        let base = Url::parse(ANNOTATION_BASE).expect("ANNOTATION_BASE is a valid URL");
         let host = base.host_str().expect("ANNOTATION_BASE has a host");
         assert!(crate::api::client::host_requires_signing(host));
     }
@@ -1415,7 +1417,7 @@ pub async fn request_annotations(
 ) -> Result<Option<serde_json::Value>, ApiError> {
     let url = annotation_url(asin, acr, version, content_format);
     let response = client.authed_get(&url).await?.send().await?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
     }
     let response = response.error_for_status()?;
@@ -1442,8 +1444,8 @@ enum AnnotationBody {
     Unparseable,
 }
 
-fn decode_annotations(status: reqwest::StatusCode, body: &[u8]) -> AnnotationBody {
-    if status == reqwest::StatusCode::NOT_FOUND {
+fn decode_annotations(status: StatusCode, body: &[u8]) -> AnnotationBody {
+    if status == StatusCode::NOT_FOUND {
         return AnnotationBody::None;
     }
     if body.iter().all(u8::is_ascii_whitespace) {

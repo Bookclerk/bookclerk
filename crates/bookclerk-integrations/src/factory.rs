@@ -1,9 +1,8 @@
 //! Build integration registry from config.
 //!
-//! First-party adapters register through
-//! `bookclerk_plugin_host::register_builtin_integrations` (feature-gated plugin
-//! crates). This module keeps [`from_config`] / [`register_builtins`] as
-//! stable no-ops so older call sites still compile.
+//! First-party adapters run as staged external guests. This module keeps
+//! [`from_config`] / [`register_builtins`] as stable no-ops so older call
+//! sites still compile.
 
 use bookclerk_config::Config;
 
@@ -12,9 +11,8 @@ use crate::registry::IntegrationRegistry;
 
 /// Register first-party integrations into an existing registry.
 ///
-/// Prefer `bookclerk_plugin_host::register_builtin_integrations` from hosts.
-/// This function is intentionally a no-op; ABS and other adapters register
-/// from their plugin packages.
+/// This function is intentionally a no-op; ABS and other adapters load as
+/// external guests through `bookclerk_plugin_host::load_integrations`.
 ///
 /// # Arguments
 ///

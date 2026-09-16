@@ -9,8 +9,10 @@ entrypoints = ["databaseAdapter"]
 
 [capabilities.network]
 mode = "outbound"
-# Native: no `domains` key (hostname filtering is workerd-only). Postgres dials TCP
-# under coarse jail outbound.
+# Native: no `domains` (fetch allowlist is workerd-only). TCP host/port is not
+# hardcoded — the host overlays the destination from `[database.postgres].url`
+# at spawn. The nested jail denies ambient AF_INET; sqlx dials a local Unix
+# socket that the SDK splices through `bookclerk_plugin_sdk::connect`.
 
 [vars]
 

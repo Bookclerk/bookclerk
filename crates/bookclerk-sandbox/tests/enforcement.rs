@@ -260,16 +260,11 @@ fn child_media_worker_shape(job_dir: &Path, files_dir: &Path) -> Result<(), Stri
     Ok(())
 }
 
-/// Mirrors the policy the plugin host builds for a guest: the install directory
-/// read-only, the guest's own `data` and `tmp` directories writable, and the
-/// download cache writable.
-///
-/// The nesting is the part that needs a backend to answer. Plugins install at
-/// `$FILES_DIR/plugins/<id>`, which is also where the host keeps that guest's
-/// state, so `data` and `tmp` sit *inside* a directory granted read-only. Both
-/// backends resolve that in favour of the more specific rule, but they do it by
-/// different means — Landlock by rule nesting, Seatbelt by rule order — so it is
-/// worth proving on each rather than reasoning about.
+/// Mirrors nested Landlock/Seatbelt rules: a read-only parent with more
+/// specific writable children. Product plugin state is a sibling
+/// (`$FILES_DIR/plugin-state/<PluginKey fs-id>/{data,tmp}`), not nested under
+/// the install tree; this probe still uses nested `plugins/probe/{data,tmp}`
+/// to prove the backend honours the more specific write grant.
 fn child_plugin_guest_shape(files_dir: &Path) -> Result<(), String> {
     let install = files_dir.join("plugins").join("probe");
     let data = install.join("data");

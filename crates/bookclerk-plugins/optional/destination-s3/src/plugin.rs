@@ -65,6 +65,7 @@ async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
         endpoint: ctx.endpoint.clone(),
         force_path_style: ctx.force_path_style,
         naming: Default::default(),
+        plugin: String::new(),
     };
     let creds = ctx.credentials.as_ref().map(credentials_from_dto);
     S3Backend::from_parts(&cfg, &ctx.prefix, creds.as_ref())

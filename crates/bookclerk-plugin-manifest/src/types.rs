@@ -563,7 +563,7 @@ fn default_module_type() -> String {
 pub struct PluginManifest {
     /// ABI / schema version. Must equal [`bookclerk_plugin_abi::PRODUCT_API_VERSION`].
     pub api_version: u32,
-    /// Globally unique plugin id (`[a-z0-9_]{2,32}` grammar).
+    /// Display / CLI alias (`[a-z0-9_]{2,32}` grammar). Not a privilege.
     pub id: String,
     /// Optional human-readable display name for Settings / Accounts UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]

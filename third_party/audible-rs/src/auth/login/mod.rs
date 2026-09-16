@@ -30,12 +30,16 @@ use crate::api::locale::Locale;
 use super::device::Device;
 use super::{AuthError, Authenticator};
 
+use bookclerk_plugin_sdk::http::StatusCode;
+use bookclerk_plugin_sdk::http::header;
+use url::Url;
+
 /// Errors raised by the login / device-registration flow.
 #[derive(Debug, thiserror::Error)]
 pub enum LoginError {
     /// The HTTP layer failed.
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] crate::HttpError),
     /// A local I/O error (e.g. binding the login server's socket).
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -47,7 +51,7 @@ pub enum LoginError {
     NoAuthorizationCode,
     /// The register endpoint answered with an error status.
     #[error("device registration failed with HTTP status {0}")]
-    Register(reqwest::StatusCode),
+    Register(StatusCode),
     /// The register response did not have the expected shape.
     #[error("device registration returned an unexpected response")]
     RegisterResponse,
@@ -195,7 +199,7 @@ pub fn authorize_url(device: &Device, pkce: &Pkce, locale: &Locale, with_usernam
         ("openid.oa2.scope", "device_auth_access".to_owned()),
     ];
     let base = format!("https://www.{host}.{domain}/ap/signin");
-    reqwest::Url::parse_with_params(&base, &params)
+    Url::parse_with_params(&base, &params)
         .expect("a valid authorize URL")
         .to_string()
 }
@@ -226,7 +230,7 @@ pub(crate) fn auth_code_from_pairs<'a>(
 
 /// Extracts the `openid.oa2.authorization_code` from the pasted redirect URL.
 pub fn extract_authorization_code(redirect: &str) -> Result<String, LoginError> {
-    let url = reqwest::Url::parse(redirect.trim()).map_err(|_| LoginError::InvalidRedirect)?;
+    let url = Url::parse(redirect.trim()).map_err(|_| LoginError::InvalidRedirect)?;
     auth_code_from_pairs(url.query_pairs()).ok_or(LoginError::NoAuthorizationCode)
 }
 
@@ -238,7 +242,7 @@ pub fn extract_authorization_code(redirect: &str) -> Result<String, LoginError> 
 /// (see the NOTE in `auth/mod.rs`). Stored website cookies are left empty;
 /// they are lazily exchanged on first cookie use (AUD-25).
 pub async fn register(
-    http: &reqwest::Client,
+    http: &crate::HttpClient,
     locale: &Locale,
     device: &Device,
     pkce: &Pkce,
@@ -279,17 +283,14 @@ pub async fn register(
             "x-amzn-identity-auth-domain",
             format!("api.{host}.{domain}"),
         )
-        .header(reqwest::header::USER_AGENT, device.register_user_agent())
-        .header(reqwest::header::ACCEPT, "application/json")
+        .header(header::USER_AGENT, device.register_user_agent())
+        .header(header::ACCEPT, "application/json")
         .header(
-            reqwest::header::ACCEPT_LANGUAGE,
+            header::ACCEPT_LANGUAGE,
             locale_language(locale.country_code),
         )
-        .header(reqwest::header::CACHE_CONTROL, "no-store")
-        .header(
-            reqwest::header::COOKIE,
-            "amzn-app-id=MAPiOSLib/6.0/ToHideRetailLink",
-        )
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::COOKIE, "amzn-app-id=MAPiOSLib/6.0/ToHideRetailLink")
         .json(&body)
         .send()
         .await?;

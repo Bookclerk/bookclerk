@@ -80,6 +80,14 @@ impl SourcesConfig {
             .insert("enabled".into(), toml::Value::Boolean(enabled));
     }
 
+    /// Occupancy PluginKey (or alias) stored as `plugin = "…"` in `[sources.<id>]`.
+    ///
+    /// Empty means the table id / display alias.
+    #[must_use]
+    pub fn occupancy(&self, source: &str) -> &str {
+        self.get_string(source, "plugin").unwrap_or("")
+    }
+
     /// Set a string-valued plugin knob (`bitrate`, `container`, …).
     pub fn set_string(&mut self, source: &str, key: &str, value: impl Into<String>) {
         self.table_mut(source)
@@ -390,6 +398,18 @@ impl IntegrationsConfig {
         self.plugin_table_mut(id)
             .insert("enabled".into(), toml::Value::Boolean(enabled));
     }
+
+    /// Occupancy PluginKey (or alias) stored as `plugin = "…"` in `[integrations.<id>]`.
+    ///
+    /// Empty means the table id / display alias.
+    #[must_use]
+    pub fn occupancy(&self, integration: &str) -> &str {
+        let id = Self::abs_table_id(integration).unwrap_or(integration);
+        self.plugin_table(id)
+            .and_then(|table| table.get("plugin"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+    }
 }
 
 /// Audiobookshelf integration settings (`[integrations.audiobookshelf]`).
@@ -430,6 +450,36 @@ impl Default for AudiobookshelfConfig {
 mod tests {
     use super::*;
     use crate::Config;
+
+    #[test]
+    fn occupancy_plugin_fields_round_trip() {
+        let config: Config = toml::from_str(
+            r#"
+[output.s3]
+enabled = true
+plugin = "path:file:///opt/plugins/s3#s3"
+bucket = "books"
+
+[sources.audible]
+enabled = true
+plugin = "path:file:///opt/plugins/audible#audible"
+
+[integrations.audiobookshelf]
+enabled = true
+plugin = "path:file:///opt/plugins/abs#audiobookshelf"
+"#,
+        )
+        .expect("parse");
+        assert_eq!(config.output.s3.plugin, "path:file:///opt/plugins/s3#s3");
+        assert_eq!(
+            config.sources.occupancy("audible"),
+            "path:file:///opt/plugins/audible#audible"
+        );
+        assert_eq!(
+            config.integrations.occupancy("audiobookshelf"),
+            "path:file:///opt/plugins/abs#audiobookshelf"
+        );
+    }
 
     #[test]
     fn plugins_jail_toml_round_trips() {

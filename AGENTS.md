@@ -114,7 +114,6 @@ cargo stage-plugins --optional --examples --skip-build
 cargo test-staged             # describe/health conformance against installed + staged guests
 ```
 
-Optional in-process stores: `cargo build -p bookclerkd --features bundled-plugins`.
 See `docs/plugins.md` and `crates/bookclerk-dev/README.md`.
 
 `cargo dev` defaults `BOOKCLERK_FILES_DIR` to `<workspace>/BookclerkFiles`

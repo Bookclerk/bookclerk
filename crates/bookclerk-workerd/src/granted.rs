@@ -600,6 +600,7 @@ pub trait GrantedListener {
     fn accept(&self) -> impl std::future::Future<Output = Result<Self::Stream>> + Send;
 }
 
+#[cfg(unix)]
 impl GrantedListener for tokio::net::UnixListener {
     type Stream = tokio::net::UnixStream;
     async fn accept(&self) -> Result<Self::Stream> {

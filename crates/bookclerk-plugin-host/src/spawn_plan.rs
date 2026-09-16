@@ -26,11 +26,19 @@ pub const WORKERD_LAUNCHER_ENV: &str = "BOOKCLERK_PLUGIN_WORKERD";
 pub const WORKERD_BIN_ENV: &str = "BOOKCLERK_WORKERD_BIN";
 /// Environment variable naming the native backend `bookclerk-workerd` fronts.
 pub const NATIVE_BACKEND_ENV: &str = "BOOKCLERK_NATIVE_BACKEND";
-/// Set to `1` when the host jail is confined so `bookclerk-workerd` may wrap
-/// the native backend in a nested `NetPolicy::Deny` jail.
+/// Set to `1` so `bookclerk-workerd` wraps the native backend in nested
+/// `NetPolicy::Deny`. Independent of the outer launcher jail.
 pub const NESTED_NATIVE_JAIL_ENV: &str = "BOOKCLERK_NESTED_NATIVE_JAIL";
 /// Jail helper used to wrap the native backend (same env as the outer launcher).
 pub const NESTED_JAIL_BIN_ENV: &str = "BOOKCLERK_PLUGIN_JAIL";
+/// `required` makes nested jail failures fail closed (outer Isolation::Required).
+pub const NESTED_JAIL_ENFORCEMENT_ENV: &str = "BOOKCLERK_NESTED_JAIL_ENFORCEMENT";
+/// Pre-created nested AppContainer profile moniker (Windows).
+#[cfg(windows)]
+pub const NESTED_AC_PROFILE_ENV: &str = "BOOKCLERK_NESTED_AC_PROFILE";
+/// Nested AppContainer Package SID for the SOCKET_PROXY named-pipe DACL (Windows).
+#[cfg(windows)]
+pub const NESTED_AC_SID_ENV: &str = "BOOKCLERK_NESTED_AC_SID";
 
 /// Which transport a spawn uses to reach the guest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -47,7 +47,12 @@ impl DatabasePluginKind {
         }
     }
 
-    /// Parse a plugin id or common alias (`local` → sqlite, `pg` → postgres).
+    /// Parse a first-party backend id or kind token (`sqlite`, `postgres`, `pg`, `d1`).
+    ///
+    /// Does **not** inspect PluginKey text. A provenance-qualified occupancy
+    /// string such as `cargo:https://evil.example#postgres` is not a kind.
+    /// First-party classification belongs in plugin-host after resolving a
+    /// discovered install (PluginKey + verified provenance).
     ///
     /// # Returns
     ///
@@ -370,6 +375,16 @@ mod tests {
             DatabasePluginKind::parse("POSTGRES"),
             Some(DatabasePluginKind::Postgres)
         );
+        assert!(
+            DatabasePluginKind::parse("platform:bookclerk/sqlite#sqlite").is_none(),
+            "PluginKey fragments must not select a first-party kind"
+        );
+        assert!(DatabasePluginKind::parse("platform:bookclerk/postgres#postgres").is_none());
+        assert!(DatabasePluginKind::parse("platform:bookclerk/d1#d1").is_none());
+        assert!(
+            DatabasePluginKind::parse("cargo:https://evil.example#something#postgres").is_none()
+        );
+        assert!(DatabasePluginKind::parse("platform:bookclerk/echo#echo").is_none());
     }
 
     #[test]
@@ -384,6 +399,16 @@ mod tests {
             msg.contains("url") || msg.contains("postgres"),
             "expected url error, got: {msg}"
         );
+
+        let keyed = DatabaseConfig {
+            plugin: "platform:bookclerk/bookclerk-plugin-database-postgres".into(),
+            ..Default::default()
+        };
+        assert!(
+            keyed.validate().is_ok(),
+            "config crate must not treat PluginKey occupancy as first-party postgres"
+        );
+        assert!(keyed.active_plugin().is_err());
     }
 
     #[test]

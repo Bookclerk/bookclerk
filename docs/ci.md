@@ -56,7 +56,7 @@ plugins, SDKs).
 | `plan` | Always runs; publishes outputs + `ci-plan` artifact |
 | `fmt / clippy / test` | Selective steps driven by plan outputs (when `SELECTIVE_CI=1`). Installs `capnproto`. The plugin ABI contract requires pinned `target/debug/workerd` (fails closed unless a local `BOOKCLERK_SKIP_WORKERD=1` skip is used — CI never sets that) |
 | `release build` | When hosts/platform packaging are affected (or full suite). Installs `capnproto`. |
-| `sandbox + jailed tiers` | When confinement packages are affected (or full suite). Windows runs `--test-threads=1` so parallel AppContainer tests do not starve `Local\bookclerk-dacl-tx`. |
+| `sandbox + jailed tiers` | When confinement packages are affected (or full suite). Windows runs `--test-threads=1` so parallel AppContainer tests do not starve `Local\bookclerk-dacl-tx`. Windows also installs Cap'n Proto and clippy/tests `bookclerk-workerd` (named-pipe SOCKET_PROXY), `bookclerk-plugin-sdk` with `http`, and `bookclerk-plugin-host --lib` so `#[cfg(windows)]` nested Deny is compiled. |
 | `tray` | When `bookclerk-tray` is affected (or full suite) |
 | `postgres 16/17/18` | When Rust runs (or full suite). Matrix of every supported PostgreSQL major ≥ 16 (`fail-fast: false`; `CI Gate` requires the whole job). Installs `capnproto`. Requires a Postgres service at that major. Runs ignored job-queue tests, TOTP atomic conformance, shared SQL-plan vectors, guest page tests, binding-schema isolation, and production RPC LIKE. |
 | `CI Gate` | Stable required check: succeeds for intentional skips; fails on real failures |

@@ -25,7 +25,8 @@ contract must be **identical** across runtimes.
    one request). RPC carries bounded values and **stream/stub capabilities**.
    Cap'n Proto field/union ordinals are append-only; unknown members fail
    closed or return typed `unsupported`. `describe()` advertises `apiVersion`
-   and `supportedRoles`; the signed manifest is the host allowlist. Manifest
+   and `supportedRoles`; the verified install receipt (provenance + content
+   hashes) is the host allowlist, not a publisher-signed manifest. Manifest
    `api_version` and `describe().apiVersion` must match
    `PRODUCT_API_VERSION`. Optional facilities use named `rpcFeatures`.
 2. **Workerd is the control-plane front door; native jail is a backend.**
@@ -143,10 +144,11 @@ spawn error in every `[plugins].isolation` mode. Direct host↔native Cap'n
 Proto survives only as `SpawnTransport::DirectNativeDiagnostic` for tests and
 diagnostics; no product binary selects it.
 
-Still deferred: deny-direct-native-egress / HTTP proxy (a native backend behind
-the front door shares the launcher's `OutboundListen` jail, so a deny-network
-native manifest is no longer OS-denied `connect`), OAuth/listen broker,
-container executor, and VPS benchmarks.
+Native-behind-workerd guests are wrapped in a nested `NetPolicy::Deny` jail
+(`bookclerk-workerd` `native_guest.rs`) and must use the SDK `SOCKET_PROXY`
+for any egress; the launcher jail stays `OutboundListen` so
+`bookclerk-workerd` can bind the host↔isolate RPC bridge. Still deferred:
+OAuth/listen broker, container executor, and VPS benchmarks.
 
 Instances are keyed by `(plugin_id, account_id)`. Shared-isolate concurrent
 principals are not a proven isolation boundary (stubs are transferable).

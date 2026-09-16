@@ -95,10 +95,11 @@ fn plugin_root_prefix(plugin_root: &Path) -> String {
 /// Stable leaf under `$TMPDIR` for one materialization session.
 ///
 /// Unix `sockaddr_un` is about 108 bytes. Guest scratch is already
-/// `$FILES_DIR/plugin-state/<PluginKey fs-id>/tmp`, so this leaf must stay short. Eight hex
-/// chars identify the plugin root; four more are a per-session nonce so
-/// concurrent `materialize` callers of the *same* root cannot clobber
-/// `workerd-config.capnp` or unix sockets.
+/// `$FILES_DIR/plugin-state/<PluginKey fs-id>/tmp`. Eight hex chars identify
+/// the plugin root; four more are a per-session nonce so concurrent
+/// `materialize` callers of the *same* root cannot clobber
+/// `workerd-config.capnp`. Unix sockets no longer need this leaf to keep
+/// absolute paths under `sockaddr_un` (Linux abstract / relative GRANTED).
 fn workerd_state_leaf(plugin_root: &Path, nonce_hex: &str) -> String {
     debug_assert_eq!(nonce_hex.len(), SESSION_NONCE_HEX);
     format!("w{}{nonce_hex}", plugin_root_prefix(plugin_root))
@@ -222,7 +223,8 @@ fn write_owner_only_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> 
 /// root is read-only under Landlock, so materializing `.bookclerk/` there fails.
 /// Each call allocates a unique leaf (`w` + root prefix + nonce) with exclusive
 /// `create_dir`, so concurrent sessions of the same plugin cannot clobber
-/// `workerd-config.capnp`. The `granted.sock` unix socket still fits in
+/// `workerd-config.capnp`. GRANTED / native-proxy sockets use Linux abstract
+/// names (or a relative `unix:granted.sock`) so `$TMPDIR` may exceed
 /// `sockaddr_un`.
 ///
 /// Callers that bind sockets first (the launcher) must pass the returned path
@@ -693,8 +695,9 @@ pub struct GeneratedConfig {
 /// `[workerd]` modules. Direct native Cap'n Proto remains a host-selected
 /// fallback, not plugin-selectable policy bypass.
 ///
-/// `granted_addr` is an optional workerd `external` address (`host:port` or
-/// `unix:/path`) for the adapter-private `GRANTED` capability channel.
+/// `granted_addr` is an optional workerd `external` address (`host:port`,
+/// `unix:/path`, `unix:granted.sock`, or Linux `unix-abstract:name`) for the
+/// adapter-private `GRANTED` capability channel.
 ///
 /// `bridge_token` is a per-isolate bearer shared by the launcher and the bridge
 /// `/rpc` + `/health` routes (`BRIDGE_TOKEN` binding).
@@ -1657,19 +1660,48 @@ mode = "deny"
     }
 
     #[test]
-    fn workerd_state_dir_unix_sockets_fit_sockaddr_un() {
-        let scratch =
-            PathBuf::from("/home/runner/work/_temp/BookclerkFiles/plugins/echo_native_node/tmp");
+    fn github_actions_cargo_tmpdir_can_overflow_sockaddr_un() {
+        // Cargo `[env] TMPDIR = .tmp` + plugin-state fs_id + workerd leaf.
+        // Absolute pathname sockets overflow Linux sun_path (108); the
+        // launcher uses unix-abstract / relative names instead (see unix_bind).
+        let scratch = PathBuf::from(
+            "/home/runner/work/bookclerk/bookclerk/.tmp/.tmpOjHB9L/plugin-state/pk-6fbbb9ca1420cebb/tmp",
+        );
         let dir = scratch.join(workerd_state_leaf(
             &scratch.join("plugin-root"),
             &"f".repeat(SESSION_NONCE_HEX),
         ));
         let granted = dir.join("granted.sock");
         assert!(
-            granted.to_string_lossy().len() < 108,
-            "granted socket path too long for sockaddr_un: {} ({} bytes)",
+            granted.to_string_lossy().len() >= 108,
+            "fixture must model the GHA overflow: {} ({} bytes)",
             granted.display(),
             granted.to_string_lossy().len()
+        );
+    }
+
+    #[test]
+    fn granted_unix_abstract_survives_capnp() {
+        use bookclerk_plugin_manifest::WorkerdLimits;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let generated = materialize_native_backend(
+            dir.path(),
+            &native_manifest(),
+            &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            Some("unix-abstract:bc-g-deadbeefcafebabe"),
+            "test-bridge-token",
+            None,
+        )
+        .expect("materialize");
+        let capnp = std::fs::read_to_string(&generated.config_path).expect("read capnp");
+        assert!(
+            capnp.contains(
+                r#"(name = "granted", external = (address = "unix-abstract:bc-g-deadbeefcafebabe""#
+            ),
+            "unix-abstract GRANTED must round-trip into workerd config:\n{capnp}"
         );
     }
 

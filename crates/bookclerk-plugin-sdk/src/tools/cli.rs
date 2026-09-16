@@ -3,6 +3,8 @@
 //! Audience: humans and CI invoking authoring subcommands. Guest plugin crates
 //! should leave feature `tools` off so they do not link `bookclerk-workerd`.
 
+#![allow(clippy::missing_docs_in_private_items)]
+
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;

@@ -212,7 +212,7 @@ pub(crate) async fn login_via_server(
     on_progress(LoginProgress::WaitingForCallback);
 
     let login = server.run(Duration::from_secs(opts.timeout_secs)).await?;
-    let http = reqwest_client()?;
+    let http = http_client()?;
     let auth = login_flow::register(
         &http,
         &login.locale,
@@ -251,7 +251,7 @@ async fn login_via_external(
     };
 
     let code = login_flow::extract_authorization_code(&redirect)?;
-    let http = reqwest_client()?;
+    let http = http_client()?;
     let auth =
         login_flow::register(&http, locale, &device, &pkce, &code, opts.audible_username).await?;
     Ok(auth)
@@ -335,8 +335,8 @@ pub(crate) fn export_authfile_plain_bytes(auth: &Authenticator) -> Result<Vec<u8
 }
 
 /// HTTP client for Amazon register calls (30s connect timeout).
-fn reqwest_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+fn http_client() -> Result<audible_rs::HttpClient> {
+    audible_rs::HttpClient::builder()
         .connect_timeout(Duration::from_secs(30))
         .build()
         .map_err(|err| AudibleError::Auth(err.to_string()))

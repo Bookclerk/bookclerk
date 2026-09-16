@@ -29,9 +29,8 @@ async-trait.workspace = true
 bookclerk-config.workspace = true
 bookclerk-integrations.workspace = true
 bookclerk-library.workspace = true
-bookclerk-plugin-sdk.workspace = true
+bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
 chrono.workspace = true
-reqwest = { version = "0.13", default-features = true, features = ["json", "query", "rustls"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "sync"] }

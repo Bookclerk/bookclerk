@@ -1617,6 +1617,57 @@ async fn plugin_oidc_upsert_rejects_custom_and_cross_plugin_client_id() {
 }
 
 #[tokio::test]
+async fn plugin_oidc_rewrites_alias_owner_to_plugin_key() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    store
+        .upsert_plugin_oidc_client(
+            "plugin-owned",
+            "audiobookshelf",
+            "Audiobookshelf",
+            &[String::from("http://127.0.0.1:13378/auth/openid/callback")],
+            true,
+            &["openid".into()],
+        )
+        .await
+        .unwrap();
+    let key = "path:file:///tmp/abs#audiobookshelf";
+    let migrated = store
+        .upsert_plugin_oidc_client(
+            "plugin-owned",
+            key,
+            "Ignored",
+            &[String::from("https://abs.home:13378/auth/openid/callback")],
+            false,
+            &["openid".into()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(migrated.plugin_id.as_deref(), Some(key));
+    let impostor = store
+        .upsert_plugin_oidc_client(
+            "plugin-owned",
+            "path:file:///tmp/other#audiobookshelf",
+            "Other",
+            &[String::from("http://127.0.0.1:9999/callback")],
+            false,
+            &["openid".into()],
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(impostor, LibraryError::Conflict(_)));
+    let still = store
+        .get_oidc_client("plugin-owned")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still.plugin_id.as_deref(), Some(key));
+}
+
+#[tokio::test]
 async fn delete_user_removes_webauthn_and_oidc_rows() {
     use chrono::{Duration as ChronoDuration, Utc};
 

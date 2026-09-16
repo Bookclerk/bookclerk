@@ -1119,18 +1119,32 @@ class DatabaseAdapterEntrypoint(NamedEntrypoint):
     :class:`AdapterDatabaseSession`; ``close`` releases the entry.
     """
 
-    bookclerk_methods = ("openSession",)
+    bookclerk_methods = ("openSession", "dropUnit")
 
     async def openSession(self):
         """Open an :class:`AdapterDatabaseSession`."""
         raise _unsupported("openSession")
 
+    async def dropUnit(self, _unit_ref: str):
+        """Physically drop one provisioned binding unit.
+
+        Args:
+            _unit_ref: Adapter-native unit identity.
+
+        Returns:
+            ``None`` when the unit is dropped.
+
+        Raises:
+            PluginError: ``unsupported`` unless a subclass implements the drop.
+        """
+        raise _unsupported("dropUnit")
+
     async def bookclerkInvoke(self, context=None, method="", *args):
-        """Adapter dispatch: ``openSession`` → session id; ``session`` → call on a retained session.
+        """Adapter dispatch: ``openSession`` → session id; ``dropUnit``; ``session`` → call on a retained session.
 
         Args:
             context: Granted bindings for this invocation.
-            method: ``openSession`` or ``session``.
+            method: ``openSession``, ``dropUnit``, or ``session``.
             *args: For ``session``: ``(id, session_method, *params)``.
 
         Returns:
@@ -1149,6 +1163,12 @@ class DatabaseAdapterEntrypoint(NamedEntrypoint):
             session_id = _fresh_session_id()
             _ADAPTER_SESSIONS[session_id] = session
             return session_id
+        if method == "dropUnit":
+            _apply_invocation_env(self, context)
+            self.invocation = _invocation_of(context)
+            unit_ref = str(py(args[0])) if args else ""
+            await _await_maybe(self.dropUnit(unit_ref))
+            return None
         if method == "session":
             if not args:
                 raise PluginError.from_wire("invalid_params", "session requires an id")

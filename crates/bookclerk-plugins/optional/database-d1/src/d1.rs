@@ -13,6 +13,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bookclerk_plugin_abi::DbType;
+use bookclerk_plugin_sdk::http::{header, Client as HttpClient, Method, Response, StatusCode};
+use url::Url;
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -49,7 +51,7 @@ pub async fn open(
 }
 
 /// True when `url` targets a loopback host (wiremock in unit tests).
-fn host_is_loopback(url: &reqwest::Url) -> bool {
+fn host_is_loopback(url: &Url) -> bool {
     match url.host_str() {
         Some("localhost") | Some("127.0.0.1") | Some("::1") => true,
         Some(host) => host
@@ -63,12 +65,9 @@ fn host_is_loopback(url: &reqwest::Url) -> bool {
 ///
 /// Production `api_base` is HTTPS (`https://api.cloudflare.com/client/v4`).
 /// Loopback HTTP is allowed only in tests so wiremock can stand in.
-fn d1_management_url(
-    api_base: &str,
-    path_and_query: &str,
-) -> std::result::Result<reqwest::Url, DbErr> {
+fn d1_management_url(api_base: &str, path_and_query: &str) -> std::result::Result<Url, DbErr> {
     let base = api_base.trim_end_matches('/');
-    let parsed = reqwest::Url::parse(&format!("{base}{path_and_query}"))
+    let parsed = Url::parse(&format!("{base}{path_and_query}"))
         .map_err(|e| DbErr::Custom(format!("d1 url: {e}")))?;
     match parsed.scheme() {
         "https" => Ok(parsed),
@@ -81,12 +80,12 @@ fn d1_management_url(
 
 /// Sends one D1 management HTTP request. `url` is already HTTPS (or loopback HTTP in tests).
 async fn d1_management_send(
-    client: &reqwest::Client,
-    method: reqwest::Method,
-    url: reqwest::Url,
+    client: &HttpClient,
+    method: Method,
+    url: Url,
     token: &str,
     body: Option<JsonValue>,
-) -> std::result::Result<reqwest::Response, DbErr> {
+) -> std::result::Result<Response, DbErr> {
     // Cloudflare account ids are public REST path segments. Off-loopback
     // transport is HTTPS (`d1_management_url`); the API token is Bearer, not a
     // URL query. Loopback HTTP is test-only (wiremock).
@@ -102,12 +101,12 @@ async fn d1_management_send(
 
 /// Sends a D1 management request and parses the JSON body.
 async fn d1_management_json(
-    client: &reqwest::Client,
-    method: reqwest::Method,
-    url: reqwest::Url,
+    client: &HttpClient,
+    method: Method,
+    url: Url,
     token: &str,
     body: Option<JsonValue>,
-) -> std::result::Result<(reqwest::StatusCode, JsonValue), DbErr> {
+) -> std::result::Result<(StatusCode, JsonValue), DbErr> {
     let response = match url.scheme() {
         "https" => d1_management_send(client, method, url, token, body).await?,
         "http" if cfg!(test) && host_is_loopback(&url) => {
@@ -128,8 +127,8 @@ async fn d1_management_json(
 }
 
 /// HTTP client for D1 account-management calls (list/create/delete).
-fn d1_management_client() -> std::result::Result<reqwest::Client, DbErr> {
-    reqwest::Client::builder()
+fn d1_management_client() -> std::result::Result<HttpClient, DbErr> {
+    HttpClient::builder()
         .timeout(D1_REQUEST_TIMEOUT)
         .connect_timeout(D1_CONNECT_TIMEOUT)
         .build()
@@ -152,10 +151,9 @@ pub async fn lookup_database(
         api_base,
         &format!("/accounts/{account_id}/d1/database?name={name}"),
     )?;
-    let (_status, listed) =
-        d1_management_json(&client, reqwest::Method::GET, list_url, api_token, None)
-            .await
-            .map_err(|e| DbErr::Custom(format!("d1 database lookup `{name}`: {e}")))?;
+    let (_status, listed) = d1_management_json(&client, Method::GET, list_url, api_token, None)
+        .await
+        .map_err(|e| DbErr::Custom(format!("d1 database lookup `{name}`: {e}")))?;
     d1_database_uuid_by_name(&listed, name).ok_or_else(|| {
         DbErr::Custom(format!(
             "d1 database `{name}` does not exist (lookup-only; will not provision)"
@@ -187,7 +185,7 @@ pub async fn ensure_database(
     let create_url = d1_management_url(api_base, &format!("/accounts/{account_id}/d1/database"))?;
     let (_status, created) = d1_management_json(
         &client,
-        reqwest::Method::POST,
+        Method::POST,
         create_url,
         api_token,
         Some(json!({ "name": name })),
@@ -231,10 +229,9 @@ pub async fn delete_database(
         api_base,
         &format!("/accounts/{account_id}/d1/database?name={name}"),
     )?;
-    let (_status, listed) =
-        d1_management_json(&client, reqwest::Method::GET, list_url, api_token, None)
-            .await
-            .map_err(|e| DbErr::Custom(format!("d1 database lookup `{name}`: {e}")))?;
+    let (_status, listed) = d1_management_json(&client, Method::GET, list_url, api_token, None)
+        .await
+        .map_err(|e| DbErr::Custom(format!("d1 database lookup `{name}`: {e}")))?;
     let Some(uuid) = d1_database_uuid_by_name(&listed, name) else {
         return Ok(());
     };
@@ -251,15 +248,9 @@ pub async fn delete_database(
             )));
         }
     }
-    let deleted = d1_management_send(
-        &client,
-        reqwest::Method::DELETE,
-        delete_url,
-        api_token,
-        None,
-    )
-    .await
-    .map_err(|e| DbErr::Custom(format!("d1 database delete `{name}`: {e}")))?;
+    let deleted = d1_management_send(&client, Method::DELETE, delete_url, api_token, None)
+        .await
+        .map_err(|e| DbErr::Custom(format!("d1 database delete `{name}`: {e}")))?;
     let status = deleted.status();
     if status.as_u16() == 404 {
         return Ok(());
@@ -323,7 +314,7 @@ struct D1Inner {
     /// Cloudflare API token injected by the host; never logged.
     api_token: String,
     /// Shared HTTP client with connect/request timeouts below the host RPC deadline.
-    client: reqwest::Client,
+    client: HttpClient,
     /// Serializes HTTP requests to a single D1 database.
     http: AsyncMutex<()>,
     /// Declared column types per table (`pragma_table_info`), lowercased
@@ -433,21 +424,27 @@ impl From<D1Error> for DbErr {
 }
 
 /// True for HTTP 408, 429, or any 5xx (safe to retry the same D1 statement).
-fn retryable_http_status(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::REQUEST_TIMEOUT
-        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+fn retryable_http_status(status: StatusCode) -> bool {
+    status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
 }
 
 /// Parses a numeric `Retry-After` header as seconds; HTTP-date values are ignored.
-fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
-    let raw = response.headers().get(reqwest::header::RETRY_AFTER)?;
+fn parse_retry_after(response: &Response) -> Option<Duration> {
+    let raw = response.headers().get(header::RETRY_AFTER)?;
     let s = raw.to_str().ok()?.trim();
     s.parse::<u64>().ok().map(Duration::from_secs)
 }
 
 impl D1Proxy {
     /// Constructs a new instance with default or provided parameters.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the HTTP client cannot be built. Under nested Deny /
+    /// [`bookclerk_plugin_sdk::SOCKET_PROXY_ENV`] this does not fall back to
+    /// ambient TCP.
     #[must_use]
     pub fn new(
         api_base: String,
@@ -455,11 +452,11 @@ impl D1Proxy {
         database_id: String,
         api_token: String,
     ) -> Self {
-        let client = reqwest::Client::builder()
+        let client = HttpClient::builder()
             .timeout(D1_REQUEST_TIMEOUT)
             .connect_timeout(D1_CONNECT_TIMEOUT)
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("D1 HTTP client");
         Self {
             inner: Arc::new(D1Inner {
                 api_base: api_base.trim_end_matches('/').to_string(),
@@ -748,7 +745,7 @@ impl ProxyDatabaseTrait for D1Proxy {
 /// The body is pulled in chunks and aborted at byte `max + 1` so a chunked or
 /// lying-small `Content-Length` cannot buffer past the page scalar budget plus
 /// a narrow D1 JSON envelope.
-async fn parse_d1_response(response: reqwest::Response) -> std::result::Result<JsonValue, D1Error> {
+async fn parse_d1_response(response: Response) -> std::result::Result<JsonValue, D1Error> {
     let status = response.status();
     let retry_after = parse_retry_after(&response);
     let max = max_d1_http_body_bytes();
@@ -785,7 +782,7 @@ async fn parse_d1_response(response: reqwest::Response) -> std::result::Result<J
 
 /// Incrementally reads `response` and errors if the body would exceed `max`.
 async fn read_body_capped(
-    mut response: reqwest::Response,
+    mut response: Response,
     max: usize,
 ) -> std::result::Result<Vec<u8>, D1Error> {
     if let Some(len) = response.content_length() {
@@ -817,7 +814,7 @@ async fn read_body_capped(
 }
 
 /// Oversized bodies after a successful or retryable HTTP status are ambiguous.
-fn body_cap_error(status: reqwest::StatusCode, message: String) -> D1Error {
+fn body_cap_error(status: StatusCode, message: String) -> D1Error {
     if status.is_success() || retryable_http_status(status) {
         D1Error::ambiguous(message)
     } else {

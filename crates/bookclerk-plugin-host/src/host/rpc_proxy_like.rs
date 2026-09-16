@@ -90,6 +90,16 @@ fn copy_plugin_toml_and_assets(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn stage_files_dir() -> Option<TempDir> {
+    // Cargo TMPDIR is workspace `.tmp`. Nested plugin-state paths overflow
+    // Linux sockaddr_un (~108 bytes) on GitHub Actions; keep staging under a
+    // similarly long prefix so native-behind-workerd cannot regress to
+    // pathname sockets.
+    let base = std::env::temp_dir().join("gha-sunlen").join("x".repeat(48));
+    std::fs::create_dir_all(&base).ok()?;
+    tempfile::Builder::new().prefix("td").tempdir_in(base).ok()
+}
+
 fn stage_first_party_guest(id: &str) -> Option<StagedGuest> {
     let src = plugin_crate_dir(id);
     if !src.join("plugin.toml").is_file() {
@@ -109,11 +119,35 @@ fn stage_first_party_guest(id: &str) -> Option<StagedGuest> {
     }
     let toml = std::fs::read_to_string(install.path().join("plugin.toml")).ok()?;
     let manifest = bookclerk_plugin_manifest::parse(&toml).ok()?;
-    let files = TempDir::new().ok()?;
+    let files = stage_files_dir()?;
+    if id == "sqlite" {
+        let version = manifest.version.as_deref().unwrap_or("0.0.0");
+        bookclerk_plugin_catalog::stamp_platform_receipt(
+            install.path(),
+            files.path(),
+            "bookclerk-plugin-database-sqlite",
+            &manifest,
+            version,
+        )
+        .ok()?;
+    }
+    let mut plugin = DiscoveredPlugin::try_new(
+        manifest,
+        install.path().to_path_buf(),
+        dest_bin,
+        Some(files.path()),
+    )
+    .ok()?;
+    if matches!(id, "postgres" | "d1") {
+        let package = format!("bookclerk-plugin-database-{id}");
+        let key = bookclerk_plugin_catalog::PluginKey::platform(&package, id).ok()?;
+        plugin.identity.plugin_key = key.clone();
+        plugin.identity.artifact.plugin_key = key;
+        plugin.identity.provenance = bookclerk_plugin_catalog::PluginProvenance::VerifiedInstalled;
+    }
     Some(StagedGuest {
         files,
-        plugin: DiscoveredPlugin::try_new(manifest, install.path().to_path_buf(), dest_bin, None)
-            .ok()?,
+        plugin,
         _install: install,
     })
 }
@@ -136,7 +170,14 @@ fn guest_config(staged: &StagedGuest, plugin_id: &str, postgres_url: Option<Stri
 fn approve_guest(config: &Config, plugin: &DiscoveredPlugin) {
     let files = &config.paths().files_dir;
     let mut grants = PluginGrantStore::load(files).expect("load grants");
-    grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
+    let mut grant = consent_request(&plugin.manifest, plugin.plugin_key());
+    crate::consent::overlay_host_implied_network(
+        &mut grant,
+        plugin,
+        config,
+        std::slice::from_ref(plugin),
+    );
+    grants.upsert(grant);
     grants.save(files).expect("save grants");
 }
 
@@ -158,7 +199,24 @@ fn postgres_plugin_tests_enabled() -> bool {
 }
 
 fn postgres_url_with_db(url: &str, db_name: &str) -> String {
-    bookclerk_plugin_database_postgres::postgres::postgres_url_with_database(url, db_name)
+    let (base, query) = match url.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (url, None),
+    };
+    let trimmed = base.trim_end_matches('/');
+    match trimmed.rfind('/') {
+        Some(slash) => {
+            let head = &trimmed[..slash];
+            match query {
+                Some(q) => format!("{head}/{db_name}?{q}"),
+                None => format!("{head}/{db_name}"),
+            }
+        }
+        None => match query {
+            Some(q) => format!("{trimmed}/{db_name}?{q}"),
+            None => format!("{trimmed}/{db_name}"),
+        },
+    }
 }
 
 async fn create_disposable_postgres_url() -> String {

@@ -1,6 +1,9 @@
 //! GraphQL client for Chirp's Mockingjay Android API.
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use bookclerk_plugin_sdk::http::header::{
+    HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT,
+};
+use bookclerk_plugin_sdk::http::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -294,7 +297,7 @@ query BookclerkAudiobookPricing($id: ID!) {
 #[derive(Debug, Clone)]
 pub struct ChirpClient {
     /// Shared HTTP client used for GraphQL and binary downloads.
-    http: reqwest::Client,
+    http: HttpClient,
     /// Mockingjay GraphQL endpoint (defaults to [`DEFAULT_GRAPHQL_URL`]).
     graphql_url: String,
     /// Bearer token from `signIn`; `None` until login or `with_token`.
@@ -312,7 +315,7 @@ impl ChirpClient {
     #[must_use]
     pub fn new(graphql_url: impl Into<String>) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: HttpClient::new(),
             graphql_url: graphql_url.into(),
             access_token: None,
         }
@@ -320,7 +323,7 @@ impl ChirpClient {
 
     /// With HTTP.
     #[must_use]
-    pub fn with_http(mut self, http: reqwest::Client) -> Self {
+    pub fn with_http(mut self, http: HttpClient) -> Self {
         self.http = http;
         self
     }
@@ -349,7 +352,7 @@ impl ChirpClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
-            reqwest::header::ACCEPT,
+            bookclerk_plugin_sdk::http::header::ACCEPT,
             HeaderValue::from_static("application/json"),
         );
         headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));

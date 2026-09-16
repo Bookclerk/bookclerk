@@ -32,9 +32,8 @@ bytes.workspace = true
 chrono.workspace = true
 bookclerk-config.workspace = true
 bookclerk-library.workspace = true
-bookclerk-plugin-sdk.workspace = true
+bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
 bookclerk-source.workspace = true
-reqwest = { version = "0.13", default-features = true, features = ["json", "query", "rustls"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

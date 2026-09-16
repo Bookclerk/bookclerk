@@ -308,6 +308,17 @@ pub trait Database {
     /// Opens an invocation-scoped adapter session.
     async fn open_session(&self) -> Result<Box<dyn AdapterDatabaseSession>>;
 
+    /// Physically deletes one provisioned binding unit.
+    ///
+    /// `unit_ref` is the adapter-native identity recorded in
+    /// `plugin_databases` (SQLite file path, PostgreSQL database name, D1
+    /// database name, or a third-party instance id). Missing units are
+    /// success so the host can remove the registry row. The default is
+    /// unsupported: adapters that cannot prove deletion must fail closed.
+    async fn drop_unit(&self, _unit_ref: &str) -> Result<()> {
+        Err(PluginError::unsupported("dropUnit"))
+    }
+
     /// Host-private interactive-transaction view of the adapter connection.
     ///
     /// First-party adapters override this. The default advertises no host
@@ -515,7 +526,7 @@ pub struct Entrypoints {
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).
 ///
-/// `describe()` advertises typed capabilities; the signed manifest plus the
+/// `describe()` advertises typed capabilities; the verified install receipt plus the
 /// operator grant is the host allowlist. `open()` returns the exported
 /// [`Entrypoints`] for one invocation.
 #[async_trait::async_trait(?Send)]

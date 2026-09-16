@@ -173,6 +173,10 @@ impl Database for SqliteDatabase {
         }))
     }
 
+    async fn drop_unit(&self, unit_ref: &str) -> Result<()> {
+        crate::sqlite::drop_unit_files(unit_ref).map_err(plugin_error_from_engine)
+    }
+
     fn host_session(&self) -> Option<Box<dyn HostAdapterDatabaseSession>> {
         if let Some(conn) = &self.dedicated {
             return Some(Box::new(host_session_on(conn.clone())));

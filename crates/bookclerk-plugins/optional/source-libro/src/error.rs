@@ -1,5 +1,6 @@
 //! Error types for the Libro.fm content source.
 
+use bookclerk_plugin_sdk::http::Error as HttpError;
 use thiserror::Error;
 
 /// Result alias for Libro.fm auth, sync, and download operations.
@@ -67,8 +68,8 @@ impl LibroError {
     }
 }
 
-impl From<reqwest::Error> for LibroError {
-    fn from(err: reqwest::Error) -> Self {
+impl From<HttpError> for LibroError {
+    fn from(err: HttpError) -> Self {
         Self::Api(err.to_string())
     }
 }

@@ -259,22 +259,29 @@ export interface Bindings {
    * third-party adapters receive this typed bootstrap (and an empty `config`).
    */
   adapter: DatabaseAdapterConfig;
-  /** `EVENTS`: outbox publisher; null unless `[[events.producers]]` is granted. */
-  events: EventPublisher;
+  /**
+   * `EVENTS`: outbox publisher; null unless `[[events.producers]]` is granted.
+   * Null when the guest does not export this capability.
+   */
+  events?: EventPublisher | null;
   /**
    * Named plugin-owned `[[databases]]` bindings: each entry is an isolated
    * database provisioned by the active adapter, separate from the Bookclerk
    * library and from every other plugin. Empty when the manifest declares none.
    */
   databases: NamedDatabase[];
-  /** Host cancellation for the whole invocation (fence / lease loss). */
-  cancel: Cancellation;
+  /**
+   * Host cancellation for the whole invocation (fence / lease loss).
+   * Null when the guest does not export this capability.
+   */
+  cancel?: Cancellation | null;
   /**
    * `WORK_FS`: host-granted object storage for durable plugin files (work
    * filesystem); null unless `[work_fs]` is granted. Job input/output travel on
    * `JobRunner.job(controller)`, never here.
+   * Null when the guest does not export this capability.
    */
-  storage: Destination;
+  storage?: Destination | null;
 }
 
 /**
@@ -283,22 +290,46 @@ export interface Bindings {
  * refuses an entrypoint the manifest or operator grant did not allow.
  */
 export interface Entrypoints {
-  /** `[[events.consumers]]` trigger: `event(batch)` handler. */
-  eventConsumer: EventConsumer;
-  /** `[triggers] jobs` trigger: `job(controller)` handler. */
-  jobRunner: JobRunner;
-  /** `storefront` entrypoint. */
-  storefront: ContentSource;
-  /** `storage` entrypoint. */
-  storage: Destination;
-  /** `databaseAdapter` entrypoint. */
-  databaseAdapter: Database;
-  /** `remoteLibrary` entrypoint. */
-  remoteLibrary: RemoteLibrary;
-  /** `cli` entrypoint. */
-  cli: PluginCli;
-  /** `oidc` entrypoint. */
-  oidc: Oidc;
+  /**
+   * `[[events.consumers]]` trigger: `event(batch)` handler.
+   * Null when the guest does not export this capability.
+   */
+  eventConsumer?: EventConsumer | null;
+  /**
+   * `[triggers] jobs` trigger: `job(controller)` handler.
+   * Null when the guest does not export this capability.
+   */
+  jobRunner?: JobRunner | null;
+  /**
+   * `storefront` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  storefront?: ContentSource | null;
+  /**
+   * `storage` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  storage?: Destination | null;
+  /**
+   * `databaseAdapter` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  databaseAdapter?: Database | null;
+  /**
+   * `remoteLibrary` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  remoteLibrary?: RemoteLibrary | null;
+  /**
+   * `cli` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  cli?: PluginCli | null;
+  /**
+   * `oidc` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  oidc?: Oidc | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -502,14 +533,26 @@ export type EventBatchReply =
 export interface JobController {
   /** Durable command envelope. */
   invocation: JobInvocation;
-  /** Job input objects. */
-  input: Source;
-  /** Job output object store. */
-  output: Destination;
-  /** Progress reporter (host coalesces frequent updates). */
-  progress: ProgressSink;
-  /** Host cancellation probe for this job (fence / lease). */
-  cancel: Cancellation;
+  /**
+   * Job input objects.
+   * Null when the guest does not export this capability.
+   */
+  input?: Source | null;
+  /**
+   * Job output object store.
+   * Null when the guest does not export this capability.
+   */
+  output?: Destination | null;
+  /**
+   * Progress reporter (host coalesces frequent updates).
+   * Null when the guest does not export this capability.
+   */
+  progress?: ProgressSink | null;
+  /**
+   * Host cancellation probe for this job (fence / lease).
+   * Null when the guest does not export this capability.
+   */
+  cancel?: Cancellation | null;
 }
 
 /** Success payload of `Destination.head`. */
@@ -534,8 +577,11 @@ export type ListReply =
 export interface GetOk {
   /** Object metadata. */
   meta: ObjectMetadata;
-  /** Streamed object bytes. */
-  body: ByteSource;
+  /**
+   * Streamed object bytes.
+   * Null when the guest does not export this capability.
+   */
+  body?: ByteSource | null;
 }
 
 /** Result union of `Destination.get`. */
@@ -575,8 +621,11 @@ export type PullReply =
 export interface OpenOk {
   /** Object metadata. */
   meta: ObjectMetadata;
-  /** Streamed object bytes. */
-  body: ByteSource;
+  /**
+   * Streamed object bytes.
+   * Null when the guest does not export this capability.
+   */
+  body?: ByteSource | null;
 }
 
 /** Result union of `Source.open`. */
@@ -783,8 +832,11 @@ export interface EventPublisher {
 export interface NamedDatabase {
   /** Binding name from `plugin.toml` `[[databases]]`. */
   name: string;
-  /** Isolated typed SQL session for this binding (plugin-owned schema). */
-  database: GuestDatabase;
+  /**
+   * Isolated typed SQL session for this binding (plugin-owned schema).
+   * Null when the guest does not export this capability.
+   */
+  database?: GuestDatabase | null;
 }
 
 /**
@@ -2446,6 +2498,13 @@ export interface Database {
    * @returns {@link AdapterSessionReply}
    */
   openSession(): Promise<AdapterSessionReply>;
+  /**
+   * Physically drop one provisioned binding unit (`unitRef` is adapter-owned).
+   *
+   * @param unitRef - Adapter-native unit (sqlite path, postgres database, D1 name).
+   * @returns {@link EmptyReply}
+   */
+  dropUnit(unitRef: string): Promise<EmptyReply>;
 }
 
 /**

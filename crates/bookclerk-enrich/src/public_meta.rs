@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use reqwest::Client;
+use bookclerk_plugin_sdk::http::{Client, RequestBuilder, StatusCode};
 use serde_json::Value;
 
 use crate::error::{EnrichError, Result};
@@ -94,7 +94,7 @@ pub fn public_http_client() -> Result<Client> {
         .user_agent(concat!("bookclerk/", env!("CARGO_PKG_VERSION")))
         .build()
         // Prefer `{:#}` so TLS/cert-store failures (common under the guest jail)
-        // include the underlying cause, not just reqwest's "builder error".
+        // include the underlying cause, not just a short builder error.
         .map_err(|err| EnrichError::Sync(format!("{err:#}")))
 }
 
@@ -876,9 +876,7 @@ pub async fn search_catalog_by_narrator(
 }
 
 /// Sends the catalog request and maps `products` into titles, dropping podcasts and unparseable rows.
-async fn catalog_products_from_response(
-    req: reqwest::RequestBuilder,
-) -> Result<Vec<CatalogProduct>> {
+async fn catalog_products_from_response(req: RequestBuilder) -> Result<Vec<CatalogProduct>> {
     let response = req
         .send()
         .await
@@ -1243,7 +1241,7 @@ pub async fn fetch_audible_catalog_rating(
         .send()
         .await
         .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
     }
     if !response.status().is_success() {
@@ -1410,7 +1408,7 @@ pub async fn fetch_audible_catalog_reviews_page(
         .send()
         .await
         .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    if response.status() == StatusCode::NOT_FOUND {
         return Ok(CatalogReviewsPage {
             reviews: Vec::new(),
             page,
@@ -1646,7 +1644,7 @@ pub async fn fetch_audnexus_book(http: &Client, asin: &str, region: &str) -> Res
         .send()
         .await
         .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
     }
     let response = response
@@ -1698,7 +1696,7 @@ pub async fn fetch_audnexus_chapters(
         .send()
         .await
         .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+    if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
     }
     let response = response

@@ -5,10 +5,10 @@ use audible_rs::api::paginator;
 use audible_rs::library_sync::DEFAULT_RESPONSE_GROUPS;
 use audible_rs::models::library as lib_model;
 use bookclerk_library::{NewBook, SourceScope};
+use bookclerk_plugin_sdk::http::Method;
 use bookclerk_source::{ScanOptions, ScanSummary};
 use chrono::{DateTime, NaiveDate, Utc};
 use futures::TryStreamExt;
-use reqwest::Method;
 
 use crate::db::{list_audible_accounts_from_db, load_authenticator_from_db};
 use crate::error::{AudibleError, Result};

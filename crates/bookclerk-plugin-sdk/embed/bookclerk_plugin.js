@@ -2139,19 +2139,40 @@ var JobControllerCodec = {
     if (v.invocation != null) {
       JobInvocationCodec.write(s.initStruct(0, 3, 8), v.invocation, caps);
     }
-    s.setCap(1, caps.exportCap(v.input));
-    s.setCap(2, caps.exportCap(v.output));
-    s.setCap(3, caps.exportCap(v.progress));
-    s.setCap(4, caps.exportCap(v.cancel));
+    if (v.input != null) {
+      s.setCap(1, caps.exportCap(v.input));
+    }
+    if (v.output != null) {
+      s.setCap(2, caps.exportCap(v.output));
+    }
+    if (v.progress != null) {
+      s.setCap(3, caps.exportCap(v.progress));
+    }
+    if (v.cancel != null) {
+      s.setCap(4, caps.exportCap(v.cancel));
+    }
   },
   read(s, caps) {
-    return {
-      invocation: JobInvocationCodec.read(s.getStruct(0, 3, 8), caps),
-      input: caps.importCap(s.getCapIndex(1)),
-      output: caps.importCap(s.getCapIndex(2)),
-      progress: caps.importCap(s.getCapIndex(3)),
-      cancel: caps.importCap(s.getCapIndex(4))
+    const out = {
+      invocation: JobInvocationCodec.read(s.getStruct(0, 3, 8), caps)
     };
+    const inputValue = caps.importCap(s.getCapIndex(1));
+    if (!(inputValue == null)) {
+      out.input = inputValue;
+    }
+    const outputValue = caps.importCap(s.getCapIndex(2));
+    if (!(outputValue == null)) {
+      out.output = outputValue;
+    }
+    const progressValue = caps.importCap(s.getCapIndex(3));
+    if (!(progressValue == null)) {
+      out.progress = progressValue;
+    }
+    const cancelValue = caps.importCap(s.getCapIndex(4));
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    return out;
   }
 };
 var HeadOkCodec = {
@@ -2421,7 +2442,9 @@ var AdapterSessionReplyCodec = {
     switch (v.kind) {
       case "ok":
         s.setUint16(0, 0);
-        s.setCap(0, caps.exportCap(v.value));
+        if (v.value != null) {
+          s.setCap(0, caps.exportCap(v.value));
+        }
         break;
       case "err":
         s.setUint16(0, 1);
@@ -6144,6 +6167,34 @@ var DatabaseOpenSessionResultsCodec = {
     };
   }
 };
+var DatabaseDropUnitParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.unitRef ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      unitRef: s.getText(0)
+    };
+  }
+};
+var DatabaseDropUnitResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var AdapterDatabaseSessionCapabilitiesParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -6732,6 +6783,13 @@ var METHODS = {
       },
       // The session id is exported through the reply CapTable as `adapterSession`.
       ok: (value) => okValue(value)
+    }),
+    dropUnit: spec({
+      params: DatabaseDropUnitParamsCodec,
+      results: DatabaseDropUnitResultsCodec,
+      stub: "databaseAdapter",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "dropUnit", [String(p.unitRef ?? "")]),
+      ok: okEmpty
     })
   },
   AdapterDatabaseSession: {
@@ -7976,7 +8034,7 @@ function freshSessionId() {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 var DatabaseAdapterEntrypoint = class extends NamedEntrypoint {
-  static bookclerkMethods = Object.freeze(["openSession"]);
+  static bookclerkMethods = Object.freeze(["openSession", "dropUnit"]);
   /**
    * Opens a session. Sessions cannot survive suspension.
    *
@@ -7986,11 +8044,20 @@ var DatabaseAdapterEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("openSession"));
   }
   /**
-   * Adapter dispatch: `openSession` → session id; `session` → call on a
-   * retained session (`args` = `[id, method, ...params]`).
+   * Physically drops one provisioned binding unit.
+   *
+   * @param _unitRef - Adapter-native unit identity.
+   * @returns Resolves when the unit is dropped.
+   */
+  dropUnit(_unitRef) {
+    return Promise.reject(unsupported("dropUnit"));
+  }
+  /**
+   * Adapter dispatch: `openSession` → session id; `dropUnit`; `session` → call
+   * on a retained session (`args` = `[id, method, ...params]`).
    *
    * @param context - Granted bindings for this invocation.
-   * @param method - `openSession` or `session`.
+   * @param method - `openSession`, `dropUnit`, or `session`.
    * @param args - Method arguments.
    * @returns Session id for `openSession`, else the session method result.
    * @internal
@@ -8004,6 +8071,12 @@ var DatabaseAdapterEntrypoint = class extends NamedEntrypoint {
       const id = freshSessionId();
       ADAPTER_SESSIONS.set(id, session2);
       return id;
+    }
+    if (method === "dropUnit") {
+      applyInvocationEnv(this, context);
+      this.invocation = invocationOf(context);
+      await this.dropUnit(String(args[0] ?? ""));
+      return void 0;
     }
     if (method === "session") {
       const [id, sessionMethod, ...params] = args;

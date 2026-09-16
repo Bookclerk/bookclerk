@@ -31,6 +31,7 @@
 //! 3. New spawns re-read the grant file and refuse to return a session whose
 //!    revision no longer matches disk.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -212,6 +213,18 @@ pub fn apply_grant_store(store: &PluginGrantStore) {
         if current != session_grant_revision {
             fence_stale_grant_revisions(&key, &current);
         }
+    }
+}
+
+/// Live `(plugin_key, authority_revision)` pairs for overlay reconciliation.
+#[must_use]
+pub fn live_authority_snapshot() -> Vec<(String, String)> {
+    match live().lock() {
+        Ok(guard) => guard
+            .iter()
+            .map(|session| (session.plugin_key.clone(), session.revision.clone()))
+            .collect(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -427,17 +440,23 @@ fn hash_grant(kind: &[u8], grant: &PluginGrant) -> String {
         hasher.update(b",");
     }
     hasher.update(b"\ntcp\n");
-    for t in &grant.tcp {
-        hasher.update(t.host.as_bytes());
-        hasher.update(b":");
-        for p in &t.ports {
-            hasher.update(p.to_string().as_bytes());
-            hasher.update(b",");
-        }
-        hasher.update(b";");
-    }
+    hash_tcp_grants(&mut hasher, &grant.tcp);
+    hasher.update(b"\noperator_added_tcp\n");
+    hash_tcp_grants(&mut hasher, &grant.operator_added_tcp);
+    hasher.update(b"\noperator_denied_tcp\n");
+    hash_tcp_grants(&mut hasher, &grant.operator_denied_tcp);
     hasher.update(b"\ncidrs\n");
     for c in &grant.address_cidrs {
+        hasher.update(c.as_bytes());
+        hasher.update(b",");
+    }
+    hasher.update(b"\noperator_added_cidrs\n");
+    for c in &grant.operator_added_cidrs {
+        hasher.update(c.as_bytes());
+        hasher.update(b",");
+    }
+    hasher.update(b"\noperator_denied_cidrs\n");
+    for c in &grant.operator_denied_cidrs {
         hasher.update(c.as_bytes());
         hasher.update(b",");
     }
@@ -484,6 +503,19 @@ fn hash_grant(kind: &[u8], grant: &PluginGrant) -> String {
             .as_bytes(),
     );
     hex::encode(hasher.finalize())
+}
+
+/// Canonical digest of TCP grants (`host:port,…;`).
+fn hash_tcp_grants(hasher: &mut Sha256, grants: &BTreeSet<bookclerk_plugin_manifest::TcpGrant>) {
+    for t in grants {
+        hasher.update(t.host.as_bytes());
+        hasher.update(b":");
+        for p in &t.ports {
+            hasher.update(p.to_string().as_bytes());
+            hasher.update(b",");
+        }
+        hasher.update(b";");
+    }
 }
 
 #[cfg(test)]
@@ -654,6 +686,16 @@ mod tests {
         let mut d = a.clone();
         d.allow_undeclared_public_redirects = true;
         assert_ne!(authority_revision(&a), authority_revision(&d));
+        let mut e = a.clone();
+        e.operator_denied_tcp
+            .insert(bookclerk_plugin_manifest::TcpGrant {
+                host: "cdn.example.com".into(),
+                ports: vec![443],
+            });
+        assert_ne!(authority_revision(&a), authority_revision(&e));
+        let mut f = a.clone();
+        f.operator_denied_cidrs.insert("10.0.0.0/8".into());
+        assert_ne!(authority_revision(&a), authority_revision(&f));
     }
 
     fn write_grants_from_child(path: &Path, text: &str) {
@@ -869,6 +911,37 @@ mod tests {
         assert!(
             !is_fenced(&flag),
             "unchanged persisted grant must not fence an overlaid postgres session"
+        );
+        unregister_session(&flag);
+    }
+
+    #[test]
+    fn host_destination_change_fences_overlaid_session() {
+        let _lock = test_live_lock();
+        let key = "path:file:///tmp/overlay-dest-change";
+        let mut persisted = grant(&["api.example"]);
+        persisted.plugin_key = key.into();
+        persisted.network_mode = "outbound".into();
+        let mut effective = persisted.clone();
+        effective.tcp.insert(bookclerk_plugin_manifest::TcpGrant {
+            host: "127.0.0.1".into(),
+            ports: vec![5432],
+        });
+        let flag = register_session_revisions(
+            key,
+            &grant_revision(&persisted),
+            &authority_revision(&effective),
+            Arc::new(|| {}),
+        );
+        let mut moved = persisted.clone();
+        moved.tcp.insert(bookclerk_plugin_manifest::TcpGrant {
+            host: "10.0.0.8".into(),
+            ports: vec![5432],
+        });
+        fence_stale_sessions(key, &authority_revision(&moved));
+        assert!(
+            is_fenced(&flag),
+            "host destination change must fence the overlaid session"
         );
         unregister_session(&flag);
     }

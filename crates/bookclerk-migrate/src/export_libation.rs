@@ -7,7 +7,6 @@ use bookclerk_config::Config;
 use bookclerk_library::content_kind_to_classic;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
 use crate::error::{MigrateError, Result};
 use crate::settings::config_to_settings_json;
@@ -30,15 +29,20 @@ pub struct LibationExportOptions {
 pub struct LibationExportSummary {
     /// Count of settings keys imported or exported.
     pub settings: bool,
-    /// Count of accounts imported or exported.
-    pub accounts: usize,
+    /// Count of storefront identities exported (JSON key remains `accounts`).
+    #[serde(rename = "accounts")]
+    pub storefronts: usize,
     /// Count of book rows imported or exported.
     pub books: usize,
     /// Non-fatal warnings collected during the run (operator-facing).
     pub warnings: Vec<String>,
 }
 
-/// Write Settings.json, AccountsSettings.json, and LibationContext.db.
+/// Write Settings.json and LibationContext.db.
+///
+/// `AccountsSettings.json` is written separately by
+/// [`crate::write_classic_storefront_file`] so the operator-facing summary
+/// never carries `list_accounts()` payloads.
 ///
 /// # Arguments
 ///
@@ -86,26 +90,23 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
     }
 
     let library_db = opts.files_dir.join("library.db");
-    let store = if library_db.exists() {
-        bookclerk_plugin_database_sqlite::open_store(&library_db).await?
+    let dest = if library_db.exists() {
+        Some(crate::store::DestStore::open(&opts.files_dir, false).await?)
     } else {
         summary
             .warnings
             .push("library.db missing — accounts/books empty".into());
-        bookclerk_plugin_database_sqlite::open_store_memory().await?
+        None
     };
-
-    let accounts = store.list_accounts().await?;
-    summary.accounts = accounts.len();
-    let accounts_json = accounts_to_libation_json(&accounts);
-    if !opts.dry_run {
-        let path = opts.dest.join("AccountsSettings.json");
-        let bytes = serde_json::to_vec_pretty(&accounts_json)
-            .map_err(|e| MigrateError::Accounts(e.to_string()))?;
-        std::fs::write(&path, bytes)?;
+    if let Some(dest) = dest.as_ref() {
+        summary.storefronts = usize::try_from(dest.store.count_identities().await?).unwrap_or(0);
     }
 
-    let books = store.list_books(None).await?;
+    let books = if let Some(dest) = dest.as_ref() {
+        dest.store.list_books(None).await?
+    } else {
+        Vec::new()
+    };
     summary.books = books.len();
     if !opts.dry_run {
         let db_path = opts.dest.join("LibationContext.db");
@@ -116,24 +117,6 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
     }
 
     Ok(summary)
-}
-
-/// Projects Bookclerk account rows into classic `AccountsSettings.json` shape.
-fn accounts_to_libation_json(accounts: &[bookclerk_library::AccountRecord]) -> Value {
-    let list: Vec<Value> = accounts
-        .iter()
-        .map(|a| {
-            json!({
-                "AccountId": a.account_id,
-                "AccountName": a.label.clone().unwrap_or_else(|| a.account_id.clone()),
-                "IdentityTokens": {
-                    "Locale": a.marketplace,
-                },
-                "LibraryScan": a.scan_enabled,
-            })
-        })
-        .collect();
-    json!({ "Accounts": list })
 }
 
 /// Creates a classic `LibationContext.db` and inserts books, contributors, and series.
@@ -383,3 +366,75 @@ CREATE TABLE IF NOT EXISTS "CategoryCategoryLadder" (
     PRIMARY KEY ("_categoriesCategoryId", "_categoryLaddersCategoryLadderId")
 );
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn libation_export_summary_is_cardinality_only() {
+        let src = tempdir().unwrap();
+        let dest = tempdir().unwrap();
+        let store = crate::store::DestStore::open(src.path(), false)
+            .await
+            .unwrap();
+        store
+            .store
+            .upsert_account("reader@example.com", "us", Some("Reader"), true, "audible")
+            .await
+            .unwrap();
+        drop(store);
+
+        let summary = export_libation(LibationExportOptions {
+            files_dir: src.path().to_path_buf(),
+            dest: dest.path().to_path_buf(),
+            force: true,
+            dry_run: false,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(summary.storefronts, 1);
+        assert!(summary
+            .warnings
+            .iter()
+            .all(|w| !w.contains("reader@example.com")));
+        crate::write_classic_storefront_file(src.path(), dest.path())
+            .await
+            .unwrap();
+        let json = std::fs::read_to_string(dest.path().join("AccountsSettings.json")).unwrap();
+        assert!(json.contains("reader@example.com"));
+        assert!(json.contains("Reader"));
+        let encoded = serde_json::to_value(&summary).unwrap();
+        assert_eq!(encoded["accounts"], 1);
+        assert!(encoded.get("storefronts").is_none());
+    }
+
+    #[tokio::test]
+    async fn libation_export_dry_run_counts_without_writing_accounts() {
+        let src = tempdir().unwrap();
+        let dest = tempdir().unwrap();
+        let store = crate::store::DestStore::open(src.path(), false)
+            .await
+            .unwrap();
+        store
+            .store
+            .upsert_account("reader@example.com", "us", None, true, "audible")
+            .await
+            .unwrap();
+        drop(store);
+
+        let summary = export_libation(LibationExportOptions {
+            files_dir: src.path().to_path_buf(),
+            dest: dest.path().to_path_buf(),
+            force: true,
+            dry_run: true,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(summary.storefronts, 1);
+        assert!(!dest.path().join("AccountsSettings.json").exists());
+    }
+}

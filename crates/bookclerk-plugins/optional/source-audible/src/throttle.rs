@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use audible_rs::api::client::Client;
 use audible_rs::downloader::{self, DownloadOutcome};
-use reqwest::header::CONTENT_TYPE;
+use bookclerk_plugin_sdk::http::header::CONTENT_TYPE;
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{AudibleError, Result};
@@ -218,7 +218,7 @@ fn is_multipart_message(body: &str) -> bool {
 
 /// Builds a download error from an unexpected Content-Type, quoting a short text body.
 async fn content_type_error(
-    response: reqwest::Response,
+    response: bookclerk_plugin_sdk::http::Response,
     got: &str,
     expected: &[&str],
 ) -> AudibleError {

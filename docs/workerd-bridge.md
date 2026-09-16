@@ -28,8 +28,8 @@ state except database-adapter sessions (below). Three route families exist:
 | Streams | `GET /destination/get`, `PUT /destination/put`, `GET /source/open` | HTTP bodies (the object bytes never enter a Cap'n message) |
 
 The control plane is a policy handshake, not a plugin method: `open` mints
-grant tokens and asks the isolate which entrypoint families the signed
-manifest lets it export; the isolate does not retain the `Bindings`. That is
+grant tokens and asks the isolate which entrypoint families the covering
+grant lets it export; the isolate does not retain the `Bindings`. That is
 why `PluginWorker.open` / `describe` / `shutdown` stay JSON while everything
 that *is* an ABI method call travels as Cap'n bytes on `/invoke`.
 

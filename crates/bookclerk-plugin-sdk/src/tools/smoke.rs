@@ -6,6 +6,8 @@
 //! config, and posts `describe` (plus role `health` when the kind exposes one)
 //! over the HTTP bridge.
 
+#![allow(clippy::missing_docs_in_private_items)]
+
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

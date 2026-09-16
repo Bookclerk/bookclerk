@@ -385,24 +385,37 @@ def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _extensible_config_codec.write(s.init_struct(0, 1, 2), v["config"], caps)
     _extensible_config_codec.write(s.init_struct(1, 1, 2), v["secrets"], caps)
     _database_adapter_config_codec.write(s.init_struct(2, 1, 4), v["adapter"], caps)
-    s.set_cap(3, caps.export_cap(v["events"]))
+    if v.get("events") is not None:
+        if v["events"] is not None:
+            s.set_cap(3, caps.export_cap(v["events"]))
     items = s.init_struct_list(4, len(v["databases"]), 0, 2)
     for item, elem in zip(items, v["databases"], strict=True):
         _named_database_codec.write(item, elem, caps)
-    s.set_cap(5, caps.export_cap(v["cancel"]))
-    s.set_cap(6, caps.export_cap(v["storage"]))
+    if v.get("cancel") is not None:
+        if v["cancel"] is not None:
+            s.set_cap(5, caps.export_cap(v["cancel"]))
+    if v.get("storage") is not None:
+        if v["storage"] is not None:
+            s.set_cap(6, caps.export_cap(v["storage"]))
 
 
 def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
-    return {
+    out: dict[str, Any] = {
         "config": _extensible_config_codec.read(s.get_struct(0, 1, 2), caps),
         "secrets": _extensible_config_codec.read(s.get_struct(1, 1, 2), caps),
         "adapter": _database_adapter_config_codec.read(s.get_struct(2, 1, 4), caps),
-        "events": caps.import_cap(s.get_cap_index(3)),
         "databases": [_named_database_codec.read(item, caps) for item in s.get_struct_list(4, 0, 2)],
-        "cancel": caps.import_cap(s.get_cap_index(5)),
-        "storage": caps.import_cap(s.get_cap_index(6)),
     }
+    events = caps.import_cap(s.get_cap_index(3))
+    if not (events is None):
+        out["events"] = events
+    cancel = caps.import_cap(s.get_cap_index(5))
+    if not (cancel is None):
+        out["cancel"] = cancel
+    storage = caps.import_cap(s.get_cap_index(6))
+    if not (storage is None):
+        out["storage"] = storage
+    return out
 
 
 _bindings_codec = _Codec(0, 7, _write_bindings, _read_bindings)
@@ -410,27 +423,60 @@ _bindings_codec = _Codec(0, 7, _write_bindings, _read_bindings)
 
 
 def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    s.set_cap(0, caps.export_cap(v["eventConsumer"]))
-    s.set_cap(1, caps.export_cap(v["jobRunner"]))
-    s.set_cap(2, caps.export_cap(v["storefront"]))
-    s.set_cap(3, caps.export_cap(v["storage"]))
-    s.set_cap(4, caps.export_cap(v["databaseAdapter"]))
-    s.set_cap(5, caps.export_cap(v["remoteLibrary"]))
-    s.set_cap(6, caps.export_cap(v["cli"]))
-    s.set_cap(7, caps.export_cap(v["oidc"]))
+    if v.get("eventConsumer") is not None:
+        if v["eventConsumer"] is not None:
+            s.set_cap(0, caps.export_cap(v["eventConsumer"]))
+    if v.get("jobRunner") is not None:
+        if v["jobRunner"] is not None:
+            s.set_cap(1, caps.export_cap(v["jobRunner"]))
+    if v.get("storefront") is not None:
+        if v["storefront"] is not None:
+            s.set_cap(2, caps.export_cap(v["storefront"]))
+    if v.get("storage") is not None:
+        if v["storage"] is not None:
+            s.set_cap(3, caps.export_cap(v["storage"]))
+    if v.get("databaseAdapter") is not None:
+        if v["databaseAdapter"] is not None:
+            s.set_cap(4, caps.export_cap(v["databaseAdapter"]))
+    if v.get("remoteLibrary") is not None:
+        if v["remoteLibrary"] is not None:
+            s.set_cap(5, caps.export_cap(v["remoteLibrary"]))
+    if v.get("cli") is not None:
+        if v["cli"] is not None:
+            s.set_cap(6, caps.export_cap(v["cli"]))
+    if v.get("oidc") is not None:
+        if v["oidc"] is not None:
+            s.set_cap(7, caps.export_cap(v["oidc"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "eventConsumer": caps.import_cap(s.get_cap_index(0)),
-        "jobRunner": caps.import_cap(s.get_cap_index(1)),
-        "storefront": caps.import_cap(s.get_cap_index(2)),
-        "storage": caps.import_cap(s.get_cap_index(3)),
-        "databaseAdapter": caps.import_cap(s.get_cap_index(4)),
-        "remoteLibrary": caps.import_cap(s.get_cap_index(5)),
-        "cli": caps.import_cap(s.get_cap_index(6)),
-        "oidc": caps.import_cap(s.get_cap_index(7)),
+    out: dict[str, Any] = {
     }
+    event_consumer = caps.import_cap(s.get_cap_index(0))
+    if not (event_consumer is None):
+        out["eventConsumer"] = event_consumer
+    job_runner = caps.import_cap(s.get_cap_index(1))
+    if not (job_runner is None):
+        out["jobRunner"] = job_runner
+    storefront = caps.import_cap(s.get_cap_index(2))
+    if not (storefront is None):
+        out["storefront"] = storefront
+    storage = caps.import_cap(s.get_cap_index(3))
+    if not (storage is None):
+        out["storage"] = storage
+    database_adapter = caps.import_cap(s.get_cap_index(4))
+    if not (database_adapter is None):
+        out["databaseAdapter"] = database_adapter
+    remote_library = caps.import_cap(s.get_cap_index(5))
+    if not (remote_library is None):
+        out["remoteLibrary"] = remote_library
+    cli = caps.import_cap(s.get_cap_index(6))
+    if not (cli is None):
+        out["cli"] = cli
+    oidc = caps.import_cap(s.get_cap_index(7))
+    if not (oidc is None):
+        out["oidc"] = oidc
+    return out
 
 
 _entrypoints_codec = _Codec(0, 8, _write_entrypoints, _read_entrypoints)
@@ -825,20 +871,37 @@ _event_batch_reply_codec = _Codec(1, 1, _write_event_batch_reply, _read_event_ba
 
 def _write_job_controller(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _job_invocation_codec.write(s.init_struct(0, 3, 8), v["invocation"], caps)
-    s.set_cap(1, caps.export_cap(v["input"]))
-    s.set_cap(2, caps.export_cap(v["output"]))
-    s.set_cap(3, caps.export_cap(v["progress"]))
-    s.set_cap(4, caps.export_cap(v["cancel"]))
+    if v.get("input") is not None:
+        if v["input"] is not None:
+            s.set_cap(1, caps.export_cap(v["input"]))
+    if v.get("output") is not None:
+        if v["output"] is not None:
+            s.set_cap(2, caps.export_cap(v["output"]))
+    if v.get("progress") is not None:
+        if v["progress"] is not None:
+            s.set_cap(3, caps.export_cap(v["progress"]))
+    if v.get("cancel") is not None:
+        if v["cancel"] is not None:
+            s.set_cap(4, caps.export_cap(v["cancel"]))
 
 
 def _read_job_controller(s: _StructReader, caps: _CapTable) -> Any:
-    return {
+    out: dict[str, Any] = {
         "invocation": _job_invocation_codec.read(s.get_struct(0, 3, 8), caps),
-        "input": caps.import_cap(s.get_cap_index(1)),
-        "output": caps.import_cap(s.get_cap_index(2)),
-        "progress": caps.import_cap(s.get_cap_index(3)),
-        "cancel": caps.import_cap(s.get_cap_index(4)),
     }
+    input = caps.import_cap(s.get_cap_index(1))
+    if not (input is None):
+        out["input"] = input
+    output = caps.import_cap(s.get_cap_index(2))
+    if not (output is None):
+        out["output"] = output
+    progress = caps.import_cap(s.get_cap_index(3))
+    if not (progress is None):
+        out["progress"] = progress
+    cancel = caps.import_cap(s.get_cap_index(4))
+    if not (cancel is None):
+        out["cancel"] = cancel
+    return out
 
 
 _job_controller_codec = _Codec(0, 5, _write_job_controller, _read_job_controller)
@@ -913,14 +976,19 @@ _list_reply_codec = _Codec(1, 1, _write_list_reply, _read_list_reply)
 
 def _write_get_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
-    s.set_cap(1, caps.export_cap(v["body"]))
+    if v.get("body") is not None:
+        if v["body"] is not None:
+            s.set_cap(1, caps.export_cap(v["body"]))
 
 
 def _read_get_ok(s: _StructReader, caps: _CapTable) -> Any:
-    return {
+    out: dict[str, Any] = {
         "meta": _object_metadata_codec.read(s.get_struct(0, 1, 4), caps),
-        "body": caps.import_cap(s.get_cap_index(1)),
     }
+    body = caps.import_cap(s.get_cap_index(1))
+    if not (body is None):
+        out["body"] = body
+    return out
 
 
 _get_ok_codec = _Codec(0, 2, _write_get_ok, _read_get_ok)
@@ -1069,14 +1137,19 @@ _pull_reply_codec = _Codec(1, 1, _write_pull_reply, _read_pull_reply)
 
 def _write_open_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _object_metadata_codec.write(s.init_struct(0, 1, 4), v["meta"], caps)
-    s.set_cap(1, caps.export_cap(v["body"]))
+    if v.get("body") is not None:
+        if v["body"] is not None:
+            s.set_cap(1, caps.export_cap(v["body"]))
 
 
 def _read_open_ok(s: _StructReader, caps: _CapTable) -> Any:
-    return {
+    out: dict[str, Any] = {
         "meta": _object_metadata_codec.read(s.get_struct(0, 1, 4), caps),
-        "body": caps.import_cap(s.get_cap_index(1)),
     }
+    body = caps.import_cap(s.get_cap_index(1))
+    if not (body is None):
+        out["body"] = body
+    return out
 
 
 _open_ok_codec = _Codec(0, 2, _write_open_ok, _read_open_ok)
@@ -1203,7 +1276,8 @@ def _write_adapter_session_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> No
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        s.set_cap(0, caps.export_cap(v["value"]))
+        if v["value"] is not None:
+            s.set_cap(0, caps.export_cap(v["value"]))
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
@@ -1228,7 +1302,8 @@ def _write_guest_database_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        s.set_cap(0, caps.export_cap(v["value"]))
+        if v["value"] is not None:
+            s.set_cap(0, caps.export_cap(v["value"]))
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
@@ -1251,14 +1326,19 @@ _guest_database_reply_codec = _Codec(1, 1, _write_guest_database_reply, _read_gu
 
 def _write_named_database(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["name"])
-    s.set_cap(1, caps.export_cap(v["database"]))
+    if v.get("database") is not None:
+        if v["database"] is not None:
+            s.set_cap(1, caps.export_cap(v["database"]))
 
 
 def _read_named_database(s: _StructReader, caps: _CapTable) -> Any:
-    return {
+    out: dict[str, Any] = {
         "name": s.get_text(0),
-        "database": caps.import_cap(s.get_cap_index(1)),
     }
+    database = caps.import_cap(s.get_cap_index(1))
+    if not (database is None):
+        out["database"] = database
+    return out
 
 
 _named_database_codec = _Codec(0, 2, _write_named_database, _read_named_database)
@@ -3966,16 +4046,21 @@ _destination_get_results_codec = _Codec(0, 1, _write_destination_get_results, _r
 
 def _write_destination_put_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["key"])
-    s.set_cap(1, caps.export_cap(v["body"]))
+    if v.get("body") is not None:
+        if v["body"] is not None:
+            s.set_cap(1, caps.export_cap(v["body"]))
     _write_options_codec.write(s.init_struct(2, 2, 3), v["options"], caps)
 
 
 def _read_destination_put_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
+    out: dict[str, Any] = {
         "key": s.get_text(0),
-        "body": caps.import_cap(s.get_cap_index(1)),
         "options": _write_options_codec.read(s.get_struct(2, 2, 3), caps),
     }
+    body = caps.import_cap(s.get_cap_index(1))
+    if not (body is None):
+        out["body"] = body
+    return out
 
 
 _destination_put_params_codec = _Codec(0, 3, _write_destination_put_params, _read_destination_put_params)
@@ -4956,6 +5041,34 @@ def _read_database_open_session_results(s: _StructReader, caps: _CapTable) -> An
 
 _database_open_session_results_codec = _Codec(0, 1, _write_database_open_session_results, _read_database_open_session_results)
 """Wire codec for ``DatabaseOpenSessionResults`` (0 data words, 1 pointers)."""
+
+
+def _write_database_drop_unit_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["unitRef"])
+
+
+def _read_database_drop_unit_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "unitRef": s.get_text(0),
+    }
+
+
+_database_drop_unit_params_codec = _Codec(0, 1, _write_database_drop_unit_params, _read_database_drop_unit_params)
+"""Wire codec for ``DatabaseDropUnitParams`` (0 data words, 1 pointers)."""
+
+
+def _write_database_drop_unit_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_database_drop_unit_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_database_drop_unit_results_codec = _Codec(0, 1, _write_database_drop_unit_results, _read_database_drop_unit_results)
+"""Wire codec for ``DatabaseDropUnitResults`` (0 data words, 1 pointers)."""
 
 
 def _write_adapter_database_session_capabilities_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

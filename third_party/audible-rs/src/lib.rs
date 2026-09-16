@@ -16,6 +16,11 @@ pub mod models;
 pub(crate) mod timefmt;
 pub mod widevine;
 
+/// HTTP client that uses ambient TCP or the Bookclerk workerd socket proxy.
+pub type HttpClient = bookclerk_plugin_sdk::http::Client;
+/// Error type for [`HttpClient`].
+pub type HttpError = bookclerk_plugin_sdk::http::Error;
+
 #[cfg(feature = "cli")]
 pub mod activation;
 #[cfg(feature = "cli")]

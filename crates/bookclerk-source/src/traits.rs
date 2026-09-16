@@ -47,8 +47,16 @@ impl PortalAuthMode {
 /// adapters and third-party JSON-RPC plugins share the same scope rules.
 #[async_trait]
 pub trait ContentSource: Send + Sync {
-    /// Stable plugin id (`audible`, `libro`, …).
+    /// Display / CLI alias (`audible`, `libro`, …). Globally unique within one
+    /// installation; durable identity is [`Self::plugin_key`].
     fn id(&self) -> &str;
+
+    /// Provenance-qualified PluginKey when this adapter is an external guest.
+    ///
+    /// Defaults to [`Self::id`] for in-crate test doubles.
+    fn plugin_key(&self) -> &str {
+        self.id()
+    }
 
     /// Human-facing store name for UI / logs.
     fn display_name(&self) -> &str {

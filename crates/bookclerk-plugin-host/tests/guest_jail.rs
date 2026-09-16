@@ -133,13 +133,12 @@ cat >/dev/null
     body
 }
 
-/// A files dir that looks like a real one, with a guest installed where
-/// Bookclerk actually installs plugins: `$FILES_DIR/plugins/<id>`.
+/// A files dir that looks like a real one, with a guest installed under
+/// `$FILES_DIR/plugins/<id>` (this fixture uses the alias as the directory
+/// name) and mutable state under `$FILES_DIR/plugin-state/<PluginKey fs-id>/`.
 ///
-/// That layout matters rather than being incidental. It puts the guest's
-/// writable data directory *inside* the install directory the host grants
-/// read-only, so a backend that did not honour the more specific rule would show
-/// up here and nowhere else.
+/// The install tree is granted read-only. `HOME` / `TMPDIR` are the host-owned
+/// plugin-state directories, not `plugins/<id>/data` or `plugins/<id>/tmp`.
 struct Fixture {
     files: tempfile::TempDir,
     config: Config,

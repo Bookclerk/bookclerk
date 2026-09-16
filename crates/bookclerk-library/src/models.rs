@@ -1744,7 +1744,7 @@ impl EventCatalogSubscription {
 pub struct EventSubscriberNodeRecord {
     /// Daemon node id.
     pub node_id: String,
-    /// Subscriber plugin id.
+    /// Canonical PluginKey of the subscriber (not the display alias).
     pub plugin_id: String,
     /// Declared subscriptions on this node.
     pub subscriptions: Vec<EventCatalogSubscription>,
@@ -1757,7 +1757,7 @@ pub struct EventSubscriberNodeRecord {
 /// Cluster-authoritative catalog row after collapsing live nodes by `plugin_id`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventSubscriberCatalogRecord {
-    /// Subscriber plugin id.
+    /// Canonical PluginKey of the subscriber (not the display alias).
     pub plugin_id: String,
     /// Union of subscriptions from live enabled nodes.
     pub subscriptions: Vec<EventCatalogSubscription>,

@@ -1057,6 +1057,7 @@ mod tests {
         assert_eq!(current_canonical_statements(), unreleased_statements());
         assert_eq!(current_canonical_schema(), unreleased_sql());
         assert!(current_canonical_schema().contains("plugin_databases"));
+        assert!(current_canonical_schema().contains("adapter_plugin_key"));
         assert!(!current_canonical_schema().contains("domain_events_v27"));
     }
 

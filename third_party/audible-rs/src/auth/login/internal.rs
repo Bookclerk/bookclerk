@@ -9,7 +9,8 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use reqwest::{Client, Url};
+use crate::HttpClient as Client;
+use url::Url;
 
 use crate::api::locale::Locale;
 use crate::auth::Authenticator;
@@ -256,21 +257,8 @@ async fn poll_approval(http: &Client, base: &Url) -> Result<(Url, String), Login
 /// can read it. A no-op where maplanding is terminal (e.g. `de`). Shared with
 /// the `account login server` proxy (AUD-60), whose upstream client needs the
 /// same capture behaviour.
-pub(crate) fn maplanding_redirect_policy() -> reqwest::redirect::Policy {
-    const MAX_HOPS: usize = 10;
-    reqwest::redirect::Policy::custom(|attempt| {
-        let code_seen = attempt
-            .previous()
-            .iter()
-            .any(|url| url.query().is_some_and(|q| q.contains(AUTH_CODE_PARAM)));
-        if code_seen {
-            attempt.stop()
-        } else if attempt.previous().len() >= MAX_HOPS {
-            attempt.error("too many redirects during sign-in")
-        } else {
-            attempt.follow()
-        }
-    })
+pub(crate) fn maplanding_redirect_policy() -> bookclerk_plugin_sdk::http::redirect::Policy {
+    bookclerk_plugin_sdk::http::redirect::Policy::StopOnQueryContains(AUTH_CODE_PARAM)
 }
 
 /// The OAuth query parameter that carries the authorization code (one

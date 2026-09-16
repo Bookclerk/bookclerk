@@ -4,7 +4,7 @@
 //! `client` module). Audible ASIN enrichment (metadata confidence matching)
 //! lives in `bookclerk-enrich` / CLI — this crate must not depend on
 //! `bookclerk-audible` or `bookclerk-enrich`. Public explore catalog helpers
-//! live in [`catalog`] (reqwest, no enrich).
+//! live in [`catalog`] (SDK HTTP, no enrich).
 
 mod auth;
 pub mod catalog;

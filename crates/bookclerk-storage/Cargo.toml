@@ -20,12 +20,16 @@ sea-orm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net"] }
 tracing.workspace = true
 
 # S3 is compiled in but unused until Phase 3 wiring; keeps the trait ready.
 aws-config.workspace = true
 aws-sdk-s3.workspace = true
+aws-smithy-runtime-api = { version = "1", default-features = false, features = ["client", "http-1x"] }
+aws-smithy-types = { version = "1", default-features = false, features = ["http-body-1-x"] }
+bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
+http-body-util = "0.1"
 chrono.workspace = true
 
 [dev-dependencies]

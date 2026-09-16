@@ -1,17 +1,14 @@
 //! Magento storefront access: customer login, downloadable ZIPs, Browser Player.
 //!
-//! This module uses a `reqwest::Client` with a cookie jar. That is fine under
-//! the default confined jail (`NetPolicy::Outbound`); catalog paths that do not
-//! need cookies can use a plain [`reqwest::Client`].
+//! Uses [`bookclerk_plugin_sdk::http::Client`] with a shared cookie jar so nested
+//! `NetPolicy::Deny` still reaches the store through the workerd socket proxy.
 
 use std::io::copy;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use reqwest::cookie::Jar;
-use reqwest::header::LOCATION;
-use reqwest::redirect::Policy;
-use reqwest::{Client, StatusCode, Url};
+use bookclerk_plugin_sdk::http::header::LOCATION;
+use bookclerk_plugin_sdk::http::{redirect, Client, CookieJar, StatusCode};
+use url::Url;
 
 use crate::options::GraphicAudioContainer;
 
@@ -92,15 +89,15 @@ impl MagentoClient {
     /// Returns an error when the operation fails.
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
-        let jar = Arc::new(Jar::default());
+        let jar = CookieJar::new();
         let http = Client::builder()
             .cookie_provider(jar.clone())
-            .redirect(Policy::limited(10))
+            .redirect(redirect::Policy::limited(10))
             .user_agent(BROWSER_UA)
             .build()?;
         let http_no_redirect = Client::builder()
             .cookie_provider(jar)
-            .redirect(Policy::none())
+            .redirect(redirect::Policy::none())
             .user_agent(BROWSER_UA)
             .build()?;
         Ok(Self {
@@ -151,7 +148,7 @@ impl MagentoClient {
         let resp = self
             .http
             .post(&post_url)
-            .header(reqwest::header::REFERER, &login_url)
+            .header(bookclerk_plugin_sdk::http::header::REFERER, &login_url)
             .form(&[
                 ("form_key", form_key.as_str()),
                 ("login[username]", email),

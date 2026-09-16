@@ -252,8 +252,23 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
             await DatabaseAdapterEntrypoint().bookclerkInvoke({}, "openSession")
         self.assertEqual(ctx.exception.code, "unsupported")
         with self.assertRaises(PluginError) as ctx:
+            await DatabaseAdapterEntrypoint().bookclerkInvoke({}, "dropUnit", "unit-ref")
+        self.assertEqual(ctx.exception.code, "unsupported")
+        with self.assertRaises(PluginError) as ctx:
             await DatabaseAdapterEntrypoint().bookclerkInvoke({}, "session")
         self.assertEqual(ctx.exception.code, "invalid_params")
+
+    async def test_drop_unit_dispatch(self) -> None:
+        dropped: list[str] = []
+
+        class DatabaseAdapter(DatabaseAdapterEntrypoint):
+            async def dropUnit(self, unit_ref: str):
+                dropped.append(unit_ref)
+
+        adapter = DatabaseAdapter()
+        self.assertIsNone(await adapter.bookclerkInvoke({"invocation": {"id": "inv-drop"}}, "dropUnit", "unit-a"))
+        self.assertEqual(dropped, ["unit-a"])
+        self.assertEqual(adapter.invocation["id"], "inv-drop")
 
 
 if __name__ == "__main__":

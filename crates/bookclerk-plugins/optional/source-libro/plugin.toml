@@ -9,6 +9,12 @@ entrypoints = ["storefront"]
 
 [capabilities.network]
 mode = "outbound"
+tcp = [
+    { host = "*.libro.fm", ports = [443] },
+]
+# Native TCP via the SDK HTTP client. Covers, API, and other libro.fm
+# hosts match the wildcard. Off-site CDN CONNECT destinations still need
+# a TCP grant (operator additions). Fetch `domains` are workerd-only.
 
 [vars]
 
