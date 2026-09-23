@@ -84,7 +84,66 @@ is **`CI Gate`** (plus the OSV check), **not** every matrix child. Skipped
 individually required, merges stay pending forever.
 
 Also enable a merge queue that consumes `merge_group` checks so the full suite
-runs on the synthetic merge commit before landing.
+runs on the synthetic merge commit before landing. Merge queues are only
+available on **organization-owned** repositories (free for public repos), so
+this step waits until the repository lives in an organization. Queue settings:
+squash, "only merge non-failing pull requests", build concurrency around 5.
+With a queue required, "require branches to be up to date" no longer matters;
+the queue tests each entry against current `main` stacked on the entries ahead
+of it.
+
+## Dependabot auto-merge
+
+`.github/workflows/dependabot-auto-merge.yml` runs
+[`fastify/github-action-merge-dependabot`](https://github.com/fastify/github-action-merge-dependabot)
+when a Dependabot PR opens or updates. It approves the PR and turns on GitHub
+auto-merge (squash) **for that PR only**. GitHub then merges it, or adds it to
+the merge queue when one is required, once `CI Gate` and `PR scan / osv-scan`
+pass. Failing PRs stay open for a human.
+
+The repository-level **Allow auto-merge** setting only makes the per-PR
+"Enable auto-merge" button and API available; it never merges a PR on its own,
+so human PRs merge exactly as before unless someone opts a PR in.
+
+The action must run while checks are still pending: GitHub rejects enabling
+auto-merge on a PR that is already mergeable. To retry a Dependabot PR (for
+example after adding the secrets), comment `@dependabot rebase`.
+
+Policy knobs live in the workflow's `with:` block:
+
+- `target: any` merges every update type. Tighten to `minor` or `patch` to
+  leave larger bumps for manual review.
+- `exclude: 'crate-a,crate-b'` skips auto-merge for PRs touching those
+  packages.
+
+### Setup
+
+1. **Settings → General → Pull Requests:** enable **Allow auto-merge**.
+2. Create a GitHub App (owned by the organization once the repo is
+   transferred; an App owned by a user can be transferred later) with
+   repository permissions **Contents: read and write** and **Pull requests:
+   read and write**, no webhook, and install it on this repository only.
+3. Add two **Dependabot** secrets (Settings → Secrets and variables →
+   Dependabot). Dependabot-triggered runs do not receive Actions secrets:
+   - `DEPENDABOT_MERGE_APP_CLIENT_ID`: the App's client ID.
+   - `DEPENDABOT_MERGE_APP_KEY`: a private key generated for the App.
+
+The App token matters: merges and queue entries attributed to `GITHUB_TOKEN`
+do not start new workflow runs, so `push` CI on `main`, the OSV SARIF upload,
+and `merge_group` checks would be skipped. The App can also approve PRs without
+the "Allow GitHub Actions to create and approve pull requests" setting.
+
+### Before the merge queue exists
+
+While the repository is still owned by a user, `Protect Main` keeps "require
+branches to be up to date" on. Auto-merge then waits on a Dependabot PR that
+has fallen behind `main` until it is rebased. Either:
+
+- turn that option off in the `Protect Main` required-status-checks rule, so
+  green Dependabot PRs merge as soon as their checks pass (Dependabot rebases
+  PRs that actually conflict, and `push` CI on `main` is the safety net). This
+  also relaxes the rule for human PRs until the queue replaces it; or
+- leave it on and comment `@dependabot rebase` on PRs that fall behind.
 
 ## Expected PR feedback (when `SELECTIVE_CI=1`)
 

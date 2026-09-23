@@ -1,0 +1,52 @@
+# Turn on GitHub auto-merge for Dependabot PRs.
+#
+# Policy:
+# - Runs when a Dependabot PR opens or updates, while required checks are
+#   still pending (`enablePullRequestAutoMerge` rejects PRs that are already
+#   mergeable). GitHub merges, or enqueues when a merge queue is required,
+#   only after `CI Gate` and `PR scan / osv-scan` pass.
+# - Uses a GitHub App token: merges attributed to GITHUB_TOKEN do not start
+#   `push` / `merge_group` workflow runs, and the App can approve PRs without
+#   the "Actions may approve PRs" setting.
+# - Hold back specific packages with `exclude`, or tighten `target`.
+#
+# Setup (App, Dependabot secrets, rulesets): docs/ci.md#dependabot-auto-merge
+
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enable-auto-merge:
+    name: enable auto-merge
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # The action's inner dependabot/fetch-metadata step lists PR commits with
+    # the job's GITHUB_TOKEN (it does not accept the App token).
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.DEPENDABOT_MERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEPENDABOT_MERGE_APP_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Approve + enable auto-merge
+        uses: fastify/github-action-merge-dependabot@73ec4cbb5e56df5591eae286972d5b2201ffe90f # v3.15.0
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          use-github-auto-merge: true
+          merge-method: squash
+          target: any
