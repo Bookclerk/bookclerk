@@ -29,7 +29,8 @@ pub use coordinate::{PackageCoordinate, RegistrySource};
 pub use error::{CatalogError, Result};
 pub use evaluate::{evaluate_install, evaluate_install_in, stamp_platform_receipt};
 pub use extract::{
-    extract_archive, safe_join, sha256_bytes, sha256_file, MAX_ARCHIVE_BYTES, MAX_EXTRACTED_BYTES,
+    extract_archive, require_mutable_child, require_under, safe_join, sha256_bytes, sha256_file,
+    MAX_ARCHIVE_BYTES, MAX_EXTRACTED_BYTES,
 };
 pub use identity::{
     is_first_party_database_adapter, is_first_party_destination, is_platform_plugin_key,

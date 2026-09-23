@@ -28,9 +28,15 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 mod platform;
+mod spawn_path;
 mod spec;
 
 pub use platform::BACKEND;
+pub use spawn_path::{
+    require_absolute_or_name, require_absolute_spawn_path, require_existing_regular_file,
+    require_helper_beside_or_absolute, require_spawn_executable, require_under_root,
+    SpawnPathError,
+};
 pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
 
 /// Windows AppContainer spawn API ([`plan_appcontainer`](spawn::plan_appcontainer),

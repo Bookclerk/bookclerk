@@ -6,7 +6,7 @@ use bookclerk_config::Config;
 use bookclerk_migrate::{import_native, migrate, MigrateOptions, NativeImportOptions};
 use clap::Subcommand;
 
-use crate::format_out::{emit, line, OutputFormat};
+use crate::format_out::{emit, err_line, line, OutputFormat};
 
 #[derive(Debug, Subcommand)]
 /// `bookclerk import` subcommands: native `.tar.gz` restore or classic Libation Files.
@@ -60,14 +60,14 @@ pub async fn run(
                 dry_run,
             })?;
             emit(format, &summary, || {
-                println!("dest\t{}", dest.display());
-                println!("files\t{}", summary.files);
-                println!("format_version\t{}", summary.format_version);
+                line(format!("dest\t{}", dest.display()));
+                line(format!("files\t{}", summary.files));
+                line(format!("format_version\t{}", summary.format_version));
                 for w in &summary.warnings {
-                    eprintln!("warning: {w}");
+                    err_line(format!("warning: {w}"));
                 }
                 if dry_run {
-                    eprintln!("dry-run: no files written");
+                    err_line("dry-run: no files written");
                 }
             })
         }
@@ -78,11 +78,11 @@ pub async fn run(
             dry_run,
         } => {
             let dest = config.paths().files_dir.clone();
-            eprintln!(
+            err_line(format!(
                 "importing libation from {} → {}",
                 from.display(),
                 dest.display()
-            );
+            ));
             let summary = migrate(MigrateOptions {
                 source: from,
                 dest_files_dir: dest,
@@ -99,10 +99,10 @@ pub async fn run(
                 line(format!("acquired\t{}", summary.acquired));
                 line(format!("storage_keys\t{}", summary.storage_keys));
                 for warning in &summary.warnings {
-                    eprintln!("warning: {warning}");
+                    err_line(format!("warning: {warning}"));
                 }
                 if dry_run {
-                    eprintln!("dry-run: no files written");
+                    err_line("dry-run: no files written");
                 }
             })
         }

@@ -85,7 +85,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
     match command {
         DiscoverCommand::RebuildWorks => {
             let n = bookclerk_discover::rebuild_works_from_library(&library).await?;
-            println!("linked {n} book(s) into works");
+            format_out::line(format!("linked {n} book(s) into works"));
         }
         DiscoverCommand::EnrichOpenlibrary => {
             let opts = bookclerk_discover::OpenLibraryOptions {
@@ -94,11 +94,11 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 ..Default::default()
             };
             let n = bookclerk_discover::enrich_books_from_openlibrary_with(&library, &opts).await?;
-            println!("open library enriched {n} book(s)");
+            format_out::line(format!("open library enriched {n} book(s)"));
         }
         DiscoverCommand::Embed { hash } => {
             let n = embed_works(cfg, &library, !hash && cfg.discovery.embeddings_enabled).await?;
-            println!("embedded {n} work(s)");
+            format_out::line(format!("embedded {n} work(s)"));
         }
         DiscoverCommand::SyncListening => {
             let summary = sync_listening(cfg, &library).await?;

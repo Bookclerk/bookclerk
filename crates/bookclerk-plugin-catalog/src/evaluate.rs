@@ -47,6 +47,16 @@ pub fn evaluate_install_in(
     manifest: &PluginManifest,
     files_dir: Option<&Path>,
 ) -> Result<PluginInstallIdentity> {
+    // Resolve the trusted install identity once so intentional `..` spelling in
+    // `files_dir` / discovery roots does not fail hashing, and so payload walks
+    // use the same canonical tree.
+    let root_buf = root.canonicalize().map_err(|source| {
+        CatalogError::message(format!(
+            "could not canonicalize plugin root {}: {source}",
+            root.display()
+        ))
+    })?;
+    let root = root_buf.as_path();
     let manifest_sha = manifest_sha256(root)?;
     let payload_sha = payload_root_sha256(root)?;
     let version = manifest.version.clone().unwrap_or_else(|| "0.0.0".into());

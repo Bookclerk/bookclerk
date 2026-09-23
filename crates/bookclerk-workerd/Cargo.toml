@@ -53,6 +53,7 @@ libc = "0.2"
 
 [dev-dependencies]
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
+bookclerk-sandbox.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -34,6 +34,9 @@ This vendored tree is identical to the pinned upstream revision except:
    (Amazon OTP is completed in the browser; this crate never generated
    codes) compile only with `--features cli`. Bookclerk depends with
    `default-features = false`.
+5. `auth/authfile.rs` unit test `wrong_password_fails` derives its mismatch
+   from the literal fixture password at runtime (analyzer hygiene for a
+   second hard-coded secret). This is not a security improvement.
 
 Re-vendor when bumping the `audible-rs` git rev in the workspace
 `Cargo.toml`, then re-apply these patches.

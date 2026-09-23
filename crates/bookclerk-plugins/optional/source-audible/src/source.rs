@@ -3,7 +3,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::drm::{decrypt_adrm, decrypt_cenc, CencDecryptRequest, DecryptRequest};
+use crate::drm::{
+    decrypt_adrm, decrypt_cenc, join_cache_component, CencDecryptRequest, DecryptRequest,
+};
 use async_trait::async_trait;
 use bookclerk_config::{AudioQuality, Config};
 use bookclerk_library::{secret_kind, SourceScope};
@@ -348,7 +350,8 @@ impl ContentSource for AudibleSource {
         let want_cover = dl.download_cover || dl.fixup_metadata;
         let mut cover_path = None;
         if want_cover {
-            let dest = opts.cache_dir.join(format!("{title_id}.cover.jpg"));
+            let dest = join_cache_component(&opts.cache_dir, &format!("{title_id}.cover.jpg"))
+                .map_err(|e| SourceError::api(format!("{e}")))?;
             match download_cover_jpeg(
                 &account.client,
                 &account.marketplace,
@@ -365,11 +368,13 @@ impl ContentSource for AudibleSource {
             }
         }
 
-        let work_dir = opts.cache_dir.join(title_id);
+        let work_dir = join_cache_component(&opts.cache_dir, title_id)
+            .map_err(|e| SourceError::api(format!("{e}")))?;
         tokio::fs::create_dir_all(&work_dir)
             .await
             .map_err(SourceError::Io)?;
-        let m4b_path = work_dir.join(format!("{title_id}.m4b"));
+        let m4b_path = join_cache_component(&work_dir, &format!("{title_id}.m4b"))
+            .map_err(|e| SourceError::api(format!("{e}")))?;
 
         let trim = if dl.strip_audible_brand_audio {
             let brand = chapter_info

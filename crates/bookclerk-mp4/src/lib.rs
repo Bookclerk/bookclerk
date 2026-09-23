@@ -20,6 +20,7 @@ pub mod edit;
 mod error;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
+mod fs_path;
 mod parser;
 mod patch;
 mod read;

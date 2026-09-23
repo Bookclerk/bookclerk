@@ -117,6 +117,57 @@ pub const MVEX: FourCC = FourCC::new(b"mvex");
 /// ISO-BMFF `dash` brand FourCC.
 pub const DASH: FourCC = FourCC::new(b"dash");
 
+/// Absolute ceiling on sample / entry table lengths read from untrusted boxes.
+///
+/// Larger than any legitimate audiobook sample table, small enough to reject
+/// `u32::MAX`-sized allocation bombs before [`Vec::with_capacity`].
+pub const MAX_MP4_TABLE_ENTRIES: usize = 10_000_000;
+
+/// Maximum bytes [`read_exact_vec`] will allocate for one dynamically sized field.
+///
+/// Caps DoS from a forged length while still allowing large codec configs / IVs
+/// and modest payload slices inside a box.
+pub const MAX_READ_EXACT_VEC_BYTES: usize = 64 * 1024 * 1024;
+
+/// Rejects `count` when it exceeds [`MAX_MP4_TABLE_ENTRIES`] or when
+/// `count * entry_bytes` cannot fit in `available` remaining box content.
+///
+/// # Arguments
+///
+/// * `count` - Declared entry/sample count from the box.
+/// * `entry_bytes` - Fixed on-disk size of one table row (at least 1).
+/// * `available` - Bytes remaining in the box after headers already consumed.
+/// * `what` - Box or field name for error messages (e.g. `"stts"`).
+///
+/// # Returns
+///
+/// `count` as `usize` when the table is plausible.
+///
+/// # Errors
+///
+/// Returns [`Mp4Error::Container`] when the count is absurd or cannot fit.
+pub fn ensure_table_entries(
+    count: u32,
+    entry_bytes: usize,
+    available: u64,
+    what: &str,
+) -> Result<usize> {
+    let n = count as usize;
+    if n > MAX_MP4_TABLE_ENTRIES {
+        return Err(Mp4Error::container(format!(
+            "{what} entry_count {n} exceeds {MAX_MP4_TABLE_ENTRIES}"
+        )));
+    }
+    let entry_bytes = entry_bytes.max(1) as u64;
+    let need = (n as u64).saturating_mul(entry_bytes);
+    if need > available {
+        return Err(Mp4Error::container(format!(
+            "{what} entry_count {n} needs {need} bytes, only {available} remain in box"
+        )));
+    }
+    Ok(n)
+}
+
 /// Header for one ISO-BMFF box.
 #[derive(Debug, Clone)]
 pub struct BoxHeader {
@@ -177,8 +228,14 @@ pub fn read_u8(r: &mut impl Read) -> Result<u8> {
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying I/O fails or fewer than `n` bytes are available.
+/// Returns an error when `n` exceeds [`MAX_READ_EXACT_VEC_BYTES`], the underlying
+/// I/O fails, or fewer than `n` bytes are available.
 pub fn read_exact_vec(r: &mut impl Read, n: usize) -> Result<Vec<u8>> {
+    if n > MAX_READ_EXACT_VEC_BYTES {
+        return Err(Mp4Error::container(format!(
+            "refusing to allocate {n} bytes (max {MAX_READ_EXACT_VEC_BYTES})"
+        )));
+    }
     let mut buf = Vec::with_capacity(n);
     let got = r.take(n as u64).read_to_end(&mut buf)?;
     if got != n {

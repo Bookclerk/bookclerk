@@ -5,10 +5,10 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use bookclerk_mp4::boxutil::{
-    find_child, read_array, read_box_header, read_exact_vec, read_fourcc,
+    ensure_table_entries, find_child, read_array, read_box_header, read_exact_vec, read_fourcc,
     read_full_box_version_flags, read_u32, read_u64, read_u8, walk_children, BoxHeader, FourCC,
-    DASH, ENCA, FTYP, HDLR, MDAT, MDHD, MDIA, MINF, MOOF, MOOV, MVEX, MVHD, SCHI, SCHM, SENC, SIDX,
-    SINF, STBL, STSD, TENC, TFHD, TRAF, TRAK, TRUN,
+    DASH, ENCA, FTYP, HDLR, MAX_MP4_TABLE_ENTRIES, MDAT, MDHD, MDIA, MINF, MOOF, MOOV, MVEX, MVHD,
+    SCHI, SCHM, SENC, SIDX, SINF, STBL, STSD, TENC, TFHD, TRAF, TRAK, TRUN,
 };
 use bookclerk_mp4::edit::{find_box_range, find_direct_child, splice_replace};
 use bookclerk_mp4::{
@@ -655,17 +655,41 @@ fn parse_trun(
 ) -> Result<(Vec<u32>, Vec<u32>)> {
     file.seek(SeekFrom::Start(trun.content_start()))?;
     let (_version, flags) = read_full_box_version_flags(file)?;
-    let sample_count = read_u32(file)? as usize;
+    let sample_count_u32 = read_u32(file)?;
+    let mut header_consumed = 8u64; // version/flags + sample_count
     if flags & 0x000001 != 0 {
         let _data_offset = read_u32(file)?;
+        header_consumed += 4;
     }
     if flags & 0x000004 != 0 {
         let _first_sample_flags = read_u32(file)?;
+        header_consumed += 4;
     }
     let has_duration = flags & 0x000100 != 0;
     let has_size = flags & 0x000200 != 0;
     let has_flags = flags & 0x000400 != 0;
     let has_cts = flags & 0x000800 != 0;
+
+    let mut entry_bytes = 0usize;
+    if has_duration {
+        entry_bytes += 4;
+    }
+    if has_size {
+        entry_bytes += 4;
+    }
+    if has_flags {
+        entry_bytes += 4;
+    }
+    if has_cts {
+        entry_bytes += 4;
+    }
+    let available = trun.content_len().saturating_sub(header_consumed);
+    // Default-only rows consume no table bytes; still bound Vec length absolutely.
+    let sample_count = if entry_bytes == 0 {
+        ensure_table_entries(sample_count_u32, 1, MAX_MP4_TABLE_ENTRIES as u64, "trun")?
+    } else {
+        ensure_table_entries(sample_count_u32, entry_bytes, available, "trun")?
+    };
 
     let mut sizes = Vec::with_capacity(sample_count);
     let mut durations = Vec::with_capacity(sample_count);
@@ -709,10 +733,10 @@ fn parse_senc_ivs(
             "senc subsample encryption is not supported".into(),
         ));
     }
-    let sample_count = read_u32(file)? as usize;
-    if sample_count != expect_count {
+    let sample_count_u32 = read_u32(file)?;
+    if sample_count_u32 as usize != expect_count {
         return Err(DrmError::Mp4(format!(
-            "senc sample_count {sample_count} != trun count {expect_count}"
+            "senc sample_count {sample_count_u32} != trun count {expect_count}"
         )));
     }
     let pos = file.stream_position()?;
@@ -720,20 +744,21 @@ fn parse_senc_ivs(
         return Err(DrmError::Mp4("senc underflow".into()));
     }
     let remaining = senc.end() - pos;
-    if sample_count == 0 {
+    if sample_count_u32 == 0 {
         return Ok(Vec::new());
     }
-    if !remaining.is_multiple_of(sample_count as u64) {
+    if !remaining.is_multiple_of(u64::from(sample_count_u32)) {
         return Err(DrmError::Mp4(format!(
-            "senc IV region {remaining} not divisible by sample_count {sample_count}"
+            "senc IV region {remaining} not divisible by sample_count {sample_count_u32}"
         )));
     }
-    let iv_size = (remaining / sample_count as u64) as usize;
+    let iv_size = (remaining / u64::from(sample_count_u32)) as usize;
     if iv_size != 8 && iv_size != 16 {
         return Err(DrmError::Mp4(format!(
             "unsupported senc IV size {iv_size} (want 8 or 16)"
         )));
     }
+    let sample_count = ensure_table_entries(sample_count_u32, iv_size, remaining, "senc")?;
     let mut ivs = Vec::with_capacity(sample_count);
     for _ in 0..sample_count {
         ivs.push(read_exact_vec(file, iv_size)?);

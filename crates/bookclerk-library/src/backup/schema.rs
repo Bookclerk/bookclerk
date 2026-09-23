@@ -19,7 +19,7 @@ use crate::migrations::{
 };
 use crate::schema_state::SchemaState;
 
-use super::{CanonicalDatabaseSchema, CanonicalTableSchema};
+use super::{CanonicalDatabaseSchema, CanonicalTableSchema, MAX_CANONICAL_SCHEMA_TABLES};
 
 /// Parses and fully admits a diagnostic/imported canonical SQL script.
 ///
@@ -159,6 +159,11 @@ pub fn sort_tables_by_foreign_keys(
     tables: Vec<CanonicalTableSchema>,
 ) -> Result<Vec<CanonicalTableSchema>> {
     let n = tables.len();
+    if n > MAX_CANONICAL_SCHEMA_TABLES {
+        return Err(LibraryError::Schema(format!(
+            "canonical schema has {n} tables; maximum is {MAX_CANONICAL_SCHEMA_TABLES}"
+        )));
+    }
     let names: Vec<String> = tables.iter().map(|t| t.parsed.table.clone()).collect();
     let index: BTreeMap<String, usize> = names
         .iter()

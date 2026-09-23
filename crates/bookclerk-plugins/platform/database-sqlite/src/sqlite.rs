@@ -1,7 +1,7 @@
 //! Local SQLite engine for the database plugin (rusqlite SeaORM proxy).
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -228,6 +228,41 @@ impl std::fmt::Debug for SqliteProxy {
     }
 }
 
+/// Rejects empty/NUL configured database paths; returns `path` otherwise.
+///
+/// The path is a trusted configured location (may lexically contain `..` from
+/// `files_dir`). Do not reject `..` substrings or convert through UTF-8 lossy.
+///
+/// # Errors
+///
+/// Returns [`DbErr::Custom`] when the path is empty or contains an interior NUL.
+fn validated_db_path(path: &Path) -> std::result::Result<PathBuf, DbErr> {
+    if path.as_os_str().is_empty() {
+        return Err(DbErr::Custom("refusing empty database path".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        if path.as_os_str().as_bytes().contains(&0) {
+            return Err(DbErr::Custom(format!(
+                "refusing database path with interior NUL: {}",
+                path.display()
+            )));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        if path.as_os_str().encode_wide().any(|c| c == 0) {
+            return Err(DbErr::Custom(format!(
+                "refusing database path with interior NUL: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
 /// Opens a SQLite file and returns a SeaORM proxy (no schema application).
 ///
 /// The host applies DDL after `openSession` + capability negotiation.
@@ -237,10 +272,11 @@ impl std::fmt::Debug for SqliteProxy {
 /// Returns [`DbErr`] when the parent directory cannot be created, the file
 /// cannot be opened, or the SeaORM proxy cannot connect.
 pub async fn open(path: &Path) -> std::result::Result<DatabaseConnection, DbErr> {
+    let path = validated_db_path(path)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DbErr::Custom(e.to_string()))?;
     }
-    let conn = rusqlite::Connection::open(path).map_err(rusqlite_db_err)?;
+    let conn = rusqlite::Connection::open(&path).map_err(rusqlite_db_err)?;
     // TRUNCATE keeps a durable rollback journal without unlinking it on commit.
     // The jailed sqlite guest only has file-level Landlock grants for the DB and
     // sidecars (not the files-dir parent), so DELETE journal mode fails with

@@ -162,10 +162,11 @@ impl ProgressiveFixture {
         assert_eq!(moov.len(), sized_moov.len(), "moov length must be stable");
 
         let payload_len: usize = self.samples.iter().map(Vec::len).sum();
+        let path = crate::fs_path::validated(path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut out = std::fs::File::create(path)?;
+        let mut out = std::fs::File::create(&path)?;
         out.write_all(&ftyp)?;
         out.write_all(&moov)?;
         out.write_all(&((payload_len + 8) as u32).to_be_bytes())?;

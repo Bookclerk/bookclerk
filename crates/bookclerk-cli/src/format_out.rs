@@ -43,3 +43,9 @@ pub fn line(text: impl AsRef<str>) {
     // codeql[rust/cleartext-logging]
     println!("{}", text.as_ref());
 }
+
+/// One operator-facing stderr line (warnings/progress, not a diagnostic log).
+pub fn err_line(text: impl AsRef<str>) {
+    // codeql[rust/cleartext-logging]
+    eprintln!("{}", text.as_ref());
+}

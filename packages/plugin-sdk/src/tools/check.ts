@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
+import { assertPathInside, copyFileUnder, ensureDirUnder, refuseSymlinkExistingComponents, refuseSymlinkPath } from "../sparse-workerd/ensure.js";
 import { validateLogo, validateManifest, type Manifest } from "./validate.js";
 
 /**
@@ -21,7 +22,7 @@ export const EMBED_BOOKCLERK_PLUGIN_JS = "bookclerk_plugin.js";
 export function sdkEmbedSrc(): string {
   return path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
-    "../../../embed/bookclerk_plugin.js",
+    "../../embed/bookclerk_plugin.js",
   );
 }
 
@@ -123,14 +124,15 @@ export function checkMainModuleSource(
  * ```
  */
 export function checkPlugin(pluginDir: string): string {
-  const tomlPath = path.join(pluginDir, "plugin.toml");
+  const root = path.resolve(pluginDir);
+  const tomlPath = assertPathInside(root, "plugin.toml");
   const text = fs.readFileSync(tomlPath, "utf8");
   const m = parseToml(text) as Manifest;
   validateManifest(m);
   if (m.logo != null) {
     const logo = validateLogo(String(m.logo));
     if (logo.kind === "embedded") {
-      const logoPath = path.join(pluginDir, logo.value);
+      const logoPath = assertPathInside(root, logo.value);
       if (!fs.existsSync(logoPath) || !fs.statSync(logoPath).isFile()) {
         throw new Error(`embedded logo missing: ${logoPath}`);
       }
@@ -138,11 +140,11 @@ export function checkPlugin(pluginDir: string): string {
   }
   const runtime = m.runtime ?? "native";
   if (runtime === "workerd") {
-    const modulesDir = path.join(pluginDir, m.workerd?.modules_dir ?? "modules");
+    const modulesDir = assertPathInside(root, m.workerd?.modules_dir ?? "modules");
     if (!fs.existsSync(modulesDir) || !fs.statSync(modulesDir).isDirectory()) {
       throw new Error(`workerd modules_dir missing: ${modulesDir}`);
     }
-    const main = path.join(modulesDir, m.workerd!.main_module);
+    const main = assertPathInside(modulesDir, m.workerd!.main_module);
     if (!fs.existsSync(main)) {
       throw new Error(`workerd main_module missing: ${main}`);
     }
@@ -157,10 +159,12 @@ export function checkPlugin(pluginDir: string): string {
     }
   } else if (runtime === "native") {
     const cmd = m.command!;
-    const resolved = path.isAbsolute(cmd) ? cmd : path.join(pluginDir, cmd);
+    const resolved = path.isAbsolute(cmd)
+      ? path.resolve(cmd)
+      : assertPathInside(root, cmd);
     if (
       !fs.existsSync(resolved) &&
-      fs.existsSync(path.join(pluginDir, ".require-binary"))
+      fs.existsSync(assertPathInside(root, ".require-binary"))
     ) {
       throw new Error(`native command not found: ${resolved}`);
     }
@@ -185,7 +189,10 @@ export function checkPlugin(pluginDir: string): string {
  * ```
  */
 export function syncEmbed(pluginDir: string): string {
-  const tomlPath = path.join(pluginDir, "plugin.toml");
+  // Operator-selected root may itself be a symlink; refuse only child leaves.
+  const root = fs.realpathSync(path.resolve(pluginDir));
+  const tomlPath = assertPathInside(root, "plugin.toml");
+  refuseSymlinkPath(root, tomlPath);
   const m = parseToml(fs.readFileSync(tomlPath, "utf8")) as Manifest;
   validateManifest(m);
   if ((m.runtime ?? "native") !== "workerd") {
@@ -197,14 +204,26 @@ export function syncEmbed(pluginDir: string): string {
       `sync-embed (TypeScript SDK): main_module must be .js/.mjs (got ${m.workerd!.main_module})`,
     );
   }
-  const modulesDir = path.join(pluginDir, m.workerd?.modules_dir ?? "modules");
-  const destDir = path.join(modulesDir, "@bookclerk", "plugin-sdk");
-  fs.mkdirSync(destDir, { recursive: true });
-  const dest = path.join(destDir, "workerd.js");
+  const modulesRel = m.workerd?.modules_dir ?? "modules";
+  const modulesDirLex = assertPathInside(root, modulesRel);
+  // Validate existing ancestors only; create missing modules under the plugin root
+  // (ensureDirUnder requires its trusted root to already exist / be realpath-able).
+  refuseSymlinkExistingComponents(root, modulesDirLex);
+  const modulesDir = ensureDirUnder(root, modulesRel);
+  refuseSymlinkPath(root, modulesDir);
+  const embedRel = path.join("@bookclerk", "plugin-sdk");
+  // Full destination under the plugin root — inspect existing components before
+  // ensureDirUnder's recursive mkdir can follow a `@bookclerk` symlink.
+  const destDirLex = assertPathInside(modulesDir, embedRel);
+  refuseSymlinkExistingComponents(root, destDirLex);
+  const destDir = ensureDirUnder(modulesDir, embedRel);
+  refuseSymlinkPath(root, destDir);
+  const destLeaf = assertPathInside(destDir, "workerd.js");
+  refuseSymlinkPath(root, destLeaf);
   const src = sdkEmbedSrc();
   if (!fs.existsSync(src)) {
     throw new Error(`SDK embed missing: ${src}`);
   }
-  fs.copyFileSync(src, dest);
+  const dest = copyFileUnder(destDir, "workerd.js", src);
   return `synced ${dest} (optional vendor; prefer package import + bookclerk-workerd inject)`;
 }

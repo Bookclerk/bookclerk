@@ -100,9 +100,15 @@ fn dir_size_bytes(root: &Path) -> std::io::Result<u64> {
     let mut total = 0u64;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        if !dir.starts_with(root) {
+            continue;
+        }
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
+            if !path.starts_with(root) {
+                continue;
+            }
             let meta = std::fs::symlink_metadata(&path)?;
             let ft = meta.file_type();
             if ft.is_symlink() {

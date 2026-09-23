@@ -66,8 +66,7 @@ fn confinement_available() -> bool {
 
 fn locate_jail() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(JAIL_BIN_ENV) {
-        let path = PathBuf::from(path);
-        if path.is_file() {
+        if let Ok(path) = bookclerk_sandbox::require_spawn_executable(Path::new(&path)) {
             return Some(path);
         }
     }
@@ -76,7 +75,7 @@ fn locate_jail() -> Option<PathBuf> {
     let name = format!("{JAIL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
     [dir.join(&name), dir.join("..").join(&name)]
         .into_iter()
-        .find(|candidate| candidate.is_file())
+        .find_map(|candidate| bookclerk_sandbox::require_spawn_executable(&candidate).ok())
 }
 
 fn confined_pool(workers: usize, confinement: Confinement) -> MediaPool {

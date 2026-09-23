@@ -19,7 +19,7 @@ use super::util::{
 use super::verify::{load_admitted_schema, verify_unit};
 use super::{
     BackupUnit, CanonicalDatabaseSchema, CanonicalRestoreKind, CanonicalRestoreOpts,
-    CanonicalTableSchema, IdentityHighWater, LIBRARY_SKIP_TABLES,
+    CanonicalTableSchema, IdentityHighWater, LIBRARY_SKIP_TABLES, MAX_CANONICAL_SCHEMA_TABLES,
 };
 use crate::error::{LibraryError, Result};
 
@@ -329,7 +329,13 @@ async fn restore_identity<C>(
 where
     C: ConnectionTrait,
 {
-    let mut rows = Vec::with_capacity(identity.len());
+    let n = identity.len();
+    if n > MAX_CANONICAL_SCHEMA_TABLES {
+        return Err(LibraryError::Schema(format!(
+            "identity catalog has {n} entries; maximum is {MAX_CANONICAL_SCHEMA_TABLES}"
+        )));
+    }
+    let mut rows = Vec::with_capacity(n);
     for (table, hw) in identity {
         if !ident_ok(table) || !ident_ok(&hw.column) {
             return Err(LibraryError::Schema(format!(

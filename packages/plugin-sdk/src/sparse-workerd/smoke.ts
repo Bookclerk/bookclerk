@@ -24,7 +24,15 @@ import {
 import type { HealthReply } from "../generated.js";
 import { validateManifest, type Manifest } from "../tools/validate.js";
 import { materializeConfig } from "./config.js";
-import { defaultCacheDir, ensureWorkerd } from "./ensure.js";
+import {
+  assertPathInside,
+  defaultCacheDir,
+  ensureWorkerd,
+  validateSpawnExecutable,
+} from "./ensure.js";
+
+/** Default Cap'n Proto config name written by {@link materializeConfig}. */
+const WORKERD_SMOKE_CONFIG = "workerd-config.capnp";
 
 async function freeLoopbackPort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -132,9 +140,10 @@ async function invokeHealth(
 }
 
 function loadManifest(pluginDir: string): Manifest {
-  const tomlPath = path.join(pluginDir, "plugin.toml");
+  const root = path.resolve(pluginDir);
+  const tomlPath = assertPathInside(root, "plugin.toml");
   if (!fs.existsSync(tomlPath)) {
-    throw new Error(`missing plugin.toml in ${pluginDir}`);
+    throw new Error(`missing plugin.toml in ${root}`);
   }
   const m = parseToml(fs.readFileSync(tomlPath, "utf8")) as Manifest;
   validateManifest(m);
@@ -190,12 +199,36 @@ export async function runSmoke(pluginDir: string): Promise<string> {
     bridgeToken,
   });
   const base = `http://${generated.listenAddr}`;
-
-  const child = spawn(workerdBin, ["serve", generated.configPath], {
-    cwd: root,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, BOOKCLERK_PLUGIN_ROOT: root },
-  });
+  const validatedBin = validateSpawnExecutable(workerdBin);
+  const binBase = path.basename(validatedBin);
+  if (binBase !== "workerd" && binBase !== "workerd.exe") {
+    throw new Error(`expected workerd binary, got ${binBase}`);
+  }
+  const validatedConfig = validateSpawnExecutable(
+    generated.configPath,
+    generated.stateDir,
+  );
+  if (path.basename(validatedConfig) !== WORKERD_SMOKE_CONFIG) {
+    throw new Error(
+      `expected ${WORKERD_SMOKE_CONFIG}, got ${path.basename(validatedConfig)}`,
+    );
+  }
+  const importPath = validateSpawnExecutable(generated.importPath);
+  // Literal argv: workerd serve + config under session cwd; import-path = RO plugin root.
+  const child = spawn(
+    "workerd",
+    ["serve", WORKERD_SMOKE_CONFIG, `--import-path=${importPath}`],
+    {
+      cwd: generated.stateDir,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+      env: {
+        ...process.env,
+        BOOKCLERK_PLUGIN_ROOT: root,
+        PATH: `${path.dirname(validatedBin)}${path.delimiter}${process.env.PATH ?? ""}`,
+      },
+    },
+  );
 
   const logs: string[] = [];
   const onChunk = (buf: Buffer) => {

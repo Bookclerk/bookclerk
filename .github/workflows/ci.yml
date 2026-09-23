@@ -274,6 +274,7 @@ jobs:
           git diff --exit-code -- embed/bookclerk_plugin.js
           npm run lint
           npm run test:tools
+          npm run test:path-security
           npm run test:db-value
           npm run test:plugin-migrations
           npm run test:entrypoints

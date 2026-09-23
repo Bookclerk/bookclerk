@@ -4,13 +4,20 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
+from ci_plan.github_paths import (  # noqa: E402
+    github_actions_file_path,
+    open_github_actions_append,
+)
 from ci_plan.plan import (  # noqa: E402
     PlanError,
     build_plan,
@@ -238,6 +245,101 @@ class CiPlanTests(unittest.TestCase):
         p = plan_from_event(base=None, head=None, metadata=META, paths=None)
         self.assertTrue(p.full_suite)
         self.assertTrue(any("planner error" in r for r in p.reasons))
+
+
+class GithubActionsFilePathTests(unittest.TestCase):
+    def test_accepts_path_under_runner_temp(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bc-runner-") as tmp:
+            root = os.path.realpath(tmp)
+            target_dir = os.path.join(root, "_runner_file_commands")
+            os.makedirs(target_dir, exist_ok=True)
+            # Spaces / Unicode must survive (no ASCII regex allowlist).
+            target = os.path.join(target_dir, "set output café")
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write("")
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": root}, clear=True):
+                got = github_actions_file_path(target, label="GITHUB_OUTPUT")
+            self.assertEqual(got, os.path.realpath(target))
+
+    def test_rejects_escape_outside_runner_roots(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bc-runner-") as tmp:
+            root = os.path.realpath(tmp)
+            outside_dir = tempfile.mkdtemp(prefix="bc-outside-")
+            outside = os.path.join(os.path.realpath(outside_dir), "leak")
+            with open(outside, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            try:
+                with mock.patch.dict(os.environ, {"RUNNER_TEMP": root}, clear=True):
+                    with self.assertRaises(SystemExit) as ctx:
+                        github_actions_file_path(outside, label="GITHUB_OUTPUT")
+                self.assertIn("outside RUNNER_TEMP", str(ctx.exception))
+            finally:
+                os.unlink(outside)
+                os.rmdir(outside_dir)
+
+    def test_rejects_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bc-runner-") as tmp:
+            root = os.path.realpath(tmp)
+            outside_dir = tempfile.mkdtemp(prefix="bc-outside-")
+            outside = os.path.join(os.path.realpath(outside_dir), "secret")
+            with open(outside, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            link = os.path.join(root, "leak")
+            try:
+                os.symlink(outside, link)
+                with mock.patch.dict(os.environ, {"RUNNER_TEMP": root}, clear=True):
+                    with self.assertRaises(SystemExit) as ctx:
+                        github_actions_file_path(link, label="GITHUB_OUTPUT")
+                self.assertIn("outside RUNNER_TEMP", str(ctx.exception))
+            finally:
+                if os.path.lexists(link):
+                    os.unlink(link)
+                os.unlink(outside)
+                os.rmdir(outside_dir)
+
+    def test_rejects_resolved_escape_via_dotdot(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bc-runner-") as tmp:
+            root = os.path.realpath(tmp)
+            escape = os.path.join(root, "..", "not-under-root")
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": root}, clear=True):
+                with self.assertRaises(SystemExit) as ctx:
+                    github_actions_file_path(escape, label="GITHUB_OUTPUT")
+            self.assertIn("outside RUNNER_TEMP", str(ctx.exception))
+
+    def test_requires_runner_roots(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                github_actions_file_path("/tmp/x", label="GITHUB_STEP_SUMMARY")
+            self.assertIn("neither RUNNER_TEMP nor GITHUB_WORKSPACE", str(ctx.exception))
+
+    def test_open_append_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bc-runner-") as tmp:
+            root = os.path.realpath(tmp)
+            target_dir = os.path.join(root, "_runner_file_commands")
+            os.makedirs(target_dir, exist_ok=True)
+            target = os.path.join(target_dir, "set_output_x")
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": root}, clear=True):
+                with open_github_actions_append(target, label="GITHUB_OUTPUT") as fh:
+                    fh.write("full_suite=false\n")
+            with open(target, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "full_suite=false\n")
+
+    def test_open_append_accepts_non_hosted_runner_root(self) -> None:
+        # Self-hosted RUNNER_TEMP is often /var/tmp or /srv/actions, not a
+        # GitHub-hosted prefix. Containment is the runner root itself.
+        if not (os.path.isdir("/var/tmp") and os.access("/var/tmp", os.W_OK)):
+            self.skipTest("/var/tmp is not writable")
+        with tempfile.TemporaryDirectory(prefix="bc-runner-", dir="/var/tmp") as tmp:
+            root = os.path.realpath(tmp)
+            self.assertTrue(root.startswith("/var/tmp") or root.startswith("/private/var/tmp"))
+            target = os.path.join(root, "edition..2")
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": root}, clear=True):
+                got = github_actions_file_path(target, label="GITHUB_OUTPUT")
+                self.assertEqual(got, os.path.realpath(target))
+                with open_github_actions_append(target, label="GITHUB_OUTPUT") as fh:
+                    fh.write("ok=1\n")
+            with open(target, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "ok=1\n")
 
 
 if __name__ == "__main__":

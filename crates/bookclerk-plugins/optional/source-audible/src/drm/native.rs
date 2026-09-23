@@ -13,6 +13,7 @@ use super::mp4::{
     find_stbl_in_trak, parse_tenc_from_enca_entry, progressive_sample_ivs,
     sample_entry_end_from_type_offset,
 };
+use super::paths::validated_fs_path;
 use super::DecryptOutcome;
 
 /// Decrypt into a DRM-free faststart M4B, trimming the requested window as the
@@ -36,9 +37,11 @@ pub fn decrypt_adrm_native(
     audible_iv_hex: &str,
     trim: Option<TrimRange>,
 ) -> Result<DecryptOutcome> {
+    let input = validated_fs_path(input)?;
     if !input.exists() {
-        return Err(DrmError::InputMissing(input.to_path_buf()));
+        return Err(DrmError::InputMissing(input));
     }
+    let output = validated_fs_path(output)?;
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -47,7 +50,7 @@ pub fn decrypt_adrm_native(
     let iv = parse_aes128_hex(audible_iv_hex)?;
 
     // Validate the input looks like an Adrm / aaxc file when possible.
-    match parse_mp4(input) {
+    match parse_mp4(&input) {
         Ok(mp4) => match mp4.audio.sample_entry_kind {
             SampleEntryKind::Aavd | SampleEntryKind::Mp4a => {}
             SampleEntryKind::Enca => {
@@ -74,14 +77,12 @@ pub fn decrypt_adrm_native(
         "native Adrm aaxc decrypt"
     );
 
-    decrypt_to_m4b(input, output, SampleCipher::Adrm { key, iv }, trim)?;
+    decrypt_to_m4b(&input, &output, SampleCipher::Adrm { key, iv }, trim)?;
 
     if !output.exists() {
-        return Err(DrmError::OutputMissing(output.to_path_buf()));
+        return Err(DrmError::OutputMissing(output));
     }
-    Ok(DecryptOutcome {
-        output: output.to_path_buf(),
-    })
+    Ok(DecryptOutcome { output })
 }
 
 /// Native CENC decrypt for Audible Widevine media (and compatible CENC files).
@@ -96,18 +97,20 @@ pub fn decrypt_cenc_native(
     key_hex: &str,
     trim: Option<TrimRange>,
 ) -> Result<DecryptOutcome> {
+    let input = validated_fs_path(input)?;
     if !input.exists() {
-        return Err(DrmError::InputMissing(input.to_path_buf()));
+        return Err(DrmError::InputMissing(input.clone()));
     }
+    let output = validated_fs_path(output)?;
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    if looks_like_dash(input).unwrap_or(false) {
-        return decrypt_dash_cenc(input, output, kid_hex, key_hex, trim);
+    if looks_like_dash(&input).unwrap_or(false) {
+        return decrypt_dash_cenc(&input, &output, kid_hex, key_hex, trim);
     }
 
-    let mp4 = parse_mp4(input).map_err(|err| {
+    let mp4 = parse_mp4(&input).map_err(|err| {
         DrmError::Native(format!(
             "native CENC requires a progressive MP4 or DASH fragment ({err})"
         ))
@@ -128,14 +131,14 @@ pub fn decrypt_cenc_native(
         // means the caller's voucher is wrong, whatever this file turned out
         // to be.
         let _key = parse_aes128_hex(key_hex)?;
-        decrypt_to_m4b(input, output, SampleCipher::Clear, trim)?;
-        return finish_cenc_output(output);
+        decrypt_to_m4b(&input, &output, SampleCipher::Clear, trim)?;
+        return finish_cenc_output(&output);
     }
 
     let key = parse_aes128_hex(key_hex)?;
     let want_kid = parse_aes128_hex(kid_hex)?;
 
-    let mut file = File::open(input)?;
+    let mut file = File::open(&input)?;
     let entry_end =
         sample_entry_end_from_type_offset(&mut file, mp4.audio.sample_entry_type_offset)?;
     let tenc =
@@ -169,19 +172,18 @@ pub fn decrypt_cenc_native(
     } else {
         SampleCipher::CencSampleIvs { key, ivs }
     };
-    decrypt_to_m4b(input, output, cipher, trim)?;
+    decrypt_to_m4b(&input, &output, cipher, trim)?;
 
-    finish_cenc_output(output)
+    finish_cenc_output(&output)
 }
 
 /// Confirms the decrypted M4B exists and returns its path; missing output fails closed.
 fn finish_cenc_output(output: &Path) -> Result<DecryptOutcome> {
+    let output = validated_fs_path(output)?;
     if !output.exists() {
-        return Err(DrmError::OutputMissing(output.to_path_buf()));
+        return Err(DrmError::OutputMissing(output.clone()));
     }
-    Ok(DecryptOutcome {
-        output: output.to_path_buf(),
-    })
+    Ok(DecryptOutcome { output })
 }
 
 #[cfg(test)]

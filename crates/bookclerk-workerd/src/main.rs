@@ -61,12 +61,12 @@ async fn main() -> Result<()> {
 
     if let Some(backend) = std::env::var_os("BOOKCLERK_NATIVE_BACKEND") {
         let backend = PathBuf::from(backend);
-        if !backend.is_file() {
-            bail!(
-                "BOOKCLERK_NATIVE_BACKEND={} is not a file",
+        let backend = bookclerk_sandbox::require_spawn_executable(&backend).with_context(|| {
+            format!(
+                "BOOKCLERK_NATIVE_BACKEND={} is not a usable native backend",
                 backend.display()
-            );
-        }
+            )
+        })?;
         return run_native_behind_workerd(&backend, &root, &manifest).await;
     }
 
@@ -124,24 +124,42 @@ fn plugin_root() -> Result<PathBuf> {
 
 /// Locates the pinned `workerd` binary (`BOOKCLERK_WORKERD_BIN`, beside the launcher, or ensure).
 fn resolve_workerd_binary() -> Result<PathBuf> {
+    let beside = std::env::current_exe().ok();
+    let beside = beside.as_deref();
     if let Ok(p) = std::env::var("BOOKCLERK_WORKERD_BIN") {
         let path = PathBuf::from(p);
-        if path.is_file() {
-            return Ok(path);
-        }
-        bail!(
-            "BOOKCLERK_WORKERD_BIN={} is not a file; run `cargo ensure-workerd` (or build-app/dev)",
-            path.display()
-        );
+        return bookclerk_sandbox::require_helper_beside_or_absolute(
+            &path,
+            binary_name(),
+            beside,
+        )
+        .with_context(|| {
+            format!(
+                "BOOKCLERK_WORKERD_BIN={} is not a usable workerd binary; run `cargo ensure-workerd`",
+                path.display()
+            )
+        });
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join(binary_name());
             if candidate.is_file() {
-                return Ok(candidate);
+                return bookclerk_sandbox::require_helper_beside_or_absolute(
+                    &candidate,
+                    binary_name(),
+                    Some(&exe),
+                )
+                .context("validate workerd beside launcher");
             }
             match ensure_workerd(dir) {
-                Ok(path) => return Ok(path),
+                Ok(path) => {
+                    return bookclerk_sandbox::require_helper_beside_or_absolute(
+                        &path,
+                        binary_name(),
+                        Some(&exe),
+                    )
+                    .context("validate ensured workerd binary");
+                }
                 Err(err) => {
                     warn!(
                         error = %err,
@@ -155,6 +173,36 @@ fn resolve_workerd_binary() -> Result<PathBuf> {
         "workerd binary not found (pin {WORKERD_RELEASE_TAG}). \
          Run `cargo ensure-workerd` or `cargo build-app --platform` / `cargo dev` first."
     )
+}
+
+/// Builds `workerd serve` after validating the binary and session argv paths.
+fn workerd_serve_command(
+    workerd_bin: &Path,
+    generated: &config::GeneratedConfig,
+    root: &Path,
+) -> Result<tokio::process::Command> {
+    let bin = bookclerk_sandbox::require_spawn_executable(workerd_bin)
+        .with_context(|| format!("validate workerd binary {}", workerd_bin.display()))?;
+    let config_path =
+        bookclerk_sandbox::require_under_root(&generated.config_path, &generated.state_dir)
+            .context("validate workerd config path under session state_dir")?;
+    let import_path = bookclerk_sandbox::require_absolute_spawn_path(&generated.import_path)
+        .context("validate workerd --import-path")?;
+
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.arg("serve")
+        // Unlocks the egress worker's `$experimental` inbound CONNECT handler.
+        .arg(bookclerk_workerd::WORKERD_SERVE_EXPERIMENTAL);
+    cmd.arg(&config_path)
+        // Cap'n Proto `/modules/…` embeds resolve against the RO install root.
+        .arg(format!("--import-path={}", import_path.display()))
+        .current_dir(&generated.state_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("BOOKCLERK_PLUGIN_ROOT", root)
+        .kill_on_drop(true);
+    Ok(cmd)
 }
 
 /// Materializes config, spawns workerd, mediates host stdio ↔ bridge HTTP, then kills the child.
@@ -223,19 +271,7 @@ async fn run_isolate(
         Some(state_dir.as_path()),
     )?;
 
-    let mut cmd = tokio::process::Command::new(workerd_bin);
-    cmd.arg("serve")
-        // Unlocks the egress worker's `$experimental` inbound CONNECT handler.
-        .arg(bookclerk_workerd::WORKERD_SERVE_EXPERIMENTAL)
-        .arg(&generated.config_path)
-        // Cap'n Proto `/modules/…` embeds resolve against the RO install root.
-        .arg(format!("--import-path={}", generated.import_path.display()))
-        .current_dir(&generated.state_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("BOOKCLERK_PLUGIN_ROOT", root)
-        .kill_on_drop(true);
+    let mut cmd = workerd_serve_command(workerd_bin, &generated, root)?;
 
     #[cfg(unix)]
     if let Some(ref listener) = rpc_listener {
@@ -400,17 +436,7 @@ async fn run_native_behind_workerd(
         Some(state_dir.as_path()),
     )?;
 
-    let mut cmd = tokio::process::Command::new(&workerd_bin);
-    cmd.arg("serve")
-        .arg(bookclerk_workerd::WORKERD_SERVE_EXPERIMENTAL)
-        .arg(&generated.config_path)
-        .arg(format!("--import-path={}", generated.import_path.display()))
-        .current_dir(&generated.state_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("BOOKCLERK_PLUGIN_ROOT", root)
-        .kill_on_drop(true);
+    let mut cmd = workerd_serve_command(&workerd_bin, &generated, root)?;
 
     #[cfg(unix)]
     if let Some(ref listener) = rpc_listener {

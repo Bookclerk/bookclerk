@@ -786,6 +786,101 @@ async fn gc_retains_live_objects_and_drops_orphans() {
     verify_recovery_point(&repo, &second.manifest.id).unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn gc_refuses_symlinked_object_prefix_and_leaves_outside_intact() {
+    let files = tempfile::tempdir().unwrap();
+    let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
+        .await
+        .unwrap();
+    apply_host_schema(&db).await.unwrap();
+    let state = current_schema_state(&db).await.unwrap();
+    let _ = backup_library(&db, &backup_req(files.path(), state, BackupReason::Manual))
+        .await
+        .unwrap()
+        .unwrap();
+    let objects = files.path().join(BACKUPS_DIR).join("objects");
+    let outside = files.path().join("outside-victim");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), b"outside-bytes").unwrap();
+    std::fs::write(outside.join(".dot"), b"dot-bytes").unwrap();
+    // Plant a malicious prefix that points outside the objects tree.
+    let link = objects.join("aa");
+    let _ = std::fs::remove_dir_all(&link);
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let repo = BackupRepository::open(files.path()).unwrap();
+    let err = repo.gc_unreferenced_objects().unwrap_err();
+    assert!(
+        err.to_string().contains("symlinked backup object prefix"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        std::fs::read(outside.join("keep.txt")).unwrap(),
+        b"outside-bytes"
+    );
+    assert_eq!(std::fs::read(outside.join(".dot")).unwrap(), b"dot-bytes");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn gc_unlinks_leaf_symlink_without_following_target() {
+    let files = tempfile::tempdir().unwrap();
+    let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
+        .await
+        .unwrap();
+    apply_host_schema(&db).await.unwrap();
+    let state = current_schema_state(&db).await.unwrap();
+    let outcome = backup_library(&db, &backup_req(files.path(), state, BackupReason::Manual))
+        .await
+        .unwrap()
+        .unwrap();
+    let objects = files.path().join(BACKUPS_DIR).join("objects");
+    let outside = files.path().join("leaf-victim.bin");
+    std::fs::write(&outside, b"do-not-delete").unwrap();
+    // Orphan leaf under a real prefix, plus a symlink leaf pointing outside.
+    let prefix = objects.join("ab");
+    std::fs::create_dir_all(&prefix).unwrap();
+    let orphan = prefix.join("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+    std::fs::write(&orphan, b"orphan").unwrap();
+    let link = prefix.join("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    // Also plant a leaf symlink to a live in-repo object and ensure peer survives GC
+    // when that digest is still live (symlink to peer is not a live digest name).
+    let live: String = outcome
+        .manifest
+        .referenced_objects()
+        .into_iter()
+        .next()
+        .unwrap();
+    let peer = objects.join(&live[..2]).join(&live[2..]);
+    assert!(peer.is_file(), "live object must exist");
+    let peer_link = prefix.join("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+    std::os::unix::fs::symlink(&peer, &peer_link).unwrap();
+    let peer_bytes = std::fs::read(&peer).unwrap();
+    let repo = BackupRepository::open(files.path()).unwrap();
+    let deleted = repo.gc_unreferenced_objects().unwrap();
+    assert!(
+        deleted >= 2,
+        "expected orphan + symlink leaves removed, got {deleted}"
+    );
+    assert!(!orphan.exists());
+    assert!(
+        link.symlink_metadata().is_err(),
+        "outside symlink leaf removed"
+    );
+    assert_eq!(std::fs::read(&outside).unwrap(), b"do-not-delete");
+    assert!(
+        peer_link.symlink_metadata().is_err(),
+        "peer symlink leaf removed"
+    );
+    assert_eq!(
+        std::fs::read(&peer).unwrap(),
+        peer_bytes,
+        "live peer bytes survive"
+    );
+    verify_recovery_point(&repo, &outcome.manifest.id).unwrap();
+}
+
 #[tokio::test]
 async fn gc_fails_closed_when_published_manifest_is_unreadable() {
     let files = tempfile::tempdir().unwrap();
@@ -832,12 +927,17 @@ async fn gc_fails_closed_when_published_manifest_is_unreadable() {
     let mut retained = first.manifest.referenced_objects();
     retained.extend(second.manifest.referenced_objects());
     for digest in retained {
-        let path = files
-            .path()
-            .join(BACKUPS_DIR)
-            .join("objects")
-            .join(&digest[..2])
-            .join(&digest[2..]);
+        let path = {
+            let path = files
+                .path()
+                .join(BACKUPS_DIR)
+                .join("objects")
+                .join(&digest[..2])
+                .join(&digest[2..]);
+            let s = path.to_string_lossy().into_owned();
+            assert!(!s.contains("..") && !s.contains('\0'));
+            std::path::PathBuf::from(s)
+        };
         assert!(
             path.is_file(),
             "GC must retain object {digest} when a published manifest is unreadable"

@@ -25,7 +25,7 @@ pub use portal::{
     mint_for_external_user, portal_identity_from_headers, portal_spa_router,
     redeem_lose_next_responses, PortalState,
 };
-pub use registry::IntegrationRegistry;
+pub use registry::{IntegrationRegistry, MAX_REGISTERED_INTEGRATIONS};
 pub use tickets::{
     generate_token, hash_token, identity_from_session, mint_claim_ticket, redeem_ticket_to_session,
     redeem_ticket_to_session_with_client, session_for_identity, session_for_identity_with_client,

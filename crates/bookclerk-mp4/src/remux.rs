@@ -113,7 +113,9 @@ pub fn remux_progressive(
     opts: &RemuxOptions,
     transform: &mut dyn SampleTransform,
 ) -> Result<()> {
-    let mp4 = parse_mp4(input)?;
+    let input = crate::fs_path::validated(input)?;
+    let output = crate::fs_path::validated(output)?;
+    let mp4 = parse_mp4(&input)?;
     let timescale = mp4.audio.timescale;
     let samples = &mp4.audio.samples;
 
@@ -138,10 +140,10 @@ pub fn remux_progressive(
         durations.push(sample.duration);
     }
 
-    let mut src = SampleReader::open(input)?;
+    let mut src = SampleReader::open(&input)?;
 
     write_progressive_m4b(
-        output,
+        &output,
         ProgressiveWriteInput {
             moov_bytes: &mp4.moov_bytes,
             moov_file_start: mp4.moov.start,
@@ -203,6 +205,7 @@ where
     let media_duration: u64 = input.durations.iter().map(|d| u64::from(*d)).sum();
     let payload_total: u64 = input.sample_sizes.iter().map(|s| u64::from(*s)).sum();
 
+    let output = crate::fs_path::validated(output)?;
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -243,7 +246,7 @@ where
         moov_len = built_len;
     };
 
-    let mut out = BufWriter::with_capacity(IO_BUFFER_BYTES, File::create(output)?);
+    let mut out = BufWriter::with_capacity(IO_BUFFER_BYTES, File::create(&output)?);
     out.write_all(&ftyp_bytes)?;
     out.write_all(&moov)?;
 

@@ -57,6 +57,8 @@ data/
 # workerd materialize artifacts (smoke / bookclerk-workerd)
 **/.bookclerk/
 **/.bookclerk-workerd-config.capnp
+packages/plugin-sdk-python/**/.workerd-cache/
+scripts/librofm-apk-probe/_smoke_keep/
 
 # Coverage / tooling
 coverage/

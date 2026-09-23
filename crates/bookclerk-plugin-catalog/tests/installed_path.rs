@@ -2,19 +2,25 @@
 //! static fixture registry, verify receipt + extract layout.
 
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use bookclerk_plugin_catalog::{
-    host_bookclerk_target, sha256_file, ArtifactTarget, BookclerkPackageManifest, InstallOptions,
-    InstallReceipt, Installer, PackageCoordinate, PluginKind, RegistryAdapter, SandboxRequest,
-    StaticAdapter, StaticIndex, StaticPackage, TrustPolicy, PROTOCOL_WORKERS_RPC,
+    host_bookclerk_target, require_under, sha256_file, ArtifactTarget, BookclerkPackageManifest,
+    InstallOptions, InstallReceipt, Installer, PackageCoordinate, PluginKind, RegistryAdapter,
+    SandboxRequest, StaticAdapter, StaticIndex, StaticPackage, TrustPolicy, PROTOCOL_WORKERS_RPC,
 };
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use tar::Builder;
 
-fn write_mini_archive(dir: &std::path::Path) -> (std::path::PathBuf, String) {
-    let archive = dir.join("echo.tar.gz");
+fn under_tmp(root: &Path, rel: impl AsRef<Path>) -> PathBuf {
+    let joined = root.join(rel.as_ref());
+    require_under(root, &joined).expect("test path under root")
+}
+
+fn write_mini_archive(dir: &Path) -> (PathBuf, String) {
+    let archive = under_tmp(dir, "echo.tar.gz");
     {
         let file = fs::File::create(&archive).unwrap();
         let enc = GzEncoder::new(file, Compression::default());
@@ -86,7 +92,7 @@ fn install_from_static_fixture_registry() {
             publisher: None,
         },
     );
-    let index_path = tmp.path().join("index.json");
+    let index_path = under_tmp(tmp.path(), "index.json");
     let index = StaticIndex {
         schema_version: 1,
         packages: vec![StaticPackage {
@@ -104,15 +110,15 @@ fn install_from_static_fixture_registry() {
     .unwrap();
     let manifest = adapter.fetch_manifest(&coord).unwrap();
 
-    let plugins = tmp.path().join("plugins");
+    let plugins = under_tmp(tmp.path(), "plugins");
     let opts = InstallOptions {
         plugins_root: plugins.clone(),
         trust: TrustPolicy::allow_unverified_publisher(),
         ..Default::default()
     };
     let out = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
-    assert!(out.plugin_root.join("plugin.toml").is_file());
-    assert!(out.plugin_root.join("echo").is_file());
+    assert!(under_tmp(&out.plugin_root, "plugin.toml").is_file());
+    assert!(under_tmp(&out.plugin_root, "echo").is_file());
     let receipt = InstallReceipt::load(&out.plugin_root).unwrap();
     assert_eq!(receipt.runtime.id, "echo");
     assert_eq!(receipt.version, "1.0.0");
@@ -126,7 +132,11 @@ fn install_from_static_fixture_registry() {
     assert!(InstallReceipt::load(&out.plugin_root).is_ok());
 
     Installer::remove(&plugins, "echo", true).unwrap();
-    assert!(!out.plugin_root.exists());
+    assert!(
+        !bookclerk_plugin_catalog::require_under(tmp.path(), &out.plugin_root)
+            .unwrap()
+            .exists()
+    );
 }
 
 #[test]

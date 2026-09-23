@@ -60,17 +60,14 @@ fn needs_spawn_jail() -> bool {
 
 fn jail_bin() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(JAIL_BIN_ENV) {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
+        return bookclerk_sandbox::require_spawn_executable(Path::new(&path)).ok();
     }
     let worker = PathBuf::from(WORKER);
     let dir = worker.parent()?;
     let name = format!("{JAIL_BIN_NAME}{}", std::env::consts::EXE_SUFFIX);
     [dir.join(&name), dir.join("..").join(&name)]
         .into_iter()
-        .find(|candidate| candidate.is_file())
+        .find_map(|candidate| bookclerk_sandbox::require_spawn_executable(&candidate).ok())
 }
 
 /// Write a small but genuine M4B so the codecs have real work to do.
@@ -143,6 +140,8 @@ fn run_worker(job: &MediaJob, confinement: Confinement) -> WorkerRun {
             .expect("spawn worker")
     } else if needs_spawn_jail() {
         let jail = jail_bin().expect("bookclerk-jail beside worker for spawn-time confinement");
+        let jail = jail.canonicalize().expect("canonicalize jail");
+        assert!(jail.is_file(), "jail binary must be a regular file");
         Command::new(jail)
             .arg("--")
             .arg(WORKER)

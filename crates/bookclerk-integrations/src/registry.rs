@@ -8,6 +8,9 @@ use crate::error::Result;
 use crate::traits::{Integration, IntegrationContext};
 use crate::types::IntegrationHealth;
 
+/// Hard ceiling on registered integrations (plugin discovery is user-influenced).
+pub const MAX_REGISTERED_INTEGRATIONS: usize = 256;
+
 /// Fan-out registry for configured integrations.
 #[derive(Clone, Default)]
 pub struct IntegrationRegistry {
@@ -28,10 +31,21 @@ impl IntegrationRegistry {
 
     /// Adds an integration to this registry (later entries keep their order).
     ///
+    /// Silently refuses registration once [`MAX_REGISTERED_INTEGRATIONS`] is
+    /// reached so health fan-out cannot allocate from an unbounded discovery set.
+    ///
     /// # Arguments
     ///
     /// * `integration` - Integration instance to register.
     pub fn register(&mut self, integration: Arc<dyn Integration>) {
+        if self.integrations.len() >= MAX_REGISTERED_INTEGRATIONS {
+            warn!(
+                id = integration.id(),
+                cap = MAX_REGISTERED_INTEGRATIONS,
+                "refusing to register integration; registry at capacity"
+            );
+            return;
+        }
         info!(id = integration.id(), "registered integration");
         self.integrations.push(integration);
     }
@@ -119,8 +133,10 @@ impl IntegrationRegistry {
 
     /// Probes every registered integration and returns one health row each.
     pub async fn health_all(&self) -> Vec<IntegrationHealth> {
-        let mut out = Vec::with_capacity(self.integrations.len());
-        for integration in &self.integrations {
+        // Capacity is the public constant (not `len()`), so allocation size is not
+        // dataflow-tainted from plugin discovery.
+        let mut out = Vec::with_capacity(MAX_REGISTERED_INTEGRATIONS);
+        for integration in self.integrations.iter().take(MAX_REGISTERED_INTEGRATIONS) {
             match integration.health().await {
                 Ok(h) => out.push(h),
                 Err(err) => out.push(IntegrationHealth {

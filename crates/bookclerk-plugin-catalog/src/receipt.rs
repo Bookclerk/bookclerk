@@ -4,8 +4,10 @@
 //! for this provenance-qualified package. They do **not** prove publisher
 //! identity. There is no publisher PKI in this receipt.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,6 +16,7 @@ use bookclerk_plugin_manifest::PluginManifest;
 
 use crate::coordinate::PackageCoordinate;
 use crate::error::{CatalogError, Result};
+use crate::extract::require_under;
 use crate::identity::{PluginKey, PluginProvenance};
 use crate::kind::RuntimeIdentity;
 use crate::manifest::SandboxRequest;
@@ -144,12 +147,28 @@ impl InstallReceipt {
 
     /// Load receipt from a plugin install directory.
     ///
+    /// Operator-selected `plugin_root` may contain `..` spelling (resolved via
+    /// canonicalize). Escaping or dangling leaf symlinks at `receipt.json` are
+    /// hard errors; a true missing file is [`CatalogError::ReceiptNotFound`].
+    ///
     /// # Errors
     ///
     /// Returns [`CatalogError::ReceiptNotFound`] when `receipt.json` is absent.
     /// Any other I/O or JSON failure is returned as an error (fail closed).
     pub fn load(plugin_root: &Path) -> Result<Self> {
-        let path = Self::path_in(plugin_root);
+        let root = match plugin_root.canonicalize() {
+            Ok(root) => root,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CatalogError::ReceiptNotFound);
+            }
+            Err(err) => {
+                return Err(CatalogError::message(format!(
+                    "could not canonicalize plugin root {}: {err}",
+                    plugin_root.display()
+                )));
+            }
+        };
+        let path = require_under(&root, &Self::path_in(&root))?;
         match fs::read_to_string(&path) {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 Err(CatalogError::ReceiptNotFound)
@@ -167,23 +186,186 @@ impl InstallReceipt {
         }
     }
 
-    /// Atomically write receipt (temp + rename).
+    /// Atomically write receipt (unique same-dir staging + replace).
+    ///
+    /// Does not follow final/backup/temp leaf symlinks: staging uses
+    /// `create_new`, and replace uses Unix `rename` / Windows `MoveFileExW` so
+    /// only the directory entry is replaced. Cleanup removes only the staging
+    /// file this call created.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub fn store(&self, plugin_root: &Path) -> Result<()> {
         fs::create_dir_all(plugin_root)?;
-        let final_path = Self::path_in(plugin_root);
-        let tmp = plugin_root.join(format!("{RECEIPT_FILE}.tmp"));
-        let text = serde_json::to_string_pretty(self)?;
-        fs::write(&tmp, text)?;
-        if final_path.exists() {
-            let _ = fs::copy(&final_path, plugin_root.join(RECEIPT_BACKUP));
+        let root = plugin_root.canonicalize().map_err(|err| {
+            CatalogError::message(format!(
+                "could not canonicalize plugin root {}: {err}",
+                plugin_root.display()
+            ))
+        })?;
+        let final_path = root.join(RECEIPT_FILE);
+        if !final_path.starts_with(&root) {
+            return Err(CatalogError::message("receipt path escaped plugin root"));
         }
-        fs::rename(&tmp, &final_path)?;
+        let text = serde_json::to_string_pretty(self)?;
+        maybe_backup_receipt(&root, &final_path)?;
+        write_receipt_atomic(&root, &final_path, text.as_bytes())?;
         Ok(())
     }
+}
+
+/// Unique same-directory staging path for an atomic receipt replace.
+fn staging_receipt_path(dir: &Path, dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(RECEIPT_FILE);
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    dir.join(format!(
+        ".{name}.tmp-{}-{nonce:016x}-{n}",
+        std::process::id()
+    ))
+}
+
+/// Replace `to` with staging file `from` without following a leaf symlink at `to`.
+fn replace_receipt_entry(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)
+    }
+    #[cfg(windows)]
+    {
+        replace_receipt_windows(from, to)
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // MoveFileExW FFI — same boundary as bookclerk-config.
+/// Atomically replaces `to` with `from` via `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`.
+///
+/// # Errors
+///
+/// Returns an I/O error when `MoveFileExW` fails.
+fn replace_receipt_windows(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+    let src = wide(from);
+    let dst = wide(to);
+    // SAFETY: `src` and `dst` are NUL-terminated wide paths that outlive the call.
+    let ok = unsafe {
+        MoveFileExW(
+            src.as_ptr(),
+            dst.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Write `bytes` to `dest` via same-dir temp + atomic replace.
+fn write_receipt_atomic(dir: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
+    if !dest.starts_with(dir) {
+        return Err(CatalogError::message(
+            "receipt destination escapes plugin root",
+        ));
+    }
+    let staging = staging_receipt_path(dir, dest);
+    if !staging.starts_with(dir) {
+        return Err(CatalogError::message(
+            "receipt staging path escapes plugin root",
+        ));
+    }
+    // Exclusive create: do not truncate/follow an unexpected existing entry.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)
+        .map_err(|err| {
+            CatalogError::message(format!(
+                "create receipt staging {}: {err}",
+                staging.display()
+            ))
+        })?;
+    if let Err(err) = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok::<(), std::io::Error>(())
+    })() {
+        let _ = fs::remove_file(&staging);
+        return Err(CatalogError::message(format!(
+            "write receipt staging {}: {err}",
+            staging.display()
+        )));
+    }
+    match replace_receipt_entry(&staging, dest) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = fs::remove_file(&staging);
+            Err(CatalogError::message(format!(
+                "replace receipt {}: {err}",
+                dest.display()
+            )))
+        }
+    }
+}
+
+/// Copy an existing regular-file receipt to `receipt.json.bak` without following
+/// leaf symlinks at the backup path.
+fn maybe_backup_receipt(root: &Path, final_path: &Path) -> Result<()> {
+    let meta = match fs::symlink_metadata(final_path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(CatalogError::message(format!(
+                "stat {}: {err}",
+                final_path.display()
+            )));
+        }
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        // Do not follow a leaf symlink for backup content.
+        return Ok(());
+    }
+    let backup = root.join(RECEIPT_BACKUP);
+    if !backup.starts_with(root) {
+        return Err(CatalogError::message(
+            "receipt backup path escaped plugin root",
+        ));
+    }
+    if let Ok(bmeta) = fs::symlink_metadata(&backup) {
+        if bmeta.file_type().is_symlink() {
+            // Unlink the directory entry only — never a canonicalized outside target.
+            fs::remove_file(&backup).map_err(|err| {
+                CatalogError::message(format!(
+                    "unlink receipt backup symlink {}: {err}",
+                    backup.display()
+                ))
+            })?;
+        }
+    }
+    let bytes = fs::read(final_path).map_err(|err| {
+        CatalogError::message(format!("read {} for backup: {err}", final_path.display()))
+    })?;
+    write_receipt_atomic(root, &backup, &bytes)
 }
 
 #[cfg(test)]
@@ -193,11 +375,9 @@ mod tests {
     use crate::kind::PluginKind;
     use crate::manifest::PROTOCOL_WORKERS_RPC;
 
-    #[test]
-    fn receipt_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
+    fn sample_receipt() -> InstallReceipt {
         let key = PluginKey::platform("bookclerk-plugin-database-sqlite", "sqlite").unwrap();
-        let receipt = InstallReceipt {
+        InstallReceipt {
             schema_version: InstallReceipt::SCHEMA_VERSION,
             plugin_key: key.canonical().to_string(),
             provenance: PluginProvenance::PlatformBundled,
@@ -223,11 +403,100 @@ mod tests {
             approved_network: "deny".into(),
             installed_at: Utc::now(),
             update_constraint: None,
-        };
+        }
+    }
+
+    #[test]
+    fn receipt_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = sample_receipt();
+        let key = receipt.plugin_key().unwrap();
         receipt.store(dir.path()).unwrap();
         let loaded = InstallReceipt::load(dir.path()).unwrap();
         assert_eq!(loaded.runtime.id, "sqlite");
         assert_eq!(loaded.plugin_key().unwrap(), key);
         assert_eq!(loaded.provenance, PluginProvenance::PlatformBundled);
+    }
+
+    #[test]
+    fn load_missing_is_receipt_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = InstallReceipt::load(dir.path()).unwrap_err();
+        assert!(err.is_receipt_not_found(), "{err}");
+    }
+
+    #[test]
+    fn store_allows_parent_dir_spelling_in_plugin_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("plug");
+        fs::create_dir_all(&nested).unwrap();
+        let with_dotdot = nested.join("..").join("plug");
+        sample_receipt().store(&with_dotdot).unwrap();
+        let loaded = InstallReceipt::load(&with_dotdot).unwrap();
+        assert_eq!(loaded.runtime.id, "sqlite");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_escaping_receipt_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("secret.json");
+        fs::write(&victim, b"{\"stolen\":true}").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(RECEIPT_FILE)).unwrap();
+        let err = InstallReceipt::load(dir.path()).unwrap_err();
+        assert!(!err.is_receipt_not_found(), "{err}");
+        assert_eq!(fs::read(&victim).unwrap(), b"{\"stolen\":true}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_dangling_receipt_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            dir.path().join("missing.json"),
+            dir.path().join(RECEIPT_FILE),
+        )
+        .unwrap();
+        let err = InstallReceipt::load(dir.path()).unwrap_err();
+        assert!(!err.is_receipt_not_found(), "{err}");
+        assert!(
+            err.to_string().contains("symlink")
+                || err.to_string().contains("dangling")
+                || err.to_string().contains("refusing")
+                || err.to_string().contains("canonicalize"),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_replaces_receipt_symlink_without_touching_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim.json");
+        fs::write(&victim, b"keep-me").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(RECEIPT_FILE)).unwrap();
+        sample_receipt().store(dir.path()).unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"keep-me");
+        let loaded = InstallReceipt::load(dir.path()).unwrap();
+        assert_eq!(loaded.runtime.id, "sqlite");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_does_not_follow_backup_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("bak-victim");
+        fs::write(&victim, b"bak-keep").unwrap();
+        sample_receipt().store(dir.path()).unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(RECEIPT_BACKUP)).unwrap();
+        let mut second = sample_receipt();
+        second.version = "2.0.0".into();
+        second.store(dir.path()).unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"bak-keep");
+        let loaded = InstallReceipt::load(dir.path()).unwrap();
+        assert_eq!(loaded.version, "2.0.0");
     }
 }

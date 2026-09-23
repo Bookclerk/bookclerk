@@ -375,14 +375,17 @@ mod tests {
         let server = thread::spawn(move || {
             let (_stream, _) = listener.accept().expect("accept");
         });
-        let output = Command::new("python3")
-            .args([
-                "-c",
-                &format!("import socket; s=socket.socket(socket.AF_UNIX); s.connect({spec:?})"),
-            ])
-            .stdin(Stdio::null())
-            .output()
-            .expect("python3");
+        let output = {
+            Command::new("python3")
+                .args([
+                    "-c",
+                    "import os, socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ['BC_SOCK'])",
+                ])
+                .env("BC_SOCK", &spec)
+                .stdin(Stdio::null())
+                .output()
+                .expect("python3")
+        };
         assert!(
             output.status.success(),
             "child connect {spec}: status={:?} stdout={} stderr={}",

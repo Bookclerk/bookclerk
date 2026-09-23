@@ -1,13 +1,14 @@
 //! Progressive (non-fragmented) MP4 structure parsing.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 
 use crate::boxutil::{
-    find_child, read_box_header, read_fourcc, read_full_box_version_flags, read_u32, read_u64,
-    walk_children, BoxHeader, FourCC, AAVD, CO64, ENCA, FTYP, HDLR, MDAT, MDHD, MDIA, MINF, MOOV,
-    MP4A, MVHD, STBL, STCO, STSC, STSD, STSZ, STTS, STZ2, TRAK,
+    ensure_table_entries, find_child, read_box_header, read_fourcc, read_full_box_version_flags,
+    read_u32, read_u64, walk_children, BoxHeader, FourCC, AAVD, CO64, ENCA, FTYP, HDLR,
+    MAX_MP4_TABLE_ENTRIES, MDAT, MDHD, MDIA, MINF, MOOV, MP4A, MVHD, STBL, STCO, STSC, STSD, STSZ,
+    STTS, STZ2, TRAK,
 };
 use crate::edit::find_child_in_range;
 use crate::error::{Mp4Error, Result};
@@ -86,7 +87,8 @@ pub struct AudioTrack {
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn parse_mp4(path: &Path) -> Result<Mp4File> {
-    let mut file = File::open(path)?;
+    let path = crate::fs_path::validated(path)?;
+    let mut file = File::open(&path)?;
     let file_size = file.seek(SeekFrom::End(0))?;
     file.seek(SeekFrom::Start(0))?;
 
@@ -117,23 +119,26 @@ pub fn parse_mp4(path: &Path) -> Result<Mp4File> {
     let (mvhd_timescale, mvhd_duration) = parse_mvhd(&mut file, &moov)?;
     let audio = parse_audio_track(&mut file, &moov)?;
 
-    let mut ftyp_bytes = vec![
-        0u8;
-        usize::try_from(ftyp.size).map_err(|_| {
-            Mp4Error::container(format!("ftyp too large: {}", ftyp.size))
-        })?
-    ];
+    let file_len = file.seek(SeekFrom::End(0))?;
+    let ftyp_end = ftyp
+        .start
+        .checked_add(ftyp.size)
+        .ok_or_else(|| Mp4Error::container("ftyp extent overflows"))?;
+    let moov_end = moov
+        .start
+        .checked_add(moov.size)
+        .ok_or_else(|| Mp4Error::container("moov extent overflows"))?;
+    if ftyp_end > file_len || moov_end > file_len {
+        return Err(Mp4Error::container("ftyp/moov extent exceeds file length"));
+    }
+    let ftyp_len = usize::try_from(ftyp.size)
+        .map_err(|_| Mp4Error::container(format!("ftyp too large: {}", ftyp.size)))?;
+    let moov_len = usize::try_from(moov.size)
+        .map_err(|_| Mp4Error::container(format!("moov too large: {}", moov.size)))?;
     file.seek(SeekFrom::Start(ftyp.start))?;
-    file.read_exact(&mut ftyp_bytes)?;
-
-    let mut moov_bytes = vec![
-        0u8;
-        usize::try_from(moov.size).map_err(|_| {
-            Mp4Error::container(format!("moov too large: {}", moov.size))
-        })?
-    ];
+    let ftyp_bytes = crate::boxutil::read_exact_vec(&mut file, ftyp_len)?;
     file.seek(SeekFrom::Start(moov.start))?;
-    file.read_exact(&mut moov_bytes)?;
+    let moov_bytes = crate::boxutil::read_exact_vec(&mut file, moov_len)?;
 
     Ok(Mp4File {
         path: path.to_path_buf(),
@@ -291,8 +296,11 @@ fn parse_stts(file: &mut File, stbl: &BoxHeader) -> Result<Vec<(u32, u32)>> {
     file.seek(SeekFrom::Start(stts.content_start()))?;
     let (_version, _) = read_full_box_version_flags(file)?;
     let entry_count = read_u32(file)?;
-    let mut out = Vec::with_capacity(entry_count as usize);
-    for _ in 0..entry_count {
+    // version/flags (4) + entry_count (4) already consumed.
+    let available = stts.content_len().saturating_sub(8);
+    let n = ensure_table_entries(entry_count, 8, available, "stts")?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
         let sample_count = read_u32(file)?;
         let sample_delta = read_u32(file)?;
         out.push((sample_count, sample_delta));
@@ -307,8 +315,10 @@ fn parse_stsc(file: &mut File, stbl: &BoxHeader) -> Result<Vec<ChunkMapEntry>> {
     file.seek(SeekFrom::Start(stsc.content_start()))?;
     let (_version, _) = read_full_box_version_flags(file)?;
     let entry_count = read_u32(file)?;
-    let mut out = Vec::with_capacity(entry_count as usize);
-    for _ in 0..entry_count {
+    let available = stsc.content_len().saturating_sub(8);
+    let n = ensure_table_entries(entry_count, 12, available, "stsc")?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
         out.push(ChunkMapEntry {
             first_chunk: read_u32(file)?,
             samples_per_chunk: read_u32(file)?,
@@ -325,11 +335,16 @@ fn parse_stsz(file: &mut File, stbl: &BoxHeader) -> Result<Vec<u32>> {
         let (_version, _) = read_full_box_version_flags(file)?;
         let sample_size = read_u32(file)?;
         let sample_count = read_u32(file)?;
+        // version/flags (4) + sample_size (4) + sample_count (4).
+        let available = stsz.content_len().saturating_sub(12);
         if sample_size != 0 {
-            return Ok(vec![sample_size; sample_count as usize]);
+            // Constant size: no per-sample table bytes; still bound the Vec length.
+            let n = ensure_table_entries(sample_count, 1, MAX_MP4_TABLE_ENTRIES as u64, "stsz")?;
+            return Ok(vec![sample_size; n]);
         }
-        let mut sizes = Vec::with_capacity(sample_count as usize);
-        for _ in 0..sample_count {
+        let n = ensure_table_entries(sample_count, 4, available, "stsz")?;
+        let mut sizes = Vec::with_capacity(n);
+        for _ in 0..n {
             sizes.push(read_u32(file)?);
         }
         return Ok(sizes);
@@ -348,8 +363,10 @@ fn parse_chunk_offsets(file: &mut File, stbl: &BoxHeader) -> Result<Vec<u64>> {
         file.seek(SeekFrom::Start(stco.content_start()))?;
         let (_version, _) = read_full_box_version_flags(file)?;
         let entry_count = read_u32(file)?;
-        let mut out = Vec::with_capacity(entry_count as usize);
-        for _ in 0..entry_count {
+        let available = stco.content_len().saturating_sub(8);
+        let n = ensure_table_entries(entry_count, 4, available, "stco")?;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
             out.push(u64::from(read_u32(file)?));
         }
         return Ok(out);
@@ -358,8 +375,10 @@ fn parse_chunk_offsets(file: &mut File, stbl: &BoxHeader) -> Result<Vec<u64>> {
         file.seek(SeekFrom::Start(co64.content_start()))?;
         let (_version, _) = read_full_box_version_flags(file)?;
         let entry_count = read_u32(file)?;
-        let mut out = Vec::with_capacity(entry_count as usize);
-        for _ in 0..entry_count {
+        let available = co64.content_len().saturating_sub(8);
+        let n = ensure_table_entries(entry_count, 8, available, "co64")?;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
             out.push(read_u64(file)?);
         }
         return Ok(out);

@@ -576,8 +576,8 @@ fn resolve_jail_bin(worker: Option<&Path>) -> std::result::Result<PathBuf, Strin
     if let Some(worker) = worker {
         if let Some(dir) = worker.parent() {
             let candidate = dir.join(&name);
-            if candidate.is_file() {
-                return Ok(candidate);
+            if let Ok(path) = bookclerk_sandbox::require_spawn_executable(&candidate) {
+                return Ok(path);
             }
         }
     }
@@ -586,13 +586,13 @@ fn resolve_jail_bin(worker: Option<&Path>) -> std::result::Result<PathBuf, Strin
     let dir = exe
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
-    if dir.join(&name).is_file() {
-        return Ok(dir.join(&name));
+    if let Ok(path) = bookclerk_sandbox::require_spawn_executable(&dir.join(&name)) {
+        return Ok(path);
     }
     if dir.file_name().is_some_and(|last| last == "deps") {
         if let Some(parent) = dir.parent() {
-            if parent.join(&name).is_file() {
-                return Ok(parent.join(name));
+            if let Ok(path) = bookclerk_sandbox::require_spawn_executable(&parent.join(&name)) {
+                return Ok(path);
             }
         }
     }
@@ -624,8 +624,8 @@ fn resolve_worker_bin(configured: Option<&Path>) -> std::result::Result<PathBuf,
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", exe.display()))?;
     let candidate = dir.join(format!("{WORKER_BIN_NAME}{}", std::env::consts::EXE_SUFFIX));
-    if candidate.is_file() {
-        return Ok(candidate);
+    if let Ok(path) = bookclerk_sandbox::require_spawn_executable(&candidate) {
+        return Ok(path);
     }
     Err(format!(
         "{WORKER_BIN_NAME} not found in {} and {WORKER_BIN_ENV} is unset",
@@ -639,15 +639,16 @@ fn check_worker_bin(path: &Path, source: &str) -> std::result::Result<PathBuf, S
 }
 
 /// Confirms `path` is a regular file; failures name `source` (env var or config key).
+///
+/// Resolves relative paths against the process cwd and requires an existing
+/// regular file. Bare names are not ambient `PATH` lookups.
 fn check_bin(path: &Path, source: &str) -> std::result::Result<PathBuf, String> {
-    if path.is_file() {
-        Ok(path.to_path_buf())
-    } else {
-        Err(format!(
-            "{source} points at {}, which is not a file",
+    bookclerk_sandbox::require_existing_regular_file(path).map_err(|err| {
+        format!(
+            "{source} points at {}, which is not a valid executable ({err})",
             path.display()
-        ))
-    }
+        )
+    })
 }
 
 /// Environment keys a media worker may inherit.

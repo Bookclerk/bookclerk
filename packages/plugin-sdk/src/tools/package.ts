@@ -8,6 +8,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parse as parseToml } from "smol-toml";
 import { validateLogo, validateManifest, type Manifest } from "./validate.js";
+import { assertPathInside, refuseSymlinkPath, writeFileUnder } from "../sparse-workerd/ensure.js";
 
 function hostTarget(): string {
   const plat = process.platform;
@@ -20,13 +21,35 @@ function hostTarget(): string {
   return `${plat}-${arch}`;
 }
 
-function copyRecursive(src: string, dst: string): void {
+/**
+ * Copy a directory tree, refusing symlinks and non-file/non-dir entries.
+ *
+ * @param src - Source directory (must not itself be a symlink).
+ * @param dst - Destination directory to create.
+ * @throws {Error} When a symlink or unsupported type is found.
+ */
+function copyRecursiveNoSymlinks(src: string, dst: string): void {
+  const srcSt = fs.lstatSync(src);
+  if (srcSt.isSymbolicLink()) {
+    throw new Error(`refusing symlink package source: ${src}`);
+  }
+  if (!srcSt.isDirectory()) {
+    throw new Error(`package source is not a directory: ${src}`);
+  }
   fs.mkdirSync(dst, { recursive: true });
   for (const ent of fs.readdirSync(src, { withFileTypes: true })) {
     const from = path.join(src, ent.name);
     const to = path.join(dst, ent.name);
-    if (ent.isDirectory()) copyRecursive(from, to);
-    else fs.copyFileSync(from, to);
+    if (ent.isSymbolicLink()) {
+      throw new Error(`refusing symlink in package source: ${from}`);
+    }
+    if (ent.isDirectory()) {
+      copyRecursiveNoSymlinks(from, to);
+    } else if (ent.isFile()) {
+      fs.copyFileSync(from, to);
+    } else {
+      throw new Error(`refusing unsupported package source type: ${from}`);
+    }
   }
 }
 
@@ -37,6 +60,10 @@ function copyRecursive(src: string, dst: string): void {
  * target triple. Workerd archives include the modules tree (the SDK is injected
  * by `bookclerk-workerd` at serve time). Updates `SHA256SUMS` beside the
  * archive.
+ *
+ * Absolute native `command` paths are treated as operator-selected build
+ * outputs. Relative package sources under the plugin tree refuse symlinks so
+ * outside bytes cannot enter the archive.
  *
  * @param pluginDir - Plugin root containing `plugin.toml`.
  * @param outDir - Destination directory for the archive and checksums.
@@ -50,7 +77,10 @@ function copyRecursive(src: string, dst: string): void {
  * ```
  */
 export function packagePlugin(pluginDir: string, outDir: string): string {
-  const tomlPath = path.join(pluginDir, "plugin.toml");
+  // Operator-selected root: resolve once so a symlinked plugin directory works.
+  const root = fs.realpathSync(path.resolve(pluginDir));
+  const tomlPath = assertPathInside(root, "plugin.toml");
+  refuseSymlinkPath(root, tomlPath);
   const m = parseToml(fs.readFileSync(tomlPath, "utf8")) as Manifest;
   validateManifest(m);
   const version = m.version ?? "0.0.0";
@@ -64,11 +94,12 @@ export function packagePlugin(pluginDir: string, outDir: string): string {
   if (m.logo != null) {
     const logo = validateLogo(String(m.logo));
     if (logo.kind === "embedded") {
-      const src = path.join(pluginDir, logo.value);
-      if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
+      const src = assertPathInside(root, logo.value);
+      refuseSymlinkPath(root, src);
+      if (!fs.existsSync(src) || fs.lstatSync(src).isSymbolicLink() || !fs.statSync(src).isFile()) {
         throw new Error(`embedded logo missing for package: ${src}`);
       }
-      const dest = path.join(staging, logo.value);
+      const dest = assertPathInside(staging, logo.value);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.copyFileSync(src, dest);
     }
@@ -78,37 +109,77 @@ export function packagePlugin(pluginDir: string, outDir: string): string {
   let archiveStem: string;
   if (runtime === "native") {
     const cmd = m.command!;
-    const src = path.isAbsolute(cmd) ? cmd : path.join(pluginDir, cmd);
-    if (!fs.existsSync(src)) {
+    const absolute = path.isAbsolute(cmd);
+    // Absolute command paths are intentional operator-selected build outputs.
+    const src = absolute ? path.resolve(cmd) : assertPathInside(root, cmd);
+    if (!absolute) {
+      refuseSymlinkPath(root, src);
+      if (fs.lstatSync(src).isSymbolicLink()) {
+        throw new Error(`refusing symlink native command under plugin: ${src}`);
+      }
+    }
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
       throw new Error(`native binary not found for package: ${src}`);
     }
     const binName = path.basename(src);
-    fs.copyFileSync(src, path.join(staging, binName));
+    const dest = assertPathInside(staging, binName);
+    fs.copyFileSync(src, dest);
     try {
-      fs.chmodSync(path.join(staging, binName), 0o755);
+      fs.chmodSync(dest, 0o755);
     } catch {
       /* windows */
     }
     archiveStem = `bookclerk-plugin-${id}-${version}-${hostTarget()}`;
   } else {
     const modulesDir = m.workerd?.modules_dir ?? "modules";
-    copyRecursive(
-      path.join(pluginDir, modulesDir),
-      path.join(staging, modulesDir),
-    );
+    const srcModules = assertPathInside(root, modulesDir);
+    refuseSymlinkPath(root, srcModules);
+    const destModules = assertPathInside(staging, modulesDir);
+    copyRecursiveNoSymlinks(srcModules, destModules);
     // Authors import `@bookclerk/plugin-sdk/workerd`; bookclerk-workerd injects it.
     archiveStem = `bookclerk-plugin-${id}-${version}-workerd`;
   }
 
   const archiveName = `${archiveStem}.tar.gz`;
-  const archivePath = path.join(outDir, archiveName);
-  const tar = spawnSync(
-    "tar",
-    ["-C", staging, "-czf", archivePath, "."],
-    { encoding: "utf8" },
-  );
-  if (tar.status !== 0) {
-    throw new Error(`tar failed: ${tar.stderr || tar.stdout}`);
+  // Manifest version is free-form and may contain `/` or `..` segments — contain
+  // the final name under outDir before any write/delete.
+  const outRoot = fs.realpathSync(path.resolve(outDir));
+  const archivePath = assertPathInside(outRoot, archiveName);
+  const attemptDirName = `.packaging-attempt-${id}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const attemptDir = assertPathInside(outRoot, attemptDirName);
+  fs.mkdirSync(attemptDir, { recursive: false });
+  const tmpPath = assertPathInside(attemptDir, "archive.tar.gz");
+  let ownedAttempt = true;
+  try {
+    const fd = fs.openSync(tmpPath, "wx");
+    try {
+      const tar = spawnSync(
+        "tar",
+        ["-C", staging, "-czf", "-", "."],
+        { encoding: "buffer", maxBuffer: 512 * 1024 * 1024 },
+      );
+      if (tar.status !== 0) {
+        throw new Error(
+          `tar failed: ${tar.stderr?.toString() || tar.stdout?.toString() || "status " + tar.status}`,
+        );
+      }
+      fs.writeFileSync(fd, tar.stdout as Buffer);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmpPath, archivePath);
+    fs.rmSync(attemptDir, { recursive: true, force: true });
+    ownedAttempt = false;
+  } catch (err) {
+    if (ownedAttempt) {
+      try {
+        fs.rmSync(attemptDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    fs.rmSync(staging, { recursive: true, force: true });
+    throw err;
   }
   fs.rmSync(staging, { recursive: true, force: true });
 
@@ -116,7 +187,8 @@ export function packagePlugin(pluginDir: string, outDir: string): string {
     .createHash("sha256")
     .update(fs.readFileSync(archivePath))
     .digest("hex");
-  const sumsPath = path.join(outDir, "SHA256SUMS");
+  const sumsPath = assertPathInside(outRoot, "SHA256SUMS");
+  refuseSymlinkPath(outRoot, sumsPath);
   let body = "";
   if (fs.existsSync(sumsPath)) {
     body = fs
@@ -127,6 +199,6 @@ export function packagePlugin(pluginDir: string, outDir: string): string {
     if (body && !body.endsWith("\n")) body += "\n";
   }
   body += `${digest}  ${archiveName}\n`;
-  fs.writeFileSync(sumsPath, body);
+  writeFileUnder(outRoot, "SHA256SUMS", body);
   return archivePath;
 }

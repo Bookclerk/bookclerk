@@ -59,7 +59,10 @@ pub async fn sweep_orphan_temp_dirs(
     for row in library.list_all_job_temp_paths().await? {
         if let Ok(Some(job)) = library.get_job(&row.job_id).await {
             if job.state.is_active() {
-                active_keep.insert(PathBuf::from(row.path));
+                // Same representation as [`sweep_dir`]: prefer canonicalize so a
+                // lexical DB path and a symlink-resolved DirEntry still match.
+                let path = PathBuf::from(&row.path);
+                active_keep.insert(normalize_existing_path(&path));
             }
         }
     }
@@ -70,28 +73,56 @@ pub async fn sweep_orphan_temp_dirs(
     Ok(swept)
 }
 
+/// Canonical path when the target exists; otherwise the input path.
+fn normalize_existing_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Requires `path` to stay under canonical `root`.
+///
+/// Sweep only visits existing `DirEntry` paths, so canonicalize should succeed.
+/// Keep-set membership uses the same canonical form via [`normalize_existing_path`].
+fn require_under_sweep_root(root: &Path, path: &Path) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    let root_norm = std::fs::canonicalize(root).ok()?;
+    let path_norm = std::fs::canonicalize(path).ok()?;
+    if !path_norm.starts_with(&root_norm) {
+        return None;
+    }
+    Some(path_norm)
+}
+
 /// Deletes unregistered child directories under `root`.
 async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>) -> u32 {
     let mut n = 0u32;
+    let Ok(root_canon) = tokio::fs::canonicalize(root).await else {
+        return 0;
+    };
     let Ok(mut rd) = tokio::fs::read_dir(root).await else {
         return 0;
     };
     while let Ok(Some(entry)) = rd.next_entry().await {
-        let path = entry.path();
-        if keep.contains(&path) {
-            continue;
-        }
-        let Ok(meta) = entry.metadata().await else {
+        let Ok(file_type) = entry.file_type().await else {
             continue;
         };
-        if !meta.is_dir() {
+        // Tokio DirEntry::metadata does not follow symlinks; skip links explicitly
+        // and never delete when the candidate resolves to the sweep root itself.
+        if file_type.is_symlink() || !file_type.is_dir() {
             continue;
         }
-        match tokio::fs::remove_dir_all(&path).await {
+        let Some(path) = require_under_sweep_root(root, &entry.path()) else {
+            continue;
+        };
+        if path == root_canon || keep.contains(&path) {
+            continue;
+        }
+        match tokio::fs::remove_dir_all(&entry.path()).await {
             Ok(()) => n += 1,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
-                warn!(path = %path.display(), error = %err, "failed to sweep orphan work dir")
+                warn!(path = %entry.path().display(), error = %err, "failed to sweep orphan work dir")
             }
         }
     }
@@ -473,6 +504,60 @@ mod tests {
         assert_eq!(swept, 1);
         assert!(!orphan.exists());
         assert!(kept.exists());
+    }
+
+    /// Keep-set paths come from the DB as lexical strings; DirEntry walks are
+    /// canonical. A symlink between the registered path and the on-disk entry
+    /// must still match so we do not delete an active job's work dir.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sweep_keep_matches_across_symlink_path_identity() {
+        use bookclerk_library::{EnqueueJobSpec, JobKind, JobPayload, JobTrigger};
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let real_cache = tmp.path().join("real-cache");
+        let cache_link = tmp.path().join("cache-link");
+        let kept_real = real_cache.join("acquire").join("kept-title");
+        tokio::fs::create_dir_all(&kept_real).await.unwrap();
+        tokio::fs::write(kept_real.join("y"), b"y").await.unwrap();
+        symlink(&real_cache, &cache_link).unwrap();
+
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    account: None,
+                    title: Some("kept".into()),
+                    trigger: JobTrigger::Api,
+                    ..Default::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 8,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let bookclerk_library::EnqueueOutcome::Created { id } = created else {
+            panic!("expected created");
+        };
+        // Lexical path through the symlink (what a job may have registered).
+        let lexical_kept = cache_link.join("acquire").join("kept-title");
+        store
+            .register_job_temp_path(&id, &lexical_kept.to_string_lossy())
+            .await
+            .unwrap();
+
+        let swept = sweep_orphan_temp_dirs(&store, &cache_link).await.unwrap();
+        assert_eq!(swept, 0);
+        assert!(kept_real.exists());
+        assert!(lexical_kept.exists());
     }
 
     #[test]

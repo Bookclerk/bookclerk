@@ -13,7 +13,10 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::drm::{decrypt_adrm, decrypt_cenc, CencDecryptRequest, DecryptRequest};
+use crate::drm::{
+    decrypt_adrm, decrypt_cenc, join_cache_component, validated_fs_path, CencDecryptRequest,
+    DecryptRequest,
+};
 use audible_rs::api::client::Client;
 use audible_rs::auth::login::{self as login_flow, LoginServer};
 use audible_rs::auth::Authenticator;
@@ -310,7 +313,8 @@ pub async fn guest_fetch_title(
     if let Some(wvd_b64) = credentials.get("widevine_b64").and_then(Value::as_str) {
         match STANDARD.decode(wvd_b64) {
             Ok(bytes) => {
-                let dest = cache_dir.join("widevine.wvd");
+                let dest = join_cache_component(cache_dir, "widevine.wvd")
+                    .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
                 if let Err(err) = tokio::fs::write(&dest, &bytes).await {
                     tracing::warn!(error = %err, "failed to write guest widevine.wvd");
                 }
@@ -357,9 +361,12 @@ pub async fn guest_fetch_title(
     let want_cover = options.download_cover || options.fixup_metadata;
     let mut cover_path = None;
     if want_cover {
-        let work_dir = cache_dir.join(title_id);
+        let work_dir = join_cache_component(cache_dir, title_id)
+            .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
         tokio::fs::create_dir_all(&work_dir).await?;
-        let cover_dest = work_dir.join(format!("{title_id}.cover.jpg"));
+        let cover_name = format!("{title_id}.cover.jpg");
+        let cover_dest = join_cache_component(&work_dir, &cover_name)
+            .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
         match download_cover_jpeg(
             &account.client,
             &account.marketplace,
@@ -376,9 +383,12 @@ pub async fn guest_fetch_title(
         }
     }
 
-    let work_dir = cache_dir.join(title_id);
+    let work_dir = join_cache_component(cache_dir, title_id)
+        .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
     tokio::fs::create_dir_all(&work_dir).await?;
-    let m4b_path = work_dir.join(format!("{title_id}.m4b"));
+    let m4b_name = format!("{title_id}.m4b");
+    let m4b_path = join_cache_component(&work_dir, &m4b_name)
+        .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
 
     let trim = if options.strip_audible_brand_audio {
         let brand = chapter_info
@@ -446,7 +456,9 @@ pub async fn guest_fetch_title(
         if let Some(parent) = m4b_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::copy(&downloaded.path, &m4b_path).await?;
+        let from = validated_fs_path(&downloaded.path)
+            .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
+        tokio::fs::copy(&from, &m4b_path).await?;
         m4b_path
     } else {
         downloaded.path

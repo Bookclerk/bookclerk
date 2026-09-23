@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 bookclerk-plugin-manifest.workspace = true
+bookclerk-sandbox.workspace = true
 chrono.workspace = true
 fs4.workspace = true
 flate2.workspace = true
@@ -28,6 +29,12 @@ ureq.workspace = true
 url = { version = "2", features = ["serde"] }
 walkdir.workspace = true
 zip.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

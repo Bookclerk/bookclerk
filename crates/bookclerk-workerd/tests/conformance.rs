@@ -38,32 +38,41 @@ use bookclerk_workerd::pin::binary_name;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
+fn rebuild_test_path(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy().into_owned();
+    assert!(!s.contains("..") && !s.contains('\0'));
+    PathBuf::from(s)
+}
+
+fn create_dir_test(path: &Path) {
+    let path = rebuild_test_path(path);
+    std::fs::create_dir_all(&path).expect("mkdir");
+}
+
 fn find_workerd() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("BOOKCLERK_WORKERD_BIN") {
-        let path = PathBuf::from(p);
-        if path.is_file() {
+        if let Ok(path) = bookclerk_sandbox::require_spawn_executable(Path::new(&p)) {
             return Some(path);
         }
     }
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     launcher
         .parent()
-        .map(|dir| dir.join(binary_name()))
-        .filter(|p| p.is_file())
+        .and_then(|dir| bookclerk_sandbox::require_spawn_executable(&dir.join(binary_name())).ok())
 }
 
 fn find_echo_guest() -> Option<PathBuf> {
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     let dir = launcher.parent()?;
     let candidate = dir.join("bookclerk-plugin-echo-native-rust");
-    candidate.is_file().then_some(candidate)
+    bookclerk_sandbox::require_spawn_executable(&candidate).ok()
 }
 
 fn find_local_guest() -> Option<PathBuf> {
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     let dir = launcher.parent()?;
     let candidate = dir.join("bookclerk-plugin-destination-local");
-    candidate.is_file().then_some(candidate)
+    bookclerk_sandbox::require_spawn_executable(&candidate).ok()
 }
 
 /// Opens the guest's `storage` entrypoint for one operator-wide invocation.
@@ -183,7 +192,7 @@ async fn direct_capnp_local_conformance_vectors() {
     };
     let tmp = tempfile::tempdir().expect("tmpdir");
     let out = tmp.path().join("out");
-    std::fs::create_dir_all(&out).expect("out");
+    create_dir_test(&out);
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -227,7 +236,7 @@ async fn native_behind_workerd_local_conformance_vectors() {
     };
     let tmp = tempfile::tempdir().expect("tmpdir");
     let root = tmp.path().join("plugin");
-    std::fs::create_dir_all(&root).expect("plugin root");
+    create_dir_test(&root);
     std::fs::write(
         root.join("plugin.toml"),
         r#"api_version = 3
@@ -242,7 +251,7 @@ mode = "deny"
     )
     .expect("plugin.toml");
     let out = tmp.path().join("out");
-    std::fs::create_dir_all(&out).expect("out");
+    create_dir_test(&out);
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -636,7 +645,7 @@ async fn native_behind_workerd_echo_event_vectors() {
     };
     let tmp = tempfile::tempdir().expect("tmpdir");
     let root = tmp.path().join("plugin");
-    std::fs::create_dir_all(&root).expect("plugin root");
+    create_dir_test(&root);
     std::fs::write(
         root.join("plugin.toml"),
         r#"api_version = 3
@@ -688,7 +697,7 @@ fn find_sqlite_guest() -> Option<PathBuf> {
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     let dir = launcher.parent()?;
     let candidate = dir.join("bookclerk-plugin-database-sqlite");
-    candidate.is_file().then_some(candidate)
+    bookclerk_sandbox::require_spawn_executable(&candidate).ok()
 }
 
 /// Spawns `bookclerk-workerd` in native mode over `guest` with the manifest
@@ -782,7 +791,7 @@ async fn native_behind_workerd_sqlite_database_vectors() {
     };
     let tmp = tempfile::tempdir().expect("tmpdir");
     let root = tmp.path().join("plugin");
-    std::fs::create_dir_all(&root).expect("plugin root");
+    create_dir_test(&root);
     std::fs::write(
         root.join("plugin.toml"),
         r#"api_version = 3
@@ -870,7 +879,7 @@ async fn native_behind_workerd_open_nulls_undeclared_entrypoints() {
     };
     let tmp = tempfile::tempdir().expect("tmpdir");
     let root = tmp.path().join("plugin");
-    std::fs::create_dir_all(&root).expect("plugin root");
+    create_dir_test(&root);
     std::fs::write(
         root.join("plugin.toml"),
         r#"api_version = 3
@@ -885,7 +894,7 @@ mode = "deny"
     )
     .expect("plugin.toml");
     let out = tmp.path().join("out");
-    std::fs::create_dir_all(&out).expect("out");
+    create_dir_test(&out);
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {

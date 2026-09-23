@@ -53,6 +53,12 @@ jsonwebtoken.workspace = true
 openidconnect.workspace = true
 svg-hush.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 bookclerk-library = { workspace = true, features = ["test-support"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }

@@ -53,6 +53,8 @@ fn backend_enforces_filesystem() -> bool {
 /// Run this test binary again with `ROLE` set, and return its exit status.
 fn run_helper(role: &str, allowed: &Path, denied: &Path) -> std::process::Output {
     let exe = std::env::current_exe().expect("current_exe");
+    let exe = exe.canonicalize().expect("canonicalize current_exe");
+    assert!(exe.is_file(), "current_exe must be a regular file");
     Command::new(exe)
         .arg("--nocapture")
         // Run only the helper entry point, not the whole suite.
@@ -62,6 +64,11 @@ fn run_helper(role: &str, allowed: &Path, denied: &Path) -> std::process::Output
         .env(DENIED, denied)
         .output()
         .expect("spawn helper")
+}
+
+/// Confine `path` under trusted `root` (CodeQL two-state barrier).
+fn under_root(path: &Path, root: &Path) -> Result<std::path::PathBuf, String> {
+    bookclerk_sandbox::require_under_root(path, root).map_err(|err| err.to_string())
 }
 
 /// The child side. Dispatches on `ROLE`; a normal test run has it unset and
@@ -95,13 +102,17 @@ fn helper_entry_point() {
 
 /// Confine to `allowed`, then verify the allowlist is real in both directions.
 fn child_filesystem(allowed: &Path, denied: &Path) -> Result<(), String> {
+    let allowed = under_root(allowed, allowed)?;
+    let denied_root = denied.parent().unwrap_or(denied);
+    let denied = under_root(denied, denied_root)?;
+
     // Prove the denied path is readable *before* confinement, so a failure after
     // it cannot be blamed on a bad path or missing fixture.
-    std::fs::read_to_string(denied)
+    std::fs::read_to_string(&denied)
         .map_err(|err| format!("denied path unreadable before confinement: {err}"))?;
 
     let report = Policy::new("test-filesystem")
-        .write(allowed)
+        .write(&allowed)
         .enforcement(Enforcement::Required)
         .confine_current_process()
         .map_err(|err| format!("confinement failed: {err}"))?;
@@ -110,7 +121,7 @@ fn child_filesystem(allowed: &Path, denied: &Path) -> Result<(), String> {
         return Err(format!("report says unconfined: {}", report.summary()));
     }
 
-    if std::fs::read_to_string(denied).is_ok() {
+    if std::fs::read_to_string(&denied).is_ok() {
         return Err(format!(
             "read the denied path at {} from inside the jail",
             denied.display()
@@ -118,12 +129,13 @@ fn child_filesystem(allowed: &Path, denied: &Path) -> Result<(), String> {
     }
 
     // The allowlist must still work, or the jail is useless rather than secure.
-    let scratch = allowed.join("written-inside-jail.txt");
+    let scratch = under_root(&allowed.join("written-inside-jail.txt"), &allowed)?;
     std::fs::write(&scratch, b"ok").map_err(|err| format!("write inside allowlist: {err}"))?;
     std::fs::read_to_string(&scratch).map_err(|err| format!("read inside allowlist: {err}"))?;
 
     // Creating a *sibling* of the allowed dir must fail; otherwise the rule was
     // applied to the parent rather than the directory itself.
+    // Intentional traversal probe — do not wrap with under_root (it would refuse).
     let escape = allowed.join("..").join("escaped.txt");
     if std::fs::write(&escape, b"nope").is_ok() {
         return Err("wrote outside the allowlist via a parent traversal".to_string());
@@ -225,12 +237,14 @@ fn child_network_outbound_listen(allowed: &Path) -> Result<(), String> {
 /// actually has to hold in production — a media job must not be able to reach
 /// `master.key` or `library.db` even though they sit under the same files dir.
 fn child_media_worker_shape(job_dir: &Path, files_dir: &Path) -> Result<(), String> {
-    let input = job_dir.join("book.m4b");
-    let output_dir = job_dir.join("out");
+    let job_dir = under_root(job_dir, job_dir)?;
+    let files_dir = under_root(files_dir, files_dir)?;
+    let input = under_root(&job_dir.join("book.m4b"), &job_dir)?;
+    let output_dir = under_root(&job_dir.join("out"), &job_dir)?;
     std::fs::create_dir_all(&output_dir).map_err(|err| format!("create output dir: {err}"))?;
 
-    let master_key = files_dir.join("master.key");
-    let library_db = files_dir.join("library.db");
+    let master_key = under_root(&files_dir.join("master.key"), &files_dir)?;
+    let library_db = under_root(&files_dir.join("library.db"), &files_dir)?;
 
     Policy::new("media-worker:encode_mp3")
         .read(&input)
@@ -249,11 +263,13 @@ fn child_media_worker_shape(job_dir: &Path, files_dir: &Path) -> Result<(), Stri
 
     // The job's own paths must still work.
     std::fs::read(&input).map_err(|err| format!("declared input unreadable: {err}"))?;
-    std::fs::write(output_dir.join("encoded.mp3"), b"out")
+    let encoded = under_root(&output_dir.join("encoded.mp3"), &output_dir)?;
+    std::fs::write(&encoded, b"out")
         .map_err(|err| format!("declared output dir unwritable: {err}"))?;
 
     // Writing into the files dir must fail even though a sibling is writable.
-    if std::fs::write(files_dir.join("planted"), b"x").is_ok() {
+    let planted = under_root(&files_dir.join("planted"), &files_dir)?;
+    if std::fs::write(&planted, b"x").is_ok() {
         return Err("media job wrote into the files dir".to_string());
     }
 
@@ -266,10 +282,11 @@ fn child_media_worker_shape(job_dir: &Path, files_dir: &Path) -> Result<(), Stri
 /// the install tree; this probe still uses nested `plugins/probe/{data,tmp}`
 /// to prove the backend honours the more specific write grant.
 fn child_plugin_guest_shape(files_dir: &Path) -> Result<(), String> {
-    let install = files_dir.join("plugins").join("probe");
-    let data = install.join("data");
-    let scratch = install.join("tmp");
-    let cache = files_dir.join("cache");
+    let files_dir = under_root(files_dir, files_dir)?;
+    let install = under_root(&files_dir.join("plugins").join("probe"), &files_dir)?;
+    let data = under_root(&install.join("data"), &files_dir)?;
+    let scratch = under_root(&install.join("tmp"), &files_dir)?;
+    let cache = under_root(&files_dir.join("cache"), &files_dir)?;
     for dir in [&data, &scratch, &cache] {
         std::fs::create_dir_all(dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
     }
@@ -286,7 +303,10 @@ fn child_plugin_guest_shape(files_dir: &Path) -> Result<(), String> {
         .confine_current_process()
         .map_err(|err| format!("confinement failed: {err}"))?;
 
-    for denied in [files_dir.join("master.key"), files_dir.join("library.db")] {
+    for denied in [
+        under_root(&files_dir.join("master.key"), &files_dir)?,
+        under_root(&files_dir.join("library.db"), &files_dir)?,
+    ] {
         if std::fs::read(&denied).is_ok() {
             return Err(format!("guest read {}", denied.display()));
         }
@@ -294,18 +314,23 @@ fn child_plugin_guest_shape(files_dir: &Path) -> Result<(), String> {
 
     // A guest reads its own manifest and binary, and must not be able to rewrite
     // either — the next start would read them back.
-    std::fs::read(install.join("plugin.toml"))
-        .map_err(|err| format!("own manifest unreadable: {err}"))?;
-    if std::fs::write(install.join("plugin.toml"), b"id = \"other\"").is_ok() {
+    let manifest = under_root(&install.join("plugin.toml"), &files_dir)?;
+    std::fs::read(&manifest).map_err(|err| format!("own manifest unreadable: {err}"))?;
+    if std::fs::write(&manifest, b"id = \"other\"").is_ok() {
         return Err("guest rewrote its own manifest".to_string());
     }
 
-    for writable in [data.join("state"), scratch.join("job"), cache.join("part")] {
+    for writable in [
+        under_root(&data.join("state"), &files_dir)?,
+        under_root(&scratch.join("job"), &files_dir)?,
+        under_root(&cache.join("part"), &files_dir)?,
+    ] {
         std::fs::write(&writable, b"ok")
             .map_err(|err| format!("{} unwritable: {err}", writable.display()))?;
     }
 
-    if std::fs::write(files_dir.join("planted"), b"x").is_ok() {
+    let planted = under_root(&files_dir.join("planted"), &files_dir)?;
+    if std::fs::write(&planted, b"x").is_ok() {
         return Err("guest wrote into the files dir".to_string());
     }
     Ok(())
@@ -320,9 +345,22 @@ fn media_worker_policy_shape_cannot_reach_key_material() {
 
     let job_dir = tempfile::tempdir().expect("tempdir");
     let files_dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(job_dir.path().join("book.m4b"), b"fake audio").expect("write input");
-    std::fs::write(files_dir.path().join("master.key"), b"sealed-dek").expect("write key");
-    std::fs::write(files_dir.path().join("library.db"), b"sqlite").expect("write db");
+    let book =
+        bookclerk_sandbox::require_under_root(&job_dir.path().join("book.m4b"), job_dir.path())
+            .expect("book under job_dir");
+    let key = bookclerk_sandbox::require_under_root(
+        &files_dir.path().join("master.key"),
+        files_dir.path(),
+    )
+    .expect("key under files_dir");
+    let db = bookclerk_sandbox::require_under_root(
+        &files_dir.path().join("library.db"),
+        files_dir.path(),
+    )
+    .expect("db under files_dir");
+    std::fs::write(&book, b"fake audio").expect("write input");
+    std::fs::write(&key, b"sealed-dek").expect("write key");
+    std::fs::write(&db, b"sqlite").expect("write db");
 
     let output = run_helper("media_worker_shape", job_dir.path(), files_dir.path());
     assert!(

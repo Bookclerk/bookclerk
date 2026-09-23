@@ -9,6 +9,9 @@ mod decrypt;
 mod error;
 mod mp4;
 mod native;
+mod paths;
+
+pub(crate) use paths::{join_cache_component, validated_fs_path};
 
 pub use bookclerk_mp4::TrimRange;
 pub use error::{DrmError, Result};
@@ -57,8 +60,9 @@ pub struct DecryptOutcome {
 
 /// Decrypt Adrm aaxc natively (AES-128-CBC sample remux + optional trim).
 pub async fn decrypt_adrm(req: DecryptRequest) -> Result<DecryptOutcome> {
-    if !req.input.exists() {
-        return Err(DrmError::InputMissing(req.input));
+    let input = paths::validated_fs_path(&req.input)?;
+    if !input.exists() {
+        return Err(DrmError::InputMissing(input));
     }
     let (Some(key), Some(iv)) = (&req.audible_key, &req.audible_iv) else {
         if req.activation_bytes.is_some() {
@@ -66,12 +70,10 @@ pub async fn decrypt_adrm(req: DecryptRequest) -> Result<DecryptOutcome> {
         }
         return Err(DrmError::MissingCredentials);
     };
-    if let Some(parent) = req.output.parent() {
+    let output = paths::validated_fs_path(&req.output)?;
+    if let Some(parent) = output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-
-    let input = req.input.clone();
-    let output = req.output.clone();
     let key = key.clone();
     let iv = iv.clone();
     let trim = req.trim;
@@ -82,15 +84,14 @@ pub async fn decrypt_adrm(req: DecryptRequest) -> Result<DecryptOutcome> {
 
 /// Decrypt Widevine CENC natively (fragmented DASH or progressive `enca`).
 pub async fn decrypt_cenc(req: CencDecryptRequest) -> Result<DecryptOutcome> {
-    if !req.input.exists() {
-        return Err(DrmError::InputMissing(req.input.clone()));
+    let input = paths::validated_fs_path(&req.input)?;
+    if !input.exists() {
+        return Err(DrmError::InputMissing(input.clone()));
     }
-    if let Some(parent) = req.output.parent() {
+    let output = paths::validated_fs_path(&req.output)?;
+    if let Some(parent) = output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-
-    let input = req.input.clone();
-    let output = req.output.clone();
     let kid = req.kid.clone();
     let key = req.key.clone();
     let trim = req.trim;

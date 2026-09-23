@@ -20,9 +20,17 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from ..path_guard import cli_user_path, resolve_under
 from ..tools import validate_manifest
 from .config import materialize_config
-from .ensure import default_cache_dir, ensure_workerd
+from .ensure import (
+    default_cache_dir,
+    ensure_workerd,
+    validate_spawn_executable,
+)
+
+# Default Cap'n Proto config name written by materialize_config.
+_WORKERD_SMOKE_CONFIG = "workerd-config.capnp"
 
 
 def _free_loopback_port() -> int:
@@ -149,8 +157,8 @@ def run_smoke(plugin_dir: Path) -> str:
     Examples:
         >>> # print(run_smoke(Path("./my-workerd-plugin")))
     """
-    root = plugin_dir.resolve()
-    toml_path = root / "plugin.toml"
+    root = cli_user_path(plugin_dir)
+    toml_path = resolve_under(root, "plugin.toml")
     if not toml_path.is_file():
         raise FileNotFoundError(f"missing plugin.toml in {root}")
     manifest = tomllib.loads(toml_path.read_text(encoding="utf-8"))
@@ -162,23 +170,42 @@ def run_smoke(plugin_dir: Path) -> str:
     workerd_bin = ensure_workerd(default_cache_dir())
     port = _free_loopback_port()
     bridge_token = secrets.token_hex(32)
-    config_path, listen_addr = materialize_config(
+    generated = materialize_config(
         root,
         manifest,
         listen_port=port,
         bridge_token=bridge_token,
     )
+    config_path = generated.config_path
+    listen_addr = generated.listen_addr
     base = f"http://{listen_addr}"
 
     env = {**os.environ, "BOOKCLERK_PLUGIN_ROOT": str(root)}
+    validated_bin = validate_spawn_executable(workerd_bin)
+    if validated_bin.name not in ("workerd", "workerd.exe"):
+        raise ValueError(f"expected workerd binary, got {validated_bin.name}")
+    validated_cfg = validate_spawn_executable(config_path, generated.state_dir)
+    if validated_cfg.name != _WORKERD_SMOKE_CONFIG:
+        raise ValueError(
+            f"expected {_WORKERD_SMOKE_CONFIG}, got {validated_cfg.name}"
+        )
+    import_path = validate_spawn_executable(generated.import_path)
+    env["PATH"] = f"{validated_bin.parent}{os.pathsep}{env.get('PATH', '')}"
+    # Literal argv: workerd serve + config under session cwd; import-path = RO plugin root.
     proc = subprocess.Popen(
-        [str(workerd_bin), "serve", str(config_path)],
-        cwd=str(root),
+        [
+            "workerd",
+            "serve",
+            _WORKERD_SMOKE_CONFIG,
+            f"--import-path={import_path}",
+        ],
+        cwd=str(generated.state_dir),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
         text=True,
+        shell=False,
     )
     try:
         _wait_for_health(base, bridge_token)

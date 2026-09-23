@@ -13,7 +13,7 @@
 //! header rather than by the file.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::boxutil::{read_box_header, BoxHeader, MOOV};
@@ -60,18 +60,34 @@ pub struct MoovLocation {
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn read_moov(path: &Path) -> Result<(MoovLocation, Vec<u8>)> {
-    let mut file = File::open(path)?;
+    let path = crate::fs_path::validated(path)?;
+    let mut file = File::open(&path)?;
+    let file_len = file.seek(SeekFrom::End(0))?;
     let boxes = top_level_boxes(&mut file)?;
     let moov = boxes
         .iter()
         .find(|header| header.kind == MOOV)
         .ok_or_else(|| Mp4Error::container("file has no moov"))?;
 
+    let end = moov
+        .start
+        .checked_add(moov.size)
+        .ok_or_else(|| Mp4Error::container("moov extent overflows"))?;
+    if end > file_len {
+        return Err(Mp4Error::container(format!(
+            "moov extent {end} exceeds file length {file_len}"
+        )));
+    }
     let len = usize::try_from(moov.size)
         .map_err(|_| Mp4Error::container("moov too large to rebuild in memory"))?;
-    let mut bytes = vec![0u8; len];
+    if len > crate::boxutil::MAX_READ_EXACT_VEC_BYTES {
+        return Err(Mp4Error::container(format!(
+            "moov is {len} bytes; refusing to allocate above {}",
+            crate::boxutil::MAX_READ_EXACT_VEC_BYTES
+        )));
+    }
     file.seek(SeekFrom::Start(moov.start))?;
-    file.read_exact(&mut bytes)?;
+    let bytes = crate::boxutil::read_exact_vec(&mut file, len)?;
 
     let is_last = boxes.last().is_some_and(|last| last.start == moov.start);
     Ok((
@@ -473,5 +489,27 @@ mod tests {
         let mut moov = moov_with(stco(&[10]));
         let err = shift_chunk_offsets(&mut moov, 0, -20).unwrap_err();
         assert!(matches!(err, Mp4Error::Container(_)), "{err}");
+    }
+
+    #[test]
+    fn read_moov_refuses_oversized_declared_extent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bomb.m4b");
+        // Minimal top-level moov header claiming a huge size (no body).
+        let mut bytes = Vec::new();
+        let claim = (crate::boxutil::MAX_READ_EXACT_VEC_BYTES as u64) + 8;
+        bytes.extend_from_slice(&(claim as u32).to_be_bytes());
+        bytes.extend_from_slice(b"moov");
+        std::fs::write(&path, &bytes).unwrap();
+        let err = read_moov(&path).unwrap_err();
+        assert!(
+            matches!(err, Mp4Error::Container(_)),
+            "expected container error, got {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("extent") || msg.contains("refusing to allocate") || msg.contains("moov"),
+            "{msg}"
+        );
     }
 }

@@ -4,8 +4,9 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 use bookclerk_mp4::boxutil::{
-    find_child, read_array, read_exact_vec, read_full_box_version_flags, read_u32, read_u64,
-    read_u8, BoxHeader, FourCC, MDIA, MINF, SAIO, SAIZ, SCHI, SCHM, SINF, STBL, TENC,
+    ensure_table_entries, find_child, read_array, read_exact_vec, read_full_box_version_flags,
+    read_u32, read_u64, read_u8, BoxHeader, FourCC, MDIA, MINF, SAIO, SAIZ, SCHI, SCHM, SINF, STBL,
+    TENC,
 };
 
 use crate::drm::crypto::expand_cenc_iv;
@@ -195,13 +196,19 @@ fn parse_saiz(file: &mut File, saiz: &BoxHeader, expect_count: usize) -> Result<
 fn parse_saio(file: &mut File, saio: &BoxHeader) -> Result<Vec<u64>> {
     file.seek(SeekFrom::Start(saio.content_start()))?;
     let (version, flags) = read_full_box_version_flags(file)?;
+    let mut header_consumed = 4u64; // version + flags
     if flags & 1 != 0 {
         let _aux_info_type = read_u32(file)?;
         let _aux_info_type_parameter = read_u32(file)?;
+        header_consumed += 8;
     }
-    let entry_count = read_u32(file)? as usize;
-    let mut offsets = Vec::with_capacity(entry_count);
-    for _ in 0..entry_count {
+    let entry_count = read_u32(file)?;
+    header_consumed += 4;
+    let entry_bytes: usize = if version == 0 { 4 } else { 8 };
+    let available = saio.content_len().saturating_sub(header_consumed);
+    let n = ensure_table_entries(entry_count, entry_bytes, available, "saio")?;
+    let mut offsets = Vec::with_capacity(n);
+    for _ in 0..n {
         let off = if version == 0 {
             u64::from(read_u32(file)?)
         } else {

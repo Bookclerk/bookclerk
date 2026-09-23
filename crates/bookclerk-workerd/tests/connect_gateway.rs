@@ -19,16 +19,14 @@ use tokio::process::Command;
 
 fn find_workerd() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("BOOKCLERK_WORKERD_BIN") {
-        let path = PathBuf::from(p);
-        if path.is_file() {
+        if let Ok(path) = bookclerk_sandbox::require_spawn_executable(Path::new(&p)) {
             return Some(path);
         }
     }
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_bookclerk-workerd"));
     launcher
         .parent()
-        .map(|dir| dir.join(binary_name()))
-        .filter(|p| p.is_file())
+        .and_then(|dir| bookclerk_sandbox::require_spawn_executable(&dir.join(binary_name())).ok())
 }
 
 async fn open_storage(client: &PluginClient) -> DestinationClient {

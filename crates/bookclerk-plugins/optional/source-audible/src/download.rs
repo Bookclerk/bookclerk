@@ -11,6 +11,7 @@ use bookclerk_config::AudioQuality;
 use bookclerk_library::SourceScope;
 use serde::{Deserialize, Serialize};
 
+use crate::drm::join_cache_component;
 use crate::error::{AudibleError, Result};
 use crate::options::DownloadOptions;
 use crate::widevine::{ensure_widevine_cdm, fetch_widevine_download};
@@ -466,9 +467,20 @@ pub async fn fetch_and_download_with_client(
             let format = license
                 .content_format
                 .as_deref()
-                .filter(|f| !f.is_empty())
+                .filter(|f| {
+                    !f.is_empty()
+                        && !f.contains("..")
+                        && !f.contains('/')
+                        && !f.contains('\\')
+                        && f.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                })
                 .unwrap_or("audio");
-            let dest = cache_dir.join(asin).join(format!("{asin}.{format}.aaxc"));
+            let work = join_cache_component(cache_dir, asin)
+                .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
+            std::fs::create_dir_all(&work)?;
+            let dest = join_cache_component(&work, &format!("{asin}.{format}.aaxc"))
+                .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
             let download = download_licensed_audio(
                 &account_client.client,
                 &license,
@@ -554,9 +566,20 @@ pub async fn fetch_and_download_with_options(
             let format = license
                 .content_format
                 .as_deref()
-                .filter(|f| !f.is_empty())
+                .filter(|f| {
+                    !f.is_empty()
+                        && !f.contains("..")
+                        && !f.contains('/')
+                        && !f.contains('\\')
+                        && f.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                })
                 .unwrap_or("audio");
-            let dest = cache_dir.join(asin).join(format!("{asin}.{format}.aaxc"));
+            let work = join_cache_component(cache_dir, asin)
+                .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
+            std::fs::create_dir_all(&work)?;
+            let dest = join_cache_component(&work, &format!("{asin}.{format}.aaxc"))
+                .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
             let download = download_licensed_audio(
                 &account_client.client,
                 &license,
@@ -615,7 +638,9 @@ async fn fetch_via_widevine(
         "starting Widevine acquire path"
     );
 
-    let work_dir = cache_dir.join(asin);
+    let work_dir = join_cache_component(cache_dir, asin)
+        .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
+    std::fs::create_dir_all(&work_dir)?;
     let wv = fetch_widevine_download(
         &account_client.client,
         &account_client.marketplace,

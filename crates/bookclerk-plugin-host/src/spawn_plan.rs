@@ -280,20 +280,33 @@ impl SpawnPlan {
     ///
     /// Nested Deny is a second launcher process. The outer jail must grant
     /// this path or a confined workerd gets `EACCES` on spawn.
+    ///
+    /// Selection matches `bookclerk-workerd`'s `find_jail`: absolute existing
+    /// file override, or the helper beside the workerd launcher — never a bare
+    /// PATH name that the child would later reject.
     #[must_use]
     pub fn nested_jail_helper(&self) -> Option<PathBuf> {
         self.native_backend.as_ref()?;
         let name = format!("bookclerk-jail{}", std::env::consts::EXE_SUFFIX);
         if let Some(path) = std::env::var_os(NESTED_JAIL_BIN_ENV) {
             let path = PathBuf::from(path);
-            if path.is_file() {
+            if let Ok(path) = bookclerk_sandbox::require_helper_beside_or_absolute(
+                &path,
+                &name,
+                Some(self.launcher.as_path()),
+            ) {
                 return Some(path);
             }
         }
-        self.launcher
-            .parent()
-            .map(|dir| dir.join(name))
-            .filter(|p| p.is_file())
+        self.launcher.parent().and_then(|dir| {
+            let candidate = dir.join(&name);
+            bookclerk_sandbox::require_helper_beside_or_absolute(
+                &candidate,
+                &name,
+                Some(&self.launcher),
+            )
+            .ok()
+        })
     }
 }
 

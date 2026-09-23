@@ -359,7 +359,10 @@ fn wait_child(child: std::process::Child, label: &str) -> Result<std::process::E
 
 /// Test-harness command that re-execs this binary in child mode.
 fn child_cmd(op: &str) -> Command {
-    let mut cmd = Command::new(std::env::current_exe().expect("current test exe"));
+    let exe = std::env::current_exe().expect("current test exe");
+    let exe = exe.canonicalize().expect("canonicalize current test exe");
+    assert!(exe.is_file(), "current test exe must be a regular file");
+    let mut cmd = Command::new(exe);
     cmd.env(CHILD_ENV, op)
         .env("RUST_BACKTRACE", "1")
         .stdin(Stdio::null())
@@ -370,18 +373,28 @@ fn child_cmd(op: &str) -> Command {
 
 /// Directory names under `plugins/` that contain `plugin.toml`.
 fn installed_plugin_dirs(plugins: &Path) -> Result<Vec<String>, String> {
+    let plugins = bookclerk_plugin_catalog::require_under(plugins, plugins)
+        .or_else(|_| {
+            plugins
+                .canonicalize()
+                .map_err(|err| bookclerk_plugin_catalog::CatalogError::message(err.to_string()))
+        })
+        .map_err(|err| err.to_string())?;
     if !plugins.is_dir() {
         return Ok(Vec::new());
     }
     let mut names = Vec::new();
-    for entry in fs::read_dir(plugins).map_err(|err| err.to_string())? {
+    for entry in fs::read_dir(&plugins).map_err(|err| err.to_string())? {
         let entry = entry.map_err(|err| err.to_string())?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name == ".staging" {
             continue;
         }
-        if entry.path().join("plugin.toml").is_file() {
+        let toml =
+            bookclerk_plugin_catalog::require_under(&plugins, &entry.path().join("plugin.toml"))
+                .map_err(|err| err.to_string())?;
+        if toml.is_file() {
             names.push(name.into_owned());
         }
     }

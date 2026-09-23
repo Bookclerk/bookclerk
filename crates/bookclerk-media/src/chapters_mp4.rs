@@ -23,6 +23,8 @@ use crate::error::{MediaError, Result};
 const CHAPTER_TIMESCALE: u32 = 1000;
 /// Nero `chpl` start-time timescale (mp4ameta / Nero default).
 const CHPL_TIMESCALE: u64 = 10_000_000;
+/// In-memory `moov` rebuild ceiling — same policy as [`bookclerk_mp4::boxutil::MAX_READ_EXACT_VEC_BYTES`].
+const MAX_MOOV_REBUILD_BYTES: usize = bookclerk_mp4::boxutil::MAX_READ_EXACT_VEC_BYTES;
 
 /// Trailing UTF-8 `encd` atom appended to each QuickTime chapter sample.
 const ENCD: [u8; 12] = [
@@ -613,6 +615,12 @@ fn strip_existing_chapters(moov: &mut Vec<u8>) -> Result<()> {
     remove_ids.dedup();
 
     // Remove matching traks and chap trefs (rebuild moov children).
+    if moov.len() > MAX_MOOV_REBUILD_BYTES {
+        return Err(MediaError::Mp4(format!(
+            "moov is {} bytes; refusing rebuild above {MAX_MOOV_REBUILD_BYTES}",
+            moov.len()
+        )));
+    }
     let mut rebuilt = Vec::with_capacity(moov.len());
     rebuilt.extend_from_slice(&moov[..8]); // moov header placeholder
     for child in iter_children(moov, moov_span(moov)) {

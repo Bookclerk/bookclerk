@@ -17,9 +17,21 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
+
+from .path_guard import (
+    resolve_under,
+    cli_user_path,
+    copy_tree_no_symlinks,
+    refuse_symlink_path,
+    refuse_symlink_existing_components,
+    write_file_under,
+    copy_file_under,
+    ensure_dir_under,
+)
 
 # Required for local bookclerk-workerd / Pyodide without pywrangler.
 PYTHON_WORKERD_FLAGS = ("python_workers", "disable_python_external_sdk")
@@ -270,7 +282,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
 
 def _workerd_modules_dir(plugin_dir: Path, m: dict[str, Any]) -> Path:
     w = m["workerd"]
-    return plugin_dir / (w.get("modules_dir") or "modules")
+    return resolve_under(plugin_dir, w.get("modules_dir") or "modules")
 
 
 def _is_python_workerd(m: dict[str, Any]) -> bool:
@@ -287,7 +299,7 @@ def _ensure_python_flags(flags: list[Any] | None) -> list[str]:
 
 
 def _sdk_workerd_embed_src() -> Path:
-    return Path(__file__).resolve().parent / "workerd.py"
+    return cli_user_path(Path(__file__).parent) / "workerd.py"
 
 
 ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
@@ -379,22 +391,24 @@ def check_plugin(plugin_dir: Path) -> str:
         >>> # print(check_plugin(Path("./my-plugin")))
         >>> # ok id=echo entrypoints=storefront runtime=workerd
     """
-    text = (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
+    root = cli_user_path(plugin_dir)
+    toml_path = resolve_under(root, "plugin.toml")
+    text = toml_path.read_text(encoding="utf-8")
     m = tomllib.loads(text)
     validate_manifest(m)
     if m.get("logo") is not None:
         kind, value = validate_logo(str(m["logo"]))
         if kind == "embedded":
-            logo_path = plugin_dir / value
+            logo_path = resolve_under(root, value)
             if not logo_path.is_file():
                 raise FileNotFoundError(f"embedded logo missing: {logo_path}")
     runtime = m.get("runtime") or "native"
     if runtime == "workerd":
         w = m["workerd"]
-        modules_dir = _workerd_modules_dir(plugin_dir, m)
+        modules_dir = _workerd_modules_dir(root, m)
         if not modules_dir.is_dir():
             raise FileNotFoundError(f"workerd modules_dir missing: {modules_dir}")
-        main = modules_dir / w["main_module"]
+        main = resolve_under(modules_dir, w["main_module"])
         if not main.is_file():
             raise FileNotFoundError(f"workerd main_module missing: {main}")
         entrypoints = [str(e) for e in (m.get("entrypoints") or [])]
@@ -416,8 +430,8 @@ def check_plugin(plugin_dir: Path) -> str:
                 )
     elif runtime == "native":
         cmd = Path(m["command"])
-        resolved = cmd if cmd.is_absolute() else plugin_dir / cmd
-        if not resolved.exists() and (plugin_dir / ".require-binary").exists():
+        resolved = cli_user_path(cmd) if cmd.is_absolute() else resolve_under(root, cmd)
+        if not resolved.exists() and resolve_under(root, ".require-binary").exists():
             raise FileNotFoundError(f"native command not found: {resolved}")
     entrypoints = ",".join(str(e) for e in (m.get("entrypoints") or []))
     return f"ok id={m['id']} entrypoints={entrypoints} runtime={runtime}"
@@ -444,7 +458,9 @@ def sync_embed(plugin_dir: Path) -> str:
     Examples:
         >>> # print(sync_embed(Path("./my-python-workerd-plugin")))
     """
-    toml_path = plugin_dir / "plugin.toml"
+    root = cli_user_path(plugin_dir)
+    toml_path = resolve_under(root, "plugin.toml")
+    refuse_symlink_path(root, toml_path)
     text = toml_path.read_text(encoding="utf-8")
     m = tomllib.loads(text)
     validate_manifest(m)
@@ -455,21 +471,29 @@ def sync_embed(plugin_dir: Path) -> str:
             "sync-embed (Python SDK): main_module must end with .py "
             f"(got {m['workerd'].get('main_module')!r})"
         )
-    modules_dir = _workerd_modules_dir(plugin_dir, m)
-    pkg = modules_dir / "bookclerk_plugin_sdk"
-    pkg.mkdir(parents=True, exist_ok=True)
-    init = pkg / "__init__.py"
+    modules_rel = (m.get("workerd") or {}).get("modules_dir") or "modules"
+    modules_dir = resolve_under(root, modules_rel)
+    # Validate existing ancestors only; create missing modules components safely.
+    refuse_symlink_existing_components(root, modules_dir)
+    modules_dir = ensure_dir_under(root, modules_rel)
+    refuse_symlink_path(root, modules_dir)
+    pkg = resolve_under(modules_dir, "bookclerk_plugin_sdk")
+    refuse_symlink_existing_components(root, pkg)
+    pkg = ensure_dir_under(modules_dir, "bookclerk_plugin_sdk")
+    refuse_symlink_path(root, pkg)
+    init = resolve_under(pkg, "__init__.py")
     if not init.is_file():
-        init.write_text(
+        write_file_under(
+            pkg,
+            "__init__.py",
             '"""Bookclerk plugin SDK (vendored for workerd). Prefer .workerd."""\n',
-            encoding="utf-8",
         )
-    dest = pkg / "workerd.py"
-    shutil.copy2(_sdk_workerd_embed_src(), dest)
+    dest = copy_file_under(pkg, "workerd.py", _sdk_workerd_embed_src())
 
     new_text = _ensure_python_flags_in_toml_text(text, m)
     if new_text != text:
-        toml_path.write_text(new_text, encoding="utf-8")
+        refuse_symlink_path(root, toml_path)
+        write_file_under(root, "plugin.toml", new_text)
         return f"synced {dest} + python workerd flags in {toml_path}"
     return f"synced {dest}"
 
@@ -727,7 +751,9 @@ def fmt_plugin_toml(path: Path, *, check_only: bool) -> str:
         ValueError: If validation fails or ``check_only`` finds a drift.
         OSError: If the file cannot be read or written.
     """
-    text = path.read_text(encoding="utf-8")
+    # Operator-selected plugin.toml path (trusted operation root for this write).
+    safe = cli_user_path(path)
+    text = safe.read_text(encoding="utf-8")
     m = tomllib.loads(text)
     validate_manifest(m)
     formatted = format_manifest(m)
@@ -738,10 +764,10 @@ def fmt_plugin_toml(path: Path, *, check_only: bool) -> str:
 
     if check_only:
         if norm(text) != norm(formatted):
-            raise ValueError(f"would reformat {path}")
-        return f"ok {path}"
-    path.write_text(formatted, encoding="utf-8")
-    return f"wrote {path}"
+            raise ValueError(f"would reformat {safe}")
+        return f"ok {safe}"
+    safe.write_text(formatted, encoding="utf-8")
+    return f"wrote {safe}"
 
 
 def _host_target() -> str:
@@ -781,71 +807,110 @@ def package_plugin(plugin_dir: Path, out_dir: Path) -> Path:
         >>> # archive = package_plugin(Path("./my-plugin"), Path("./dist"))
         >>> # print(f"packed {archive}")
     """
-    m = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+    root = Path(os.path.realpath(cli_user_path(plugin_dir)))
+    out = cli_user_path(out_dir)
+    toml_path = resolve_under(root, "plugin.toml")
+    refuse_symlink_path(root, toml_path)
+    m = tomllib.loads(toml_path.read_text(encoding="utf-8"))
     validate_manifest(m)
     version = m.get("version") or "0.0.0"
     plugin_id = m["id"]
-    out_dir.mkdir(parents=True, exist_ok=True)
-    staging = out_dir / f".staging-{plugin_id}"
+    out.mkdir(parents=True, exist_ok=True)
+    staging = resolve_under(out, f".staging-{plugin_id}")
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
     runtime = m.get("runtime") or "native"
     if runtime == "native":
-        shutil.copy2(plugin_dir / "plugin.toml", staging / "plugin.toml")
+        shutil.copy2(toml_path, resolve_under(staging, "plugin.toml"))
         cmd = Path(m["command"])
-        src = cmd if cmd.is_absolute() else plugin_dir / cmd
-        if not src.is_file():
+        # Absolute command paths are operator-selected build outputs (documented).
+        # Relative paths must stay under the plugin tree without following links.
+        src = cli_user_path(cmd) if cmd.is_absolute() else resolve_under(root, cmd)
+        if not cmd.is_absolute():
+            refuse_symlink_path(root, src)
+        if src.is_symlink() or not src.is_file():
             raise FileNotFoundError(f"native binary not found for package: {src}")
-        dest = staging / src.name
-        shutil.copy2(src, dest)
+        dest = resolve_under(staging, src.name)
+        shutil.copy2(src, dest, follow_symlinks=False)
         os.chmod(dest, 0o755)
         stem = f"bookclerk-plugin-{plugin_id}-{version}-{_host_target()}"
     else:
         modules_dir = m["workerd"].get("modules_dir") or "modules"
-        shutil.copytree(plugin_dir / modules_dir, staging / modules_dir)
-        toml_text = (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
+        src_modules = resolve_under(root, modules_dir)
+        refuse_symlink_path(root, src_modules)
+        dest_modules = resolve_under(staging, modules_dir)
+        copy_tree_no_symlinks(src_modules, dest_modules)
+        toml_text = toml_path.read_text(encoding="utf-8")
         if _is_python_workerd(m):
             # Vendor package-shaped SDK so archives work even without host injection.
-            pkg = staging / modules_dir / "bookclerk_plugin_sdk"
+            pkg = resolve_under(dest_modules, "bookclerk_plugin_sdk")
             pkg.mkdir(parents=True, exist_ok=True)
-            (pkg / "__init__.py").write_text(
+            resolve_under(pkg, "__init__.py").write_text(
                 '"""Bookclerk plugin SDK (vendored for workerd)."""\n',
                 encoding="utf-8",
             )
-            shutil.copy2(_sdk_workerd_embed_src(), pkg / "workerd.py")
+            shutil.copy2(_sdk_workerd_embed_src(), resolve_under(pkg, "workerd.py"))
             toml_text = _ensure_python_flags_in_toml_text(toml_text, m)
-        (staging / "plugin.toml").write_text(toml_text, encoding="utf-8")
+        resolve_under(staging, "plugin.toml").write_text(toml_text, encoding="utf-8")
         stem = f"bookclerk-plugin-{plugin_id}-{version}-workerd"
 
     if m.get("logo") is not None:
         kind, value = validate_logo(str(m["logo"]))
         if kind == "embedded":
-            src = plugin_dir / value
-            if not src.is_file():
+            src = resolve_under(root, value)
+            refuse_symlink_path(root, src)
+            if src.is_symlink() or not src.is_file():
                 raise FileNotFoundError(f"embedded logo missing for package: {src}")
-            dest = staging / value
+            dest = resolve_under(staging, value)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
+            shutil.copy2(src, dest, follow_symlinks=False)
 
     archive_name = f"{stem}.tar.gz"
-    archive_path = out_dir / archive_name
-    subprocess.run(
-        ["tar", "-C", str(staging), "-czf", str(archive_path), "."],
-        check=True,
-    )
-    shutil.rmtree(staging)
+    # Free-form version may embed path segments; contain under out before write.
+    archive_path = resolve_under(out, archive_name)
+    attempt_name = f".packaging-attempt-{plugin_id}-{os.getpid()}-{time.time_ns()}"
+    attempt_dir = resolve_under(out, attempt_name)
+    os.mkdir(attempt_dir)
+    owned_attempt = True
+    tmp_path = resolve_under(attempt_dir, "archive.tar.gz")
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(os.fspath(tmp_path), flags, 0o644)
+        try:
+            with os.fdopen(fd, "wb") as out_fh:
+                proc = subprocess.run(
+                    ["tar", "-C", str(staging), "-czf", "-", "."],
+                    check=True,
+                    stdout=out_fh,
+                )
+                del proc
+        except Exception:
+            if tmp_path.exists() and not tmp_path.is_symlink():
+                tmp_path.unlink(missing_ok=True)
+            raise
+        os.replace(tmp_path, archive_path)
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+        owned_attempt = False
+    except Exception:
+        if owned_attempt:
+            shutil.rmtree(attempt_dir, ignore_errors=True)
+        raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
     digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    sums = out_dir / "SHA256SUMS"
+    sums = resolve_under(out, "SHA256SUMS")
+    refuse_symlink_path(out, sums)
     lines = []
-    if sums.is_file():
+    if sums.is_file() and not sums.is_symlink():
         lines = [
             ln
             for ln in sums.read_text(encoding="utf-8").splitlines()
             if ln and not ln.endswith(archive_name)
         ]
     lines.append(f"{digest}  {archive_name}")
-    sums.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_file_under(out, "SHA256SUMS", "\n".join(lines) + "\n")
     return archive_path
 
 
@@ -992,8 +1057,15 @@ def generate_types(plugin_dir: Path, out_file: Path | None = None) -> str:
         ValueError: When the manifest is invalid or bindings collide.
         OSError: If files cannot be read or written.
     """
-    m = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+    root = cli_user_path(plugin_dir)
+    toml_path = resolve_under(root, "plugin.toml")
+    m = tomllib.loads(toml_path.read_text(encoding="utf-8"))
     validate_manifest(m)
-    dest = out_file or (plugin_dir / TYPES_OUTPUT_FILE)
+    if out_file is None:
+        dest = resolve_under(root, TYPES_OUTPUT_FILE)
+        refuse_symlink_path(root, dest)
+    else:
+        # Operator-selected output path (not forced under cwd).
+        dest = cli_user_path(out_file)
     dest.write_text(render_env_types(m), encoding="utf-8")
     return f"wrote {dest}"

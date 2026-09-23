@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use fs4::fs_std::FileExt;
 
 use crate::error::{CatalogError, Result};
+use crate::extract::require_under;
 
 /// Filename under `$BOOKCLERK_FILES_DIR` for the host plugin mutation lock.
 pub const PLUGIN_MUTATION_LOCK_FILE: &str = ".plugin-mutation.lock";
@@ -57,21 +58,24 @@ impl PluginMutationLock {
     /// Blocks until the lock is available. Creates `files_dir` and the lock
     /// file when missing. Does not take a shared-database or cluster lock.
     ///
+    /// Operator-selected roots may contain `..` spelling; they are resolved via
+    /// canonicalize. Escaping or dangling leaf symlinks at the lock path are
+    /// refused via [`require_under`] before open (not a claim that check-then-open
+    /// is race-free).
+    ///
     /// # Errors
     ///
-    /// Returns when `files_dir` cannot be created, the lock file cannot be
-    /// opened, or the OS refuses the advisory lock.
+    /// Returns when `files_dir` cannot be created, the lock path escapes the
+    /// root, the lock file cannot be opened, or the OS refuses the advisory lock.
     pub fn acquire(files_dir: &Path) -> Result<Self> {
-        if files_dir
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            return Err(CatalogError::message(
-                "refusing plugin mutation lock path with '..' in files_dir",
-            ));
-        }
         std::fs::create_dir_all(files_dir)?;
-        let path = Self::path(files_dir);
+        let root = files_dir.canonicalize().map_err(|err| {
+            CatalogError::message(format!(
+                "could not canonicalize files_dir {}: {err}",
+                files_dir.display()
+            ))
+        })?;
+        let path = require_under(&root, &Self::path(&root))?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -165,5 +169,84 @@ mod tests {
         let lock_a = PluginMutationLock::acquire(a.path()).unwrap();
         let lock_b = PluginMutationLock::acquire(b.path()).unwrap();
         assert_ne!(lock_a.files_dir(), lock_b.files_dir());
+    }
+
+    #[test]
+    fn acquire_allows_parent_dir_spelling_in_files_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let with_dotdot = nested.join("..").join(nested.file_name().unwrap());
+        let lock = PluginMutationLock::acquire(&with_dotdot).unwrap();
+        assert!(
+            PluginMutationLock::path(tmp.path()).is_file() || {
+                // Lock lives under the resolved nested dir spelling the caller passed.
+                PluginMutationLock::path(&with_dotdot).exists()
+                    || PluginMutationLock::path(&nested).is_file()
+            }
+        );
+        drop(lock);
+        let again = PluginMutationLock::acquire(&with_dotdot).unwrap();
+        drop(again);
+    }
+
+    #[test]
+    fn acquire_refuses_escaping_lock_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim.lock");
+        std::fs::write(&victim, b"secret").unwrap();
+        let files = tmp.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let link = files.join(PLUGIN_MUTATION_LOCK_FILE);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&victim, &link).unwrap();
+            let err = PluginMutationLock::acquire(&files).unwrap_err();
+            assert!(
+                err.to_string().contains("escape")
+                    || err.to_string().contains("symlink")
+                    || err.to_string().contains("refusing"),
+                "{err}"
+            );
+            assert_eq!(std::fs::read(&victim).unwrap(), b"secret");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (victim, link);
+        }
+    }
+
+    #[test]
+    fn acquire_refuses_dangling_lock_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = tmp.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let link = files.join(PLUGIN_MUTATION_LOCK_FILE);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(files.join("missing-target"), &link).unwrap();
+            let err = PluginMutationLock::acquire(&files).unwrap_err();
+            assert!(
+                err.to_string().contains("symlink")
+                    || err.to_string().contains("dangling")
+                    || err.to_string().contains("refusing")
+                    || err.to_string().contains("canonicalize"),
+                "{err}"
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = link;
+        }
+    }
+
+    #[test]
+    fn acquire_repeated_same_process() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock1 = PluginMutationLock::acquire(tmp.path()).unwrap();
+        drop(lock1);
+        let lock2 = PluginMutationLock::acquire(tmp.path()).unwrap();
+        drop(lock2);
     }
 }

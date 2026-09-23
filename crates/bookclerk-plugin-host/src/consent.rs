@@ -517,6 +517,10 @@ impl PluginGrantStore {
 
     /// Loads grants from disk, or an empty store when the file is missing.
     ///
+    /// Operator-selected `files_dir` may contain `..` spelling (resolved via
+    /// canonicalize). Escaping or dangling leaf symlinks at `plugin-grants.json`
+    /// are hard errors; a true missing file yields an empty store.
+    ///
     /// # Arguments
     ///
     /// * `files_dir` - Bookclerk files directory that owns `plugin-grants.json`.
@@ -529,15 +533,36 @@ impl PluginGrantStore {
     ///
     /// Returns [`PluginError`] when the file cannot be read or parsed.
     pub fn load(files_dir: &Path) -> Result<Self> {
-        let path = Self::path(files_dir);
-        if !path.is_file() {
-            return Ok(Self::default());
+        let root = match files_dir.canonicalize() {
+            Ok(root) => root,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(err) => {
+                return Err(PluginError::message(format!(
+                    "could not canonicalize files_dir {}: {err}",
+                    files_dir.display()
+                )));
+            }
+        };
+        let path = bookclerk_plugin_catalog::require_under(&root, &Self::path(&root))
+            .map_err(|err| PluginError::message(err.to_string()))?;
+        match std::fs::read_to_string(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(PluginError::message(format!(
+                "read {}: {err}",
+                path.display()
+            ))),
+            Ok(text) => Ok(serde_json::from_str(&text)?),
         }
-        let text = std::fs::read_to_string(&path)?;
-        Ok(serde_json::from_str(&text)?)
     }
 
     /// Writes this grant store to `plugin-grants.json` under `files_dir`.
+    ///
+    /// Uses unique same-dir `create_new` staging and Unix `rename` / Windows
+    /// `MoveFileExW` so a leaf symlink at the final path is replaced as a
+    /// directory entry (not followed). Cleanup removes only staging this call
+    /// created.
     ///
     /// # Arguments
     ///
@@ -547,14 +572,19 @@ impl PluginGrantStore {
     ///
     /// Returns [`PluginError`] when serialization or the write fails.
     pub fn save(&self, files_dir: &Path) -> Result<()> {
-        let path = Self::path(files_dir);
-        let text = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, &text)?;
-        if std::fs::rename(&tmp, &path).is_err() {
-            let _ = std::fs::remove_file(&path);
-            std::fs::rename(&tmp, &path)?;
+        std::fs::create_dir_all(files_dir)?;
+        let root = files_dir.canonicalize().map_err(|err| {
+            PluginError::message(format!(
+                "could not canonicalize files_dir {}: {err}",
+                files_dir.display()
+            ))
+        })?;
+        let path = root.join(GRANTS_FILE);
+        if !path.starts_with(&root) {
+            return Err(PluginError::message("plugin-grants path escaped files_dir"));
         }
+        let text = serde_json::to_string_pretty(self)?;
+        write_grants_atomic(&root, &path, text.as_bytes())?;
         crate::authority::notify_grants_changed();
         Ok(())
     }
@@ -629,6 +659,120 @@ impl PluginGrantStore {
             self.grants[i] = grant;
         } else {
             self.grants.push(grant);
+        }
+    }
+}
+
+/// Unique same-directory staging path for an atomic grants replace.
+fn staging_grants_path(dir: &Path, dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(GRANTS_FILE);
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    dir.join(format!(
+        ".{name}.tmp-{}-{nonce:016x}-{n}",
+        std::process::id()
+    ))
+}
+
+/// Replace `to` with staging file `from` without following a leaf symlink at `to`.
+fn replace_grants_entry(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)
+    }
+    #[cfg(windows)]
+    {
+        replace_grants_windows(from, to)
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // MoveFileExW FFI — same boundary as bookclerk-config.
+/// Atomically replaces `to` with `from` via `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`.
+///
+/// # Errors
+///
+/// Returns an I/O error when `MoveFileExW` fails.
+fn replace_grants_windows(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+    let src = wide(from);
+    let dst = wide(to);
+    // SAFETY: `src` and `dst` are NUL-terminated wide paths that outlive the call.
+    let ok = unsafe {
+        MoveFileExW(
+            src.as_ptr(),
+            dst.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Write `bytes` to `dest` via same-dir temp + atomic replace.
+fn write_grants_atomic(dir: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    if !dest.starts_with(dir) {
+        return Err(PluginError::message(
+            "plugin-grants destination escapes files_dir",
+        ));
+    }
+    let staging = staging_grants_path(dir, dest);
+    if !staging.starts_with(dir) {
+        return Err(PluginError::message(
+            "plugin-grants staging path escapes files_dir",
+        ));
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)
+        .map_err(|err| {
+            PluginError::message(format!(
+                "create plugin-grants staging {}: {err}",
+                staging.display()
+            ))
+        })?;
+    if let Err(err) = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok::<(), std::io::Error>(())
+    })() {
+        let _ = std::fs::remove_file(&staging);
+        return Err(PluginError::message(format!(
+            "write plugin-grants staging {}: {err}",
+            staging.display()
+        )));
+    }
+    match replace_grants_entry(&staging, dest) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_file(&staging);
+            Err(PluginError::message(format!(
+                "replace plugin-grants {}: {err}",
+                dest.display()
+            )))
         }
     }
 }
@@ -2422,6 +2566,108 @@ mode = "deny"
             approved_at: "2026-01-01T00:00:00Z".into(),
             ..PluginGrant::empty()
         }
+    }
+
+    #[test]
+    fn grant_store_absent_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PluginGrantStore::load(dir.path()).unwrap();
+        assert!(store.grants.is_empty());
+    }
+
+    #[test]
+    fn grant_store_round_trip_under_parent_dir_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("files");
+        std::fs::create_dir_all(&nested).unwrap();
+        let with_dotdot = nested.join("..").join("files");
+        let mut store = PluginGrantStore::default();
+        store.upsert(sample_grant(&["a.example"], &["config"], &[]));
+        store.save(&with_dotdot).unwrap();
+        let loaded = PluginGrantStore::load(&with_dotdot).unwrap();
+        assert_eq!(loaded.grants.len(), 1);
+        assert!(loaded.grants[0].domains.contains("a.example"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grant_store_load_refuses_escaping_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("stolen.json");
+        std::fs::write(&victim, b"{\"grants\":[]}").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(GRANTS_FILE)).unwrap();
+        let err = PluginGrantStore::load(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("escape")
+                || err.to_string().contains("symlink")
+                || err.to_string().contains("refusing")
+                || err.to_string().contains("path"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"{\"grants\":[]}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grant_store_load_refuses_dangling_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            dir.path().join("missing.json"),
+            dir.path().join(GRANTS_FILE),
+        )
+        .unwrap();
+        let err = PluginGrantStore::load(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("symlink")
+                || err.to_string().contains("dangling")
+                || err.to_string().contains("refusing")
+                || err.to_string().contains("canonicalize"),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grant_store_save_replaces_final_symlink_without_touching_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("grants-victim");
+        std::fs::write(&victim, b"keep-grants").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(GRANTS_FILE)).unwrap();
+        let mut store = PluginGrantStore::default();
+        store.upsert(sample_grant(&["b.example"], &["config"], &[]));
+        store.save(dir.path()).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep-grants");
+        let loaded = PluginGrantStore::load(dir.path()).unwrap();
+        assert!(loaded.grants[0].domains.contains("b.example"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grant_store_save_does_not_follow_temp_symlink_name() {
+        // Unique staging names mean a fixed `.json.tmp` plant is not used; planting a
+        // symlink at a guessed staging path must not be truncated/followed via create_new.
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("tmp-victim");
+        std::fs::write(&victim, b"tmp-keep").unwrap();
+        // Pre-plant the legacy fixed temp name used by the old writer.
+        let legacy_tmp = dir.path().join("plugin-grants.json.tmp");
+        std::os::unix::fs::symlink(&victim, &legacy_tmp).unwrap();
+        let mut store = PluginGrantStore::default();
+        store.upsert(sample_grant(&["c.example"], &["config"], &[]));
+        store.save(dir.path()).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"tmp-keep");
+        assert!(
+            std::fs::symlink_metadata(&legacy_tmp)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "legacy temp plant must remain untouched"
+        );
+        let loaded = PluginGrantStore::load(dir.path()).unwrap();
+        assert!(loaded.grants[0].domains.contains("c.example"));
     }
 
     #[test]

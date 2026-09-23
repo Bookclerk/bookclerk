@@ -67,6 +67,12 @@ pub const MAX_BACKUP_ARCHIVE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_BACKUP_ARCHIVE_STREAM_BYTES: u64 =
     MAX_BACKUP_ARCHIVE_TOTAL_BYTES + MAX_BACKUP_ARCHIVE_ENTRIES * 1024;
 
+/// Ceiling on tables (and identity high-water rows) in one canonical backup unit.
+///
+/// Host + plugin schemas are tiny compared to this; the bound rejects malicious
+/// or corrupt schema objects before topo-sort / restore allocate by length.
+pub const MAX_CANONICAL_SCHEMA_TABLES: usize = 10_000;
+
 /// Library registry rows are environment-local (`unit_ref` is not portable).
 pub const LIBRARY_SKIP_TABLES: &[&str] = &["plugin_databases"];
 

@@ -21,6 +21,7 @@ path = "src/lib.rs"
 anyhow.workspace = true
 bookclerk-plugin-manifest = { path = "../bookclerk-plugin-manifest" }
 bookclerk-plugin-catalog = { path = "../bookclerk-plugin-catalog" }
+bookclerk-sandbox = { path = "../bookclerk-sandbox" }
 bookclerk-workerd = { path = "../bookclerk-workerd" }
 clap.workspace = true
 flate2 = "1"

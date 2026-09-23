@@ -4294,14 +4294,17 @@ async fn discover_purchase_hints_batch(
     headers: HeaderMap,
     Json(body): Json<PurchaseHintsBatchBody>,
 ) -> Result<Json<PurchaseHintsBatchResponse>, (StatusCode, String)> {
-    if body.queries.len() > 24 {
+    const MAX_PURCHASE_HINT_QUERIES: usize = 24;
+    let n = body.queries.len();
+    if n > MAX_PURCHASE_HINT_QUERIES {
         return Err((
             StatusCode::BAD_REQUEST,
             "at most 24 purchase-hint queries per batch".into(),
         ));
     }
     let preferred = preferred_sources_for_caller(&state, &headers).await;
-    let mut queries = Vec::with_capacity(body.queries.len());
+    // Cap is enforced above; `.min` keeps the allocation size visibly bounded for analyzers.
+    let mut queries = Vec::with_capacity(n.min(MAX_PURCHASE_HINT_QUERIES));
     for mut q in body.queries {
         validate_purchase_hints_query(&q)?;
         q.preferred_sources = preferred.clone();
@@ -4311,7 +4314,7 @@ async fn discover_purchase_hints_batch(
         let sources = state.sources.read().await;
         bookclerk_discover::resolve_purchase_hints_batch(&sources, &queries, 4).await
     };
-    let mut results = Vec::with_capacity(resolved.len());
+    let mut results = Vec::with_capacity(resolved.len().min(MAX_PURCHASE_HINT_QUERIES));
     for item in resolved {
         results.push(item.map_err(internal_err)?);
     }

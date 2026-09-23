@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
@@ -95,10 +95,43 @@ impl BackupRepository {
     ///
     /// Returns when the directories cannot be created.
     pub fn open_root(root: &Path) -> Result<Self> {
-        fs::create_dir_all(root.join("manifests"))?;
-        fs::create_dir_all(root.join("objects"))?;
+        // Trusted configured base (may include lexical `..` from `files_dir`).
+        // Create children under a canonical root so containment uses realpath
+        // identity before filesystem access.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            if root.as_os_str().as_bytes().contains(&0) {
+                return Err(LibraryError::Schema(format!(
+                    "refusing backup repository root with NUL: {}",
+                    root.display()
+                )));
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            if root.as_os_str().encode_wide().any(|c| c == 0) {
+                return Err(LibraryError::Schema(format!(
+                    "refusing backup repository root with NUL: {}",
+                    root.display()
+                )));
+            }
+        }
+        let root_buf = root.to_path_buf();
+        fs::create_dir_all(&root_buf)?;
+        let root = fs::canonicalize(&root_buf).unwrap_or(root_buf);
+        let manifests = root.join("manifests");
+        let objects = root.join("objects");
+        if !manifests.starts_with(&root) || !objects.starts_with(&root) {
+            return Err(LibraryError::Schema(
+                "backup manifests/objects path escaped repository root".into(),
+            ));
+        }
+        fs::create_dir_all(&manifests)?;
+        fs::create_dir_all(&objects)?;
         Ok(Self {
-            root: root.to_path_buf(),
+            root,
             lock: Arc::new(RepoLock {
                 inner: Mutex::new(RepoLockInner {
                     file: None,
@@ -108,6 +141,128 @@ impl BackupRepository {
                 cv: Condvar::new(),
             }),
         })
+    }
+
+    /// Returns `path` when it stays under this repository root.
+    ///
+    /// Canonicalizes when possible. An existing path that canonicalizes outside
+    /// the root is rejected (symlink escape). A missing leaf falls back to
+    /// canonicalizing the nearest existing parent and rejoining the remaining
+    /// components — never returning a lexical path that failed containment.
+    fn under_root(&self, path: &Path) -> Result<PathBuf> {
+        if path.components().any(|c| matches!(c, Component::ParentDir)) {
+            return Err(LibraryError::Schema(format!(
+                "refusing backup path with '..': {}",
+                path.display()
+            )));
+        }
+        if !path.starts_with(&self.root) {
+            return Err(LibraryError::Schema(format!(
+                "backup path {} escaped repository root {}",
+                path.display(),
+                self.root.display()
+            )));
+        }
+        let path = match fs::canonicalize(path) {
+            Ok(canon) => {
+                if !canon.starts_with(&self.root) {
+                    return Err(LibraryError::Schema(format!(
+                        "backup path {} escapes repository root {} after canonicalize",
+                        canon.display(),
+                        self.root.display()
+                    )));
+                }
+                canon
+            }
+            Err(err) => {
+                match fs::symlink_metadata(path) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        return Err(LibraryError::Schema(format!(
+                            "refusing dangling or unresolvable backup symlink {}: {err}",
+                            path.display()
+                        )));
+                    }
+                    Ok(_) => {
+                        return Err(LibraryError::Schema(format!(
+                            "could not canonicalize existing backup path {}: {err}",
+                            path.display()
+                        )));
+                    }
+                    Err(meta_err) if meta_err.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(LibraryError::Schema(format!(
+                            "could not stat backup path {}: {meta_err}",
+                            path.display()
+                        )));
+                    }
+                    Err(_) => {}
+                }
+                // Missing leaf: canonicalize existing ancestors, rejoin suffix.
+                let mut suffix = Vec::new();
+                let mut cursor = path.to_path_buf();
+                loop {
+                    match fs::canonicalize(&cursor) {
+                        Ok(canon) => {
+                            let mut out = canon;
+                            for part in suffix.iter().rev() {
+                                out.push(part);
+                            }
+                            if !out.starts_with(&self.root) {
+                                return Err(LibraryError::Schema(format!(
+                                    "backup path {} escapes repository root {}",
+                                    out.display(),
+                                    self.root.display()
+                                )));
+                            }
+                            break out;
+                        }
+                        Err(canon_err) => {
+                            match fs::symlink_metadata(&cursor) {
+                                Ok(meta) if meta.file_type().is_symlink() => {
+                                    return Err(LibraryError::Schema(format!(
+                                        "refusing dangling or unresolvable backup symlink {}: {canon_err}",
+                                        cursor.display()
+                                    )));
+                                }
+                                Ok(_) => {
+                                    return Err(LibraryError::Schema(format!(
+                                        "could not canonicalize backup path {}: {canon_err}",
+                                        cursor.display()
+                                    )));
+                                }
+                                Err(meta_err)
+                                    if meta_err.kind() != std::io::ErrorKind::NotFound =>
+                                {
+                                    return Err(LibraryError::Schema(format!(
+                                        "could not stat backup path {}: {meta_err}",
+                                        cursor.display()
+                                    )));
+                                }
+                                Err(_) => {}
+                            }
+                            let name = cursor.file_name().ok_or_else(|| {
+                                LibraryError::Schema(format!(
+                                    "could not resolve backup path {}: {err}",
+                                    path.display()
+                                ))
+                            })?;
+                            suffix.push(name.to_os_string());
+                            match cursor.parent() {
+                                Some(parent) if !parent.as_os_str().is_empty() => {
+                                    cursor = parent.to_path_buf();
+                                }
+                                _ => {
+                                    return Err(LibraryError::Schema(format!(
+                                        "could not resolve backup path {}: {err}",
+                                        path.display()
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        Ok(path.to_path_buf())
     }
 
     /// Repository root (`…/backups`).
@@ -134,12 +289,13 @@ impl BackupRepository {
             .unwrap_or_else(|err| err.into_inner());
         loop {
             if inner.depth == 0 {
+                let lock_path = self.under_root(&self.root.join(".lock"))?;
                 let file = OpenOptions::new()
                     .create(true)
                     .read(true)
                     .write(true)
                     .truncate(false)
-                    .open(self.root.join(".lock"))?;
+                    .open(&lock_path)?;
                 file.lock()?;
                 inner.file = Some(file);
                 inner.depth = 1;
@@ -186,11 +342,12 @@ impl BackupRepository {
             }
         }
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-            fsync_dir(parent);
+            let parent = self.under_root(parent)?;
+            fs::create_dir_all(&parent)?;
+            fsync_dir(&parent);
         }
         let stored = wrap_stored_object(&uncompressed)?;
-        let tmp = unique_tmp_path(&path);
+        let tmp = self.under_root(&unique_tmp_path(&path))?;
         {
             let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             f.write_all(&stored)?;
@@ -262,14 +419,21 @@ impl BackupRepository {
         }
         let json = serde_json::to_vec_pretty(manifest)
             .map_err(|err| LibraryError::Other(anyhow::anyhow!("backup manifest json: {err}")))?;
-        let dir = self.root.join("manifests");
+        let dir = self.under_root(&self.root.join("manifests"))?;
         fs::create_dir_all(&dir)?;
-        let staging = unique_tmp_path(&dir.join(format!("{}.json", manifest.id)));
-        let final_path = dir.join(format!("{}.json", manifest.id));
-        let hash_path = dir.join(format!("{}.sha256", manifest.id));
+        if !manifest_id_ok(&manifest.id) {
+            return Err(LibraryError::Schema(format!(
+                "backup recovery-point id `{}` is not a safe path",
+                manifest.id
+            )));
+        }
+        let staging =
+            self.under_root(&unique_tmp_path(&dir.join(format!("{}.json", manifest.id))))?;
+        let final_path = self.under_root(&dir.join(format!("{}.json", manifest.id)))?;
+        let hash_path = self.under_root(&dir.join(format!("{}.sha256", manifest.id)))?;
         write_tmp_fsync(&staging, &json)?;
         let digest = sha256_hex(&json);
-        let hash_tmp = unique_tmp_path(&hash_path);
+        let hash_tmp = self.under_root(&unique_tmp_path(&hash_path))?;
         write_tmp_fsync(&hash_tmp, format!("{digest}\n").as_bytes())?;
         fs::rename(&hash_tmp, &hash_path)?;
         fsync_dir(&dir);
@@ -290,8 +454,9 @@ impl BackupRepository {
                 "backup recovery-point id `{id}` is not a safe path"
             )));
         }
-        let path = self.root.join("manifests").join(format!("{id}.json"));
-        let hash_path = self.root.join("manifests").join(format!("{id}.sha256"));
+        let path = self.under_root(&self.root.join("manifests").join(format!("{id}.json")))?;
+        let hash_path =
+            self.under_root(&self.root.join("manifests").join(format!("{id}.sha256")))?;
         if !path.is_file() {
             return Err(LibraryError::Schema(format!(
                 "backup recovery point `{id}` is missing"
@@ -328,7 +493,9 @@ impl BackupRepository {
     /// and unreadable manifests are skipped.
     #[must_use]
     pub fn list_manifests(&self) -> Vec<BackupManifest> {
-        let dir = self.root.join("manifests");
+        let Ok(dir) = self.under_root(&self.root.join("manifests")) else {
+            return Vec::new();
+        };
         let Ok(entries) = fs::read_dir(&dir) else {
             return Vec::new();
         };
@@ -360,7 +527,7 @@ impl BackupRepository {
     /// `*.json` fails [`Self::read_manifest`], or an unexpected non-sidecar
     /// file is present.
     pub fn list_manifests_strict(&self) -> Result<Vec<BackupManifest>> {
-        let dir = self.root.join("manifests");
+        let dir = self.under_root(&self.root.join("manifests"))?;
         if !dir.exists() {
             return Ok(Vec::new());
         }
@@ -402,8 +569,8 @@ impl BackupRepository {
                 "backup recovery-point id `{id}` is not a safe path"
             )));
         }
-        let json = self.root.join("manifests").join(format!("{id}.json"));
-        let hash = self.root.join("manifests").join(format!("{id}.sha256"));
+        let json = self.under_root(&self.root.join("manifests").join(format!("{id}.json")))?;
+        let hash = self.under_root(&self.root.join("manifests").join(format!("{id}.sha256")))?;
         let mut removed = false;
         for path in [json, hash] {
             match fs::remove_file(&path) {
@@ -431,32 +598,66 @@ impl BackupRepository {
         for manifest in self.list_manifests_strict()? {
             live.extend(manifest.referenced_objects());
         }
-        let objects = self.root.join("objects");
+        let objects = self.under_root(&self.root.join("objects"))?;
         let mut deleted = 0usize;
         let Ok(prefixes) = fs::read_dir(&objects) else {
             return Ok(0);
         };
         for prefix in prefixes.flatten() {
             let path = prefix.path();
-            if !path.is_dir() {
+            if !path.starts_with(&objects) {
                 continue;
             }
+            // Refuse symlinked object-prefix directories (including dangling links)
+            // before descending — `is_dir()` would follow and GC could delete
+            // outside bytes.
+            let Ok(prefix_meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if prefix_meta.file_type().is_symlink() {
+                return Err(LibraryError::Schema(format!(
+                    "refusing symlinked backup object prefix {}",
+                    path.display()
+                )));
+            }
+            if !prefix_meta.is_dir() {
+                continue;
+            }
+            let path = self.under_root(&path)?;
             let Ok(files) = fs::read_dir(&path) else {
                 continue;
             };
             for file in files.flatten() {
                 let file_path = file.path();
+                if !file_path.starts_with(&objects) {
+                    continue;
+                }
                 let Some(name) = file_path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
+                // Unlink the directory entry only — never follow a leaf symlink
+                // (would delete another object's or an outside file's bytes).
+                let Ok(leaf_meta) = fs::symlink_metadata(&file_path) else {
+                    continue;
+                };
+                let ft = leaf_meta.file_type();
+                if ft.is_dir() {
+                    continue;
+                }
                 if name.starts_with('.') {
                     let _ = fs::remove_file(&file_path);
+                    continue;
+                }
+                if !ft.is_file() && !ft.is_symlink() {
                     continue;
                 }
                 let Some(dir) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
                 let digest = format!("{dir}{name}");
+                if !object_digest_ok(&digest) {
+                    continue;
+                }
                 if live.contains(&digest) {
                     continue;
                 }
@@ -474,11 +675,12 @@ impl BackupRepository {
                 "backup object digest `{digest}` is not a SHA-256 hex id"
             )));
         }
-        Ok(self
+        let path = self
             .root
             .join("objects")
             .join(&digest[..2])
-            .join(&digest[2..]))
+            .join(&digest[2..]);
+        self.under_root(&path)
     }
 }
 
@@ -499,6 +701,12 @@ fn unique_tmp_path(final_path: &Path) -> PathBuf {
 
 /// Writes `bytes` to `path` (must not exist) and `sync_all`s the file.
 fn write_tmp_fsync(path: &Path, bytes: &[u8]) -> Result<()> {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(LibraryError::Schema(format!(
+            "refusing backup temp path with '..': {}",
+            path.display()
+        )));
+    }
     let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;
     f.write_all(bytes)?;
     f.sync_all()?;

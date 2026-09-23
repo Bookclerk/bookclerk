@@ -270,10 +270,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .await
                 {
                     Ok(n) if n > 0 => {
-                        println!(
+                        format_out::line(format!(
                             "Audible enrichment: updated {n} book(s) (min confidence {}%)",
                             config.library.enrich_min_confidence
-                        );
+                        ));
                     }
                     Ok(_) => {}
                     Err(err) => tracing::warn!(error = %err, "Audible enrichment failed"),

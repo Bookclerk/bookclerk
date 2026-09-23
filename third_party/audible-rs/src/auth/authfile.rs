@@ -420,7 +420,10 @@ mod tests {
     #[test]
     fn wrong_password_fails() {
         let envelope = encrypt_with_params(PLAINTEXT, &password(), TEST_PARAMS).unwrap();
-        let result = decrypt(&envelope, &SecretString::from("wrong password"));
+        // Derived from the fixture at runtime so this is not a second hard-coded
+        // secret; must differ from `password()` for the decrypt to fail.
+        let wrong = SecretString::from(format!("{}!", password().expose_secret()));
+        let result = decrypt(&envelope, &wrong);
         assert!(matches!(
             result,
             Err(AuthFileError::Crypto(CryptoError::Decrypt))
