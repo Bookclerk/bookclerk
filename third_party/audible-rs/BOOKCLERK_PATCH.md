@@ -37,6 +37,17 @@ This vendored tree is identical to the pinned upstream revision except:
 5. `auth/authfile.rs` unit test `wrong_password_fails` derives its mismatch
    from the literal fixture password at runtime (analyzer hygiene for a
    second hard-coded secret). This is not a security improvement.
+6. RSA private-key blinding (RUSTSEC-2023-0071 / `rsa` 0.9.10). Defense in
+   depth only — not a substitute for a patched `rsa` release:
+   - Widevine `Cdm::parse_license` unwraps `SignedMessage.session_key` with
+     `RsaPrivateKey::decrypt_blinded` (same RSA-OAEP/SHA-1 as `decrypt`).
+   - Audible request signing uses `pkcs1v15::SigningKey::sign_with_rng`.
+     PKCS#1 v1.5 stays deterministic; the RNG is blinding only.
+   - Widevine challenge signing uses `pss::BlindedSigningKey` (SHA-1, salt
+     length = digest length). `pss::SigningKey::sign_with_rng` leaves the
+     private operation unblinded.
+7. `downloader` lib tests import `url::Url` (used by the annotation-base
+   lockstep test; the type was previously unresolved under `--lib` tests).
 
 Re-vendor when bumping the `audible-rs` git rev in the workspace
 `Cargo.toml`, then re-apply these patches.

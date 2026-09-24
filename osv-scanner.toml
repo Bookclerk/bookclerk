@@ -1,9 +1,15 @@
 # OSV-Scanner config (applies to Cargo.lock / package-lock in this directory).
 # Prefer fixing or replacing vulnerable deps. Exceptions must be INFO/unmaintained
 # or otherwise non-actionable, with a concrete mitigation written down.
+# `ignoreUntil` is a TOML local date (YYYY-MM-DD). After that day the scanner
+# treats the ID as actionable again so the exception is re-reviewed.
+#
+# A passing scan that filters IgnoredVulns is not "0 vulnerabilities." It is
+# zero *unignored/actionable* findings. Suppressed packages remain in the graph.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-12-23
 reason = """
 INFO / unmaintained advisory on crates.io `paste` 1.0.15 — no CVE, no patched
 registry release, and no safe crates.io substitute under the same package name.
@@ -14,4 +20,91 @@ exploit path. We do not vendor a rename-to-`paste` fork: OSV still matches the
 lockfile package name, so a path patch would not clear the scan. Accept the
 INFO finding until upstream moves to maintained `pastey` (or equivalent).
 Re-evaluate when tokenizers/fastembed stop depending on `paste`.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0253"
+ignoreUntil = 2026-12-23
+reason = """
+lru 0.16.4 use-after-free (INFO/unsound): `LruCache::pop()` leaves the node
+linked if the stored *key* Drop panics, then a later eviction can UAF. Fixed in
+lru >= 0.18.2. Requires unwind panics plus `catch_unwind` so execution continues
+after that Drop (RUSTSEC-2026-0253).
+
+Consumers of activated lru 0.16.x (verified `cargo tree -i lru@0.16.4`):
+only tantivy 0.26.2 (`bookclerk-search`). aws-sdk-s3 now uses lru 0.18.5.
+
+Tantivy 0.26.2 source (`src/store/reader.rs`) is the sole `LruCache` site:
+`LruCache<usize, OwnedBytes>` (`type Block = OwnedBytes`). Production calls
+are `get()` / `put()` only; `pop()` is never called. `peek_lru()` is
+`#[cfg(test)]` only and does not detach. `usize` has no destructor, so the
+advisory's panicking-key-Drop trigger cannot occur on this cache.
+
+Cannot `cargo update -p lru` to 0.18: tantivy pins `lru = "0.16.3"` (^0.16.3,
+<0.17). No newer crates.io tantivy (0.26.2 is latest; 2026-09-08) and open
+upstream PRs to lru 0.18 are unmerged. A `[patch]`/override to 0.18 would be
+semver-incompatible. Do not vendor a backported 0.16.
+
+Accept until tantivy publishes a release on lru >= 0.18.2. Re-evaluate on each
+tantivy bump or if another crate pulls lru 0.16.x.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2026-12-23
+reason = """
+rsa 0.9.10 Marvin Attack (CVE-2023-49092 / GHSA-c38w-74pg-36hr): timing
+sidechannel on RSA private-key operations; historically framed around PKCS#1
+v1.5 *decryption*. No patched crates.io release (`patched = []` as of
+2026-09-14). Latest stable 0.9.10 and 0.10.0-rc.18 are still listed affected
+(RustCrypto/RSA#626; implicit-rejection #680 and default decrypt blinding #702
+are unreleased). Workaround: avoid rsa where attackers can observe timing.
+
+Activated rsa 0.9 consumers (verified `cargo tree -i rsa`):
+
+1) JWT / OIDC verification (jsonwebtoken 11 rust_crypto + openidconnect 4 in
+   bookclerkd). Production path is *public-key* RS256/PS* verification of
+   ID tokens (JWKS). Apple client-secret minting is ES256 (P-256), not RSA.
+   RSA private-key signing in oidc_verify.rs is `#[cfg(test)]` only
+   (`sign_id_token` / `EncodingKey::from_rsa_pem`). No PKCS#1 v1.5 or OAEP
+   private-key *decryption* of remote ciphertext on this path.
+
+Bookclerk does not perform PKCS#1 v1.5 private-key *decryption*.
+
+2) Audible request signing (third_party/audible-rs auth/signing.rs). PKCS#1
+   v1.5 *signing* (SHA-256) of `method\\npath\\ntimestamp\\nbody\\nadp_token`.
+   Uses `pkcs1v15::SigningKey::sign_with_rng` (rsa 0.9.10 `RandomizedSigner`),
+   which passes the RNG only as RSA blinding. The signature stays
+   deterministic (crate docs on `pkcs1v15::sign`). Login only parses/re-encodes
+   the registration private key.
+
+3) Widevine challenge (audible-rs widevine/client.rs). RSA-PSS *signing*
+   (SHA-1, salt length = digest length) via `pss::BlindedSigningKey`. In
+   rsa 0.9.10, `pss::SigningKey::sign_with_rng` uses the RNG for the salt but
+   passes `blind = false`; `BlindedSigningKey` keeps the same EMSA-PSS
+   encoding and sets that flag. PSS signatures are randomized by the salt.
+
+4) Widevine license parse (`Cdm::parse_license`). The only activated rsa
+   private-key *decrypt*: RSA-OAEP/SHA-1 of `SignedMessage.session_key` via
+   `RsaPrivateKey::decrypt_blinded`. Ciphertext origin: the `drmlicense` HTTP
+   response (`license` base64 SignedMessage). A malicious or compromised
+   license endpoint, or a TLS MitM, can choose those bytes.
+
+   `parse_license()` runs only after that response has completed. Bookclerk
+   does not send the decrypt result, the `ClientError` class, or an immediate
+   protocol response back to the license server, so this is not an obvious
+   synchronous remote padding/timing oracle. One acquire writes a `.wvkey`
+   cache on success. Residual local timing and repeated-observation risk
+   remain. Blinding is defense in depth, not a patched `rsa`.
+
+Not claimed safe, and the advisory is not fixed: `rsa` 0.9.10 is still an
+affected, unpatched dependency. Residual uncertainty: a local high-resolution
+timer, or a compromised license host plus many operator-driven acquires, is
+outside the structural argument above.
+
+Alternatives checked and rejected for now: rsa 0.10-rc still affected;
+openssl / aws-lc-rs OAEP swap would not remove rsa (signing + JWT remain)
+and would change a protocol-critical path; upstream audible-rs still depends
+on rsa 0.9. Re-evaluate when rsa ships a fix or jsonwebtoken/openidconnect/
+audible-rs move off it.
 """

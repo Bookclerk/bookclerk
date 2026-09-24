@@ -18,7 +18,7 @@ use cmac::Cmac;
 use hmac::{Hmac, Mac as _};
 use prost::Message as _;
 use rsa::pkcs1::DecodeRsaPrivateKey as _;
-use rsa::pss::SigningKey;
+use rsa::pss::BlindedSigningKey;
 use rsa::signature::{RandomizedSigner as _, SignatureEncoding as _};
 use rsa::{Oaep, RsaPrivateKey};
 use sha1::Sha1;
@@ -129,9 +129,11 @@ impl Cdm {
         let request = request.encode_to_vec();
 
         // RSA-PSS over SHA-1 (salt length = digest length, matching the app).
-        let signing_key = SigningKey::<Sha1>::new(self.private_key.clone());
-        let mut rng = OsRng;
-        let signature = signing_key.sign_with_rng(&mut rng, &request).to_vec();
+        // `pss::SigningKey` uses the RNG for the salt but passes `blind = false`
+        // into the private operation (rsa 0.9.10). `BlindedSigningKey` keeps
+        // the same EMSA-PSS encoding and sets that flag. Not a patched `rsa`.
+        let signing_key = BlindedSigningKey::<Sha1>::new(self.private_key.clone());
+        let signature = signing_key.sign_with_rng(&mut OsRng, &request).to_vec();
 
         let signed = proto::SignedMessage {
             r#type: Some(proto::signed_message::MessageType::LicenseRequest as i32),
@@ -157,9 +159,14 @@ impl Cdm {
         }
 
         // Unwrap the AES session key with the device RSA key (OAEP/SHA-1).
+        // `RsaPrivateKey::decrypt` runs the private-key modexp unblinded
+        // (RUSTSEC-2023-0071 / RustCrypto RSA#702). Blinding does not change
+        // OAEP/SHA-1 semantics. This is not a patched `rsa` release — see
+        // osv-scanner.toml.
         let session_key = Zeroizing::new(
             self.private_key
-                .decrypt(
+                .decrypt_blinded(
+                    &mut OsRng,
                     Oaep::new::<Sha1>(),
                     signed.session_key.as_deref().unwrap_or_default(),
                 )
@@ -228,4 +235,137 @@ fn kid_16(id: &[u8]) -> [u8; 16] {
     let n = id.len().min(16);
     out[..n].copy_from_slice(&id[..n]);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widevine::device::Device;
+    use cbc::cipher::BlockEncryptMut as _;
+    use rsa::RsaPublicKey;
+    use rsa::pkcs1::EncodeRsaPrivateKey as _;
+
+    type Aes128CbcEnc = cbc::Encryptor<Aes128>;
+
+    fn test_cdm() -> (Cdm, RsaPrivateKey) {
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 1024).expect("test RSA keygen");
+        let der = private_key.to_pkcs1_der().expect("pkcs1 der");
+        let client_id = proto::ClientIdentification::default().encode_to_vec();
+        let mut blob = Vec::new();
+        blob.extend_from_slice(b"WVD");
+        blob.extend_from_slice(&[2, 2, 3, 0]);
+        let key = der.as_bytes();
+        blob.extend_from_slice(&(key.len() as u16).to_be_bytes());
+        blob.extend_from_slice(key);
+        blob.extend_from_slice(&(client_id.len() as u16).to_be_bytes());
+        blob.extend_from_slice(&client_id);
+        let device = Device::from_wvd(&blob).expect("synthetic .wvd");
+        (Cdm::from_device(&device).expect("cdm"), private_key)
+    }
+
+    fn challenge_with_request(request: Vec<u8>) -> Challenge {
+        Challenge {
+            message: Vec::new(),
+            request,
+        }
+    }
+
+    #[test]
+    fn parse_license_rejects_garbage_session_key() {
+        let (cdm, _) = test_cdm();
+        let challenge = challenge_with_request(b"request".to_vec());
+        let signed = proto::SignedMessage {
+            r#type: Some(proto::signed_message::MessageType::License as i32),
+            msg: Some(b"not-a-license".to_vec()),
+            signature: Some(vec![0u8; 32]),
+            session_key: Some(vec![0u8; 16]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            cdm.parse_license(&challenge, &signed.encode_to_vec()),
+            Err(ClientError::SessionKey)
+        ));
+    }
+
+    #[test]
+    fn parse_license_roundtrip_oaep_sha1_session_key() {
+        let (cdm, private_key) = test_cdm();
+        let request = b"widevine-oaep-roundtrip-request".to_vec();
+        let challenge = challenge_with_request(request.clone());
+
+        let mut session_key = [0u8; 16];
+        OsRng.fill_bytes(&mut session_key);
+        let public = RsaPublicKey::from(&private_key);
+        let wrapped = public
+            .encrypt(&mut OsRng, Oaep::new::<Sha1>(), &session_key)
+            .expect("oaep wrap");
+
+        let (enc_context, mac_context) = derive_context(&request);
+        let enc_key = cmac(&session_key, &enc_context, 1).expect("enc cmac");
+        let mut mac_key_server = cmac(&session_key, &mac_context, 1).expect("mac1");
+        mac_key_server.extend(cmac(&session_key, &mac_context, 2).expect("mac2"));
+
+        let kid = [0x11u8; 16];
+        let content_key = [0x22u8; 16];
+        let iv = [0x33u8; 16];
+        let wrapped_content = Aes128CbcEnc::new_from_slices(&enc_key, &iv)
+            .expect("aes")
+            .encrypt_padded_vec_mut::<Pkcs7>(&content_key);
+
+        let license = proto::License {
+            key: vec![proto::license::KeyContainer {
+                id: Some(kid.to_vec()),
+                iv: Some(iv.to_vec()),
+                key: Some(wrapped_content),
+                r#type: Some(proto::license::key_container::KeyType::Content as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let msg = license.encode_to_vec();
+        let oemcrypto = b"oem";
+        let mut hmac = Hmac::<Sha256>::new_from_slice(&mac_key_server).expect("hmac key");
+        hmac.update(oemcrypto);
+        hmac.update(&msg);
+        let signature = hmac.finalize().into_bytes().to_vec();
+
+        let signed = proto::SignedMessage {
+            r#type: Some(proto::signed_message::MessageType::License as i32),
+            msg: Some(msg),
+            signature: Some(signature),
+            session_key: Some(wrapped),
+            oemcrypto_core_message: Some(oemcrypto.to_vec()),
+            ..Default::default()
+        };
+
+        let keys = cdm
+            .parse_license(&challenge, &signed.encode_to_vec())
+            .expect("parse_license");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].kid, kid);
+        assert_eq!(&*keys[0].key, content_key.as_slice());
+    }
+
+    #[test]
+    fn challenge_signature_verifies_as_rsa_pss_sha1() {
+        use rsa::pss::{Signature, VerifyingKey};
+        use rsa::signature::Verifier as _;
+
+        let (cdm, private_key) = test_cdm();
+        let challenge = cdm.challenge(b"pssh-init", true).expect("challenge");
+        let signed =
+            proto::SignedMessage::decode(challenge.message.as_slice()).expect("signed message");
+        assert_eq!(
+            signed.r#type,
+            Some(proto::signed_message::MessageType::LicenseRequest as i32)
+        );
+        let msg = signed.msg.expect("request bytes");
+        let raw = signed.signature.expect("pss signature");
+        let signature = Signature::try_from(raw.as_slice()).expect("signature length");
+        let verifying = VerifyingKey::<Sha1>::new(RsaPublicKey::from(private_key));
+        verifying
+            .verify(&msg, &signature)
+            .expect("RSA-PSS/SHA-1 challenge signature verifies");
+    }
 }

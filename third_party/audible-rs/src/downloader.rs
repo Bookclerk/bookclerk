@@ -668,6 +668,7 @@ fn redact_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use url::Url;
 
     /// Locks the resume writers to the predicate: whatever `part_path` and
     /// `version_marker_path` produce must count as a resume artifact, and

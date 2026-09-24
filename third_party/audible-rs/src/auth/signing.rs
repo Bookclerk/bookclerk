@@ -10,10 +10,11 @@ use std::fmt;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use chacha20poly1305::aead::OsRng;
 use rsa::RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
-use rsa::signature::{SignatureEncoding, Signer};
+use rsa::signature::{RandomizedSigner, SignatureEncoding};
 use sha2::Sha256;
 
 /// Value of the `x-adp-alg` header.
@@ -114,8 +115,11 @@ impl RequestSigner {
         data.push(b'\n');
         data.extend_from_slice(self.adp_token.as_bytes());
 
-        // PKCS#1 v1.5 signing is deterministic and infallible.
-        let signature = self.signing_key.sign(&data);
+        // PKCS#1 v1.5 is deterministic. `sign()` runs the private operation
+        // unblinded (`rng = None`). `sign_with_rng` passes this RNG only as
+        // RSA blinding (rsa 0.9.10 `pkcs1v15::sign`); it does not randomize
+        // the signature. Not a patched `rsa` release — see osv-scanner.toml.
+        let signature = self.signing_key.sign_with_rng(&mut OsRng, &data);
         let encoded = BASE64.encode(signature.to_bytes());
 
         SignedHeaders {
@@ -144,6 +148,44 @@ fn signing_timestamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rsa::RsaPublicKey;
+    use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
+    use rsa::pkcs1v15::VerifyingKey;
+    use rsa::signature::{Signer, Verifier};
+
+    fn signer() -> (RequestSigner, RsaPrivateKey) {
+        let key = RsaPrivateKey::new(&mut OsRng, 1024).expect("test RSA keygen");
+        let pem = key
+            .to_pkcs1_pem(LineEnding::LF)
+            .expect("pkcs1 pem")
+            .to_string();
+        (RequestSigner::new(&pem, "adp-token").expect("signer"), key)
+    }
+
+    #[test]
+    fn blinded_pkcs1v15_signature_matches_unblinded_and_verifies() {
+        let (signer, key) = signer();
+        let headers = signer.sign_request_at(
+            "GET",
+            "/1.0/library",
+            b"",
+            "2026-01-02T03:04:05.000000+00:00Z",
+        );
+        assert_eq!(headers.adp_token, "adp-token");
+        assert_eq!(headers.alg, ADP_ALG);
+        let (encoded, timestamp) = headers.signature.split_once(':').expect("sig:ts");
+        assert_eq!(timestamp, "2026-01-02T03:04:05.000000+00:00Z");
+        let signature_bytes = BASE64.decode(encoded).expect("base64 signature");
+
+        let data = b"GET\n/1.0/library\n2026-01-02T03:04:05.000000+00:00Z\n\nadp-token";
+        let unblinded = SigningKey::<Sha256>::new(key.clone()).sign(data);
+        assert_eq!(signature_bytes, unblinded.to_bytes().to_vec());
+
+        let verifying = VerifyingKey::<Sha256>::new(RsaPublicKey::from(key));
+        verifying
+            .verify(data, &unblinded)
+            .expect("PKCS#1 v1.5 signature verifies");
+    }
 
     #[test]
     fn timestamp_matches_python_isoformat_shape() {

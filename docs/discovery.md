@@ -89,9 +89,11 @@ as a **compile-time proc-macro**. That crate is **unmaintained**
 INFO, no CVE, no patched release). There is no crates.io drop-in under the same
 name; renaming to maintained [`pastey`](https://crates.io/crates/pastey) would
 still leave OSV matching the lockfile package name `paste`. Bookclerk therefore
-keeps the registry dependency and records a narrow ignore in
-[`osv-scanner.toml`](../osv-scanner.toml). Revisit when upstream depends on
-`pastey` (or drops `paste`) directly.
+keeps the registry dependency and records a narrow, dated ignore in
+[`osv-scanner.toml`](../osv-scanner.toml) (`ignoreUntil`). That ignore filters
+the INFO finding from the *actionable* scan result; the `paste` package remains
+in the lockfile. Revisit when upstream depends on `pastey` (or drops `paste`)
+directly, or when the ignore expires.
 
 ## Recommendation ranking
 

@@ -61,7 +61,11 @@ plugins, SDKs).
 | `postgres 16/17/18` | When Rust runs (or full suite). Matrix of every supported PostgreSQL major ≥ 16 (`fail-fast: false`; `CI Gate` requires the whole job). Installs `capnproto`. Requires a Postgres service at that major. Runs ignored job-queue tests, TOTP atomic conformance, shared SQL-plan vectors, guest page tests, binding-schema isolation, and production RPC LIKE. |
 | `CI Gate` | Stable required check: succeeds for intentional skips; fails on real failures |
 
-OSV scanning remains a separate workflow/gate.
+OSV scanning remains a separate workflow/gate. A green OSV job that applies
+[`osv-scanner.toml`](../osv-scanner.toml) `IgnoredVulns` means **zero
+unignored/actionable** findings, not that ignored advisories have left the
+dependency graph. Each ignore must record reachability evidence and an
+`ignoreUntil` review date.
 
 The scheduled **SQL-v1 property** job (`.github/workflows/sql-v1-proptest.yml`)
 runs a longer `proptest` suite (`PROPTEST_CASES=256`) on `bookclerk-plugin-abi`
