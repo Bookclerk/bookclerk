@@ -20,15 +20,18 @@ Every guest is an **external** (jailed) subprocess. Runtimes are **`native`** or
 | `cargo build-app --platform` | Full installer: all `default-members` + platform guests + ensure pinned `workerd` |
 | `cargo build-app --optional` | Optional guest crates |
 | `cargo build-app --examples` | Cargo-backed examples |
+| `cargo build-app --plugin libro --plugin echo_native_rust` | Individual guests by `plugin.toml` id (any tier; repeatable) |
 | `cargo build-app --print …` | Print resolved `-p` names (no duplicates) |
 | `cargo ensure-workerd` | Download/update pinned Cloudflare `workerd` → `target/<profile>/` |
 | `cargo install-platform` | Install platform guests → `$BOOKCLERK_FILES_DIR/plugins/` |
 | `cargo stage-plugins --optional` | Stage optional guests → `target/plugin-artifacts` |
+| `cargo stage-plugins --plugin libro` | Stage only the named optional/example guests (platform ids are rejected — `install-platform` owns them) |
 | **`cargo dev`** | Platform build + refresh `ui/dist` if stale + ensure workerd, install, exec `bookclerkd` |
 | `cargo dev --optional` | Also build/stage optional storefronts |
 | `cargo dev --examples` | Also stage reference Echo |
 | `cargo dev-cli` | Same platform build, then CLI binary |
-| `cargo test-staged` | Full platform + optional + examples + conformance |
+| `cargo test-staged` | Full platform + optional + examples, then the `bookclerk-plugin-e2e` staged suite |
+| `cargo test-staged --plugin libro` | Platform + only `libro` staged; suite scoped with `BOOKCLERK_STAGED_PLUGINS` |
 | **`cargo reset --yes`** | Wipe `$BOOKCLERK_FILES_DIR` (DB, config, keys, plugins) |
 | `cargo reset --yes --artifacts` | Also clear `target/plugin-artifacts` |
 

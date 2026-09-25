@@ -1,0 +1,206 @@
+# Relationships `cargo metadata --no-deps` cannot describe.
+#
+# The planner derives package ownership and normal/build/dev edges from Cargo.
+# Everything here is an input or runtime prerequisite Cargo does not see.
+# `scripts/tests/test_ci_relations.py` scans for *recognized* reference forms
+# (literal `include_str!`/`include_bytes!` paths, test-source path literals
+# into other packages, workspace binary names in `tests/`) and fails when one
+# is neither declared nor reviewed below. Computed paths, macro-generated
+# includes, and dynamically discovered fixtures are not detected: declare
+# them here or rely on the planner's conservative fallbacks. See docs/ci.md.
+
+# Files outside a package directory compiled into that package.
+[[embed]]
+package = "bookclerk-workerd"
+paths = [
+    "packages/plugin-sdk/embed/bookclerk_plugin.js",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/db_value.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_abi.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/guest_sql.py",
+]
+# Injected into every workerd isolate: check the workerd-runtime guests,
+# not the whole installation.
+e2e = "workerd-runtime"
+
+[[embed]]
+package = "bookclerkd"
+paths = ["assets/brand/svg/bookclerk-logo.svg"]
+
+# Files outside a package directory read by that package's tests.
+[[test_input]]
+package = "bookclerk-plugin-manifest"
+paths = ["examples/plugins-echo-native-rust/plugin.toml"]
+
+[[test_input]]
+package = "bookclerk-plugin-tools"
+paths = ["crates/bookclerk-plugin-abi/fixtures/tools/**"]
+
+[[test_input]]
+package = "bookclerk-library"
+# `architecture_lint_database_plugins` runs this script over the tree. The
+# sources it scans are covered by the plan job, which runs the same script on
+# every event (scripts/tests/test_db_plugin_isolation.py).
+paths = ["scripts/check-db-plugin-isolation.py"]
+
+[[test_input]]
+package = "bookclerk-plugin-host"
+# plugin_inventory walks every plugin.toml. (rpc_proxy_like's sqlite/postgres
+# guest directories are covered by [test_guests.bookclerk-plugin-host].)
+paths = [
+    "crates/bookclerk-plugins/*/*/plugin.toml",
+    "examples/plugins-*/plugin.toml",
+]
+
+# Package-local files that no target of the owning package compiles (shared
+# test fixtures). Changes skip the owner's compile propagation and select only
+# the declared consumers: `test_input` packages above plus these checks.
+[[fixture]]
+paths = ["crates/bookclerk-plugin-abi/fixtures/**"]
+# TS (`npm run test:tools`) and Python SDK author-tools conformance.
+checks = ["plugin_sdk_abi", "python_sdk"]
+
+# Workspace executables launched by a package's tests. Built before the tests
+# run; a change to one re-runs the launching package's tests (no further
+# propagation). Prerequisites never select their owners' own checks.
+[test_guests.bookclerk-workerd]
+build = [
+    "bookclerk-plugin-echo-native-rust",
+    "bookclerk-plugin-destination-local",
+    "bookclerk-plugin-database-sqlite",
+]
+ensure_workerd = true
+
+[test_guests.bookclerk-plugin-host]
+build = [
+    "bookclerk-plugin-database-sqlite",
+    "bookclerk-plugin-database-postgres",
+    "bookclerk-jail",
+    "bookclerk-workerd",
+]
+ensure_workerd = true
+
+[test_guests.bookclerk-media-worker]
+build = ["bookclerk-jail"]
+
+[test_guests.bookclerk-media]
+build = ["bookclerk-media-worker", "bookclerk-jail"]
+
+# Extra feature-specific test invocations (the plain `--tests` run uses
+# default features).
+[[feature_tests]]
+package = "bookclerk-plugin-database-sqlite"
+features = ["host-helpers"]
+
+# PostgreSQL contract steps (commands live in scripts/ci_plan/execute.py).
+# Each runs on every supported major when its owner's tests are selected.
+[postgres.steps]
+library_queue = "bookclerk-library"
+library_totp = "bookclerk-library"
+library_vectors = "bookclerk-library"
+db_guest = "bookclerk-db-guest"
+binding_schema = "bookclerk-plugin-database-postgres"
+rpc_like = "bookclerk-plugin-host"
+
+[staged_e2e]
+# A direct source change in these packages checks the full installation.
+full_packages = [
+    "bookclerk-dev",
+    "bookclerk-plugin-manifest",
+    "bookclerk-plugin-abi",
+    "bookclerk-workerd",
+    "bookclerk-jail",
+    "bookclerk-sandbox",
+    "bookclerk-plugin-e2e",
+]
+# Inventory, discovery and install layout.
+full_paths = [
+    "crates/bookclerk-plugins/*/*/plugin.toml",
+    "examples/plugins-*/plugin.toml",
+    "crates/bookclerk-plugin-host/src/discover.rs",
+    "crates/bookclerk-plugin-host/src/registry.rs",
+    "crates/bookclerk-plugin-host/src/install_preflight.rs",
+]
+# Small deterministic guests covering native, workerd TS and workerd Python
+# transports when shared host runtime code changes.
+runtime_smoke = ["echo_native_rust", "echo_workerd_ts", "echo_workerd_python"]
+runtime_smoke_packages = ["bookclerk-plugin-host"]
+
+[platform_jobs]
+# sandbox + jailed tiers (3 OS): enforcement tests.
+confinement = [
+    "bookclerk-sandbox",
+    "bookclerk-jail",
+    "bookclerk-media",
+    "bookclerk-media-worker",
+]
+tray = ["bookclerk-tray"]
+
+# Native-behind-workerd gateway smoke (3 OS): `bookclerk-plugin-e2e --test
+# native_gateway` launches a guest through the production PluginSession path.
+[native_gateway]
+# Selected when any of these is in the Cargo-compiled closure of the change
+# (source or a normal/build dependency changed). Test-only edits in these
+# packages do not compile them and do not select the smoke.
+packages = [
+    "bookclerk-plugin-host",
+    "bookclerk-workerd",
+    "bookclerk-plugin-sdk",
+    "bookclerk-sandbox",
+    "bookclerk-jail",
+    "bookclerk-plugin-e2e",
+]
+# Inputs only the smoke reads: its target and support files under `tests/`
+# (Cargo's target model would route those to the e2e crate's own tests) and
+# the fixture guest. They select `native_gateway`, not the staged e2e suite.
+paths = [
+    "crates/bookclerk-plugin-e2e/tests/native_gateway.rs",
+    "crates/bookclerk-plugin-e2e/tests/native_gateway/**",
+    "crates/bookclerk-plugin-e2e/src/bin/native_gateway_probe.rs",
+]
+
+[release]
+# Shipped beside hosts: release builds cover these when affected.
+shipped = [
+    "bookclerk-cli",
+    "bookclerkd",
+    "bookclerk-media-worker",
+    "bookclerk-jail",
+    "bookclerk-workerd",
+    "bookclerk-plugin-database-sqlite",
+    "bookclerk-plugin-destination-local",
+]
+# Packaging / helper-layout inputs: full `build-app --release --platform`.
+full_packages = ["bookclerk-dev"]
+full_paths = [
+    "crates/bookclerk-plugins/platform/*/plugin.toml",
+    "workerd.pin.json",
+    "crates/bookclerk-workerd/workerd-pin.json",
+]
+
+# Recognized references the guardrail found that are intentionally not
+# declared, with the reason.
+[[reviewed]]
+package = "bookclerkd"
+reference = "ui/dist"
+reason = "runtime lookup of the packaged SPA; tests pass the dist path explicitly"
+
+[[reviewed]]
+package = "bookclerkd"
+reference = "assets/logo.png"
+reason = "runtime lookup relative to ui/dist, not a repository path"
+
+[[reviewed]]
+package = "bookclerkd"
+reference = "assets/logo.svg"
+reason = "runtime lookup relative to ui/dist, not a repository path"
+
+[[reviewed]]
+package = "abi-layout"
+reference = "crates/bookclerk-plugin-abi/schema"
+reason = "schema tool input at run time, not a test; the derived layout JSON is checked by gen-plugin-abi --check"
+
+[[reviewed]]
+package = "bookclerk-plugin-catalog"
+reference = "bookclerk-dev"
+reason = "package-name string in install-path test data, not a launched executable"

@@ -19,8 +19,9 @@ Per matrix runner (`ubuntu-latest` → `linux-x64-gnu`, `macos-latest` →
 
 1. `cargo build --release -p <plugin_package>`
 2. Stages `plugin.toml` + the release binary
-3. When the repo depends on `bookclerk-plugin-sdk`, runs
-   `bookclerk-plugin check` + `package` (same tools as local authoring).
+3. When the workspace contains `bookclerk-plugin-tools` and its
+   `bookclerk-plugin` binary, runs `bookclerk-plugin check` + `package`.
+   A dependency reference to `bookclerk-plugin-sdk` is not enough.
    Otherwise packs with `tar` into
    `{crate}-{version}-{bookclerk_target}.tar.gz` (Unix) or `.zip` (Windows)
 4. Writes `SHA256SUMS` next to the archive

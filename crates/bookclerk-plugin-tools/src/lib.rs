@@ -1,32 +1,28 @@
-//! Authoring helpers: `check`, `fmt`, `package`, and (with feature `tools`) `smoke`.
+//! Plugin authoring tools behind the `bookclerk-plugin` CLI: `check`, `fmt`,
+//! `sync-embed`, `package`, and `smoke`.
 //!
 //! Audience: plugin maintainers validating `plugin.toml` layout and packaging
-//! archives for distribution. The `bookclerk-plugin` binary requires
-//! `--features tools` so guest plugins that depend on this crate with default
-//! features do not pull `bookclerk-workerd`.
+//! archives for distribution. Kept out of `bookclerk-plugin-sdk` so guest
+//! plugins never link `bookclerk-workerd` or the packaging stack.
 //!
-//! | Helper | Feature | Purpose |
-//! | --- | --- | --- |
-//! | [`check_plugin`] / [`fmt_plugin_toml`] / [`package_plugin`] | always | Validate, format, archive |
-//! | [`sync_embed`] | always | Optional workerd JS vendor |
-//! | `run_tools_cli` / `smoke_plugin` | `tools` | CLI entry + live workerd smoke |
+//! | Helper | Purpose |
+//! | --- | --- |
+//! | [`check_plugin`] / [`fmt_plugin_toml`] / [`package_plugin`] | Validate, format, archive |
+//! | [`sync_embed`] | Optional workerd JS vendor |
+//! | [`run_tools_cli`] / [`smoke_plugin`] | CLI entry + live workerd smoke |
 //!
 //! See `docs/plugins.md` and the crate README.
 
 mod check;
-#[cfg(feature = "tools")]
 mod cli;
 mod package;
-#[cfg(feature = "tools")]
 mod smoke;
 
 pub use check::{
     check_main_module_source, check_plugin, entrypoint_export_class, sync_embed, MainModuleLanguage,
 };
-#[cfg(feature = "tools")]
 pub use cli::run as run_tools_cli;
 pub use package::package_plugin;
-#[cfg(feature = "tools")]
 pub use smoke::smoke_plugin;
 
 use bookclerk_plugin_manifest::{format_manifest, parse, PluginManifest};

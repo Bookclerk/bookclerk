@@ -17,6 +17,7 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 Language-specific helpers (`sync-embed`, Python workerd flags) are covered in
 each SDK's own tests against the Echo examples.
 
-Canonical `fmt` output is produced by the Rust SDK (`bookclerk-plugin fmt`) and
+Canonical `fmt` output is produced by the Rust CLI (`bookclerk-plugin fmt`,
+crate `bookclerk-plugin-tools`) and
 compared by other SDKs via `fmt --check` against that gold file when present
 (`*.fmt.toml`).

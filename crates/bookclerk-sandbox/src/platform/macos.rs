@@ -190,6 +190,15 @@ fn build_profile(policy: &Policy) -> String {
     push_paths(&mut out, "file-read*", &reads, &[]);
     // Writable paths must also be readable; SBPL treats the two separately.
     push_paths(&mut out, "file-read* file-write*", &writes, &[]);
+    // Pathname Unix sockets are files in SBPL's eyes but gated by the network
+    // operations, which the rules above scope to IP (or not at all). Allow
+    // binding and connecting to sockets inside the writable tree only, in
+    // every mode — Linux Landlock likewise leaves pathname sockets under
+    // filesystem rules. A path filter never matches an IP socket, so this
+    // grants no TCP/UDP reach. The native-behind-workerd socket proxy relies
+    // on it: the launcher binds it in its state dir and the nested
+    // deny-network guest connects to it.
+    push_paths(&mut out, "network-bind network-outbound", &writes, &[]);
 
     out
 }
@@ -305,6 +314,35 @@ mod tests {
         );
         // An unfiltered grant would make this indistinguishable from `Full`.
         assert!(!profile.contains("(allow network-bind)\n"), "{profile}");
+    }
+
+    #[test]
+    fn unix_sockets_are_scoped_to_writable_paths_in_every_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for net in [
+            NetPolicy::Deny,
+            NetPolicy::Outbound,
+            NetPolicy::OutboundListen,
+        ] {
+            let profile = build_profile(
+                &Policy::new("test")
+                    .system_paths(false)
+                    .write(dir.path())
+                    .net(net),
+            );
+            let body = rule_body(&profile, "network-bind network-outbound");
+            assert!(body.contains("(subpath "), "{profile}");
+            assert!(!body.contains("ip "), "{profile}");
+            if net == NetPolicy::Deny {
+                assert!(!profile.contains("(allow network-outbound)"), "{profile}");
+                assert!(
+                    !profile.contains("(allow network-bind (local ip"),
+                    "{profile}"
+                );
+            }
+        }
+        let profile = build_profile(&Policy::new("test").system_paths(false));
+        assert!(!profile.contains("network-bind"), "{profile}");
     }
 
     #[test]

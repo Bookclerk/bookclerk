@@ -6,21 +6,37 @@
 
 use std::path::PathBuf;
 
+use bookclerk_plugin_e2e::{skip_or_fail, staged_plugin_dir, StagedScope};
+
 fn artifacts_root() -> Option<PathBuf> {
     std::env::var_os("BOOKCLERK_PLUGIN_ARTIFACTS").map(PathBuf::from)
 }
 
-#[tokio::test]
-async fn staged_audible_guest_describes_when_artifacts_present() {
+/// Staged directory for `id`, or `None` when this run does not cover it.
+fn staged_dir(id: &str) -> Option<PathBuf> {
+    let scope = StagedScope::from_env().unwrap_or_else(|e| panic!("{e}"));
+    if !scope.includes(id) {
+        eprintln!("skip: `{id}` outside BOOKCLERK_STAGED_PLUGINS scope");
+        return None;
+    }
     let Some(root) = artifacts_root() else {
-        eprintln!("skip: set BOOKCLERK_PLUGIN_ARTIFACTS (cargo test-staged)");
+        skip_or_fail("BOOKCLERK_PLUGIN_ARTIFACTS is unset (cargo test-staged)");
+        return None;
+    };
+    let dir = staged_plugin_dir(&root, id);
+    assert!(
+        dir.is_some(),
+        "`{id}` is in scope but not staged under {}",
+        root.display()
+    );
+    dir
+}
+
+#[tokio::test]
+async fn staged_audible_guest_layout() {
+    let Some(plugin_dir) = staged_dir("audible") else {
         return;
     };
-    let plugin_dir = root.join("audible");
-    if !plugin_dir.join("plugin.toml").is_file() {
-        eprintln!("skip: audible not staged under {}", plugin_dir.display());
-        return;
-    }
     // Discovery + describe is covered by staged_plugins.rs; this test asserts
     // the install-shaped layout (plugin.toml beside binary) used by receipts.
     assert!(plugin_dir.join("plugin.toml").is_file());
@@ -38,16 +54,10 @@ async fn staged_audible_guest_describes_when_artifacts_present() {
 }
 
 #[tokio::test]
-async fn staged_s3_guest_layout_when_artifacts_present() {
-    let Some(root) = artifacts_root() else {
-        eprintln!("skip: set BOOKCLERK_PLUGIN_ARTIFACTS");
+async fn staged_s3_guest_layout() {
+    let Some(plugin_dir) = staged_dir("s3") else {
         return;
     };
-    let plugin_dir = root.join("s3");
-    if !plugin_dir.join("plugin.toml").is_file() {
-        eprintln!("skip: s3 not staged");
-        return;
-    }
     assert!(plugin_dir.join("plugin.toml").is_file());
 }
 

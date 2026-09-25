@@ -607,11 +607,12 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../../../.github/workflows/ci.yml"
         ));
+        // Job key `postgres:` at the two-space jobs indent (not the service).
         let jobs = yml
-            .split("postgres-jobs:")
+            .split("\n  postgres:\n")
             .nth(1)
-            .expect("ci.yml postgres-jobs");
-        let job = jobs.split("ci-gate:").next().expect("postgres-jobs body");
+            .expect("ci.yml postgres job");
+        let job = jobs.split("ci-gate:").next().expect("postgres job body");
         let line = job
             .lines()
             .find(|l| l.trim_start().starts_with("postgres:"))

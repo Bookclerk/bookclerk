@@ -1,7 +1,7 @@
 //! `bookclerk-plugin package` — archive a plugin directory for distribution.
 //!
-//! Audience: release / CI packaging. Always available as a library function;
-//! the CLI subcommand is behind feature `tools`.
+//! Audience: release / CI packaging. Library function behind the
+//! `bookclerk-plugin package` subcommand.
 
 use std::fs::File;
 use std::io::Read;
@@ -12,7 +12,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use sha2::{Digest, Sha256};
 
-use crate::error::{Result, SdkError};
+use bookclerk_plugin_sdk::{Result, SdkError};
 
 /// Packages a plugin directory into `out_dir` as a `.tar.gz` plus `SHA256SUMS`.
 ///

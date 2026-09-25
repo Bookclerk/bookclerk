@@ -1,7 +1,7 @@
 //! Guest SDK transport and helper errors.
 //!
 //! Audience: plugin authors calling SDK helpers ([`crate::fetch_work_dir`],
-//! [`crate::fetch_work_dir`], authoring tools behind feature `tools`). These
+//! [`crate::fetch_work_dir`], and `bookclerk-plugin-tools`). These
 //! errors wrap stdio / framing / I/O failures — not storefront business logic,
 //! which should return [`bookclerk_plugin_abi::PluginError`] on the wire.
 

@@ -27,6 +27,17 @@ fn check_valid_workerd() {
 }
 
 #[test]
+fn check_accepts_leading_separator_from_cargo_alias() {
+    // `cargo plugin -- check <dir>` forwards `--` before the subcommand.
+    let dir = repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/valid-workerd");
+    let out = bookclerk_plugin()
+        .args(["--", "check", dir.to_str().unwrap()])
+        .output()
+        .expect("run check");
+    assert!(out.status.success(), "{:?}", out);
+}
+
+#[test]
 fn check_rejects_outbound_without_domains() {
     let dir =
         repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/invalid-outbound-no-domains");

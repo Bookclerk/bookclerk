@@ -33,9 +33,9 @@ mod spec;
 
 pub use platform::BACKEND;
 pub use spawn_path::{
-    require_absolute_or_name, require_absolute_spawn_path, require_existing_regular_file,
-    require_helper_beside_or_absolute, require_spawn_executable, require_under_root,
-    SpawnPathError,
+    canonicalize, require_absolute_or_name, require_absolute_spawn_path,
+    require_existing_regular_file, require_helper_beside_or_absolute, require_spawn_executable,
+    require_under_root, SpawnPathError,
 };
 pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
 
@@ -457,7 +457,7 @@ impl Policy {
 /// Returns `None` when the path does not exist, since a rule naming a missing
 /// path is an error rather than a wider grant.
 fn resolve(path: &Path) -> Option<PathBuf> {
-    std::fs::canonicalize(path).ok().map(strip_verbatim)
+    canonicalize(path).ok().map(strip_verbatim)
 }
 
 /// Drop the `\\?\` prefix Windows canonicalization adds.
@@ -710,7 +710,7 @@ pub fn ensure_dir(path: &Path) -> std::io::Result<PathBuf> {
     // kernel sees; a rule on the link alone would not cover the target. Same
     // spelling as `resolve`, so a scratch directory built here compares equal
     // to the allowlist entry derived from it.
-    std::fs::canonicalize(path).map(strip_verbatim)
+    canonicalize(path).map(strip_verbatim)
 }
 
 #[cfg(test)]

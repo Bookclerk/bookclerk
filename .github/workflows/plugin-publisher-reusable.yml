@@ -100,7 +100,7 @@ jobs:
         shell: bash
         run: cargo build --release -p "${{ inputs.plugin_package }}"
 
-      - name: Check + pack archive (SDK tools when present)
+      - name: Check + pack archive (bookclerk-plugin-tools when present)
         id: pack
         shell: bash
         env:
@@ -130,13 +130,33 @@ jobs:
             chmod +x "staging/${bin_name}"
           fi
 
-          # Prefer in-language SDK author tools (Rust bin) when this repo
-          # depends on bookclerk-plugin-sdk — same check/package as local CI.
+          # Prefer `cargo run -p bookclerk-plugin-tools --bin bookclerk-plugin`
+          # only when that package is a workspace member and exposes the
+          # binary. A dependency name (including bookclerk-plugin-sdk) is not
+          # enough; otherwise pack with tar below.
+          # publisher-tools-detect:begin
+          tools_detect=$(cat <<'PY'
+          import json, sys
+          meta = json.load(sys.stdin)
+          found = False
+          for pkg in meta.get("packages") or []:
+              if not isinstance(pkg, dict) or pkg.get("name") != "bookclerk-plugin-tools":
+                  continue
+              for target in pkg.get("targets") or []:
+                  if not isinstance(target, dict):
+                      continue
+                  if target.get("name") == "bookclerk-plugin" and "bin" in (target.get("kind") or []):
+                      found = True
+                      break
+          raise SystemExit(0 if found else 1)
+          PY
+          )
           if cargo metadata --no-deps --format-version 1 2>/dev/null \
-            | grep -q '"name":"bookclerk-plugin-sdk"'; then
-            cargo run -q -p bookclerk-plugin-sdk --features tools --bin bookclerk-plugin -- check staging
+            | python3 -c "$tools_detect"; then
+          # publisher-tools-detect:end
+            cargo run -q -p bookclerk-plugin-tools --bin bookclerk-plugin -- check staging
             # package emits bookclerk-plugin-<id>-<ver>-<target>.tar.gz + SHA256SUMS
-            cargo run -q -p bookclerk-plugin-sdk --features tools --bin bookclerk-plugin -- \
+            cargo run -q -p bookclerk-plugin-tools --bin bookclerk-plugin -- \
               package --out "$out" staging
             archive="$(ls -1 "$out"/bookclerk-plugin-"${PLUGIN_ID}"-*.tar.gz | head -1)"
             archive_name="$(basename "$archive")"

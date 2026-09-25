@@ -1,4 +1,4 @@
-//! Out-of-tree workerd smoke via the `bookclerk-workerd` library (feature `tools`).
+//! Out-of-tree workerd smoke via the `bookclerk-workerd` library.
 //!
 //! Audience: authors verifying a `runtime = "workerd"` plugin answers
 //! `describe()` without installing the full Bookclerk host. Downloads/ensures
@@ -25,8 +25,6 @@ use serde_json::{json, Value};
 ///
 /// Spawns unconfined `workerd serve` on a free loopback port (jailed guests use
 /// a listen FD via the launcher instead). Kills the child before returning.
-///
-/// **Feature gate:** `tools` (pulls `bookclerk-workerd`).
 ///
 /// # Arguments
 ///

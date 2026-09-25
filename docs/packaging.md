@@ -66,10 +66,11 @@ to ship). Commands and flags match across ecosystems; each SDK is
 `smoke` downloads the pinned Cloudflare `workerd` binary (no Rust
 `bookclerk-workerd` launcher required for TS/Python), materializes Cap’n Proto +
 bridge (including a per-isolate `BRIDGE_TOKEN`), and POSTs `describe` (plus the
-role `health` route) with `Authorization: Bearer …`. Rust `smoke` uses the
-`bookclerk-workerd` library crate behind the SDK’s optional **`tools`** feature
-(`cargo plugin` enables it; guest plugins leave it off so they do not pull
-workerd download deps). Pin + bridge copies are kept in sync by
+role `health` route) with `Authorization: Bearer …`. The Rust CLI lives in the
+**`bookclerk-plugin-tools`** crate (`cargo plugin` runs its `bookclerk-plugin`
+binary) and uses the `bookclerk-workerd` library for `smoke`; guest plugins
+depend only on `bookclerk-plugin-sdk`, so they never pull workerd download
+deps. Pin + bridge copies are kept in sync by
 `scripts/sync-workerd-pin.py` (`--check` in CI).
 
 Workerd packaging: authors import the language package

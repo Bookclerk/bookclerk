@@ -42,6 +42,102 @@ pub enum SpawnPathError {
     },
 }
 
+/// [`std::fs::canonicalize`] that also works inside a Windows AppContainer.
+///
+/// On Windows, `canonicalize` asks the mount manager for the DOS drive letter
+/// (`VOLUME_NAME_DOS`), which an AppContainer token may not query, so every
+/// path fails with "Access is denied" even when the file is readable. The
+/// fallback resolves the volume-relative final path from the open handle,
+/// re-attaches the caller's drive, and accepts it only when it opens as the
+/// very same file (volume serial + file index); otherwise the original error
+/// stands.
+///
+/// # Errors
+///
+/// Returns the [`std::fs::canonicalize`] error when the path cannot be
+/// resolved (or, on Windows, cannot be proven identical by handle).
+pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        #[cfg(windows)]
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            windows_final_path::same_drive(path).ok_or(err)
+        }
+        other => other,
+    }
+}
+
+/// Handle-based final-path resolution for [`canonicalize`].
+#[cfg(windows)]
+#[allow(unsafe_code)] // Win32 file-identity and final-path queries.
+mod windows_final_path {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Component, Path, PathBuf, Prefix};
+
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, VOLUME_NAME_NONE,
+    };
+
+    /// Opens `path` (file or directory) without requesting data access.
+    fn open(path: &Path) -> Option<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+            .open(path)
+            .ok()
+    }
+
+    /// Volume serial and file index: equal on both handles means one file.
+    fn identity(file: &std::fs::File) -> Option<(u32, u32, u32)> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: the handle is open for the duration of the call.
+        unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }.ok()?;
+        Some((
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        ))
+    }
+
+    /// `\\?\<drive>:` + the handle's volume-relative final path, if it is
+    /// provably the same file as `path`.
+    pub(super) fn same_drive(path: &Path) -> Option<PathBuf> {
+        let absolute = std::path::absolute(path).ok()?;
+        let drive = match absolute.components().next()? {
+            Component::Prefix(p) => match p.kind() {
+                Prefix::Disk(d) | Prefix::VerbatimDisk(d) => d,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let file = open(&absolute)?;
+        let mut buf = vec![0u16; 512];
+        loop {
+            // SAFETY: `buf` is a live writable buffer and the handle is open.
+            let len = unsafe {
+                GetFinalPathNameByHandleW(HANDLE(file.as_raw_handle()), &mut buf, VOLUME_NAME_NONE)
+            } as usize;
+            if len == 0 {
+                return None;
+            }
+            if len < buf.len() {
+                buf.truncate(len);
+                break;
+            }
+            buf.resize(len + 1, 0);
+        }
+        let rest = std::ffi::OsString::from_wide(&buf);
+        let mut resolved = std::ffi::OsString::from(format!(r"\\?\{}:", char::from(drive)));
+        resolved.push(rest);
+        let resolved = PathBuf::from(resolved);
+        let same = identity(&file)? == identity(&open(&resolved)?)?;
+        same.then_some(resolved)
+    }
+}
+
 /// True when `s` contains an interior NUL that would truncate a C argv/`CreateProcess` string.
 fn os_contains_nul(s: &OsStr) -> bool {
     #[cfg(unix)]
@@ -128,11 +224,10 @@ pub fn require_absolute_spawn_path(path: &Path) -> Result<PathBuf, SpawnPathErro
 pub fn require_spawn_executable(path: &Path) -> Result<PathBuf, SpawnPathError> {
     let path = require_absolute_or_name(path)?;
     if path.is_absolute() {
-        let canon =
-            std::fs::canonicalize(&path).map_err(|source| SpawnPathError::Canonicalize {
-                path: path.clone(),
-                source,
-            })?;
+        let canon = canonicalize(&path).map_err(|source| SpawnPathError::Canonicalize {
+            path: path.clone(),
+            source,
+        })?;
         if !canon.is_file() {
             return Err(SpawnPathError::NotFile(canon));
         }
@@ -164,11 +259,10 @@ pub fn require_existing_regular_file(path: &Path) -> Result<PathBuf, SpawnPathEr
         })?;
         cwd.join(path)
     };
-    let canon =
-        std::fs::canonicalize(&absolute).map_err(|source| SpawnPathError::Canonicalize {
-            path: absolute.clone(),
-            source,
-        })?;
+    let canon = canonicalize(&absolute).map_err(|source| SpawnPathError::Canonicalize {
+        path: absolute.clone(),
+        source,
+    })?;
     if !canon.is_file() {
         return Err(SpawnPathError::NotFile(canon));
     }
@@ -186,12 +280,11 @@ pub fn require_existing_regular_file(path: &Path) -> Result<PathBuf, SpawnPathEr
 pub fn require_under_root(path: &Path, root: &Path) -> Result<PathBuf, SpawnPathError> {
     let path = require_absolute_spawn_path(path)?;
     let root = require_absolute_spawn_path(root)?;
-    let root_canon =
-        std::fs::canonicalize(&root).map_err(|source| SpawnPathError::Canonicalize {
-            path: root.clone(),
-            source,
-        })?;
-    let path_canon = match std::fs::canonicalize(&path) {
+    let root_canon = canonicalize(&root).map_err(|source| SpawnPathError::Canonicalize {
+        path: root.clone(),
+        source,
+    })?;
+    let path_canon = match canonicalize(&path) {
         Ok(p) => p,
         Err(err) => {
             match std::fs::symlink_metadata(&path) {
@@ -226,7 +319,7 @@ pub fn require_under_root(path: &Path, root: &Path) -> Result<PathBuf, SpawnPath
                     source: err,
                 })?;
             let parent_canon =
-                std::fs::canonicalize(parent).map_err(|source| SpawnPathError::Canonicalize {
+                canonicalize(parent).map_err(|source| SpawnPathError::Canonicalize {
                     path: parent.to_path_buf(),
                     source,
                 })?;
@@ -274,10 +367,7 @@ pub fn require_helper_beside_or_absolute(
                 return require_spawn_executable(path);
             }
             if path.is_absolute() {
-                if let (Ok(left), Ok(right)) = (
-                    std::fs::canonicalize(path),
-                    std::fs::canonicalize(&expected),
-                ) {
+                if let (Ok(left), Ok(right)) = (canonicalize(path), canonicalize(&expected)) {
                     if left == right {
                         return require_spawn_executable(path);
                     }

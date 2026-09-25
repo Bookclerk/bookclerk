@@ -129,7 +129,7 @@ review responsibility (see GitHub issue #157).
 | Rust `missing_docs` | Workspace lint + `RUSTFLAGS=-D warnings` |
 | Rust private docs | Workspace `clippy::missing_docs_in_private_items` + `RUSTFLAGS=-D warnings` |
 | Rustdoc HTML / links | `./scripts/generate-api-docs.sh` (deny broken, private, and redundant intra-doc links plus invalid HTML/URLs/codeblocks; publish crates also deny missing crate-level docs) |
-| Rust doctests | `cargo test --doc` for every library on the full suite (selected packages when selective CI is on). Most crates have **zero** runnable `# Examples`; that is expected. Behavioral coverage is the `Test` step (`--lib --bins --tests`). |
+| Rust doctests | `cargo test --doc` for every library on the full suite (selected packages when selective CI is on). Most crates have **zero** runnable `# Examples`; that is expected. Behavioral coverage is the `Test` step (`--tests`: lib/bin unit tests + integration tests). |
 | Publish-crate Clippy docs | `missing_errors_doc` / `missing_panics_doc` on the ABI/manifest/SDK trio (including private items via `CLIPPY_CONF_DIR=clippy-publish`) |
 | Rust public section shape | Same Errors/Panics Clippy denies on selected packages (existence only) |
 | TypeScript JSDoc shape | Oxlint: `@param` / `@returns` **existence** on API surfaces (`ui/src/lib/**`, `packages/plugin-sdk/src/**`); description rules off |

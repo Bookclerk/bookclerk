@@ -25,8 +25,8 @@ fn join_component_under(root: &Path, name: &str) -> Result<PathBuf> {
     {
         bail!("refusing unsafe path component: {name}");
     }
-    let root_norm =
-        fs::canonicalize(root).with_context(|| format!("canonicalize root {}", root.display()))?;
+    let root_norm = bookclerk_sandbox::canonicalize(root)
+        .with_context(|| format!("canonicalize root {}", root.display()))?;
     let out = root_norm.join(name);
     if !out.starts_with(&root_norm) {
         bail!(
@@ -65,7 +65,8 @@ fn prepare_cache_dir(dir: &Path) -> Result<PathBuf> {
         bail!("refusing empty workerd cache dir");
     }
     fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    fs::canonicalize(dir).with_context(|| format!("canonicalize cache {}", dir.display()))
+    bookclerk_sandbox::canonicalize(dir)
+        .with_context(|| format!("canonicalize cache {}", dir.display()))
 }
 
 /// Unique same-directory staging path for an exclusive install attempt.

@@ -1,0 +1,28 @@
+[package]
+name = "bookclerk-plugin-e2e"
+description = "End-to-end suite against a staged first-party plugin installation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# The `native_gateway_probe` bin (test-only guest for tests/native_gateway.rs)
+# links the SDK only; host crates stay dev-dependencies.
+[dependencies]
+async-trait.workspace = true
+bookclerk-plugin-manifest.workspace = true
+bookclerk-plugin-sdk.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time", "net"] }
+
+[dev-dependencies]
+bookclerk-config.workspace = true
+bookclerk-plugin-host.workspace = true
+bookclerk-sandbox.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

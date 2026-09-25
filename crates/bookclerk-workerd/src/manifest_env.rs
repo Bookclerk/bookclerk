@@ -11,7 +11,7 @@ fn join_plugin_toml(root: &Path) -> Result<PathBuf> {
     if root.as_os_str().is_empty() {
         bail!("refusing empty plugin root");
     }
-    let root_norm = match fs::canonicalize(root) {
+    let root_norm = match bookclerk_sandbox::canonicalize(root) {
         Ok(c) => c,
         Err(_) => root.to_path_buf(),
     };

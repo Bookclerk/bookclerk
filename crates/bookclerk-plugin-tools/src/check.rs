@@ -1,14 +1,14 @@
 //! `bookclerk-plugin check` and optional workerd embed sync.
 //!
 //! Audience: authors validating on-disk plugin layout before packaging or
-//! loading. Always available (no `tools` feature required for these library
-//! entry points); the CLI wrapper lives behind feature `tools`.
+//! loading. Library entry points back the `bookclerk-plugin check` and
+//! `sync-embed` subcommands.
 
 use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_manifest::{parse, Entrypoint, PluginRuntimeKind};
 
-use crate::error::{Result, SdkError};
+use bookclerk_plugin_sdk::{Result, SdkError};
 
 /// Validates `plugin.toml` and the on-disk layout under `plugin_dir`.
 ///
@@ -276,7 +276,7 @@ pub fn check_main_module_source(
 
 /// Optionally vendors the workerd JS embed under the plugin modules tree.
 ///
-/// Writes [`crate::workerd::EMBED_BOOKCLERK_PLUGIN_JS_SRC`] to
+/// Writes [`bookclerk_plugin_sdk::workerd::EMBED_BOOKCLERK_PLUGIN_JS_SRC`] to
 /// `modules/@bookclerk/plugin-sdk/workerd.js` (paths from the manifest). Hosts
 /// normally inject this package at runtime — use sync only for offline /
 /// hermetic trees.
@@ -320,7 +320,11 @@ pub fn sync_embed(plugin_dir: &Path) -> Result<String> {
         .join("plugin-sdk");
     std::fs::create_dir_all(&dest_dir).map_err(SdkError::from)?;
     let dest = dest_dir.join("workerd.js");
-    std::fs::write(&dest, crate::workerd::EMBED_BOOKCLERK_PLUGIN_JS_SRC).map_err(SdkError::from)?;
+    std::fs::write(
+        &dest,
+        bookclerk_plugin_sdk::workerd::EMBED_BOOKCLERK_PLUGIN_JS_SRC,
+    )
+    .map_err(SdkError::from)?;
     Ok(format!(
         "synced {} (optional vendor; prefer package import + bookclerk-workerd inject)",
         dest.display()

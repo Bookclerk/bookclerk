@@ -1,7 +1,6 @@
-//! CLI entry for the `bookclerk-plugin` binary (feature `tools`).
+//! CLI entry for the `bookclerk-plugin` binary.
 //!
-//! Audience: humans and CI invoking authoring subcommands. Guest plugin crates
-//! should leave feature `tools` off so they do not link `bookclerk-workerd`.
+//! Audience: humans and CI invoking authoring subcommands.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -11,15 +10,12 @@ use std::process::ExitCode;
 
 use bookclerk_plugin_manifest::{format_manifest, parse};
 
-use super::{check_plugin, package_plugin, smoke_plugin, sync_embed};
+use crate::{check_plugin, package_plugin, smoke_plugin, sync_embed};
 
 /// Runs the authoring CLI (`check` / `fmt` / `sync-embed` / `package` / `smoke`).
 ///
 /// Reads `std::env::args` after the binary name. Unknown commands or missing
 /// required flags print usage to stderr and return exit code `2`.
-///
-/// **Feature gate:** available only with `--features tools` (also required by
-/// the `bookclerk-plugin` binary).
 ///
 /// # Returns
 ///
@@ -31,11 +27,16 @@ use super::{check_plugin, package_plugin, smoke_plugin, sync_embed};
 /// ```ignore
 /// // from src/bin/bookclerk-plugin.rs
 /// fn main() -> std::process::ExitCode {
-///     bookclerk_plugin_sdk::tools::run_tools_cli()
+///     bookclerk_plugin_tools::run_tools_cli()
 /// }
 /// ```
 pub fn run() -> ExitCode {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
+    // `cargo plugin -- check .` forwards a literal `--` because the alias
+    // already ends with one.
+    if args.first().map(String::as_str) == Some("--") {
+        args.remove(0);
+    }
     if args.is_empty() {
         eprint_usage();
         return ExitCode::from(2);

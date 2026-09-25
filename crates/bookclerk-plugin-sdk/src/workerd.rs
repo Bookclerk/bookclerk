@@ -18,7 +18,7 @@
 //! `bookclerk-workerd` injects `@bookclerk/plugin-sdk/workerd` (and the package
 //! root) into the isolate — authors do not vendor a relative filepath. Optional
 //! offline vendors can copy [`EMBED_BOOKCLERK_PLUGIN_JS_SRC`] via
-//! `bookclerk-plugin sync-embed` (feature `tools`).
+//! `bookclerk-plugin sync-embed` (crate `bookclerk-plugin-tools`).
 //!
 //! Layout (see `examples/plugins-echo-workerd-rust/`):
 //!
@@ -52,6 +52,6 @@ pub const EMBED_BOOKCLERK_PLUGIN_JS: &str = "bookclerk_plugin.js";
 ///
 /// Contains the `BookclerkEntrypoint` base class, the named `*Entrypoint`
 /// bases, and the `RpcTarget` stream classes mirrored by the npm package. Written to
-/// `modules/@bookclerk/plugin-sdk/workerd.js` by [`crate::tools::sync_embed`]
-/// when authors need an offline vendor (feature `tools`).
+/// `modules/@bookclerk/plugin-sdk/workerd.js` by `bookclerk-plugin sync-embed`
+/// (crate `bookclerk-plugin-tools`) when authors need an offline vendor.
 pub const EMBED_BOOKCLERK_PLUGIN_JS_SRC: &str = include_str!("../embed/bookclerk_plugin.js");

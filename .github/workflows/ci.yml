@@ -20,48 +20,43 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
-  # Selective PR CI (#157). Keep "0" (shadow) until representative PRs have
-  # executed the selective command branches. When "1", job/step selection
-  # follows the planner; merge_group / main still force full_suite via
-  # --force-full. execute_full_suite collapses to plan.full_suite when
-  # selection is on.
-  SELECTIVE_CI: "0"
+  # Selective PR CI (#157). "0" = shadow: every job runs at full scope and the
+  # selective prediction is recorded in the plan summary for audit. "1" = jobs
+  # and checks follow the prediction. merge_group / main always --force-full.
+  SELECTIVE_CI: "1"
 
+# Every job below `plan` downloads the `ci-plan` artifact, validates it
+# (schema, run id, checked-out commit) and runs checks through
+# `scripts/ci-exec.py run <check>`, which issues the check's prerequisites
+# first. `if:` gates read the same artifact via the plan job's outputs.
+# scripts/tests/test_ci_contract.py keeps this file and the planner in sync.
 jobs:
   plan:
     name: plan
     runs-on: ubuntu-latest
     outputs:
-      full_suite: ${{ steps.plan.outputs.full_suite }}
-      ui: ${{ steps.plan.outputs.ui }}
-      ts_sdk: ${{ steps.plan.outputs.ts_sdk }}
-      python_sdk: ${{ steps.plan.outputs.python_sdk }}
-      abi_sync: ${{ steps.plan.outputs.abi_sync }}
-      build_app_platform: ${{ steps.plan.outputs.build_app_platform }}
-      build_app_optional: ${{ steps.plan.outputs.build_app_optional }}
-      build_app_examples: ${{ steps.plan.outputs.build_app_examples }}
-      confinement: ${{ steps.plan.outputs.confinement }}
-      tray: ${{ steps.plan.outputs.tray }}
-      store_free: ${{ steps.plan.outputs.store_free }}
-      release: ${{ steps.plan.outputs.release }}
-      docs_markdown: ${{ steps.plan.outputs.docs_markdown }}
-      rust_packages: ${{ steps.plan.outputs.rust_packages }}
-      rust_doc_packages: ${{ steps.plan.outputs.rust_doc_packages }}
-      rust_doctest_packages: ${{ steps.plan.outputs.rust_doctest_packages }}
-      rust_package_count: ${{ steps.plan.outputs.rust_package_count }}
-      # Execution gate: true in shadow (SELECTIVE_CI!=1) or when the planner
-      # predicts full_suite. Job/step selection and cargo package targeting use
-      # this; ``full_suite`` above stays the unmodified prediction for reports.
-      execute_full_suite: ${{ steps.flags.outputs.execute_full_suite }}
-      run_rust: ${{ steps.flags.outputs.run_rust }}
-      run_ui: ${{ steps.flags.outputs.run_ui }}
-      run_docs: ${{ steps.flags.outputs.run_docs }}
-      run_sdk: ${{ steps.flags.outputs.run_sdk }}
-      run_build_app: ${{ steps.flags.outputs.run_build_app }}
-      run_confinement: ${{ steps.flags.outputs.run_confinement }}
-      run_tray: ${{ steps.flags.outputs.run_tray }}
-      run_release: ${{ steps.flags.outputs.run_release }}
-      run_store_free: ${{ steps.flags.outputs.run_store_free }}
+      mode: ${{ steps.resolve.outputs.mode }}
+      job_check: ${{ steps.resolve.outputs.job_check }}
+      job_release: ${{ steps.resolve.outputs.job_release }}
+      job_confinement: ${{ steps.resolve.outputs.job_confinement }}
+      job_native_gateway: ${{ steps.resolve.outputs.job_native_gateway }}
+      job_tray: ${{ steps.resolve.outputs.job_tray }}
+      job_postgres: ${{ steps.resolve.outputs.job_postgres }}
+      check_ui: ${{ steps.resolve.outputs.check_ui }}
+      check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
+      check_python_sdk: ${{ steps.resolve.outputs.check_python_sdk }}
+      check_author_surface: ${{ steps.resolve.outputs.check_author_surface }}
+      check_fmt: ${{ steps.resolve.outputs.check_fmt }}
+      check_clippy: ${{ steps.resolve.outputs.check_clippy }}
+      check_clippy_publish: ${{ steps.resolve.outputs.check_clippy_publish }}
+      check_api_docs: ${{ steps.resolve.outputs.check_api_docs }}
+      check_doctest: ${{ steps.resolve.outputs.check_doctest }}
+      check_store_free: ${{ steps.resolve.outputs.check_store_free }}
+      check_rust_test: ${{ steps.resolve.outputs.check_rust_test }}
+      check_e2e: ${{ steps.resolve.outputs.check_e2e }}
+      check_needs_cargo: ${{ steps.resolve.outputs.check_needs_cargo }}
+      check_needs_node: ${{ steps.resolve.outputs.check_needs_node }}
+      release_mode: ${{ steps.resolve.outputs.release_mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,8 +89,20 @@ jobs:
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
 
-      - name: Run planner unit tests
-        run: python3 scripts/tests/test_ci_plan.py -q
+      - name: Install CI test requirements
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/ci-venv"
+          "$RUNNER_TEMP/ci-venv/bin/pip" install --require-hashes -r scripts/tests/requirements.txt
+
+      - name: Planner, executor and workflow-contract tests
+        run: |
+          set -euo pipefail
+          PY="$RUNNER_TEMP/ci-venv/bin/python"
+          "$PY" scripts/tests/test_ci_plan.py
+          "$PY" scripts/tests/test_ci_relations.py
+          "$PY" scripts/tests/test_ci_contract.py
+          "$PY" scripts/tests/test_plugin_publisher.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
@@ -103,8 +110,8 @@ jobs:
       - name: Private-docs lint regression
         run: python3 scripts/tests/test_private_docs_lint.py
 
-      - name: Compute CI plan
-        id: plan
+      - name: Resolve CI plan
+        id: resolve
         run: |
           set -euo pipefail
           EXTRA=()
@@ -112,124 +119,46 @@ jobs:
           if [ "${{ github.event_name }}" = "merge_group" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
             EXTRA+=(--force-full)
           fi
-          python3 scripts/ci-plan.py \
+          python3 scripts/ci-exec.py resolve \
             --base "${{ steps.shas.outputs.base }}" \
             --head "${{ steps.shas.outputs.head }}" \
-            --format github-output \
-            --write-summary \
+            --selective "$SELECTIVE_CI" \
             "${EXTRA[@]+"${EXTRA[@]}"}"
-          python3 scripts/ci-plan.py \
-            --base "${{ steps.shas.outputs.base }}" \
-            --head "${{ steps.shas.outputs.head }}" \
-            --format json \
-            "${EXTRA[@]+"${EXTRA[@]}"}" > ci-plan.json
-
-      - name: Shadow mode notice
-        if: env.SELECTIVE_CI != '1'
-        run: |
-          {
-            echo "## Selective CI shadow mode"
-            echo ""
-            echo "\`SELECTIVE_CI\` is \`${{ env.SELECTIVE_CI }}\`: the planner still"
-            echo "records predicted skip/run decisions (\`full_suite\` and surface"
-            echo "flags) while \`execute_full_suite=true\` forces the full command"
-            echo "baseline so predictions can be compared safely."
-            echo "Flip \`SELECTIVE_CI\` to \`1\` after representative PR plans look correct."
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Derive run flags
-        id: flags
-        run: |
-          set -euo pipefail
-          FULL="${{ steps.plan.outputs.full_suite }}"
-          SEL="${{ env.SELECTIVE_CI }}"
-          # Execution vs prediction: shadow (SELECTIVE_CI!=1) always executes the
-          # full baseline; planner ``full_suite`` remains the reported prediction.
-          if [ "$SEL" != "1" ] || [ "$FULL" = "true" ]; then
-            echo "execute_full_suite=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "execute_full_suite=false" >> "$GITHUB_OUTPUT"
-          fi
-          # When shadowing or the plan predicts full_suite, every job runs.
-          if [ "$SEL" != "1" ] || [ "$FULL" = "true" ]; then
-            echo "run_rust=true" >> "$GITHUB_OUTPUT"
-            echo "run_ui=true" >> "$GITHUB_OUTPUT"
-            echo "run_docs=true" >> "$GITHUB_OUTPUT"
-            echo "run_sdk=true" >> "$GITHUB_OUTPUT"
-            echo "run_build_app=true" >> "$GITHUB_OUTPUT"
-            echo "run_confinement=true" >> "$GITHUB_OUTPUT"
-            echo "run_tray=true" >> "$GITHUB_OUTPUT"
-            echo "run_release=true" >> "$GITHUB_OUTPUT"
-            echo "run_store_free=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Selective PR path (SELECTIVE_CI=1 and plan.full_suite=false).
-          COUNT="${{ steps.plan.outputs.rust_package_count }}"
-          if [ "${COUNT:-0}" != "0" ]; then
-            echo "run_rust=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_rust=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "run_ui=${{ steps.plan.outputs.ui }}" >> "$GITHUB_OUTPUT"
-          # Docs job: markdown-only changes still skip heavy API generation unless
-          # a language surface is affected; rust/ts/python flags drive generate.
-          if [ "${{ steps.plan.outputs.ui }}" = "true" ] \
-            || [ "${{ steps.plan.outputs.ts_sdk }}" = "true" ] \
-            || [ "${{ steps.plan.outputs.python_sdk }}" = "true" ] \
-            || [ "${COUNT:-0}" != "0" ]; then
-            echo "run_docs=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_docs=false" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "${{ steps.plan.outputs.abi_sync }}" = "true" ] \
-            || [ "${{ steps.plan.outputs.ts_sdk }}" = "true" ] \
-            || [ "${{ steps.plan.outputs.python_sdk }}" = "true" ]; then
-            echo "run_sdk=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_sdk=false" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "${{ steps.plan.outputs.build_app_platform }}" = "true" ] \
-            || [ "${{ steps.plan.outputs.build_app_optional }}" = "true" ] \
-            || [ "${{ steps.plan.outputs.build_app_examples }}" = "true" ]; then
-            echo "run_build_app=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_build_app=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "run_confinement=${{ steps.plan.outputs.confinement }}" >> "$GITHUB_OUTPUT"
-          echo "run_tray=${{ steps.plan.outputs.tray }}" >> "$GITHUB_OUTPUT"
-          echo "run_release=${{ steps.plan.outputs.release }}" >> "$GITHUB_OUTPUT"
-          echo "run_store_free=${{ steps.plan.outputs.store_free }}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-plan
-          path: ci-plan.json
+          path: ${{ runner.temp }}/ci-plan/ci-plan.json
           if-no-files-found: error
 
   check:
     name: fmt / clippy / test
     needs: plan
+    if: needs.plan.outputs.job_check == 'true'
     runs-on: ubuntu-latest
+    env:
+      BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
+      BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python3 scripts/ci-exec.py validate
+
       - name: Install Rust toolchain
-        if: needs.plan.outputs.run_rust == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_store_free == 'true'
+        if: needs.plan.outputs.check_needs_cargo == 'true'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Install Rust toolchain (fmt only)
-        if: needs.plan.outputs.run_rust != 'true' && needs.plan.outputs.run_docs != 'true' && needs.plan.outputs.run_sdk != 'true' && needs.plan.outputs.run_build_app != 'true' && needs.plan.outputs.run_store_free != 'true'
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
-        with:
-          toolchain: stable
-          components: rustfmt
-
       - name: Install Node.js
-        if: needs.plan.outputs.run_ui == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_release == 'true'
+        if: needs.plan.outputs.check_needs_node == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -239,269 +168,82 @@ jobs:
             packages/plugin-sdk/package-lock.json
 
       - name: Install capnproto
-        if: needs.plan.outputs.run_rust == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_store_free == 'true'
+        if: needs.plan.outputs.check_needs_cargo == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
       - name: Cache cargo
-        if: needs.plan.outputs.run_rust == 'true' || needs.plan.outputs.run_docs == 'true' || needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.run_store_free == 'true'
+        if: needs.plan.outputs.check_needs_cargo == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           env-vars: RUSTFLAGS
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build UI
-        if: needs.plan.outputs.run_ui == 'true' || needs.plan.outputs.run_build_app == 'true' || needs.plan.outputs.execute_full_suite == 'true'
-        run: |
-          cd ui
-          npm ci
-          npm run lint
-          npm run test:safe-html
-          npm run build
-
-      - name: Author surface check
-        if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.run_rust == 'true'
-        run: ./scripts/check-author-surface.sh
+      - name: UI lint, tests and build
+        if: needs.plan.outputs.check_ui == 'true'
+        run: python3 scripts/ci-exec.py run ui
 
       - name: Plugin SDK ABI schema drift check
-        if: needs.plan.outputs.run_sdk == 'true'
-        run: |
-          python3 scripts/gen-plugin-abi.py --check
-          python3 scripts/sync-workerd-pin.py --check
-          cd packages/plugin-sdk
-          npm ci
-          npm run build
-          # The isolate embed is bundled from src/ by `npm run build`; a stale
-          # committed bundle (or mirror) is drift.
-          git diff --exit-code -- embed/bookclerk_plugin.js
-          npm run lint
-          npm run test:tools
-          npm run test:path-security
-          npm run test:db-value
-          npm run test:plugin-migrations
-          npm run test:entrypoints
-          npm run test:entrypoints-codec
+        if: needs.plan.outputs.check_plugin_sdk_abi == 'true'
+        run: python3 scripts/ci-exec.py run plugin_sdk_abi
 
       - name: Python plugin SDK tools conformance
-        if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.python_sdk == 'true'
-        run: |
-          python3 -m venv .venv-ci-plugin-sdk
-          .venv-ci-plugin-sdk/bin/pip install -e "packages/plugin-sdk-python[dev,docs]"
-          .venv-ci-plugin-sdk/bin/ruff check packages/plugin-sdk-python
-          .venv-ci-plugin-sdk/bin/pytest packages/plugin-sdk-python/tests -q
+        if: needs.plan.outputs.check_python_sdk == 'true'
+        run: python3 scripts/ci-exec.py run python_sdk
 
-      - name: Rust plugin SDK tools conformance
-        if: needs.plan.outputs.run_sdk == 'true'
-        run: cargo test -p bookclerk-plugin-sdk --features tools --test tools_conformance
+      - name: Author surface check
+        if: needs.plan.outputs.check_author_surface == 'true'
+        run: python3 scripts/ci-exec.py run author_surface
 
       - name: Format
-        run: cargo fmt --all -- --check
+        if: needs.plan.outputs.check_fmt == 'true'
+        run: python3 scripts/ci-exec.py run fmt
 
       - name: Clippy
-        if: needs.plan.outputs.run_rust == 'true'
-        run: |
-          set -euo pipefail
-          # `-D missing_errors_doc` / `missing_panics_doc` enforce Google-style
-          # section *existence* on public items (prose quality is review-only).
-          # Private-item section checks use CLIPPY_CONF_DIR=clippy-publish below.
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
-            cargo clippy --workspace --all-targets -- \
-              -D warnings \
-              -D clippy::missing_docs_in_private_items \
-              -D clippy::missing_errors_doc \
-              -D clippy::missing_panics_doc
-          else
-            PKGS="${{ needs.plan.outputs.rust_packages }}"
-            ARGS=()
-            for p in $PKGS; do ARGS+=(-p "$p"); done
-            cargo clippy "${ARGS[@]}" --all-targets -- \
-              -D warnings \
-              -D clippy::missing_docs_in_private_items \
-              -D clippy::missing_errors_doc \
-              -D clippy::missing_panics_doc
-          fi
+        if: needs.plan.outputs.check_clippy == 'true'
+        run: python3 scripts/ci-exec.py run clippy
 
       - name: Clippy publish-crate doc lints
-        if: needs.plan.outputs.run_sdk == 'true' || needs.plan.outputs.execute_full_suite == 'true'
-        env:
-          # Private items included for the publish trio only.
-          CLIPPY_CONF_DIR: ${{ github.workspace }}/clippy-publish
-        run: >
-          cargo clippy -p bookclerk-plugin-abi -p bookclerk-plugin-manifest
-          -p bookclerk-plugin-sdk --all-targets --
-          -D warnings
-          -D clippy::missing_errors_doc
-          -D clippy::missing_panics_doc
+        if: needs.plan.outputs.check_clippy_publish == 'true'
+        run: python3 scripts/ci-exec.py run clippy_publish
+
       - name: Generate API docs
-        if: needs.plan.outputs.run_docs == 'true'
-        run: |
-          set -euo pipefail
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
-            ./scripts/generate-api-docs.sh --check --all
-          else
-            ARGS=(--check)
-            DOC_PKGS="${{ needs.plan.outputs.rust_doc_packages }}"
-            for p in $DOC_PKGS; do ARGS+=(--rust-package "$p"); done
-            if [ "${{ needs.plan.outputs.ts_sdk }}" = "true" ]; then
-              ARGS+=(--typescript-sdk)
-            fi
-            if [ "${{ needs.plan.outputs.ui }}" = "true" ]; then
-              ARGS+=(--ui)
-            fi
-            if [ "${{ needs.plan.outputs.python_sdk }}" = "true" ]; then
-              ARGS+=(--python)
-            fi
-            # If only rust packages selected, still generate rust docs.
-            if [ -z "$DOC_PKGS" ] && [ "${{ needs.plan.outputs.ts_sdk }}" != "true" ] \
-              && [ "${{ needs.plan.outputs.ui }}" != "true" ] \
-              && [ "${{ needs.plan.outputs.python_sdk }}" != "true" ]; then
-              echo "No API doc surfaces selected; skipping"
-              exit 0
-            fi
-            ./scripts/generate-api-docs.sh "${ARGS[@]}"
-          fi
+        if: needs.plan.outputs.check_api_docs == 'true'
+        run: python3 scripts/ci-exec.py run api_docs
 
       - name: Explicit doctests
-        if: needs.plan.outputs.run_rust == 'true'
-        run: |
-          set -euo pipefail
-          # Compiles every library's rustdoc `# Examples`. Most crates have
-          # zero runnable examples (Google-style docs are prose-first); that
-          # is not a skip. Unit/integration tests run in the Test step.
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
-            cargo test --workspace --doc --all-features
-          else
-            PKGS="${{ needs.plan.outputs.rust_doctest_packages }}"
-            if [ -z "${PKGS}" ]; then
-              echo "No doctestable packages in plan; skipping cargo test --doc"
-              exit 0
-            fi
-            ARGS=()
-            for p in $PKGS; do ARGS+=(-p "$p"); done
-            cargo test "${ARGS[@]}" --doc --all-features
-          fi
-
-      - name: Plugin host without in-process sources
-        if: needs.plan.outputs.run_store_free == 'true'
-        run: cargo check -p bookclerk-plugin-host --no-default-features
+        if: needs.plan.outputs.check_doctest == 'true'
+        run: python3 scripts/ci-exec.py run doctest
 
       - name: Hosts build store-free, and stay cipher-free
-        if: needs.plan.outputs.run_store_free == 'true'
-        run: |
-          cargo clippy -p bookclerk-cli -p bookclerkd --no-default-features \
-            --all-targets -- -D warnings
-          ./scripts/check-store-free-hosts.sh
-          ./scripts/check-plugin-architecture.sh
-
-      - name: Build app (platform + optional + examples)
-        if: needs.plan.outputs.run_build_app == 'true'
-        run: |
-          set -euo pipefail
-          ARGS=()
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
-            || [ "${{ needs.plan.outputs.build_app_platform }}" = "true" ]; then
-            ARGS+=(--platform)
-          fi
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
-            || [ "${{ needs.plan.outputs.build_app_optional }}" = "true" ]; then
-            ARGS+=(--optional)
-          fi
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
-            || [ "${{ needs.plan.outputs.build_app_examples }}" = "true" ]; then
-            ARGS+=(--examples)
-          fi
-          if [ ${#ARGS[@]} -eq 0 ]; then
-            ARGS=(--platform)
-          fi
-          cargo build-app "${ARGS[@]}"
-
-      - name: Pinned workerd present beside helpers
-        if: needs.plan.outputs.run_build_app == 'true' && (needs.plan.outputs.build_app_platform == 'true' || needs.plan.outputs.execute_full_suite == 'true')
-        run: |
-          test -x target/debug/bookclerk-workerd
-          test -x target/debug/workerd
-          test -f target/debug/workerd.version
-
-      - name: Install platform guests into FILES_DIR
-        if: needs.plan.outputs.run_build_app == 'true' && (needs.plan.outputs.build_app_platform == 'true' || needs.plan.outputs.execute_full_suite == 'true')
-        env:
-          BOOKCLERK_FILES_DIR: ${{ runner.temp }}/BookclerkFiles
-        run: cargo install-platform --skip-build
-
-      - name: Stage optional plugins + reference examples
-        if: needs.plan.outputs.run_build_app == 'true' && (needs.plan.outputs.build_app_optional == 'true' || needs.plan.outputs.build_app_examples == 'true' || needs.plan.outputs.execute_full_suite == 'true')
-        env:
-          BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
-        run: |
-          set -euo pipefail
-          ARGS=(--skip-build)
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
-            || [ "${{ needs.plan.outputs.build_app_optional }}" = "true" ]; then
-            ARGS+=(--optional)
-          fi
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ] \
-            || [ "${{ needs.plan.outputs.build_app_examples }}" = "true" ]; then
-            ARGS+=(--examples)
-          fi
-          cargo stage-plugins "${ARGS[@]}"
+        if: needs.plan.outputs.check_store_free == 'true'
+        run: python3 scripts/ci-exec.py run store_free
 
       - name: Test
-        if: needs.plan.outputs.run_rust == 'true'
-        env:
-          BOOKCLERK_FILES_DIR: ${{ runner.temp }}/BookclerkFiles
-          BOOKCLERK_PLUGIN_ARTIFACTS: ${{ runner.temp }}/bookclerk-plugins
-          BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
-          BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
-          BOOKCLERK_WORKERD_BIN: ${{ github.workspace }}/target/debug/workerd
-        run: |
-          set -euo pipefail
-          if [ -n "${BOOKCLERK_SKIP_WORKERD:-}" ]; then
-            echo "CI must run the workerd contract (do not set BOOKCLERK_SKIP_WORKERD)" >&2
-            exit 1
-          fi
-          export PATH="${{ github.workspace }}/target/debug:$PATH"
-          NEED_SQLITE_GUEST=0
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
-            NEED_SQLITE_GUEST=1
-          else
-            case " ${{ needs.plan.outputs.rust_packages }} " in
-              *" bookclerk-plugin-host "*) NEED_SQLITE_GUEST=1 ;;
-            esac
-          fi
-          if [ "$NEED_SQLITE_GUEST" = 1 ]; then
-            # Production Cap'n leftover LIKE needs a guest binary compiled in
-            # this job. `cargo test -p bookclerk-plugin-host` does not rebuild
-            # dependency bins, so a stale snapshot binary advertises
-            # maxFunctionArgs=0 and fails host minimums.
-            cargo build -p bookclerk-plugin-database-sqlite
-          fi
-          if [ "${{ needs.plan.outputs.execute_full_suite }}" = "true" ]; then
-            # `--lib --bins --tests` keeps unit + integration tests and skips
-            # doctests (already run in "Explicit doctests"). `--tests` alone
-            # would drop `src/` unit tests.
-            cargo test --workspace --lib --bins --tests
-            cargo test -p bookclerk-plugin-database-sqlite --features host-helpers --lib --bins --tests
-          else
-            PKGS="${{ needs.plan.outputs.rust_packages }}"
-            ARGS=()
-            for p in $PKGS; do ARGS+=(-p "$p"); done
-            cargo test "${ARGS[@]}" --lib --bins --tests
-            case " $PKGS " in
-              *" bookclerk-plugin-database-sqlite "*)
-                cargo test -p bookclerk-plugin-database-sqlite --features host-helpers --lib --bins --tests
-                ;;
-            esac
-          fi
+        if: needs.plan.outputs.check_rust_test == 'true'
+        run: python3 scripts/ci-exec.py run rust_test
+
+      - name: Staged plugin installation (e2e)
+        if: needs.plan.outputs.check_e2e == 'true'
+        run: python3 scripts/ci-exec.py run e2e
 
   release:
     name: release build
     needs: plan
-    if: needs.plan.outputs.run_release == 'true'
+    if: needs.plan.outputs.job_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python3 scripts/ci-exec.py validate
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
@@ -509,6 +251,7 @@ jobs:
           toolchain: stable
 
       - name: Install Node.js
+        if: needs.plan.outputs.release_mode == 'full'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -527,29 +270,15 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build UI
-        run: |
-          cd ui
-          npm ci
-          npm run build
-
       - name: Build release binaries
         env:
           BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
-        run: cargo build-app --release --platform
-
-      - name: Helper binaries are present beside the hosts
-        run: |
-          test -x target/release/bookclerk-media-worker
-          test -x target/release/bookclerk-jail
-          test -x target/release/bookclerk-workerd
-          test -x target/release/workerd
-          test -f target/release/workerd.version
+        run: python3 scripts/ci-exec.py run release
 
   confinement:
     name: sandbox + jailed tiers (${{ matrix.os }})
     needs: plan
-    if: needs.plan.outputs.run_confinement == 'true'
+    if: needs.plan.outputs.job_confinement == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -557,6 +286,18 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python scripts/ci-exec.py validate
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
@@ -571,31 +312,58 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Clippy
-        run: >
-          cargo clippy -p bookclerk-sandbox -p bookclerk-media
-          -p bookclerk-media-worker -p bookclerk-jail
-          --all-targets -- -D warnings
+      - name: Confinement clippy + enforcement tests
+        run: python scripts/ci-exec.py run confinement
 
-      - name: Test
-        if: matrix.os != 'windows-latest'
-        env:
-          BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
-          BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
-        run: >
-          cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
-          -p bookclerk-jail
+  native-gateway:
+    name: native-behind-workerd gateway (${{ matrix.os }})
+    needs: plan
+    if: needs.plan.outputs.job_native_gateway == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Test
-        if: matrix.os == 'windows-latest'
-        env:
-          BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
-        run: >
-          cargo test -p bookclerk-sandbox -p bookclerk-media -p bookclerk-media-worker
-          -p bookclerk-jail -- --test-threads=1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
-      - name: Install capnproto (Windows native gateway)
-        if: matrix.os == 'windows-latest'
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python scripts/ci-exec.py validate
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install capnproto (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
+      - name: Install capnproto (macOS)
+        if: runner.os == 'macOS'
+        run: brew install capnp
+
+      - name: Install capnproto (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $url = "https://capnproto.org/capnproto-c++-win32-1.1.0.zip"
@@ -616,23 +384,13 @@ jobs:
           }
           echo $toolsDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Clippy native-behind-workerd Windows gateway
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo clippy -p bookclerk-workerd --all-targets -- -D warnings
-          cargo clippy -p bookclerk-plugin-sdk --features http --all-targets -- -D warnings
-          cargo clippy -p bookclerk-plugin-host --lib -- -D warnings
-
-      - name: Test named-pipe SOCKET_PROXY
-        if: matrix.os == 'windows-latest'
-        run: cargo test -p bookclerk-workerd --lib
+      - name: Native gateway smoke (+ Windows/macOS workerd checks)
+        run: python scripts/ci-exec.py run native_gateway
 
   tray:
     name: tray (${{ matrix.os }})
     needs: plan
-    if: needs.plan.outputs.run_tray == 'true'
+    if: needs.plan.outputs.job_tray == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -640,6 +398,18 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python scripts/ci-exec.py validate
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
@@ -654,16 +424,13 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Clippy bookclerk-tray
-        run: cargo clippy -p bookclerk-tray --all-targets -- -D warnings
+      - name: Tray clippy + tests
+        run: python scripts/ci-exec.py run tray
 
-      - name: Test bookclerk-tray
-        run: cargo test -p bookclerk-tray
-
-  postgres-jobs:
+  postgres:
     name: postgres ${{ matrix.postgres }}
     needs: plan
-    if: needs.plan.outputs.run_rust == 'true'
+    if: needs.plan.outputs.job_postgres == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -683,8 +450,19 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+    env:
+      BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+      BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python3 scripts/ci-exec.py validate
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
@@ -703,78 +481,28 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Postgres job-queue tests
-        env:
-          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
-        run: cargo test -p bookclerk-library --lib postgres_ -- --ignored --nocapture
-
-      - name: Postgres TOTP atomic tests
-        env:
-          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
-        run: cargo test -p bookclerk-library --lib postgres_totp -- --nocapture
-
-      - name: Postgres shared SQL-plan vectors
-        env:
-          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
-        run: cargo test -p bookclerk-library --lib typed_shared_vectors_on_postgres -- --ignored --nocapture
-
-      - name: Postgres guest page tests
-        env:
-          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
-        run: cargo test -p bookclerk-db-guest --lib postgres_ -- --ignored --nocapture
-
-      - name: Postgres plugin binding-schema isolation tests
-        env:
-          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
-        run: cargo test -p bookclerk-plugin-database-postgres --lib postgres_ -- --ignored --nocapture
-
-      - name: Postgres production RPC proxy LIKE boundary
-        env:
-          BOOKCLERK_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-          BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
-          BOOKCLERK_WORKERD_BIN: ${{ github.workspace }}/target/debug/workerd
-        run: |
-          set -euo pipefail
-          # Production spawn always goes through bookclerk-workerd; the guest
-          # binary alone is not enough after the mandatory front-door change
-          # (mirrors the main Test job's PATH / BOOKCLERK_WORKERD_BIN setup).
-          cargo build -p bookclerk-plugin-database-postgres -p bookclerk-workerd -p bookclerk-jail
-          cargo ensure-workerd
-          export PATH="${{ github.workspace }}/target/debug:$PATH"
-          cargo test -p bookclerk-plugin-host --lib production_rpc_proxy_keeps_like_through_postgres_guest -- --ignored --nocapture
+      - name: Postgres contract tests
+        run: python3 scripts/ci-exec.py run postgres
 
   ci-gate:
     name: CI Gate
-    needs: [plan, check, release, confinement, tray, postgres-jobs]
+    needs: [plan, check, release, confinement, native-gateway, tray, postgres]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Evaluate required jobs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A failed or skipped plan job leaves no artifact: download fails and
+      # so does the gate.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python3 scripts/ci-exec.py validate
+
+      - name: Compare job results with the expected execution
         env:
-          PLAN: ${{ needs.plan.result }}
-          CHECK: ${{ needs.check.result }}
-          RELEASE: ${{ needs.release.result }}
-          CONFINEMENT: ${{ needs.confinement.result }}
-          TRAY: ${{ needs.tray.result }}
-          POSTGRES_JOBS: ${{ needs.postgres-jobs.result }}
-        run: |
-          set -euo pipefail
-          echo "plan=$PLAN check=$CHECK release=$RELEASE confinement=$CONFINEMENT tray=$TRAY postgres-jobs=$POSTGRES_JOBS"
-          fail=0
-          for pair in "plan:$PLAN" "check:$CHECK" "release:$RELEASE" "confinement:$CONFINEMENT" "tray:$TRAY" "postgres-jobs:$POSTGRES_JOBS"; do
-            job="${pair%%:*}"
-            result="${pair#*:}"
-            case "$result" in
-              success|skipped) ;;
-              *)
-                echo "required job $job failed: $result"
-                fail=1
-                ;;
-            esac
-          done
-          exit "$fail"
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/ci-exec.py gate

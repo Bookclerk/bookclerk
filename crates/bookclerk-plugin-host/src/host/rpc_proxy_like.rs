@@ -300,12 +300,20 @@ async fn assert_like_through_production_proxy(config: &Config, plugin: &Discover
     assert_canonical_like_boundary(&sqls);
 }
 
+/// Skips when a first-party guest binary is missing, unless
+/// `BOOKCLERK_REQUIRE_TEST_GUESTS=1` (CI) demands it be built.
+fn missing_guest(package: &str) {
+    let hint = format!("build {package} (cargo build -p {package})");
+    if std::env::var("BOOKCLERK_REQUIRE_TEST_GUESTS").is_ok_and(|v| v == "1") {
+        panic!("BOOKCLERK_REQUIRE_TEST_GUESTS=1 but guest binary is missing: {hint}");
+    }
+    eprintln!("skipping: {hint}");
+}
+
 #[tokio::test]
 async fn production_rpc_proxy_keeps_like_through_sqlite_guest() {
     let Some(staged) = stage_first_party_guest("sqlite") else {
-        eprintln!(
-            "skipping: build bookclerk-plugin-database-sqlite (cargo build -p bookclerk-plugin-database-sqlite)"
-        );
+        missing_guest("bookclerk-plugin-database-sqlite");
         return;
     };
     let config = guest_config(&staged, "sqlite", None);
@@ -317,9 +325,7 @@ async fn production_rpc_proxy_keeps_like_through_sqlite_guest() {
 #[tokio::test]
 async fn postgres_guest_describes_through_workerd() {
     let Some(staged) = stage_first_party_guest("postgres") else {
-        eprintln!(
-            "skipping: build bookclerk-plugin-database-postgres (cargo build -p bookclerk-plugin-database-postgres)"
-        );
+        missing_guest("bookclerk-plugin-database-postgres");
         return;
     };
     eprintln!(

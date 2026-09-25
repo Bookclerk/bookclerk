@@ -93,6 +93,68 @@ pub fn packages_for(root: &Path, sel: BuildSelection) -> Result<Vec<String>> {
     Ok(pkgs)
 }
 
+/// Resolves plugin manifest ids to discovered guests across every tier.
+///
+/// Lets CI and developers build or stage one guest (for example `libro`)
+/// without the rest of its tier.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `ids` - Plugin manifest ids (`plugin.toml` `id`); duplicates are ignored.
+///
+/// # Returns
+///
+/// Guests in the order first requested.
+///
+/// # Errors
+///
+/// Returns an error naming every unknown id, or when discovery fails.
+pub fn guests_by_id(root: &Path, ids: &[String]) -> Result<Vec<DiscoveredGuest>> {
+    let mut all = discover_platform(root)?;
+    all.extend(discover_optional(root)?);
+    all.extend(discover_examples(root)?);
+    let mut out: Vec<DiscoveredGuest> = Vec::new();
+    let mut unknown = Vec::new();
+    for id in ids {
+        if out.iter().any(|g| &g.id == id) {
+            continue;
+        }
+        match all.iter().find(|g| &g.id == id) {
+            Some(guest) => out.push(guest.clone()),
+            None => unknown.push(id.as_str()),
+        }
+    }
+    if !unknown.is_empty() {
+        let mut known: Vec<_> = all.iter().map(|g| g.id.as_str()).collect();
+        known.sort_unstable();
+        bail!("unknown plugin id(s) {unknown:?}; known: {known:?}");
+    }
+    Ok(out)
+}
+
+/// Cargo `-p` names needed to build `guests` (workerd guests ship `modules/`).
+///
+/// # Arguments
+///
+/// * `guests` - Guests resolved by [`guests_by_id`] or tier discovery.
+///
+/// # Returns
+///
+/// Unique native package names in input order.
+pub fn packages_for_guests(guests: &[DiscoveredGuest]) -> Vec<String> {
+    let mut pkgs = Vec::new();
+    for guest in guests {
+        push_native_package(&mut pkgs, guest);
+    }
+    pkgs
+}
+
+/// Whether `guest` is a platform guest (installed, never staged).
+fn is_platform_guest(guest: &DiscoveredGuest) -> bool {
+    guest.rel_dir.starts_with(PLATFORM_PLUGINS_DIR)
+}
+
 /// Canonical PluginKey used when staging/installing `guest`.
 ///
 /// Platform artifacts use `platform:bookclerk/{package}`. Workspace
@@ -172,8 +234,9 @@ pub fn build_selection(root: &Path, release: bool, sel: BuildSelection) -> Resul
 /// * `root` - Cargo workspace root directory.
 /// * `dest` - Filesystem path (`dest`).
 /// * `release` - When true, install under `target/release/`; otherwise `target/debug/`.
-/// * `optional` - Boolean flag `optional`.
-/// * `examples` - Boolean flag `examples`.
+/// * `optional` - Stage every guest under `crates/bookclerk-plugins/optional`.
+/// * `examples` - Stage every guest under `examples`.
+/// * `plugin_ids` - Additional individual guests by manifest id (`--plugin`).
 /// * `skip_build` - Boolean flag `skip_build`.
 ///
 /// # Returns
@@ -182,28 +245,44 @@ pub fn build_selection(root: &Path, release: bool, sel: BuildSelection) -> Resul
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
+/// Returns an error when nothing is selected, an id is unknown or names a
+/// platform guest (those are installed by `install-platform`), or the
+/// underlying I/O, parse, or build operation fails.
 pub fn stage_plugins(
     root: &Path,
     dest: &Path,
     release: bool,
     optional: bool,
     examples: bool,
+    plugin_ids: &[String],
     skip_build: bool,
 ) -> Result<()> {
-    if !optional && !examples {
-        bail!("stage-plugins requires --optional and/or --examples");
+    if !optional && !examples && plugin_ids.is_empty() {
+        bail!("stage-plugins requires --optional, --examples, and/or --plugin <id>");
+    }
+    let mut guests = Vec::new();
+    if optional {
+        guests.extend(discover_tier(root, OPTIONAL_PLUGINS_DIR)?);
+    }
+    if examples {
+        guests.extend(discover_examples(root)?);
+    }
+    for guest in guests_by_id(root, plugin_ids)? {
+        if is_platform_guest(&guest) {
+            bail!(
+                "`{}` is a platform guest; `cargo install-platform` installs it",
+                guest.id
+            );
+        }
+        if !guests.iter().any(|g| g.id == guest.id) {
+            guests.push(guest);
+        }
     }
     if !skip_build {
-        build_selection(
-            root,
-            release,
-            BuildSelection {
-                optional,
-                examples,
-                ..Default::default()
-            },
-        )?;
+        let pkgs = packages_for_guests(&guests);
+        if !pkgs.is_empty() {
+            build_packages(root, release, &pkgs)?;
+        }
     }
     if dest.exists() {
         fs::remove_dir_all(dest)
@@ -212,13 +291,6 @@ pub fn stage_plugins(
     fs::create_dir_all(dest).with_context(|| format!("create staging dir {}", dest.display()))?;
 
     let bin_dir = root.join("target").join(profile_dir(release));
-    let mut guests = Vec::new();
-    if optional {
-        guests.extend(discover_tier(root, OPTIONAL_PLUGINS_DIR)?);
-    }
-    if examples {
-        guests.extend(discover_examples(root)?);
-    }
     for guest in guests {
         stage_guest(root, &bin_dir, dest, &guest, None)?;
     }
@@ -480,7 +552,7 @@ pub fn stage_platform_for_pack(
 ///
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub fn stage_optional_for_pack(root: &Path, dest: &Path, release: bool) -> Result<()> {
-    stage_plugins(root, dest, release, true, false, false)
+    stage_plugins(root, dest, release, true, false, &[], false)
 }
 
 /// Lists platform plugin guests under `crates/bookclerk-plugins/platform`.
@@ -860,7 +932,17 @@ fn copy_dir_all(src: &Path, dest: &Path) -> Result<()> {
 }
 
 /// Runs `cargo build [-p …]` for the selected packages; inherits stdio and fails on non-zero exit.
-fn build_packages(root: &Path, release: bool, packages: &[String]) -> Result<()> {
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `release` - Build with `--release` when true.
+/// * `packages` - Cargo package names passed as `-p`.
+///
+/// # Errors
+///
+/// Returns an error when `cargo` cannot be spawned or exits non-zero.
+pub fn build_packages(root: &Path, release: bool, packages: &[String]) -> Result<()> {
     let mut cmd = cargo(root);
     cmd.arg("build");
     if release {
@@ -1302,5 +1384,48 @@ mode = "deny"
         assert!(seen.contains("echo_workerd_python"));
         assert!(seen.contains("echo_workerd_rust"));
         assert!(seen.contains("echo_workerd_fetch"));
+    }
+
+    #[test]
+    fn guests_by_id_resolves_across_tiers_in_request_order() {
+        let root = workspace_root();
+        let ids = ["libro", "echo_workerd_ts", "sqlite", "libro"].map(String::from);
+        let guests = guests_by_id(&root, &ids).expect("resolve");
+        let got: Vec<_> = guests.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(got, ["libro", "echo_workerd_ts", "sqlite"]);
+        assert_eq!(
+            packages_for_guests(&guests),
+            [
+                "bookclerk-plugin-source-libro",
+                "bookclerk-plugin-database-sqlite"
+            ],
+            "workerd guests contribute no Cargo package"
+        );
+    }
+
+    #[test]
+    fn guests_by_id_rejects_unknown_ids() {
+        let root = workspace_root();
+        let err = guests_by_id(&root, &["libro".into(), "nope".into()]).unwrap_err();
+        assert!(err.to_string().contains("\"nope\""), "{err}");
+    }
+
+    #[test]
+    fn stage_plugins_rejects_platform_ids_and_empty_selection() {
+        let root = workspace_root();
+        let dest = tempfile::tempdir().expect("tempdir");
+        let err = stage_plugins(
+            &root,
+            dest.path(),
+            false,
+            false,
+            false,
+            &["sqlite".into()],
+            true,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("platform guest"), "{err}");
+        let err = stage_plugins(&root, dest.path(), false, false, false, &[], true).unwrap_err();
+        assert!(err.to_string().contains("--plugin"), "{err}");
     }
 }

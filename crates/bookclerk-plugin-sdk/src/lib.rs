@@ -18,7 +18,7 @@
 //! | Workerd / Wasm guests | [`workerd`] + npm `@bookclerk/plugin-sdk` |
 //! | ABI DTOs / method names | [`protocol`] (re-exports `bookclerk-plugin-abi`) |
 //! | Database guest session / atomic execution | feature `db` → [`database_adapter`] |
-//! | Author CLI (`check` / `fmt` / `package` / `smoke`) | feature `tools` → [`tools`] |
+//! | Author CLI (`check` / `fmt` / `sync-embed` / `package` / `smoke`) | separate crate `bookclerk-plugin-tools` (`cargo plugin`) |
 //!
 //! ```toml
 //! # In a standalone plugin repo / workspace:
@@ -28,13 +28,13 @@
 //! # bookclerk-plugin-sdk = { …, features = ["db"] }
 //! ```
 //!
-//! Authoring helpers (`check` / `fmt` / `package` / `smoke`) live behind feature
-//! `tools` (pulls `bookclerk-workerd` for smoke only). Guest plugins should use
-//! default features.
+//! Authoring helpers (`check` / `fmt` / `sync-embed` / `package` / `smoke`)
+//! live in the separate `bookclerk-plugin-tools` crate so guests never link
+//! `bookclerk-workerd`:
 //!
 //! ```bash
-//! cargo run -p bookclerk-plugin-sdk --features tools --bin bookclerk-plugin -- check .
-//! cargo plugin -- smoke .   # alias enables --features tools
+//! cargo plugin -- check .   # alias for `cargo run -p bookclerk-plugin-tools --bin bookclerk-plugin --`
+//! cargo plugin -- smoke .
 //! ```
 //!
 //! # API documentation
@@ -66,7 +66,6 @@ mod manifest_caps;
 pub mod net;
 mod pass_fd;
 pub mod protocol;
-pub mod tools;
 pub mod workerd;
 
 pub use callback_tunnel::{TunnelGuest, TunnelHost, TunnelStream};

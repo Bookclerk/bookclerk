@@ -12,12 +12,15 @@ npm bridge described in `src/workerd.rs`.
 | --- | --- |
 | *(default)* | Cap'n Proto guest runner, fetch/upload path helpers, callback tunnel, ABI re-exports |
 | `db` | SeaORM ↔ Workers RPC DTO helpers for database guests |
-| `tools` | `bookclerk-plugin` author CLI (`check` / `fmt` / `package` / `smoke`) |
+| `http` | Native HTTPS through the workerd socket proxy |
 
-Guest plugins should leave `tools` off so they do not pull `bookclerk-workerd`.
+The `bookclerk-plugin` author CLI (`check` / `fmt` / `sync-embed` / `package` /
+`smoke`) lives in [`bookclerk-plugin-tools`](../bookclerk-plugin-tools), so
+guests depending on this SDK never pull `bookclerk-workerd`:
 
 ```bash
-cargo run -p bookclerk-plugin-sdk --features tools --bin bookclerk-plugin -- check .
+cargo plugin -- check .
+# same as: cargo run -p bookclerk-plugin-tools --bin bookclerk-plugin -- check .
 ```
 
 ## API documentation

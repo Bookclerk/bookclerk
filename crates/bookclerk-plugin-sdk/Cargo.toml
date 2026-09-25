@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-plugin-sdk"
-description = "Guest Bookclerk plugin SDK (Workers RPC ABI + BookclerkEntrypoint + stdio server + author tools)"
+description = "Guest Bookclerk plugin SDK (Workers RPC ABI + BookclerkEntrypoint + stdio server)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -40,32 +40,18 @@ http = [
     "dep:url",
     "dep:webpki-roots",
 ]
-# Author CLI (`bookclerk-plugin`) including workerd `smoke`. Guest plugins
-# should leave this off so they do not pull `bookclerk-workerd` / download deps.
-tools = ["dep:bookclerk-workerd"]
-
-[[bin]]
-name = "bookclerk-plugin"
-path = "src/bin/bookclerk-plugin.rs"
-required-features = ["tools"]
 
 [dependencies]
 async-trait.workspace = true
 bookclerk-plugin-abi.workspace = true
 bookclerk-plugin-manifest.workspace = true
-bookclerk-workerd = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["serde"] }
-flate2.workspace = true
-hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
-tar.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync", "time", "net"] }
 toml.workspace = true
 tracing.workspace = true
-ureq.workspace = true
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 cookie = { version = "0.18", optional = true }
@@ -90,13 +76,7 @@ webpki-roots = { version = "1", optional = true }
 libc = "0.2"
 
 [dev-dependencies]
-bookclerk-library.workspace = true
-bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
-
-[[test]]
-name = "tools_conformance"
-required-features = ["tools"]
 
 [package.metadata.docs.rs]
 all-features = true

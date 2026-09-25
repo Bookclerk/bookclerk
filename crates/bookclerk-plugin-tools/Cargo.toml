@@ -1,0 +1,31 @@
+[package]
+name = "bookclerk-plugin-tools"
+description = "Bookclerk plugin author CLI (`bookclerk-plugin`: check / fmt / sync-embed / package / smoke)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "bookclerk-plugin"
+path = "src/bin/bookclerk-plugin.rs"
+
+[dependencies]
+bookclerk-plugin-manifest.workspace = true
+bookclerk-plugin-sdk.workspace = true
+bookclerk-workerd.workspace = true
+flate2.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

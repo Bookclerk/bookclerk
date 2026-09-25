@@ -1037,6 +1037,41 @@ fn appcontainer_child_context(
         ),
     })?;
 
+    let env = appcontainer_child_env(std::env::vars_os(), &folder, &temp);
+    Ok((folder, env))
+}
+
+/// Profile-local variables the AppContainer child always gets from the jail.
+#[cfg(any(windows, test))]
+const APPCONTAINER_PROFILE_ENV: [&str; 3] = ["LOCALAPPDATA", "TEMP", "TMP"];
+
+/// Child environment for an AppContainer launch.
+///
+/// Mirrors the Unix jail, which `exec`s with its own environment: the caller
+/// that spawned `bookclerk-jail` already curated it (the plugin host clears
+/// the environment and sets only allowlisted and bootstrap variables such as
+/// `BOOKCLERK_PLUGIN_ROOT` / `BOOKCLERK_NATIVE_BACKEND`). Only the profile
+/// locations are replaced, so the guest never sees the host user's
+/// `LOCALAPPDATA` / `TEMP`, and the jail spec is never forwarded.
+///
+/// # Arguments
+///
+/// * `inherited` - The jail's environment (`std::env::vars_os()`).
+/// * `folder` - AppContainer profile folder (guest `LOCALAPPDATA`).
+/// * `temp` - Profile `Temp` directory (guest `TEMP` / `TMP`).
+#[cfg(any(windows, test))]
+fn appcontainer_child_env(
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+    folder: &Path,
+    temp: &Path,
+) -> Vec<(OsString, OsString)> {
+    let replaced = |key: &OsString| {
+        let key = key.to_string_lossy();
+        key.eq_ignore_ascii_case(crate::SPEC_ENV)
+            || APPCONTAINER_PROFILE_ENV
+                .iter()
+                .any(|k| key.eq_ignore_ascii_case(k))
+    };
     let mut env: Vec<(OsString, OsString)> = vec![
         (
             OsString::from("LOCALAPPDATA"),
@@ -1045,22 +1080,8 @@ fn appcontainer_child_context(
         (OsString::from("TEMP"), temp.as_os_str().to_os_string()),
         (OsString::from("TMP"), temp.as_os_str().to_os_string()),
     ];
-    // Required Windows runtime variables only — never reintroduce Bookclerk secrets.
-    for key in [
-        "SystemRoot",
-        "windir",
-        "SystemDrive",
-        "ComSpec",
-        "PATH",
-        "PATHEXT",
-        "NUMBER_OF_PROCESSORS",
-        "PROCESSOR_ARCHITECTURE",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            env.push((OsString::from(key), value));
-        }
-    }
-    Ok((folder, env))
+    env.extend(inherited.into_iter().filter(|(key, _)| !replaced(key)));
+    env
 }
 
 /// Resolve the AppContainer profile folder via `GetAppContainerFolderPath`.
@@ -1807,6 +1828,46 @@ use std::os::windows::ffi::OsStrExt;
 mod tests {
     use super::*;
     use crate::Policy;
+
+    #[test]
+    fn appcontainer_child_env_keeps_curated_env_and_replaces_profile_paths() {
+        let inherited = [
+            ("BOOKCLERK_PLUGIN_ROOT", "C:\\plugins\\probe"),
+            ("BOOKCLERK_NATIVE_BACKEND", "C:\\plugins\\probe\\probe.exe"),
+            ("SystemRoot", "C:\\Windows"),
+            ("LocalAppData", "C:\\Users\\host\\AppData\\Local"),
+            ("TEMP", "C:\\Users\\host\\Temp"),
+            ("tmp", "C:\\Users\\host\\Temp"),
+            (crate::SPEC_ENV, "{\"label\":\"x\"}"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let folder = Path::new("C:\\Users\\host\\AppData\\Local\\Packages\\bc.x\\AC");
+        let temp = folder.join("Temp");
+        let env = appcontainer_child_env(inherited, folder, &temp);
+        let get = |key: &str| {
+            let hits: Vec<_> = env
+                .iter()
+                .filter(|(k, _)| k.to_string_lossy().eq_ignore_ascii_case(key))
+                .map(|(_, v)| v.clone())
+                .collect();
+            assert!(hits.len() <= 1, "{key} set {} times", hits.len());
+            hits.into_iter().next()
+        };
+        assert_eq!(get("LOCALAPPDATA"), Some(folder.as_os_str().to_os_string()));
+        assert_eq!(get("TEMP"), Some(temp.as_os_str().to_os_string()));
+        assert_eq!(get("TMP"), Some(temp.as_os_str().to_os_string()));
+        assert_eq!(
+            get("BOOKCLERK_PLUGIN_ROOT"),
+            Some(OsString::from("C:\\plugins\\probe"))
+        );
+        assert!(get("BOOKCLERK_NATIVE_BACKEND").is_some());
+        assert!(get("SystemRoot").is_some());
+        assert_eq!(
+            get(crate::SPEC_ENV),
+            None,
+            "the jail spec must not reach the guest"
+        );
+    }
 
     #[test]
     fn deny_maps_to_no_network_caps() {

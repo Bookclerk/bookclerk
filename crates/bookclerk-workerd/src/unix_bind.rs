@@ -246,13 +246,12 @@ fn bind_pathname_short_addr(path: &Path) -> io::Result<UnixListener> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn abstract_listener_accepts_connect() {
         use std::os::linux::net::SocketAddrExt;
@@ -269,7 +268,6 @@ mod tests {
         let (_server, _) = listener.accept().expect("accept");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn bind_granted_uses_unix_abstract() {
         let dir = tempfile::tempdir().expect("tmpdir");
@@ -281,7 +279,6 @@ mod tests {
         assert!(addr.len() < 48, "unix-abstract address too long: {addr}");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn bind_socket_proxy_uses_proc_fd_pathname() {
         use std::os::fd::AsRawFd;
@@ -315,7 +312,6 @@ mod tests {
         let (_server, _) = proxy.listener.accept().expect("accept");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn bind_socket_proxy_survives_github_actions_sun_len() {
         let base = tempfile::tempdir().expect("tmpdir");
@@ -359,7 +355,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn child_process_connects_through_inherited_dir_fd() {
         use std::os::fd::AsRawFd;
@@ -396,7 +391,6 @@ mod tests {
         server.join().expect("server");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn pathname_bind_survives_sockaddr_un_overflow() {
         use std::os::fd::AsRawFd;

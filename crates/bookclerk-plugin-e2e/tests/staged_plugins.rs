@@ -1,13 +1,17 @@
 //! Host↔guest describe conformance against staged optional/example artifacts (+ platform in FILES_DIR).
 //!
 //! Requires:
-//! - `BOOKCLERK_PLUGIN_ARTIFACTS` — optional + examples (`cargo stage-plugins --optional --examples`)
+//! - `BOOKCLERK_PLUGIN_ARTIFACTS` — optional + examples (`cargo stage-plugins --optional --examples`,
+//!   or `--plugin <id>` for a subset run with `BOOKCLERK_STAGED_PLUGINS`)
 //! - platform guests under `$BOOKCLERK_FILES_DIR/plugins/` (`cargo install-platform`)
+//!
+//! See the crate docs for `BOOKCLERK_STAGED_PLUGINS` / `BOOKCLERK_REQUIRE_STAGED_PLUGINS`.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bookclerk_config::{Config, Paths};
+use bookclerk_plugin_e2e::{skip_or_fail, StagedScope};
 use bookclerk_plugin_host::{
     consent_request, discover_plugins, CliInvokeParams, Entrypoint, PluginFamily, PluginGrantStore,
     PluginSession, SearchCatalogParams, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
@@ -25,9 +29,10 @@ fn artifacts_dir() -> Option<PathBuf> {
 
 #[tokio::test]
 async fn staged_first_party_plugins_describe() {
+    let scope = StagedScope::from_env().unwrap_or_else(|e| panic!("{e}"));
     let Some(artifacts) = artifacts_dir() else {
-        eprintln!(
-            "skipping: set BOOKCLERK_PLUGIN_ARTIFACTS after `cargo stage-plugins --optional --examples`"
+        skip_or_fail(
+            "BOOKCLERK_PLUGIN_ARTIFACTS is unset (run `cargo stage-plugins --optional --examples`)",
         );
         return;
     };
@@ -40,7 +45,7 @@ async fn staged_first_party_plugins_describe() {
     let files = match std::env::var_os("BOOKCLERK_FILES_DIR") {
         Some(dir) => PathBuf::from(dir),
         None => {
-            eprintln!("skipping: set BOOKCLERK_FILES_DIR after `cargo install-platform`");
+            skip_or_fail("BOOKCLERK_FILES_DIR is unset (run `cargo install-platform`)");
             return;
         }
     };
@@ -75,35 +80,15 @@ async fn staged_first_party_plugins_describe() {
     grants.save(&config.paths().files_dir).expect("save grants");
 
     let ids: Vec<_> = plugins.iter().map(|p| p.manifest.id.as_str()).collect();
-    for expected in [
-        // platform (FILES_DIR)
-        "local",
-        "sqlite",
-        // optional (artifacts)
-        "audible",
-        "libro",
-        "chirp",
-        "graphicaudio",
-        "audiobookshelf",
-        "s3",
-        "d1",
-        "postgres",
-        // examples
-        "echo_native_rust",
-        "echo_native_node",
-        "echo_native_python",
-        "echo_workerd_ts",
-        "echo_workerd_python",
-        "echo_workerd_rust",
-        "echo_workerd_fetch",
-    ] {
+    eprintln!("staged_plugins: scope {scope:?}");
+    for expected in scope.required_ids() {
         assert!(
-            ids.contains(&expected),
+            ids.contains(&expected.as_str()),
             "expected plugin `{expected}` in {ids:?}"
         );
     }
 
-    for plugin in &plugins {
+    for plugin in plugins.iter().filter(|p| scope.includes(&p.manifest.id)) {
         assert_eq!(
             plugin.manifest.api_version, 3,
             "plugin `{}` must be api_version 3",

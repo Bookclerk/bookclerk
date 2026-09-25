@@ -1786,6 +1786,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-plugin-e2e"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bookclerk-config",
+ "bookclerk-plugin-host",
+ "bookclerk-plugin-manifest",
+ "bookclerk-plugin-sdk",
+ "bookclerk-sandbox",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "bookclerk-plugin-echo-native-rust"
 version = "0.1.0"
 dependencies = [
@@ -1881,18 +1896,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "bookclerk-library",
  "bookclerk-plugin-abi",
- "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-manifest",
- "bookclerk-workerd",
  "bytes",
  "chrono",
  "cookie",
  "cookie_store",
- "flate2",
  "futures",
- "hex",
  "http 1.5.0",
  "http-body",
  "http-body-util",
@@ -1905,8 +1915,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "sha2 0.11.0",
- "tar",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -1914,7 +1922,6 @@ dependencies = [
  "toml",
  "tower-service",
  "tracing",
- "ureq",
  "url",
  "uuid",
  "webpki-roots",
@@ -2025,6 +2032,22 @@ dependencies = [
  "tracing",
  "wiremock",
  "zip",
+]
+
+[[package]]
+name = "bookclerk-plugin-tools"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-plugin-manifest",
+ "bookclerk-plugin-sdk",
+ "bookclerk-workerd",
+ "flate2",
+ "hex",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]

@@ -103,8 +103,14 @@ cargo build-app --optional --examples   # optional + Cargo examples
 cargo install-platform                  # sqlite + local → FILES_DIR/plugins
 cargo stage-plugins --optional          # optional → target/plugin-artifacts
 cargo stage-plugins --examples --skip-build
-cargo test-staged                       # describe/health conformance smoke
+cargo test-staged                       # describe/health conformance smoke (bookclerk-plugin-e2e)
 ```
+
+The staged suite lives in `crates/bookclerk-plugin-e2e` so ordinary
+`bookclerk-plugin-host` tests never need a staged installation. Set
+`BOOKCLERK_STAGED_PLUGINS=libro,echo_workerd_ts` to check a subset (platform
+guests are always checked) and `BOOKCLERK_REQUIRE_STAGED_PLUGINS=1` to fail
+instead of skipping when staging roots are missing.
 
 Add `--release` to any alias for release builds. Override staging dir with
 `BOOKCLERK_PLUGIN_ARTIFACTS`. Forward host args after `--` (e.g. `cargo dev -- --help`).
@@ -423,6 +429,8 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 `capabilities.network.domains` is the **fetch** allowlist (workerd only). Raw TCP is `capabilities.network.tcp` (`host` + `ports`). The operator may add extra fetch hosts, TCP targets, and CIDRs; the guest `describe()` cannot. Default address-space policy is public Internet only — loopback, RFC1918, link-local, ULA, and metadata stay denied unless an explicit CIDR is granted. `allow_undeclared_public_redirects` lets fetch redirects leave the domain allowlist for **public** destinations only; it never implies those special ranges.
 
 When you need enforceable hostname allowlists for `fetch()`, ship a **workerd** plugin. Native plugins that need networking must use the SDK socket capability.
+
+The native path is exercised end to end on Linux, macOS and Windows by `cargo test -p bookclerk-plugin-e2e --test native_gateway`: a granted loopback port round-trips through the proxy, an ungranted live port is refused with `403`, and a direct socket from the nested jail is blocked (see [ci.md](ci.md#native-behind-workerd-gateway-smoke)).
 
 Workerd egress matching (shared `EgressPolicy` + `bridge/egress.js`):
 

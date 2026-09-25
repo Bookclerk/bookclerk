@@ -113,8 +113,8 @@ fn join_under(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf> {
             }
         }
     }
-    let root_norm =
-        fs::canonicalize(root).with_context(|| format!("canonicalize root {}", root.display()))?;
+    let root_norm = bookclerk_sandbox::canonicalize(root)
+        .with_context(|| format!("canonicalize root {}", root.display()))?;
     let mut out = root_norm.clone();
     for comp in rel.components() {
         if let Component::Normal(name) = comp {
@@ -132,8 +132,8 @@ fn require_under(root: &Path, path: &Path) -> Result<PathBuf> {
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         bail!("refusing path with '..': {}", path.display());
     }
-    let root_norm =
-        fs::canonicalize(root).with_context(|| format!("canonicalize root {}", root.display()))?;
+    let root_norm = bookclerk_sandbox::canonicalize(root)
+        .with_context(|| format!("canonicalize root {}", root.display()))?;
     // Lexical under-root barrier *before* canonicalize/symlink_metadata sinks.
     // Compare against both the caller root and its canonical form: Windows
     // canonicalize rewrites `C:\Users\RUNNER~1\...` to `\\?\C:\Users\runneradmin\...`,
@@ -155,7 +155,7 @@ fn require_under(root: &Path, path: &Path) -> Result<PathBuf> {
             root_norm.display()
         );
     }
-    let path_norm = match fs::canonicalize(&lexical) {
+    let path_norm = match bookclerk_sandbox::canonicalize(&lexical) {
         Ok(c) => c,
         Err(err) => {
             match fs::symlink_metadata(&lexical) {
@@ -191,7 +191,7 @@ fn require_under(root: &Path, path: &Path) -> Result<PathBuf> {
                         root_norm.display()
                     );
                 }
-                match fs::canonicalize(&cursor) {
+                match bookclerk_sandbox::canonicalize(&cursor) {
                     Ok(canon) => {
                         let mut out = canon;
                         for part in suffix.iter().rev() {
@@ -259,8 +259,8 @@ fn require_under(root: &Path, path: &Path) -> Result<PathBuf> {
 /// filesystem sink.
 fn ensure_dir_under(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf> {
     let rel = rel.as_ref();
-    let root_norm =
-        fs::canonicalize(root).with_context(|| format!("canonicalize root {}", root.display()))?;
+    let root_norm = bookclerk_sandbox::canonicalize(root)
+        .with_context(|| format!("canonicalize root {}", root.display()))?;
     let mut out = root_norm.clone();
     for comp in rel.components() {
         match comp {
@@ -276,8 +276,8 @@ fn ensure_dir_under(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf> {
         }
     }
     fs::create_dir_all(&out).with_context(|| format!("create {}", out.display()))?;
-    let canon =
-        fs::canonicalize(&out).with_context(|| format!("canonicalize {}", out.display()))?;
+    let canon = bookclerk_sandbox::canonicalize(&out)
+        .with_context(|| format!("canonicalize {}", out.display()))?;
     if !canon.starts_with(&root_norm) {
         bail!(
             "path {} escapes root {}",
@@ -294,8 +294,8 @@ fn ensure_dir_under(root: &Path, rel: impl AsRef<Path>) -> Result<PathBuf> {
 /// then writes through the canonical path in this function (sink + barrier colocated).
 fn write_file_under(root: &Path, name: &str, contents: impl AsRef<[u8]>) -> Result<PathBuf> {
     let name = require_single_path_component("file name", name)?;
-    let root_norm =
-        fs::canonicalize(root).with_context(|| format!("canonicalize root {}", root.display()))?;
+    let root_norm = bookclerk_sandbox::canonicalize(root)
+        .with_context(|| format!("canonicalize root {}", root.display()))?;
     let out = root_norm.join(name);
     if !out.starts_with(&root_norm) {
         bail!(
@@ -311,8 +311,8 @@ fn write_file_under(root: &Path, name: &str, contents: impl AsRef<[u8]>) -> Resu
     if !out.exists() {
         fs::File::create(&out).with_context(|| format!("create {}", out.display()))?;
     }
-    let canon =
-        fs::canonicalize(&out).with_context(|| format!("canonicalize {}", out.display()))?;
+    let canon = bookclerk_sandbox::canonicalize(&out)
+        .with_context(|| format!("canonicalize {}", out.display()))?;
     if !canon.starts_with(&root_norm) {
         bail!(
             "path {} escapes root {}",
@@ -576,8 +576,8 @@ fn write_owner_only_file_under(
     use std::io::Write;
 
     let name = require_single_path_component("file name", name)?;
-    let root_norm =
-        fs::canonicalize(root).with_context(|| format!("canonicalize root {}", root.display()))?;
+    let root_norm = bookclerk_sandbox::canonicalize(root)
+        .with_context(|| format!("canonicalize root {}", root.display()))?;
     let out = root_norm.join(name);
     if !out.starts_with(&root_norm) {
         bail!(
@@ -601,8 +601,8 @@ fn write_owner_only_file_under(
         opts.open(&out)
             .with_context(|| format!("create {}", out.display()))?;
     }
-    let canon =
-        fs::canonicalize(&out).with_context(|| format!("canonicalize {}", out.display()))?;
+    let canon = bookclerk_sandbox::canonicalize(&out)
+        .with_context(|| format!("canonicalize {}", out.display()))?;
     if !canon.starts_with(&root_norm) {
         bail!(
             "path {} escapes root {}",
@@ -661,7 +661,7 @@ pub fn workerd_state_dir(plugin_root: &Path) -> Result<PathBuf> {
 
     let base = workerd_state_base(plugin_root);
     fs::create_dir_all(&base).with_context(|| format!("create {}", base.display()))?;
-    let base = fs::canonicalize(&base)
+    let base = bookclerk_sandbox::canonicalize(&base)
         .with_context(|| format!("canonicalize state base {}", base.display()))?;
     let mut rng = rand::thread_rng();
     for _ in 0..64 {
@@ -674,7 +674,7 @@ pub fn workerd_state_dir(plugin_root: &Path) -> Result<PathBuf> {
         }
         match create_exclusive_owner_only_dir(&dir) {
             Ok(()) => {
-                let canon = fs::canonicalize(&dir)
+                let canon = bookclerk_sandbox::canonicalize(&dir)
                     .with_context(|| format!("canonicalize {}", dir.display()))?;
                 if !canon.starts_with(&base) {
                     bail!("path {} escapes root {}", canon.display(), base.display());
@@ -705,7 +705,8 @@ fn resolve_state_dir(root: &Path, state_dir: Option<&Path>) -> Result<PathBuf> {
         }
         None => workerd_state_dir(root)?,
     };
-    fs::canonicalize(&dir).with_context(|| format!("canonicalize state dir {}", dir.display()))
+    bookclerk_sandbox::canonicalize(&dir)
+        .with_context(|| format!("canonicalize state dir {}", dir.display()))
 }
 
 /// How the bridge HTTP socket is exposed to `bookclerk-workerd`.
@@ -1081,7 +1082,7 @@ const bridgeWorker :Workerd.Worker = (
     );
 
     let config_path = write_owner_only_file_under(&state_dir, "workerd-config.capnp", config)?;
-    let import_path = fs::canonicalize(root)
+    let import_path = bookclerk_sandbox::canonicalize(root)
         .with_context(|| format!("canonicalize import path {}", root.display()))?;
     Ok(GeneratedConfig {
         config_path,
@@ -1461,7 +1462,7 @@ const bridgeWorker :Workerd.Worker = (
 
     let config_path = write_owner_only_file_under(&state_dir, "workerd-config.capnp", config)?;
 
-    let import_path = fs::canonicalize(root)
+    let import_path = bookclerk_sandbox::canonicalize(root)
         .with_context(|| format!("canonicalize import path {}", root.display()))?;
 
     Ok(GeneratedConfig {

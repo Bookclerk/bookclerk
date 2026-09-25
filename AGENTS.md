@@ -81,9 +81,16 @@ stay on the bind mount so you can run built Linux binaries on the host afterward
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` (CI treats
   warnings as errors via `RUSTFLAGS="-D warnings"`).
 - Test: `cargo test --workspace`
-- CI planner (selective PR checks): `python3 scripts/ci-plan.py --base <sha> --head <sha> --format summary`
-  and `python3 scripts/tests/test_ci_plan.py -q` — see [`docs/ci.md`](docs/ci.md).
-  Branch protection should require the stable **`CI Gate`** job (not every matrix child).
+- CI planner (selective PR checks): `python3 scripts/ci-plan.py --paths <file>… --format summary`
+  (or `--base <sha> --head <sha>`); reproduce a check locally with
+  `python3 scripts/ci-exec.py resolve --selective 1 --paths <file>…` then
+  `python3 scripts/ci-exec.py run <check> --run-id local`. Tests:
+  `python3 scripts/tests/test_ci_plan.py`, `test_ci_relations.py`, and
+  `test_ci_contract.py` (needs PyYAML from `scripts/tests/requirements.txt`).
+  Relationships Cargo cannot see (embedded SDK files, cross-package test
+  inputs, executables tests launch) go in `scripts/ci_plan/relations.toml` —
+  see [`docs/ci.md`](docs/ci.md). Branch protection should require the stable
+  **`CI Gate`** job (not every matrix child).
 - Release binaries: `cargo build --release -p bookclerk-cli -p bookclerkd
   -p bookclerk-media-worker -p bookclerk-jail -p bookclerk-workerd`
   (helpers are not optional — see above)
@@ -91,8 +98,10 @@ stay on the bind mount so you can run built Linux binaries on the host afterward
   expected: `BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT=1 cargo test --workspace`
   (CI sets this on Linux/macOS for self-confine tests; Windows also sets
   `BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT=1` for AppContainer jail/media).
-  A plugin-host test also needs `target/debug/bookclerk-jail`, which
-  `cargo test --workspace` builds but `cargo test -p bookclerk-plugin-host` does not.
+  Plugin-host tests also launch `bookclerk-jail`, `bookclerk-workerd` and the
+  sqlite/postgres guests, which `cargo test --workspace` builds but
+  `cargo test -p bookclerk-plugin-host` does not (`cargo build -p …` them
+  first; `BOOKCLERK_REQUIRE_TEST_GUESTS=1` turns a missing guest into a failure).
 
 ### External plugins (local dev)
 
@@ -111,7 +120,10 @@ cargo build-app --platform --optional --examples
 cargo ensure-workerd          # pinned Cloudflare workerd beside helpers
 cargo install-platform --skip-build
 cargo stage-plugins --optional --examples --skip-build
-cargo test-staged             # describe/health conformance against installed + staged guests
+cargo stage-plugins --plugin libro --skip-build   # individual guest(s) by plugin.toml id
+cargo test-staged             # describe/health conformance (bookclerk-plugin-e2e) against installed + staged guests
+cargo test-staged --plugin libro                  # platform + only libro
+cargo plugin -- check <dir>   # author CLI (crate bookclerk-plugin-tools)
 ```
 
 See `docs/plugins.md` and `crates/bookclerk-dev/README.md`.

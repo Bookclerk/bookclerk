@@ -28,9 +28,9 @@ struct Cli {
 #[derive(Subcommand)]
 /// Dev-workflow subcommands dispatched by the `cargo` aliases.
 enum Commands {
-    /// Build installer / guest packages selected by directory tier.
+    /// Build installer / guest packages selected by directory tier or guest id.
     ///
-    /// At least one of `--platform`, `--optional`, `--examples` is required.
+    /// At least one of `--platform`, `--optional`, `--examples`, `--plugin` is required.
     BuildApp {
         /// `default-members` + guests under `plugins/platform/`.
         #[arg(long)]
@@ -41,6 +41,9 @@ enum Commands {
         /// Guests under `examples/`.
         #[arg(long, env = "BOOKCLERK_DEV_EXAMPLES")]
         examples: bool,
+        /// Individual guest by `plugin.toml` id (repeatable, any tier).
+        #[arg(long = "plugin", value_name = "ID")]
+        plugins: Vec<String>,
         /// Print resolved Cargo package names (one per line) and exit.
         #[arg(long)]
         print: bool,
@@ -59,6 +62,9 @@ enum Commands {
         #[arg(long, env = "BOOKCLERK_DEV_EXAMPLES")]
         /// When set, also include reference guests under `examples/`.
         examples: bool,
+        #[arg(long = "plugin", value_name = "ID")]
+        /// Individual optional/example guest by `plugin.toml` id (repeatable).
+        plugins: Vec<String>,
         #[arg(long)]
         /// Skip Cargo build and only install/stage already-built artifacts.
         skip_build: bool,
@@ -121,6 +127,9 @@ enum Commands {
         #[arg(long)]
         /// Skip Cargo build and only install/stage already-built artifacts.
         skip_build: bool,
+        #[arg(long = "plugin", value_name = "ID")]
+        /// Stage and check only these optional/example guests (plus platform).
+        plugins: Vec<String>,
     },
     /// Build release **optional** plugins and write per-crate archives.
     PackagePlugins {
@@ -187,19 +196,25 @@ fn run() -> Result<()> {
             platform,
             optional,
             examples,
+            plugins: plugin_ids,
             print,
         } => {
-            if !platform && !optional && !examples {
-                bail!("build-app requires --platform and/or --optional and/or --examples");
+            if !platform && !optional && !examples && plugin_ids.is_empty() {
+                bail!(
+                    "build-app requires --platform, --optional, --examples, and/or --plugin <id>"
+                );
             }
             let sel = plugins::BuildSelection {
                 platform,
                 optional,
                 examples,
             };
-            let pkgs = plugins::packages_for(&root, sel)?;
-            if pkgs.is_empty() {
-                bail!("build-app selection resolved to no packages");
+            let mut pkgs = plugins::packages_for(&root, sel)?;
+            let selected = plugins::guests_by_id(&root, &plugin_ids)?;
+            for pkg in plugins::packages_for_guests(&selected) {
+                if !pkgs.contains(&pkg) {
+                    pkgs.push(pkg);
+                }
             }
             if print {
                 for pkg in &pkgs {
@@ -207,7 +222,12 @@ fn run() -> Result<()> {
                 }
                 return Ok(());
             }
-            plugins::build_selection(&root, cli.release, sel)?;
+            if pkgs.is_empty() {
+                // Workerd-only guest ids ship `modules/`; nothing to compile.
+                eprintln!("build-app: selection has no Cargo packages to build");
+            } else {
+                plugins::build_packages(&root, cli.release, &pkgs)?;
+            }
             if platform {
                 ensure_ui_dist(&root)?;
                 let bin = ensure_workerd_for_profile(&root, cli.release)?;
@@ -219,6 +239,7 @@ fn run() -> Result<()> {
             dest,
             optional,
             examples,
+            plugins: plugin_ids,
             skip_build,
         } => {
             let artifacts = dest.unwrap_or_else(|| default_artifacts(&root));
@@ -228,6 +249,7 @@ fn run() -> Result<()> {
                 cli.release,
                 optional,
                 examples,
+                &plugin_ids,
                 skip_build,
             )
         }
@@ -295,7 +317,10 @@ fn run() -> Result<()> {
             examples,
             skip_build,
         ),
-        Commands::TestStaged { skip_build } => test_staged(&root, cli.release, skip_build),
+        Commands::TestStaged {
+            skip_build,
+            plugins: plugin_ids,
+        } => test_staged(&root, cli.release, skip_build, &plugin_ids),
         Commands::PackagePlugins { out, version } => {
             let out = out.unwrap_or_else(|| root.join("target").join("dist").join("plugins"));
             package::package_plugins(
@@ -418,7 +443,7 @@ fn dev_host(
     let _ = ensure_workerd_for_profile(root, release)?;
     plugins::install_platform(root, &files_dir, release)?;
     if optional || examples {
-        plugins::stage_plugins(root, &artifacts, release, optional, examples, true)?;
+        plugins::stage_plugins(root, &artifacts, release, optional, examples, &[], true)?;
     }
 
     let bin = root
@@ -455,30 +480,43 @@ fn dev_host(
     }
 }
 
-/// Stages optional+example guests and runs the host staged-guest conformance test.
-fn test_staged(root: &Path, release: bool, skip_build: bool) -> Result<()> {
+/// Stages optional+example guests and runs the staged-guest e2e suite (`bookclerk-plugin-e2e`).
+///
+/// With `plugin_ids`, stages only those guests (plus the platform install) and
+/// scopes the suite to them via `BOOKCLERK_STAGED_PLUGINS`.
+fn test_staged(root: &Path, release: bool, skip_build: bool, plugin_ids: &[String]) -> Result<()> {
     let files_dir = default_files_dir();
     let artifacts = default_artifacts(root);
+    let full = plugin_ids.is_empty();
+    let stage_skip_build = stage_plugins_skip_build(skip_build, full);
     if !skip_build {
         plugins::build_selection(
             root,
             release,
             plugins::BuildSelection {
                 platform: true,
-                optional: true,
-                examples: true,
+                optional: full,
+                examples: full,
             },
         )?;
     }
     let _ = ensure_workerd_for_profile(root, release)?;
     plugins::install_platform(root, &files_dir, release)?;
-    plugins::stage_plugins(root, &artifacts, release, true, true, true)?;
+    plugins::stage_plugins(
+        root,
+        &artifacts,
+        release,
+        full,
+        full,
+        plugin_ids,
+        stage_skip_build,
+    )?;
 
     let mut cmd = cargo(root);
     cmd.args([
         "test",
         "-p",
-        "bookclerk-plugin-host",
+        "bookclerk-plugin-e2e",
         "--test",
         "staged_plugins",
     ]);
@@ -487,6 +525,11 @@ fn test_staged(root: &Path, release: bool, skip_build: bool) -> Result<()> {
     }
     cmd.env("BOOKCLERK_PLUGIN_ARTIFACTS", &artifacts);
     cmd.env("BOOKCLERK_FILES_DIR", &files_dir);
+    // Everything was just staged; a missing root must fail, not skip.
+    cmd.env("BOOKCLERK_REQUIRE_STAGED_PLUGINS", "1");
+    if !full {
+        cmd.env("BOOKCLERK_STAGED_PLUGINS", plugin_ids.join(","));
+    }
     cmd.env(
         "BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT",
         std::env::var_os("BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT").unwrap_or_else(|| "1".into()),
@@ -498,10 +541,40 @@ fn test_staged(root: &Path, release: bool, skip_build: bool) -> Result<()> {
 
     let status = cmd
         .status()
-        .context("cargo test -p bookclerk-plugin-host --test staged_plugins")?;
+        .context("cargo test -p bookclerk-plugin-e2e --test staged_plugins")?;
     if status.success() {
         Ok(())
     } else {
         bail!("staged plugin test exited with {status}");
+    }
+}
+
+/// Whether `stage_plugins` should build again during `test-staged`.
+///
+/// A full run already built platform, optional, and example packages, so
+/// staging must not rebuild them. A subset run only built the platform, so
+/// selected guests are built while staging. `--skip-build` skips both phases.
+fn stage_plugins_skip_build(skip_build: bool, full: bool) -> bool {
+    skip_build || full
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stage_plugins_skip_build;
+
+    #[test]
+    fn full_staged_test_stages_without_rebuilding() {
+        assert!(stage_plugins_skip_build(false, true));
+    }
+
+    #[test]
+    fn subset_staged_test_builds_selected_guests_while_staging() {
+        assert!(!stage_plugins_skip_build(false, false));
+    }
+
+    #[test]
+    fn skip_build_skips_the_stage_build() {
+        assert!(stage_plugins_skip_build(true, true));
+        assert!(stage_plugins_skip_build(true, false));
     }
 }
