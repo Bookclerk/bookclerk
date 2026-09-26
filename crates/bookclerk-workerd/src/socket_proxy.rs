@@ -579,6 +579,20 @@ async fn wait_fence(fence: &AtomicBool) {
     }
 }
 
+async fn shutdown_fenced<W>(writer: &mut W, fence: &AtomicBool) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    tokio::select! {
+        biased;
+        () = wait_fence(fence) => bail!("session fenced"),
+        result = writer.shutdown() => {
+            result?;
+            Ok(())
+        }
+    }
+}
+
 async fn splice<C, U>(client: &mut C, upstream: &mut U, fence: &AtomicBool) -> Result<()>
 where
     C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -588,31 +602,28 @@ where
     let mut up_buf = vec![0_u8; 16 * 1024];
     loop {
         if fence.load(Ordering::SeqCst) {
-            let _ = client.shutdown().await;
-            let _ = upstream.shutdown().await;
             bail!("session fenced");
         }
         tokio::select! {
+            biased;
             () = wait_fence(fence) => {
-                let _ = client.shutdown().await;
-                let _ = upstream.shutdown().await;
                 bail!("session fenced");
             }
             n = client.read(&mut client_buf) => {
                 let n = n?;
                 if n == 0 {
-                    let _ = upstream.shutdown().await;
+                    let _ = shutdown_fenced(upstream, fence).await;
                     return Ok(());
                 }
-                upstream.write_all(&client_buf[..n]).await?;
+                write_fenced(upstream, &client_buf[..n], fence).await?;
             }
             n = upstream.read(&mut up_buf) => {
                 let n = n?;
                 if n == 0 {
-                    let _ = client.shutdown().await;
+                    let _ = shutdown_fenced(client, fence).await;
                     return Ok(());
                 }
-                client.write_all(&up_buf[..n]).await?;
+                write_fenced(client, &up_buf[..n], fence).await?;
             }
         }
     }
@@ -643,6 +654,46 @@ mod tests {
             address_cidrs: cidrs.iter().map(|s| (*s).to_string()).collect(),
             ..EgressPolicy::deny()
         }
+    }
+
+    #[tokio::test]
+    async fn blocked_splice_writes_return_when_fenced() {
+        use tokio::io::AsyncWriteExt;
+
+        async fn direction(client_to_upstream: bool) {
+            let (mut client, client_peer) = tokio::io::duplex(64);
+            let (mut upstream, upstream_peer) = tokio::io::duplex(64);
+            let fence = Arc::new(AtomicBool::new(false));
+            let fence_task = Arc::clone(&fence);
+            let task =
+                tokio::spawn(async move { splice(&mut client, &mut upstream, &fence_task).await });
+            let payload = vec![0xABu8; 64 * 1024];
+            let (mut writing, held) = if client_to_upstream {
+                (client_peer, upstream_peer)
+            } else {
+                (upstream_peer, client_peer)
+            };
+            let writer = tokio::spawn(async move {
+                let _ = writing.write_all(&payload).await;
+                writing
+            });
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            assert!(
+                !task.is_finished(),
+                "splice returned before the fence while the peer is still alive"
+            );
+            fence.store(true, Ordering::SeqCst);
+            let result = tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .expect("fenced splice write did not return")
+                .expect("splice task");
+            assert!(result.is_err(), "fence must stop the blocked write");
+            writer.abort();
+            drop(held);
+        }
+
+        direction(true).await;
+        direction(false).await;
     }
 
     #[test]
