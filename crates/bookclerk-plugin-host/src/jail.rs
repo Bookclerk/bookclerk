@@ -1083,6 +1083,11 @@ fn sibling_guest_spec_resource_limits(
 /// [`GuestRuntimeKind::process_overhead`] recovers `extraProcesses`. The
 /// result is the infrastructure thread budget plus that extra. It is not
 /// the Windows outer cap and not the payload process count.
+///
+/// Production callers are Linux-only. Other platforms still call this from
+/// the sibling-grant unit test, so `--lib` builds there allow the unused
+/// warning.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn session_cgroup_thread_limits(
     payload: bookclerk_sandbox::ResourceLimits,
     runtime: crate::GuestRuntimeKind,

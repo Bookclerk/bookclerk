@@ -32,7 +32,14 @@ pub struct CallbackProxy {
 }
 
 impl CallbackProxy {
-    /// Bind browser TCP + IPC, spawn accept/forward loop.
+    /// Bind the browser TCP listener and the guest IPC endpoint, then spawn
+    /// the accept/forward loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns when `callback_bind` is not a socket address, the TCP listener
+    /// cannot bind, the scratch directory cannot be created, or the platform
+    /// IPC endpoint cannot be created.
     pub async fn start(
         callback_bind: Option<&str>,
         scratch: &Path,
