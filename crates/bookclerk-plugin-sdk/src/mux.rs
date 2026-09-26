@@ -838,6 +838,9 @@ async fn writer_task<W: AsyncWrite + Unpin>(
     let mut data_open = true;
     loop {
         if stop.load(Ordering::SeqCst) {
+            // Accepted Data, credit, and Close are written before the socket
+            // is dropped. Stop does not discard frames `poll_write` already took.
+            drain_writer(&mut writer, &state, &mut data_rx, &data_wakers).await;
             break;
         }
         if flush_outbound(&mut writer, &state).await.is_err() {
@@ -845,7 +848,10 @@ async fn writer_task<W: AsyncWrite + Unpin>(
         }
         tokio::select! {
             biased;
-            () = wait_stop(&stop, &wake) => break,
+            () = wait_stop(&stop, &wake) => {
+                drain_writer(&mut writer, &state, &mut data_rx, &data_wakers).await;
+                break;
+            }
             ctrl = control_rx.recv() => {
                 let Some(ctrl) = ctrl else {
                     drain_writer(&mut writer, &state, &mut data_rx, &data_wakers).await;
@@ -1801,6 +1807,25 @@ mod tests {
             "writer still holds the transport"
         );
         drop(client);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_mux_still_writes_queued_data() {
+        let (client, server) = pair();
+        let mut outgoing = client.open().await.expect("open");
+        let mut incoming = server.accept().await.expect("accept");
+        outgoing.write_all(b"hello").await.expect("queue");
+        drop(outgoing);
+        drop(client);
+        let mut buf = [0u8; 5];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            incoming.read_exact(&mut buf),
+        )
+        .await
+        .expect("queued data was not written before the mux stopped")
+        .expect("read");
+        assert_eq!(&buf, b"hello");
     }
 
     fn window_credit(log: &Mutex<Vec<FrameLog>>) -> u32 {

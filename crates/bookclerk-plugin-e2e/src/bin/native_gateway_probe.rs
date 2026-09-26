@@ -209,13 +209,20 @@ fn fcntl_getfd(fd: i32) -> Result<(), String> {
 }
 
 /// One `ping` process, not `cmd /c ping`, so a Job slot is a single process.
+///
+/// `DETACHED_PROCESS` keeps `conhost.exe` out of the Job. A console-subsystem
+/// child of a detached AppContainer otherwise starts a console host, and that
+/// host consumes a second active-process slot (`ERROR_ACCESS_DENIED`).
 fn spawn_ping() -> serde_json::Value {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
         match std::process::Command::new("ping")
             .args(["-n", "30", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .creation_flags(DETACHED_PROCESS)
             .spawn()
         {
             Ok(child) => {
@@ -457,6 +464,11 @@ async fn serve_ipc_unix(callback: &str) -> serde_json::Value {
         postgres.abort();
         return serde_json::json!({ "ok": false, "error": format!("callback echo: {err}") });
     }
+    // Stay in the mux until the host has read the echo and half-closes. Returning
+    // here drops the tunnel while those bytes may still be queued.
+    let _ = browser.shutdown().await;
+    let mut tail = [0u8; 8];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(20), browser.read(&mut tail)).await;
     let pg = match postgres.await {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(err)) => return serde_json::json!({ "ok": false, "error": err }),

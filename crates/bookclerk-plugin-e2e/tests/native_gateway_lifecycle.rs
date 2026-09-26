@@ -1012,7 +1012,7 @@ async fn windows_job_extras_deny_the_next_direct_ping() {
             let started = probe(&session, "spawn_ping", 0, "").await;
             assert_eq!(
                 started["ok"], true,
-                "direct ping {n} of {children} was refused: {started}"
+                "direct ping {n} of {children} was refused: {started}; job {job}"
             );
         }
         let denied = probe(&session, "spawn_ping", 0, "").await;
@@ -1118,6 +1118,7 @@ async fn seatbelt_oauth_callback_and_postgres_mediator_use_guest_ipc() {
         .unwrap_or_else(|_| ng_harness::fail_deadline("oauth echo timed out"))
         .unwrap_or_else(|err| ng_harness::fail_deadline(&format!("oauth echo: {err}")));
         assert_eq!(&echo, b"oauth-ok");
+        let _ = tcp.shutdown().await;
     };
     let (outcome, ()) = tokio::join!(guest, host);
     assert_eq!(outcome["ok"], true, "{outcome}");

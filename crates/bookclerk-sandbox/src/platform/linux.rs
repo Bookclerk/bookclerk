@@ -452,9 +452,10 @@ fn move_self_into_cgroup(dir: &Path) -> Result<(), String> {
 /// already exists so two sessions never share a leaf. `pids.max` is the thread
 /// budget in `limits.active_processes` (not the Windows process baseline).
 ///
-/// The leaf is created under [`nearest_delegating_parent`], which may be an
-/// ancestor of this process. A populated cgroup cannot distribute domain
-/// controllers to children. The leaf is not created in that cgroup.
+/// The leaf is created under the nearest ancestor that can delegate
+/// controllers, which may be an ancestor of this process. A populated cgroup
+/// cannot distribute domain controllers to children. The leaf is not created
+/// in that cgroup.
 ///
 /// Failure is best-effort (same posture as `try_apply_cgroup_v2`): callers treat
 /// `Err` as not-applicable and fall back to process-group kill, which does not
