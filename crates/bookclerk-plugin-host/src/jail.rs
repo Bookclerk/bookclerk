@@ -900,12 +900,18 @@ fn build_spec_with_grant(
         // Extra processes belong on the guest / outer session cap, not the gateway.
         resources.active_processes = Some(2);
     }
-    if matches!(role, JailRole::Gateway | JailRole::Guest) {
-        // A nested Job CPU rate is a fraction of its parent. The outer session
-        // Job keeps the one-core hard cap; sibling inner Jobs keep process and
-        // memory limits only. Standalone (Combined) launches still set CPU.
-        resources.cpu_rate_percent = None;
-    }
+    // A nested Job CPU rate is a fraction of its parent. The outer session
+    // Job keeps the one-core hard cap. Sibling inner specs say `"off"` so the
+    // jail does not fill the plugin label default. Standalone Combined and
+    // media specs keep their percent. Memory and process limits stay explicit.
+    let cpu_rate_percent = if matches!(role, JailRole::Gateway | JailRole::Guest) {
+        bookclerk_sandbox::CpuRate::Disabled
+    } else {
+        match resources.cpu_rate_percent {
+            Some(percent) => bookclerk_sandbox::CpuRate::Percent(percent),
+            None => bookclerk_sandbox::CpuRate::Unspecified,
+        }
+    };
     Spec {
         label: format!("plugin:{}{label_suffix}", plugin.plugin_key().fs_id()),
         reads,
@@ -918,7 +924,7 @@ fn build_spec_with_grant(
         windows_profile_name,
         memory_bytes: resources.memory_bytes,
         active_processes: resources.active_processes,
-        cpu_rate_percent: resources.cpu_rate_percent,
+        cpu_rate_percent,
         inherit_handles: Vec::new(),
         cgroup_dir,
         unix_socket_dirs,
@@ -1609,8 +1615,11 @@ entrypoints = ["{entrypoint}"]
         // guest 1 + default extra 2
         assert_eq!(guest.active_processes, Some(3));
         // Nested CPU would compound against the outer session Job.
-        assert_eq!(gateway.cpu_rate_percent, None);
-        assert_eq!(guest.cpu_rate_percent, None);
+        assert_eq!(
+            gateway.cpu_rate_percent,
+            bookclerk_sandbox::CpuRate::Disabled
+        );
+        assert_eq!(guest.cpu_rate_percent, bookclerk_sandbox::CpuRate::Disabled);
         let payload = session_resource_limits(&plugin, plan.runtime, None);
         assert_eq!(payload.active_processes, Some(5), "linux payload stays 3+2");
         let outer = windows_outer_job_limits(payload, plan.runtime);
@@ -1861,7 +1870,10 @@ entrypoints = ["{entrypoint}"]
         // Host knobs are ceilings: min(default 512, 256), min(80, host_max for 250),
         // extra min(2, 1) → active = 1 + 1 = 2. 250 clamps to host_max then min with 80.
         assert_eq!(spec.memory_bytes, Some(256 * 1024 * 1024));
-        assert_eq!(spec.cpu_rate_percent, Some(80));
+        assert_eq!(
+            spec.cpu_rate_percent,
+            bookclerk_sandbox::CpuRate::Percent(80)
+        );
         assert_eq!(spec.active_processes, Some(2));
 
         // Session aggregate behind the front door stays 3 + 1 = 4; the gateway
@@ -1900,8 +1912,11 @@ entrypoints = ["{entrypoint}"]
         );
         assert_eq!(gateway.active_processes, Some(2));
         assert_eq!(guest.active_processes, Some(2));
-        assert_eq!(gateway.cpu_rate_percent, None);
-        assert_eq!(guest.cpu_rate_percent, None);
+        assert_eq!(
+            gateway.cpu_rate_percent,
+            bookclerk_sandbox::CpuRate::Disabled
+        );
+        assert_eq!(guest.cpu_rate_percent, bookclerk_sandbox::CpuRate::Disabled);
         let mut session = session_resource_limits(&native, plan.runtime, None);
         apply_global_jail_resource_overrides(&mut session, &config.plugins.jail, plan.runtime);
         // Linux payload: 3 + extra 1. Windows outer: 5 + extra 1. CPU stays outer-only.
@@ -1935,7 +1950,10 @@ entrypoints = ["{entrypoint}"]
         // Direct native: overhead 1 + default extra 2 = 3. Workerd: overhead 2 + extra 2 = 4.
         assert_eq!(native_spec.memory_bytes, Some(512 * 1024 * 1024));
         assert_eq!(native_spec.active_processes, Some(3));
-        assert_eq!(native_spec.cpu_rate_percent, Some(80));
+        assert_eq!(
+            native_spec.cpu_rate_percent,
+            bookclerk_sandbox::CpuRate::Percent(80)
+        );
 
         let native_with_grant = build_spec_with_grant(
             &native,
@@ -1974,7 +1992,10 @@ entrypoints = ["{entrypoint}"]
             None,
         );
         assert_eq!(native_with_grant.memory_bytes, Some(256 * 1024 * 1024));
-        assert_eq!(native_with_grant.cpu_rate_percent, Some(40));
+        assert_eq!(
+            native_with_grant.cpu_rate_percent,
+            bookclerk_sandbox::CpuRate::Percent(40)
+        );
         // Clamped by default global extra_processes = 2 → active = 1 + 2 = 3.
         assert_eq!(native_with_grant.active_processes, Some(3));
 
@@ -2002,7 +2023,10 @@ entrypoints = ["{entrypoint}"]
         assert_eq!(default_spec.active_processes, Some(4));
         // Workerd isolate budget is cpu_ms; jail CPU stays at host default (80),
         // not the old cpu_ms → rate heuristic (which would have been 40).
-        assert_eq!(default_spec.cpu_rate_percent, Some(80));
+        assert_eq!(
+            default_spec.cpu_rate_percent,
+            bookclerk_sandbox::CpuRate::Percent(80)
+        );
 
         let mut config_ceil = config_at(files.path());
         config_ceil.plugins.jail.cpu_rate_percent = Some(25);
@@ -2016,7 +2040,10 @@ entrypoints = ["{entrypoint}"]
             Enforcement::Required,
             None,
         );
-        assert_eq!(capped.cpu_rate_percent, Some(25));
+        assert_eq!(
+            capped.cpu_rate_percent,
+            bookclerk_sandbox::CpuRate::Percent(25)
+        );
     }
 
     #[test]
@@ -2066,7 +2093,10 @@ entrypoints = ["{entrypoint}"]
             }),
             None,
         );
-        assert_eq!(spec.cpu_rate_percent, Some(want));
+        assert_eq!(
+            spec.cpu_rate_percent,
+            bookclerk_sandbox::CpuRate::Percent(want)
+        );
     }
 
     /// Hostile / non-grammar ids are rejected (no lossy rewrite). State for a

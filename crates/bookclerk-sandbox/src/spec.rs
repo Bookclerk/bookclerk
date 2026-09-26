@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Enforcement, NetPolicy, Policy};
+use crate::{CpuRate, Enforcement, NetPolicy, Policy};
 
 /// Reserved descriptor number for a native SCM_RIGHTS side channel (fd 3).
 ///
@@ -98,8 +98,12 @@ pub struct Spec {
     /// Object hard cap, scaled by logical CPU count so the same percent means
     /// one-core bandwidth (see [`crate::windows_job_cpu_rate`]). macOS Seatbelt
     /// cannot enforce this (see docs).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_rate_percent: Option<u32>,
+    ///
+    /// Omitted and `null` are unspecified (the label default). A number is a
+    /// percent. `"off"` disables the rate so a nested Job is not filled with
+    /// the plugin default.
+    #[serde(default, skip_serializing_if = "CpuRate::is_unspecified")]
+    pub cpu_rate_percent: CpuRate,
     /// Windows handles the jail must put on the child's inherit list.
     ///
     /// The host never marks these inheritable itself. It duplicates them into
@@ -148,7 +152,7 @@ impl Spec {
             windows_profile_name: None,
             memory_bytes: None,
             active_processes: None,
-            cpu_rate_percent: None,
+            cpu_rate_percent: CpuRate::Unspecified,
             inherit_handles: Vec::new(),
             cgroup_dir: None,
             unix_socket_dirs: None,
@@ -167,7 +171,7 @@ impl Spec {
             .enforcement(self.enforcement)
             .memory_bytes(self.memory_bytes)
             .active_processes(self.active_processes)
-            .cpu_rate_percent(self.cpu_rate_percent)
+            .cpu_rate(self.cpu_rate_percent)
             .unix_socket_dirs(self.unix_socket_dirs.clone())
             .cgroup_dir(self.cgroup_dir.clone())
     }
@@ -191,7 +195,7 @@ mod tests {
             windows_profile_name: None,
             memory_bytes: Some(512 * 1024 * 1024),
             active_processes: Some(8),
-            cpu_rate_percent: Some(80),
+            cpu_rate_percent: CpuRate::Percent(80),
             inherit_handles: vec![42],
             cgroup_dir: Some(PathBuf::from("/sys/fs/cgroup/bookclerk-session")),
             unix_socket_dirs: Some(vec![PathBuf::from("/tmp/session")]),
@@ -216,6 +220,39 @@ mod tests {
         .expect("encode");
         assert!(json.contains("\"outbound-listen\""), "{json}");
         assert!(json.contains("\"best-effort\""), "{json}");
+    }
+
+    #[test]
+    fn cpu_rate_wire_keeps_omitted_null_number_and_off_distinct() {
+        let omitted = serde_json::from_str::<Spec>(r#"{"label":"probe"}"#).expect("omitted");
+        assert_eq!(omitted.cpu_rate_percent, CpuRate::Unspecified);
+        assert!(!serde_json::to_string(&Spec::new("probe"))
+            .expect("encode")
+            .contains("cpu_rate_percent"));
+
+        let null = serde_json::from_str::<Spec>(r#"{"label":"probe","cpu_rate_percent":null}"#)
+            .expect("null");
+        assert_eq!(null.cpu_rate_percent, CpuRate::Unspecified);
+
+        let percent = serde_json::from_str::<Spec>(r#"{"label":"probe","cpu_rate_percent":40}"#)
+            .expect("number");
+        assert_eq!(percent.cpu_rate_percent, CpuRate::Percent(40));
+
+        let off = serde_json::from_str::<Spec>(r#"{"label":"probe","cpu_rate_percent":"off"}"#)
+            .expect("off");
+        assert_eq!(off.cpu_rate_percent, CpuRate::Disabled);
+        let encoded = serde_json::to_value(&off).expect("encode off");
+        assert_eq!(encoded["cpu_rate_percent"], "off");
+
+        let resolved = off.policy().resolved_job_limits();
+        assert_eq!(resolved.cpu_rate_percent, None);
+        assert_eq!(
+            Spec::new("plugin:echo")
+                .policy()
+                .resolved_job_limits()
+                .cpu_rate_percent,
+            Some(80)
+        );
     }
 
     #[test]

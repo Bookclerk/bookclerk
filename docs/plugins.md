@@ -660,9 +660,11 @@ workerd isolate **2**, native-behind payload **3** split as gateway **2** +
 guest **1 + extra**). Spec `active_processes` = overhead + extra (capped at
 64). The Windows **outer** session Job counts both `bookclerk-jail`
 supervisors as well, so its cap is **5 + extra** (still capped at 64). That
-outer Job is the only sibling Job that sets the CPU hard cap; the gateway and
-guest Jobs omit `cpu_rate_percent` because a nested Job rate is a fraction of
-its parent. A standalone jail (no outer Job) still sets CPU on its own Job.
+outer Job is the only sibling Job that sets the CPU hard cap. Gateway and
+guest specs set CPU to `"off"` so a nested Job is not filled with the plugin
+label default (80). Omitted or null stays unspecified and still takes that
+default; a JSON number is a percent. A standalone jail (no outer Job) still
+sets CPU on its own Job.
 Linux `pids.max` is a thread budget and is **not** given this Windows process
 count. Creating the outer Job under `isolation = "required"` fails the spawn
 before either sibling starts. `best-effort` continues without an outer Job

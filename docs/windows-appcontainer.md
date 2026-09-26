@@ -105,15 +105,16 @@ label (`S:(ML;;NW;;;LW)`). See [plugins.md](plugins.md) (Interactive listeners).
 | --- | --- | --- |
 | Job memory (cumulative) | 512 MiB | 2 GiB |
 | Active processes | overhead + extra (direct-native 1+2=3, isolate 2+2=4, native-behind gateway 2, guest 1+extra, outer session Job 5+extra) | 64 |
-| CPU rate | 80% of one core hard cap on the outer session Job (sibling inner Jobs omit CPU so the rate is not compounded; standalone Jobs still set it) | uncapped |
+| CPU rate | 80% of one core hard cap on the outer session Job (sibling inner specs send `"off"` so the label default is not applied; standalone Jobs still set a percent) | uncapped |
 | Stderr proxy budget | 1 MiB | 16 MiB |
 | data/tmp growth (plan + side-pass) | 512 MiB each | n/a |
 | RPC timeout | kill + quarantine | n/a (stdio job) |
 
 Defaults come from the jail label (`plugin:…` vs `media-…`) and grant/host
 ceilings. A `Spec` may set `memory_bytes` / `active_processes` /
-`cpu_rate_percent` explicitly; each set field overrides the corresponding
-heuristic. Memory uses Job Object **job-wide** commit charge
+`cpu_rate_percent` explicitly. Omitted or null CPU is unspecified and takes the
+label default; a number is a percent; `"off"` disables the rate and is not
+filled. Memory uses Job Object **job-wide** commit charge
 (`JOB_OBJECT_LIMIT_JOB_MEMORY`), aligned with Linux cgroup `memory.max` (main +
 children). Limits are best-effort Job Object + host policy, not a hard
 multi-tenant quota.

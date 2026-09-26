@@ -25,7 +25,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Deserializer, Visitor};
+use serde::{Deserialize, Serialize, Serializer};
 
 #[cfg(unix)]
 mod guest_ipc;
@@ -158,8 +159,8 @@ pub struct Policy {
     memory_bytes: Option<u64>,
     /// Optional cap on concurrent processes in the jail.
     active_processes: Option<u32>,
-    /// Optional CPU hard-cap as percent of one logical CPU (1..=cores×100).
-    cpu_rate_percent: Option<u32>,
+    /// CPU hard-cap: unspecified (label default), off, or a percent.
+    cpu_rate: CpuRate,
     /// macOS Seatbelt pathname Unix-socket directories (`None` = writable paths).
     unix_socket_dirs: Option<Vec<PathBuf>>,
     /// Linux cgroup v2 leaf to join instead of creating `bookclerk-<pid>`.
@@ -181,6 +182,126 @@ pub fn host_logical_cpus() -> u32 {
 #[must_use]
 pub fn host_cpu_rate_max() -> u32 {
     host_logical_cpus().saturating_mul(100)
+}
+
+/// CPU hard-cap carried on a [`Spec`] before label defaults are applied.
+///
+/// Omitted and JSON `null` are [`Self::Unspecified`] (the label default). A
+/// JSON number is [`Self::Percent`]. [`Self::Disabled`] is the string `"off"`
+/// and must not be filled from the label: sibling inner Jobs use it so they
+/// do not pick up the plugin default of 80 under an outer cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CpuRate {
+    /// Use [`label_resource_defaults`] when resolving a Job.
+    #[default]
+    Unspecified,
+    /// Do not apply a CPU rate, and do not substitute the label default.
+    Disabled,
+    /// Percent of one logical CPU, clamped to `1..=`[`host_cpu_rate_max`] when
+    /// the policy is built.
+    Percent(u32),
+}
+
+impl CpuRate {
+    /// Percent when this is [`Self::Percent`]. Unspecified and disabled are
+    /// both absent until [`Self::resolve`].
+    #[must_use]
+    pub fn percent(self) -> Option<u32> {
+        match self {
+            Self::Percent(percent) => Some(percent),
+            Self::Unspecified | Self::Disabled => None,
+        }
+    }
+
+    /// Label default for unspecified, nothing for disabled, the percent otherwise.
+    #[must_use]
+    pub fn resolve(self, label_default: Option<u32>) -> Option<u32> {
+        match self {
+            Self::Unspecified => label_default,
+            Self::Disabled => None,
+            Self::Percent(percent) => Some(percent),
+        }
+    }
+
+    /// True when the wire value was omitted or null.
+    fn is_unspecified(&self) -> bool {
+        matches!(self, Self::Unspecified)
+    }
+}
+
+impl Serialize for CpuRate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Unspecified => serializer.serialize_none(),
+            Self::Disabled => serializer.serialize_str("off"),
+            Self::Percent(percent) => serializer.serialize_u32(*percent),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CpuRate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CpuRateVisitor;
+
+        impl Visitor<'_> for CpuRateVisitor {
+            type Value = CpuRate;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a CPU percent, \"off\", or null")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(CpuRate::Unspecified)
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(CpuRate::Unspecified)
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let percent = u32::try_from(value).map_err(E::custom)?;
+                Ok(CpuRate::Percent(percent))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let percent = u32::try_from(value).map_err(E::custom)?;
+                Ok(CpuRate::Percent(percent))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value == "off" {
+                    Ok(CpuRate::Disabled)
+                } else {
+                    Err(E::custom(format!(
+                        "cpu_rate_percent must be a number or \"off\", got {value}"
+                    )))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(CpuRateVisitor)
+    }
 }
 
 /// Optional OS resource ceilings carried on a [`Policy`] / [`Spec`].
@@ -271,7 +392,7 @@ impl Policy {
             enforcement: Enforcement::Required,
             memory_bytes: None,
             active_processes: None,
-            cpu_rate_percent: None,
+            cpu_rate: CpuRate::Unspecified,
             unix_socket_dirs: None,
             cgroup_dir: None,
         }
@@ -357,14 +478,30 @@ impl Policy {
         self
     }
 
-    /// CPU hard-cap percent of one logical CPU (`None` = platform default / unset).
-    ///
-    /// Clamped to `1..=`[`host_cpu_rate_max`] (100 × logical CPUs).
+    /// CPU hard-cap. [`CpuRate::Unspecified`] takes the label default;
+    /// [`CpuRate::Disabled`] stays off. A percent is clamped to
+    /// `1..=`[`host_cpu_rate_max`].
     #[must_use]
-    pub fn cpu_rate_percent(mut self, percent: Option<u32>) -> Self {
+    pub fn cpu_rate(mut self, rate: CpuRate) -> Self {
         let max = host_cpu_rate_max();
-        self.cpu_rate_percent = percent.map(|p| p.clamp(1, max));
+        self.cpu_rate = match rate {
+            CpuRate::Percent(percent) => CpuRate::Percent(percent.clamp(1, max)),
+            other => other,
+        };
         self
+    }
+
+    /// CPU hard-cap percent of one logical CPU.
+    ///
+    /// `None` is unspecified (the label default), not disabled. Use
+    /// [`Self::cpu_rate`]`(`[`CpuRate::Disabled`]`)` to keep a nested Job from
+    /// inheriting that default. A percent is clamped to `1..=`[`host_cpu_rate_max`].
+    #[must_use]
+    pub fn cpu_rate_percent(self, percent: Option<u32>) -> Self {
+        self.cpu_rate(match percent {
+            Some(percent) => CpuRate::Percent(percent),
+            None => CpuRate::Unspecified,
+        })
     }
 
     /// Restrict pathname Unix sockets to `dirs` (`Some([])` denies them).
@@ -408,7 +545,7 @@ impl Policy {
     pub fn resource_limits(&self) -> ResourceLimits {
         ResourceLimits {
             memory_bytes: self.memory_bytes,
-            cpu_rate_percent: self.cpu_rate_percent,
+            cpu_rate_percent: self.cpu_rate.percent(),
             active_processes: self.active_processes,
         }
     }
@@ -428,7 +565,7 @@ impl Policy {
         let defaults = label_resource_defaults(&self.label);
         ResourceLimits {
             memory_bytes: self.memory_bytes.or(defaults.memory_bytes),
-            cpu_rate_percent: self.cpu_rate_percent.or(defaults.cpu_rate_percent),
+            cpu_rate_percent: self.cpu_rate.resolve(defaults.cpu_rate_percent),
             active_processes: self.active_processes.or(defaults.active_processes),
         }
     }
@@ -1022,5 +1159,18 @@ mod tests {
         assert_eq!(windows_job_cpu_rate(50, 0), 5_000); // cores treated as 1
                                                         // Cap at full machine.
         assert_eq!(windows_job_cpu_rate(10_000, 4), 10_000);
+    }
+
+    #[test]
+    fn disabled_cpu_rate_stays_unset_and_unspecified_uses_the_plugin_default() {
+        let disabled = Policy::new("plugin:echo").cpu_rate(CpuRate::Disabled);
+        assert_eq!(disabled.resource_limits().cpu_rate_percent, None);
+        assert_eq!(disabled.resolved_job_limits().cpu_rate_percent, None);
+
+        let unspecified = Policy::new("plugin:echo").cpu_rate_percent(None);
+        assert_eq!(unspecified.resolved_job_limits().cpu_rate_percent, Some(80));
+
+        let percent = Policy::new("plugin:echo").cpu_rate(CpuRate::Percent(25));
+        assert_eq!(percent.resolved_job_limits().cpu_rate_percent, Some(25));
     }
 }

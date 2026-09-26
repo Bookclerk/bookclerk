@@ -13,7 +13,7 @@ use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use bookclerk_sandbox::{Enforcement, NetPolicy, Spec};
+use bookclerk_sandbox::{CpuRate, Enforcement, NetPolicy, Spec};
 use serde_json::Value;
 
 const JAIL: &str = env!("CARGO_BIN_EXE_bookclerk-jail");
@@ -72,7 +72,7 @@ fn base_spec(label: &str, reads: Vec<PathBuf>, writes: Vec<PathBuf>) -> Spec {
         windows_profile_name: None,
         memory_bytes: None,
         active_processes: None,
-        cpu_rate_percent: None,
+        cpu_rate_percent: CpuRate::Unspecified,
         inherit_handles: Vec::new(),
         cgroup_dir: None,
         unix_socket_dirs: None,

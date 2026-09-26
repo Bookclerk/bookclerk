@@ -14,7 +14,7 @@ use bookclerk_media::{
     package_m4b_from_pcm, Confinement, FixupRequest, MediaJob, MediaJobReply, JAIL_BIN_ENV,
     JAIL_BIN_NAME, WORKER_ENFORCEMENT_ENV,
 };
-use bookclerk_sandbox::{Enforcement, NetPolicy, Spec, SPEC_ENV};
+use bookclerk_sandbox::{CpuRate, Enforcement, NetPolicy, Spec, SPEC_ENV};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_bookclerk-media-worker");
 
@@ -111,7 +111,7 @@ fn media_spec(job: &MediaJob, confinement: Confinement) -> Spec {
         windows_profile_name: None,
         memory_bytes: None,
         active_processes: None,
-        cpu_rate_percent: None,
+        cpu_rate_percent: CpuRate::Unspecified,
         inherit_handles: Vec::new(),
         cgroup_dir: None,
         unix_socket_dirs: None,
