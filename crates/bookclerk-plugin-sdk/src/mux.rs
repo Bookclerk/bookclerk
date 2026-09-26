@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use crate::{Result, SdkError};
 
@@ -144,13 +144,36 @@ struct Slot {
     credit_alive: Arc<AtomicBool>,
 }
 
+/// Reader and writer lifetime shared by every clone of a [`Mux`].
+///
+/// The tasks hold the stop flag, not this struct. Dropping the last clone sets
+/// the flag so those tasks exit instead of detaching. [`Mux::shutdown`] sets
+/// the same flag while other clones still exist.
+struct MuxTasks {
+    stop: Arc<AtomicBool>,
+    wake: Arc<Notify>,
+    remaining: Arc<AtomicUsize>,
+    finished: Arc<Notify>,
+}
+
+impl Drop for MuxTasks {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.wake.notify_waiters();
+    }
+}
+
 /// One multiplexed endpoint. Cheap to clone (shared tasks + id allocator).
+///
+/// Clones share one task owner. Dropping a clone does not stop the reader or
+/// writer while another clone remains. Dropping the last clone, or calling
+/// [`Mux::shutdown`], cancels both tasks even if the peer is still connected.
 #[derive(Clone)]
 pub struct Mux {
     shared: Arc<Shared>,
     next_id: Arc<AtomicU32>,
     accept_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<MuxStream>>>,
-    _tasks: Arc<Vec<tokio::task::JoinHandle<()>>>,
+    tasks: Arc<MuxTasks>,
 }
 
 /// One multiplexed logical connection implementing `AsyncRead` + `AsyncWrite`.
@@ -225,31 +248,96 @@ impl Mux {
             data_wakers: Arc::clone(&data_wakers),
             writer_state: Arc::clone(&writer_state),
         });
-        let mut tasks = Vec::new();
-        tasks.push(tokio::spawn(writer_task(
-            writer,
-            writer_state,
-            control_rx,
-            data_rx,
-            data_wakers,
-        )));
+        let task_owner = Arc::new(MuxTasks {
+            stop: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(Notify::new()),
+            remaining: Arc::new(AtomicUsize::new(2)),
+            finished: Arc::new(Notify::new()),
+        });
+        let writer_stop = Arc::clone(&task_owner.stop);
+        let writer_wake = Arc::clone(&task_owner.wake);
+        let writer_remaining = Arc::clone(&task_owner.remaining);
+        let writer_finished = Arc::clone(&task_owner.finished);
+        tokio::spawn(async move {
+            writer_task(
+                writer,
+                writer_state,
+                control_rx,
+                data_rx,
+                data_wakers,
+                writer_stop,
+                writer_wake,
+            )
+            .await;
+            finish_task(&writer_remaining, &writer_finished);
+        });
         let reader_shared = Arc::clone(&shared);
-        tasks.push(tokio::spawn(async move {
-            if let Err(err) =
-                reader_task(reader, Arc::clone(&reader_shared), accept_tx, id_base).await
+        let reader_stop = Arc::clone(&task_owner.stop);
+        let reader_wake = Arc::clone(&task_owner.wake);
+        let reader_remaining = Arc::clone(&task_owner.remaining);
+        let reader_finished = Arc::clone(&task_owner.finished);
+        tokio::spawn(async move {
+            if let Err(err) = reader_task(
+                reader,
+                Arc::clone(&reader_shared),
+                accept_tx,
+                id_base,
+                reader_stop,
+                reader_wake,
+            )
+            .await
             {
                 tracing::debug!(error = %err, "mux reader stopped");
             }
             reader_shared.close_all_peers();
-        }));
+            finish_task(&reader_remaining, &reader_finished);
+        });
         Self {
             shared,
             next_id: Arc::new(AtomicU32::new(id_base)),
             accept_rx: Arc::new(tokio::sync::Mutex::new(accept_rx)),
-            _tasks: Arc::new(tasks),
+            tasks: task_owner,
         }
     }
 
+    /// Stop the reader and writer even if other clones of this mux still exist.
+    ///
+    /// The peer does not have to hang up. [`Self::closed`] resolves when both
+    /// tasks have left their loops and dropped the transport.
+    pub fn shutdown(&self) {
+        self.tasks.stop.store(true, Ordering::SeqCst);
+        self.tasks.wake.notify_waiters();
+    }
+
+    /// Wait until the reader and writer tasks have finished.
+    pub async fn closed(&self) {
+        loop {
+            let notified = self.tasks.finished.notified();
+            if self.tasks.remaining.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+fn finish_task(remaining: &AtomicUsize, finished: &Notify) {
+    if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+        finished.notify_waiters();
+    }
+}
+
+async fn wait_stop(stop: &AtomicBool, wake: &Notify) {
+    loop {
+        let notified = wake.notified();
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        notified.await;
+    }
+}
+
+impl Mux {
     /// Open a logical stream toward the peer.
     ///
     /// # Errors
@@ -575,9 +663,15 @@ async fn reader_task<R: AsyncRead + Unpin>(
     shared: Arc<Shared>,
     accept_tx: mpsc::UnboundedSender<MuxStream>,
     id_base: u32,
+    stop: Arc<AtomicBool>,
+    wake: Arc<Notify>,
 ) -> Result<()> {
     loop {
-        let header = read_header(&mut reader).await?;
+        let header = tokio::select! {
+            biased;
+            () = wait_stop(&stop, &wake) => return Ok(()),
+            result = read_header(&mut reader) => result?,
+        };
         match header.typ {
             TYPE_OPEN => {
                 if header.payload_len != 0 || !peer_id_allowed(id_base, header.conn_id) {
@@ -714,14 +808,20 @@ async fn writer_task<W: AsyncWrite + Unpin>(
     mut control_rx: mpsc::Receiver<Control>,
     mut data_rx: mpsc::Receiver<OutData>,
     data_wakers: Arc<Mutex<Vec<Waker>>>,
+    stop: Arc<AtomicBool>,
+    wake: Arc<Notify>,
 ) {
     let mut data_open = true;
     loop {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         if flush_outbound(&mut writer, &state).await.is_err() {
             break;
         }
         tokio::select! {
             biased;
+            () = wait_stop(&stop, &wake) => break,
             ctrl = control_rx.recv() => {
                 let Some(ctrl) = ctrl else {
                     drain_writer(&mut writer, &state, &mut data_rx, &data_wakers).await;
@@ -1431,6 +1531,8 @@ mod tests {
             control_rx,
             data_rx,
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
         ));
         let ready = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -1627,6 +1729,56 @@ mod tests {
 
     type FrameLog = (u8, u32, Vec<u8>);
 
+    #[tokio::test]
+    async fn dropping_the_mux_finishes_tasks_while_the_peer_stays_idle() {
+        let (client_io, server_io) = duplex(4096);
+        let (cr, cw) = tokio::io::split(client_io);
+        let (sr, sw) = tokio::io::split(server_io);
+        let reader_gone = Arc::new(AtomicBool::new(false));
+        let writer_gone = Arc::new(AtomicBool::new(false));
+        let reader_started = Arc::new(AtomicBool::new(false));
+        let server = Mux::server(
+            IdleReader {
+                inner: sr,
+                started: Arc::clone(&reader_started),
+                gone: Arc::clone(&reader_gone),
+            },
+            IdleWriter {
+                inner: sw,
+                gone: Arc::clone(&writer_gone),
+            },
+        );
+        let client = Mux::client(cr, cw);
+        let started = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !reader_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(started.is_ok(), "mux reader never polled the idle peer");
+        let observed = server.clone();
+        drop(server);
+        // The client clone is still alive, so this drop is not the last owner.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(
+            !reader_gone.load(Ordering::SeqCst),
+            "dropping one clone stopped the reader"
+        );
+        observed.shutdown();
+        tokio::time::timeout(std::time::Duration::from_secs(2), observed.closed())
+            .await
+            .expect("mux tasks did not finish");
+        assert!(
+            reader_gone.load(Ordering::SeqCst),
+            "reader still holds the transport"
+        );
+        assert!(
+            writer_gone.load(Ordering::SeqCst),
+            "writer still holds the transport"
+        );
+        drop(client);
+    }
+
     fn window_credit(log: &Mutex<Vec<FrameLog>>) -> u32 {
         log.lock()
             .unwrap()
@@ -1634,6 +1786,61 @@ mod tests {
             .filter(|(typ, _, payload)| *typ == TYPE_WINDOW && payload.len() == 4)
             .map(|(_, _, payload)| u32::from_be_bytes(payload.as_slice().try_into().unwrap()))
             .fold(0u32, u32::saturating_add)
+    }
+
+    struct IdleReader<R> {
+        inner: R,
+        started: Arc<AtomicBool>,
+        gone: Arc<AtomicBool>,
+    }
+
+    impl<R> Drop for IdleReader<R> {
+        fn drop(&mut self) {
+            self.gone.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl<R: AsyncRead + Unpin> AsyncRead for IdleReader<R> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            self.started.store(true, Ordering::SeqCst);
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    struct IdleWriter<W> {
+        inner: W,
+        gone: Arc<AtomicBool>,
+    }
+
+    impl<W> Drop for IdleWriter<W> {
+        fn drop(&mut self) {
+            self.gone.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl<W: AsyncWrite + Unpin> AsyncWrite for IdleWriter<W> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
     }
 
     /// Writer that records mux frames and can refuse them until a gate opens.

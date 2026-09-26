@@ -46,6 +46,11 @@ pub struct ProxyServer {
     tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// Accept loop. Aborted on drop.
     accept: Option<tokio::task::JoinHandle<()>>,
+    /// Mux created inside the accept task after the session challenge.
+    ///
+    /// Dropping the proxy shuts this down so the reader and writer exit while
+    /// the peer is still connected. The accept task's clone is not the owner.
+    mux: Arc<Mutex<Option<bookclerk_plugin_sdk::mux::Mux>>>,
 }
 
 impl ProxyServer {
@@ -73,6 +78,11 @@ impl ProxyServer {
 impl Drop for ProxyServer {
     fn drop(&mut self) {
         self.fence.store(true, Ordering::SeqCst);
+        if let Ok(mut mux) = self.mux.lock() {
+            if let Some(mux) = mux.take() {
+                mux.shutdown();
+            }
+        }
         if let Some(task) = self.accept.take() {
             task.abort();
         }
@@ -149,6 +159,7 @@ pub fn spawn_unix(
         fence,
         tasks,
         accept: Some(accept),
+        mux: Arc::new(Mutex::new(None)),
     })
 }
 
@@ -467,6 +478,8 @@ where
     let accept_tasks = Arc::clone(&tasks);
     let accept_fence = Arc::clone(&fence);
     let admits = Arc::new(Semaphore::new(MAX_CONNECT_TASKS));
+    let mux_slot = Arc::new(Mutex::new(None));
+    let publish_mux = Arc::clone(&mux_slot);
     let accept = tokio::spawn(async move {
         let mut reader = reader;
         if let Some(expected) = challenge {
@@ -482,6 +495,9 @@ where
             }
         }
         let mux = bookclerk_plugin_sdk::mux::Mux::server(reader, writer);
+        if let Ok(mut slot) = publish_mux.lock() {
+            *slot = Some(mux.clone());
+        }
         loop {
             if accept_fence.load(Ordering::SeqCst) {
                 break;
@@ -518,6 +534,7 @@ where
         fence,
         tasks,
         accept: Some(accept),
+        mux: mux_slot,
     })
 }
 
@@ -1128,5 +1145,113 @@ mod tests {
             "approved dial did not connect"
         );
         fence.store(true, Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_proxy_stops_mux_tasks_while_the_peer_is_idle() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+        struct FlagReader<R> {
+            inner: R,
+            started: Arc<AtomicBool>,
+            gone: Arc<AtomicBool>,
+        }
+
+        impl<R> Drop for FlagReader<R> {
+            fn drop(&mut self) {
+                self.gone.store(true, Ordering::SeqCst);
+            }
+        }
+
+        impl<R: AsyncRead + Unpin> AsyncRead for FlagReader<R> {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                self.started.store(true, Ordering::SeqCst);
+                Pin::new(&mut self.inner).poll_read(cx, buf)
+            }
+        }
+
+        struct FlagWriter<W> {
+            inner: W,
+            gone: Arc<AtomicBool>,
+        }
+
+        impl<W> Drop for FlagWriter<W> {
+            fn drop(&mut self) {
+                self.gone.store(true, Ordering::SeqCst);
+            }
+        }
+
+        impl<W: AsyncWrite + Unpin> AsyncWrite for FlagWriter<W> {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Pin::new(&mut self.inner).poll_write(cx, buf)
+            }
+
+            fn poll_flush(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Pin::new(&mut self.inner).poll_flush(cx)
+            }
+
+            fn poll_shutdown(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Pin::new(&mut self.inner).poll_shutdown(cx)
+            }
+        }
+
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (client_read, client_write) = tokio::io::split(client_io);
+        let (server_read, server_write) = tokio::io::split(server_io);
+        let started = Arc::new(AtomicBool::new(false));
+        let reader_gone = Arc::new(AtomicBool::new(false));
+        let writer_gone = Arc::new(AtomicBool::new(false));
+        let proxy = spawn_halves(
+            FlagReader {
+                inner: server_read,
+                started: Arc::clone(&started),
+                gone: Arc::clone(&reader_gone),
+            },
+            FlagWriter {
+                inner: server_write,
+                gone: Arc::clone(&writer_gone),
+            },
+            EgressPolicy::deny(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("proxy");
+        let running = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(running.is_ok(), "proxy mux reader never started");
+        drop(proxy);
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !reader_gone.load(Ordering::SeqCst) || !writer_gone.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            finished.is_ok(),
+            "reader gone={} writer gone={}",
+            reader_gone.load(Ordering::SeqCst),
+            writer_gone.load(Ordering::SeqCst)
+        );
+        drop(client_read);
+        drop(client_write);
     }
 }
