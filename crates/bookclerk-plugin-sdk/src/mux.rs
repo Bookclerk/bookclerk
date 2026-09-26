@@ -8,7 +8,11 @@
 //! The peer is untrusted. Frame length is rejected before a payload buffer is
 //! allocated. Each stream buffers at most [`MAX_BUFFERED_PER_STREAM`] unread
 //! bytes, the connection buffers at most [`MAX_AGGREGATE_BUFFERED`], and at
-//! most [`MAX_LIVE_STREAMS`] streams exist. Window updates saturate at
+//! most [`MAX_LIVE_STREAMS`] stream objects exist. That cap covers streams
+//! waiting in the accept queue and streams the peer has already closed: a
+//! `Close` frame does not free the slot while the [`MuxStream`] is still
+//! alive. Each slot has a generation so dropping an old stream cannot remove
+//! a replacement that reused the id. Window updates saturate at
 //! [`INITIAL_WINDOW`]. Data frames use a bounded queue; `Window` and `Close`
 //! travel on a separate queue that the writer drains first.
 //!
@@ -24,7 +28,7 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
@@ -80,6 +84,8 @@ enum OutData {
 /// Shared tables for the reader task and every [`MuxStream`].
 struct Shared {
     map: Mutex<HashMap<u32, Slot>>,
+    /// Next generation handed out by [`Shared::try_insert`].
+    next_generation: AtomicU64,
     aggregate: AtomicUsize,
     control_tx: mpsc::Sender<Control>,
     data_tx: mpsc::Sender<OutData>,
@@ -88,8 +94,13 @@ struct Shared {
 }
 
 /// Per-connection inbound slot used by the reader task.
+///
+/// The slot stays in the map until the [`MuxStream`] that owns it is dropped.
+/// `data_tx` is taken when the peer closes so the stream observes EOF without
+/// freeing the id for reuse.
 struct Slot {
-    data_tx: mpsc::UnboundedSender<Vec<u8>>,
+    generation: u64,
+    data_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
     buffered: Arc<AtomicUsize>,
     send_credit: Arc<AtomicU32>,
     in_flight: Arc<AtomicU32>,
@@ -109,6 +120,8 @@ pub struct Mux {
 /// One multiplexed logical connection implementing `AsyncRead` + `AsyncWrite`.
 pub struct MuxStream {
     id: u32,
+    /// Generation stored in the map when this stream was inserted.
+    generation: u64,
     shared: Arc<Shared>,
     data_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     read_buf: Vec<u8>,
@@ -162,6 +175,7 @@ impl Mux {
         let data_wakers = Arc::new(Mutex::new(Vec::new()));
         let shared = Arc::new(Shared {
             map: Mutex::new(HashMap::new()),
+            next_generation: AtomicU64::new(1),
             aggregate: AtomicUsize::new(0),
             control_tx: control_tx.clone(),
             data_tx: data_tx.clone(),
@@ -181,7 +195,7 @@ impl Mux {
             {
                 tracing::debug!(error = %err, "mux reader stopped");
             }
-            reader_shared.retire_all();
+            reader_shared.close_all_peers();
         }));
         Self {
             shared,
@@ -200,9 +214,10 @@ impl Mux {
     pub async fn open(&self) -> Result<MuxStream> {
         let id = self.next_id.fetch_add(2, Ordering::Relaxed);
         let (mut stream, slot) = MuxStream::pair(id, Arc::clone(&self.shared));
-        if !self.shared.try_insert(id, slot) {
+        let Some(generation) = self.shared.try_insert(id, slot) else {
             return Err(SdkError::message("mux stream cap"));
-        }
+        };
+        stream.generation = generation;
         stream.inserted = true;
         self.shared
             .control_tx
@@ -229,29 +244,57 @@ impl Mux {
 }
 
 impl Shared {
-    fn try_insert(&self, id: u32, slot: Slot) -> bool {
+    /// Insert `slot` unless `id` is taken or the live-object cap is full.
+    ///
+    /// The returned generation is stored on the [`MuxStream`]. A later drop
+    /// removes the map entry only when it still carries this generation.
+    fn try_insert(&self, id: u32, mut slot: Slot) -> Option<u64> {
         let mut map = lock_map(&self.map);
         if map.len() >= MAX_LIVE_STREAMS || map.contains_key(&id) {
-            return false;
+            return None;
         }
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        slot.generation = generation;
         map.insert(id, slot);
-        true
+        Some(generation)
     }
 
-    fn retire(&self, id: u32) {
-        let slot = lock_map(&self.map).remove(&id);
-        if let Some(slot) = slot {
-            slot.peer_gone.store(true, Ordering::SeqCst);
-            if let Some(waker) = lock_waker(&slot.send_waker).take() {
-                waker.wake();
-            }
+    /// End inbound delivery for `id` without freeing the stream object.
+    ///
+    /// The peer may reuse an id only after the [`MuxStream`] drops and
+    /// [`Self::release_stream`] removes a matching generation.
+    fn close_peer(&self, id: u32) {
+        let mut map = lock_map(&self.map);
+        let Some(slot) = map.get_mut(&id) else {
+            return;
+        };
+        slot.peer_gone.store(true, Ordering::SeqCst);
+        slot.data_tx.take();
+        let waker = lock_waker(&slot.send_waker).take();
+        drop(map);
+        if let Some(waker) = waker {
+            waker.wake();
         }
     }
 
-    fn retire_all(&self) {
+    fn close_all_peers(&self) {
         let ids: Vec<u32> = lock_map(&self.map).keys().copied().collect();
         for id in ids {
-            self.retire(id);
+            self.close_peer(id);
+        }
+    }
+
+    /// Remove the slot only when it is still the generation `stream` inserted.
+    fn release_stream(&self, id: u32, generation: u64) {
+        let mut map = lock_map(&self.map);
+        let matches = map
+            .get(&id)
+            .is_some_and(|slot| slot.generation == generation);
+        if !matches {
+            return;
+        }
+        if let Some(slot) = map.remove(&id) {
+            slot.peer_gone.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -266,6 +309,7 @@ impl MuxStream {
         let peer_gone = Arc::new(AtomicBool::new(false));
         let stream = Self {
             id,
+            generation: 0,
             shared,
             data_rx,
             read_buf: Vec::new(),
@@ -281,7 +325,8 @@ impl MuxStream {
         (
             stream,
             Slot {
-                data_tx: inbound_tx,
+                generation: 0,
+                data_tx: Some(inbound_tx),
                 buffered,
                 send_credit,
                 in_flight,
@@ -313,10 +358,7 @@ impl Drop for MuxStream {
         let left = self.buffered.swap(0, Ordering::AcqRel);
         sub_atomic(&self.shared.aggregate, left);
         if self.inserted {
-            let slot = lock_map(&self.shared.map).remove(&self.id);
-            if let Some(slot) = slot {
-                slot.peer_gone.store(true, Ordering::SeqCst);
-            }
+            self.shared.release_stream(self.id, self.generation);
         }
         if self.announced && !self.closed {
             self.queue_close();
@@ -462,10 +504,13 @@ async fn reader_task<R: AsyncRead + Unpin>(
                     return Err(SdkError::message("mux duplicate stream id"));
                 }
                 let (mut stream, slot) = MuxStream::pair(header.conn_id, Arc::clone(&shared));
-                if !shared.try_insert(header.conn_id, slot) {
+                let Some(generation) = shared.try_insert(header.conn_id, slot) else {
+                    // Cap is full or the id is still owned by a stream object.
+                    // Refuse without blocking the reader on the accept queue.
                     let _ = shared.control_tx.try_send(Control::Close(header.conn_id));
                     continue;
-                }
+                };
+                stream.generation = generation;
                 stream.inserted = true;
                 stream.announced = true;
                 if accept_tx.send(stream).is_err() {
@@ -475,7 +520,7 @@ async fn reader_task<R: AsyncRead + Unpin>(
             TYPE_DATA => {
                 if !admit_data(&shared, header.conn_id, header.payload_len) {
                     discard(&mut reader, header.payload_len).await?;
-                    shared.retire(header.conn_id);
+                    shared.close_peer(header.conn_id);
                     continue;
                 }
                 let mut payload = vec![0u8; header.payload_len];
@@ -486,7 +531,7 @@ async fn reader_task<R: AsyncRead + Unpin>(
                 if header.payload_len != 0 {
                     discard(&mut reader, header.payload_len).await?;
                 }
-                shared.retire(header.conn_id);
+                shared.close_peer(header.conn_id);
             }
             TYPE_WINDOW => {
                 if header.payload_len != 4 {
@@ -525,6 +570,9 @@ fn admit_data(shared: &Shared, id: u32, payload_len: usize) -> bool {
     let Some(slot) = map.get(&id) else {
         return false;
     };
+    if slot.peer_gone.load(Ordering::Acquire) || slot.data_tx.is_none() {
+        return false;
+    }
     let cur = slot.buffered.load(Ordering::Acquire);
     let agg = shared.aggregate.load(Ordering::Acquire);
     cur.saturating_add(payload_len) <= MAX_BUFFERED_PER_STREAM
@@ -540,18 +588,25 @@ fn enqueue_data(shared: &Shared, id: u32, payload: Vec<u8>) {
     let Some(slot) = map.get(&id) else {
         return;
     };
+    if slot.peer_gone.load(Ordering::Acquire) || slot.data_tx.is_none() {
+        return;
+    }
     let cur = slot.buffered.load(Ordering::Acquire);
     let agg = shared.aggregate.load(Ordering::Acquire);
     if cur.saturating_add(len) > MAX_BUFFERED_PER_STREAM
         || agg.saturating_add(len) > MAX_AGGREGATE_BUFFERED
     {
         drop(map);
-        shared.retire(id);
+        shared.close_peer(id);
         return;
     }
     slot.buffered.fetch_add(len, Ordering::AcqRel);
     shared.aggregate.fetch_add(len, Ordering::AcqRel);
-    if slot.data_tx.send(payload).is_err() {
+    let sent = slot
+        .data_tx
+        .as_ref()
+        .is_some_and(|tx| tx.send(payload).is_ok());
+    if !sent {
         sub_atomic(&slot.buffered, len);
         sub_atomic(&shared.aggregate, len);
     }
@@ -893,6 +948,97 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, MAX_LIVE_STREAMS);
+    }
+
+    #[tokio::test]
+    async fn open_close_flood_with_accept_paused_stays_at_the_cap() {
+        let (server_io, peer) = duplex(64 * 1024);
+        let (sr, sw) = tokio::io::split(server_io);
+        let server = Mux::server(sr, sw);
+        let (mut pr, mut pw) = tokio::io::split(peer);
+        let drain = tokio::spawn(async move {
+            let mut buf = vec![0u8; 8192];
+            loop {
+                match pr.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        });
+        let opens = MAX_LIVE_STREAMS * 8;
+        for i in 0..opens {
+            let id = (i as u32) * 2 + 1;
+            write_open(&mut pw, id).await;
+            write_raw(&mut pw, TYPE_CLOSE, id, &[]).await.unwrap();
+        }
+        drop(pw);
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if lock_map(&server.shared.map).len() == MAX_LIVE_STREAMS {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            settled.is_ok(),
+            "occupancy never settled at the cap; map={}",
+            lock_map(&server.shared.map).len()
+        );
+        assert_eq!(lock_map(&server.shared.map).len(), MAX_LIVE_STREAMS);
+        let mut n = 0usize;
+        let mut held = Vec::new();
+        while let Ok(Ok(stream)) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), server.accept()).await
+        {
+            n += 1;
+            held.push(stream);
+        }
+        assert_eq!(n, MAX_LIVE_STREAMS, "accept queue grew past the live cap");
+        assert_eq!(lock_map(&server.shared.map).len(), MAX_LIVE_STREAMS);
+        drop(held);
+        assert_eq!(lock_map(&server.shared.map).len(), 0);
+        drain.abort();
+    }
+
+    #[tokio::test]
+    async fn dropping_a_stale_stream_does_not_retire_the_reused_id() {
+        let (server_io, _peer) = duplex(4096);
+        let (sr, sw) = tokio::io::split(server_io);
+        let server = Mux::server(sr, sw);
+        let (mut stale, _old_slot) = MuxStream::pair(1, Arc::clone(&server.shared));
+        stale.generation = 1;
+        stale.inserted = true;
+        let (mut live, mut slot) = MuxStream::pair(1, Arc::clone(&server.shared));
+        slot.generation = 2;
+        live.generation = 2;
+        live.inserted = true;
+        lock_map(&server.shared.map).insert(1, slot);
+        drop(stale);
+        assert_eq!(
+            lock_map(&server.shared.map)
+                .get(&1)
+                .map(|slot| slot.generation),
+            Some(2),
+            "dropping the old stream removed the replacement"
+        );
+        {
+            let map = lock_map(&server.shared.map);
+            map.get(&1)
+                .expect("replacement slot")
+                .data_tx
+                .as_ref()
+                .expect("replacement inbound")
+                .send(b"ok".to_vec())
+                .expect("send");
+        }
+        let mut buf = [0u8; 2];
+        live.read_exact(&mut buf)
+            .await
+            .expect("replacement still reads");
+        assert_eq!(&buf, b"ok");
     }
 
     #[tokio::test]
