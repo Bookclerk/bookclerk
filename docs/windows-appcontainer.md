@@ -121,8 +121,11 @@ multi-tenant quota.
 
 Cross-platform: Linux applies the same Spec fields via cgroup v2 into an
 **exclusive** child cgroup when the hierarchy allows it (never onto a shared
-parent slice, and never a leaf that already exists). `pids.max` counts threads
-and is not the Windows process baseline. If a leaf cannot be created, the
+parent slice, and never a leaf that already exists). `pids.max` counts threads.
+It is the infrastructure thread budget plus `extraProcesses`, not the Windows
+outer baseline (5 + extra). `bookclerk-workerd` pins its Tokio worker and
+blocking-thread counts so that budget does not grow with CPU count. If a leaf
+cannot be created, the
 resources layer is reported not-applicable, process-group kill is the fallback
 (it does not cover `setsid`), and Required still rests on FS/net. macOS
 Seatbelt cannot enforce memory/CPU/pids — Bookclerk reports that layer as not

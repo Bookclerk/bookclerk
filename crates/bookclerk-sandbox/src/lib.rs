@@ -184,6 +184,25 @@ pub fn host_cpu_rate_max() -> u32 {
     host_logical_cpus().saturating_mul(100)
 }
 
+/// Tokio worker threads for `bookclerk-workerd`.
+///
+/// Fixed so a session `pids.max` does not grow with [`host_logical_cpus`].
+pub const GATEWAY_WORKER_THREADS: usize = 2;
+
+/// Blocking-pool ceiling for `bookclerk-workerd`.
+pub const GATEWAY_MAX_BLOCKING_THREADS: usize = 4;
+
+/// Threads reserved for one native-behind-workerd session before `extraProcesses`.
+///
+/// Covers the pinned gateway runtime ([`GATEWAY_WORKER_THREADS`] plus
+/// [`GATEWAY_MAX_BLOCKING_THREADS`]), the pinned Cloudflare `workerd` process,
+/// the native guest's current-thread runtime, and the two jail supervisors.
+/// This is not the Windows outer process baseline (5 + extra) and not the
+/// payload process count (3 + extra). `pids.max` counts threads; guest
+/// `extraProcesses` are added on top of this budget.
+pub const INFRASTRUCTURE_THREAD_BUDGET: u32 =
+    (GATEWAY_WORKER_THREADS + GATEWAY_MAX_BLOCKING_THREADS + 16 + 4 + 4) as u32;
+
 /// CPU hard-cap carried on a [`Spec`] before label defaults are applied.
 ///
 /// Omitted and JSON `null` are [`Self::Unspecified`] (the label default). A

@@ -880,3 +880,87 @@ async fn revoke_before_register_fails_startup() {
     );
     step("revoke before register failed startup and removed the session");
 }
+
+fn sandbox_enforcement_demanded() -> bool {
+    std::env::var("BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT")
+        .is_ok_and(|value| !value.trim().is_empty())
+}
+
+/// `pids.max` is the pinned infrastructure thread budget plus `extraProcesses`.
+///
+/// Startup must finish on a multi-core host. The next thread is denied only
+/// when a delegated cgroup was actually applied. A missing leaf is recorded
+/// and is not treated as enforcement; demanding enforcement turns that into
+/// a failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delegated_pids_max_denies_the_next_thread() {
+    let _env = workerd_bin_lock().await;
+    let listener = Listener::bind(false).await;
+    let install = Install::new(listener.port);
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    if cpus < 2 {
+        if sandbox_enforcement_demanded() {
+            ng_harness::fail_deadline("enforcement demanded on a single-core host");
+        }
+        eprintln!(
+            "native_gateway: single-core host; the multi-core pids.max case was not asserted"
+        );
+        return;
+    }
+    let session = install.spawn().await;
+    open_session(&session).await;
+    let guest = session.guest_pid().expect("guest");
+    let Some(cgroup) = linux_session_cgroup(guest)
+        .or_else(|| session.gateway_pid().and_then(linux_session_cgroup))
+    else {
+        if sandbox_enforcement_demanded() {
+            ng_harness::fail_deadline(
+                "enforcement demanded but no delegated session cgroup was applied",
+            );
+        }
+        eprintln!(
+            "native_gateway: delegated cgroup unavailable; pids.max enforcement was not asserted"
+        );
+        drop(session);
+        return;
+    };
+    let text = std::fs::read_to_string(cgroup.join("pids.max"))
+        .unwrap_or_else(|err| panic!("read pids.max: {err}"));
+    let applied: u32 = text
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("pids.max {text:?}"));
+    let expected = bookclerk_sandbox::INFRASTRUCTURE_THREAD_BUDGET + 2;
+    assert_eq!(
+        applied, expected,
+        "pids.max {applied} is not the infrastructure budget {expected} plus default extra 2"
+    );
+    assert_ne!(
+        applied,
+        5 + 2,
+        "pids.max must not copy the Windows outer cap"
+    );
+    assert_ne!(
+        applied,
+        3 + 2,
+        "pids.max must not copy the payload process count"
+    );
+    let outcome = probe(&session, "exhaust_threads", 0, &applied.to_string()).await;
+    let created = outcome["created"].as_u64().unwrap_or(0);
+    let error = outcome["error"].as_str().unwrap_or("");
+    assert!(
+        outcome["ok"] == true && created > 0 && created < u64::from(applied),
+        "next thread was not denied under pids.max {applied}: {outcome}"
+    );
+    assert!(
+        error.contains("os error 11") || error.to_ascii_lowercase().contains("temporarily"),
+        "denial should be EAGAIN, got {error}"
+    );
+    step(&format!(
+        "pids.max {applied} on {cpus} cpus denied thread {} ({error})",
+        created + 1
+    ));
+    drop(session);
+}

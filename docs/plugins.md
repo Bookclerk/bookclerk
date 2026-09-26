@@ -677,8 +677,13 @@ rather than a per-plugin `cpuRatePercent`. On Linux the Spec fields are applied
 best-effort via an exclusive cgroup v2 leaf (never written onto a shared parent
 slice). The leaf name includes the plugin id, the host pid, and a per-session
 nonce; creating a leaf that already exists fails, and two sessions of the same
-plugin do not share one. `pids.max` is that payload thread budget, not the
-Windows outer process count. The host kills members, waits until `cgroup.procs`
+plugin do not share one. `pids.max` is the infrastructure thread budget
+(pinned `bookclerk-workerd` workers and blocking threads, the pinned
+`workerd` process, the guest runtime, and the jail supervisors) plus the
+guest's `extraProcesses` allowance. It is not the Windows outer process count
+(5 + extra) and not the payload process count (3 + extra). `bookclerk-workerd`
+pins `worker_threads` and `max_blocking_threads`, so that budget does not grow
+with the host CPU count. The host kills members, waits until `cgroup.procs`
 is empty, and removes the leaf on failed startup and on teardown. Creating the
 leaf or writing `memory.max` / `cpu.max` / `pids.max` is often refused inside
 desktop app cgroup scopes (browsers, IDEs). Bookclerk reports that and falls

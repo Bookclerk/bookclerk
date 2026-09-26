@@ -163,6 +163,41 @@ async fn hold_until_eof(host: &str, port: u16, payload: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// Spawn parked threads until `limit` or the kernel refuses another task.
+///
+/// `pids.max` counts threads. A refusal is the cgroup cap, reported as an
+/// error string; the caller decides whether that is enforcement.
+fn exhaust_threads(limit: &str) -> serde_json::Value {
+    let limit: u32 = limit.parse().unwrap_or(0);
+    let mut created = 0_u32;
+    let mut error = None;
+    let mut handles = Vec::new();
+    for _ in 0..limit {
+        match std::thread::Builder::new()
+            .name("bookclerk-probe-park".into())
+            .spawn(|| {
+                std::thread::park();
+            }) {
+            Ok(handle) => {
+                created += 1;
+                handles.push(handle);
+            }
+            Err(err) => {
+                error = Some(err.to_string());
+                break;
+            }
+        }
+    }
+    // Detach the parked threads. They keep their `pids.max` slots until the
+    // session is torn down.
+    drop(handles);
+    serde_json::json!({
+        "ok": error.is_some(),
+        "created": created,
+        "error": error,
+    })
+}
+
 /// Fork a sleeper that stays in this process group. `exec` is denied, so the
 /// child only calls `pause`. Windows observes the jail's child instead.
 fn spawn_pause_descendant() -> serde_json::Value {
@@ -252,6 +287,7 @@ impl PluginCli for Probe {
                 serde_json::json!({ "ok": true })
             }
             "descendant" => spawn_pause_descendant(),
+            "exhaust_threads" => exhaust_threads(arg(&params, "payload")),
             "read_path" => {
                 let path = arg(&params, "payload");
                 match std::fs::read(path) {

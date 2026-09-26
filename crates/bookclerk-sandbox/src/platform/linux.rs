@@ -352,8 +352,8 @@ fn move_self_into_cgroup(dir: &Path) -> Result<(), String> {
 ///
 /// The host assigns both sibling jails via [`crate::Spec::cgroup_dir`]. The leaf
 /// name is the suffix the caller supplies; `create_dir` fails when that name
-/// already exists so two sessions never share a leaf. `pids.max` is the payload
-/// thread budget from `limits` (not the Windows process baseline).
+/// already exists so two sessions never share a leaf. `pids.max` is the thread
+/// budget in `limits.active_processes` (not the Windows process baseline).
 ///
 /// Failure is best-effort (same posture as `try_apply_cgroup_v2`): callers treat
 /// `Err` as not-applicable and fall back to process-group kill, which does not

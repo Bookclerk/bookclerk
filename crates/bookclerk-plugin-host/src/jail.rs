@@ -211,9 +211,9 @@ pub(crate) struct GuestJail {
     pub guest_start: Option<Start>,
     /// Aggregate session resource ceilings.
     ///
-    /// Linux cgroup writes use this payload accounting. The Windows outer Job
-    /// rewrites `active_processes` through [`windows_outer_job_limits`] so the
-    /// two jail supervisors are included without changing the Linux thread cap.
+    /// Process-count ceilings (overhead + extra). Linux `pids.max` is
+    /// [`session_cgroup_thread_limits`], not this number. The Windows outer Job
+    /// rewrites `active_processes` through [`windows_outer_job_limits`].
     #[allow(dead_code)] // read on Windows (`SessionJob`); Linux writes limits at create.
     pub session_limits: bookclerk_sandbox::ResourceLimits,
     /// Isolation mode from config. Required refuses a missing outer Windows Job.
@@ -395,10 +395,12 @@ impl GuestJail {
         );
         #[cfg(target_os = "linux")]
         let session_cgroup = if siblings {
-            // `pids.max` stays the payload thread budget in `session_limits`.
-            // The Windows outer process baseline is not applied here.
+            // `pids.max` is the infrastructure thread budget plus the guest's
+            // extra allowance. `session_limits` stays the process count the
+            // Windows outer Job rewrites; it is not copied into the cgroup.
+            let thread_limits = session_cgroup_thread_limits(session_limits, spawn.runtime);
             match bookclerk_sandbox::create_session_cgroup(
-                &session_limits,
+                &thread_limits,
                 &session_cgroup_suffix(plugin),
             ) {
                 Ok(path) => Some(SessionCgroup::new(path)),
@@ -1075,10 +1077,30 @@ fn sibling_guest_spec_resource_limits(
     guest_spec_resource_limits(plugin, crate::GuestRuntimeKind::NativeDirect, grant)
 }
 
-/// Payload session ceilings shared with the Linux cgroup.
+/// Linux `pids.max` for one session.
 ///
-/// Process count here is payload overhead plus extras (3 + extra for
-/// native-behind-workerd). It is **not** the Windows outer Job cap.
+/// `payload.active_processes` is a process count. Subtracting
+/// [`GuestRuntimeKind::process_overhead`] recovers `extraProcesses`. The
+/// result is the infrastructure thread budget plus that extra. It is not
+/// the Windows outer cap and not the payload process count.
+fn session_cgroup_thread_limits(
+    payload: bookclerk_sandbox::ResourceLimits,
+    runtime: crate::GuestRuntimeKind,
+) -> bookclerk_sandbox::ResourceLimits {
+    use crate::consent::PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT;
+
+    let extra = payload
+        .active_processes
+        .map(|absolute| absolute.saturating_sub(runtime.process_overhead()))
+        .unwrap_or(PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT);
+    let mut limits = payload;
+    limits.active_processes =
+        Some(bookclerk_sandbox::INFRASTRUCTURE_THREAD_BUDGET.saturating_add(extra));
+    limits
+}
+
+/// Process-count ceilings (overhead + extra). Linux `pids.max` is
+/// [`session_cgroup_thread_limits`].
 fn session_resource_limits(
     plugin: &DiscoveredPlugin,
     runtime: crate::GuestRuntimeKind,
@@ -1090,8 +1112,8 @@ fn session_resource_limits(
 /// Windows outer Job limits: same memory and CPU as `payload`, process cap
 /// baseline 5 plus the extra budget already applied to that payload cap.
 ///
-/// Sibling inner Jobs omit CPU; this outer Job keeps it. Linux cgroup limits
-/// stay on `payload` so `pids.max` is not given the Windows process count.
+/// Sibling inner Jobs omit CPU; this outer Job keeps it. Linux `pids.max`
+/// is [`session_cgroup_thread_limits`], not this Windows process count.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn windows_outer_job_limits(
     payload: bookclerk_sandbox::ResourceLimits,
@@ -1625,6 +1647,13 @@ entrypoints = ["{entrypoint}"]
         let outer = windows_outer_job_limits(payload, plan.runtime);
         assert_eq!(outer.active_processes, Some(7), "windows outer is 5+2");
         assert_eq!(outer.cpu_rate_percent, payload.cpu_rate_percent);
+        let threads = session_cgroup_thread_limits(payload, plan.runtime);
+        assert_eq!(
+            threads.active_processes,
+            Some(bookclerk_sandbox::INFRASTRUCTURE_THREAD_BUDGET + 2)
+        );
+        assert_ne!(threads.active_processes, outer.active_processes);
+        assert_ne!(threads.active_processes, payload.active_processes);
         assert_eq!(gateway.writes, vec![session.clone()]);
         assert!(guest.writes.contains(&data));
         assert!(guest.writes.contains(&scratch));

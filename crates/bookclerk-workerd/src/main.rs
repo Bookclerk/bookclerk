@@ -50,8 +50,19 @@ use crate::manifest_env::load_manifest;
 #[cfg(windows)]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(bookclerk_sandbox::GATEWAY_WORKER_THREADS)
+        .max_blocking_threads(bookclerk_sandbox::GATEWAY_MAX_BLOCKING_THREADS)
+        .enable_all()
+        .thread_name("bookclerk-workerd")
+        .build()
+        .context("build the bookclerk-workerd runtime")?;
+    runtime.block_on(run())
+}
+
+/// Gateway process body on the pinned runtime.
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
