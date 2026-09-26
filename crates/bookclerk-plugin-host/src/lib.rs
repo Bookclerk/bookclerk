@@ -70,6 +70,7 @@ pub use authority::{
 pub use bookclerk_plugin_manifest::TcpGrant;
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
 pub use builtins::{load_integrations, load_sources};
+pub use callback_proxy::CallbackProxy;
 pub use consent::{
     active_processes_for, canonical_event_filter, consent_request, consent_request_alias,
     consent_summary, consumers_cover, cores_to_percent, database_binding_name, effective_cpu_cores,

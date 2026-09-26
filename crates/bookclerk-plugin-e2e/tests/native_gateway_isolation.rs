@@ -21,10 +21,8 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     let install_a = Install::new(listener_a.port);
     let install_b = Install::new(listener_b.port);
 
-    let session_a = install_a.spawn().await;
-    let session_b = install_b.spawn().await;
-    open_session(&session_a).await;
-    open_session(&session_b).await;
+    let (session_a, session_b) = tokio::join!(install_a.spawn(), install_b.spawn());
+    tokio::join!(open_session(&session_a), open_session(&session_b));
 
     let dir_a = session_a
         .session_dir()
@@ -38,12 +36,32 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     let secret_b = dir_b.join("host-secret.txt");
     std::fs::write(&secret_b, b"session-b-private").expect("write B secret");
 
+    let env_a = probe(&session_a, "env_keys", 0, "").await;
     let env_b = probe(&session_b, "env_keys", 0, "").await;
+    let proxy_a = env_a["socket_proxy"].as_str().unwrap_or("").to_string();
     let proxy_b = env_b["socket_proxy"].as_str().unwrap_or("").to_string();
+    assert!(
+        proxy_a.starts_with("fd:") || proxy_a.starts_with("handle:"),
+        "A SOCKET_PROXY: {proxy_a}"
+    );
     assert!(
         proxy_b.starts_with("fd:") || proxy_b.starts_with("handle:"),
         "B SOCKET_PROXY: {proxy_b}"
     );
+    let fd_a = proxy_a.split(':').next_back().unwrap_or("");
+    let fd_b = proxy_b.split(':').next_back().unwrap_or("");
+    let foreign = probe(&session_a, "touch_fd", 0, "250").await;
+    assert_eq!(
+        foreign["ok"], false,
+        "session A treated fd 250 as an open inherited proxy: {foreign}"
+    );
+    if fd_a != fd_b {
+        let borrowed = probe(&session_a, "touch_fd", 0, fd_b).await;
+        assert_eq!(
+            borrowed["ok"], false,
+            "session A opened B's proxy descriptor number {fd_b}: {borrowed}"
+        );
+    }
     step(&format!(
         "A session={} B session={} B proxy={proxy_b}",
         dir_a.display(),

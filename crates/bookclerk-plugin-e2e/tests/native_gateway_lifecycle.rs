@@ -951,3 +951,185 @@ async fn delegated_pids_max_denies_the_next_thread() {
     ));
     drop(session);
 }
+
+/// Persisted `extraProcesses` for the installed probe, read on the next spawn.
+#[cfg(windows)]
+fn set_extra_processes(install: &Install, extra: Option<u32>) {
+    let mut grants = PluginGrantStore::load(install.files_dir()).expect("load grants");
+    let mut grant = grants.grants.first().cloned().expect("installed grant");
+    grant.extra_processes = extra;
+    grants.upsert(grant);
+    grants.save(install.files_dir()).expect("save grants");
+    reconcile_grants_from_disk(install.files_dir());
+}
+
+/// Real `PluginSession::spawn_with` of the gateway and guest.
+///
+/// Extras 0, 1, and the default each allow that many direct `ping` children
+/// inside the guest Job. The next child is denied. A CPU rate on the queried
+/// Job means the outer session Job; a missing rate means the inner Job, whose
+/// cap is one guest plus the extra allowance.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn windows_job_extras_deny_the_next_direct_ping() {
+    let _env = workerd_bin_lock().await;
+    for extra in [Some(0_u32), Some(1), None] {
+        let children = extra.unwrap_or(bookclerk_plugin_host::PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT);
+        let inner = 1 + children;
+        let outer = bookclerk_plugin_host::windows_session_active_processes(children);
+        let listener = Listener::bind(false).await;
+        let install = Install::new(listener.port);
+        set_extra_processes(&install, extra);
+        let session = install.spawn().await;
+        open_session(&session).await;
+        let job = probe(&session, "job_limits", 0, "").await;
+        assert_eq!(job["in_job"], true, "guest is not in a Job: {job}");
+        if let Some(limit) = job["active_limit"].as_u64() {
+            let limit = u32::try_from(limit).unwrap_or(u32::MAX);
+            if job["cpu_rate"].is_null() {
+                assert_eq!(
+                    limit, inner,
+                    "a Job with CPU off must be the inner guest cap {inner}: {job}"
+                );
+            } else {
+                assert_eq!(
+                    limit, outer,
+                    "a Job with a CPU rate must be the outer session cap {outer}: {job}"
+                );
+                assert_eq!(job["cpu_hard_cap"], true, "{job}");
+                let expect = bookclerk_sandbox::windows_job_cpu_rate(
+                    bookclerk_plugin_host::PLUGIN_JAIL_CPU_RATE_DEFAULT,
+                    bookclerk_sandbox::host_logical_cpus(),
+                );
+                assert_eq!(
+                    job["cpu_rate"].as_u64(),
+                    Some(u64::from(expect)),
+                    "outer CpuRate {job}"
+                );
+            }
+        }
+        for n in 0..children {
+            let started = probe(&session, "spawn_ping", 0, "").await;
+            assert_eq!(
+                started["ok"], true,
+                "direct ping {n} of {children} was refused: {started}"
+            );
+        }
+        let denied = probe(&session, "spawn_ping", 0, "").await;
+        let os = denied["os"].as_u64().unwrap_or(0);
+        assert_eq!(denied["ok"], false, "ping past the grant started: {denied}");
+        assert!(
+            os == 5 || os == 1816,
+            "expected ERROR_ACCESS_DENIED (5) or ERROR_NOT_ENOUGH_QUOTA (1816), got {denied}"
+        );
+        step(&format!(
+            "windows extra {children} inner {inner} outer {outer} denied ping os {os}: {job}"
+        ));
+        drop(session);
+    }
+}
+
+/// Seatbelt guest IPC: the host OAuth callback tunnel and the `.s.PGSQL.5432` mediator.
+///
+/// Skip only when Seatbelt cannot be applied and enforcement is not demanded.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn seatbelt_oauth_callback_and_postgres_mediator_use_guest_ipc() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let _env = workerd_bin_lock().await;
+    let listener = Listener::bind(false).await;
+    let install = Install::new(listener.port);
+    let plugin = install.plugin();
+    let spawned = tokio::time::timeout(
+        SPAWN_TIMEOUT,
+        PluginSession::spawn_with(
+            &plugin,
+            &install.config,
+            serde_json::json!({}),
+            HOST_SHARED_ACCOUNT,
+            &[],
+            SessionServices::default(),
+        ),
+    )
+    .await;
+    let session = match spawned {
+        Ok(Ok(session)) => session,
+        Ok(Err(err)) => {
+            let text = err.to_string();
+            let seatbelt = text.to_ascii_lowercase().contains("seatbelt")
+                || text.to_ascii_lowercase().contains("sandbox_init");
+            let demanded = std::env::var("BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT")
+                .is_ok_and(|value| !value.trim().is_empty());
+            if seatbelt && !demanded {
+                eprintln!(
+                    "native_gateway: Seatbelt could not be applied ({text}); \
+                     oauth callback and postgres mediator were not asserted"
+                );
+                return;
+            }
+            ng_harness::fail_deadline(&format!("spawn failed: {text}"));
+        }
+        Err(_) => ng_harness::fail_deadline("seatbelt spawn timed out"),
+    };
+    open_session(&session).await;
+    let ipc = session
+        .guest_ipc_dir()
+        .unwrap_or_else(|| ng_harness::fail_deadline("jailed guest has no IPC directory"))
+        .to_path_buf();
+    let proxy = bookclerk_plugin_host::CallbackProxy::start(None, &ipc, session.package_sid())
+        .await
+        .unwrap_or_else(|err| {
+            ng_harness::fail_deadline(&format!("oauth callback listener failed: {err}"))
+        });
+    let endpoint = proxy.ipc_endpoint.clone();
+    let tcp_addr = proxy.bind_addr();
+    let pg_path = ipc.join(".s.PGSQL.5432");
+    let guest = async { probe(&session, "serve_ipc", 0, &endpoint).await };
+    let host = async {
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+        while !pg_path.exists() {
+            if Instant::now() >= deadline {
+                ng_harness::fail_deadline(
+                    "postgres mediator socket was not bound in the guest IPC directory",
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let mut pg = tokio::net::UnixStream::connect(&pg_path)
+            .await
+            .unwrap_or_else(|err| {
+                ng_harness::fail_deadline(&format!("connect postgres mediator: {err}"))
+            });
+        pg.write_all(b"startup").await.expect("startup");
+        let mut ack = [0u8; 4];
+        pg.read_exact(&mut ack).await.expect("PGOK");
+        assert_eq!(&ack, b"PGOK", "mediator socket did not accept a client");
+        let mut tcp = tokio::net::TcpStream::connect(tcp_addr)
+            .await
+            .unwrap_or_else(|err| ng_harness::fail_deadline(&format!("oauth TCP: {err}")));
+        tcp.write_all(b"oauth-ok").await.expect("oauth write");
+        let mut echo = [0u8; 8];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            tcp.read_exact(&mut echo),
+        )
+        .await
+        .unwrap_or_else(|_| ng_harness::fail_deadline("oauth echo timed out"))
+        .unwrap_or_else(|err| ng_harness::fail_deadline(&format!("oauth echo: {err}")));
+        assert_eq!(&echo, b"oauth-ok");
+    };
+    let (outcome, ()) = tokio::join!(guest, host);
+    assert_eq!(outcome["ok"], true, "{outcome}");
+    assert_eq!(outcome["oauth"], "oauth-ok", "{outcome}");
+    assert_eq!(outcome["postgres"], "startup", "{outcome}");
+    assert!(
+        pg_path.starts_with(&ipc),
+        "mediator socket {} is outside {}",
+        pg_path.display(),
+        ipc.display()
+    );
+    step("seatbelt guest IPC served the oauth callback and the postgres mediator");
+    drop(proxy);
+    drop(session);
+}
