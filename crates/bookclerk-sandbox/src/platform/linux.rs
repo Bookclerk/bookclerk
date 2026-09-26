@@ -295,12 +295,15 @@ fn current_cgroup_v2_path() -> Result<String, String> {
     Err("no cgroup v2 entry in /proc/self/cgroup".into())
 }
 
+/// Controllers a session leaf wants. `pids` is required for `pids.max`.
+const SESSION_CONTROLLERS: [&str; 3] = ["memory", "cpu", "pids"];
+
 /// Enables `memory`/`cpu`/`pids` on the parent cgroup when those controllers exist.
 fn enable_subtree_controllers(parent: &Path) -> Result<(), String> {
     let available = std::fs::read_to_string(parent.join("cgroup.controllers"))
         .map_err(|err| format!("read cgroup.controllers: {err}"))?;
     let mut enable = String::new();
-    for name in ["memory", "cpu", "pids"] {
+    for name in SESSION_CONTROLLERS {
         if available.split_whitespace().any(|c| c == name) {
             if !enable.is_empty() {
                 enable.push(' ');
@@ -316,10 +319,97 @@ fn enable_subtree_controllers(parent: &Path) -> Result<(), String> {
         .map_err(|err| format!("write cgroup.subtree_control ({enable}): {err}"))
 }
 
+/// True when `dir/cgroup.procs` lists at least one member.
+fn cgroup_populated(dir: &Path) -> bool {
+    match std::fs::read_to_string(dir.join("cgroup.procs")) {
+        Ok(text) => text.split_whitespace().any(|line| !line.is_empty()),
+        Err(_) => true,
+    }
+}
+
+/// True when `name` is already distributed to children of `dir`.
+fn subtree_has_controller(dir: &Path, name: &str) -> bool {
+    std::fs::read_to_string(dir.join("cgroup.subtree_control"))
+        .map(|text| text.split_whitespace().any(|token| token == name))
+        .unwrap_or(false)
+}
+
+/// Enables each session controller that `dir` has but does not yet distribute.
+///
+/// One write per controller: a refused domain controller (`memory`, `cpu` on a
+/// populated cgroup) must not block `pids`.
+fn enable_session_controllers(dir: &Path) {
+    let Ok(available) = std::fs::read_to_string(dir.join("cgroup.controllers")) else {
+        return;
+    };
+    let available: Vec<&str> = available.split_whitespace().collect();
+    for name in SESSION_CONTROLLERS {
+        if !available.contains(&name) || subtree_has_controller(dir, name) {
+            continue;
+        }
+        let _ = std::fs::write(dir.join("cgroup.subtree_control"), format!("+{name}"));
+    }
+}
+
+/// Parent directory for a session leaf.
+///
+/// A populated cgroup cannot enable domain controllers in `subtree_control`
+/// (the no-internal-process rule). Enabling `pids` there turns the cgroup into
+/// a threaded domain and its children into `domain invalid`, which cannot take
+/// members. Walk up to the nearest ancestor that has no member processes — or
+/// the root, which is exempt — enable the controllers there, and require
+/// `pids` in that ancestor's `subtree_control`.
+fn nearest_delegating_parent(current: &Path) -> std::path::PathBuf {
+    let root = Path::new("/sys/fs/cgroup");
+    let mut cursor = current.to_path_buf();
+    loop {
+        let exempt = cursor == root;
+        if exempt || !cgroup_populated(&cursor) {
+            enable_session_controllers(&cursor);
+            if subtree_has_controller(&cursor, "pids") {
+                return cursor;
+            }
+        }
+        if exempt {
+            break;
+        }
+        match cursor.parent() {
+            Some(parent) if parent.starts_with(root) => {
+                cursor = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    current.to_path_buf()
+}
+
+/// Writes one controller file.
+///
+/// On cgroupfs a missing file means that controller was not delegated.
+/// [`Ok`]`(false)` records that skip. A temp directory is not cgroupfs, so the
+/// write creates the file (unit tests). A present file that cannot be written
+/// is an error.
+fn write_controller_file(dir: &Path, name: &str, value: &str) -> Result<bool, String> {
+    let path = dir.join(name);
+    if path.starts_with("/sys/fs/cgroup") && !path.exists() {
+        return Ok(false);
+    }
+    std::fs::write(&path, value).map_err(|err| format!("write {}: {err}", path.display()))?;
+    Ok(true)
+}
+
 /// Writes `memory.max`, `cpu.max` (100 ms period), and `pids.max` when the policy set them.
+///
+/// A controller file that does not exist on cgroupfs is skipped. `pids.max` is
+/// not optional when `active_processes` is set: the leaf is refused rather than
+/// kept without the thread cap. Other skipped controllers are warned and the
+/// files that do exist are still written.
 fn write_cgroup_limits(dir: &Path, limits: &crate::ResourceLimits) -> Result<(), String> {
+    let mut skipped = Vec::new();
     if let Some(bytes) = limits.memory_bytes {
-        write_cgroup_file(dir, "memory.max", &bytes.to_string())?;
+        if !write_controller_file(dir, "memory.max", &bytes.to_string())? {
+            skipped.push("memory");
+        }
     }
     if let Some(percent) = limits.cpu_rate_percent {
         // cgroup v2 cpu.max: "$MAX $PERIOD" in microseconds. 100ms period;
@@ -327,18 +417,25 @@ fn write_cgroup_limits(dir: &Path, limits: &crate::ResourceLimits) -> Result<(),
         const PERIOD_US: u64 = 100_000;
         let pct = u64::from(percent.max(1));
         let quota = PERIOD_US.saturating_mul(pct) / 100;
-        write_cgroup_file(dir, "cpu.max", &format!("{quota} {PERIOD_US}"))?;
+        if !write_controller_file(dir, "cpu.max", &format!("{quota} {PERIOD_US}"))? {
+            skipped.push("cpu");
+        }
     }
     if let Some(n) = limits.active_processes {
-        write_cgroup_file(dir, "pids.max", &n.to_string())?;
+        if !write_controller_file(dir, "pids.max", &n.to_string())? {
+            return Err(
+                "pids controller is not delegated; refusing a session leaf without pids.max".into(),
+            );
+        }
+    }
+    if !skipped.is_empty() {
+        tracing::warn!(
+            skipped = %skipped.join(","),
+            dir = %dir.display(),
+            "cgroup controller not delegated; the remaining limits were applied"
+        );
     }
     Ok(())
-}
-
-/// Writes one cgroup attribute file; errors include the target path.
-fn write_cgroup_file(dir: &Path, name: &str, value: &str) -> Result<(), String> {
-    let path = dir.join(name);
-    std::fs::write(&path, value).map_err(|err| format!("write {}: {err}", path.display()))
 }
 
 /// Moves this PID into `dir/cgroup.procs` so limits apply only to this leaf.
@@ -355,6 +452,10 @@ fn move_self_into_cgroup(dir: &Path) -> Result<(), String> {
 /// already exists so two sessions never share a leaf. `pids.max` is the thread
 /// budget in `limits.active_processes` (not the Windows process baseline).
 ///
+/// The leaf is created under [`nearest_delegating_parent`], which may be an
+/// ancestor of this process. A populated cgroup cannot distribute domain
+/// controllers to children. The leaf is not created in that cgroup.
+///
 /// Failure is best-effort (same posture as `try_apply_cgroup_v2`): callers treat
 /// `Err` as not-applicable and fall back to process-group kill, which does not
 /// cover a descendant that calls `setsid`. That is not fake enforcement.
@@ -362,8 +463,8 @@ fn move_self_into_cgroup(dir: &Path) -> Result<(), String> {
 /// # Errors
 ///
 /// Returns a string when the hierarchy is missing, the leaf already exists, a
-/// child cannot be created, or a limit file cannot be written. A partial
-/// directory is removed when writing limits fails.
+/// child cannot be created, `pids` cannot be delegated, or a present limit file
+/// cannot be written. A partial directory is removed when writing limits fails.
 pub fn create_session_cgroup(
     limits: &crate::ResourceLimits,
     suffix: &str,
@@ -373,18 +474,32 @@ pub fn create_session_cgroup(
         return Err("cgroup v2 not mounted at /sys/fs/cgroup".into());
     }
     let current_rel = current_cgroup_v2_path()?;
-    let parent = if current_rel.is_empty() || current_rel == "/" {
+    let current = if current_rel.is_empty() || current_rel == "/" {
         root.to_path_buf()
     } else {
         root.join(current_rel.trim_start_matches('/'))
     };
-    if !parent.is_dir() {
+    if !current.is_dir() {
         return Err(format!(
             "current cgroup path {} is missing under /sys/fs/cgroup",
-            parent.display()
+            current.display()
         ));
     }
-    let _ = enable_subtree_controllers(&parent);
+    let parent = nearest_delegating_parent(&current);
+    if !subtree_has_controller(&parent, "pids") {
+        return Err(format!(
+            "pids controller is not delegated under {} (current cgroup {})",
+            parent.display(),
+            current.display()
+        ));
+    }
+    if parent != current {
+        tracing::debug!(
+            parent = %parent.display(),
+            current = %current.display(),
+            "session cgroup parent is an ancestor that can delegate controllers"
+        );
+    }
     let suffix = suffix
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')

@@ -683,11 +683,15 @@ plugin do not share one. `pids.max` is the infrastructure thread budget
 guest's `extraProcesses` allowance. It is not the Windows outer process count
 (5 + extra) and not the payload process count (3 + extra). `bookclerk-workerd`
 pins `worker_threads` and `max_blocking_threads`, so that budget does not grow
-with the host CPU count. The host kills members, waits until `cgroup.procs`
-is empty, and removes the leaf on failed startup and on teardown. Creating the
-leaf or writing `memory.max` / `cpu.max` / `pids.max` is often refused inside
-desktop app cgroup scopes (browsers, IDEs). Bookclerk reports that and falls
-back to process-group SIGKILL. A descendant that has called `setsid` is outside
+with the host CPU count. A cgroup that already contains the host cannot
+enable domain controllers for its children. The session leaf is created in
+the nearest ancestor that can delegate `pids` (often the parent of the host
+cgroup). A controller file that is not present is skipped; `pids.max` is
+required, and a leaf without it is not kept. The host kills members, waits
+until `cgroup.procs` is empty, and removes the leaf on failed startup and on
+teardown. Creating that ancestor leaf or writing `pids.max` is often refused
+inside desktop app cgroup scopes (browsers, IDEs). Bookclerk reports that and
+falls back to process-group SIGKILL. A descendant that has called `setsid` is outside
 that group; without a delegated cgroup this path does not own it. The host
 records each leader's pid and start time (`/proc/<pid>/stat` starttime on
 Linux, `proc_pidinfo` on macOS). It observes leader exit with `waitid`
