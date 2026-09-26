@@ -531,50 +531,150 @@ pub fn create_session_cgroup(
     Ok(child)
 }
 
-/// Kill every member of `dir` except this process, wait until `cgroup.procs`
-/// is empty, and remove the leaf.
+/// Kill every member of `dir` and remove the leaf.
 ///
-/// A missing directory is success, so teardown is idempotent. Pid 0 is never
-/// signalled. The host process is skipped when it appears in the leaf.
+/// Writes `cgroup.kill`, which the kernel applies to the whole leaf including
+/// tasks that fork while the write runs, then waits until `cgroup.events`
+/// reports `populated 0`. This is ownership of the leaf, not a snapshot of
+/// numeric pids. A descendant that called `setsid` is still inside the leaf
+/// and dies with it. Without a delegated cgroup, process-group kill is a
+/// different path and does not own that descendant.
+///
+/// When `cgroup.kill` is absent, the only fallback is `pidfd_open` on each
+/// current member and `pidfd_send_signal` on that file descriptor. A raw pid
+/// from the snapshot is never signalled. If neither mechanism is available,
+/// the error names what is missing.
+///
+/// A missing directory is success, so teardown is idempotent.
 ///
 /// # Errors
 ///
-/// Returns a string when membership cannot be read, members are still present
-/// after the wait, or the empty directory cannot be removed.
+/// Returns a string when `cgroup.kill` cannot be written, both kill mechanisms
+/// are missing, the leaf stays populated, or the empty directory cannot be
+/// removed.
 pub fn destroy_session_cgroup(dir: &Path) -> Result<(), String> {
     if !dir.exists() {
         return Ok(());
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let host = std::process::id();
-    loop {
-        let members = read_cgroup_procs(dir)?;
-        let mut alive = false;
-        for pid in members {
-            if pid == 0 || pid == host {
-                continue;
-            }
-            alive = true;
-            unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
-            }
-        }
-        if !alive {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(format!(
-                "session cgroup {} still has members after kill",
-                dir.display()
-            ));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    let kill_file = dir.join("cgroup.kill");
+    if kill_file.is_file() {
+        std::fs::write(&kill_file, "1")
+            .map_err(|err| format!("write {}: {err}", kill_file.display()))?;
+    } else {
+        kill_members_by_pidfd(dir)?;
     }
+    wait_until_unpopulated(dir)?;
     match std::fs::remove_dir(dir) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(format!("remove session cgroup {}: {err}", dir.display())),
     }
+}
+
+/// `cgroup.events` `populated` flag. `1` while the leaf or a child has tasks.
+fn cgroup_events_populated(dir: &Path) -> Result<bool, String> {
+    let path = dir.join("cgroup.events");
+    let text =
+        std::fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        if parts.next() == Some("populated") {
+            return Ok(parts.next() != Some("0"));
+        }
+    }
+    Err(format!(
+        "cgroup.events in {} has no populated key",
+        dir.display()
+    ))
+}
+
+/// Poll `populated 0` so a leaf is empty before `rmdir`.
+fn wait_until_unpopulated(dir: &Path) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if !cgroup_events_populated(dir)? {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "session cgroup {} still populated after cgroup.kill",
+                dir.display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Open a pidfd for each member and signal that descriptor.
+///
+/// Used only when `cgroup.kill` is not on this kernel. The numeric pid is
+/// never passed to `kill`.
+fn kill_members_by_pidfd(dir: &Path) -> Result<(), String> {
+    let procs = dir.join("cgroup.procs");
+    if !procs.is_file() {
+        return Err("cgroup.kill is missing and pidfd fallback cannot read cgroup.procs".into());
+    }
+    let members = read_cgroup_procs(dir).map_err(|err| {
+        format!("cgroup.kill is missing and pidfd fallback could not read membership: {err}")
+    })?;
+    let host = std::process::id();
+    let mut handles = Vec::new();
+    for pid in members {
+        if pid == 0 || pid == host {
+            continue;
+        }
+        match pidfd_open(pid) {
+            Ok(fd) => handles.push(fd),
+            Err(err) if err.raw_os_error() == Some(libc::ESRCH) => {}
+            Err(err) if err.raw_os_error() == Some(libc::ENOSYS) => {
+                return Err("cgroup.kill is missing and pidfd_open is not available".into());
+            }
+            Err(err) => {
+                return Err(format!(
+                    "cgroup.kill is missing and pidfd_open({pid}) failed: {err}"
+                ));
+            }
+        }
+    }
+    for fd in &handles {
+        pidfd_send_signal(fd)?;
+    }
+    Ok(())
+}
+
+/// `pidfd_open(2)` for `pid`. The returned fd stays valid if the pid is reused.
+fn pidfd_open(pid: u32) -> Result<std::os::fd::OwnedFd, std::io::Error> {
+    use std::os::fd::FromRawFd;
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0u32) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as std::os::fd::RawFd) })
+}
+
+/// `pidfd_send_signal(2)` with `SIGKILL`. `ESRCH` means the task is already gone.
+fn pidfd_send_signal(fd: &std::os::fd::OwnedFd) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            libc::SIGKILL,
+            std::ptr::null::<libc::siginfo_t>(),
+            0u32,
+        )
+    };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        if err.raw_os_error() == Some(libc::ENOSYS) {
+            return Err("cgroup.kill is missing and pidfd_send_signal is not available".into());
+        }
+        return Err(format!("pidfd_send_signal failed: {err}"));
+    }
+    Ok(())
 }
 
 /// Pids listed in `dir/cgroup.procs`. A missing file is an empty set.
@@ -993,6 +1093,127 @@ mod tests {
         assert!(!first.exists());
         assert!(!second.exists());
         destroy_session_cgroup(&first).expect("idempotent destroy");
+    }
+
+    /// A directory that is not a cgroup has neither kill mechanism.
+    #[test]
+    fn destroy_without_cgroup_kill_names_the_missing_mechanism() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = destroy_session_cgroup(dir.path()).expect_err("not a cgroup");
+        assert!(
+            err.contains("cgroup.kill") && err.contains("pidfd"),
+            "the error must name both missing mechanisms: {err}"
+        );
+    }
+
+    /// `cgroup.kill` during fork churn removes that leaf and leaves another session up.
+    ///
+    /// A missing delegated hierarchy is recorded and is not an enforcement pass.
+    #[test]
+    fn cgroup_kill_during_fork_churn_spares_the_other_session() {
+        let limits = crate::ResourceLimits {
+            memory_bytes: None,
+            cpu_rate_percent: None,
+            active_processes: Some(16),
+        };
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let churn_dir = match create_session_cgroup(&limits, &format!("churn-{nonce}")) {
+            Ok(dir) => dir,
+            Err(err) => {
+                eprintln!(
+                    "delegated cgroup unavailable ({err}); cgroup.kill was not asserted. \
+                     process-group kill is the fallback and does not cover a descendant that calls setsid"
+                );
+                return;
+            }
+        };
+        let other = match create_session_cgroup(&limits, &format!("churn-{nonce}-other")) {
+            Ok(dir) => dir,
+            Err(err) => {
+                let _ = destroy_session_cgroup(&churn_dir);
+                panic!("second session leaf failed after the first was created: {err}");
+            }
+        };
+        let mut churn = spawn_cgroup_member(&churn_dir, "churn");
+        let mut sleeper = spawn_cgroup_member(&other, "sleep");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        destroy_session_cgroup(&churn_dir).expect("cgroup.kill removes the churn leaf");
+        assert!(
+            !churn_dir.exists(),
+            "churn leaf {} remains",
+            churn_dir.display()
+        );
+        let churn_status = churn.try_wait().expect("churn status");
+        assert!(
+            churn_status.is_some(),
+            "fork-churn leader {} still running after cgroup.kill",
+            churn.id()
+        );
+        assert!(
+            other.exists(),
+            "the other session leaf was removed with the churn leaf"
+        );
+        assert!(
+            sleeper.try_wait().expect("sleeper status").is_none(),
+            "the other session's process died during churn teardown"
+        );
+        destroy_session_cgroup(&other).expect("remove the other session");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while sleeper.try_wait().expect("sleeper status").is_none()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            sleeper.try_wait().expect("sleeper status").is_some(),
+            "the other session's process survived its own cgroup.kill"
+        );
+        assert!(!other.exists(), "other session leaf remains");
+    }
+
+    /// Move a short-lived helper into `dir` and wait until it prints `ready`.
+    fn spawn_cgroup_member(dir: &Path, mode: &str) -> std::process::Child {
+        let script = r#"
+import os, sys, time
+leaf, mode = sys.argv[1], sys.argv[2]
+with open(os.path.join(leaf, "cgroup.procs"), "w") as handle:
+    handle.write(str(os.getpid()))
+print("ready", flush=True)
+if mode == "sleep":
+    time.sleep(60)
+    raise SystemExit(0)
+end = time.time() + 30
+while time.time() < end:
+    try:
+        pid = os.fork()
+    except OSError:
+        continue
+    if pid == 0:
+        time.sleep(60)
+        os._exit(0)
+"#;
+        let mut child = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .arg(dir)
+            .arg(mode)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("python3");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
+            .expect("ready");
+        assert!(
+            line.contains("ready"),
+            "helper in {} did not join the cgroup: {line}",
+            dir.display()
+        );
+        child
     }
 
     #[test]

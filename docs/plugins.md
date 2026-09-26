@@ -687,12 +687,18 @@ with the host CPU count. A cgroup that already contains the host cannot
 enable domain controllers for its children. The session leaf is created in
 the nearest ancestor that can delegate `pids` (often the parent of the host
 cgroup). A controller file that is not present is skipped; `pids.max` is
-required, and a leaf without it is not kept. The host kills members, waits
-until `cgroup.procs` is empty, and removes the leaf on failed startup and on
-teardown. Creating that ancestor leaf or writing `pids.max` is often refused
-inside desktop app cgroup scopes (browsers, IDEs). Bookclerk reports that and
-falls back to process-group SIGKILL. A descendant that has called `setsid` is outside
-that group; without a delegated cgroup this path does not own it. The host
+required, and a leaf without it is not kept. Teardown writes `cgroup.kill`
+and waits until `cgroup.events` reports `populated 0` before removing the
+leaf. That is kernel ownership of the leaf: tasks that fork during the kill,
+and descendants that have called `setsid`, die with the leaf. If `cgroup.kill`
+is missing, the only fallback is `pidfd_open` plus `pidfd_send_signal` on
+that descriptor. A raw pid from a snapshot is not signalled. If neither
+mechanism exists, teardown returns an error that names it. Creating that
+ancestor leaf or writing `pids.max` is often refused inside desktop app
+cgroup scopes (browsers, IDEs). Bookclerk reports that and falls back to
+process-group SIGKILL. That fallback is a different path: a descendant that
+has called `setsid` is outside the group, and without a delegated cgroup
+this path does not own it. The host
 records each leader's pid and start time (`/proc/<pid>/stat` starttime on
 Linux, `proc_pidinfo` on macOS). It observes leader exit with `waitid`
 `WNOWAIT` so the zombie still has that start time, signals the group only
