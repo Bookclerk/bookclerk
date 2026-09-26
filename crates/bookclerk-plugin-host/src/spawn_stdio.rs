@@ -97,7 +97,8 @@ pub(crate) struct SpawnedStdio {
     /// Pid and start time captured when each sibling was spawned.
     ///
     /// Cleanup signals that process group only while the start time still
-    /// matches, including after `try_wait` has cleared [`Child::id`].
+    /// matches. The leader must still be a zombie: reaping it drops the start
+    /// time, and a recycled pid is not signalled.
     pub identities: SiblingIdentities,
     /// Linux cgroup leaf. Drop kills members and removes the directory.
     #[cfg(target_os = "linux")]
@@ -638,7 +639,9 @@ fn command_for_start(start: &Start, program: &std::path::Path, args: &[String]) 
 ///
 /// Spawn uses `process_group(0)`, so `pid` is the group leader. Callers must
 /// confirm the pid still names that leader ([`ProcessIdentity::kill_if_same`]);
-/// a recycled pid must not be signalled.
+/// a recycled pid must not be signalled. A descendant that has called `setsid`
+/// is in a new session and is outside this group. Without a delegated cgroup,
+/// this path does not own that descendant.
 #[cfg(unix)]
 pub(crate) fn kill_process_group(pid: u32) {
     unsafe {
@@ -684,6 +687,9 @@ impl ProcessIdentity {
     }
 
     /// SIGKILL the process group only while `pid` still has this start time.
+    ///
+    /// The leader may already be a zombie. Reaping it first makes
+    /// [`Self::still_same`] fail, and the rest of the group is left alive.
     pub(crate) fn kill_if_same(&self) {
         if !self.still_same() {
             tracing::warn!(
@@ -733,6 +739,29 @@ impl SiblingIdentities {
             }
         }
     }
+}
+
+/// True when `pid` is a child that has exited and has not been reaped.
+///
+/// `waitid` with `WNOWAIT` leaves the zombie in place so
+/// [`ProcessIdentity::kill_if_same`] can still read its start time. A later
+/// `wait` collects it. A descendant that called `setsid` is not in this
+/// process group; this function does not claim that descendant.
+#[cfg(unix)]
+pub(crate) fn exited_without_reaping(pid: u32) -> bool {
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+        )
+    };
+    if rc != 0 {
+        return false;
+    }
+    unsafe { info.assume_init().si_pid() == pid as libc::pid_t }
 }
 
 /// Capture identities for leaders that exist right now.
@@ -1303,10 +1332,22 @@ pub(crate) fn spawn_failure_detail(
 }
 
 fn child_status(tag: &str, child: &mut Child) -> String {
-    match child.try_wait() {
-        Ok(Some(st)) => format!("{tag} exited: {st}"),
-        Ok(None) => format!("{tag} still running"),
-        Err(e) => format!("{tag} wait error: {e}"),
+    // Do not reap here. A later group kill still needs the leader's start time.
+    #[cfg(unix)]
+    {
+        match child.id() {
+            Some(pid) if exited_without_reaping(pid) => format!("{tag} exited"),
+            Some(_) => format!("{tag} still running"),
+            None => format!("{tag} already reaped"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match child.try_wait() {
+            Ok(Some(st)) => format!("{tag} exited: {st}"),
+            Ok(None) => format!("{tag} still running"),
+            Err(e) => format!("{tag} wait error: {e}"),
+        }
     }
 }
 
@@ -1497,6 +1538,56 @@ mod tests {
         assert!(
             !process_alive(descendant),
             "a descendant that stays in the leader's process group must exit"
+        );
+        assert!(!process_alive(leader.pid));
+    }
+
+    /// Leader exit must be visible without a reap, so a later group kill still
+    /// sees the start time and the same-group descendant dies.
+    #[cfg(unix)]
+    #[test]
+    fn observing_leader_exit_still_kills_the_same_group_descendant() {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("trap '' HUP; sleep 60 & echo $!; exit");
+        cmd.process_group(0);
+        cmd.stdout(std::process::Stdio::piped());
+        let mut child = with_fd_spawn_lock(|| cmd.spawn()).expect("sh");
+        let leader = ProcessIdentity::capture(Some(child.id())).expect("leader");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
+            .expect("descendant pid");
+        let descendant: u32 = line.trim().parse().expect("pid");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !exited_without_reaping(leader.pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "leader did not exit while its descendant stayed up"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            exited_without_reaping(leader.pid),
+            "a second observation must not reap the leader"
+        );
+        assert!(
+            leader.still_same(),
+            "the zombie leader must keep the start time captured at spawn"
+        );
+        assert!(
+            process_alive(descendant),
+            "descendant must still be alive when the leader is only observed"
+        );
+        leader.kill_if_same();
+        let _ = child.wait();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && process_alive(descendant) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            !process_alive(descendant),
+            "observing leader exit must still let the group kill reach the descendant"
         );
         assert!(!process_alive(leader.pid));
     }

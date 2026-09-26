@@ -1982,20 +1982,40 @@ async fn open_database_adapter(
 }
 
 /// True when the gateway or native guest has already exited.
+///
+/// On Unix this uses `waitid(WNOWAIT)` so the zombie keeps the start time
+/// recorded at spawn. [`reap_siblings`] signals the process group only while
+/// that start time matches, then reaps. A `setsid` descendant is outside the
+/// group and is not owned here unless a delegated cgroup contains it.
 fn sibling_exited(
     gateway: &mut tokio::process::Child,
     guest: Option<&mut tokio::process::Child>,
 ) -> bool {
-    gateway.try_wait().ok().flatten().is_some()
-        || guest.is_some_and(|child| child.try_wait().ok().flatten().is_some())
+    #[cfg(unix)]
+    {
+        fn gone(child: &tokio::process::Child) -> bool {
+            match child.id() {
+                Some(pid) => crate::spawn_stdio::exited_without_reaping(pid),
+                None => true,
+            }
+        }
+        gone(gateway) || guest.as_deref().is_some_and(gone)
+    }
+    #[cfg(not(unix))]
+    {
+        gateway.try_wait().ok().flatten().is_some()
+            || guest.is_some_and(|child| child.try_wait().ok().flatten().is_some())
+    }
 }
 
 /// Kills both siblings and waits until they exit.
 ///
 /// On Unix the spawn put each child in its own process group. The signal uses
-/// the pid and start time recorded at spawn, so it still runs after `try_wait`
-/// has cleared [`tokio::process::Child::id`], and it does not signal a pid that
-/// has already been reused.
+/// the pid and start time recorded at spawn. The leader is still a zombie at
+/// this point (`waitid` `WNOWAIT`), so the start time is readable. A recycled
+/// pid is not signalled. `wait` reaps only after the group signal. A
+/// descendant that called `setsid` is outside the group; without a delegated
+/// cgroup this does not own it.
 async fn reap_siblings(
     gateway: &mut tokio::process::Child,
     guest: &mut Option<tokio::process::Child>,
@@ -2346,9 +2366,10 @@ fn vat_thread(
                     Box<dyn bookclerk_plugin_abi::AdapterTransaction>,
                 > = std::collections::HashMap::new();
                 loop {
-                    // `try_wait` notices an already-reaped sibling. Tokio
-                    // `Child::wait` is cancellation-safe; a cancelled wait does
-                    // not drop zombie status.
+                    // Observe exit without reaping so the group kill still sees
+                    // the leader start time. Tokio `Child::wait` is
+                    // cancellation-safe; a cancelled wait does not drop zombie
+                    // status.
                     if sibling_exited(&mut child, guest.as_mut()) {
                         tracing::info!("sibling exited; ending plugin vat");
                         break;

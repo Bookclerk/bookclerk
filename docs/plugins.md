@@ -680,10 +680,13 @@ Windows outer process count. The host kills members, waits until `cgroup.procs`
 is empty, and removes the leaf on failed startup and on teardown. Creating the
 leaf or writing `memory.max` / `cpu.max` / `pids.max` is often refused inside
 desktop app cgroup scopes (browsers, IDEs). Bookclerk reports that and falls
-back to process-group SIGKILL. The fallback does not cover a descendant that
-calls `setsid`. The host records each leader's pid and start time (`/proc/<pid>/stat`
-starttime on Linux, `proc_pidinfo` on macOS) and signals the group only while
-that identity still matches, including after the leader has been reaped.
+back to process-group SIGKILL. A descendant that has called `setsid` is outside
+that group; without a delegated cgroup this path does not own it. The host
+records each leader's pid and start time (`/proc/<pid>/stat` starttime on
+Linux, `proc_pidinfo` on macOS). It observes leader exit with `waitid`
+`WNOWAIT` so the zombie still has that start time, signals the group only
+while the start time matches, and reaps afterward. It does not signal a
+process-group id whose start time is gone.
 Tokio `Child::wait` is cancellation-safe; cancelling it does not drop zombie
 status. On macOS Seatbelt the resource fields are ignored (documented as
 unsupported — FS/net only). `[plugins.jail].cpu_rate_percent` is a **per-jail ceiling** only (not a
