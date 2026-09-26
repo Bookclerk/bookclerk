@@ -159,6 +159,12 @@ pub fn unregister_session(flag: &Arc<AtomicBool>) {
     }
 }
 
+/// Sessions currently registered with the process-wide authority table.
+#[must_use]
+pub fn live_session_count() -> usize {
+    live().lock().map(|guard| guard.len()).unwrap_or(0)
+}
+
 /// Fences every live session for `plugin_key` (grant/authority change).
 pub fn fence_plugin_key(plugin_key: &str) {
     fence_stale_sessions(plugin_key, "");

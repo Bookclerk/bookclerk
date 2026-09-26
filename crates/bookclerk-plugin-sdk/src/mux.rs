@@ -41,6 +41,28 @@ use tokio::sync::{mpsc, Notify};
 
 use crate::{Result, SdkError};
 
+/// Mux reader and writer tasks that have not finished in this process.
+static LIVE_MUX_TASKS: AtomicUsize = AtomicUsize::new(0);
+
+/// In-process mux reader and writer tasks that have not returned.
+#[must_use]
+pub fn live_mux_task_count() -> usize {
+    LIVE_MUX_TASKS.load(Ordering::SeqCst)
+}
+
+struct LiveMuxTask;
+
+impl Drop for LiveMuxTask {
+    fn drop(&mut self) {
+        LIVE_MUX_TASKS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn begin_mux_task() -> LiveMuxTask {
+    LIVE_MUX_TASKS.fetch_add(1, Ordering::SeqCst);
+    LiveMuxTask
+}
+
 /// Frame type byte for opening a multiplexed connection.
 pub const TYPE_OPEN: u8 = 1;
 /// Frame type byte for payload bytes on an open connection.
@@ -259,6 +281,7 @@ impl Mux {
         let writer_remaining = Arc::clone(&task_owner.remaining);
         let writer_finished = Arc::clone(&task_owner.finished);
         tokio::spawn(async move {
+            let _live = begin_mux_task();
             writer_task(
                 writer,
                 writer_state,
@@ -277,6 +300,7 @@ impl Mux {
         let reader_remaining = Arc::clone(&task_owner.remaining);
         let reader_finished = Arc::clone(&task_owner.finished);
         tokio::spawn(async move {
+            let _live = begin_mux_task();
             if let Err(err) = reader_task(
                 reader,
                 Arc::clone(&reader_shared),

@@ -662,6 +662,10 @@ impl PluginSession {
     }
 
     /// Connects Cap'n Proto over the spawned stdio and negotiates `describe`.
+    ///
+    /// A [`StartupOwner`] is registered before describe. Dropping this future,
+    /// a failed ready delivery, or a grant change tears the siblings, proxy,
+    /// and session directory down instead of entering the work loop.
     async fn connect_spawned(
         spawned: crate::spawn_stdio::SpawnedStdio,
         plugin: &DiscoveredPlugin,
@@ -696,24 +700,40 @@ impl PluginSession {
         let identity = ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
             .with_overlay_config(config)
             .with_persisted_and_effective(&spawned.persisted_grant, &spawned.grant);
+        let files_dir = spawned.files_dir.clone();
+        let cancel = Arc::clone(&spawned.cancel);
+        publish_test_hold_facts(gateway_pid, guest_pid, {
+            #[cfg(windows)]
+            {
+                package_sid.as_deref()
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        });
+        let mut held = SpawnHold {
+            spawned: Some(spawned),
+        };
         if identity.grant_revision.is_empty() {
             return Err(PluginError::message(format!(
                 "plugin `{}` spawn is missing an authority revision",
                 plugin.plugin_key().canonical()
             )));
         }
-        let files_dir = spawned.files_dir.clone();
-        let cancel = Arc::clone(&spawned.cancel);
+        // Describe has not started. A revoke here changes the grant before
+        // registration; the re-check below fails the spawn instead of relying
+        // on a watcher event that already fired.
+        wait_test_hold("BOOKCLERK_TEST_STARTUP_HOLD_DIR", None).await;
+        grant_still_current(&files_dir, plugin, config, &identity)?;
+        let spawned = held
+            .spawned
+            .take()
+            .ok_or_else(|| PluginError::message("plugin spawn already released"))?;
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) =
             oneshot::channel::<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>();
         let vat_account = account_id.to_string();
-        thread::Builder::new()
-            .name(vat_thread_name(&id))
-            .spawn(move || vat_thread(spawned, manifest, vat_account, events, rx, ready_tx))
-            .map_err(|err| PluginError::message(format!("plugin vat thread: {err}")))?;
-        // Register before describe returns so a grant change during startup
-        // sets `cancel` immediately. The proxy and the vat already select on it.
         let shutdown_tx = tx.clone();
         let authority_fence = crate::authority::register_session_revisions_on(
             plugin.plugin_key().canonical(),
@@ -724,42 +744,34 @@ impl PluginSession {
             }),
             Arc::clone(&cancel),
         );
+        let owner = StartupOwner {
+            active: true,
+            cancel: Arc::clone(&cancel),
+            shutdown: tx.clone(),
+            fence: Some(authority_fence),
+        };
+        let guard = SpawnGuard {
+            spawned: Some(spawned),
+        };
+        thread::Builder::new()
+            .name(vat_thread_name(&id))
+            .spawn(move || vat_thread(guard, manifest, vat_account, events, rx, ready_tx))
+            .map_err(|err| PluginError::message(format!("plugin vat thread: {err}")))?;
         let (desc, limits, features) = match ready_rx.await {
             Ok(Ok(ready)) => ready,
-            Ok(Err(err)) => {
-                crate::authority::unregister_session(&authority_fence);
-                return Err(err);
-            }
+            Ok(Err(err)) => return Err(err),
             Err(err) => {
-                crate::authority::unregister_session(&authority_fence);
                 return Err(PluginError::message(format!("plugin vat dropped: {err}")));
             }
         };
         if desc.api_version != PRODUCT_API_VERSION {
-            let _ = tx.send(Work::Shutdown);
-            crate::authority::unregister_session(&authority_fence);
             return Err(PluginError::message(format!(
                 "plugin `{id}` describe apiVersion {} is not {PRODUCT_API_VERSION}",
                 desc.api_version
             )));
         }
-        match crate::consent::spawn_grant(&files_dir, plugin) {
-            Ok(fresh) => {
-                let effective = crate::spawn_stdio::effective_spawn_grant(&fresh, plugin, config);
-                if crate::authority::authority_revision(&effective) == identity.authority_revision {
-                } else {
-                    cancel.store(true, Ordering::SeqCst);
-                    let _ = tx.send(Work::Shutdown);
-                    crate::authority::unregister_session(&authority_fence);
-                    return Err(crate::authority::fenced_error());
-                }
-            }
-            Err(err) => {
-                let _ = tx.send(Work::Shutdown);
-                crate::authority::unregister_session(&authority_fence);
-                return Err(err);
-            }
-        }
+        grant_still_current(&files_dir, plugin, config, &identity)?;
+        let authority_fence = owner.disarm();
         Ok(Self {
             tx,
             id,
@@ -2041,23 +2053,185 @@ fn vat_thread_name(plugin_key: &str) -> String {
     name
 }
 
+/// Owns the spawned siblings until the vat thread takes them.
+///
+/// Drop kills the children, aborts the proxy, rolls back the ACL journal, and
+/// removes the session directory when `connect_spawned` never starts the vat.
+struct SpawnHold {
+    spawned: Option<crate::spawn_stdio::SpawnedStdio>,
+}
+
+impl Drop for SpawnHold {
+    fn drop(&mut self) {
+        if let Some(spawned) = self.spawned.take() {
+            abandon_spawned(spawned);
+        }
+    }
+}
+
+/// Same cleanup as [`SpawnHold`], moved into the vat thread.
+///
+/// The thread takes the child on entry. If the thread fails to start, this
+/// drop is what tears the siblings down.
+struct SpawnGuard {
+    spawned: Option<crate::spawn_stdio::SpawnedStdio>,
+}
+
+impl Drop for SpawnGuard {
+    fn drop(&mut self) {
+        if let Some(spawned) = self.spawned.take() {
+            abandon_spawned(spawned);
+        }
+    }
+}
+
+/// Registered before describe. Drop fences the session and asks the vat to exit
+/// so an abandoned `spawn_with` cannot leave the work loop running.
+struct StartupOwner {
+    active: bool,
+    cancel: Arc<AtomicBool>,
+    shutdown: mpsc::UnboundedSender<Work>,
+    fence: Option<Arc<AtomicBool>>,
+}
+
+impl StartupOwner {
+    /// Transfer the fence to the returned session. Later drops do not unregister it.
+    fn disarm(mut self) -> Arc<AtomicBool> {
+        self.active = false;
+        self.fence
+            .take()
+            .unwrap_or_else(|| Arc::clone(&self.cancel))
+    }
+}
+
+impl Drop for StartupOwner {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.cancel.store(true, Ordering::SeqCst);
+        let _ = self.shutdown.send(Work::Shutdown);
+        if let Some(fence) = self.fence.take() {
+            crate::authority::unregister_session(&fence);
+        }
+    }
+}
+
+/// Kill both siblings, abort the proxy, and remove host-owned session state.
+fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
+    spawned.identities.kill_matching();
+    let _ = spawned.child.start_kill();
+    if let Some(guest) = spawned.guest.as_mut() {
+        let _ = guest.start_kill();
+    }
+    drop(spawned.proxy.take());
+    #[cfg(windows)]
+    drop(spawned.session_job.take());
+    #[cfg(target_os = "linux")]
+    drop(spawned.session_cgroup.take());
+    let dir = spawned.session_dir.take();
+    drop(spawned);
+    if let Some(dir) = dir {
+        for _ in 0..100 {
+            if !dir.exists() || std::fs::remove_dir_all(&dir).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// True when the grant file still matches the revision captured at spawn.
+fn grant_still_current(
+    files_dir: &std::path::Path,
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+    identity: &ExecutorIdentity,
+) -> Result<()> {
+    let persisted = crate::consent::spawn_grant(files_dir, plugin)?;
+    let effective = crate::spawn_stdio::effective_spawn_grant(&persisted, plugin, config);
+    let grant_rev = crate::consent::grant_revision(&persisted);
+    let authority_rev = crate::authority::authority_revision(&effective);
+    if grant_rev != identity.grant_revision || authority_rev != identity.authority_revision {
+        return Err(crate::authority::fenced_error());
+    }
+    Ok(())
+}
+
+/// Block while `env_key` names a directory that has no `release` file.
+///
+/// `cancel` unblocks a vat that is already running. Dropping the caller future
+/// is enough for the pre-registration hold, because that future owns the siblings.
+async fn wait_test_hold(env_key: &str, cancel: Option<&Arc<AtomicBool>>) {
+    let Ok(dir) = std::env::var(env_key) else {
+        return;
+    };
+    if dir.is_empty() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("holding"), b"1");
+    loop {
+        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return;
+        }
+        if dir.join("release").is_file() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Record pids (and the Windows package SID) for an armed test hold.
+fn publish_test_hold_facts(
+    gateway_pid: Option<u32>,
+    guest_pid: Option<u32>,
+    package_sid: Option<&str>,
+) {
+    for key in [
+        "BOOKCLERK_TEST_STARTUP_HOLD_DIR",
+        "BOOKCLERK_TEST_DESCRIBE_HOLD_DIR",
+    ] {
+        let Ok(dir) = std::env::var(key) else {
+            continue;
+        };
+        if dir.is_empty() {
+            continue;
+        }
+        let dir = std::path::PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        if let Some(pid) = gateway_pid {
+            let _ = std::fs::write(dir.join("gateway_pid"), pid.to_string());
+        }
+        if let Some(pid) = guest_pid {
+            let _ = std::fs::write(dir.join("guest_pid"), pid.to_string());
+        }
+        if let Some(sid) = package_sid {
+            let _ = std::fs::write(dir.join("package_sid"), sid);
+        }
+    }
+}
+
 fn vat_thread(
-    spawned: crate::spawn_stdio::SpawnedStdio,
+    mut guard: SpawnGuard,
     manifest: PluginManifest,
     account_id: String,
     events: Option<EventOutbox>,
     mut rx: mpsc::UnboundedReceiver<Work>,
     ready: oneshot::Sender<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>,
 ) {
+    let Some(spawned) = guard.spawned.take() else {
+        let _ = ready.send(Err(PluginError::message("plugin spawn already released")));
+        return;
+    };
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(rt) => rt,
         Err(err) => {
-            if let Some(dir) = spawned.session_dir {
-                let _ = std::fs::remove_dir_all(dir);
-            }
+            abandon_spawned(spawned);
             let _ = ready.send(Err(PluginError::message(format!("plugin runtime: {err}"))));
             return;
         }
@@ -2084,6 +2258,21 @@ fn vat_thread(
                 // A sibling that exits before describe completes must fail the
                 // spawn. Cap'n Proto does not always surface that EOF (seen on
                 // macOS), so the wait is raced with process exit.
+                wait_test_hold(
+                    "BOOKCLERK_TEST_DESCRIBE_HOLD_DIR",
+                    Some(&session_cancel),
+                )
+                .await;
+                if session_cancel.load(Ordering::SeqCst) {
+                    #[cfg(windows)]
+                    drop(_session_job);
+                    reap_siblings(&mut child, &mut guest, &identities).await;
+                    #[cfg(target_os = "linux")]
+                    drop(session_cgroup.take());
+                    drop(remove_session_dir.take());
+                    let _ = ready.send(Err(crate::authority::fenced_error()));
+                    return;
+                }
                 let described = tokio::select! {
                     biased;
                     () = wait_flag(Arc::clone(&session_cancel)) => {
@@ -2100,7 +2289,15 @@ fn vat_thread(
                     Ok(desc) => match negotiate_describe(&desc, &manifest, &grant) {
                         Ok((limits, features)) => {
                             let client = client.with_limits(limits);
-                            let _ = ready.send(Ok((desc, limits, features)));
+                            if ready.send(Ok((desc, limits, features))).is_err() {
+                                #[cfg(windows)]
+                                drop(_session_job);
+                                reap_siblings(&mut child, &mut guest, &identities).await;
+                                #[cfg(target_os = "linux")]
+                                drop(session_cgroup.take());
+                                drop(remove_session_dir.take());
+                                return;
+                            }
                             client
                         }
                         Err(err) => {

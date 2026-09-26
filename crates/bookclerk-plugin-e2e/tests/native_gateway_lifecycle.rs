@@ -633,3 +633,250 @@ async fn outer_session_job_failure_leaves_no_session_and_no_proxy() {
         );
     }
 }
+
+struct ClearHoldEnv;
+
+impl Drop for ClearHoldEnv {
+    fn drop(&mut self) {
+        std::env::remove_var("BOOKCLERK_TEST_STARTUP_HOLD_DIR");
+        std::env::remove_var("BOOKCLERK_TEST_DESCRIBE_HOLD_DIR");
+    }
+}
+
+fn hold_pid(dir: &std::path::Path, name: &str) -> Option<u32> {
+    std::fs::read_to_string(dir.join(name))
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+}
+
+fn held_pids(dir: &std::path::Path) -> Vec<u32> {
+    let mut pids = Vec::new();
+    for name in ["gateway_pid", "guest_pid"] {
+        let Some(pid) = hold_pid(dir, name) else {
+            continue;
+        };
+        pids.push(pid);
+        pids.extend(ProcessTree::capture().descendants(pid));
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+async fn wait_until_holding(dir: &std::path::Path) {
+    let deadline = Instant::now() + SPAWN_TIMEOUT;
+    while !dir.join("holding").is_file() {
+        if Instant::now() >= deadline {
+            let _ = std::fs::write(dir.join("release"), b"1");
+            ng_harness::fail_deadline(&format!("hold was not reached under {}", dir.display()));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+async fn assert_hold_cleaned(
+    files: &std::path::Path,
+    hold: &std::path::Path,
+    pids: &[u32],
+    cgroup: Option<std::path::PathBuf>,
+    regs_before: usize,
+    mux_before: usize,
+    label: &str,
+) {
+    for pid in pids {
+        let deadline = Instant::now() + ng_harness::EXIT_TIMEOUT;
+        while process_alive(*pid) {
+            if Instant::now() >= deadline {
+                ng_harness::fail_deadline(&format!("{label}: pid {pid} still running"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        if session_dirs_under(files).is_empty() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            ng_harness::fail_deadline(&format!(
+                "{label}: session dir leaked under {}",
+                files.display()
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    if let Some(dir) = cgroup {
+        let deadline = Instant::now() + SETTLE_TIMEOUT;
+        while dir.exists() && Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(!dir.exists(), "{label}: cgroup {} remains", dir.display());
+    }
+    let reg_deadline = Instant::now() + SETTLE_TIMEOUT;
+    while bookclerk_plugin_host::live_session_count() != regs_before {
+        if Instant::now() >= reg_deadline {
+            ng_harness::fail_deadline(&format!(
+                "{label}: live sessions {} != {regs_before}",
+                bookclerk_plugin_host::live_session_count()
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let mux_deadline = Instant::now() + SETTLE_TIMEOUT;
+    while bookclerk_plugin_sdk::mux::live_mux_task_count() > mux_before {
+        if Instant::now() >= mux_deadline {
+            ng_harness::fail_deadline(&format!(
+                "{label}: mux tasks {} > {mux_before}",
+                bookclerk_plugin_sdk::mux::live_mux_task_count()
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    #[cfg(windows)]
+    {
+        let sid = std::fs::read_to_string(hold.join("package_sid"))
+            .unwrap_or_else(|err| panic!("{label}: package sid missing after the hold: {err}"));
+        let sid = sid.trim();
+        assert!(!sid.is_empty(), "{label}: empty package sid");
+        let plugin = files.join("plugins").join(ng_harness::PLUGIN_ID);
+        for path in [files, plugin.as_path()] {
+            let mentioned = bookclerk_sandbox::spawn::dacl_mentions_sid(path, sid)
+                .unwrap_or_else(|err| panic!("{label}: DACL read {}: {err}", path.display()));
+            assert!(
+                !mentioned,
+                "{label}: package SID {sid} remains on {}",
+                path.display()
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = hold;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abort_spawn_during_describe_reaps_the_session() {
+    let _env = workerd_bin_lock().await;
+    let _clear = ClearHoldEnv;
+    let listener = Listener::bind(false).await;
+    let install = Install::new(listener.port);
+    let hold = tempfile::tempdir().expect("describe hold dir");
+    std::env::set_var("BOOKCLERK_TEST_DESCRIBE_HOLD_DIR", hold.path());
+    let regs_before = bookclerk_plugin_host::live_session_count();
+    let mux_before = bookclerk_plugin_sdk::mux::live_mux_task_count();
+    let plugin = install.plugin();
+    let config = install.config.clone();
+    let spawned = tokio::spawn(async move {
+        PluginSession::spawn_with(
+            &plugin,
+            &config,
+            serde_json::json!({}),
+            HOST_SHARED_ACCOUNT,
+            &[],
+            SessionServices::default(),
+        )
+        .await
+    });
+    wait_until_holding(hold.path()).await;
+    if bookclerk_plugin_host::live_session_count() != regs_before + 1 {
+        spawned.abort();
+        let _ = std::fs::write(hold.path().join("release"), b"1");
+        ng_harness::fail_deadline(&format!(
+            "describe hold was not registered: {} vs {regs_before}",
+            bookclerk_plugin_host::live_session_count()
+        ));
+    }
+    let pids = held_pids(hold.path());
+    if pids.is_empty() {
+        spawned.abort();
+        let _ = std::fs::write(hold.path().join("release"), b"1");
+        ng_harness::fail_deadline("describe hold published no sibling pids");
+    }
+    let cgroup = hold_pid(hold.path(), "gateway_pid")
+        .and_then(linux_session_cgroup)
+        .or_else(|| hold_pid(hold.path(), "guest_pid").and_then(linux_session_cgroup));
+    spawned.abort();
+    let _ = spawned.await;
+    assert_hold_cleaned(
+        install.files_dir(),
+        hold.path(),
+        &pids,
+        cgroup,
+        regs_before,
+        mux_before,
+        "abort during describe",
+    )
+    .await;
+    assert_eq!(listener.accepts(), 0, "aborted describe accepted a proxy");
+    step("abort during describe reaped siblings, mux tasks, and the registration");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revoke_before_register_fails_startup() {
+    let _env = workerd_bin_lock().await;
+    let _clear = ClearHoldEnv;
+    let listener = Listener::bind(false).await;
+    let install = Install::new(listener.port);
+    let hold = tempfile::tempdir().expect("startup hold dir");
+    std::env::set_var("BOOKCLERK_TEST_STARTUP_HOLD_DIR", hold.path());
+    let regs_before = bookclerk_plugin_host::live_session_count();
+    let mux_before = bookclerk_plugin_sdk::mux::live_mux_task_count();
+    let plugin = install.plugin();
+    let config = install.config.clone();
+    let spawned = tokio::spawn(async move {
+        PluginSession::spawn_with(
+            &plugin,
+            &config,
+            serde_json::json!({}),
+            HOST_SHARED_ACCOUNT,
+            &[],
+            SessionServices::default(),
+        )
+        .await
+    });
+    wait_until_holding(hold.path()).await;
+    if bookclerk_plugin_host::live_session_count() != regs_before {
+        let _ = std::fs::write(hold.path().join("release"), b"1");
+        ng_harness::fail_deadline("startup hold registered the session before describe");
+    }
+    let pids = held_pids(hold.path());
+    if pids.is_empty() {
+        let _ = std::fs::write(hold.path().join("release"), b"1");
+        ng_harness::fail_deadline("startup hold published no sibling pids");
+    }
+    let cgroup = hold_pid(hold.path(), "gateway_pid")
+        .and_then(linux_session_cgroup)
+        .or_else(|| hold_pid(hold.path(), "guest_pid").and_then(linux_session_cgroup));
+    revoke_grant(&install);
+    std::fs::write(hold.path().join("release"), b"1").expect("release startup hold");
+    let joined = tokio::time::timeout(SPAWN_TIMEOUT, spawned).await;
+    let result = match joined {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => ng_harness::fail_deadline(&format!("startup task panicked: {err}")),
+        Err(_) => ng_harness::fail_deadline("revoke-before-register spawn hung"),
+    };
+    match result {
+        Ok(_) => ng_harness::fail_deadline("spawn succeeded after a pre-registration revoke"),
+        Err(err) => {
+            let text = err.to_string();
+            if !text.contains("fenced") {
+                ng_harness::fail_deadline(&format!("expected a fenced startup failure: {text}"));
+            }
+        }
+    }
+    assert_hold_cleaned(
+        install.files_dir(),
+        hold.path(),
+        &pids,
+        cgroup,
+        regs_before,
+        mux_before,
+        "revoke before register",
+    )
+    .await;
+    assert_eq!(
+        listener.accepts(),
+        0,
+        "pre-registration revoke accepted a proxy"
+    );
+    step("revoke before register failed startup and removed the session");
+}

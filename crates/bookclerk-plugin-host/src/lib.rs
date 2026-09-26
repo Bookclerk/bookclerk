@@ -62,10 +62,10 @@ pub use bookclerk_plugin_sdk::{
 
 pub use authority::{
     apply_grant_store, authority_revision, fence_plugin_key, fence_stale_grant_revisions,
-    fence_stale_sessions, is_fenced, notify_grants_changed, reconcile_grants_from_disk,
-    register_session, register_session_revisions, register_session_with_shutdown,
-    spawn_grant_watcher, unregister_session, watch_grants_loop, SessionShutdown,
-    GRANT_WATCH_INTERVAL,
+    fence_stale_sessions, is_fenced, live_session_count, notify_grants_changed,
+    reconcile_grants_from_disk, register_session, register_session_revisions,
+    register_session_with_shutdown, spawn_grant_watcher, unregister_session, watch_grants_loop,
+    SessionShutdown, GRANT_WATCH_INTERVAL,
 };
 pub use bookclerk_plugin_manifest::TcpGrant;
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
