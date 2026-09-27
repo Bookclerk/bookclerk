@@ -237,6 +237,10 @@ struct MuxTasks {
     remaining: Arc<AtomicUsize>,
     finished: Arc<Notify>,
     joins: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Wakes flush waiters when the writer task is aborted before it runs.
+    writer_state: Arc<WriterState>,
+    /// Closes peer slots when the reader task is aborted before it runs.
+    shared: Arc<Shared>,
 }
 
 impl Drop for MuxTasks {
@@ -248,6 +252,10 @@ impl Drop for MuxTasks {
 fn cancel_mux_tasks(tasks: &MuxTasks) {
     tasks.stop.store(true, Ordering::SeqCst);
     tasks.wake.notify_waiters();
+    // The tasks may not have been polled. Wake stream waiters and close peer
+    // slots here; abort still does not write queued frames.
+    stop_writer(&tasks.writer_state);
+    tasks.shared.close_all_peers();
     let joins = std::mem::take(
         &mut *tasks
             .joins
@@ -386,17 +394,20 @@ impl Mux {
             remaining: Arc::new(AtomicUsize::new(2)),
             finished: Arc::new(Notify::new()),
             joins: Mutex::new(Vec::new()),
+            writer_state: Arc::clone(&writer_state),
+            shared: Arc::clone(&shared),
         });
         let writer_stop = Arc::clone(&task_owner.stop);
         let writer_wake = Arc::clone(&task_owner.wake);
-        let writer_remaining = Arc::clone(&task_owner.remaining);
-        let writer_finished = Arc::clone(&task_owner.finished);
+        // Owned before spawn so abort before the first poll still decrements
+        // `remaining`. The counter must not depend on the future being polled.
+        let writer_finish = FinishTask {
+            remaining: Arc::clone(&task_owner.remaining),
+            finished: Arc::clone(&task_owner.finished),
+        };
         let writer_join = tokio::spawn(async move {
+            let _finish = writer_finish;
             let _live = begin_mux_task();
-            let _finish = FinishTask {
-                remaining: writer_remaining,
-                finished: writer_finished,
-            };
             writer_task(
                 writer,
                 writer_state,
@@ -411,14 +422,13 @@ impl Mux {
         let reader_shared = Arc::clone(&shared);
         let reader_stop = Arc::clone(&task_owner.stop);
         let reader_wake = Arc::clone(&task_owner.wake);
-        let reader_remaining = Arc::clone(&task_owner.remaining);
-        let reader_finished = Arc::clone(&task_owner.finished);
+        let reader_finish = FinishTask {
+            remaining: Arc::clone(&task_owner.remaining),
+            finished: Arc::clone(&task_owner.finished),
+        };
         let reader_join = tokio::spawn(async move {
+            let _finish = reader_finish;
             let _live = begin_mux_task();
-            let _finish = FinishTask {
-                remaining: reader_remaining,
-                finished: reader_finished,
-            };
             let peers = ClosePeers(Arc::clone(&reader_shared));
             if let Err(err) = reader_task(
                 reader,
@@ -458,13 +468,21 @@ impl Mux {
     }
 
     /// Wait until the reader and writer tasks have finished.
-    pub async fn closed(&self) {
-        loop {
-            let notified = self.tasks.finished.notified();
-            if self.tasks.remaining.load(Ordering::SeqCst) == 0 {
-                return;
+    ///
+    /// The returned future does not hold this mux. Dropping the last owner
+    /// while it is pending still cancels tasks that have not been polled.
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub fn closed(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let remaining = Arc::clone(&self.tasks.remaining);
+        let finished = Arc::clone(&self.tasks.finished);
+        async move {
+            loop {
+                let notified = finished.notified();
+                if remaining.load(Ordering::SeqCst) == 0 {
+                    return;
+                }
+                notified.await;
             }
-            notified.await;
         }
     }
 }
@@ -810,6 +828,10 @@ static PROBE_OPEN_LOCK_ORDER: AtomicBool = AtomicBool::new(false);
 ///
 /// `open` and the writer share this order. The mutexes are not reentrant, so
 /// callers must not take `local_gens` again while `body` runs.
+///
+/// # Panics
+///
+/// Panics in tests when `local_gens` is already locked while `pending_opens` is held.
 fn with_local_open_locks<R>(
     state: &WriterState,
     body: impl FnOnce(&mut VecDeque<PendingOpen>, &mut Vec<LocalGen>) -> R,
@@ -2073,6 +2095,83 @@ mod tests {
         done_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("generation lock order deadlocked");
+    }
+
+    fn current_thread_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+    }
+
+    /// `shutdown` before either spawned future runs still completes `closed`.
+    #[test]
+    fn shutdown_before_first_poll_completes() {
+        let rt = current_thread_runtime();
+        rt.block_on(async {
+            let (client, server) = pair();
+            client.shutdown();
+            tokio::time::timeout(std::time::Duration::from_secs(1), client.closed())
+                .await
+                .expect("client closed hung before the tasks ran");
+            server.shutdown();
+            tokio::time::timeout(std::time::Duration::from_secs(1), server.closed())
+                .await
+                .expect("server closed hung before the tasks ran");
+        });
+    }
+
+    /// A clone is already waiting on `closed` when the last owner drops.
+    ///
+    /// Subscription happens inside this task. That poll does not yield, so the
+    /// mux tasks stay unpolled until the drop aborts them.
+    #[test]
+    fn last_owner_drop_before_first_poll_wakes_the_other_clone() {
+        let rt = current_thread_runtime();
+        rt.block_on(async {
+            let (client, server) = pair();
+            let observer = client.clone();
+            let mut waiting = std::pin::pin!(observer.closed());
+            tokio::select! {
+                biased;
+                _ = waiting.as_mut() => panic!("closed before the last owner dropped"),
+                _ = std::future::ready(()) => {}
+            }
+            drop(client);
+            drop(observer);
+            drop(server);
+            tokio::time::timeout(std::time::Duration::from_secs(1), waiting.as_mut())
+                .await
+                .expect("closed hung after the last owner dropped");
+        });
+    }
+
+    /// `open` queues control without waiting, then forced cancel writes nothing.
+    #[test]
+    fn open_then_shutdown_before_first_poll_writes_nothing() {
+        let rt = current_thread_runtime();
+        rt.block_on(async {
+            let (local, mut peer) = duplex(64 * 1024);
+            let (reader, writer) = tokio::io::split(local);
+            let client = Mux::client(reader, writer);
+            let mut stream = client.open().await.expect("open");
+            client.shutdown();
+            let shutdown =
+                tokio::time::timeout(std::time::Duration::from_secs(1), stream.shutdown())
+                    .await
+                    .expect("stream shutdown hung");
+            assert!(
+                shutdown.is_err(),
+                "forced cancel reported a clean stream shutdown"
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(1), client.closed())
+                .await
+                .expect("mux closed hung");
+            tokio::task::yield_now().await;
+            let mut buf = [0u8; 64];
+            let n = peer.read(&mut buf).await.expect("peer read");
+            assert_eq!(n, 0, "forced cancel wrote frames: {buf:?}");
+        });
     }
 
     #[tokio::test]
