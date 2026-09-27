@@ -210,11 +210,11 @@ fn fcntl_getfd(fd: i32) -> Result<(), String> {
 
 /// One Job slot: this probe, not `cmd /c` and not `ping.exe`.
 ///
-/// `ping.exe` is a System32 console image. CreateProcess from the guest
-/// AppContainer returns `ERROR_ACCESS_DENIED` for that image, and Bookclerk
-/// does not add an ACE under System32. This binary already has the package
-/// execute ACE. `DETACHED_PROCESS` keeps `conhost.exe` out of the Job; a
-/// console host would consume a second active-process slot.
+/// `Stdio::null()` opens `\\.\NUL`. An AppContainer token is denied that
+/// device, and `Command::spawn` returns `ERROR_ACCESS_DENIED` before
+/// `CreateProcess`. Pipes are closed in the parent after spawn so the child
+/// still has no console. `DETACHED_PROCESS` keeps `conhost.exe` out of the
+/// Job; a console host would consume a second active-process slot.
 fn spawn_ping() -> serde_json::Value {
     #[cfg(windows)]
     {
@@ -230,18 +230,24 @@ fn spawn_ping() -> serde_json::Value {
                 });
             }
         };
-        match std::process::Command::new(&image)
-            .arg("--hold-job-slot")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(DETACHED_PROCESS)
-            .spawn()
-        {
-            Ok(child) => {
+        let image = win32_spawn_path(&image);
+        let mut cmd = std::process::Command::new(&image);
+        cmd.arg("--hold-job-slot")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .creation_flags(DETACHED_PROCESS);
+        if let Some(dir) = image.parent() {
+            cmd.current_dir(dir);
+        }
+        match cmd.spawn() {
+            Ok(mut child) => {
                 let pid = child.id();
-                // Leave the process running so it keeps its Job slot. Dropping
-                // the handle does not terminate it.
+                // Close the parent's pipe ends. Dropping `Child` does not
+                // terminate the process; it keeps the Job slot.
+                drop(child.stdin.take());
+                drop(child.stdout.take());
+                drop(child.stderr.take());
                 drop(child);
                 serde_json::json!({
                     "ok": true,
@@ -261,6 +267,14 @@ fn spawn_ping() -> serde_json::Value {
     {
         serde_json::json!({ "ok": false, "error": "ping Job slots are Windows-only" })
     }
+}
+
+/// Strip a `\\?\` prefix. AppContainer `CreateProcess` rejects that form.
+#[cfg(windows)]
+fn win32_spawn_path(path: &std::path::Path) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    let stripped = text.strip_prefix(r"\\?\").unwrap_or(text.as_ref());
+    std::path::PathBuf::from(stripped)
 }
 
 /// Inner or outer Job limits visible to this process.

@@ -515,9 +515,15 @@ async fn finish_clean_session(install: &Install, listener: &Listener, label: &st
             .files_dir()
             .join("plugins")
             .join(ng_harness::PLUGIN_ID);
+        let deadline = Instant::now() + SETTLE_TIMEOUT;
         for path in [install.files_dir(), plugin.as_path()] {
-            let mentioned = bookclerk_sandbox::spawn::dacl_mentions_sid(path, sid)
+            let mut mentioned = bookclerk_sandbox::spawn::dacl_mentions_sid(path, sid)
                 .unwrap_or_else(|err| panic!("{label}: DACL read {}: {err}", path.display()));
+            while mentioned && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                mentioned = bookclerk_sandbox::spawn::dacl_mentions_sid(path, sid)
+                    .unwrap_or_else(|err| panic!("{label}: DACL read {}: {err}", path.display()));
+            }
             assert!(
                 !mentioned,
                 "{label}: package SID {sid} remains on {}",
@@ -966,12 +972,11 @@ fn set_extra_processes(install: &Install, extra: Option<u32>) {
 /// Real `PluginSession::spawn_with` of the gateway and guest.
 ///
 /// Extras 0, 1, and the default each allow that many direct children inside
-/// the guest Job. Each child is this probe holding one slot (`--hold-job-slot`),
-/// not `cmd /c` and not `ping.exe` (AppContainer CreateProcess of that System32
-/// image is access-denied, and Bookclerk does not ACE System32). The next child
-/// is denied. A CPU rate on the queried Job means the outer session Job; a
-/// missing rate means the inner Job, whose cap is one guest plus the extra
-/// allowance.
+/// the guest Job. Each child is this probe holding one slot (`--hold-job-slot`)
+/// with piped stdio, not `Stdio::null()` (`\\.\NUL` is access-denied inside an
+/// AppContainer) and not `cmd /c`. The next child is denied. A CPU rate on the
+/// queried Job means the outer session Job; a missing rate means the inner
+/// Job, whose cap is one guest plus the extra allowance.
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn windows_job_extras_deny_the_next_direct_ping() {
