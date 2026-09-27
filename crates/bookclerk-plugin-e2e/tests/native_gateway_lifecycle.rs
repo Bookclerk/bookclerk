@@ -970,8 +970,9 @@ async fn revoke_after_validation_before_register_fails_startup() {
 ///
 /// Startup must finish on a multi-core host. The next thread is denied only
 /// when a delegated cgroup was actually applied. A missing leaf is recorded
-/// and is not an enforcement pass. GitHub-hosted runners often cannot
-/// delegate; that skip stays a separate result from the denial assertion.
+/// and is not an enforcement pass. `BOOKCLERK_CGROUP_ENFORCEMENT=required`
+/// panics instead of skipping that missing leaf. GitHub-hosted runners often
+/// cannot delegate; that skip stays a separate result from the denial assertion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delegated_pids_max_denies_the_next_thread() {
     let _env = workerd_bin_lock().await;
@@ -992,9 +993,16 @@ async fn delegated_pids_max_denies_the_next_thread() {
     let Some(cgroup) = linux_session_cgroup(guest)
         .or_else(|| session.gateway_pid().and_then(linux_session_cgroup))
     else {
-        eprintln!(
-            "native_gateway: delegated cgroup unavailable; pids.max enforcement was not asserted"
-        );
+        let message =
+            "native_gateway: delegated cgroup unavailable; pids.max enforcement was not asserted";
+        if std::env::var("BOOKCLERK_CGROUP_ENFORCEMENT")
+            .ok()
+            .as_deref()
+            == Some("required")
+        {
+            panic!("{message}");
+        }
+        eprintln!("{message}");
         drop(session);
         return;
     };

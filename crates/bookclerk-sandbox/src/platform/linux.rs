@@ -1152,6 +1152,7 @@ mod tests {
     /// `cgroup.kill` during fork churn removes that leaf and leaves another session up.
     ///
     /// A missing delegated hierarchy is recorded and is not an enforcement pass.
+    /// `BOOKCLERK_CGROUP_ENFORCEMENT=required` panics instead of skipping.
     #[test]
     fn cgroup_kill_during_fork_churn_spares_the_other_session() {
         let limits = crate::ResourceLimits {
@@ -1166,10 +1167,10 @@ mod tests {
         let churn_dir = match create_session_cgroup(&limits, &format!("churn-{nonce}")) {
             Ok(dir) => dir,
             Err(err) => {
-                eprintln!(
+                skip_delegated_cgroup(&format!(
                     "delegated cgroup unavailable ({err}); cgroup.kill enforcement was not asserted. \
                      process-group kill is the fallback and does not cover a descendant that calls setsid"
-                );
+                ));
                 return;
             }
         };
@@ -1215,6 +1216,9 @@ mod tests {
             "the other session's process survived its own cgroup.kill"
         );
         assert!(!other.exists(), "other session leaf remains");
+        eprintln!(
+            "cgroup.kill enforcement was enforced; fork churn died and the other session stayed alive until its own teardown"
+        );
     }
 
     /// Restrictive parent, populated host child, and a session leaf under that parent.
@@ -1222,7 +1226,8 @@ mod tests {
     /// The fixture is a child of the current cgroup's parent when that parent
     /// already delegates `pids`. Product placement does not look at that
     /// ancestor. A cgroup that cannot be delegated skips with a line that says
-    /// enforcement was not asserted.
+    /// enforcement was not asserted. `BOOKCLERK_CGROUP_ENFORCEMENT=required`
+    /// panics instead of skipping.
     #[test]
     fn owned_subtree_session_leaf_stays_under_the_restrictive_parent() {
         if std::env::var_os("BOOKCLERK_CGROUP_HELPER").is_some() {
@@ -1342,14 +1347,31 @@ mod tests {
         );
     }
 
+    /// `BOOKCLERK_CGROUP_ENFORCEMENT=required` turns a missing hierarchy into a
+    /// failure. Unset, the same condition stays an explicit skip.
+    fn cgroup_enforcement_required() -> bool {
+        std::env::var("BOOKCLERK_CGROUP_ENFORCEMENT")
+            .ok()
+            .as_deref()
+            == Some("required")
+    }
+
+    /// Records a missing delegated hierarchy. Panics when enforcement is required.
+    fn skip_delegated_cgroup(message: &str) -> Option<std::path::PathBuf> {
+        if cgroup_enforcement_required() {
+            panic!("{message}");
+        }
+        eprintln!("{message}");
+        None
+    }
+
     fn try_restrictive_parent(label: &str) -> Option<std::path::PathBuf> {
         let current_rel = match current_cgroup_v2_path() {
             Ok(path) => path,
             Err(err) => {
-                eprintln!(
+                return skip_delegated_cgroup(&format!(
                     "{label}: delegated cgroup unavailable ({err}); enforcement was not asserted"
-                );
-                return None;
+                ));
             }
         };
         let current = if current_rel.is_empty() || current_rel == "/" {
@@ -1358,16 +1380,14 @@ mod tests {
             Path::new("/sys/fs/cgroup").join(current_rel.trim_start_matches('/'))
         };
         let Some(owner) = current.parent() else {
-            eprintln!(
+            return skip_delegated_cgroup(&format!(
                 "{label}: delegated cgroup unavailable (no parent cgroup); enforcement was not asserted"
-            );
-            return None;
+            ));
         };
         if !subtree_has_controller(owner, "pids") {
-            eprintln!(
+            return skip_delegated_cgroup(&format!(
                 "{label}: delegated cgroup unavailable (parent does not delegate pids); enforcement was not asserted"
-            );
-            return None;
+            ));
         }
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1375,18 +1395,16 @@ mod tests {
             .unwrap_or(0);
         let dir = owner.join(format!("bookclerk-test-restrictive-{nonce}"));
         if let Err(err) = std::fs::create_dir(&dir) {
-            eprintln!(
+            return skip_delegated_cgroup(&format!(
                 "{label}: delegated cgroup unavailable ({err}); enforcement was not asserted"
-            );
-            return None;
+            ));
         }
         let typ = std::fs::read_to_string(dir.join("cgroup.type")).unwrap_or_default();
         if typ.contains("invalid") || std::fs::write(dir.join("pids.max"), "64").is_err() {
             let _ = std::fs::remove_dir(&dir);
-            eprintln!(
+            return skip_delegated_cgroup(&format!(
                 "{label}: delegated cgroup unavailable (child cannot take pids.max, type {typ}); enforcement was not asserted"
-            );
-            return None;
+            ));
         }
         Some(dir)
     }
