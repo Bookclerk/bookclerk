@@ -20,8 +20,9 @@
 //! writer accepts them, so a full control queue cannot drop receive credit.
 //! `Close` is written only after Data already accepted for that same stream.
 //! Window updates and other streams' control frames are not stuck behind one
-//! unread stream. Writer shutdown writes every accepted credit update and
-//! ready `Close`, or stops on the socket error.
+//! unread stream. A stream flush or shutdown waits until that stream's
+//! accepted output is written. [`Mux::shutdown`] and dropping the last mux
+//! cancel both tasks without draining queued frames.
 //!
 //! Frame layout (big-endian):
 //! ```text
@@ -179,6 +180,9 @@ struct WriterState {
     fault: Mutex<Option<String>>,
     flush_wakers: Mutex<Vec<Waker>>,
     writer_stopped: AtomicBool,
+    /// Forced cancellation flag shared with the mux task owner.
+    stop: Arc<AtomicBool>,
+    wake: Arc<Notify>,
     credit_hwm: AtomicUsize,
     close_hwm: AtomicUsize,
     record_hwm: AtomicUsize,
@@ -232,12 +236,37 @@ struct MuxTasks {
     wake: Arc<Notify>,
     remaining: Arc<AtomicUsize>,
     finished: Arc<Notify>,
+    joins: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl Drop for MuxTasks {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        self.wake.notify_waiters();
+        cancel_mux_tasks(self);
+    }
+}
+
+fn cancel_mux_tasks(tasks: &MuxTasks) {
+    tasks.stop.store(true, Ordering::SeqCst);
+    tasks.wake.notify_waiters();
+    let joins = std::mem::take(
+        &mut *tasks
+            .joins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for join in joins {
+        join.abort();
+    }
+}
+
+struct FinishTask {
+    remaining: Arc<AtomicUsize>,
+    finished: Arc<Notify>,
+}
+
+impl Drop for FinishTask {
+    fn drop(&mut self) {
+        finish_task(&self.remaining, &self.finished);
     }
 }
 
@@ -316,6 +345,8 @@ impl Mux {
         let (accept_tx, accept_rx) = mpsc::unbounded_channel();
         let data_wakers = Arc::new(Mutex::new(Vec::new()));
         let admit_wake = Arc::new(Notify::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let wake = Arc::new(Notify::new());
         let writer_state = Arc::new(WriterState {
             credits: Mutex::new(Vec::new()),
             closes: Mutex::new(Vec::new()),
@@ -326,6 +357,8 @@ impl Mux {
             fault: Mutex::new(None),
             flush_wakers: Mutex::new(Vec::new()),
             writer_stopped: AtomicBool::new(false),
+            stop: Arc::clone(&stop),
+            wake: Arc::clone(&wake),
             credit_hwm: AtomicUsize::new(0),
             close_hwm: AtomicUsize::new(0),
             record_hwm: AtomicUsize::new(0),
@@ -345,17 +378,22 @@ impl Mux {
             admit_wake,
         });
         let task_owner = Arc::new(MuxTasks {
-            stop: Arc::new(AtomicBool::new(false)),
-            wake: Arc::new(Notify::new()),
+            stop: Arc::clone(&stop),
+            wake: Arc::clone(&wake),
             remaining: Arc::new(AtomicUsize::new(2)),
             finished: Arc::new(Notify::new()),
+            joins: Mutex::new(Vec::new()),
         });
         let writer_stop = Arc::clone(&task_owner.stop);
         let writer_wake = Arc::clone(&task_owner.wake);
         let writer_remaining = Arc::clone(&task_owner.remaining);
         let writer_finished = Arc::clone(&task_owner.finished);
-        tokio::spawn(async move {
+        let writer_join = tokio::spawn(async move {
             let _live = begin_mux_task();
+            let _finish = FinishTask {
+                remaining: writer_remaining,
+                finished: writer_finished,
+            };
             writer_task(
                 writer,
                 writer_state,
@@ -366,15 +404,19 @@ impl Mux {
                 writer_wake,
             )
             .await;
-            finish_task(&writer_remaining, &writer_finished);
         });
         let reader_shared = Arc::clone(&shared);
         let reader_stop = Arc::clone(&task_owner.stop);
         let reader_wake = Arc::clone(&task_owner.wake);
         let reader_remaining = Arc::clone(&task_owner.remaining);
         let reader_finished = Arc::clone(&task_owner.finished);
-        tokio::spawn(async move {
+        let reader_join = tokio::spawn(async move {
             let _live = begin_mux_task();
+            let _finish = FinishTask {
+                remaining: reader_remaining,
+                finished: reader_finished,
+            };
+            let peers = ClosePeers(Arc::clone(&reader_shared));
             if let Err(err) = reader_task(
                 reader,
                 Arc::clone(&reader_shared),
@@ -385,11 +427,17 @@ impl Mux {
             )
             .await
             {
-                tracing::debug!(error = %err, "mux reader stopped");
+                if !is_mux_stopped(&err) {
+                    tracing::debug!(error = %err, "mux reader stopped");
+                }
             }
-            reader_shared.close_all_peers();
-            finish_task(&reader_remaining, &reader_finished);
+            drop(peers);
         });
+        task_owner
+            .joins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend([writer_join, reader_join]);
         Self {
             shared,
             next_id: Arc::new(AtomicU32::new(id_base)),
@@ -403,8 +451,7 @@ impl Mux {
     /// The peer does not have to hang up. [`Self::closed`] resolves when both
     /// tasks have left their loops and dropped the transport.
     pub fn shutdown(&self) {
-        self.tasks.stop.store(true, Ordering::SeqCst);
-        self.tasks.wake.notify_waiters();
+        cancel_mux_tasks(&self.tasks);
     }
 
     /// Wait until the reader and writer tasks have finished.
@@ -432,6 +479,19 @@ async fn wait_stop(stop: &AtomicBool, wake: &Notify) {
             return;
         }
         notified.await;
+    }
+}
+
+fn is_mux_stopped(err: &SdkError) -> bool {
+    matches!(err, SdkError::Message(msg) if msg == "mux stopped")
+}
+
+/// Closes every peer slot when the reader task is aborted or returns.
+struct ClosePeers(Arc<Shared>);
+
+impl Drop for ClosePeers {
+    fn drop(&mut self) {
+        self.0.close_all_peers();
     }
 }
 
@@ -920,6 +980,44 @@ async fn discard<R: AsyncRead + Unpin>(reader: &mut R, mut n: usize) -> Result<(
     Ok(())
 }
 
+/// Reads `buf` unless forced cancellation wins first.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when the peer closes early, the read fails, or the mux
+/// is stopped.
+async fn read_exact_unless_stopped<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut [u8],
+    stop: &AtomicBool,
+    wake: &Notify,
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        () = wait_stop(stop, wake) => Err(SdkError::message("mux stopped")),
+        result = reader.read_exact(buf) => result.map(|_| ()).map_err(io_err),
+    }
+}
+
+/// Discards `n` bytes unless forced cancellation wins first.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when the peer closes early, the read fails, or the mux
+/// is stopped.
+async fn discard_unless_stopped<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    n: usize,
+    stop: &AtomicBool,
+    wake: &Notify,
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        () = wait_stop(stop, wake) => Err(SdkError::message("mux stopped")),
+        result = discard(reader, n) => result,
+    }
+}
+
 /// Demultiplexes frames until the peer closes or a frame is rejected.
 ///
 /// # Errors
@@ -968,17 +1066,17 @@ async fn reader_task<R: AsyncRead + Unpin>(
             }
             TYPE_DATA => {
                 if !admit_data(&shared, header.conn_id, header.payload_len) {
-                    discard(&mut reader, header.payload_len).await?;
+                    discard_unless_stopped(&mut reader, header.payload_len, &stop, &wake).await?;
                     shared.close_peer(header.conn_id);
                     continue;
                 }
                 let mut payload = vec![0u8; header.payload_len];
-                reader.read_exact(&mut payload).await.map_err(io_err)?;
+                read_exact_unless_stopped(&mut reader, &mut payload, &stop, &wake).await?;
                 enqueue_data(&shared, header.conn_id, payload);
             }
             TYPE_CLOSE => {
                 if header.payload_len != 0 {
-                    discard(&mut reader, header.payload_len).await?;
+                    discard_unless_stopped(&mut reader, header.payload_len, &stop, &wake).await?;
                 }
                 shared.close_peer(header.conn_id);
             }
@@ -987,7 +1085,7 @@ async fn reader_task<R: AsyncRead + Unpin>(
                     return Err(SdkError::message("mux window payload must be 4 bytes"));
                 }
                 let mut bytes = [0u8; 4];
-                reader.read_exact(&mut bytes).await.map_err(io_err)?;
+                read_exact_unless_stopped(&mut reader, &mut bytes, &stop, &wake).await?;
                 let credit = u32::from_be_bytes(bytes);
                 let map = lock_map(&shared.map);
                 if let Some(slot) = map.get(&header.conn_id) {
@@ -1074,24 +1172,44 @@ fn wake_data_writers(wakers: &Mutex<Vec<Waker>>) {
     }
 }
 
+/// Drops the data queue and wakes writers when the writer task ends or is aborted.
+struct WriterExit {
+    data_rx: Option<mpsc::Receiver<OutData>>,
+    data_wakers: Arc<Mutex<Vec<Waker>>>,
+    state: Arc<WriterState>,
+}
+
+impl Drop for WriterExit {
+    fn drop(&mut self) {
+        self.data_rx.take();
+        wake_data_writers(&self.data_wakers);
+        if lock_fault(&self.state.fault).is_none() {
+            fail_writer(&self.state, &SdkError::message("mux stopped"));
+        } else {
+            wake_flush_wakers(&self.state);
+        }
+        stop_writer(&self.state);
+    }
+}
+
 async fn writer_task<W: AsyncWrite + Unpin>(
     mut writer: W,
     state: Arc<WriterState>,
     mut control_rx: mpsc::Receiver<Control>,
-    mut data_rx: mpsc::Receiver<OutData>,
+    data_rx: mpsc::Receiver<OutData>,
     data_wakers: Arc<Mutex<Vec<Waker>>>,
     stop: Arc<AtomicBool>,
     wake: Arc<Notify>,
 ) {
-    let _stop_guard = WriterStopGuard(&state);
+    let mut exit = WriterExit {
+        data_rx: Some(data_rx),
+        data_wakers,
+        state: Arc::clone(&state),
+    };
     let mut data_open = true;
     let mut held: Option<OutData> = None;
     loop {
         if stop.load(Ordering::SeqCst) {
-            // Accepted Data, credit, and Close are written before the socket
-            // is dropped. Stop does not discard frames `poll_write` already took.
-            // Queued Opens are written before their Data and Close.
-            drain_writer(&mut writer, &state, &mut data_rx, &data_wakers, &mut held).await;
             break;
         }
         let flushed = flush_outbound(&mut writer, &state).await;
@@ -1114,43 +1232,27 @@ async fn writer_task<W: AsyncWrite + Unpin>(
         }
         tokio::select! {
             biased;
-            () = wait_stop(&stop, &wake) => {
-                drain_writer(
-                    &mut writer,
-                    &state,
-                    &mut data_rx,
-                    &data_wakers,
-                    &mut held,
-                )
-                .await;
-                break;
-            }
+            () = wait_stop(&stop, &wake) => break,
             ctrl = control_rx.recv() => {
                 let Some(ctrl) = ctrl else {
-                    drain_writer(
-                        &mut writer,
-                        &state,
-                        &mut data_rx,
-                        &data_wakers,
-                        &mut held,
-                    )
-                    .await;
                     break;
                 };
-                // `Open` is written from `pending_opens` so it stays ahead of Close.
+                // `Open` is written from the pending-open queue so it stays ahead of Close.
                 if let Control::Close(id) = ctrl {
-                    if let Err(err) = write_raw(&mut writer, TYPE_CLOSE, id, &[]).await {
+                    if let Err(err) =
+                        write_unless_stopped(&mut writer, &state, TYPE_CLOSE, id, &[]).await
+                    {
                         fail_writer(&state, &err);
                         break;
                     }
                 }
             }
-            data = data_rx.recv(), if data_open && held.is_none() => {
+            data = recv_out_data(exit.data_rx.as_mut()), if data_open && held.is_none() => {
                 let Some(data) = data else {
                     data_open = false;
                     continue;
                 };
-                wake_data_writers(&data_wakers);
+                wake_data_writers(&exit.data_wakers);
                 if local_payload_ready(&state, data.generation) {
                     if let Err(err) = emit_data(&mut writer, &state, data).await {
                         fail_writer(&state, &err);
@@ -1161,6 +1263,13 @@ async fn writer_task<W: AsyncWrite + Unpin>(
                 }
             }
         }
+    }
+}
+
+async fn recv_out_data(rx: Option<&mut mpsc::Receiver<OutData>>) -> Option<OutData> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => None,
     }
 }
 
@@ -1205,10 +1314,13 @@ fn wake_flush_wakers(state: &WriterState) {
 }
 
 fn stream_incomplete_error(state: &WriterState, done: bool) -> Option<std::io::Error> {
+    if done {
+        return None;
+    }
     if let Some(message) = lock_fault(&state.fault).clone() {
         return Some(std::io::Error::other(message));
     }
-    if !done && state.writer_stopped.load(Ordering::Acquire) {
+    if state.writer_stopped.load(Ordering::Acquire) {
         return Some(std::io::Error::new(
             std::io::ErrorKind::BrokenPipe,
             "mux writer gone",
@@ -1236,14 +1348,6 @@ fn fail_writer(state: &WriterState, err: &SdkError) {
 fn stop_writer(state: &WriterState) {
     state.writer_stopped.store(true, Ordering::Release);
     wake_flush_wakers(state);
-}
-
-struct WriterStopGuard<'a>(&'a WriterState);
-
-impl Drop for WriterStopGuard<'_> {
-    fn drop(&mut self) {
-        stop_writer(self.0);
-    }
 }
 
 fn open_is_eligible(open: &PendingOpen, gens: &[LocalGen]) -> bool {
@@ -1274,7 +1378,7 @@ async fn write_one_pending_open<W: AsyncWrite + Unpin>(
     let Some(open) = next else {
         return Ok(false);
     };
-    write_raw(writer, TYPE_OPEN, open.id, &[]).await?;
+    write_unless_stopped(writer, state, TYPE_OPEN, open.id, &[]).await?;
     if lock_pending_opens(&state.pending_opens)
         .front()
         .is_some_and(|item| item.generation == open.generation)
@@ -1327,7 +1431,15 @@ async fn flush_credits_and_closes<W: AsyncWrite + Unpin>(
             discard_emitting_credit(state, credit.generation);
             continue;
         }
-        if let Err(err) = write_raw(writer, TYPE_WINDOW, credit.id, &credit.n.to_be_bytes()).await {
+        if let Err(err) = write_unless_stopped(
+            writer,
+            state,
+            TYPE_WINDOW,
+            credit.id,
+            &credit.n.to_be_bytes(),
+        )
+        .await
+        {
             restore_emitting_credit(state, &credit);
             return Err(err);
         }
@@ -1336,7 +1448,7 @@ async fn flush_credits_and_closes<W: AsyncWrite + Unpin>(
     }
     let closes = take_ready_closes(state);
     for close in closes {
-        if let Err(err) = write_raw(writer, TYPE_CLOSE, close.id, &[]).await {
+        if let Err(err) = write_unless_stopped(writer, state, TYPE_CLOSE, close.id, &[]).await {
             restore_emitting_close(state, close.generation);
             return Err(err);
         }
@@ -1525,68 +1637,6 @@ fn finish_emitting_close(state: &WriterState, generation: u64) {
     }
 }
 
-/// After the control channel closes, write remaining Opens, credit, Data, and Close.
-///
-/// An `Open` still in [`WriterState::pending_opens`] is written before that
-/// generation's Data and `Close`. Data for an unwritten `Open` stays held
-/// instead of passing the `Open`.
-async fn drain_writer<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    state: &WriterState,
-    data_rx: &mut mpsc::Receiver<OutData>,
-    data_wakers: &Mutex<Vec<Waker>>,
-    held: &mut Option<OutData>,
-) {
-    loop {
-        let wrote = match flush_outbound(writer, state).await {
-            Ok(wrote) => wrote,
-            Err(err) => {
-                tracing::debug!(error = %err, "mux writer flush failed");
-                fail_writer(state, &err);
-                return;
-            }
-        };
-        let mut data_wrote = false;
-        if let Some(data) = held.take() {
-            if local_payload_ready(state, data.generation) {
-                if let Err(err) = emit_data(writer, state, data).await {
-                    tracing::debug!(error = %err, "mux writer data flush failed");
-                    fail_writer(state, &err);
-                    return;
-                }
-                data_wrote = true;
-            } else {
-                *held = Some(data);
-                if !wrote {
-                    tracing::debug!("mux drain dropped data whose Open could not be written");
-                    held.take();
-                    return;
-                }
-                continue;
-            }
-        }
-        match data_rx.try_recv() {
-            Ok(data) => {
-                wake_data_writers(data_wakers);
-                if local_payload_ready(state, data.generation) {
-                    if let Err(err) = emit_data(writer, state, data).await {
-                        tracing::debug!(error = %err, "mux writer data flush failed");
-                        fail_writer(state, &err);
-                        return;
-                    }
-                } else {
-                    *held = Some(data);
-                }
-            }
-            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
-                if !wrote && !data_wrote {
-                    return;
-                }
-            }
-        }
-    }
-}
-
 /// Writes one data frame and records a trailing `Close` when that was the last one.
 ///
 /// # Errors
@@ -1598,7 +1648,7 @@ async fn emit_data<W: AsyncWrite + Unpin>(
     data: OutData,
 ) -> Result<()> {
     let generation = data.generation;
-    if write_out_data(writer, data).await? {
+    if write_out_data(writer, state, data).await? {
         note_close_written(state, generation);
     } else {
         wake_flush_wakers(state);
@@ -1612,17 +1662,40 @@ async fn emit_data<W: AsyncWrite + Unpin>(
 /// # Errors
 ///
 /// Returns [`SdkError`] when the underlying write or flush fails.
-async fn write_out_data<W: AsyncWrite + Unpin>(writer: &mut W, data: OutData) -> Result<bool> {
-    write_raw(writer, TYPE_DATA, data.id, &data.payload).await?;
+async fn write_out_data<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    state: &WriterState,
+    data: OutData,
+) -> Result<bool> {
+    write_unless_stopped(writer, state, TYPE_DATA, data.id, &data.payload).await?;
     let left = data.outbound_queued.fetch_sub(1, Ordering::AcqRel);
     if left == 1 && data.close_pending.swap(false, Ordering::AcqRel) {
-        if let Err(err) = write_raw(writer, TYPE_CLOSE, data.id, &[]).await {
+        if let Err(err) = write_unless_stopped(writer, state, TYPE_CLOSE, data.id, &[]).await {
             data.close_pending.store(true, Ordering::SeqCst);
             return Err(err);
         }
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Writes one frame unless forced cancellation wins first.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when the underlying write fails or the mux is stopped.
+async fn write_unless_stopped<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    state: &WriterState,
+    typ: u8,
+    conn_id: u32,
+    payload: &[u8],
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        () = wait_stop(&state.stop, &state.wake) => Err(SdkError::message("mux stopped")),
+        result = write_raw(writer, typ, conn_id, payload) => result,
+    }
 }
 
 /// Writes one length-prefixed mux frame and flushes it.
@@ -2320,6 +2393,8 @@ mod tests {
             fault: Mutex::new(None),
             flush_wakers: Mutex::new(Vec::new()),
             writer_stopped: AtomicBool::new(false),
+            stop: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(Notify::new()),
             credit_hwm: AtomicUsize::new(0),
             close_hwm: AtomicUsize::new(0),
             record_hwm: AtomicUsize::new(0),
@@ -2620,7 +2695,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queued_open_during_mux_drain_stays_ahead_of_close() {
+    async fn queued_open_during_forced_cancel_emits_nothing() {
         let gate = Arc::new(AtomicBool::new(false));
         let waker_slot = Arc::new(Mutex::new(None));
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -2637,26 +2712,30 @@ mod tests {
                 buf: Vec::new(),
             },
         );
+        let observed = client.clone();
         let stream = client.open().await.expect("open");
         drop(stream);
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        drop(client);
+        client.shutdown();
+        tokio::time::timeout(std::time::Duration::from_secs(2), observed.closed())
+            .await
+            .expect("forced cancel did not finish the tasks");
         gate.store(true, Ordering::SeqCst);
         if let Some(waker) = waker_slot.lock().unwrap().take() {
             waker.wake();
         }
-        let frames = read_frames_until_close(&mut rr).await;
-        assert_eq!(
-            frames.iter().map(|(typ, _, _)| *typ).collect::<Vec<_>>(),
-            vec![TYPE_OPEN, TYPE_CLOSE],
-            "drain wrote Close before Open: {frames:?}"
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "forced cancel drained queued Open/Close: {:?}",
+            log.lock().unwrap()
         );
         let mut tail = [0u8; 1];
         let n = tokio::time::timeout(std::time::Duration::from_secs(2), rr.read(&mut tail))
             .await
             .expect("eof timed out")
             .expect("read");
-        assert_eq!(n, 0, "peer did not observe EOF after drain");
+        assert_eq!(n, 0, "peer did not observe EOF after forced cancel");
+        drop(client);
     }
 
     #[tokio::test]
@@ -2855,11 +2934,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_the_mux_still_writes_queued_data() {
+    async fn stream_shutdown_still_writes_queued_data() {
         let (client, server) = pair();
         let mut outgoing = client.open().await.expect("open");
         let mut incoming = server.accept().await.expect("accept");
         outgoing.write_all(b"hello").await.expect("queue");
+        outgoing.shutdown().await.expect("graceful shutdown");
         drop(outgoing);
         drop(client);
         let mut buf = [0u8; 5];
@@ -2868,9 +2948,149 @@ mod tests {
             incoming.read_exact(&mut buf),
         )
         .await
-        .expect("queued data was not written before the mux stopped")
+        .expect("accepted data was not written by stream shutdown")
         .expect("read");
         assert_eq!(&buf, b"hello");
+    }
+
+    #[tokio::test]
+    async fn forced_cancel_mid_data_finishes_while_the_frame_stays_partial() {
+        forced_cancel_while_stalled(partial_frame(TYPE_DATA, 1, &[0xAB; 32], true), true).await;
+    }
+
+    #[tokio::test]
+    async fn forced_cancel_mid_window_finishes_while_the_frame_stays_partial() {
+        let credit = 1u32.to_be_bytes();
+        forced_cancel_while_stalled(partial_frame(TYPE_WINDOW, 1, &credit, true), true).await;
+    }
+
+    #[tokio::test]
+    async fn forced_cancel_mid_discard_finishes_while_the_frame_stays_partial() {
+        forced_cancel_while_stalled(partial_frame(TYPE_DATA, 1, &[0u8; 64], false), false).await;
+    }
+
+    async fn forced_cancel_while_stalled(script: Vec<u8>, accept_open: bool) {
+        let stalled = Arc::new(AtomicBool::new(false));
+        let gone = Arc::new(AtomicBool::new(false));
+        let server = Mux::server(
+            StallAfter {
+                data: script,
+                pos: 0,
+                stalled: Arc::clone(&stalled),
+                gone: Arc::clone(&gone),
+            },
+            tokio::io::sink(),
+        );
+        let accepted = if accept_open {
+            Some(
+                tokio::time::timeout(std::time::Duration::from_secs(2), server.accept())
+                    .await
+                    .expect("accept timed out")
+                    .expect("accept"),
+            )
+        } else {
+            None
+        };
+        let saw_stall = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !stalled.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            saw_stall.is_ok(),
+            "reader never blocked inside the partial payload"
+        );
+        server.shutdown();
+        drop(accepted);
+        tokio::time::timeout(std::time::Duration::from_secs(2), server.closed())
+            .await
+            .expect("forced cancel left a task running");
+        assert!(
+            gone.load(Ordering::SeqCst),
+            "reader still holds the transport"
+        );
+    }
+
+    fn partial_frame(typ: u8, id: u32, payload: &[u8], with_open: bool) -> Vec<u8> {
+        let mut script = Vec::new();
+        if with_open {
+            script.extend(frame_bytes(TYPE_OPEN, id, &[]));
+        }
+        let frame = frame_bytes(typ, id, payload);
+        let keep = 4 + 5 + 1;
+        script.extend_from_slice(&frame[..keep.min(frame.len())]);
+        script
+    }
+
+    fn frame_bytes(typ: u8, id: u32, payload: &[u8]) -> Vec<u8> {
+        let len = (1 + 4 + payload.len()) as u32;
+        let mut buf = Vec::with_capacity(4 + len as usize);
+        buf.extend_from_slice(&len.to_be_bytes());
+        buf.push(typ);
+        buf.extend_from_slice(&id.to_be_bytes());
+        buf.extend_from_slice(payload);
+        buf
+    }
+
+    #[tokio::test]
+    async fn forced_cancel_with_saturated_output_wakes_waiters_without_draining() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let waker_slot = Arc::new(Mutex::new(None));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (local, remote) = duplex(64 * 1024);
+        let (lr, lw) = tokio::io::split(local);
+        let (mut rr, _rw) = tokio::io::split(remote);
+        let client = Mux::client(
+            lr,
+            GateWriter {
+                inner: lw,
+                gate: Arc::clone(&gate),
+                waker_slot: Arc::clone(&waker_slot),
+                log: Arc::clone(&log),
+                buf: Vec::new(),
+            },
+        );
+        let mut stream = client.open().await.expect("open");
+        stream
+            .write_all(b"queued-not-drained")
+            .await
+            .expect("queue");
+        let shutdown = tokio::spawn(async move { stream.shutdown().await });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "writer emitted frames while the gate was closed"
+        );
+        client.shutdown();
+        let err = tokio::time::timeout(std::time::Duration::from_secs(2), shutdown)
+            .await
+            .expect("shutdown waiter hung after forced cancel")
+            .expect("shutdown task")
+            .expect_err("forced cancel reported a successful shutdown");
+        assert!(
+            err.to_string().contains("mux stopped") || err.to_string().contains("mux writer"),
+            "waiter error was {err}"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), client.closed())
+            .await
+            .expect("tasks did not finish");
+        gate.store(true, Ordering::SeqCst);
+        if let Some(waker) = waker_slot.lock().unwrap().take() {
+            waker.wake();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "forced cancel drained after the gate opened: {:?}",
+            log.lock().unwrap()
+        );
+        let mut tail = [0u8; 1];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(2), rr.read(&mut tail))
+            .await
+            .expect("eof timed out")
+            .expect("read");
+        assert_eq!(n, 0, "peer did not observe EOF");
     }
 
     fn window_credit(log: &Mutex<Vec<FrameLog>>) -> u32 {
@@ -2880,6 +3100,37 @@ mod tests {
             .filter(|(typ, _, payload)| *typ == TYPE_WINDOW && payload.len() == 4)
             .map(|(_, _, payload)| u32::from_be_bytes(payload.as_slice().try_into().unwrap()))
             .fold(0u32, u32::saturating_add)
+    }
+
+    /// Yields a scripted prefix, then stays pending until the mux drops it.
+    struct StallAfter {
+        data: Vec<u8>,
+        pos: usize,
+        stalled: Arc<AtomicBool>,
+        gone: Arc<AtomicBool>,
+    }
+
+    impl Drop for StallAfter {
+        fn drop(&mut self) {
+            self.gone.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl AsyncRead for StallAfter {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.pos >= self.data.len() {
+                self.stalled.store(true, Ordering::SeqCst);
+                return Poll::Pending;
+            }
+            let n = buf.remaining().min(self.data.len() - self.pos);
+            buf.put_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Poll::Ready(Ok(()))
+        }
     }
 
     struct IdleReader<R> {
