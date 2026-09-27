@@ -1396,6 +1396,13 @@ async fn write_one_pending_open<W: AsyncWrite + Unpin>(
     Ok(true)
 }
 
+/// Writes every queued `Open`, then the window credit and `Close` frames that
+/// already have that `Open` on the wire.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when a frame cannot be written. Credit and close
+/// accounting is restored first.
 async fn flush_outbound<W: AsyncWrite + Unpin>(
     writer: &mut W,
     state: &WriterState,
