@@ -1011,7 +1011,12 @@ fn probe_sentinel(value: u64, handle: *mut core::ffi::c_void) -> serde_json::Val
 /// CONNECT through a handle without `GetHandleInformation`.
 ///
 /// Failure to duplicate is an invalid endpoint (the value is not open here).
-/// A duplicate is a real object: write the CONNECT on that copy.
+/// A duplicate that is this process's stdio, this session's own proxy, or
+/// not a pipe is also an invalid endpoint and is not written. Overlapped
+/// I/O on those objects kills the guest: the number collided with a local
+/// handle, and the bytes would land on the authenticated mux or the RPC
+/// pipes. A duplicate that is some other pipe is a candidate for the other
+/// session's proxy, so the CONNECT is written on that copy.
 #[cfg(windows)]
 fn drive_handle_connect(value: u64, bytes: &[u8]) -> serde_json::Value {
     let handle = match handle_ptr(value) {
@@ -1024,22 +1029,18 @@ fn drive_handle_connect(value: u64, bytes: &[u8]) -> serde_json::Value {
     };
     let copy = match duplicate_raw(handle) {
         Ok(copy) => copy,
-        Err(info) => {
-            return serde_json::json!({
-                "ok": false,
-                "completed": false,
-                "unsupported": false,
-                "opened_stream": false,
-                "closed": false,
-                "refused": false,
-                "wrote": false,
-                "invalid_endpoint": true,
-                "os": info.os,
-                "error": info.error,
-            });
-        }
+        Err(info) => return invalid_foreign_handle(&info.error, info.os),
     };
     let _close = CloseEvent(copy);
+    if is_stdio_value(value) {
+        return invalid_foreign_handle("handle value is a standard handle", 0);
+    }
+    if session_owns_handle(value) {
+        return invalid_foreign_handle("handle value collides with this session proxy", 0);
+    }
+    if !is_pipe_handle(copy) {
+        return invalid_foreign_handle("duplicated handle is not a pipe", 0);
+    }
     let mut outcome = if let Err(err) = overlapped_write(copy, bytes) {
         observe_result(false, is_closed_io(&err), false, Some(err))
     } else {
@@ -1059,6 +1060,75 @@ fn drive_handle_connect(value: u64, bytes: &[u8]) -> serde_json::Value {
     };
     tag_invalid_endpoint(&mut outcome);
     outcome
+}
+
+/// JSON for a foreign handle that did not open a stream.
+#[cfg(windows)]
+fn invalid_foreign_handle(error: &str, os: u32) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "completed": false,
+        "unsupported": false,
+        "opened_stream": false,
+        "closed": false,
+        "refused": false,
+        "wrote": false,
+        "invalid_endpoint": true,
+        "os": os,
+        "error": error,
+    })
+}
+
+/// `handle:<n>` from an endpoint spec.
+#[cfg(windows)]
+fn spec_handle_value(spec: &str) -> Option<u64> {
+    spec.strip_prefix("handle:")
+        .and_then(|rest| rest.trim().parse().ok())
+}
+
+/// This authenticated session's proxy already uses `value`.
+///
+/// The unrelated child has no session challenge, so a duplicate there is
+/// still written: that child is checking whether the proxy was inherited.
+#[cfg(windows)]
+fn session_owns_handle(value: u64) -> bool {
+    if std::env::var_os(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV).is_none() {
+        return false;
+    }
+    let proxy = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV)
+        .ok()
+        .and_then(|spec| spec_handle_value(&spec));
+    let write = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV)
+        .ok()
+        .and_then(|spec| spec_handle_value(&spec));
+    proxy == Some(value) || write == Some(value)
+}
+
+/// `value` is stdin, stdout, or stderr in this process.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn is_stdio_value(value: u64) -> bool {
+    const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+    const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;
+    for kind in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        let handle = unsafe { GetStdHandle(kind) };
+        if handle.is_null() || handle as isize == -1 {
+            continue;
+        }
+        if handle as usize as u64 == value {
+            return true;
+        }
+    }
+    false
+}
+
+/// `FILE_TYPE_PIPE` on a handle this process already duplicated.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn is_pipe_handle(handle: *mut core::ffi::c_void) -> bool {
+    const FILE_TYPE_PIPE: u32 = 0x0003;
+    unsafe { GetFileType(handle) == FILE_TYPE_PIPE }
 }
 
 /// Pointer-sized handle value. Fails when `value` does not fit `usize`.
@@ -1258,6 +1328,8 @@ extern "system" {
     fn SetHandleInformation(handle: *mut core::ffi::c_void, mask: u32, flags: u32) -> i32;
     fn GetHandleInformation(handle: *mut core::ffi::c_void, flags: *mut u32) -> i32;
     fn GetCurrentProcess() -> *mut core::ffi::c_void;
+    fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
+    fn GetFileType(handle: *mut core::ffi::c_void) -> u32;
     fn DuplicateHandle(
         source_process: *mut core::ffi::c_void,
         source: *mut core::ffi::c_void,
