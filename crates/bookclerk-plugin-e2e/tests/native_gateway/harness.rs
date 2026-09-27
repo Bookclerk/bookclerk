@@ -102,6 +102,7 @@ pub struct Install {
 
 impl Install {
     pub fn new(tcp_port: u16) -> Self {
+        enable_spawn_diag_stderr();
         let files = tempfile::tempdir().expect("tempdir");
         let paths = Paths::from_files_dir(files.path().to_path_buf());
         let root = paths.files_dir.join("plugins").join(PLUGIN_ID);
@@ -160,6 +161,17 @@ impl Install {
         .unwrap_or_else(|_| fail_deadline(&format!("spawn timed out after {SPAWN_TIMEOUT:?}")))
         .unwrap_or_else(|err| panic!("spawn through the workerd front door failed: {err}"))
     }
+}
+
+/// `BOOKCLERK_SPAWN_DIAG=stderr` so CI still sees stage lines.
+///
+/// Production daemons leave the variable unset. Spawn code then emits
+/// `bookclerk::spawn` tracing events and does not write raw text to stderr.
+fn enable_spawn_diag_stderr() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        std::env::set_var("BOOKCLERK_SPAWN_DIAG", "stderr");
+    });
 }
 
 /// End the test process when an RPC deadline expires.

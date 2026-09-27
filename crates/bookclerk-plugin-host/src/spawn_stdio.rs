@@ -20,7 +20,9 @@ use bookclerk_sandbox::GATEWAY_GUEST_RPC_WRITE_ENV;
 #[cfg(test)]
 use bookclerk_sandbox::GATEWAY_PROXY_ENV;
 use bookclerk_sandbox::{
-    with_fd_spawn_lock, GATEWAY_GUEST_RPC_ENV, SOCKET_PROXY_ENV, WORKERD_STATE_DIR_ENV,
+    join_capped_lines, push_capped_line, redact_diagnostic_text, spawn_diag_stderr_enabled,
+    truncate_utf8, with_fd_spawn_lock, GATEWAY_GUEST_RPC_ENV, SOCKET_PROXY_ENV,
+    SPAWN_DIAG_MAX_LINES, SPAWN_DIAG_RECORD_BYTES, SPAWN_DIAG_TOTAL_BYTES, WORKERD_STATE_DIR_ENV,
 };
 #[cfg(windows)]
 use bookclerk_sandbox::{DuplexHalf, StdioEnds};
@@ -31,7 +33,7 @@ use bookclerk_sandbox::{GATEWAY_RPC_FD, GUEST_PROXY_FD};
 use serde_json::Value;
 #[cfg(windows)]
 use tokio::io::AsyncWriteExt;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 use crate::consent::{inject_workerd_grant_env, spawn_config_for_grant, spawn_grant, PluginGrant};
@@ -40,66 +42,59 @@ use crate::jail::{GuestJail, Start};
 use crate::spawn_plan::{SpawnPlan, WORKERD_BIN_ENV};
 use crate::{PluginError, Result};
 
-/// Last startup lines, including stderr tails, kept for a spawn deadline.
-const SPAWN_DIAG_LINES: usize = 80;
-
 static SPAWN_DIAG: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static SPAWN_DIAG_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// Record one secret-free startup line and print it.
+/// Record one secret-free startup line.
 ///
-/// Session challenges are stripped. The ring survives the spawn future being
-/// dropped by a deadline so the timeout handler can still print identities,
-/// the last stage, and stderr tails.
+/// The line is a `bookclerk::spawn` tracing event and a byte-capped ring
+/// entry. Raw stderr is written only when [`spawn_diag_stderr_enabled`] is
+/// set (`BOOKCLERK_SPAWN_DIAG=1|true|stderr`). Session challenges are stripped.
+/// Plugin stderr is not stored here; the per-session tail is separate.
 pub fn note_spawn_stage(message: &str) {
-    let message = redact_spawn_text(message);
-    let seq = SPAWN_DIAG_SEQ.fetch_add(1, Ordering::Relaxed);
-    let line = format!("bookclerk-spawn: stage {seq}: {message}");
-    eprintln!("{line}");
-    let _ = std::io::Write::flush(&mut std::io::stderr());
-    if let Ok(mut ring) = SPAWN_DIAG.lock() {
-        if ring.len() >= SPAWN_DIAG_LINES {
-            ring.pop_front();
-        }
-        ring.push_back(line);
-    }
+    let line = push_stage(message);
+    emit_structured_stage(&line);
 }
 
 /// Bounded startup log for the current process.
 ///
-/// A deadline handler prints this before exiting. Lines already went to
-/// stderr as they were recorded; this copy survives after the spawn future
-/// is dropped.
+/// A deadline handler prints this before exiting. The snapshot is a second
+/// capped copy of the ring, not a join of unbounded strings.
 #[must_use]
 pub fn recent_spawn_diagnostics() -> String {
     SPAWN_DIAG
         .lock()
-        .map(|ring| ring.iter().cloned().collect::<Vec<_>>().join("\n"))
+        .map(|ring| join_capped_lines(&ring, SPAWN_DIAG_TOTAL_BYTES))
         .unwrap_or_default()
 }
 
 /// Drop 64-hex session challenges and the challenge env name.
 fn redact_spawn_text(message: &str) -> String {
-    let mut out = String::with_capacity(message.len());
-    let bytes = message.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index].is_ascii_hexdigit() {
-            let start = index;
-            while index < bytes.len() && bytes[index].is_ascii_hexdigit() {
-                index += 1;
-            }
-            if index - start == 64 {
-                out.push_str("[redacted]");
-            } else {
-                out.push_str(&message[start..index]);
-            }
-            continue;
-        }
-        out.push(bytes[index] as char);
-        index += 1;
+    redact_diagnostic_text(message)
+}
+
+fn push_stage(message: &str) -> String {
+    let message = redact_spawn_text(truncate_utf8(message, SPAWN_DIAG_RECORD_BYTES));
+    let seq = SPAWN_DIAG_SEQ.fetch_add(1, Ordering::Relaxed);
+    let line = format!("bookclerk-spawn: stage {seq}: {message}");
+    if let Ok(mut ring) = SPAWN_DIAG.lock() {
+        push_capped_line(
+            &mut ring,
+            &line,
+            SPAWN_DIAG_RECORD_BYTES,
+            SPAWN_DIAG_TOTAL_BYTES,
+            SPAWN_DIAG_MAX_LINES,
+        );
     }
-    out.replace("BOOKCLERK_SESSION_CHALLENGE", "[redacted-env]")
+    line
+}
+
+fn emit_structured_stage(line: &str) {
+    tracing::info!(target: "bookclerk::spawn", "{line}");
+    if spawn_diag_stderr_enabled() {
+        eprintln!("{line}");
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    }
 }
 
 /// Jailed plugin child with stdio pipes (describe not yet called).
@@ -1408,10 +1403,19 @@ fn curated_guest_env_keys(extra: &[(&str, OsString)]) -> BTreeSet<String> {
 
 /// Lines of guest stderr retained for spawn/describe failure messages.
 const STDERR_TAIL_LINES: usize = 40;
+/// Bytes kept from one guest stderr line, including the sibling tag.
+const STDERR_TAIL_LINE_BYTES: usize = 512;
+/// Bytes kept across the per-session tail. Entry count is not the budget.
+const STDERR_TAIL_TOTAL_BYTES: usize = 8 * 1024;
+/// Marker appended when a guest line is longer than the cap.
+const STDERR_TRUNCATED: &str = "[truncated]";
 
 /// Re-emits each guest stderr line through tracing so `bookclerkd` JSON logs
 /// stay structured. ANSI from guest formatters is stripped so JSON
-/// does not encode CSI as `\u001b`. Also keeps a short ring for panic text.
+/// does not encode CSI as `\u001b`. A byte-capped per-session tail keeps
+/// panic text. Untrusted guest text is not copied into the process-wide
+/// stage ring. Gateway lines that our jail already marked `bookclerk-spawn:`
+/// are the exception: they are host diagnostics and stay in that ring.
 fn forward_guest_stderr(
     plugin: String,
     tag: &'static str,
@@ -1419,23 +1423,124 @@ fn forward_guest_stderr(
     tail: Arc<Mutex<VecDeque<String>>>,
 ) {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let line = bookclerk_config::strip_ansi_escapes(&line);
-            if line.is_empty() {
-                continue;
-            }
-            let tagged = format!("[{tag}] {line}");
-            note_spawn_stage(&tagged);
-            if let Ok(mut buf) = tail.lock() {
-                if buf.len() >= STDERR_TAIL_LINES {
-                    buf.pop_front();
-                }
-                buf.push_back(tagged.clone());
-            }
-            tracing::info!(plugin = %plugin, sibling = tag, "{line}");
-        }
+        drain_guest_stderr(&plugin, tag, stderr, tail.as_ref()).await;
     });
+}
+
+/// Read guest stderr in capped chunks until EOF.
+///
+/// `BufReader::lines` would allocate the whole line before a newline. This
+/// keeps at most [`STDERR_TAIL_LINE_BYTES`] of each line and still reads the
+/// rest so a noisy sibling cannot stall the pipe.
+async fn drain_guest_stderr<R>(plugin: &str, tag: &str, reader: R, tail: &Mutex<VecDeque<String>>)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = GuestLineReader::new(reader);
+    while let Ok(Some(line)) = reader.next_line().await {
+        let line = bookclerk_config::strip_ansi_escapes(&line);
+        if line.is_empty() {
+            continue;
+        }
+        if tag == "gateway" && line.contains("bookclerk-spawn:") {
+            let _ = push_stage(&format!("[{tag}] {line}"));
+        }
+        push_stderr_tail(tail, &format!("[{tag}] {line}"));
+        emit_guest_stderr_record(plugin, tag, &line);
+    }
+}
+
+fn emit_guest_stderr_record(plugin: &str, tag: &str, line: &str) {
+    let line = truncate_utf8(line, STDERR_TAIL_LINE_BYTES);
+    tracing::info!(target: "bookclerk::spawn", plugin, sibling = tag, "{line}");
+    if spawn_diag_stderr_enabled() {
+        eprintln!("bookclerk-spawn: [{tag}] {line}");
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    }
+}
+
+fn push_stderr_tail(tail: &Mutex<VecDeque<String>>, line: &str) {
+    let Ok(mut buf) = tail.lock() else {
+        return;
+    };
+    push_capped_line(
+        &mut buf,
+        line,
+        STDERR_TAIL_LINE_BYTES,
+        STDERR_TAIL_TOTAL_BYTES,
+        STDERR_TAIL_LINES,
+    );
+}
+
+/// Chunked line reader with a hard cap and a discard-until-newline drain.
+struct GuestLineReader<R> {
+    inner: R,
+    pending: VecDeque<u8>,
+}
+
+impl<R> GuestLineReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            pending: VecDeque::new(),
+        }
+    }
+}
+
+impl<R> GuestLineReader<R>
+where
+    R: AsyncRead + Unpin,
+{
+    async fn next_line(&mut self) -> std::io::Result<Option<String>> {
+        let mut kept = Vec::new();
+        let mut truncated = false;
+        let mut saw = false;
+        loop {
+            if self.pending.is_empty() {
+                let mut buf = [0_u8; 4096];
+                let n = self.inner.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                self.pending.extend(buf[..n].iter().copied());
+            }
+            while let Some(byte) = self.pending.pop_front() {
+                if byte == b'\n' {
+                    return Ok(Some(bounded_guest_line(&kept, truncated)));
+                }
+                saw = true;
+                if byte == b'\r' {
+                    continue;
+                }
+                if kept.len() < STDERR_TAIL_LINE_BYTES {
+                    kept.push(byte);
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+        if !saw {
+            return Ok(None);
+        }
+        Ok(Some(bounded_guest_line(&kept, truncated)))
+    }
+}
+
+fn bounded_guest_line(bytes: &[u8], truncated: bool) -> String {
+    let valid = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => {
+            let up = err.valid_up_to();
+            std::str::from_utf8(&bytes[..up]).unwrap_or("")
+        }
+    };
+    if !truncated {
+        return valid.to_string();
+    }
+    let room = STDERR_TAIL_LINE_BYTES.saturating_sub(STDERR_TRUNCATED.len());
+    let mut out = truncate_utf8(valid, room).to_string();
+    out.push_str(STDERR_TRUNCATED);
+    out
 }
 
 /// Guest process status plus captured stderr, for describe/spawn failures.
@@ -1533,7 +1638,7 @@ pub(crate) fn overlay_discovered_plugins(
 
 fn stderr_tail_text(tail: &Arc<Mutex<VecDeque<String>>>) -> String {
     tail.lock()
-        .map(|buf| buf.iter().cloned().collect::<Vec<_>>().join("\n"))
+        .map(|buf| join_capped_lines(&buf, STDERR_TAIL_TOTAL_BYTES))
         .unwrap_or_default()
 }
 
@@ -1546,12 +1651,116 @@ mod tests {
         let challenge = "ab".repeat(32);
         assert_eq!(challenge.len(), 64);
         let line = redact_spawn_text(&format!(
-            "plugin=probe BOOKCLERK_SESSION_CHALLENGE={challenge} tail"
+            "café plugin=probe BOOKCLERK_SESSION_CHALLENGE={challenge} tail"
         ));
         assert!(!line.contains(&challenge));
         assert!(line.contains("[redacted]"));
         assert!(line.contains("[redacted-env]"));
         assert!(line.contains("tail"));
+        assert!(line.contains("café"));
+        assert!(!line.contains('Ã'));
+        assert!(!line.contains('©'));
+    }
+
+    #[test]
+    fn spawn_diagnostics_snapshot_is_byte_bounded() {
+        for _ in 0..200 {
+            note_spawn_stage(&format!("café-{}", "x".repeat(4_000)));
+        }
+        let snap = recent_spawn_diagnostics();
+        assert!(snap.len() <= SPAWN_DIAG_TOTAL_BYTES);
+        assert!(snap.contains("café"));
+        assert!(!snap.contains(&"x".repeat(1_000)));
+        assert!(!snap.contains('Ã'));
+    }
+
+    #[test]
+    fn json_logging_is_structured_and_filtered() {
+        let info = capture_spawn_logs("bookclerk=info", "json-café-info");
+        let warn = capture_spawn_logs("bookclerk=warn", "json-café-warn");
+        assert!(
+            info.lines()
+                .all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok()),
+            "stderr sink was not JSON: {info}"
+        );
+        assert!(info.contains("json-café-info"), "{info}");
+        assert!(info.contains("café"));
+        assert!(!info.contains('Ã'));
+        assert!(
+            !warn.contains("json-café-warn"),
+            "warn filter kept an info spawn line: {warn}"
+        );
+    }
+
+    fn capture_spawn_logs(filter: &str, token: &str) -> String {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log buf").extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&bytes);
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_writer(move || Buf(Arc::clone(&sink)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            note_spawn_stage(token);
+            emit_guest_stderr_record("probe", "guest", token);
+        });
+        let text = String::from_utf8(bytes.lock().expect("log buf").clone()).expect("utf-8 log");
+        text
+    }
+
+    #[tokio::test]
+    async fn guest_stderr_is_byte_capped_and_leaves_the_stage_ring() {
+        use tokio::io::AsyncWriteExt;
+
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let token = "guest-café-token";
+        let tail = Arc::new(Mutex::new(VecDeque::new()));
+        let tail_task = Arc::clone(&tail);
+        let drained = tokio::spawn(async move {
+            drain_guest_stderr("probe", "guest", client, tail_task.as_ref()).await;
+        });
+        let chunk = vec![b'B'; 8192];
+        server.write_all(token.as_bytes()).await.expect("token");
+        let mut written = 0usize;
+        while written < 2_000_000 {
+            server.write_all(&chunk).await.expect("pad");
+            written += chunk.len();
+        }
+        server
+            .write_all(b"\nafter-newline\n")
+            .await
+            .expect("tail line");
+        drop(server);
+        drained.await.expect("drain");
+        let text = stderr_tail_text(&tail);
+        assert!(text.len() <= STDERR_TAIL_TOTAL_BYTES, "{}", text.len());
+        assert!(text.contains(token), "{text}");
+        assert!(text.contains("café"));
+        assert!(text.contains("after-newline"), "{text}");
+        assert!(!text.contains(&"B".repeat(1_000)));
+        assert!(!text.contains('Ã'));
+        for line in text.lines() {
+            assert!(line.len() <= STDERR_TAIL_LINE_BYTES, "{}", line.len());
+        }
+        drop(tail);
+        let stages = recent_spawn_diagnostics();
+        assert!(!stages.contains(token));
+        assert!(!stages.contains("after-newline"));
     }
 
     #[test]

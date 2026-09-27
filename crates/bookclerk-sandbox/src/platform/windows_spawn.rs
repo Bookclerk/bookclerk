@@ -1577,53 +1577,24 @@ fn path_is_safe_appcontainer_folder(
 #[cfg(windows)]
 const FILE_GENERIC_EXECUTE: u32 = 0x0012_00A0;
 
-/// Print one startup line and flush. Stderr is a pipe in CI.
+/// Record one profile or DACL stage.
 ///
-/// The same line is kept in [`recent_platform_spawn_diagnostics`] so a spawn
-/// deadline can reprint profile and DACL stages after the future is dropped.
+/// The line is a tracing event and a byte-capped ring entry. Raw stderr is
+/// diagnostic mode, or this process's captured jail pipe. See
+/// [`crate::record_spawn_diagnostic`].
 #[cfg(windows)]
 fn emit_spawn_line(message: &str) {
-    eprintln!("{message}");
-    let _ = std::io::Write::flush(&mut std::io::stderr());
-    let mut ring = PLATFORM_SPAWN_DIAG
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if ring.len() >= PLATFORM_SPAWN_DIAG_LINES {
-        ring.pop_front();
-    }
-    ring.push_back(message.to_string());
+    crate::record_spawn_diagnostic(message);
 }
 
-/// Profile-create and DACL-mutex lines kept for a spawn deadline.
-#[cfg(windows)]
-const PLATFORM_SPAWN_DIAG_LINES: usize = 80;
-
-/// Ring of those lines. The timeout handler reprints it after the spawn future
-/// is dropped. Stderr is also flushed as each line is recorded.
-#[cfg(windows)]
-static PLATFORM_SPAWN_DIAG: std::sync::Mutex<std::collections::VecDeque<String>> =
-    std::sync::Mutex::new(std::collections::VecDeque::new());
-
-/// Startup lines recorded by AppContainer profile and DACL synchronization.
+/// Startup lines recorded by AppContainer profile, DACL, and proxy stages.
 ///
-/// Empty off Windows. The lines are also printed as they happen; this copy
-/// survives for the timeout handler in the same process.
+/// Byte-capped. Raw copies are not written to the daemon log unless
+/// `BOOKCLERK_SPAWN_DIAG` is set. A jailed child's own copy stays on its
+/// stderr pipe so the host forwarder can re-emit it as tracing.
 #[must_use]
 pub fn recent_platform_spawn_diagnostics() -> String {
-    #[cfg(windows)]
-    {
-        PLATFORM_SPAWN_DIAG
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-    #[cfg(not(windows))]
-    {
-        String::new()
-    }
+    crate::snapshot_spawn_diagnostics()
 }
 
 /// Cross-process + in-process serialization for Win32 DACL mutations.

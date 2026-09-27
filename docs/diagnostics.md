@@ -26,6 +26,12 @@ Override with `collector_url` or runtime `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL`.
 - **stderr / OS facility** (journald, macOS `os_log`, Windows Event Log) honor
   `BOOKCLERK_LOG` → `RUST_LOG` → daemon default `bookclerk=info,warn`. The CLI
   default is quiet (`off`); use `-v` / `-vv` / `-vvv` or `BOOKCLERK_LOG`.
+- Spawn stages and forwarded guest stderr are `bookclerk::spawn` tracing
+  events, so they follow that filter and stay inside the JSON daemon sink.
+  Raw `bookclerk-spawn:` lines are written only when `BOOKCLERK_SPAWN_DIAG` is
+  `1`, `true`, or `stderr` (gateway CI sets this). The process-wide stage ring
+  and the per-session stderr tail are byte-capped; plugin stderr is not kept
+  in the stage ring after the session exits.
 - The **diagnostics ring buffer always retains TRACE and above**, so crash /
   burst uploads include deep context even when the console is quiet.
 - For local investigation: `BOOKCLERK_LOG=bookclerk=debug` (or `-v` / `-vv` on the CLI).

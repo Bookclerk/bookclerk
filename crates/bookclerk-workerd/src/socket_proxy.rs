@@ -490,13 +490,14 @@ where
                 result = reader.read_exact(&mut got) => result.is_ok() && got == expected,
             };
             if !matched {
-                tracing::debug!("socket proxy session challenge rejected");
-                eprintln!("bookclerk-spawn: socket proxy challenge rejected");
-                let _ = std::io::Write::flush(&mut std::io::stderr());
+                bookclerk_sandbox::record_spawn_diagnostic(
+                    "bookclerk-spawn: socket proxy challenge rejected",
+                );
                 return;
             }
-            eprintln!("bookclerk-spawn: socket proxy challenge accepted");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
+            bookclerk_sandbox::record_spawn_diagnostic(
+                "bookclerk-spawn: socket proxy challenge accepted",
+            );
         }
         let mux = bookclerk_plugin_sdk::mux::Mux::server(reader, writer);
         if let Ok(mut slot) = publish_mux.lock() {

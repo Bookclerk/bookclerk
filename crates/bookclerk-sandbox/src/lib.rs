@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize, Serializer};
 mod guest_ipc;
 mod link;
 mod platform;
+mod spawn_diag;
 mod spawn_path;
 mod spec;
 
@@ -63,6 +64,11 @@ pub use platform::windows_spawn::recent_platform_spawn_diagnostics;
 /// Event the host waits on before starting a second Windows jail.
 #[cfg(windows)]
 pub use platform::windows_spawn::JailReady;
+pub use spawn_diag::{
+    join_capped_lines, push_capped_line, record_spawn_diagnostic, redact_diagnostic_text,
+    snapshot_spawn_diagnostics, spawn_diag_raw_stderr, spawn_diag_stderr_enabled, truncate_utf8,
+    SPAWN_DIAG_MAX_LINES, SPAWN_DIAG_RECORD_BYTES, SPAWN_DIAG_TOTAL_BYTES,
+};
 pub use spawn_path::{
     canonicalize, create_process_path, require_absolute_or_name, require_absolute_spawn_path,
     require_existing_regular_file, require_helper_beside_or_absolute, require_spawn_executable,
