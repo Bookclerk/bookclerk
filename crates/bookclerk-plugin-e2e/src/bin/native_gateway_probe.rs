@@ -244,6 +244,66 @@ fn unrelated_challenge(payload: &str) -> serde_json::Value {
     }
 }
 
+/// Spawn a child that does not inherit this session's proxy and have it
+/// write a CONNECT toward `host:port` on the advertised endpoint.
+///
+/// The child never receives `inherit`. Disarming the endpoint first is what
+/// keeps the already-authenticated proxy out of the child.
+fn unrelated_drive(host: &str, port: u16) -> serde_json::Value {
+    let spec = match std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV) {
+        Ok(spec) => spec,
+        Err(err) => return challenge_failure(&format!("proxy endpoint is unset: {err}")),
+    };
+    let write_spec = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV).ok();
+    if let Err(err) = disarm_inherit(&spec, write_spec.as_deref()) {
+        return challenge_failure(&format!("could not stop endpoint inheritance: {err}"));
+    }
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => return challenge_failure(&err.to_string()),
+    };
+    let mut cmd = std::process::Command::new(win32_child_image(&exe));
+    cmd.arg("--endpoint-connect")
+        .arg(&spec)
+        .arg(write_spec.as_deref().unwrap_or(""))
+        .arg(host)
+        .arg(port.to_string())
+        .env_remove(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(dir) = exe.parent() {
+        cmd.current_dir(dir);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(err) => return challenge_failure(&format!("unrelated child spawn: {err}")),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return challenge_failure(&format!(
+            "unrelated child status {}: {stderr}",
+            output.status
+        ));
+    }
+    match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        Ok(value) => value,
+        Err(err) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            challenge_failure(&format!(
+                "unrelated child stdout is not JSON ({err}): {} {stderr}",
+                String::from_utf8_lossy(&output.stdout)
+            ))
+        }
+    }
+}
+
 /// Failure JSON for a child that did not complete a challenge.
 fn challenge_failure(error: &str) -> serde_json::Value {
     serde_json::json!({
@@ -464,6 +524,143 @@ fn labeled_attempt(spec: &str, bytes: &[u8]) -> serde_json::Value {
     outcome
 }
 
+/// `CONNECT` request bytes. This is a stream open, not a session challenge.
+fn connect_request(host: &str, port: u16) -> Vec<u8> {
+    format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n").into_bytes()
+}
+
+/// Write a CONNECT to every spec in `payload` (one `fd:` / `handle:` per line).
+///
+/// `payload` is another session's already-authenticated proxy, not this
+/// process's challenge. `unsupported` stays false: a bad fd or handle is an
+/// invalid endpoint.
+fn drive_foreign_endpoint(payload: &str, host: &str, port: u16) -> serde_json::Value {
+    let bytes = connect_request(host, port);
+    let mut attempts = Vec::new();
+    for spec in payload.split(['\n', ',']) {
+        let spec = spec.trim();
+        if spec.is_empty() {
+            continue;
+        }
+        attempts.push(drive_one(spec, &bytes));
+    }
+    if attempts.is_empty() {
+        let mut err = observe_error("no endpoint spec");
+        err["invalid_endpoint"] = serde_json::Value::Bool(true);
+        return err;
+    }
+    summarize_drives(&attempts)
+}
+
+/// Child entry: CONNECT toward `host:port` on endpoints this process was told
+/// about. The parent has already cleared inherit, and this child has no
+/// session challenge.
+fn child_endpoint_connect(
+    spec: &str,
+    write_spec: Option<&str>,
+    host: &str,
+    port: u16,
+) -> serde_json::Value {
+    let bytes = connect_request(host, port);
+    let mut attempts = vec![drive_one(spec, &bytes)];
+    if let Some(write_spec) = write_spec {
+        if !write_spec.is_empty() && write_spec != spec {
+            attempts.push(drive_one(write_spec, &bytes));
+        }
+    }
+    summarize_drives(&attempts)
+}
+
+/// One CONNECT attempt. Windows does not call `GetHandleInformation` on the
+/// foreign value: that API kills an AppContainer guest when the value is not
+/// a handle. `DuplicateHandle` failure is an invalid endpoint.
+fn drive_one(spec: &str, bytes: &[u8]) -> serde_json::Value {
+    if let Some(rest) = spec.strip_prefix("fd:") {
+        #[cfg(unix)]
+        {
+            let mut outcome = observe_endpoint(spec, bytes);
+            let _ = rest;
+            tag_invalid_endpoint(&mut outcome);
+            outcome["endpoint"] = serde_json::Value::String(spec.to_string());
+            return outcome;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (rest, bytes);
+            let mut err = observe_error("fd: endpoints are Unix-only");
+            err["invalid_endpoint"] = serde_json::Value::Bool(true);
+            err["endpoint"] = serde_json::Value::String(spec.to_string());
+            return err;
+        }
+    }
+    if let Some(rest) = spec.strip_prefix("handle:") {
+        #[cfg(windows)]
+        {
+            let value: u64 = match rest.parse() {
+                Ok(value) => value,
+                Err(err) => {
+                    let mut outcome = observe_error(&format!("bad handle {spec}: {err}"));
+                    outcome["invalid_endpoint"] = serde_json::Value::Bool(true);
+                    outcome["endpoint"] = serde_json::Value::String(spec.to_string());
+                    return outcome;
+                }
+            };
+            let mut outcome = drive_handle_connect(value, bytes);
+            outcome["endpoint"] = serde_json::Value::String(spec.to_string());
+            return outcome;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (rest, bytes);
+            let mut err = observe_error("handle: endpoints are Windows-only");
+            err["invalid_endpoint"] = serde_json::Value::Bool(true);
+            err["endpoint"] = serde_json::Value::String(spec.to_string());
+            return err;
+        }
+    }
+    let mut err = observe_error(&format!("unsupported endpoint spec {spec}"));
+    err["invalid_endpoint"] = serde_json::Value::Bool(true);
+    err["endpoint"] = serde_json::Value::String(spec.to_string());
+    err
+}
+
+/// A failed attempt that never wrote and never opened a stream is an invalid
+/// endpoint. `unsupported` is left as the attempt recorded it.
+fn tag_invalid_endpoint(outcome: &mut serde_json::Value) {
+    let wrote = outcome["wrote"] == true;
+    let opened = outcome["opened_stream"] == true;
+    outcome["invalid_endpoint"] = serde_json::Value::Bool(!wrote && !opened);
+}
+
+/// Combine CONNECT attempts. `unsupported` is true only when every attempt
+/// says so, which these attempts do not.
+fn summarize_drives(attempts: &[serde_json::Value]) -> serde_json::Value {
+    let opened_stream = attempts
+        .iter()
+        .any(|attempt| attempt["opened_stream"] == true);
+    let wrote = attempts.iter().any(|attempt| attempt["wrote"] == true);
+    let closed = attempts.iter().any(|attempt| attempt["closed"] == true);
+    let refused = attempts.iter().any(|attempt| attempt["refused"] == true);
+    let invalid_endpoint = attempts
+        .iter()
+        .any(|attempt| attempt["invalid_endpoint"] == true);
+    let unsupported = !attempts.is_empty()
+        && attempts
+            .iter()
+            .all(|attempt| attempt["unsupported"] == true);
+    serde_json::json!({
+        "ok": opened_stream,
+        "completed": opened_stream,
+        "unsupported": unsupported,
+        "opened_stream": opened_stream,
+        "closed": closed,
+        "refused": refused,
+        "wrote": wrote,
+        "invalid_endpoint": invalid_endpoint,
+        "attempts": attempts,
+    })
+}
+
 /// Probe a live handle the host did not place in this process.
 ///
 /// `GetHandleInformation` on the inherited proxy must succeed first. That
@@ -484,7 +681,9 @@ fn unlisted_handle(payload: &str) -> serde_json::Value {
             "unsupported": true,
             "denied": false,
             "proxy_usable": false,
-            "error": "GetHandleInformation is Windows-only",
+            "proxy_usable_after": false,
+            "sentinels": [],
+            "error": "unlisted-handle sentinels are Windows-only",
         })
     }
 }
@@ -665,7 +864,13 @@ fn observe_handle(value: u64, bytes: &[u8]) -> serde_json::Value {
     }
 }
 
-/// `DuplicateHandle` on each candidate the host did not inherit.
+/// `DuplicateHandle` on every sentinel the host created before spawn.
+///
+/// The inherited proxy is queried with `GetHandleInformation` first and
+/// again at the end (it is a real handle). Each sentinel is `DuplicateHandle`
+/// only. A successful duplicate is `SetEvent` on that copy so the host can
+/// see whether the omitted object was inherited. Numeric collisions are
+/// reported, not skipped.
 #[cfg(windows)]
 fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
     let proxy_spec = match std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV) {
@@ -676,13 +881,15 @@ fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
                 "unsupported": false,
                 "denied": false,
                 "proxy_usable": false,
+                "proxy_usable_after": false,
+                "sentinels": [],
                 "error": format!("proxy endpoint is unset: {err}"),
             })
         }
     };
     let proxy_value = match proxy_spec
         .strip_prefix("handle:")
-        .and_then(|rest| rest.parse().ok())
+        .and_then(|rest| rest.parse::<u64>().ok())
     {
         Some(value) => value,
         None => {
@@ -691,6 +898,8 @@ fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
                 "unsupported": false,
                 "denied": false,
                 "proxy_usable": false,
+                "proxy_usable_after": false,
+                "sentinels": [],
                 "error": format!("proxy endpoint is not handle:<n>: {proxy_spec}"),
             })
         }
@@ -703,6 +912,8 @@ fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
                 "unsupported": false,
                 "denied": false,
                 "proxy_usable": false,
+                "proxy_usable_after": false,
+                "sentinels": [],
                 "error": err,
             })
         }
@@ -714,77 +925,139 @@ fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
             "unsupported": false,
             "denied": false,
             "proxy_usable": false,
+            "proxy_usable_after": false,
             "os": first.os,
+            "sentinels": [],
             "error": first.error,
         });
     }
-    let known = known_handle_values(proxy_value);
-    let mut denied = false;
-    let mut os = 0_u32;
-    let mut error = String::from("no unlisted candidate");
-    let mut saw_candidate = false;
+    let mut sentinels = Vec::new();
     for part in payload.split(',') {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
         let Ok(value) = part.parse::<u64>() else {
+            sentinels.push(serde_json::json!({
+                "value": part,
+                "duplicated": false,
+                "denied": false,
+                "os": 0,
+                "error": "sentinel is not a handle value",
+            }));
             continue;
         };
-        if known.contains(&value) {
-            continue;
-        }
         let Ok(handle) = handle_ptr(value) else {
+            sentinels.push(serde_json::json!({
+                "value": value,
+                "duplicated": false,
+                "denied": false,
+                "os": 0,
+                "error": "sentinel does not fit a handle",
+            }));
             continue;
         };
-        saw_candidate = true;
-        let info = duplicate_same_access(handle);
-        if info.ok {
-            // The numeric value is some other open handle in this process.
-            continue;
-        }
-        if info.os == 5 || info.os == 6 {
-            denied = true;
-            os = info.os;
-            error = info.error;
-            break;
-        }
-        error = info.error;
-    }
-    if !denied && saw_candidate {
-        error = "every candidate was open in the guest".into();
+        sentinels.push(probe_sentinel(value, handle));
     }
     let again = handle_information(proxy);
+    let denied = !sentinels.is_empty() && sentinels.iter().all(|row| row["denied"] == true);
+    let os = sentinels
+        .iter()
+        .find_map(|row| row["os"].as_u64())
+        .unwrap_or(0);
     serde_json::json!({
         "ok": false,
         "unsupported": false,
         "denied": denied,
-        "proxy_usable": again.ok,
+        "proxy_usable": true,
+        "proxy_usable_after": again.ok,
         "os": os,
-        "error": error,
+        "sentinels": sentinels,
+        "error": if denied { "" } else { "a sentinel was not denied" },
     })
 }
 
-/// Inherited proxy, its write half, and the process standard handles.
+/// `DuplicateHandle` one omitted sentinel. Never `GetHandleInformation`.
 #[cfg(windows)]
-#[allow(unsafe_code)]
-fn known_handle_values(proxy: u64) -> Vec<u64> {
-    let mut known = vec![proxy];
-    if let Ok(spec) = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV) {
-        if let Some(value) = spec
-            .strip_prefix("handle:")
-            .and_then(|rest| rest.parse().ok())
-        {
-            known.push(value);
+fn probe_sentinel(value: u64, handle: *mut core::ffi::c_void) -> serde_json::Value {
+    match duplicate_raw(handle) {
+        Ok(copy) => {
+            let _close = CloseEvent(copy);
+            let signaled = unsafe { SetEvent(copy) } != 0;
+            serde_json::json!({
+                "value": value,
+                "duplicated": true,
+                "denied": false,
+                "signaled_copy": signaled,
+                "os": 0,
+                "error": "",
+            })
+        }
+        Err(info) => {
+            let denied = info.os == 5 || info.os == 6;
+            serde_json::json!({
+                "value": value,
+                "duplicated": false,
+                "denied": denied,
+                "signaled_copy": false,
+                "os": info.os,
+                "error": info.error,
+            })
         }
     }
-    for kind in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-        let handle = unsafe { GetStdHandle(kind) };
-        if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
-            known.push(handle as usize as u64);
+}
+
+/// CONNECT through a handle without `GetHandleInformation`.
+///
+/// Failure to duplicate is an invalid endpoint (the value is not open here).
+/// A duplicate is a real object: write the CONNECT on that copy.
+#[cfg(windows)]
+fn drive_handle_connect(value: u64, bytes: &[u8]) -> serde_json::Value {
+    let handle = match handle_ptr(value) {
+        Ok(handle) => handle,
+        Err(err) => {
+            let mut outcome = observe_error(&err);
+            outcome["invalid_endpoint"] = serde_json::Value::Bool(true);
+            return outcome;
         }
-    }
-    known
+    };
+    let copy = match duplicate_raw(handle) {
+        Ok(copy) => copy,
+        Err(info) => {
+            return serde_json::json!({
+                "ok": false,
+                "completed": false,
+                "unsupported": false,
+                "opened_stream": false,
+                "closed": false,
+                "refused": false,
+                "wrote": false,
+                "invalid_endpoint": true,
+                "os": info.os,
+                "error": info.error,
+            });
+        }
+    };
+    let _close = CloseEvent(copy);
+    let mut outcome = if let Err(err) = overlapped_write(copy, bytes) {
+        observe_result(false, is_closed_io(&err), false, Some(err))
+    } else {
+        match overlapped_read(copy, 1000) {
+            Ok(buf) if buf.is_empty() => {
+                observe_result(true, true, false, Some("link closed".into()))
+            }
+            Ok(buf) if saw_http_200(&buf) => observe_result(true, false, true, None),
+            Ok(buf) => observe_result(
+                true,
+                false,
+                false,
+                Some(format!("no stream ({} bytes)", buf.len())),
+            ),
+            Err(err) => observe_result(true, is_closed_io(&err), false, Some(err)),
+        }
+    };
+    tag_invalid_endpoint(&mut outcome);
+    outcome
 }
 
 /// Pointer-sized handle value. Fails when `value` does not fit `usize`.
@@ -802,12 +1075,13 @@ struct HandleInfo {
     error: String,
 }
 
-/// `DuplicateHandle` into this process. Success means the value is already
-/// open here; the duplicate is closed. Failure keeps the Win32 code (`5` or
-/// `6` means the value is not a usable handle here).
+/// `DuplicateHandle` into this process. The caller closes `Ok`.
+///
+/// Failure keeps the Win32 code (`5` or `6` means the value is not a usable
+/// handle here) and does not raise the Job invalid-handle exception.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn duplicate_same_access(handle: *mut core::ffi::c_void) -> HandleInfo {
+fn duplicate_raw(handle: *mut core::ffi::c_void) -> Result<*mut core::ffi::c_void, HandleInfo> {
     let mut copy = core::ptr::null_mut();
     let ok = unsafe {
         DuplicateHandle(
@@ -821,14 +1095,9 @@ fn duplicate_same_access(handle: *mut core::ffi::c_void) -> HandleInfo {
         )
     };
     if ok == 0 {
-        return last_handle_info();
+        return Err(last_handle_info());
     }
-    unsafe { CloseHandle(copy) };
-    HandleInfo {
-        ok: true,
-        os: 0,
-        error: String::new(),
-    }
+    Ok(copy)
 }
 
 /// Win32 error from the most recent call.
@@ -982,16 +1251,6 @@ const DUPLICATE_SAME_ACCESS: u32 = 0x2;
 const ERROR_IO_PENDING: i32 = 997;
 #[cfg(windows)]
 const WAIT_TIMEOUT: u32 = 258;
-#[cfg(windows)]
-const STD_INPUT_HANDLE: u32 = -10_i32 as u32;
-#[cfg(windows)]
-const STD_OUTPUT_HANDLE: u32 = -11_i32 as u32;
-#[cfg(windows)]
-const STD_ERROR_HANDLE: u32 = -12_i32 as u32;
-
-#[cfg(windows)]
-#[allow(unsafe_code)]
-const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1_isize as *mut core::ffi::c_void;
 
 #[cfg(windows)]
 extern "system" {
@@ -1007,13 +1266,13 @@ extern "system" {
         inherit: i32,
         options: u32,
     ) -> i32;
-    fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
     fn CreateEventW(
         attrs: *mut core::ffi::c_void,
         manual: i32,
         initial: i32,
         name: *const u16,
     ) -> *mut core::ffi::c_void;
+    fn SetEvent(handle: *mut core::ffi::c_void) -> i32;
     fn WriteFile(
         handle: *mut core::ffi::c_void,
         buf: *const u8,
@@ -1490,7 +1749,13 @@ impl PluginCli for Probe {
                 let mut keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
                 keys.sort();
                 let proxy = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV).ok();
-                serde_json::json!({ "ok": true, "keys": keys, "socket_proxy": proxy })
+                let proxy_write = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV).ok();
+                serde_json::json!({
+                    "ok": true,
+                    "keys": keys,
+                    "socket_proxy": proxy,
+                    "socket_proxy_write": proxy_write,
+                })
             }
             "hold" => match hold_until_eof(host, port, arg(&params, "payload")).await {
                 Ok(()) => serde_json::json!({ "ok": true, "eof": true }),
@@ -1506,6 +1771,8 @@ impl PluginCli for Probe {
             "session_challenge" => session_challenge(),
             "unrelated_challenge" => unrelated_challenge(arg(&params, "payload")),
             "present_challenge" => present_foreign_challenge(arg(&params, "payload")).await,
+            "drive_foreign" => drive_foreign_endpoint(arg(&params, "payload"), host, port),
+            "unrelated_drive" => unrelated_drive(host, port),
             "unlisted_handle" => unlisted_handle(arg(&params, "payload")),
             "spawn_ping" => spawn_ping(),
             "job_limits" => job_limits(),
@@ -1545,6 +1812,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let spec = args.next().unwrap_or_default();
         let write_spec = args.next();
         println!("{}", child_endpoint_challenge(&spec, write_spec.as_deref()));
+        return Ok(());
+    }
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--endpoint-connect") {
+        let spec = args.next().unwrap_or_default();
+        let write_spec = args.next().unwrap_or_default();
+        let host = args.next().unwrap_or_default();
+        let port = args.next().unwrap_or_default().parse().unwrap_or(0);
+        let write = if write_spec.is_empty() {
+            None
+        } else {
+            Some(write_spec.as_str())
+        };
+        println!("{}", child_endpoint_connect(&spec, write, &host, port));
         return Ok(());
     }
     // One Job slot. The session Job kills this process when the test drops it.

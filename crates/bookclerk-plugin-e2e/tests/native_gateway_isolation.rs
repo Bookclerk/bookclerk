@@ -3,12 +3,18 @@
 //! Overlapping launches also exercise the live proxy challenge. Another
 //! session's secret on this link closes it, and an unrelated child without
 //! `BOOKCLERK_SESSION_CHALLENGE` cannot complete a handshake on an endpoint it
-//! can see. A numeric fd or handle is not cross-process identity. On Windows,
-//! `GetHandleInformation` on the inherited proxy must succeed so a missing API
-//! is not reported as a denial. An unlisted live handle is checked with
-//! `DuplicateHandle`: access denied or invalid handle is a denial.
-//! `GetHandleInformation` on a value that is not a handle in the guest
-//! terminated the AppContainer process.
+//! can see. After both sessions have completed that handshake, guest A and a
+//! child that does not inherit try to CONNECT through B's already-authenticated
+//! proxy. A numeric fd or handle is not cross-process identity.
+//!
+//! On Windows, inheritable event sentinels are created before `Install::spawn`
+//! and are not placed on `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
+//! `GetHandleInformation` on the inherited proxy must succeed before and after
+//! the probe. Each sentinel is `DuplicateHandle` only. Denial is Win32 5 or 6
+//! on every sentinel. A duplicate is not success: `SetEvent` on that copy plus
+//! `WaitForSingleObject(0)` on the host event distinguishes an inherited object
+//! from a numeric collision, and both fail the test. Unix reports
+//! `unsupported` and that result is not a denial.
 
 #[path = "native_gateway/harness.rs"]
 mod ng_harness;
@@ -116,6 +122,10 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     assert_ne!(listener_a.port, listener_b.port);
     let install_a = Install::new(listener_a.port);
     let install_b = Install::new(listener_b.port);
+    // Live inheritable objects, omitted from the guest handle allowlist.
+    // They must already exist when the guest `CreateProcess` runs.
+    #[cfg(windows)]
+    let sentinels = SentinelEvents::create(4);
 
     let (session_a, session_b) = tokio::join!(install_a.spawn(), install_b.spawn());
     tokio::join!(open_session(&session_a), open_session(&session_b));
@@ -144,22 +154,30 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
         proxy_b.starts_with("fd:") || proxy_b.starts_with("handle:"),
         "B SOCKET_PROXY: {proxy_b}"
     );
-    let handles = probe(&session_a, "unlisted_handle", 0, &unlisted_payload()).await;
+    let unlisted = {
+        #[cfg(windows)]
+        {
+            sentinels.payload()
+        }
+        #[cfg(not(windows))]
+        {
+            "0".to_string()
+        }
+    };
+    let handles = probe(&session_a, "unlisted_handle", 0, &unlisted).await;
     #[cfg(windows)]
     {
-        assert_eq!(handles["unsupported"], false, "{handles}");
-        assert_eq!(
-            handles["proxy_usable"], true,
-            "inherited proxy handle was not usable: {handles}"
-        );
-        assert_eq!(handles["denied"], true, "{handles}");
-        let os = handles["os"].as_u64().unwrap_or(0);
-        assert!(
-            os == 5 || os == 6,
-            "unlisted handle must be access-denied or invalid: {handles}"
-        );
+        assert_sentinels_denied(&sentinels, &handles);
+        let rows = handles["sentinels"].as_array().expect("sentinels");
+        for row in rows {
+            step(&format!(
+                "unlisted sentinel {} denied os {}",
+                row["value"], row["os"]
+            ));
+        }
         step(&format!(
-            "unlisted handle denied os {os}; inherited proxy handle still usable"
+            "inherited proxy handle usable before={} after={}",
+            handles["proxy_usable"], handles["proxy_usable_after"]
         ));
     }
     #[cfg(not(windows))]
@@ -169,7 +187,9 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
             handles["denied"], true,
             "unsupported must not count as a denial: {handles}"
         );
-        step("unlisted-handle probe unsupported on this platform; denial was not asserted");
+        step(
+            "unlisted-handle probe unsupported on this platform; denial was not asserted; unsupported is not a denial",
+        );
     }
     step(&format!(
         "A session={} B session={} B proxy={proxy_b}",
@@ -216,6 +236,43 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     assert!(listener_a.wait_for_accepts(1).await);
     assert!(listener_b.wait_for_accepts(before_b + 1).await);
 
+    let proxy_write = env_b["socket_proxy_write"].as_str().unwrap_or("");
+    let foreign_spec = if proxy_write.is_empty() {
+        proxy_b.clone()
+    } else {
+        format!("{proxy_b}\n{proxy_write}")
+    };
+    let accepts_before_foreign = listener_b.accepts();
+    let (drive_a, drive_child) = tokio::join!(
+        probe(&session_a, "drive_foreign", listener_b.port, &foreign_spec),
+        probe(&session_b, "unrelated_drive", listener_b.port, ""),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        listener_b.accepts(),
+        accepts_before_foreign,
+        "driving B's authenticated proxy produced an accept: A={drive_a} child={drive_child}"
+    );
+    assert_foreign_blocked("guest A", &drive_a);
+    assert_foreign_blocked("unrelated child", &drive_child);
+    #[cfg(windows)]
+    let sentinel_unsupported = false;
+    #[cfg(not(windows))]
+    let sentinel_unsupported = true;
+    step(&format!(
+        "authenticated foreign: A opened_stream={} closed={} refused={} invalid_endpoint={} unsupported={}; child opened_stream={} closed={} refused={} invalid_endpoint={} unsupported={}; sentinel_unsupported={sentinel_unsupported}; unsupported is not a denial and is not success; B accepts unchanged",
+        drive_a["opened_stream"],
+        drive_a["closed"],
+        drive_a["refused"],
+        drive_a["invalid_endpoint"],
+        drive_a["unsupported"],
+        drive_child["opened_stream"],
+        drive_child["closed"],
+        drive_child["refused"],
+        drive_child["invalid_endpoint"],
+        drive_child["unsupported"],
+    ));
+
     let gateway_a = session_a.gateway_pid().expect("A gateway");
     let guest_a = session_a.guest_pid().expect("A guest");
     let gateway_b = session_b.gateway_pid().expect("B gateway");
@@ -231,35 +288,150 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     step("both sessions tore down cleanly");
 }
 
-/// Handle values that are live in this process and were not placed in the guest.
-fn unlisted_payload() -> String {
-    #[cfg(windows)]
-    {
-        live_host_handles()
+/// `opened_stream` is false, and the attempt closed, refused, or was an
+/// invalid endpoint. `unsupported` is neither success nor a denial.
+fn assert_foreign_blocked(label: &str, outcome: &serde_json::Value) {
+    assert_ne!(
+        outcome["unsupported"], true,
+        "{label} unsupported is not a result: {outcome}"
+    );
+    assert_eq!(
+        outcome["opened_stream"], false,
+        "{label} opened a stream on the foreign proxy: {outcome}"
+    );
+    let blocked = outcome["closed"] == true
+        || outcome["refused"] == true
+        || outcome["invalid_endpoint"] == true;
+    assert!(
+        blocked,
+        "{label} was not closed, refused, or an invalid endpoint: {outcome}"
+    );
+}
+
+/// Inheritable manual-reset events created before the guest is spawned.
+///
+/// Drop closes them. They are not added to the process handle allowlist.
+#[cfg(windows)]
+struct SentinelEvents {
+    handles: Vec<usize>,
+}
+
+#[cfg(windows)]
+impl SentinelEvents {
+    /// `count` unnamed manual-reset events, nonsignaled, `bInheritHandle = TRUE`.
+    #[allow(unsafe_code)]
+    fn create(count: usize) -> Self {
+        extern "system" {
+            fn CreateEventW(
+                attrs: *mut core::ffi::c_void,
+                manual: i32,
+                initial: i32,
+                name: *const u16,
+            ) -> *mut core::ffi::c_void;
+        }
+        #[repr(C)]
+        struct SecurityAttributes {
+            n_length: u32,
+            lp_security_descriptor: *mut core::ffi::c_void,
+            b_inherit_handle: i32,
+        }
+        let mut created = Self {
+            handles: Vec::with_capacity(count),
+        };
+        for _ in 0..count {
+            let mut attrs = SecurityAttributes {
+                n_length: std::mem::size_of::<SecurityAttributes>() as u32,
+                lp_security_descriptor: core::ptr::null_mut(),
+                b_inherit_handle: 1,
+            };
+            let handle = unsafe {
+                CreateEventW(
+                    core::ptr::addr_of_mut!(attrs).cast(),
+                    1,
+                    0,
+                    core::ptr::null(),
+                )
+            };
+            assert!(
+                !handle.is_null(),
+                "CreateEventW failed: {}",
+                std::io::Error::last_os_error()
+            );
+            created.handles.push(handle as usize);
+        }
+        created
     }
-    #[cfg(not(windows))]
-    {
-        "0".to_string()
+
+    fn payload(&self) -> String {
+        self.handles
+            .iter()
+            .map(|handle| (*handle as u64).to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// `WAIT_OBJECT_0` means this process's event was signaled.
+    #[allow(unsafe_code)]
+    fn signaled(&self, value: u64) -> bool {
+        extern "system" {
+            fn WaitForSingleObject(handle: *mut core::ffi::c_void, millis: u32) -> u32;
+        }
+        let handle = self
+            .handles
+            .iter()
+            .copied()
+            .find(|candidate| *candidate as u64 == value)
+            .unwrap_or_else(|| panic!("sentinel {value} was not created by this process"));
+        let waited = unsafe { WaitForSingleObject(handle as *mut core::ffi::c_void, 0) };
+        waited == 0
     }
 }
 
-/// Four live event handles. The guest did not inherit them.
 #[cfg(windows)]
-#[allow(unsafe_code)]
-fn live_host_handles() -> String {
-    extern "system" {
-        fn CreateEventW(
-            attrs: *mut core::ffi::c_void,
-            manual: i32,
-            initial: i32,
-            name: *const u16,
-        ) -> *mut core::ffi::c_void;
+impl Drop for SentinelEvents {
+    fn drop(&mut self) {
+        extern "system" {
+            fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        }
+        for handle in &self.handles {
+            unsafe {
+                CloseHandle(*handle as *mut core::ffi::c_void);
+            }
+        }
     }
-    let mut values = Vec::new();
-    for _ in 0..4 {
-        let handle = unsafe { CreateEventW(core::ptr::null_mut(), 1, 0, core::ptr::null()) };
-        assert!(!handle.is_null(), "CreateEventW failed");
-        values.push((handle as usize as u64).to_string());
+}
+
+/// Every sentinel is Win32 5 or 6. A duplicate fails the test: signaled means
+/// the omitted object was inherited, and an unsignaled duplicate is a numeric
+/// collision rather than a skip.
+#[cfg(windows)]
+fn assert_sentinels_denied(sentinels: &SentinelEvents, report: &serde_json::Value) {
+    assert_eq!(report["unsupported"], false, "{report}");
+    assert_eq!(
+        report["proxy_usable"], true,
+        "inherited proxy handle was not usable: {report}"
+    );
+    assert_eq!(
+        report["proxy_usable_after"], true,
+        "inherited proxy handle was not usable after the sentinel probe: {report}"
+    );
+    let rows = report["sentinels"].as_array().expect("sentinel rows");
+    assert_eq!(rows.len(), 4, "every sentinel must be reported: {report}");
+    for row in rows {
+        let value = row["value"].as_u64().unwrap_or_else(|| {
+            panic!("sentinel value was not a number: {row}");
+        });
+        if row["duplicated"] == true {
+            if sentinels.signaled(value) {
+                panic!("omitted sentinel {value} was inherited: {report}");
+            }
+            panic!("sentinel {value} duplicated a different object (numeric collision): {report}");
+        }
+        let os = row["os"].as_u64().unwrap_or(0);
+        assert!(
+            os == 5 || os == 6,
+            "sentinel {value} must be access-denied or invalid, not skipped: {report}"
+        );
     }
-    values.join(",")
+    assert_eq!(report["denied"], true, "{report}");
 }
