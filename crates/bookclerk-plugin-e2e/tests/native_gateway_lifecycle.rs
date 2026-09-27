@@ -965,10 +965,13 @@ fn set_extra_processes(install: &Install, extra: Option<u32>) {
 
 /// Real `PluginSession::spawn_with` of the gateway and guest.
 ///
-/// Extras 0, 1, and the default each allow that many direct `ping` children
-/// inside the guest Job. The next child is denied. A CPU rate on the queried
-/// Job means the outer session Job; a missing rate means the inner Job, whose
-/// cap is one guest plus the extra allowance.
+/// Extras 0, 1, and the default each allow that many direct children inside
+/// the guest Job. Each child is this probe holding one slot (`--hold-job-slot`),
+/// not `cmd /c` and not `ping.exe` (AppContainer CreateProcess of that System32
+/// image is access-denied, and Bookclerk does not ACE System32). The next child
+/// is denied. A CPU rate on the queried Job means the outer session Job; a
+/// missing rate means the inner Job, whose cap is one guest plus the extra
+/// allowance.
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn windows_job_extras_deny_the_next_direct_ping() {
@@ -1012,12 +1015,25 @@ async fn windows_job_extras_deny_the_next_direct_ping() {
             let started = probe(&session, "spawn_ping", 0, "").await;
             assert_eq!(
                 started["ok"], true,
-                "direct ping {n} of {children} was refused: {started}; job {job}"
+                "job-slot child {n} of {children} was refused: {started}; job {job}"
             );
+            let observed = probe(&session, "job_limits", 0, "").await;
+            if observed["cpu_rate"].is_null() {
+                if let Some(active) = observed["active_processes"].as_u64() {
+                    assert_eq!(
+                        active,
+                        u64::from(1 + n + 1),
+                        "each granted child is one process in the inner Job: {observed}"
+                    );
+                }
+            }
         }
         let denied = probe(&session, "spawn_ping", 0, "").await;
         let os = denied["os"].as_u64().unwrap_or(0);
-        assert_eq!(denied["ok"], false, "ping past the grant started: {denied}");
+        assert_eq!(
+            denied["ok"], false,
+            "child past the grant started: {denied}"
+        );
         assert!(
             os == 5 || os == 1816,
             "expected ERROR_ACCESS_DENIED (5) or ERROR_NOT_ENOUGH_QUOTA (1816), got {denied}"

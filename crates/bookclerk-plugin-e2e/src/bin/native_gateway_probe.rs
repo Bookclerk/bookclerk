@@ -208,18 +208,31 @@ fn fcntl_getfd(fd: i32) -> Result<(), String> {
     Err(std::io::Error::last_os_error().to_string())
 }
 
-/// One `ping` process, not `cmd /c ping`, so a Job slot is a single process.
+/// One Job slot: this probe, not `cmd /c` and not `ping.exe`.
 ///
-/// `DETACHED_PROCESS` keeps `conhost.exe` out of the Job. A console-subsystem
-/// child of a detached AppContainer otherwise starts a console host, and that
-/// host consumes a second active-process slot (`ERROR_ACCESS_DENIED`).
+/// `ping.exe` is a System32 console image. CreateProcess from the guest
+/// AppContainer returns `ERROR_ACCESS_DENIED` for that image, and Bookclerk
+/// does not add an ACE under System32. This binary already has the package
+/// execute ACE. `DETACHED_PROCESS` keeps `conhost.exe` out of the Job; a
+/// console host would consume a second active-process slot.
 fn spawn_ping() -> serde_json::Value {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
-        match std::process::Command::new("ping")
-            .args(["-n", "30", "127.0.0.1"])
+        let image = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(err) => {
+                return serde_json::json!({
+                    "ok": false,
+                    "error": err.to_string(),
+                    "os": err.raw_os_error(),
+                });
+            }
+        };
+        match std::process::Command::new(&image)
+            .arg("--hold-job-slot")
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags(DETACHED_PROCESS)
@@ -230,12 +243,17 @@ fn spawn_ping() -> serde_json::Value {
                 // Leave the process running so it keeps its Job slot. Dropping
                 // the handle does not terminate it.
                 drop(child);
-                serde_json::json!({ "ok": true, "pid": pid })
+                serde_json::json!({
+                    "ok": true,
+                    "pid": pid,
+                    "image": image.display().to_string(),
+                })
             }
             Err(err) => serde_json::json!({
                 "ok": false,
                 "error": err.to_string(),
                 "os": err.raw_os_error(),
+                "image": image.display().to_string(),
             }),
         }
     }
@@ -344,6 +362,31 @@ fn query_windows_job() -> serde_json::Value {
             core::ptr::null_mut(),
         );
         let cpu_error = if cpu_ok == 0 { GetLastError() } else { 0 };
+        #[repr(C)]
+        struct BasicAccounting {
+            total_user_time: i64,
+            total_kernel_time: i64,
+            this_period_total_user_time: i64,
+            this_period_total_kernel_time: i64,
+            total_page_fault_count: u32,
+            total_processes: u32,
+            active_processes: u32,
+            total_terminated_processes: u32,
+        }
+        const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION: i32 = 1;
+        let mut accounting = std::mem::zeroed::<BasicAccounting>();
+        let accounting_ok = QueryInformationJobObject(
+            core::ptr::null_mut(),
+            JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+            &mut accounting as *mut BasicAccounting as *mut _,
+            std::mem::size_of::<BasicAccounting>() as u32,
+            core::ptr::null_mut(),
+        );
+        let accounting_error = if accounting_ok == 0 {
+            GetLastError()
+        } else {
+            0
+        };
         let cpu_enabled = cpu_ok != 0 && (cpu.flags & CPU_RATE_CONTROL_ENABLE) != 0;
         let active_limit = if limit_ok != 0
             && (extended.basic.limit_flags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS) != 0
@@ -360,6 +403,12 @@ fn query_windows_job() -> serde_json::Value {
             "cpu_rate": if cpu_enabled { Some(cpu.rate) } else { None::<u32> },
             "cpu_hard_cap": cpu_enabled && (cpu.flags & CPU_RATE_CONTROL_HARD_CAP) != 0,
             "cpu_query_error": cpu_error,
+            "active_processes": if accounting_ok != 0 {
+                Some(accounting.active_processes)
+            } else {
+                None::<u32>
+            },
+            "accounting_error": accounting_error,
         })
     }
 }
@@ -640,6 +689,11 @@ impl PluginCli for Probe {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("BOOKCLERK_PROBE_EXIT").is_some() {
+        return Ok(());
+    }
+    // One Job slot. The session Job kills this process when the test drops it.
+    if std::env::args().any(|arg| arg == "--hold-job-slot") {
+        std::thread::sleep(Duration::from_secs(180));
         return Ok(());
     }
     serve(Root).await?;
