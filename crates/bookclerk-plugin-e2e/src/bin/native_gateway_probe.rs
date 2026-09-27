@@ -979,6 +979,7 @@ fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
 
 /// `DuplicateHandle` one omitted sentinel. Never `GetHandleInformation`.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn probe_sentinel(value: u64, handle: *mut core::ffi::c_void) -> serde_json::Value {
     match duplicate_raw(handle) {
         Ok(copy) => {

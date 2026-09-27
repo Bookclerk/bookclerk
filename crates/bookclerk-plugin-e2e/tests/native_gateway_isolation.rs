@@ -389,6 +389,7 @@ impl SentinelEvents {
 
 #[cfg(windows)]
 impl Drop for SentinelEvents {
+    #[allow(unsafe_code)]
     fn drop(&mut self) {
         extern "system" {
             fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
