@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bookclerk_config::Config;
@@ -39,6 +39,68 @@ use crate::discover::DiscoveredPlugin;
 use crate::jail::{GuestJail, Start};
 use crate::spawn_plan::{SpawnPlan, WORKERD_BIN_ENV};
 use crate::{PluginError, Result};
+
+/// Last startup lines, including stderr tails, kept for a spawn deadline.
+const SPAWN_DIAG_LINES: usize = 80;
+
+static SPAWN_DIAG: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+static SPAWN_DIAG_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Record one secret-free startup line and print it.
+///
+/// Session challenges are stripped. The ring survives the spawn future being
+/// dropped by a deadline so the timeout handler can still print identities,
+/// the last stage, and stderr tails.
+pub fn note_spawn_stage(message: &str) {
+    let message = redact_spawn_text(message);
+    let seq = SPAWN_DIAG_SEQ.fetch_add(1, Ordering::Relaxed);
+    let line = format!("bookclerk-spawn: stage {seq}: {message}");
+    eprintln!("{line}");
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+    if let Ok(mut ring) = SPAWN_DIAG.lock() {
+        if ring.len() >= SPAWN_DIAG_LINES {
+            ring.pop_front();
+        }
+        ring.push_back(line);
+    }
+}
+
+/// Bounded startup log for the current process.
+///
+/// A deadline handler prints this before exiting. Lines already went to
+/// stderr as they were recorded; this copy survives after the spawn future
+/// is dropped.
+#[must_use]
+pub fn recent_spawn_diagnostics() -> String {
+    SPAWN_DIAG
+        .lock()
+        .map(|ring| ring.iter().cloned().collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
+}
+
+/// Drop 64-hex session challenges and the challenge env name.
+fn redact_spawn_text(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let bytes = message.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_hexdigit() {
+            let start = index;
+            while index < bytes.len() && bytes[index].is_ascii_hexdigit() {
+                index += 1;
+            }
+            if index - start == 64 {
+                out.push_str("[redacted]");
+            } else {
+                out.push_str(&message[start..index]);
+            }
+            continue;
+        }
+        out.push(bytes[index] as char);
+        index += 1;
+    }
+    out.replace("BOOKCLERK_SESSION_CHALLENGE", "[redacted-env]")
+}
 
 /// Jailed plugin child with stdio pipes (describe not yet called).
 pub(crate) struct SpawnedStdio {
@@ -166,6 +228,8 @@ pub(crate) async fn spawn_stdio_guest(
     extra_env: &[(&str, OsString)],
 ) -> Result<SpawnedStdio> {
     let id = plugin.plugin_key().canonical().to_string();
+    note_spawn_stage(&format!("spawn begin plugin={id}"));
+    tokio::task::yield_now().await;
     let alias = plugin.manifest.id.clone();
     let persisted_grant = spawn_grant(&config.paths().files_dir, plugin)?;
     let grant = effective_spawn_grant(&persisted_grant, plugin, config);
@@ -174,6 +238,7 @@ pub(crate) async fn spawn_stdio_guest(
     // only moves fields, so `mut` is unused there.
     #[cfg_attr(windows, allow(unused_mut))]
     let mut jail = GuestJail::plan(config, plugin, plan)?;
+    note_spawn_stage(&format!("spawn planned plugin={id}"));
     let mut session_guard = SessionDirGuard(jail.session_dir.clone());
     let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
     #[cfg(windows)]
@@ -477,6 +542,10 @@ async fn spawn_siblings(
         if let Some(job) = session_job.as_ref() {
             assign_job(job, &gateway)?;
         }
+        let gateway_pid = gateway.id().unwrap_or(0);
+        note_spawn_stage(&format!(
+            "handoff gateway begin pid={gateway_pid} plugin={id}"
+        ));
         if let Err(err) =
             windows_handoff_gateway(&mut gateway, &rpc_pipes.host_stdout, &rpc_pipes.host_stdin)
                 .await
@@ -484,8 +553,26 @@ async fn spawn_siblings(
             let _ = gateway.kill().await;
             return Err(err);
         }
+        note_spawn_stage(&format!(
+            "handoff gateway wrote pid={gateway_pid} plugin={id}"
+        ));
         let ready_deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+        let mut last_ready_note = tokio::time::Instant::now();
+        note_spawn_stage(&format!(
+            "jail-ready wait begin pid={gateway_pid} plugin={id}"
+        ));
         loop {
+            if last_ready_note.elapsed() >= std::time::Duration::from_secs(15) {
+                let status = match gateway.try_wait() {
+                    Ok(Some(code)) => format!("exited:{code}"),
+                    Ok(None) => "running".to_string(),
+                    Err(err) => format!("wait-error:{err}"),
+                };
+                note_spawn_stage(&format!(
+                    "jail-ready still waiting pid={gateway_pid} status={status} plugin={id}"
+                ));
+                last_ready_note = tokio::time::Instant::now();
+            }
             match jail_ready.is_signaled() {
                 Ok(true) => break,
                 Ok(false) => {}
@@ -517,6 +604,9 @@ async fn spawn_siblings(
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        note_spawn_stage(&format!(
+            "jail-ready signaled pid={gateway_pid} plugin={id}"
+        ));
     }
 
     let guest_spawn = with_fd_spawn_lock(|| guest_cmd.spawn());
@@ -540,6 +630,8 @@ async fn spawn_siblings(
 
     #[cfg(windows)]
     {
+        let guest_pid = guest.id().unwrap_or(0);
+        note_spawn_stage(&format!("handoff guest begin pid={guest_pid} plugin={id}"));
         if let Some(job) = session_job.as_ref() {
             if let Err(err) = assign_job(job, &guest) {
                 let _ = gateway.kill().await;
@@ -560,6 +652,7 @@ async fn spawn_siblings(
             let _ = guest.kill().await;
             return Err(err);
         }
+        note_spawn_stage(&format!("handoff guest wrote pid={guest_pid} plugin={id}"));
     }
     #[cfg(unix)]
     {
@@ -593,6 +686,11 @@ async fn spawn_siblings(
     };
     let gateway_pid = gateway.id();
     let guest_pid = guest.id();
+    note_spawn_stage(&format!(
+        "siblings started gateway_pid={} guest_pid={} plugin={id}",
+        gateway_pid.unwrap_or(0),
+        guest_pid.unwrap_or(0)
+    ));
     Ok(SpawnedParts {
         child: gateway,
         guest: Some(guest),
@@ -1121,19 +1219,46 @@ async fn write_handoff_line(child: &mut Child, handoff: &JailHandoff) -> Result<
         .stdin
         .as_mut()
         .ok_or_else(|| PluginError::message("jail stdin missing for handoff"))?;
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|err| PluginError::message(format!("write jail handoff: {err}")))?;
-    stdin
-        .write_all(b"\n")
-        .await
-        .map_err(|err| PluginError::message(format!("write jail handoff newline: {err}")))?;
-    stdin
-        .flush()
+    write_all_noted(stdin, line.as_bytes(), "handoff write").await?;
+    write_all_noted(stdin, b"\n", "handoff newline").await?;
+    wait_noted(stdin.flush(), "handoff flush")
         .await
         .map_err(|err| PluginError::message(format!("flush jail handoff: {err}")))?;
     Ok(())
+}
+
+/// Poll `write` until it finishes, logging every 15s so a full pipe is visible.
+#[cfg(windows)]
+async fn write_all_noted(
+    stdin: &mut tokio::process::ChildStdin,
+    bytes: &[u8],
+    stage: &str,
+) -> Result<()> {
+    let write = stdin.write_all(bytes);
+    wait_noted(write, stage)
+        .await
+        .map_err(|err| PluginError::message(format!("{stage}: {err}")))
+}
+
+/// Drive `fut` and record `stage still waiting` while it is pending.
+#[cfg(windows)]
+async fn wait_noted<F, T>(fut: F, stage: &str) -> std::io::Result<T>
+where
+    F: std::future::Future<Output = std::io::Result<T>>,
+{
+    let mut fut = std::pin::pin!(fut);
+    let started = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            result = fut.as_mut() => return result,
+            () = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                note_spawn_stage(&format!(
+                    "{stage} still waiting elapsed_ms={}",
+                    started.elapsed().as_millis()
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1301,6 +1426,7 @@ fn forward_guest_stderr(
                 continue;
             }
             let tagged = format!("[{tag}] {line}");
+            note_spawn_stage(&tagged);
             if let Ok(mut buf) = tail.lock() {
                 if buf.len() >= STDERR_TAIL_LINES {
                     buf.pop_front();
@@ -1414,6 +1540,19 @@ fn stderr_tail_text(tail: &Arc<Mutex<VecDeque<String>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_diagnostics_redact_session_challenges() {
+        let challenge = "ab".repeat(32);
+        assert_eq!(challenge.len(), 64);
+        let line = redact_spawn_text(&format!(
+            "plugin=probe BOOKCLERK_SESSION_CHALLENGE={challenge} tail"
+        ));
+        assert!(!line.contains(&challenge));
+        assert!(line.contains("[redacted]"));
+        assert!(line.contains("[redacted-env]"));
+        assert!(line.contains("tail"));
+    }
 
     #[test]
     fn guest_env_contract_excludes_gateway_secrets() {

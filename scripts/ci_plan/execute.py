@@ -79,6 +79,7 @@ NATIVE_GATEWAY_TESTS = (
     "native_gateway",
     "native_gateway_isolation",
     "native_gateway_lifecycle",
+    "native_gateway_authenticated_endpoint",
 )
 POSTGRES_STEPS: dict[str, tuple[str, list[str]]] = {
     "library_queue": (
@@ -539,6 +540,25 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
                 ),
                 Command("clippy bookclerk-plugin-host --lib", ["cargo", "clippy", "-p", "bookclerk-plugin-host", "--lib", "--", "-D", "warnings"]),
                 Command("named-pipe SOCKET_PROXY", ["cargo", "test", "-p", "bookclerk-workerd", "--lib"]),
+                # Alone, before the suite. The suite still runs this test in
+                # its original order (shared serialization lock with Job extras).
+                Command(
+                    "lifecycle churn alone",
+                    [
+                        "cargo",
+                        "test",
+                        "-p",
+                        E2E_PACKAGE,
+                        "--test",
+                        "native_gateway_lifecycle",
+                        "--",
+                        "sequential_and_concurrent_spawn_cycles_do_not_leak",
+                        "--exact",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ],
+                    env=runtime_env,
+                ),
             ]
         elif ctx.os_name == "Darwin":
             cmds.append(Command("bookclerk-workerd lib tests", ["cargo", "test", "-p", "bookclerk-workerd", "--lib"]))

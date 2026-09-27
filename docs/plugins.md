@@ -462,7 +462,7 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 
 When you need enforceable hostname allowlists for `fetch()`, ship a **workerd** plugin. Native plugins that need networking must use the SDK socket capability.
 
-The native path is exercised end to end on Linux, macOS and Windows by `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle`: a granted loopback port round-trips through the proxy, an ungranted live port is refused with `403`, a direct socket from the sibling jail is blocked, both pids and the host session directory go away on drop, and concurrent sessions cannot read each other's gateway state (see [ci.md](ci.md#native-behind-workerd-gateway-smoke)).
+The native path is exercised end to end on Linux, macOS and Windows by `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`: a granted loopback port round-trips through the proxy, an ungranted live port is refused with `403`, a direct socket from the sibling jail is blocked, both pids and the host session directory go away on drop, and concurrent sessions cannot read each other's gateway state (see [ci.md](ci.md#native-behind-workerd-gateway-smoke)).
 
 Workerd egress matching (shared `EgressPolicy` + `bridge/egress.js`):
 

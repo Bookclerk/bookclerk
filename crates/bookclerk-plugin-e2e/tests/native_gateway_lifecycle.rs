@@ -446,10 +446,18 @@ async fn sequential_and_concurrent_spawn_cycles_do_not_leak() {
 /// One spawn on a shared installation. The install stays alive so an empty
 /// session-dir listing means production cleanup removed the directory.
 async fn finish_clean_session(install: &Install, listener: &Listener, label: &str) {
+    step(&format!("{label}: spawn begin"));
     let session = install.spawn().await;
+    step(&format!(
+        "{label}: spawn ready gateway_pid={} guest_pid={}",
+        session.gateway_pid().unwrap_or(0),
+        session.guest_pid().unwrap_or(0)
+    ));
     open_session(&session).await;
+    step(&format!("{label}: session open"));
     let outcome = probe(&session, "connect", listener.port, label).await;
     assert_eq!(outcome["ok"], true, "{label}: {outcome}");
+    step(&format!("{label}: connect ok"));
     let gateway = session.gateway_pid().expect("gateway");
     let guest = session.guest_pid().expect("guest");
     let tree = ProcessTree::capture();
@@ -474,11 +482,18 @@ async fn finish_clean_session(install: &Install, listener: &Listener, label: &st
     #[cfg(windows)]
     let sid = session.package_sid().map(str::to_string);
     let session_dir = session.session_dir().map(std::path::Path::to_path_buf);
+    step(&format!(
+        "{label}: drop session gateway={gateway} guest={guest} workerd={workerd} descendant={descendant}"
+    ));
     drop(session);
     wait_for_exit(gateway).await;
+    step(&format!("{label}: gateway {gateway} exited"));
     wait_for_exit(guest).await;
+    step(&format!("{label}: guest {guest} exited"));
     wait_for_exit(workerd).await;
+    step(&format!("{label}: workerd {workerd} exited"));
     wait_for_exit(descendant).await;
+    step(&format!("{label}: descendant {descendant} exited"));
     assert!(
         install.files_dir().is_dir(),
         "{label}: installation parent disappeared"
@@ -493,6 +508,7 @@ async fn finish_clean_session(install: &Install, listener: &Listener, label: &st
             "{label}: session dir remains {}",
             dir.display()
         );
+        step(&format!("{label}: session dir removed"));
     }
     match cgroup {
         Some(dir) => {
@@ -529,8 +545,13 @@ async fn finish_clean_session(install: &Install, listener: &Listener, label: &st
                 "{label}: package SID {sid} remains on {}",
                 path.display()
             );
+            step(&format!(
+                "{label}: package SID cleared on {}",
+                path.display()
+            ));
         }
     }
+    step(&format!("{label}: cleanup assertions held"));
 }
 
 /// Child of the guest supervisor. Unix `exec` replaces the jail, so the probe

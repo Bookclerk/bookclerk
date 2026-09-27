@@ -135,6 +135,7 @@ pub use spawn_plan::{
     GuestRuntimeKind, SpawnPlan, SpawnTransport, WorkerdFrontDoor, WORKERD_BIN_ENV,
     WORKERD_LAUNCHER_ENV,
 };
+pub use spawn_stdio::{note_spawn_stage, recent_spawn_diagnostics};
 
 /// Register discovered external plugins into the in-process registries.
 ///

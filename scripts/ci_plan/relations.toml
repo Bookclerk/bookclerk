@@ -157,6 +157,7 @@ paths = [
     "crates/bookclerk-plugin-e2e/tests/native_gateway.rs",
     "crates/bookclerk-plugin-e2e/tests/native_gateway_isolation.rs",
     "crates/bookclerk-plugin-e2e/tests/native_gateway_lifecycle.rs",
+    "crates/bookclerk-plugin-e2e/tests/native_gateway_authenticated_endpoint.rs",
     "crates/bookclerk-plugin-e2e/tests/native_gateway/**",
     "crates/bookclerk-plugin-e2e/src/bin/native_gateway_probe.rs",
 ]

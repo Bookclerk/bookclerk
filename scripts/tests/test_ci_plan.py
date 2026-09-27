@@ -549,6 +549,8 @@ class NativeGatewayTests(unittest.TestCase):
         "native_gateway_isolation",
         "--test",
         "native_gateway_lifecycle",
+        "--test",
+        "native_gateway_authenticated_endpoint",
         "--",
         "--nocapture",
     ]
@@ -629,6 +631,19 @@ class NativeGatewayTests(unittest.TestCase):
                     ["cargo", "clippy", "-p", "bookclerk-plugin-sdk", "--features", "http", "--all-targets", "--", "-D", "warnings"],
                     ["cargo", "clippy", "-p", "bookclerk-plugin-host", "--lib", "--", "-D", "warnings"],
                     ["cargo", "test", "-p", "bookclerk-workerd", "--lib"],
+                    [
+                        "cargo",
+                        "test",
+                        "-p",
+                        E2E_PACKAGE,
+                        "--test",
+                        "native_gateway_lifecycle",
+                        "--",
+                        "sequential_and_concurrent_spawn_cycles_do_not_leak",
+                        "--exact",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ],
                 ],
             ),
         ):

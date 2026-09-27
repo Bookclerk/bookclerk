@@ -734,7 +734,7 @@ impl PluginSession {
         note_test_hold_file("BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR", "validated");
         wait_test_hold("BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR", None).await;
         let (tx, rx) = mpsc::unbounded_channel();
-        let (ready_tx, ready_rx) =
+        let (ready_tx, mut ready_rx) =
             oneshot::channel::<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>();
         let vat_account = account_id.to_string();
         let shutdown_tx = tx.clone();
@@ -771,13 +771,33 @@ impl PluginSession {
             .name(vat_thread_name(&id))
             .spawn(move || vat_thread(guard, manifest, vat_account, events, rx, ready_tx))
             .map_err(|err| PluginError::message(format!("plugin vat thread: {err}")))?;
-        let (desc, limits, features) = match ready_rx.await {
+        crate::spawn_stdio::note_spawn_stage(&format!(
+            "describe wait plugin={id} gateway_pid={} guest_pid={}",
+            gateway_pid.unwrap_or(0),
+            guest_pid.unwrap_or(0)
+        ));
+        let describe_started = tokio::time::Instant::now();
+        let ready = loop {
+            tokio::select! {
+                ready = &mut ready_rx => break ready,
+                () = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                    crate::spawn_stdio::note_spawn_stage(&format!(
+                        "describe still waiting plugin={id} gateway_pid={} guest_pid={} elapsed_ms={}",
+                        gateway_pid.unwrap_or(0),
+                        guest_pid.unwrap_or(0),
+                        describe_started.elapsed().as_millis()
+                    ));
+                }
+            }
+        };
+        let (desc, limits, features) = match ready {
             Ok(Ok(ready)) => ready,
             Ok(Err(err)) => return Err(err),
             Err(err) => {
                 return Err(PluginError::message(format!("plugin vat dropped: {err}")));
             }
         };
+        crate::spawn_stdio::note_spawn_stage(&format!("describe ready plugin={id}"));
         if desc.api_version != PRODUCT_API_VERSION {
             return Err(PluginError::message(format!(
                 "plugin `{id}` describe apiVersion {} is not {PRODUCT_API_VERSION}",

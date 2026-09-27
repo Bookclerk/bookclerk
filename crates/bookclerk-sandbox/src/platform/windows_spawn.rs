@@ -260,16 +260,30 @@ impl AppContainerSession {
                     ),
                 });
             }
-            let profile = AppContainerProfile::ensure(
-                profile_name,
-                &format!("Bookclerk {display_label}"),
-                Some("Bookclerk plugin / media guest AppContainer"),
-            )
+            // CreateAppContainerProfile / DeleteAppContainerProfile are not
+            // thread-safe. Overlapping launches (the lifecycle churn's four
+            // concurrent sessions, plus each jail's attach) must queue on the
+            // same mutex as DACL updates. The lock covers only this call:
+            // holding it across jail-ready would deadlock the jail's attach.
+            emit_spawn_line(&format!(
+                "bookclerk-spawn: appcontainer profile create begin name={profile_name}"
+            ));
+            let profile = {
+                let _lock = acl_api_lock();
+                AppContainerProfile::ensure(
+                    profile_name,
+                    &format!("Bookclerk {display_label}"),
+                    Some("Bookclerk plugin / media guest AppContainer"),
+                )
+            }
             .map_err(|err| SandboxError::Backend {
                 label: display_label.to_string(),
                 backend: "appcontainer",
                 detail: format!("CreateAppContainerProfile failed: {err}"),
             })?;
+            emit_spawn_line(&format!(
+                "bookclerk-spawn: appcontainer profile create end name={profile_name}"
+            ));
             Ok(Self {
                 profile_name: profile_name.to_string(),
                 package_sid: profile.sid.as_string().to_string(),
@@ -297,7 +311,19 @@ impl AppContainerSession {
             name: self.profile_name.clone(),
             sid: AppContainerSid::from_sddl(&self.package_sid),
         };
-        if let Err(err) = profile.delete() {
+        emit_spawn_line(&format!(
+            "bookclerk-spawn: appcontainer profile delete begin name={}",
+            self.profile_name
+        ));
+        let deleted = {
+            let _lock = acl_api_lock();
+            profile.delete()
+        };
+        emit_spawn_line(&format!(
+            "bookclerk-spawn: appcontainer profile delete end name={}",
+            self.profile_name
+        ));
+        if let Err(err) = deleted {
             tracing::warn!(
                 profile = %self.profile_name,
                 error = %err,
@@ -1551,6 +1577,13 @@ fn path_is_safe_appcontainer_folder(
 #[cfg(windows)]
 const FILE_GENERIC_EXECUTE: u32 = 0x0012_00A0;
 
+/// Print one startup line and flush. Stderr is a pipe in CI.
+#[cfg(windows)]
+fn emit_spawn_line(message: &str) {
+    eprintln!("{message}");
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+}
+
 /// Cross-process + in-process serialization for Win32 DACL mutations.
 ///
 /// Concurrent `SetNamedSecurityInfo` / `SetEntriesInAcl` on the same path (e.g.
@@ -1620,7 +1653,19 @@ impl AclApiLock {
         // Per acquisition, and still fail-closed. Four concurrent jail launches
         // queue here; the host's jail-ready deadline is longer than this wait.
         const ACL_MUTEX_TIMEOUT_MS: u32 = 120_000;
-        let wait = unsafe { WaitForSingleObject(mutex, ACL_MUTEX_TIMEOUT_MS) };
+        let started = std::time::Instant::now();
+        let immediate = unsafe { WaitForSingleObject(mutex, 0) };
+        let wait = if immediate == WAIT_TIMEOUT {
+            emit_spawn_line("bookclerk-spawn: dacl mutex wait begin");
+            let wait = unsafe { WaitForSingleObject(mutex, ACL_MUTEX_TIMEOUT_MS) };
+            emit_spawn_line(&format!(
+                "bookclerk-spawn: dacl mutex wait end elapsed_ms={}",
+                started.elapsed().as_millis()
+            ));
+            wait
+        } else {
+            immediate
+        };
         if wait == WAIT_FAILED {
             let _ = unsafe { CloseHandle(mutex) };
             return Err(SandboxError::Backend {

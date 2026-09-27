@@ -168,6 +168,10 @@ impl Install {
 /// so the test binary never exits and the CI job runs until the workflow
 /// timeout. Exiting fails the same assertion and lets the job report it.
 pub fn fail_deadline(what: &str) -> ! {
+    let diag = bookclerk_plugin_host::recent_spawn_diagnostics();
+    if !diag.is_empty() {
+        eprintln!("native_gateway: startup diagnostics before exit:\n{diag}");
+    }
     eprintln!("native_gateway: {what}");
     std::process::exit(1);
 }

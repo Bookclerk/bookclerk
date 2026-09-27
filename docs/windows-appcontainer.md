@@ -74,7 +74,12 @@ does **not** synthesize a Packages path when the API fails.
 ## Cross-process ACL sync
 
 Named mutex `Local\bookclerk-dacl-tx` (120s timeout, fail closed) around every
-DACL RMW, plus an in-process mutex. Ancestor traverse ACEs are written with
+DACL RMW, plus an in-process mutex. The same pair serializes
+`CreateAppContainerProfile` and `DeleteAppContainerProfile`: those Win32 calls
+are not thread-safe, and four overlapping session launches plus each jail's
+`attach` otherwise sit inside the API together. The lock is released before
+the host waits for jail-ready, so the jail can attach while the host is
+waiting. Ancestor traverse ACEs are written with
 `SetKernelObjectSecurity` so inheritable ACEs already on a broad parent
 (`%TEMP%`, a build directory) are not propagated to every child while that
 mutex is held. Leaf directory grants still use inheritable ACEs.
