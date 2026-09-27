@@ -303,9 +303,9 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
 ///
 /// A collision in some other process is not this result. `not_inherited` means
 /// the child could not open the parent's value, or the object at that value
-/// is not the pipe (stdio or another type). Inheritance would have kept the
-/// pipe itself at that value. `reached_proxy` would mean the mux server
-/// accepted a stream.
+/// is not the pipe (stdio, another file type, or a non-file). Inheritance
+/// would have kept the pipe itself at that value. `reached_proxy` would mean
+/// the mux server accepted a stream.
 fn assert_endpoint_sealed(label: &str, outcome: &serde_json::Value) {
     assert_ne!(
         outcome["unsupported"], true,

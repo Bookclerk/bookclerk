@@ -1269,15 +1269,18 @@ fn is_pipe_handle(handle: *mut core::ffi::c_void) -> bool {
 }
 
 /// `GetFileType`, or the Win32 error when the call fails.
+///
+/// `6` (`ERROR_INVALID_HANDLE`) means the object is not a file. A named pipe
+/// is a file and returns `FILE_TYPE_PIPE` instead.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn file_type(handle: *mut core::ffi::c_void) -> Result<u32, String> {
+fn file_type(handle: *mut core::ffi::c_void) -> Result<u32, u32> {
     const FILE_TYPE_UNKNOWN: u32 = 0;
     let kind = unsafe { GetFileType(handle) };
     if kind == FILE_TYPE_UNKNOWN {
         let err = unsafe { GetLastError() };
         if err != 0 {
-            return Err(format!("GetFileType os {err}"));
+            return Err(err);
         }
     }
     Ok(kind)
@@ -2154,10 +2157,11 @@ fn unix_endpoint_absent(spec: &str) -> Option<serde_json::Value> {
 /// `DuplicateHandle` before this process creates any other handles.
 ///
 /// Inheritance keeps a parent's handle value only for the same object. A
-/// duplicate that is not a pipe, or that is this process's stdio, is a
-/// different object, so the pipe endpoint was not inherited. Both halves
-/// have to be pipes before the mux probe runs. `GetFileType` failure is
-/// not reported as absence.
+/// duplicate that is not a pipe, that is this process's stdio, or that
+/// `GetFileType` rejects with `ERROR_INVALID_HANDLE` is a different object,
+/// so the pipe endpoint was not inherited. Both halves have to be pipes
+/// before the mux probe runs. Any other `GetFileType` failure is not
+/// reported as absence.
 #[cfg(windows)]
 fn windows_endpoint_absent(spec: &str, write_spec: &str) -> Option<serde_json::Value> {
     let read = spec_handle_value(spec)?;
@@ -2194,9 +2198,10 @@ fn windows_endpoint_absent(spec: &str, write_spec: &str) -> Option<serde_json::V
 }
 
 /// `None` when `value` duplicates as a pipe. Otherwise the pipe is absent
-/// or `GetFileType` failed.
+/// or `GetFileType` failed for a reason other than a non-file object.
 #[cfg(windows)]
 fn duplicated_pipe_or_absent(value: u64, raw: *mut core::ffi::c_void) -> Option<serde_json::Value> {
+    const ERROR_INVALID_HANDLE: u32 = 6;
     let copy = match duplicate_raw(raw) {
         Ok(copy) => copy,
         Err(info) => {
@@ -2207,16 +2212,30 @@ fn duplicated_pipe_or_absent(value: u64, raw: *mut core::ffi::c_void) -> Option<
     drop(CloseEvent(copy));
     match kind {
         Ok(kind) if is_pipe_type(kind) => None,
-        Ok(kind) => Some(mux_status(
+        Ok(kind) => Some(pipe_not_inherited(value, &format!("file type {kind:#x}"))),
+        Err(ERROR_INVALID_HANDLE) => {
+            Some(pipe_not_inherited(value, "not a file (GetFileType os 6)"))
+        }
+        Err(os) => Some(mux_status(
             false,
             false,
-            true,
             false,
             false,
-            &format!(
-                "handle {value:#x} is file type {kind:#x}; the pipe endpoint was not inherited"
-            ),
+            false,
+            &format!("GetFileType os {os}"),
         )),
-        Err(err) => Some(mux_status(false, false, false, false, false, &err)),
     }
+}
+
+/// The value is open here, and it is not the inherited pipe.
+#[cfg(windows)]
+fn pipe_not_inherited(value: u64, why: &str) -> serde_json::Value {
+    mux_status(
+        false,
+        false,
+        true,
+        false,
+        false,
+        &format!("handle {value:#x} is {why}; the pipe endpoint was not inherited"),
+    )
 }
