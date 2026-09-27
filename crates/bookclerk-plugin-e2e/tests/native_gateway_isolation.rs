@@ -1,8 +1,11 @@
 //! Concurrent native-behind-workerd sessions keep separate grants and state.
 //!
-//! This checks filesystem state and egress policy. It does not treat a numeric
-//! fd or handle value as cross-process identity. Overlapping launches prove
-//! that with the per-session proxy challenge.
+//! Overlapping launches also exercise the live proxy challenge. Another
+//! session's secret on this link closes it, and an unrelated child without
+//! `BOOKCLERK_SESSION_CHALLENGE` cannot complete a handshake on an endpoint it
+//! can see. A numeric fd or handle is not cross-process identity. On Windows,
+//! `GetHandleInformation` on the inherited proxy must succeed so an invalid
+//! unlisted handle is a denial rather than a missing API.
 
 #[path = "native_gateway/harness.rs"]
 mod ng_harness;
@@ -15,6 +18,91 @@ use ng_harness::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_sessions_keep_separate_grants_and_state() {
+    // The proxy is still waiting for its 32-byte challenge until the first
+    // connect. These two sessions exist only to exercise that handshake.
+    let listener_gate_a = Listener::bind(true).await;
+    let listener_gate_b = Listener::bind(true).await;
+    let install_gate_a = Install::new(listener_gate_a.port);
+    let install_gate_b = Install::new(listener_gate_b.port);
+    let (gate_a, gate_b) = tokio::join!(install_gate_a.spawn(), install_gate_b.spawn());
+    tokio::join!(open_session(&gate_a), open_session(&gate_b));
+
+    let challenge_b = probe(&gate_b, "session_challenge", 0, "").await;
+    assert_eq!(
+        challenge_b["ok"], true,
+        "B did not publish a challenge: {challenge_b}"
+    );
+    let secret_b = challenge_b["hex"].as_str().unwrap_or("").to_string();
+    assert_eq!(secret_b.len(), 64, "B challenge hex: {secret_b}");
+    let (foreign, child) = tokio::join!(
+        probe(&gate_a, "present_challenge", 0, &secret_b),
+        probe(&gate_b, "unrelated_challenge", 0, "inherit"),
+    );
+    assert_eq!(foreign["unsupported"], false, "{foreign}");
+    assert_eq!(
+        foreign["wrote"], true,
+        "B's challenge was not written on A's link: {foreign}"
+    );
+    assert_eq!(foreign["opened_stream"], false, "{foreign}");
+    assert_eq!(foreign["completed"], false, "{foreign}");
+    assert!(
+        foreign["closed"] == true || foreign["refused"] == true,
+        "B's challenge on A's link must close or refuse: {foreign}"
+    );
+    assert_eq!(child["unsupported"], false, "{child}");
+    assert_eq!(child["completed"], false, "{child}");
+    assert_eq!(child["challenge_env"], false, "{child}");
+    assert_eq!(child["opened_stream"], false, "{child}");
+    let attempts = child["attempts"].as_array().expect("child attempts");
+    assert!(!attempts.is_empty(), "{child}");
+    for attempt in attempts {
+        assert_eq!(attempt["completed"], false, "{child}");
+        assert_eq!(attempt["opened_stream"], false, "{child}");
+        let err = attempt["error"].as_str().unwrap_or("");
+        assert!(!err.to_ascii_lowercase().contains("unsupported"), "{child}");
+        assert!(!err.contains("Unix-only"), "{child}");
+        assert!(!err.contains("fd identity"), "{child}");
+    }
+    #[cfg(unix)]
+    {
+        let primary = &attempts[0];
+        assert_eq!(
+            primary["wrote"], true,
+            "unrelated child could not see the live proxy: {child}"
+        );
+        assert_eq!(
+            primary["closed"], true,
+            "live proxy did not close on the child's zeros: {child}"
+        );
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        listener_gate_a.accepts(),
+        0,
+        "foreign challenge produced an accept"
+    );
+    assert_eq!(
+        listener_gate_b.accepts(),
+        0,
+        "unrelated child produced an accept"
+    );
+    step(&format!(
+        "live endpoint: B's challenge on A's link closed={} refused={} opened_stream=false; unrelated child completed=false wrote={} closed={}",
+        foreign["closed"], foreign["refused"], child["wrote"], child["closed"]
+    ));
+    let gate_gateway_a = gate_a.gateway_pid().expect("gate A gateway");
+    let gate_guest_a = gate_a.guest_pid().expect("gate A guest");
+    let gate_gateway_b = gate_b.gateway_pid().expect("gate B gateway");
+    let gate_guest_b = gate_b.guest_pid().expect("gate B guest");
+    drop(gate_a);
+    drop(gate_b);
+    wait_for_exit(gate_gateway_a).await;
+    wait_for_exit(gate_guest_a).await;
+    wait_for_exit(gate_gateway_b).await;
+    wait_for_exit(gate_guest_b).await;
+    assert!(session_dirs_under(install_gate_a.files_dir()).is_empty());
+    assert!(session_dirs_under(install_gate_b.files_dir()).is_empty());
+
     let listener_a = Listener::bind(true).await;
     let listener_b = Listener::bind(true).await;
     assert_ne!(listener_a.port, listener_b.port);
@@ -48,19 +136,32 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
         proxy_b.starts_with("fd:") || proxy_b.starts_with("handle:"),
         "B SOCKET_PROXY: {proxy_b}"
     );
-    let fd_a = proxy_a.split(':').next_back().unwrap_or("");
-    let fd_b = proxy_b.split(':').next_back().unwrap_or("");
-    let foreign = probe(&session_a, "touch_fd", 0, "250").await;
-    assert_eq!(
-        foreign["ok"], false,
-        "session A treated fd 250 as an open inherited proxy: {foreign}"
-    );
-    if fd_a != fd_b {
-        let borrowed = probe(&session_a, "touch_fd", 0, fd_b).await;
+    let handles = probe(&session_a, "unlisted_handle", 0, &unlisted_payload()).await;
+    #[cfg(windows)]
+    {
+        assert_eq!(handles["unsupported"], false, "{handles}");
         assert_eq!(
-            borrowed["ok"], false,
-            "session A opened B's proxy descriptor number {fd_b}: {borrowed}"
+            handles["proxy_usable"], true,
+            "inherited proxy handle was not usable: {handles}"
         );
+        assert_eq!(handles["denied"], true, "{handles}");
+        let os = handles["os"].as_u64().unwrap_or(0);
+        assert!(
+            os == 5 || os == 6,
+            "unlisted handle must be access-denied or invalid: {handles}"
+        );
+        step(&format!(
+            "unlisted handle denied os {os}; inherited proxy handle still usable"
+        ));
+    }
+    #[cfg(not(windows))]
+    {
+        assert_eq!(handles["unsupported"], true, "{handles}");
+        assert_ne!(
+            handles["denied"], true,
+            "unsupported must not count as a denial: {handles}"
+        );
+        step("unlisted-handle probe unsupported on this platform; denial was not asserted");
     }
     step(&format!(
         "A session={} B session={} B proxy={proxy_b}",
@@ -120,4 +221,37 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     assert!(session_dirs_under(install_a.files_dir()).is_empty());
     assert!(session_dirs_under(install_b.files_dir()).is_empty());
     step("both sessions tore down cleanly");
+}
+
+/// Handle values that are live in this process and were not placed in the guest.
+fn unlisted_payload() -> String {
+    #[cfg(windows)]
+    {
+        live_host_handles()
+    }
+    #[cfg(not(windows))]
+    {
+        "0".to_string()
+    }
+}
+
+/// Four live event handles. The guest did not inherit them.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn live_host_handles() -> String {
+    extern "system" {
+        fn CreateEventW(
+            attrs: *mut core::ffi::c_void,
+            manual: i32,
+            initial: i32,
+            name: *const u16,
+        ) -> *mut core::ffi::c_void;
+    }
+    let mut values = Vec::new();
+    for _ in 0..4 {
+        let handle = unsafe { CreateEventW(core::ptr::null_mut(), 1, 0, core::ptr::null()) };
+        assert!(!handle.is_null(), "CreateEventW failed");
+        values.push((handle as usize as u64).to_string());
+    }
+    values.join(",")
 }

@@ -163,49 +163,819 @@ async fn hold_until_eof(host: &str, port: u16, payload: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// Report whether `payload` is an open fd in this process.
-///
-/// `F_GETFD` fails with `EBADF` when the number is not open here. That is the
-/// inherited-fd check: another process's descriptor number is not this
-/// session's proxy. The call does not close or write the descriptor.
-fn touch_fd(payload: &str) -> serde_json::Value {
-    #[cfg(unix)]
-    {
-        let fd: i32 = match payload.parse() {
-            Ok(fd) => fd,
-            Err(err) => {
-                return serde_json::json!({ "ok": false, "error": format!("bad fd: {err}") })
-            }
-        };
-        match fcntl_getfd(fd) {
-            Ok(()) => serde_json::json!({ "ok": true, "open": true }),
-            Err(err) => serde_json::json!({
-                "ok": false,
-                "open": false,
-                "error": err,
-            }),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = payload;
-        serde_json::json!({ "ok": false, "error": "fd identity is Unix-only" })
+/// Hex session challenge from the environment. Does not touch the proxy.
+fn session_challenge() -> serde_json::Value {
+    match std::env::var(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV) {
+        Ok(hex) => serde_json::json!({
+            "ok": true,
+            "present": true,
+            "hex": hex.trim(),
+        }),
+        Err(err) => serde_json::json!({
+            "ok": false,
+            "present": false,
+            "error": err.to_string(),
+        }),
     }
 }
 
-/// `fcntl(fd, F_GETFD)`. `EBADF` means the number is not an open descriptor.
+/// Spawn a child with the session challenge removed and let it try every
+/// endpoint it was told about.
+///
+/// `payload` is `inherit`: the child receives the still-waiting proxy and
+/// writes 32 zero bytes, the same shape as the socket-proxy unit test. The
+/// live proxy must not treat that as a completed challenge.
+fn unrelated_challenge(payload: &str) -> serde_json::Value {
+    let spec = match std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV) {
+        Ok(spec) => spec,
+        Err(err) => {
+            return challenge_failure(&format!("proxy endpoint is unset: {err}"));
+        }
+    };
+    let write_spec = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV).ok();
+    if payload != "inherit" {
+        if let Err(err) = disarm_inherit(&spec, write_spec.as_deref()) {
+            return challenge_failure(&format!("could not stop endpoint inheritance: {err}"));
+        }
+    }
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => return challenge_failure(&err.to_string()),
+    };
+    let mut cmd = std::process::Command::new(win32_child_image(&exe));
+    cmd.arg("--endpoint-challenge")
+        .arg(&spec)
+        .env_remove(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(dir) = exe.parent() {
+        cmd.current_dir(dir);
+    }
+    if let Some(write_spec) = &write_spec {
+        cmd.arg(write_spec);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(err) => return challenge_failure(&format!("unrelated child spawn: {err}")),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return challenge_failure(&format!(
+            "unrelated child status {}: {stderr}",
+            output.status
+        ));
+    }
+    match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        Ok(value) => value,
+        Err(err) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            challenge_failure(&format!(
+                "unrelated child stdout is not JSON ({err}): {} {stderr}",
+                String::from_utf8_lossy(&output.stdout)
+            ))
+        }
+    }
+}
+
+/// Failure JSON for a child that did not complete a challenge.
+fn challenge_failure(error: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "completed": false,
+        "unsupported": false,
+        "challenge_env": false,
+        "wrote": false,
+        "closed": false,
+        "opened_stream": false,
+        "error": error,
+        "attempts": [],
+    })
+}
+
+/// Image path for a child of this probe. Windows AppContainer rejects `\\?\`.
+fn win32_child_image(path: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        win32_spawn_path(path)
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// Clear inheritability so a non-`inherit` child cannot see the live proxy.
+fn disarm_inherit(spec: &str, write_spec: Option<&str>) -> Result<(), String> {
+    disarm_one(spec)?;
+    if let Some(write_spec) = write_spec {
+        disarm_one(write_spec)?;
+    }
+    Ok(())
+}
+
+/// Mark one `fd:` / `handle:` endpoint non-inheritable.
+fn disarm_one(spec: &str) -> Result<(), String> {
+    if let Some(rest) = spec.strip_prefix("fd:") {
+        #[cfg(unix)]
+        {
+            let fd: i32 = rest
+                .parse()
+                .map_err(|err| format!("bad fd {spec}: {err}"))?;
+            return set_cloexec(fd);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = rest;
+            return Err("fd: endpoints are Unix-only".into());
+        }
+    }
+    if let Some(rest) = spec.strip_prefix("handle:") {
+        #[cfg(windows)]
+        {
+            let value: u64 = rest
+                .parse()
+                .map_err(|err| format!("bad handle {spec}: {err}"))?;
+            return clear_handle_inherit(value);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = rest;
+            return Err("handle: endpoints are Windows-only".into());
+        }
+    }
+    Err(format!(
+        "endpoint spec must be fd:<n> or handle:<n>, got {spec}"
+    ))
+}
+
+/// Write `hex` (another session's challenge) on this process's proxy link.
+///
+/// Used before this guest has started its mux, so the bytes are the proxy's
+/// session challenge. A mismatch closes the link and does not open a stream.
+async fn present_foreign_challenge(hex: &str) -> serde_json::Value {
+    let bytes = match decode_challenge(hex) {
+        Ok(bytes) => bytes,
+        Err(err) => return observe_error(&err),
+    };
+    let spec = match std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV) {
+        Ok(spec) => spec,
+        Err(err) => return observe_error(&format!("proxy endpoint is unset: {err}")),
+    };
+    let write_spec = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV).ok();
+    let target = write_spec.as_deref().unwrap_or(spec.as_str());
+    observe_endpoint(target, &bytes)
+}
+
+/// Decode [`bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN`] bytes of hex.
+fn decode_challenge(
+    hex: &str,
+) -> Result<[u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN], String> {
+    let hex = hex.trim();
+    let len = bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN;
+    if hex.len() != len * 2 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("challenge must be {len} bytes of hex"));
+    }
+    let mut out = [0u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+            .map_err(|err| format!("challenge hex: {err}"))?;
+    }
+    Ok(out)
+}
+
+/// Write `bytes` to `spec` and report whether a stream or HTTP 200 appeared.
+fn observe_endpoint(spec: &str, bytes: &[u8]) -> serde_json::Value {
+    if let Some(rest) = spec.strip_prefix("fd:") {
+        #[cfg(unix)]
+        {
+            let fd: i32 = match rest.parse() {
+                Ok(fd) => fd,
+                Err(err) => return observe_error(&format!("bad fd {spec}: {err}")),
+            };
+            return observe_fd(fd, bytes);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (rest, bytes);
+            return observe_error("fd: endpoints are Unix-only");
+        }
+    }
+    if let Some(rest) = spec.strip_prefix("handle:") {
+        #[cfg(windows)]
+        {
+            let value: u64 = match rest.parse() {
+                Ok(value) => value,
+                Err(err) => return observe_error(&format!("bad handle {spec}: {err}")),
+            };
+            return observe_handle(value, bytes);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (rest, bytes);
+            return observe_error("handle: endpoints are Windows-only");
+        }
+    }
+    observe_error(&format!("unsupported endpoint spec {spec}"))
+}
+
+/// JSON for an attempt that did not run.
+fn observe_error(error: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "completed": false,
+        "unsupported": false,
+        "opened_stream": false,
+        "closed": false,
+        "refused": false,
+        "wrote": false,
+        "error": error,
+    })
+}
+
+/// Classify a finished attempt. `unsupported` stays false: a platform that
+/// cannot run the probe uses a different op result.
+fn observe_result(
+    wrote: bool,
+    closed: bool,
+    opened_stream: bool,
+    error: Option<String>,
+) -> serde_json::Value {
+    let refused = !opened_stream && (closed || error.is_some());
+    serde_json::json!({
+        "ok": opened_stream,
+        "completed": opened_stream,
+        "unsupported": false,
+        "opened_stream": opened_stream,
+        "closed": closed,
+        "refused": refused,
+        "wrote": wrote,
+        "error": error,
+    })
+}
+
+/// `HTTP/1.x 200` in `bytes` is a completed CONNECT, not a mux close.
+fn saw_http_200(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    text.contains("HTTP/1.1 200") || text.contains("HTTP/1.0 200")
+}
+
+/// Child entry: no session-challenge env, try the advertised endpoints.
+fn child_endpoint_challenge(spec: &str, write_spec: Option<&str>) -> serde_json::Value {
+    let challenge_env = std::env::var_os(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV).is_some();
+    let zeros = [0u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+    let mut attempts = Vec::new();
+    attempts.push(labeled_attempt(spec, &zeros));
+    if let Some(write_spec) = write_spec {
+        if write_spec != spec {
+            attempts.push(labeled_attempt(write_spec, &zeros));
+        }
+    }
+    #[cfg(unix)]
+    attempts.extend(extra_socket_attempts(&zeros, spec));
+    let completed = attempts.iter().any(|attempt| attempt["completed"] == true);
+    let wrote = attempts.iter().any(|attempt| attempt["wrote"] == true);
+    let closed = attempts.iter().any(|attempt| attempt["closed"] == true);
+    let opened_stream = attempts
+        .iter()
+        .any(|attempt| attempt["opened_stream"] == true);
+    serde_json::json!({
+        "ok": completed,
+        "completed": completed,
+        "unsupported": false,
+        "challenge_env": challenge_env,
+        "wrote": wrote,
+        "closed": closed,
+        "opened_stream": opened_stream,
+        "attempts": attempts,
+    })
+}
+
+/// One endpoint attempt, tagged with its spec.
+fn labeled_attempt(spec: &str, bytes: &[u8]) -> serde_json::Value {
+    let mut outcome = observe_endpoint(spec, bytes);
+    outcome["endpoint"] = serde_json::Value::String(spec.to_string());
+    outcome
+}
+
+/// Probe a live handle the host did not place in this process.
+///
+/// `GetHandleInformation` on the inherited proxy must succeed first. That
+/// separates "API missing" (`unsupported`) from "not a handle here"
+/// (`denied`). The proxy handle is queried again after the foreign value.
+fn unlisted_handle(payload: &str) -> serde_json::Value {
+    #[cfg(windows)]
+    {
+        unlisted_handle_windows(payload)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = payload;
+        serde_json::json!({
+            "ok": false,
+            "unsupported": true,
+            "denied": false,
+            "proxy_usable": false,
+            "error": "GetHandleInformation is Windows-only",
+        })
+    }
+}
+
+/// `FD_CLOEXEC` so a later `exec` does not receive `fd`.
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn fcntl_getfd(fd: i32) -> Result<(), String> {
-    extern "C" {
-        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+fn set_cloexec(fd: i32) -> Result<(), String> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
     }
-    const F_GETFD: i32 = 1;
-    let rc = unsafe { fcntl(fd, F_GETFD, 0) };
-    if rc >= 0 {
-        return Ok(());
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
     }
-    Err(std::io::Error::last_os_error().to_string())
+    Ok(())
+}
+
+/// Write `bytes` to `fd` and wait briefly for a close or an HTTP 200.
+#[cfg(unix)]
+fn observe_fd(fd: i32, bytes: &[u8]) -> serde_json::Value {
+    if let Err(err) = write_all_fd(fd, bytes) {
+        return observe_result(false, is_closed_io(&err), false, Some(err));
+    }
+    match read_fd_timeout(fd, 1000) {
+        Ok(buf) if buf.is_empty() => observe_result(true, true, false, Some("link closed".into())),
+        Ok(buf) if saw_http_200(&buf) => observe_result(true, false, true, None),
+        Ok(buf) => observe_result(
+            true,
+            false,
+            false,
+            Some(format!("no stream ({} bytes)", buf.len())),
+        ),
+        Err(err) => observe_result(true, is_closed_io(&err), false, Some(err)),
+    }
+}
+
+/// Other open sockets besides `primary`. Stdio stays untouched.
+#[cfg(unix)]
+fn extra_socket_attempts(bytes: &[u8], primary: &str) -> Vec<serde_json::Value> {
+    let primary_fd = primary
+        .strip_prefix("fd:")
+        .and_then(|rest| rest.parse::<i32>().ok());
+    let mut out = Vec::new();
+    for fd in 3..64 {
+        if Some(fd) == primary_fd || !fd_is_socket(fd) {
+            continue;
+        }
+        out.push(labeled_attempt(&format!("fd:{fd}"), bytes));
+        if out.len() == 4 {
+            break;
+        }
+    }
+    out
+}
+
+/// `fstat` says `fd` is a socket.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn fd_is_socket(fd: i32) -> bool {
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    if unsafe { libc::fstat(fd, &mut stat) } < 0 {
+        return false;
+    }
+    (stat.st_mode & libc::S_IFMT) == libc::S_IFSOCK
+}
+
+/// Write every byte. `EINTR` retries. Any other error is the caller's result.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn write_all_fd(fd: i32, mut bytes: &[u8]) -> Result<(), String> {
+    while !bytes.is_empty() {
+        let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err.to_string());
+        }
+        if n == 0 {
+            return Err("write returned 0".into());
+        }
+        bytes = &bytes[n as usize..];
+    }
+    Ok(())
+}
+
+/// Poll `fd` then read whatever is pending. Timeout is "not accepted".
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn read_fd_timeout(fd: i32, timeout_ms: i32) -> Result<Vec<u8>, String> {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            return read_fd_timeout(fd, timeout_ms);
+        }
+        return Err(err.to_string());
+    }
+    if rc == 0 {
+        return Err("challenge was not accepted".into());
+    }
+    if pfd.revents & libc::POLLNVAL != 0 {
+        return Err("endpoint is not a pollable descriptor".into());
+    }
+    let mut buf = [0u8; 256];
+    let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+    if n < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::WouldBlock {
+            return Err("challenge was not accepted".into());
+        }
+        return Err(err.to_string());
+    }
+    Ok(buf[..n as usize].to_vec())
+}
+
+/// Broken pipe / reset / peer-closed, on Unix and Windows error text.
+fn is_closed_io(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("broken pipe")
+        || lower.contains("connection reset")
+        || lower.contains("connection abort")
+        || lower.contains("not connected")
+        || lower.contains("pipe has been ended")
+        || lower.contains("os error 32")
+        || lower.contains("os error 104")
+        || lower.contains("os error 107")
+        || lower.contains("os error 109")
+        || lower.contains("os error 232")
+}
+
+/// Drop `HANDLE_FLAG_INHERIT` so `CreateProcess` will not pass `value` on.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn clear_handle_inherit(value: u64) -> Result<(), String> {
+    let handle = handle_ptr(value)?;
+    let ok = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+    if ok == 0 {
+        return Err(format!(
+            "SetHandleInformation: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// Write `bytes` to an overlapped pipe handle and wait for a close or a 200.
+#[cfg(windows)]
+fn observe_handle(value: u64, bytes: &[u8]) -> serde_json::Value {
+    let handle = match handle_ptr(value) {
+        Ok(handle) => handle,
+        Err(err) => return observe_error(&err),
+    };
+    let info = handle_information(handle);
+    if !info.ok {
+        return observe_result(false, false, false, Some(info.error));
+    }
+    if let Err(err) = overlapped_write(handle, bytes) {
+        return observe_result(false, is_closed_io(&err), false, Some(err));
+    }
+    match overlapped_read(handle, 1000) {
+        Ok(buf) if buf.is_empty() => observe_result(true, true, false, Some("link closed".into())),
+        Ok(buf) if saw_http_200(&buf) => observe_result(true, false, true, None),
+        Ok(buf) => observe_result(
+            true,
+            false,
+            false,
+            Some(format!("no stream ({} bytes)", buf.len())),
+        ),
+        Err(err) => observe_result(true, is_closed_io(&err), false, Some(err)),
+    }
+}
+
+/// `GetHandleInformation` on each candidate the host did not inherit.
+#[cfg(windows)]
+fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
+    let proxy_spec = match std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV) {
+        Ok(spec) => spec,
+        Err(err) => {
+            return serde_json::json!({
+                "ok": false,
+                "unsupported": false,
+                "denied": false,
+                "proxy_usable": false,
+                "error": format!("proxy endpoint is unset: {err}"),
+            })
+        }
+    };
+    let proxy_value = match proxy_spec
+        .strip_prefix("handle:")
+        .and_then(|rest| rest.parse().ok())
+    {
+        Some(value) => value,
+        None => {
+            return serde_json::json!({
+                "ok": false,
+                "unsupported": false,
+                "denied": false,
+                "proxy_usable": false,
+                "error": format!("proxy endpoint is not handle:<n>: {proxy_spec}"),
+            })
+        }
+    };
+    let proxy = match handle_ptr(proxy_value) {
+        Ok(handle) => handle,
+        Err(err) => {
+            return serde_json::json!({
+                "ok": false,
+                "unsupported": false,
+                "denied": false,
+                "proxy_usable": false,
+                "error": err,
+            })
+        }
+    };
+    let first = handle_information(proxy);
+    if !first.ok {
+        return serde_json::json!({
+            "ok": false,
+            "unsupported": false,
+            "denied": false,
+            "proxy_usable": false,
+            "os": first.os,
+            "error": first.error,
+        });
+    }
+    let known = known_handle_values(proxy_value);
+    let mut denied = false;
+    let mut os = 0_u32;
+    let mut error = String::from("no unlisted candidate");
+    let mut saw_candidate = false;
+    for part in payload.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let Ok(value) = part.parse::<u64>() else {
+            continue;
+        };
+        if known.contains(&value) {
+            continue;
+        }
+        let Ok(handle) = handle_ptr(value) else {
+            continue;
+        };
+        saw_candidate = true;
+        let info = handle_information(handle);
+        if !info.ok && (info.os == 5 || info.os == 6) {
+            denied = true;
+            os = info.os;
+            error = info.error;
+            break;
+        }
+    }
+    if !denied && saw_candidate {
+        error = "every candidate was open in the guest".into();
+    }
+    let again = handle_information(proxy);
+    serde_json::json!({
+        "ok": false,
+        "unsupported": false,
+        "denied": denied,
+        "proxy_usable": again.ok,
+        "os": os,
+        "error": error,
+    })
+}
+
+/// Inherited proxy, its write half, and the process standard handles.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn known_handle_values(proxy: u64) -> Vec<u64> {
+    let mut known = vec![proxy];
+    if let Ok(spec) = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV) {
+        if let Some(value) = spec
+            .strip_prefix("handle:")
+            .and_then(|rest| rest.parse().ok())
+        {
+            known.push(value);
+        }
+    }
+    for kind in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        let handle = unsafe { GetStdHandle(kind) };
+        if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+            known.push(handle as usize as u64);
+        }
+    }
+    known
+}
+
+/// Pointer-sized handle value. Fails when `value` does not fit `usize`.
+#[cfg(windows)]
+fn handle_ptr(value: u64) -> Result<*mut core::ffi::c_void, String> {
+    let n = usize::try_from(value).map_err(|_| format!("handle {value} does not fit usize"))?;
+    Ok(n as *mut core::ffi::c_void)
+}
+
+/// Result of `GetHandleInformation`.
+#[cfg(windows)]
+struct HandleInfo {
+    ok: bool,
+    os: u32,
+    error: String,
+}
+
+/// Query `handle`. Failure keeps the Win32 code (`5` or `6` is a denial).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn handle_information(handle: *mut core::ffi::c_void) -> HandleInfo {
+    let mut flags = 0_u32;
+    let ok = unsafe { GetHandleInformation(handle, &mut flags) };
+    if ok != 0 {
+        return HandleInfo {
+            ok: true,
+            os: 0,
+            error: String::new(),
+        };
+    }
+    let err = std::io::Error::last_os_error();
+    let os = u32::try_from(err.raw_os_error().unwrap_or(0)).unwrap_or(0);
+    HandleInfo {
+        ok: false,
+        os,
+        error: err.to_string(),
+    }
+}
+
+/// Write every byte with an `OVERLAPPED` record. The product pipes are overlapped.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn overlapped_write(handle: *mut core::ffi::c_void, bytes: &[u8]) -> Result<(), String> {
+    let n = overlapped_transfer(handle, bytes.as_ptr() as *mut u8, bytes.len(), true, 1000)?;
+    if n != bytes.len() {
+        return Err(format!("short write {n}"));
+    }
+    Ok(())
+}
+
+/// Read pending bytes. An empty buffer is EOF (the peer closed).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn overlapped_read(handle: *mut core::ffi::c_void, timeout_ms: u32) -> Result<Vec<u8>, String> {
+    let mut buf = vec![0_u8; 256];
+    let n = overlapped_transfer(handle, buf.as_mut_ptr(), buf.len(), false, timeout_ms)?;
+    buf.truncate(n);
+    Ok(buf)
+}
+
+/// One overlapped `ReadFile` or `WriteFile`. Timeout cancels the pending I/O.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn overlapped_transfer(
+    handle: *mut core::ffi::c_void,
+    buf: *mut u8,
+    len: usize,
+    write: bool,
+    timeout_ms: u32,
+) -> Result<usize, String> {
+    let event = unsafe { CreateEventW(core::ptr::null_mut(), 1, 0, core::ptr::null()) };
+    if event.is_null() {
+        return Err(format!("CreateEventW: {}", std::io::Error::last_os_error()));
+    }
+    let _close = CloseEvent(event);
+    let mut overlapped = Overlapped {
+        internal: 0,
+        internal_high: 0,
+        offset: 0,
+        offset_high: 0,
+        event,
+    };
+    let len_u32 = u32::try_from(len).map_err(|_| format!("transfer length {len} exceeds u32"))?;
+    let mut transferred = 0_u32;
+    let ok = if write {
+        unsafe {
+            WriteFile(
+                handle,
+                buf.cast_const(),
+                len_u32,
+                &mut transferred,
+                &mut overlapped,
+            )
+        }
+    } else {
+        unsafe { ReadFile(handle, buf, len_u32, &mut transferred, &mut overlapped) }
+    };
+    if ok != 0 {
+        return Ok(transferred as usize);
+    }
+    let err = std::io::Error::last_os_error();
+    let code = err.raw_os_error().unwrap_or(0);
+    if code != ERROR_IO_PENDING {
+        return Err(err.to_string());
+    }
+    let wait = unsafe { WaitForSingleObject(event, timeout_ms) };
+    if wait == WAIT_TIMEOUT {
+        unsafe {
+            CancelIoEx(handle, &mut overlapped);
+        }
+        return Err("challenge was not accepted".into());
+    }
+    transferred = 0;
+    let ok = unsafe { GetOverlappedResult(handle, &mut overlapped, &mut transferred, 0) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(transferred as usize)
+}
+
+/// Closes a Win32 event handle.
+#[cfg(windows)]
+struct CloseEvent(*mut core::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for CloseEvent {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            #[allow(unsafe_code)]
+            unsafe {
+                CloseHandle(self.0)
+            };
+        }
+    }
+}
+
+/// `OVERLAPPED`. The offset pair is the 8-byte union; `event` follows it.
+#[cfg(windows)]
+#[repr(C)]
+struct Overlapped {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    event: *mut core::ffi::c_void,
+}
+
+#[cfg(windows)]
+const HANDLE_FLAG_INHERIT: u32 = 0x1;
+#[cfg(windows)]
+const ERROR_IO_PENDING: i32 = 997;
+#[cfg(windows)]
+const WAIT_TIMEOUT: u32 = 258;
+#[cfg(windows)]
+const STD_INPUT_HANDLE: u32 = -10_i32 as u32;
+#[cfg(windows)]
+const STD_OUTPUT_HANDLE: u32 = -11_i32 as u32;
+#[cfg(windows)]
+const STD_ERROR_HANDLE: u32 = -12_i32 as u32;
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1_isize as *mut core::ffi::c_void;
+
+#[cfg(windows)]
+extern "system" {
+    fn SetHandleInformation(handle: *mut core::ffi::c_void, mask: u32, flags: u32) -> i32;
+    fn GetHandleInformation(handle: *mut core::ffi::c_void, flags: *mut u32) -> i32;
+    fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
+    fn CreateEventW(
+        attrs: *mut core::ffi::c_void,
+        manual: i32,
+        initial: i32,
+        name: *const u16,
+    ) -> *mut core::ffi::c_void;
+    fn WriteFile(
+        handle: *mut core::ffi::c_void,
+        buf: *const u8,
+        len: u32,
+        written: *mut u32,
+        overlapped: *mut Overlapped,
+    ) -> i32;
+    fn ReadFile(
+        handle: *mut core::ffi::c_void,
+        buf: *mut u8,
+        len: u32,
+        read: *mut u32,
+        overlapped: *mut Overlapped,
+    ) -> i32;
+    fn GetOverlappedResult(
+        handle: *mut core::ffi::c_void,
+        overlapped: *mut Overlapped,
+        transferred: *mut u32,
+        wait: i32,
+    ) -> i32;
+    fn WaitForSingleObject(handle: *mut core::ffi::c_void, millis: u32) -> u32;
+    fn CancelIoEx(handle: *mut core::ffi::c_void, overlapped: *mut Overlapped) -> i32;
+    fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
 }
 
 /// One Job slot: this probe, not `cmd /c` and not `ping.exe`.
@@ -427,12 +1197,11 @@ fn query_windows_job() -> serde_json::Value {
     }
 }
 
-/// OAuth callback tunnel plus the PostgreSQL mediator socket in the guest IPC directory.
+/// OAuth callback tunnel plus the probe's Unix socket mock in the guest IPC directory.
 ///
 /// `payload` is the host callback socket (`cb.sock` or a Windows pipe). The
 /// guest binds `{GUEST_IPC_DIR}/.s.PGSQL.5432`, accepts one client, and accepts
-/// one tunneled browser stream. This is the callback and mediator sockets, not
-/// a pathname echo.
+/// one tunneled browser stream. `PGOK` is this mock, not the PostgreSQL adapter.
 async fn serve_ipc(callback: &str) -> serde_json::Value {
     #[cfg(unix)]
     {
@@ -445,7 +1214,9 @@ async fn serve_ipc(callback: &str) -> serde_json::Value {
     }
 }
 
-/// Bind `.s.PGSQL.5432` and accept the host callback tunnel.
+/// Bind the `.s.PGSQL.5432` mock socket and accept the host callback tunnel.
+///
+/// The four-byte `PGOK` reply is this probe, not a PostgreSQL adapter startup.
 #[cfg(unix)]
 async fn serve_ipc_unix(callback: &str) -> serde_json::Value {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -462,7 +1233,7 @@ async fn serve_ipc_unix(callback: &str) -> serde_json::Value {
         Err(err) => {
             return serde_json::json!({
                 "ok": false,
-                "error": format!("postgres mediator bind {}: {err}", pg_path.display()),
+                "error": format!("probe unix socket mock bind {}: {err}", pg_path.display()),
             })
         }
     };
@@ -470,15 +1241,15 @@ async fn serve_ipc_unix(callback: &str) -> serde_json::Value {
         let (mut sock, _) = listener
             .accept()
             .await
-            .map_err(|err| format!("postgres mediator accept: {err}"))?;
+            .map_err(|err| format!("probe unix socket mock accept: {err}"))?;
         let mut buf = [0u8; 64];
         let n = tokio::time::timeout(std::time::Duration::from_secs(20), sock.read(&mut buf))
             .await
-            .map_err(|_| "postgres mediator read timed out".to_string())?
-            .map_err(|err| format!("postgres mediator read: {err}"))?;
+            .map_err(|_| "probe unix socket mock read timed out".to_string())?
+            .map_err(|err| format!("probe unix socket mock read: {err}"))?;
         sock.write_all(b"PGOK")
             .await
-            .map_err(|err| format!("postgres mediator write: {err}"))?;
+            .map_err(|err| format!("probe unix socket mock write: {err}"))?;
         Ok::<Vec<u8>, String>(buf[..n].to_vec())
     });
     let stream = match tokio::net::UnixStream::connect(callback).await {
@@ -671,7 +1442,10 @@ impl PluginCli for Probe {
             }
             "descendant" => spawn_pause_descendant(),
             "exhaust_threads" => exhaust_threads(arg(&params, "payload")),
-            "touch_fd" => touch_fd(arg(&params, "payload")),
+            "session_challenge" => session_challenge(),
+            "unrelated_challenge" => unrelated_challenge(arg(&params, "payload")),
+            "present_challenge" => present_foreign_challenge(arg(&params, "payload")).await,
+            "unlisted_handle" => unlisted_handle(arg(&params, "payload")),
             "spawn_ping" => spawn_ping(),
             "job_limits" => job_limits(),
             "serve_ipc" => serve_ipc(arg(&params, "payload")).await,
@@ -703,6 +1477,13 @@ impl PluginCli for Probe {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("BOOKCLERK_PROBE_EXIT").is_some() {
+        return Ok(());
+    }
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--endpoint-challenge") {
+        let spec = args.next().unwrap_or_default();
+        let write_spec = args.next();
+        println!("{}", child_endpoint_challenge(&spec, write_spec.as_deref()));
         return Ok(());
     }
     // One Job slot. The session Job kills this process when the test drops it.

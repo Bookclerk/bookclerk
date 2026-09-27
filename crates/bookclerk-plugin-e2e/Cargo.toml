@@ -15,6 +15,7 @@ publish = false
 async-trait.workspace = true
 bookclerk-plugin-manifest.workspace = true
 bookclerk-plugin-sdk.workspace = true
+libc = "0.2"
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time", "net"] }
 

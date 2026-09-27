@@ -1031,7 +1031,7 @@ async fn delegated_pids_max_denies_the_next_thread() {
         "denial should be EAGAIN, got {error}"
     );
     step(&format!(
-        "pids.max {applied} on {cpus} cpus denied thread {} ({error})",
+        "pids.max enforcement was enforced; pids.max {applied} on {cpus} cpus denied thread {} ({error})",
         created + 1
     ));
     drop(session);
@@ -1123,15 +1123,22 @@ async fn windows_job_extras_deny_the_next_direct_ping() {
             "expected ERROR_ACCESS_DENIED (5) or ERROR_NOT_ENOUGH_QUOTA (1816), got {denied}"
         );
         step(&format!(
-            "windows extra {children} inner {inner} outer {outer} denied ping os {os}: {job}"
+            "windows job measured active_limit={} cpu_rate={} cpu_hard_cap={}",
+            job["active_limit"], job["cpu_rate"], job["cpu_hard_cap"]
+        ));
+        step(&format!(
+            "windows job calculated inner {inner} outer {outer} extra {children} denied ping os {os}"
         ));
         drop(session);
     }
 }
 
-/// Seatbelt guest IPC: the host OAuth callback tunnel and the `.s.PGSQL.5432` mediator.
+/// Seatbelt guest IPC: `CallbackProxy` echoes `oauth-ok` on the real callback tunnel.
 ///
-/// Skip only when Seatbelt cannot be applied and enforcement is not demanded.
+/// `PGOK` is the probe's `serve_ipc_unix` mock of a Unix socket named
+/// `.s.PGSQL.5432`. It is not the PostgreSQL adapter and does not claim that
+/// adapter's startup contract. Skip only when Seatbelt cannot be applied and
+/// enforcement is not demanded.
 #[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn seatbelt_oauth_callback_and_postgres_mediator_use_guest_ipc() {
@@ -1191,7 +1198,7 @@ async fn seatbelt_oauth_callback_and_postgres_mediator_use_guest_ipc() {
         while !pg_path.exists() {
             if Instant::now() >= deadline {
                 ng_harness::fail_deadline(
-                    "postgres mediator socket was not bound in the guest IPC directory",
+                    "probe unix socket mock was not bound in the guest IPC directory",
                 );
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1199,12 +1206,12 @@ async fn seatbelt_oauth_callback_and_postgres_mediator_use_guest_ipc() {
         let mut pg = tokio::net::UnixStream::connect(&pg_path)
             .await
             .unwrap_or_else(|err| {
-                ng_harness::fail_deadline(&format!("connect postgres mediator: {err}"))
+                ng_harness::fail_deadline(&format!("connect probe unix socket mock: {err}"))
             });
         pg.write_all(b"startup").await.expect("startup");
         let mut ack = [0u8; 4];
         pg.read_exact(&mut ack).await.expect("PGOK");
-        assert_eq!(&ack, b"PGOK", "mediator socket did not accept a client");
+        assert_eq!(&ack, b"PGOK", "probe unix socket mock did not return PGOK");
         let mut tcp = tokio::net::TcpStream::connect(tcp_addr)
             .await
             .unwrap_or_else(|err| ng_harness::fail_deadline(&format!("oauth TCP: {err}")));
@@ -1230,7 +1237,9 @@ async fn seatbelt_oauth_callback_and_postgres_mediator_use_guest_ipc() {
         pg_path.display(),
         ipc.display()
     );
-    step("seatbelt guest IPC served the oauth callback and the postgres mediator");
+    step(
+        "seatbelt CallbackProxy echoed oauth-ok; PGOK is the probe serve_ipc_unix mock, not the PostgreSQL adapter",
+    );
     drop(proxy);
     drop(session);
 }
