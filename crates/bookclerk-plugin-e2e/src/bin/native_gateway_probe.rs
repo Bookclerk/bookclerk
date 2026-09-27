@@ -244,20 +244,18 @@ fn unrelated_challenge(payload: &str) -> serde_json::Value {
     }
 }
 
-/// Spawn a child that does not inherit this session's proxy and have it
-/// write a CONNECT toward `host:port` on the advertised endpoint.
+/// Spawn a child through ordinary `CreateProcess` / `exec` inheritance.
 ///
-/// The child never receives `inherit`. Disarming the endpoint first is what
-/// keeps the already-authenticated proxy out of the child.
+/// This does not clear the inherit bit first. Production adoption
+/// (`FD_CLOEXEC` / `SetHandleInformation`) is what keeps the authenticated
+/// proxy out of the child. The child speaks mux Open/Data/CONNECT, not raw
+/// HTTP on the pipe.
 fn unrelated_drive(host: &str, port: u16) -> serde_json::Value {
     let spec = match std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV) {
         Ok(spec) => spec,
         Err(err) => return challenge_failure(&format!("proxy endpoint is unset: {err}")),
     };
     let write_spec = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV).ok();
-    if let Err(err) = disarm_inherit(&spec, write_spec.as_deref()) {
-        return challenge_failure(&format!("could not stop endpoint inheritance: {err}"));
-    }
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(err) => return challenge_failure(&err.to_string()),
@@ -529,136 +527,215 @@ fn connect_request(host: &str, port: u16) -> Vec<u8> {
     format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n").into_bytes()
 }
 
-/// Write a CONNECT to every spec in `payload` (one `fd:` / `handle:` per line).
+/// Speak mux Open/Data/CONNECT on `payload`.
 ///
-/// `payload` is another session's already-authenticated proxy, not this
-/// process's challenge. `unsupported` stays false: a bad fd or handle is an
-/// invalid endpoint.
-fn drive_foreign_endpoint(payload: &str, host: &str, port: u16) -> serde_json::Value {
-    let bytes = connect_request(host, port);
-    let mut attempts = Vec::new();
-    for spec in payload.split(['\n', ',']) {
-        let spec = spec.trim();
-        if spec.is_empty() {
-            continue;
-        }
-        attempts.push(drive_one(spec, &bytes));
-    }
-    if attempts.is_empty() {
+/// Windows pairs the read and write halves. A process-local handle number
+/// from another session is not endpoint identity: failure to duplicate it is
+/// `numeric_miss`, and a collision with this process's own handle is
+/// `collided`. Neither one is treated as proof the object is absent.
+async fn drive_foreign_endpoint(payload: &str, host: &str, port: u16) -> serde_json::Value {
+    let specs: Vec<&str> = payload
+        .split(['\n', ','])
+        .map(str::trim)
+        .filter(|spec| !spec.is_empty())
+        .collect();
+    if specs.is_empty() {
         let mut err = observe_error("no endpoint spec");
-        err["invalid_endpoint"] = serde_json::Value::Bool(true);
+        err["numeric_miss"] = serde_json::Value::Bool(true);
         return err;
     }
-    summarize_drives(&attempts)
+    drive_authenticated_specs(&specs, host, port).await
 }
 
-/// Child entry: CONNECT toward `host:port` on endpoints this process was told
-/// about. The parent has already cleared inherit, and this child has no
-/// session challenge.
-fn child_endpoint_connect(
+/// Child entry: mux CONNECT on the endpoints named in argv.
+///
+/// The parent did not clear inherit. This process has no session challenge.
+/// One server is the reader; this child is the only client on a leaked pipe.
+async fn child_endpoint_connect(
     spec: &str,
     write_spec: Option<&str>,
     host: &str,
     port: u16,
 ) -> serde_json::Value {
-    let bytes = connect_request(host, port);
-    let mut attempts = vec![drive_one(spec, &bytes)];
+    let mut specs = vec![spec];
     if let Some(write_spec) = write_spec {
         if !write_spec.is_empty() && write_spec != spec {
-            attempts.push(drive_one(write_spec, &bytes));
+            specs.push(write_spec);
         }
     }
-    summarize_drives(&attempts)
+    drive_authenticated_specs(&specs, host, port).await
 }
 
-/// One CONNECT attempt. Windows does not call `GetHandleInformation` on the
-/// foreign value: that API kills an AppContainer guest when the value is not
-/// a handle. `DuplicateHandle` failure is an invalid endpoint.
-fn drive_one(spec: &str, bytes: &[u8]) -> serde_json::Value {
-    if let Some(rest) = spec.strip_prefix("fd:") {
-        #[cfg(unix)]
-        {
-            let mut outcome = observe_endpoint(spec, bytes);
-            let _ = rest;
-            tag_invalid_endpoint(&mut outcome);
-            outcome["endpoint"] = serde_json::Value::String(spec.to_string());
-            return outcome;
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (rest, bytes);
-            let mut err = observe_error("fd: endpoints are Unix-only");
-            err["invalid_endpoint"] = serde_json::Value::Bool(true);
-            err["endpoint"] = serde_json::Value::String(spec.to_string());
-            return err;
-        }
-    }
-    if let Some(rest) = spec.strip_prefix("handle:") {
-        #[cfg(windows)]
-        {
-            let value: u64 = match rest.parse() {
-                Ok(value) => value,
-                Err(err) => {
-                    let mut outcome = observe_error(&format!("bad handle {spec}: {err}"));
-                    outcome["invalid_endpoint"] = serde_json::Value::Bool(true);
-                    outcome["endpoint"] = serde_json::Value::String(spec.to_string());
-                    return outcome;
+/// One mux client over the advertised endpoint.
+async fn drive_authenticated_specs(specs: &[&str], host: &str, port: u16) -> serde_json::Value {
+    #[cfg(windows)]
+    {
+        let mut handles = Vec::new();
+        for spec in specs {
+            match spec.strip_prefix("handle:") {
+                Some(rest) => match rest.trim().parse::<u64>() {
+                    Ok(value) => handles.push(value),
+                    Err(err) => {
+                        return mux_status(
+                            false,
+                            false,
+                            false,
+                            false,
+                            true,
+                            &format!("bad handle {spec}: {err}"),
+                        );
+                    }
+                },
+                None => {
+                    return mux_status(
+                        false,
+                        false,
+                        false,
+                        false,
+                        true,
+                        &format!("expected handle:<n>, got {spec}"),
+                    );
                 }
-            };
-            let mut outcome = drive_handle_connect(value, bytes);
-            outcome["endpoint"] = serde_json::Value::String(spec.to_string());
-            return outcome;
+            }
         }
-        #[cfg(not(windows))]
-        {
-            let _ = (rest, bytes);
-            let mut err = observe_error("handle: endpoints are Windows-only");
-            err["invalid_endpoint"] = serde_json::Value::Bool(true);
-            err["endpoint"] = serde_json::Value::String(spec.to_string());
-            return err;
+        if handles.len() < 2 {
+            return mux_status(
+                false,
+                false,
+                false,
+                false,
+                true,
+                "Windows mux proxy needs distinct read and write handles",
+            );
         }
+        return drive_handle_pair(handles[0], handles[1], host, port).await;
     }
-    let mut err = observe_error(&format!("unsupported endpoint spec {spec}"));
-    err["invalid_endpoint"] = serde_json::Value::Bool(true);
-    err["endpoint"] = serde_json::Value::String(spec.to_string());
-    err
+    #[cfg(unix)]
+    {
+        let spec = specs[0];
+        let Some(rest) = spec.strip_prefix("fd:") else {
+            return mux_status(
+                false,
+                false,
+                false,
+                false,
+                true,
+                &format!("expected fd:<n>, got {spec}"),
+            );
+        };
+        let fd: i32 = match rest.trim().parse() {
+            Ok(fd) => fd,
+            Err(err) => {
+                return mux_status(
+                    false,
+                    false,
+                    false,
+                    false,
+                    true,
+                    &format!("bad fd {spec}: {err}"),
+                );
+            }
+        };
+        return drive_fd_mux(fd, host, port).await;
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (specs, host, port);
+        mux_status(
+            false,
+            false,
+            false,
+            false,
+            true,
+            "mux probe requires Unix or Windows",
+        )
+    }
 }
 
-/// A failed attempt that never wrote and never opened a stream is an invalid
-/// endpoint. `unsupported` is left as the attempt recorded it.
-fn tag_invalid_endpoint(outcome: &mut serde_json::Value) {
-    let wrote = outcome["wrote"] == true;
-    let opened = outcome["opened_stream"] == true;
-    outcome["invalid_endpoint"] = serde_json::Value::Bool(!wrote && !opened);
-}
-
-/// Combine CONNECT attempts. `unsupported` is true only when every attempt
-/// says so, which these attempts do not.
-fn summarize_drives(attempts: &[serde_json::Value]) -> serde_json::Value {
-    let opened_stream = attempts
-        .iter()
-        .any(|attempt| attempt["opened_stream"] == true);
-    let wrote = attempts.iter().any(|attempt| attempt["wrote"] == true);
-    let closed = attempts.iter().any(|attempt| attempt["closed"] == true);
-    let refused = attempts.iter().any(|attempt| attempt["refused"] == true);
-    let invalid_endpoint = attempts
-        .iter()
-        .any(|attempt| attempt["invalid_endpoint"] == true);
-    let unsupported = !attempts.is_empty()
-        && attempts
-            .iter()
-            .all(|attempt| attempt["unsupported"] == true);
+/// JSON for one mux CONNECT attempt.
+///
+/// `not_inherited` means this process could not open the advertised value.
+/// `collided` means the value is open but it is stdio, this session's own
+/// proxy, or not a pipe — that is not evidence the foreign object is absent.
+/// `numeric_miss` is a bad or unopened number, also not object identity.
+fn mux_status(
+    opened_stream: bool,
+    reached_proxy: bool,
+    not_inherited: bool,
+    collided: bool,
+    numeric_miss: bool,
+    error: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "ok": opened_stream,
         "completed": opened_stream,
-        "unsupported": unsupported,
+        "unsupported": false,
         "opened_stream": opened_stream,
-        "closed": closed,
-        "refused": refused,
-        "wrote": wrote,
-        "invalid_endpoint": invalid_endpoint,
-        "attempts": attempts,
+        "reached_proxy": reached_proxy,
+        "not_inherited": not_inherited,
+        "collided": collided,
+        "numeric_miss": numeric_miss,
+        "invalid_endpoint": false,
+        "closed": false,
+        "refused": !opened_stream && reached_proxy,
+        "wrote": reached_proxy,
+        "error": error,
     })
+}
+
+/// Open one stream, write CONNECT, and read the proxy status line.
+async fn speak_mux_connect(
+    mux: bookclerk_plugin_sdk::mux::Mux,
+    host: &str,
+    port: u16,
+) -> serde_json::Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let opened = match tokio::time::timeout(Duration::from_secs(5), mux.open()).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(err)) => {
+            return mux_status(false, false, false, false, false, &err.to_string());
+        }
+        Err(_) => return mux_status(false, false, false, false, false, "mux open timed out"),
+    };
+    let mut stream = opened;
+    let req = connect_request(host, port);
+    if let Err(err) = stream.write_all(&req).await {
+        return mux_status(false, true, false, false, false, &err.to_string());
+    }
+    if let Err(err) = stream.flush().await {
+        return mux_status(false, true, false, false, false, &err.to_string());
+    }
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 1];
+    let read = async {
+        loop {
+            stream.read_exact(&mut tmp).await?;
+            buf.push(tmp[0]);
+            if buf.len() >= 4 && buf.ends_with(b"\r\n\r\n") {
+                return Ok::<(), std::io::Error>(());
+            }
+            if buf.len() > 8192 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "handshake too large",
+                ));
+            }
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs(5), read).await {
+        Ok(Ok(())) if saw_http_200(&buf) => mux_status(true, true, false, false, false, ""),
+        Ok(Ok(())) => mux_status(
+            false,
+            true,
+            false,
+            false,
+            false,
+            &format!("proxy response was not HTTP 200 ({} bytes)", buf.len()),
+        ),
+        Ok(Err(err)) => mux_status(false, true, false, false, false, &err.to_string()),
+        Err(_) => mux_status(false, true, false, false, false, "mux response timed out"),
+    }
 }
 
 /// Probe a live handle the host did not place in this process.
@@ -1008,75 +1085,135 @@ fn probe_sentinel(value: u64, handle: *mut core::ffi::c_void) -> serde_json::Val
     }
 }
 
-/// CONNECT through a handle without `GetHandleInformation`.
+/// Mux client over a duplicated Windows read/write pair.
 ///
-/// Failure to duplicate is an invalid endpoint (the value is not open here).
-/// A duplicate that is this process's stdio, this session's own proxy, or
-/// not a pipe is also an invalid endpoint and is not written. Overlapped
-/// I/O on those objects kills the guest: the number collided with a local
-/// handle, and the bytes would land on the authenticated mux or the RPC
-/// pipes. A duplicate that is some other pipe is a candidate for the other
-/// session's proxy, so the CONNECT is written on that copy.
+/// `DuplicateHandle` failure is `not_inherited` / `numeric_miss`. A copy that
+/// is stdio, this session's proxy, or not a pipe is `collided` and is not
+/// written. The copies are one `Mux::client`; raw CONNECT bytes are not.
 #[cfg(windows)]
-fn drive_handle_connect(value: u64, bytes: &[u8]) -> serde_json::Value {
-    let handle = match handle_ptr(value) {
+async fn drive_handle_pair(read: u64, write: u64, host: &str, port: u16) -> serde_json::Value {
+    if read == write {
+        return mux_status(
+            false,
+            false,
+            false,
+            false,
+            true,
+            "read and write handles must be distinct",
+        );
+    }
+    if is_stdio_value(read)
+        || is_stdio_value(write)
+        || session_owns_handle(read)
+        || session_owns_handle(write)
+    {
+        return mux_status(
+            false,
+            false,
+            false,
+            true,
+            false,
+            "handle value collides with a local object",
+        );
+    }
+    let read_raw = match handle_ptr(read) {
         Ok(handle) => handle,
-        Err(err) => {
-            let mut outcome = observe_error(&err);
-            outcome["invalid_endpoint"] = serde_json::Value::Bool(true);
-            return outcome;
-        }
+        Err(err) => return mux_status(false, false, false, false, true, &err),
     };
-    let copy = match duplicate_raw(handle) {
+    let write_raw = match handle_ptr(write) {
+        Ok(handle) => handle,
+        Err(err) => return mux_status(false, false, false, false, true, &err),
+    };
+    let read_copy = match duplicate_raw(read_raw) {
         Ok(copy) => copy,
-        Err(info) => return invalid_foreign_handle(&info.error, info.os),
+        Err(info) => return mux_status(false, false, true, false, true, &info.error),
     };
-    let _close = CloseEvent(copy);
-    if is_stdio_value(value) {
-        return invalid_foreign_handle("handle value is a standard handle", 0);
-    }
-    if session_owns_handle(value) {
-        return invalid_foreign_handle("handle value collides with this session proxy", 0);
-    }
-    if !is_pipe_handle(copy) {
-        return invalid_foreign_handle("duplicated handle is not a pipe", 0);
-    }
-    let mut outcome = if let Err(err) = overlapped_write(copy, bytes) {
-        observe_result(false, is_closed_io(&err), false, Some(err))
-    } else {
-        match overlapped_read(copy, 1000) {
-            Ok(buf) if buf.is_empty() => {
-                observe_result(true, true, false, Some("link closed".into()))
-            }
-            Ok(buf) if saw_http_200(&buf) => observe_result(true, false, true, None),
-            Ok(buf) => observe_result(
-                true,
-                false,
-                false,
-                Some(format!("no stream ({} bytes)", buf.len())),
-            ),
-            Err(err) => observe_result(true, is_closed_io(&err), false, Some(err)),
+    let write_copy = match duplicate_raw(write_raw) {
+        Ok(copy) => copy,
+        Err(info) => {
+            drop(CloseEvent(read_copy));
+            return mux_status(false, false, true, false, true, &info.error);
         }
     };
-    tag_invalid_endpoint(&mut outcome);
-    outcome
+    if !is_pipe_handle(read_copy) || !is_pipe_handle(write_copy) {
+        drop(CloseEvent(read_copy));
+        drop(CloseEvent(write_copy));
+        return mux_status(
+            false,
+            false,
+            false,
+            true,
+            false,
+            "duplicated object is not a pipe",
+        );
+    }
+    let read_pipe = match named_pipe_from_raw(read_copy) {
+        Ok(pipe) => pipe,
+        Err(err) => {
+            drop(CloseEvent(write_copy));
+            return mux_status(false, false, false, false, false, &err);
+        }
+    };
+    let write_pipe = match named_pipe_from_raw(write_copy) {
+        Ok(pipe) => pipe,
+        Err(err) => return mux_status(false, false, false, false, false, &err),
+    };
+    let mux = bookclerk_plugin_sdk::mux::Mux::client(read_pipe, write_pipe);
+    speak_mux_connect(mux, host, port).await
 }
 
-/// JSON for a foreign handle that did not open a stream.
+/// Take ownership of a duplicated overlapped pipe.
 #[cfg(windows)]
-fn invalid_foreign_handle(error: &str, os: u32) -> serde_json::Value {
-    serde_json::json!({
-        "ok": false,
-        "completed": false,
-        "unsupported": false,
-        "opened_stream": false,
-        "closed": false,
-        "refused": false,
-        "wrote": false,
-        "invalid_endpoint": true,
-        "os": os,
-        "error": error,
-    })
+#[allow(unsafe_code)]
+fn named_pipe_from_raw(
+    handle: *mut core::ffi::c_void,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, String> {
+    use std::os::windows::io::RawHandle;
+    unsafe {
+        tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(handle as RawHandle)
+    }
+    .map_err(|err| err.to_string())
+}
+
+/// Mux client over a duplicated Unix fd. The original descriptor is left as
+/// the SDK adopted it, including `FD_CLOEXEC`.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+async fn drive_fd_mux(fd: i32, host: &str, port: u16) -> serde_json::Value {
+    use std::os::fd::FromRawFd;
+    if (0..=2).contains(&fd) {
+        return mux_status(
+            false,
+            false,
+            false,
+            true,
+            false,
+            "fd collides with a standard stream",
+        );
+    }
+    let duped = unsafe { libc::dup(fd) };
+    if duped < 0 {
+        return mux_status(
+            false,
+            false,
+            true,
+            false,
+            true,
+            &format!("dup: {}", std::io::Error::last_os_error()),
+        );
+    }
+    let _ = unsafe { libc::fcntl(duped, libc::F_SETFD, libc::FD_CLOEXEC) };
+    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(duped) };
+    if let Err(err) = std_stream.set_nonblocking(true) {
+        return mux_status(false, false, false, false, false, &err.to_string());
+    }
+    let tokio_stream = match tokio::net::UnixStream::from_std(std_stream) {
+        Ok(stream) => stream,
+        Err(err) => return mux_status(false, false, false, false, false, &err.to_string()),
+    };
+    let (reader, writer) = tokio::io::split(tokio_stream);
+    let mux = bookclerk_plugin_sdk::mux::Mux::client(reader, writer);
+    speak_mux_connect(mux, host, port).await
 }
 
 /// `handle:<n>` from an endpoint spec.
@@ -1844,7 +1981,7 @@ impl PluginCli for Probe {
             "session_challenge" => session_challenge(),
             "unrelated_challenge" => unrelated_challenge(arg(&params, "payload")),
             "present_challenge" => present_foreign_challenge(arg(&params, "payload")).await,
-            "drive_foreign" => drive_foreign_endpoint(arg(&params, "payload"), host, port),
+            "drive_foreign" => drive_foreign_endpoint(arg(&params, "payload"), host, port).await,
             "unrelated_drive" => unrelated_drive(host, port),
             "unlisted_handle" => unlisted_handle(arg(&params, "payload")),
             "spawn_ping" => spawn_ping(),
@@ -1875,11 +2012,28 @@ impl PluginCli for Probe {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("BOOKCLERK_PROBE_EXIT").is_some() {
         return Ok(());
     }
+    // Classify inheritance before the runtime opens descriptors. Tokio would
+    // otherwise reuse a low fd number and a sealed proxy would look open.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--endpoint-connect") {
+        let spec = args.get(1).map(String::as_str).unwrap_or("");
+        let write_spec = args.get(2).map(String::as_str).unwrap_or("");
+        if let Some(early) = endpoint_absent_before_runtime(spec, write_spec) {
+            println!("{early}");
+            return Ok(());
+        }
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(probe_main())
+}
+
+async fn probe_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() == Some("--endpoint-challenge") {
         let spec = args.next().unwrap_or_default();
@@ -1898,7 +2052,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Some(write_spec.as_str())
         };
-        println!("{}", child_endpoint_connect(&spec, write, &host, port));
+        println!(
+            "{}",
+            child_endpoint_connect(&spec, write, &host, port).await
+        );
         return Ok(());
     }
     // One Job slot. The session Job kills this process when the test drops it.
@@ -1908,4 +2065,109 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     serve(Root).await?;
     Ok(())
+}
+
+/// `Some` when the advertised endpoint is already known to be absent.
+///
+/// Called before the async runtime so a closed descriptor cannot be reused.
+/// An open socket or pipe falls through and the mux probe runs.
+fn endpoint_absent_before_runtime(spec: &str, write_spec: &str) -> Option<serde_json::Value> {
+    #[cfg(unix)]
+    {
+        let _ = write_spec;
+        unix_endpoint_absent(spec)
+    }
+    #[cfg(windows)]
+    {
+        windows_endpoint_absent(spec, write_spec)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (spec, write_spec);
+        None
+    }
+}
+
+/// `F_GETFD` before any library opens a descriptor.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn unix_endpoint_absent(spec: &str) -> Option<serde_json::Value> {
+    let rest = spec.strip_prefix("fd:")?;
+    let fd = rest.trim().parse::<i32>().ok()?;
+    if (0..=2).contains(&fd) {
+        return Some(mux_status(
+            false,
+            false,
+            false,
+            true,
+            false,
+            "fd collides with a standard stream",
+        ));
+    }
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Some(mux_status(
+            false,
+            false,
+            true,
+            false,
+            true,
+            &format!("fd is not open: {}", std::io::Error::last_os_error()),
+        ));
+    }
+    if !fd_is_socket(fd) {
+        return Some(mux_status(
+            false,
+            false,
+            false,
+            true,
+            false,
+            "advertised fd is not a socket",
+        ));
+    }
+    None
+}
+
+/// `DuplicateHandle` before this process creates any other handles.
+#[cfg(windows)]
+fn windows_endpoint_absent(spec: &str, write_spec: &str) -> Option<serde_json::Value> {
+    let read = spec_handle_value(spec)?;
+    let write = spec_handle_value(write_spec)?;
+    if read == write || is_stdio_value(read) || is_stdio_value(write) {
+        return Some(mux_status(
+            false,
+            false,
+            false,
+            true,
+            false,
+            "handle value collides with a local object",
+        ));
+    }
+    let read_raw = handle_ptr(read).ok()?;
+    let write_raw = handle_ptr(write).ok()?;
+    match duplicate_raw(read_raw) {
+        Ok(copy) => drop(CloseEvent(copy)),
+        Err(info) => {
+            return Some(mux_status(false, false, true, false, true, &info.error));
+        }
+    }
+    match duplicate_raw(write_raw) {
+        Ok(copy) => {
+            let pipe = is_pipe_handle(copy);
+            drop(CloseEvent(copy));
+            if !pipe {
+                return Some(mux_status(
+                    false,
+                    false,
+                    false,
+                    true,
+                    false,
+                    "duplicated object is not a pipe",
+                ));
+            }
+        }
+        Err(info) => {
+            return Some(mux_status(false, false, true, false, true, &info.error));
+        }
+    }
+    None
 }

@@ -588,12 +588,38 @@ fn windows_handle_id(spec: &str) -> Result<u64> {
 #[cfg(windows)]
 fn windows_pipe_client(value: u64) -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
     use std::os::windows::io::RawHandle;
+    // Same rule as Unix `FD_CLOEXEC`: adopting the inherited proxy must stop
+    // a later `CreateProcess` in this guest from receiving it. The jail marks
+    // the handle inheritable only so this process can receive it.
+    clear_inherited_handle(value)?;
     unsafe {
         tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
             value as usize as RawHandle,
         )
     }
     .map_err(SdkError::from)
+}
+
+/// Clear `HANDLE_FLAG_INHERIT` on a handle this process just adopted.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when `SetHandleInformation` fails.
+#[cfg(windows)]
+fn clear_inherited_handle(value: u64) -> Result<()> {
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+    extern "system" {
+        fn SetHandleInformation(handle: *mut core::ffi::c_void, mask: u32, flags: u32) -> i32;
+    }
+    let handle = value as usize as *mut core::ffi::c_void;
+    let ok = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+    if ok == 0 {
+        return Err(SdkError::message(format!(
+            "SetHandleInformation(clear inherit) on handle {value}: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(all(unix, target_os = "linux"))]

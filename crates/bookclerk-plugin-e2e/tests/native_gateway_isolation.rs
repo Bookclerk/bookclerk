@@ -253,24 +253,31 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
         accepts_before_foreign,
         "driving B's authenticated proxy produced an accept: A={drive_a} child={drive_child}"
     );
-    assert_foreign_blocked("guest A", &drive_a);
-    assert_foreign_blocked("unrelated child", &drive_child);
+    assert_eq!(
+        drive_a["opened_stream"], false,
+        "guest A opened a stream: {drive_a}"
+    );
+    assert_ne!(
+        drive_a["collided"], true,
+        "guest A handle collision is not absence: {drive_a}"
+    );
+    // B's process-local handle numbers are not the endpoint. Only the child,
+    // which would inherit the same values, can show whether the object leaked.
+    assert_endpoint_sealed("unrelated child", &drive_child);
     #[cfg(windows)]
     let sentinel_unsupported = false;
     #[cfg(not(windows))]
     let sentinel_unsupported = true;
     step(&format!(
-        "authenticated foreign: A opened_stream={} closed={} refused={} invalid_endpoint={} unsupported={}; child opened_stream={} closed={} refused={} invalid_endpoint={} unsupported={}; sentinel_unsupported={sentinel_unsupported}; unsupported is not a denial and is not success; B accepts unchanged",
+        "authenticated foreign: A opened_stream={} reached_proxy={} collided={} numeric_miss={} (numeric miss is not identity); child opened_stream={} reached_proxy={} not_inherited={} collided={}; sentinel_unsupported={sentinel_unsupported}; unsupported is not a denial and is not success; B accepts unchanged",
         drive_a["opened_stream"],
-        drive_a["closed"],
-        drive_a["refused"],
-        drive_a["invalid_endpoint"],
-        drive_a["unsupported"],
+        drive_a["reached_proxy"],
+        drive_a["collided"],
+        drive_a["numeric_miss"],
         drive_child["opened_stream"],
-        drive_child["closed"],
-        drive_child["refused"],
-        drive_child["invalid_endpoint"],
-        drive_child["unsupported"],
+        drive_child["reached_proxy"],
+        drive_child["not_inherited"],
+        drive_child["collided"],
     ));
 
     let gateway_a = session_a.gateway_pid().expect("A gateway");
@@ -288,23 +295,32 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     step("both sessions tore down cleanly");
 }
 
-/// `opened_stream` is false, and the attempt closed, refused, or was an
-/// invalid endpoint. `unsupported` is neither success nor a denial.
-fn assert_foreign_blocked(label: &str, outcome: &serde_json::Value) {
+/// The child did not inherit a usable authenticated endpoint.
+///
+/// A collision or a mere invalid number in some other process is not this
+/// result. `not_inherited` is the dup/`DuplicateHandle` failure for the value
+/// the parent actually holds, which Windows and Unix preserve across
+/// inheritance. `reached_proxy` would mean the mux server accepted a stream.
+fn assert_endpoint_sealed(label: &str, outcome: &serde_json::Value) {
     assert_ne!(
         outcome["unsupported"], true,
         "{label} unsupported is not a result: {outcome}"
     );
+    assert_ne!(
+        outcome["collided"], true,
+        "{label} collision is not absence: {outcome}"
+    );
     assert_eq!(
         outcome["opened_stream"], false,
-        "{label} opened a stream on the foreign proxy: {outcome}"
+        "{label} opened a stream on the authenticated proxy: {outcome}"
     );
-    let blocked = outcome["closed"] == true
-        || outcome["refused"] == true
-        || outcome["invalid_endpoint"] == true;
-    assert!(
-        blocked,
-        "{label} was not closed, refused, or an invalid endpoint: {outcome}"
+    assert_ne!(
+        outcome["reached_proxy"], true,
+        "{label} reached the authenticated proxy: {outcome}"
+    );
+    assert_eq!(
+        outcome["not_inherited"], true,
+        "{label} did not show the endpoint was absent from the child: {outcome}"
     );
 }
 
