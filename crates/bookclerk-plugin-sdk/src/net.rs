@@ -794,6 +794,7 @@ mod tests {
         let guest_fd = guest.into_std().expect("into_std").into_raw_fd();
         let (gr, gw) = gateway.into_split();
         let server = crate::mux::Mux::server(gr, gw);
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             let mut stream = server.accept().await.expect("accept");
             let mut buf = vec![0_u8; 256];
@@ -808,6 +809,13 @@ mod tests {
                 .await
                 .expect("200");
             stream.write_all(b"mux").await.expect("body");
+            // Mux drop cancels the writer and does not flush. Shutdown writes
+            // the queued response while `server` is still alive, and the mux
+            // stays up until the client has closed so that Close can be written.
+            stream.shutdown().await.expect("server shutdown");
+            drop(stream);
+            let _ = release_rx.await;
+            drop(server);
         });
 
         std::env::remove_var(SESSION_CHALLENGE_ENV);
@@ -825,6 +833,7 @@ mod tests {
         let n = sock.stream().read(&mut buf).await.unwrap();
         assert_eq!(&buf[..n], b"mux");
         sock.close().await.unwrap();
+        let _ = release_tx.send(());
         server_task.await.unwrap();
         std::env::remove_var(SOCKET_PROXY_ENV);
     }
