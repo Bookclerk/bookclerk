@@ -465,6 +465,20 @@ impl DuplexHalf {
     pub fn handle_value(&self) -> u64 {
         self.as_raw_handle() as usize as u64
     }
+
+    /// Mark this end inheritable.
+    ///
+    /// Product hosts duplicate into `bookclerk-jail` instead of calling this.
+    /// The authenticated-endpoint fixture uses it so a test child can inherit
+    /// the pipe when `inherit` is set and cannot when it is cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when `SetHandleInformation` fails.
+    #[cfg(windows)]
+    pub fn set_inheritable(&self, inherit: bool) -> io::Result<()> {
+        windows::set_handle_inheritable(self.as_raw_handle(), inherit)
+    }
 }
 
 /// `dup2` `src` onto `dest` and clear `FD_CLOEXEC` on the destination.
