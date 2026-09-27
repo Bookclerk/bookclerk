@@ -1795,6 +1795,7 @@ dependencies = [
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
  "bookclerk-sandbox",
+ "bookclerk-workerd",
  "libc",
  "serde_json",
  "tempfile",

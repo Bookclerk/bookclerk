@@ -34,6 +34,16 @@ const MAX_HEADER_COUNT: usize = 32;
 /// Time allowed to finish the CONNECT request line and headers.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Reserved CONNECT host answered with the session channel tag.
+///
+/// Production proxies pass no tag, so this host is an ordinary denied dial.
+/// A test sets the tag on the host proxy only. The guest is not given the tag
+/// in its environment.
+pub const TEST_CHANNEL_IDENT_HOST: &str = "bookclerk-test-channel";
+
+/// Port paired with [`TEST_CHANNEL_IDENT_HOST`].
+pub const TEST_CHANNEL_IDENT_PORT: u16 = 1;
+
 /// In-flight host CONNECT proxy. Dropping it cancels accepts and handlers.
 ///
 /// The [`Self::fence`] flag is the session cancel token. Authority revocation
@@ -140,7 +150,7 @@ pub fn spawn_unix(
                             let fence = Arc::clone(&accept_fence);
                             let handle = tokio::spawn(async move {
                                 let _permit = permit;
-                                if let Err(err) = handle_client(stream, policy, fence).await {
+                                if let Err(err) = handle_client(stream, policy, fence, None).await {
                                     tracing::debug!(error = %err, "socket proxy session ended");
                                 }
                             });
@@ -163,7 +173,12 @@ pub fn spawn_unix(
     })
 }
 
-async fn handle_client<S>(stream: S, policy: EgressPolicy, fence: Arc<AtomicBool>) -> Result<()>
+async fn handle_client<S>(
+    stream: S,
+    policy: EgressPolicy,
+    fence: Arc<AtomicBool>,
+    channel_tag: Option<Arc<str>>,
+) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -192,6 +207,18 @@ where
         )
         .await;
         bail!("session fenced");
+    }
+    if let Some(tag) = channel_tag.as_deref() {
+        if host.eq_ignore_ascii_case(TEST_CHANNEL_IDENT_HOST) && port == TEST_CHANNEL_IDENT_PORT {
+            let header = format!(
+                "HTTP/1.1 200 Connection Established\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                tag.len()
+            );
+            write_fenced(&mut writer, header.as_bytes(), &fence).await?;
+            write_fenced(&mut writer, tag.as_bytes(), &fence).await?;
+            let _ = writer.shutdown().await;
+            return Ok(());
+        }
     }
     if !policy.allows_tcp(&host, port) {
         write_fenced(
@@ -441,7 +468,7 @@ where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
-    spawn_halves_inner(reader, writer, policy, fence, None)
+    spawn_halves_inner(reader, writer, policy, fence, None, None)
 }
 
 /// [`spawn_halves`] that requires `challenge` on the read half before mux frames.
@@ -460,7 +487,71 @@ where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
-    spawn_halves_inner(reader, writer, policy, fence, Some(challenge))
+    spawn_halves_inner(reader, writer, policy, fence, Some(challenge), None)
+}
+
+/// [`spawn_link_with_challenge`] that answers [`TEST_CHANNEL_IDENT_HOST`].
+///
+/// The tag is not a privilege. CONNECT to that host returns it and does not
+/// dial. Every other target still uses `policy`. Production calls
+/// [`spawn_link_with_challenge`], which passes no tag.
+///
+/// # Errors
+///
+/// Returns an error when `channel_tag` is empty, longer than 64 bytes, or
+/// contains a byte other than ASCII alphanumeric, `-`, or `_`, or when the
+/// accept task cannot be spawned.
+pub fn spawn_link_with_challenge_tag<S>(
+    link: S,
+    policy: EgressPolicy,
+    fence: Arc<AtomicBool>,
+    challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
+    channel_tag: &str,
+) -> Result<ProxyServer>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let (reader, writer) = tokio::io::split(link);
+    spawn_halves_with_challenge_tag(reader, writer, policy, fence, challenge, channel_tag)
+}
+
+/// [`spawn_halves_with_challenge`] that answers [`TEST_CHANNEL_IDENT_HOST`].
+///
+/// # Errors
+///
+/// Returns an error when `channel_tag` is not a safe token, or when the accept
+/// task cannot be spawned. See [`spawn_link_with_challenge_tag`].
+pub fn spawn_halves_with_challenge_tag<R, W>(
+    reader: R,
+    writer: W,
+    policy: EgressPolicy,
+    fence: Arc<AtomicBool>,
+    challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
+    channel_tag: &str,
+) -> Result<ProxyServer>
+where
+    R: tokio::io::AsyncRead + Send + Unpin + 'static,
+    W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    if !channel_tag_is_safe(channel_tag) {
+        bail!("channel tag must be 1..=64 bytes of ascii alphanumeric, hyphen, or underscore");
+    }
+    spawn_halves_inner(
+        reader,
+        writer,
+        policy,
+        fence,
+        Some(challenge),
+        Some(Arc::from(channel_tag)),
+    )
+}
+
+fn channel_tag_is_safe(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 64
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 fn spawn_halves_inner<R, W>(
@@ -469,6 +560,7 @@ fn spawn_halves_inner<R, W>(
     policy: EgressPolicy,
     fence: Arc<AtomicBool>,
     challenge: Option<[u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN]>,
+    channel_tag: Option<Arc<str>>,
 ) -> Result<ProxyServer>
 where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
@@ -518,9 +610,10 @@ where
                             };
                             let policy = policy.clone();
                             let fence = Arc::clone(&accept_fence);
+                            let tag = channel_tag.clone();
                             let handle = tokio::spawn(async move {
                                 let _permit = permit;
-                                if let Err(err) = handle_client(stream, policy, fence).await {
+                                if let Err(err) = handle_client(stream, policy, fence, tag).await {
                                     tracing::debug!(error = %err, "socket proxy session ended");
                                 }
                             });
@@ -646,7 +739,6 @@ mod tests {
     use bookclerk_plugin_manifest::{EgressPolicy, NetworkMode, TcpGrant};
     #[cfg(unix)]
     use std::time::Duration as StdDuration;
-    #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn tcp_policy(host: &str, port: u16, cidrs: &[&str]) -> EgressPolicy {
@@ -699,6 +791,96 @@ mod tests {
 
         direction(true).await;
         direction(false).await;
+    }
+
+    #[tokio::test]
+    async fn tagged_channel_answers_without_dialing() {
+        let (client, server) = tokio::io::duplex(8_192);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let challenge = [0x5A_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+        let fence = Arc::new(AtomicBool::new(false));
+        let proxy = spawn_halves_with_challenge_tag(
+            server_read,
+            server_write,
+            EgressPolicy::deny(),
+            fence,
+            challenge,
+            "endpoint-b",
+        )
+        .expect("proxy");
+        client_write.write_all(&challenge).await.expect("challenge");
+        client_write.flush().await.expect("flush challenge");
+        let mux = bookclerk_plugin_sdk::mux::Mux::client(client_read, client_write);
+        let mut stream = mux.open().await.expect("open");
+        stream
+            .write_all(
+                b"CONNECT bookclerk-test-channel:1 HTTP/1.1\r\nHost: bookclerk-test-channel:1\r\n\r\n",
+            )
+            .await
+            .expect("ident");
+        stream.flush().await.expect("flush ident");
+        let mut body = Vec::new();
+        let mut buf = [0_u8; 256];
+        while !body
+            .windows(b"endpoint-b".len())
+            .any(|w| w == b"endpoint-b")
+            && body.len() < 512
+        {
+            let n = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf))
+                .await
+                .expect("ident timed out")
+                .expect("read ident");
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&buf[..n]);
+        }
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("200"), "{text}");
+        assert!(text.contains("endpoint-b"), "{text}");
+        drop(stream);
+        drop(mux);
+        drop(proxy);
+    }
+
+    #[tokio::test]
+    async fn untagged_channel_host_is_not_answered() {
+        let (client, server) = tokio::io::duplex(8_192);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let challenge = [0x5A_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+        let fence = Arc::new(AtomicBool::new(false));
+        let proxy = spawn_halves_with_challenge(
+            server_read,
+            server_write,
+            EgressPolicy::deny(),
+            fence,
+            challenge,
+        )
+        .expect("proxy");
+        client_write.write_all(&challenge).await.expect("challenge");
+        client_write.flush().await.expect("flush challenge");
+        let mux = bookclerk_plugin_sdk::mux::Mux::client(client_read, client_write);
+        let mut stream = mux.open().await.expect("open");
+        stream
+            .write_all(
+                b"CONNECT bookclerk-test-channel:1 HTTP/1.1\r\nHost: bookclerk-test-channel:1\r\n\r\n",
+            )
+            .await
+            .expect("ident");
+        stream.flush().await.expect("flush ident");
+        let mut buf = vec![0_u8; 512];
+        let n = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf))
+            .await
+            .expect("response timed out")
+            .expect("read response");
+        let text = String::from_utf8_lossy(&buf[..n]);
+        assert!(text.contains("403"), "{text}");
+        assert!(!text.contains("endpoint-b"), "{text}");
+        drop(stream);
+        drop(mux);
+        drop(proxy);
     }
 
     #[test]

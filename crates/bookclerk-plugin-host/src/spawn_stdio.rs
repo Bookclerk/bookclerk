@@ -42,6 +42,16 @@ use crate::jail::{GuestJail, Start};
 use crate::spawn_plan::{SpawnPlan, WORKERD_BIN_ENV};
 use crate::{PluginError, Result};
 
+/// Set to `1` or `true` in the host process to give each proxy a channel tag.
+///
+/// The variable is not copied into the guest. The tag is written under the
+/// gateway session directory as [`TEST_CHANNEL_TAG_FILE`] and answered only
+/// by that session's proxy. Production leaves it unset.
+pub const TEST_CHANNEL_IDENT_ENV: &str = "BOOKCLERK_TEST_CHANNEL_IDENT";
+
+/// Session-directory file holding the tag when [`TEST_CHANNEL_IDENT_ENV`] is set.
+pub const TEST_CHANNEL_TAG_FILE: &str = "channel-tag";
+
 static SPAWN_DIAG: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static SPAWN_DIAG_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -478,12 +488,15 @@ async fn spawn_siblings(
         bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
         hex::encode(challenge),
     );
+    // Host-only. The guest learns the tag by asking the proxy, not from env.
+    let channel_tag = prepare_channel_tag(session_dir)?;
     #[cfg(unix)]
     let proxy = serve_host_socket_proxy(
         proxy_gateway,
         grant.egress_policy(),
         Arc::clone(&cancel),
         challenge,
+        channel_tag.as_deref(),
     )?;
     #[cfg(windows)]
     let proxy = serve_host_socket_proxy(
@@ -492,6 +505,7 @@ async fn spawn_siblings(
         grant.egress_policy(),
         Arc::clone(&cancel),
         challenge,
+        channel_tag.as_deref(),
     )?;
 
     #[cfg(unix)]
@@ -1020,6 +1034,28 @@ fn apply_temp_and_home(cmd: &mut Command, tmp: &std::path::Path, home: &std::pat
 }
 
 /// 32 random bytes the guest must write before the proxy mux starts.
+fn channel_ident_requested(value: Option<&str>) -> bool {
+    matches!(value, Some("1") | Some("true"))
+}
+
+/// Write a unique tag for this session when the test env is set.
+fn prepare_channel_tag(session_dir: &std::path::Path) -> Result<Option<String>> {
+    write_channel_tag(
+        session_dir,
+        channel_ident_requested(std::env::var(TEST_CHANNEL_IDENT_ENV).ok().as_deref()),
+    )
+}
+
+fn write_channel_tag(session_dir: &std::path::Path, enabled: bool) -> Result<Option<String>> {
+    if !enabled {
+        return Ok(None);
+    }
+    let tag = format!("ch-{}", uuid::Uuid::new_v4().simple());
+    std::fs::write(session_dir.join(TEST_CHANNEL_TAG_FILE), &tag)
+        .map_err(|err| PluginError::message(format!("could not record the channel tag: {err}")))?;
+    Ok(Some(tag))
+}
+
 fn new_session_challenge() -> [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN] {
     let mut out = [0u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
     let first = uuid::Uuid::new_v4();
@@ -1066,6 +1102,7 @@ fn serve_host_socket_proxy(
     policy: bookclerk_plugin_manifest::EgressPolicy,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
+    channel_tag: Option<&str>,
 ) -> Result<bookclerk_workerd::socket_proxy::ProxyServer> {
     use std::os::unix::net::UnixStream;
     let std_stream = UnixStream::from(link.into_owned_fd());
@@ -1074,8 +1111,15 @@ fn serve_host_socket_proxy(
         .map_err(|err| PluginError::message(format!("host socket proxy nonblocking: {err}")))?;
     let stream = tokio::net::UnixStream::from_std(std_stream)
         .map_err(|err| PluginError::message(format!("host socket proxy wrap: {err}")))?;
-    bookclerk_workerd::socket_proxy::spawn_link_with_challenge(stream, policy, fence, challenge)
-        .map_err(|err| PluginError::message(format!("host socket proxy failed to start: {err}")))
+    let started = match channel_tag {
+        Some(tag) => bookclerk_workerd::socket_proxy::spawn_link_with_challenge_tag(
+            stream, policy, fence, challenge, tag,
+        ),
+        None => bookclerk_workerd::socket_proxy::spawn_link_with_challenge(
+            stream, policy, fence, challenge,
+        ),
+    };
+    started.map_err(|err| PluginError::message(format!("host socket proxy failed to start: {err}")))
 }
 
 /// Serve the guest CONNECT mux on two unidirectional overlapped pipes.
@@ -1087,6 +1131,7 @@ fn serve_host_socket_proxy(
     policy: bookclerk_plugin_manifest::EgressPolicy,
     fence: Arc<AtomicBool>,
     challenge: [u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN],
+    channel_tag: Option<&str>,
 ) -> Result<bookclerk_workerd::socket_proxy::ProxyServer> {
     use std::os::windows::io::IntoRawHandle;
     let read = unsafe {
@@ -1101,10 +1146,15 @@ fn serve_host_socket_proxy(
         )
     }
     .map_err(|err| PluginError::message(format!("host proxy write pipe: {err}")))?;
-    bookclerk_workerd::socket_proxy::spawn_halves_with_challenge(
-        read, write, policy, fence, challenge,
-    )
-    .map_err(|err| PluginError::message(format!("host socket proxy failed to start: {err}")))
+    let started = match channel_tag {
+        Some(tag) => bookclerk_workerd::socket_proxy::spawn_halves_with_challenge_tag(
+            read, write, policy, fence, challenge, tag,
+        ),
+        None => bookclerk_workerd::socket_proxy::spawn_halves_with_challenge(
+            read, write, policy, fence, challenge,
+        ),
+    };
+    started.map_err(|err| PluginError::message(format!("host socket proxy failed to start: {err}")))
 }
 
 #[cfg(unix)]
@@ -1645,6 +1695,24 @@ fn stderr_tail_text(tail: &Arc<Mutex<VecDeque<String>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_tag_file_is_written_only_when_requested() {
+        assert!(!channel_ident_requested(None));
+        assert!(!channel_ident_requested(Some("")));
+        assert!(!channel_ident_requested(Some("0")));
+        assert!(channel_ident_requested(Some("1")));
+        assert!(channel_ident_requested(Some("true")));
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(write_channel_tag(dir.path(), false).unwrap().is_none());
+        assert!(!dir.path().join(TEST_CHANNEL_TAG_FILE).exists());
+        let tag = write_channel_tag(dir.path(), true).unwrap().expect("tag");
+        assert!(tag.starts_with("ch-"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(TEST_CHANNEL_TAG_FILE)).unwrap(),
+            tag
+        );
+    }
 
     #[test]
     fn spawn_diagnostics_redact_session_challenges() {

@@ -1,6 +1,10 @@
 //! The authenticated-endpoint probe must succeed on a real mux and must notice
 //! an intentional inherit leak.
 //!
+//! A second fixture supplies one session's real proxy endpoint, with one
+//! server reader, and checks that the channel-absence predicate fails. That
+//! spawn is not the jail and does not change its handle list.
+//!
 //! Each case has one server reader and one child client. The server has already
 //! passed the session challenge (`Mux::server` with no second reader). The
 //! child sends Open, then Data containing CONNECT. Raw HTTP on the pipe is not
@@ -8,8 +12,13 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+#[path = "native_gateway/channel.rs"]
+mod channel;
+
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -220,6 +229,148 @@ async fn windows_fixture(inherit: bool) -> serde_json::Value {
     drop(pipes.guest_stdin);
     drop(pipes.guest_stdout);
     outcome
+}
+
+fn assert_supplied_endpoint_is_visible(outcome: &serde_json::Value, foreign: &str) {
+    let reported = outcome["tag"].as_str().unwrap_or("");
+    assert_eq!(
+        reported, foreign,
+        "the supplied endpoint did not answer its own tag: {outcome}"
+    );
+    assert!(
+        !channel::foreign_channel_absent(reported, foreign),
+        "absence assertion did not fail when B's endpoint was supplied: {outcome}"
+    );
+    assert!(
+        channel::foreign_channel_absent(reported, "endpoint-a"),
+        "a different tag must still count as absent: {outcome}"
+    );
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn spawn_channel_child(envs: &[(&'static str, String)]) -> std::process::Output {
+    let mut cmd = Command::new(probe_bin());
+    cmd.arg("--channel-ident")
+        .env_remove(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV)
+        .env_remove(bookclerk_plugin_sdk::SOCKET_PROXY_ENV)
+        .env_remove(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV);
+    for (key, value) in envs {
+        cmd.env(*key, value);
+    }
+    cmd.output().expect("spawn channel child")
+}
+
+/// One production proxy reader and one child client holding that pipe.
+async fn finish_channel_child(
+    proxy: bookclerk_workerd::socket_proxy::ProxyServer,
+    envs: Vec<(&'static str, String)>,
+) -> serde_json::Value {
+    let output = tokio::task::spawn_blocking(move || spawn_channel_child(&envs))
+        .await
+        .expect("join");
+    let outcome = parse_probe(&output);
+    drop(proxy);
+    outcome
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(unsafe_code)]
+async fn supplied_endpoint_fails_channel_absence() {
+    use std::os::fd::{FromRawFd, IntoRawFd};
+
+    let (client, server) = tokio::net::UnixStream::pair().expect("socketpair");
+    let client = client.into_std().expect("into_std");
+    let fd = client.into_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    assert!(flags >= 0, "F_GETFD");
+    assert_eq!(
+        unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) },
+        0,
+        "F_SETFD"
+    );
+    let challenge = [0x11_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+    let fence = Arc::new(AtomicBool::new(false));
+    let proxy = bookclerk_workerd::socket_proxy::spawn_link_with_challenge_tag(
+        server,
+        bookclerk_plugin_manifest::EgressPolicy::deny(),
+        fence,
+        challenge,
+        "endpoint-b",
+    )
+    .expect("proxy");
+    let outcome = finish_channel_child(
+        proxy,
+        vec![
+            (
+                bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
+                hex_encode(&challenge),
+            ),
+            (bookclerk_plugin_sdk::SOCKET_PROXY_ENV, format!("fd:{fd}")),
+        ],
+    )
+    .await;
+    assert_supplied_endpoint_is_visible(&outcome, "endpoint-b");
+    drop(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) });
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supplied_endpoint_fails_channel_absence() {
+    let pipes = bookclerk_sandbox::StdioEnds::pair_overlapped().expect("pipes");
+    pipes
+        .guest_stdin
+        .set_inheritable(true)
+        .expect("read inherit");
+    pipes
+        .guest_stdout
+        .set_inheritable(true)
+        .expect("write inherit");
+    let read_value = pipes.guest_stdin.handle_value();
+    let write_value = pipes.guest_stdout.handle_value();
+    let server_read = pipe_from_owned(pipes.host_stdout.into_owned_handle());
+    let server_write = pipe_from_owned(pipes.host_stdin.into_owned_handle());
+    let challenge = [0x11_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+    let fence = Arc::new(AtomicBool::new(false));
+    let proxy = bookclerk_workerd::socket_proxy::spawn_halves_with_challenge_tag(
+        server_read,
+        server_write,
+        bookclerk_plugin_manifest::EgressPolicy::deny(),
+        fence,
+        challenge,
+        "endpoint-b",
+    )
+    .expect("proxy");
+    let outcome = finish_channel_child(
+        proxy,
+        vec![
+            (
+                bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
+                hex_encode(&challenge),
+            ),
+            (
+                bookclerk_plugin_sdk::SOCKET_PROXY_ENV,
+                format!("handle:{read_value}"),
+            ),
+            (
+                bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV,
+                format!("handle:{write_value}"),
+            ),
+        ],
+    )
+    .await;
+    assert_supplied_endpoint_is_visible(&outcome, "endpoint-b");
+    drop(pipes.guest_stdin);
+    drop(pipes.guest_stdout);
 }
 
 #[cfg(windows)]

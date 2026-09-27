@@ -221,7 +221,10 @@ Windows, two host-created AppContainers plus a session Job; no named-pipe
 - both `gateway_pid()` and `guest_pid()` exit after drop, the host session
   directory is gone, and the guest cannot read gateway state or
   `WORKERD_GRANT_*` / `BOOKCLERK_JAIL_*` env;
-- two concurrent sessions cannot use each other's inherited link values;
+- two concurrent sessions cannot exercise each other's socket-proxy endpoint.
+  Each proxy answers a distinct channel tag through the production handoff;
+  a numeric fd or handle is not that identity. A test-only leak that supplies
+  B's actual endpoint makes the same absence check fail;
 - guest-exit / missing-workerd / mid-session kill fail closed.
 
 Nothing skips: a missing helper, runtime, confinement backend, startup failure

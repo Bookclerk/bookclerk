@@ -3,9 +3,11 @@
 //! Overlapping launches also exercise the live proxy challenge. Another
 //! session's secret on this link closes it, and an unrelated child without
 //! `BOOKCLERK_SESSION_CHALLENGE` cannot complete a handshake on an endpoint it
-//! can see. After both sessions have completed that handshake, guest A and a
-//! child that does not inherit try to CONNECT through B's already-authenticated
-//! proxy. A numeric fd or handle is not cross-process identity.
+//! can see. After both sessions have completed that handshake, each guest asks
+//! the proxy it actually holds for that proxy's channel tag. A's tag is A's,
+//! not B's, whatever B's numeric fd or handle is. A child of B that does not
+//! inherit still cannot open B's endpoint. That child check is the
+//! parent-to-child boundary, not the A-to-B one.
 //!
 //! On Windows, inheritable event sentinels are created before `Install::spawn`
 //! and are not placed on `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
@@ -16,17 +18,22 @@
 //! from a numeric collision, and both fail the test. Unix reports
 //! `unsupported` and that result is not a denial.
 
+#[path = "native_gateway/channel.rs"]
+mod channel;
 #[path = "native_gateway/harness.rs"]
 mod ng_harness;
 
 use std::time::SystemTime;
 
+use bookclerk_plugin_host::{TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE};
 use ng_harness::{
     assert_no_session_dirs, error_text, open_session, probe, step, wait_for_exit, Install, Listener,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_sessions_keep_separate_grants_and_state() {
+    // Host-only. Each proxy answers its own tag; the guest is not given it.
+    std::env::set_var(TEST_CHANNEL_IDENT_ENV, "1");
     // The proxy is still waiting for its 32-byte challenge until the first
     // connect. These two sessions exist only to exercise that handshake.
     let listener_gate_a = Listener::bind(true).await;
@@ -236,48 +243,48 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     assert!(listener_a.wait_for_accepts(1).await);
     assert!(listener_b.wait_for_accepts(before_b + 1).await);
 
-    let proxy_write = env_b["socket_proxy_write"].as_str().unwrap_or("");
-    let foreign_spec = if proxy_write.is_empty() {
-        proxy_b.clone()
-    } else {
-        format!("{proxy_b}\n{proxy_write}")
-    };
-    let accepts_before_foreign = listener_b.accepts();
-    let (drive_a, drive_child) = tokio::join!(
-        probe(&session_a, "drive_foreign", listener_b.port, &foreign_spec),
-        probe(&session_b, "unrelated_drive", listener_b.port, ""),
+    let tag_a = read_channel_tag(&dir_a);
+    let tag_b = read_channel_tag(&dir_b);
+    assert_ne!(tag_a, tag_b, "overlapping sessions shared a channel tag");
+    let (ident_a, ident_b) = tokio::join!(
+        probe(&session_a, "channel_ident", 0, ""),
+        probe(&session_b, "channel_ident", 0, ""),
     );
+    assert_eq!(ident_a["ok"], true, "A did not read its channel: {ident_a}");
+    assert_eq!(ident_b["ok"], true, "B did not read its channel: {ident_b}");
+    let reported_a = ident_a["tag"].as_str().unwrap_or("");
+    let reported_b = ident_b["tag"].as_str().unwrap_or("");
+    assert_eq!(
+        reported_a, tag_a,
+        "A's endpoint was not the channel handed to A: {ident_a}"
+    );
+    assert_eq!(
+        reported_b, tag_b,
+        "B's endpoint was not the channel handed to B: {ident_b}"
+    );
+    assert!(
+        channel::foreign_channel_absent(reported_a, &tag_b),
+        "A exercised B's endpoint tag={tag_b}: {ident_a}"
+    );
+    assert!(
+        channel::foreign_channel_absent(reported_b, &tag_a),
+        "B exercised A's endpoint tag={tag_a}: {ident_b}"
+    );
+    let accepts_before_child = listener_b.accepts();
+    let drive_child = probe(&session_b, "unrelated_drive", listener_b.port, "").await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert_eq!(
         listener_b.accepts(),
-        accepts_before_foreign,
-        "driving B's authenticated proxy produced an accept: A={drive_a} child={drive_child}"
+        accepts_before_child,
+        "the child of B produced an accept: {drive_child}"
     );
-    assert_eq!(
-        drive_a["opened_stream"], false,
-        "guest A opened a stream: {drive_a}"
-    );
-    // B's numbers are not an object identity in A. An invalid duplicate or a
-    // collision with A's own handle is not evidence the endpoint is absent.
-    // The child of B inherits those same values and is the absence check.
-    step(&format!(
-        "guest A foreign drive opened_stream={} reached_proxy={} collided={} numeric_miss={} (collision and numeric miss are not identity)",
-        drive_a["opened_stream"],
-        drive_a["reached_proxy"],
-        drive_a["collided"],
-        drive_a["numeric_miss"]
-    ));
     assert_endpoint_sealed("unrelated child", &drive_child);
     #[cfg(windows)]
     let sentinel_unsupported = false;
     #[cfg(not(windows))]
     let sentinel_unsupported = true;
     step(&format!(
-        "authenticated foreign: A opened_stream={} reached_proxy={} collided={} numeric_miss={} (numeric miss is not identity); child opened_stream={} reached_proxy={} not_inherited={} collided={}; sentinel_unsupported={sentinel_unsupported}; unsupported is not a denial and is not success; B accepts unchanged",
-        drive_a["opened_stream"],
-        drive_a["reached_proxy"],
-        drive_a["collided"],
-        drive_a["numeric_miss"],
+        "channel identity: A tag={reported_a} B tag={reported_b}; A did not report B; child opened_stream={} reached_proxy={} not_inherited={} collided={}; sentinel_unsupported={sentinel_unsupported}; numeric collision is not identity; B accepts unchanged",
         drive_child["opened_stream"],
         drive_child["reached_proxy"],
         drive_child["not_inherited"],
@@ -297,6 +304,19 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     assert_no_session_dirs(install_a.files_dir()).await;
     assert_no_session_dirs(install_b.files_dir()).await;
     step("both sessions tore down cleanly");
+}
+
+fn read_channel_tag(dir: &std::path::Path) -> String {
+    let text = std::fs::read_to_string(dir.join(TEST_CHANNEL_TAG_FILE)).unwrap_or_else(|err| {
+        panic!(
+            "channel tag {} in {}: {err}",
+            TEST_CHANNEL_TAG_FILE,
+            dir.display()
+        )
+    });
+    let tag = text.trim().to_string();
+    assert!(!tag.is_empty(), "empty channel tag in {}", dir.display());
+    tag
 }
 
 /// The child did not inherit a usable authenticated endpoint.

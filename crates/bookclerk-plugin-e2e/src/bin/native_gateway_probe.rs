@@ -19,6 +19,10 @@ use bookclerk_plugin_sdk::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const PLUGIN_ID: &str = "native_gateway_probe";
+/// Must match `socket_proxy::TEST_CHANNEL_IDENT_HOST`. The probe bin does not
+/// link the workerd crate.
+const TEST_CHANNEL_HOST: &str = "bookclerk-test-channel";
+const TEST_CHANNEL_PORT: u16 = 1;
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const AMBIENT_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -161,6 +165,66 @@ async fn hold_until_eof(host: &str, port: u16, payload: &str) -> Result<(), Stri
     let mut extra = [0_u8; 8];
     let _ = stream.read(&mut extra).await;
     Ok(())
+}
+
+/// Ask the inherited proxy which channel it is.
+///
+/// The tag comes from the server response. This process's environment does
+/// not carry it, and the numeric fd or handle is not compared.
+async fn channel_ident() -> serde_json::Value {
+    let address = SocketAddress {
+        hostname: TEST_CHANNEL_HOST.into(),
+        port: TEST_CHANNEL_PORT,
+    };
+    let connected = tokio::time::timeout(
+        IO_TIMEOUT,
+        bookclerk_plugin_sdk::net::connect(address, ConnectOptions::default()),
+    )
+    .await;
+    let mut socket = match connected {
+        Ok(Ok(socket)) => socket,
+        Ok(Err(err)) => {
+            return serde_json::json!({ "ok": false, "tag": "", "error": err.to_string() });
+        }
+        Err(_) => {
+            return serde_json::json!({ "ok": false, "tag": "", "error": "connect timed out" });
+        }
+    };
+    let mut body = Vec::new();
+    let mut buf = [0_u8; 128];
+    loop {
+        if body.len() >= 128 {
+            break;
+        }
+        match tokio::time::timeout(IO_TIMEOUT, socket.stream().read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => body.extend_from_slice(&buf[..n]),
+            Ok(Err(err)) => {
+                return serde_json::json!({
+                    "ok": false,
+                    "tag": "",
+                    "error": format!("read tag: {err}"),
+                });
+            }
+            Err(_) => {
+                return serde_json::json!({ "ok": false, "tag": "", "error": "read timed out" });
+            }
+        }
+    }
+    let tag = String::from_utf8_lossy(&body).trim().to_string();
+    let safe = !tag.is_empty()
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    serde_json::json!({
+        "ok": safe,
+        "tag": if safe { tag } else { String::new() },
+        "error": if safe {
+            String::new()
+        } else {
+            "unexpected tag bytes".to_string()
+        },
+    })
 }
 
 /// Hex session challenge from the environment. Does not touch the proxy.
@@ -2005,6 +2069,7 @@ impl PluginCli for Probe {
             }
             "descendant" => spawn_pause_descendant(),
             "exhaust_threads" => exhaust_threads(arg(&params, "payload")),
+            "channel_ident" => channel_ident().await,
             "session_challenge" => session_challenge(),
             "unrelated_challenge" => unrelated_challenge(arg(&params, "payload")),
             "present_challenge" => present_foreign_challenge(arg(&params, "payload")).await,
@@ -2083,6 +2148,11 @@ async fn probe_main() -> Result<(), Box<dyn std::error::Error>> {
             "{}",
             child_endpoint_connect(&spec, write, &host, port).await
         );
+        return Ok(());
+    }
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--channel-ident") {
+        println!("{}", channel_ident().await);
         return Ok(());
     }
     // One Job slot. The session Job kills this process when the test drops it.
