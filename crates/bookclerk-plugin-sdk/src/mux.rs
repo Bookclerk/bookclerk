@@ -513,17 +513,15 @@ impl Mux {
         };
         stream.generation = generation;
         stream.inserted = true;
-        {
-            let mut gens = lock_local_gens(&self.shared.writer_state.local_gens);
+        with_local_open_locks(&self.shared.writer_state, |pending, gens| {
             gens.push(LocalGen {
                 id,
                 generation,
                 open_written: false,
                 close_written: false,
             });
-            lock_pending_opens(&self.shared.writer_state.pending_opens)
-                .push_back(PendingOpen { id, generation });
-        }
+            pending.push_back(PendingOpen { id, generation });
+        });
         stream.announced = true;
         self.shared
             .control_tx
@@ -802,6 +800,30 @@ fn lock_pending_opens(
 fn lock_local_gens(gens: &Mutex<Vec<LocalGen>>) -> std::sync::MutexGuard<'_, Vec<LocalGen>> {
     gens.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Set while a test checks that `pending_opens` is held and `local_gens` is not.
+#[cfg(test)]
+static PROBE_OPEN_LOCK_ORDER: AtomicBool = AtomicBool::new(false);
+
+/// Nested bookkeeping for a local Open. Always `pending_opens`, then `local_gens`.
+///
+/// `open` and the writer share this order. The mutexes are not reentrant, so
+/// callers must not take `local_gens` again while `body` runs.
+fn with_local_open_locks<R>(
+    state: &WriterState,
+    body: impl FnOnce(&mut VecDeque<PendingOpen>, &mut Vec<LocalGen>) -> R,
+) -> R {
+    let mut pending = lock_pending_opens(&state.pending_opens);
+    #[cfg(test)]
+    if PROBE_OPEN_LOCK_ORDER.load(Ordering::SeqCst) {
+        assert!(
+            state.local_gens.try_lock().is_ok(),
+            "local_gens is locked before pending_opens"
+        );
+    }
+    let mut gens = lock_local_gens(&state.local_gens);
+    body(&mut pending, &mut gens)
 }
 
 fn lock_deferred(deferred: &Mutex<VecDeque<u32>>) -> std::sync::MutexGuard<'_, VecDeque<u32>> {
@@ -1378,16 +1400,14 @@ async fn write_one_pending_open<W: AsyncWrite + Unpin>(
     writer: &mut W,
     state: &WriterState,
 ) -> Result<bool> {
-    let next = {
-        let pending = lock_pending_opens(&state.pending_opens);
-        let gens = lock_local_gens(&state.local_gens);
+    let next = with_local_open_locks(state, |pending, gens| {
         pending.front().and_then(|open| {
-            open_is_eligible(open, &gens).then_some(PendingOpen {
+            open_is_eligible(open, gens).then_some(PendingOpen {
                 id: open.id,
                 generation: open.generation,
             })
         })
-    };
+    });
     let Some(open) = next else {
         return Ok(false);
     };
@@ -2007,6 +2027,52 @@ mod tests {
         drop(remote);
         wait_bookkeeping_idle(&client).await;
         wait_bookkeeping_idle(&server).await;
+    }
+
+    /// The helper holds `pending_opens` and not yet `local_gens`.
+    #[tokio::test]
+    async fn generation_locks_are_pending_then_local_gens() {
+        let (client, _server) = pair();
+        PROBE_OPEN_LOCK_ORDER.store(true, Ordering::SeqCst);
+        with_local_open_locks(&client.shared.writer_state, |pending, gens| {
+            assert!(pending.is_empty());
+            assert!(gens.is_empty());
+        });
+        PROBE_OPEN_LOCK_ORDER.store(false, Ordering::SeqCst);
+    }
+
+    /// Concurrent open and writer progress on a multi-thread runtime.
+    ///
+    /// The timeout runs on this thread, not on a worker blocked in `std::sync::Mutex`.
+    #[test]
+    fn open_and_writer_do_not_deadlock_on_generation_locks() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("runtime");
+            rt.block_on(async {
+                let (client, server) = pair();
+                let accept = tokio::spawn(async move {
+                    for _ in 0..64 {
+                        let mut remote = server.accept().await.expect("accept");
+                        remote.shutdown().await.expect("peer close");
+                    }
+                });
+                for _ in 0..64 {
+                    let mut local = client.open().await.expect("open");
+                    local.write_all(b"x").await.expect("write");
+                    local.shutdown().await.expect("shutdown");
+                }
+                accept.await.expect("accept task");
+            });
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("generation lock order deadlocked");
     }
 
     #[tokio::test]
