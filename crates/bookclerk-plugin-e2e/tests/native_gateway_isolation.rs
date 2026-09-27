@@ -22,7 +22,7 @@ mod ng_harness;
 use std::time::SystemTime;
 
 use ng_harness::{
-    error_text, open_session, probe, session_dirs_under, step, wait_for_exit, Install, Listener,
+    assert_no_session_dirs, error_text, open_session, probe, step, wait_for_exit, Install, Listener,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -114,8 +114,8 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     wait_for_exit(gate_guest_a).await;
     wait_for_exit(gate_gateway_b).await;
     wait_for_exit(gate_guest_b).await;
-    assert!(session_dirs_under(install_gate_a.files_dir()).is_empty());
-    assert!(session_dirs_under(install_gate_b.files_dir()).is_empty());
+    assert_no_session_dirs(install_gate_a.files_dir()).await;
+    assert_no_session_dirs(install_gate_b.files_dir()).await;
 
     let listener_a = Listener::bind(true).await;
     let listener_b = Listener::bind(true).await;
@@ -294,17 +294,18 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     wait_for_exit(guest_a).await;
     wait_for_exit(gateway_b).await;
     wait_for_exit(guest_b).await;
-    assert!(session_dirs_under(install_a.files_dir()).is_empty());
-    assert!(session_dirs_under(install_b.files_dir()).is_empty());
+    assert_no_session_dirs(install_a.files_dir()).await;
+    assert_no_session_dirs(install_b.files_dir()).await;
     step("both sessions tore down cleanly");
 }
 
 /// The child did not inherit a usable authenticated endpoint.
 ///
-/// A collision or a mere invalid number in some other process is not this
-/// result. `not_inherited` is the dup/`DuplicateHandle` failure for the value
-/// the parent actually holds, which Windows and Unix preserve across
-/// inheritance. `reached_proxy` would mean the mux server accepted a stream.
+/// A collision in some other process is not this result. `not_inherited` means
+/// the child could not open the parent's value, or the object at that value
+/// is not the pipe (stdio or another type). Inheritance would have kept the
+/// pipe itself at that value. `reached_proxy` would mean the mux server
+/// accepted a stream.
 fn assert_endpoint_sealed(label: &str, outcome: &serde_json::Value) {
     assert_ne!(
         outcome["unsupported"], true,

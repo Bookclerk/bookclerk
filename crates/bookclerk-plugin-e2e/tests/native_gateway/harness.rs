@@ -323,6 +323,30 @@ pub fn linux_fd_count() -> Option<usize> {
     }
 }
 
+/// Wait until host `RemoveOnDrop` finishes removing session directories.
+///
+/// Process exit returns before that retry loop. The assertion still fails
+/// when a directory remains after [`SETTLE_TIMEOUT`].
+pub async fn assert_no_session_dirs(files: &Path) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let left = session_dirs_under(files);
+        if left.is_empty() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session dirs remain under {}: {}",
+            files.display(),
+            left.iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 pub fn session_dirs_under(files: &Path) -> Vec<PathBuf> {
     let root = files.join("plugin-state");
     let mut found = Vec::new();

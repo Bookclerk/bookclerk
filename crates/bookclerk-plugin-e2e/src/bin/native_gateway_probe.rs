@@ -1261,11 +1261,34 @@ fn is_stdio_value(value: u64) -> bool {
 }
 
 /// `FILE_TYPE_PIPE` on a handle this process already duplicated.
+///
+/// The remote bit is masked off. A failed `GetFileType` is not a pipe.
+#[cfg(windows)]
+fn is_pipe_handle(handle: *mut core::ffi::c_void) -> bool {
+    file_type(handle).is_ok_and(is_pipe_type)
+}
+
+/// `GetFileType`, or the Win32 error when the call fails.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn is_pipe_handle(handle: *mut core::ffi::c_void) -> bool {
+fn file_type(handle: *mut core::ffi::c_void) -> Result<u32, String> {
+    const FILE_TYPE_UNKNOWN: u32 = 0;
+    let kind = unsafe { GetFileType(handle) };
+    if kind == FILE_TYPE_UNKNOWN {
+        let err = unsafe { GetLastError() };
+        if err != 0 {
+            return Err(format!("GetFileType os {err}"));
+        }
+    }
+    Ok(kind)
+}
+
+/// Pipe, ignoring `FILE_TYPE_REMOTE`.
+#[cfg(windows)]
+fn is_pipe_type(kind: u32) -> bool {
     const FILE_TYPE_PIPE: u32 = 0x0003;
-    unsafe { GetFileType(handle) == FILE_TYPE_PIPE }
+    const FILE_TYPE_REMOTE: u32 = 0x8000;
+    (kind & !FILE_TYPE_REMOTE) == FILE_TYPE_PIPE
 }
 
 /// Pointer-sized handle value. Fails when `value` does not fit `usize`.
@@ -1467,6 +1490,7 @@ extern "system" {
     fn GetCurrentProcess() -> *mut core::ffi::c_void;
     fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
     fn GetFileType(handle: *mut core::ffi::c_void) -> u32;
+    fn GetLastError() -> u32;
     fn DuplicateHandle(
         source_process: *mut core::ffi::c_void,
         source: *mut core::ffi::c_void,
@@ -2128,46 +2152,71 @@ fn unix_endpoint_absent(spec: &str) -> Option<serde_json::Value> {
 }
 
 /// `DuplicateHandle` before this process creates any other handles.
+///
+/// Inheritance keeps a parent's handle value only for the same object. A
+/// duplicate that is not a pipe, or that is this process's stdio, is a
+/// different object, so the pipe endpoint was not inherited. Both halves
+/// have to be pipes before the mux probe runs. `GetFileType` failure is
+/// not reported as absence.
 #[cfg(windows)]
 fn windows_endpoint_absent(spec: &str, write_spec: &str) -> Option<serde_json::Value> {
     let read = spec_handle_value(spec)?;
     let write = spec_handle_value(write_spec)?;
-    if read == write || is_stdio_value(read) || is_stdio_value(write) {
+    if read == write {
         return Some(mux_status(
             false,
             false,
             false,
             true,
             false,
-            "handle value collides with a local object",
+            "read and write handles must be distinct",
+        ));
+    }
+    if is_stdio_value(read) || is_stdio_value(write) {
+        return Some(mux_status(
+            false,
+            false,
+            true,
+            false,
+            false,
+            "handle value is this process's stdio; the pipe endpoint was not inherited",
         ));
     }
     let read_raw = handle_ptr(read).ok()?;
     let write_raw = handle_ptr(write).ok()?;
-    match duplicate_raw(read_raw) {
-        Ok(copy) => drop(CloseEvent(copy)),
-        Err(info) => {
-            return Some(mux_status(false, false, true, false, true, &info.error));
-        }
+    if let Some(early) = duplicated_pipe_or_absent(read, read_raw) {
+        return Some(early);
     }
-    match duplicate_raw(write_raw) {
-        Ok(copy) => {
-            let pipe = is_pipe_handle(copy);
-            drop(CloseEvent(copy));
-            if !pipe {
-                return Some(mux_status(
-                    false,
-                    false,
-                    false,
-                    true,
-                    false,
-                    "duplicated object is not a pipe",
-                ));
-            }
-        }
-        Err(info) => {
-            return Some(mux_status(false, false, true, false, true, &info.error));
-        }
+    if let Some(early) = duplicated_pipe_or_absent(write, write_raw) {
+        return Some(early);
     }
     None
+}
+
+/// `None` when `value` duplicates as a pipe. Otherwise the pipe is absent
+/// or `GetFileType` failed.
+#[cfg(windows)]
+fn duplicated_pipe_or_absent(value: u64, raw: *mut core::ffi::c_void) -> Option<serde_json::Value> {
+    let copy = match duplicate_raw(raw) {
+        Ok(copy) => copy,
+        Err(info) => {
+            return Some(mux_status(false, false, true, false, true, &info.error));
+        }
+    };
+    let kind = file_type(copy);
+    drop(CloseEvent(copy));
+    match kind {
+        Ok(kind) if is_pipe_type(kind) => None,
+        Ok(kind) => Some(mux_status(
+            false,
+            false,
+            true,
+            false,
+            false,
+            &format!(
+                "handle {value:#x} is file type {kind:#x}; the pipe endpoint was not inherited"
+            ),
+        )),
+        Err(err) => Some(mux_status(false, false, false, false, false, &err)),
+    }
 }
