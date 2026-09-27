@@ -518,10 +518,12 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
     if check == "confinement":
         env: dict[str, str] = {"BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT": "1"}
         test = ["cargo", "test", *_pkg_args(CONFINEMENT_PACKAGES)]
+        # `--nocapture` keeps cgroup skip and enforcement lines in the job log.
         if ctx.os_name == "Windows":
-            test += ["--", "--test-threads=1"]
+            test += ["--", "--test-threads=1", "--nocapture"]
         else:
             env["BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT"] = "1"
+            test += ["--", "--nocapture"]
         return [
             Command("clippy (confinement)", ["cargo", "clippy", *_pkg_args(CONFINEMENT_PACKAGES), "--all-targets", "--", "-D", "warnings"]),
             Command("confinement tests", test, env=env),

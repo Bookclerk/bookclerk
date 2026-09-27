@@ -4,8 +4,11 @@
 //! session's secret on this link closes it, and an unrelated child without
 //! `BOOKCLERK_SESSION_CHALLENGE` cannot complete a handshake on an endpoint it
 //! can see. A numeric fd or handle is not cross-process identity. On Windows,
-//! `GetHandleInformation` on the inherited proxy must succeed so an invalid
-//! unlisted handle is a denial rather than a missing API.
+//! `GetHandleInformation` on the inherited proxy must succeed so a missing API
+//! is not reported as a denial. An unlisted live handle is checked with
+//! `DuplicateHandle`: access denied or invalid handle is a denial.
+//! `GetHandleInformation` on a value that is not a handle in the guest
+//! terminated the AppContainer process.
 
 #[path = "native_gateway/harness.rs"]
 mod ng_harness;
@@ -32,10 +35,15 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
         challenge_b["ok"], true,
         "B did not publish a challenge: {challenge_b}"
     );
-    let secret_b = challenge_b["hex"].as_str().unwrap_or("").to_string();
-    assert_eq!(secret_b.len(), 64, "B challenge hex: {secret_b}");
+    let challenge_hex = challenge_b["hex"].as_str().unwrap_or("").to_string();
+    assert_eq!(
+        challenge_hex.len(),
+        64,
+        "B challenge hex was not 32 bytes (len {})",
+        challenge_hex.len()
+    );
     let (foreign, child) = tokio::join!(
-        probe(&gate_a, "present_challenge", 0, &secret_b),
+        probe(&gate_a, "present_challenge", 0, &challenge_hex),
         probe(&gate_b, "unrelated_challenge", 0, "inherit"),
     );
     assert_eq!(foreign["unsupported"], false, "{foreign}");

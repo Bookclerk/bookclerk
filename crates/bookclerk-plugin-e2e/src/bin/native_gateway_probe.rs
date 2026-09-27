@@ -468,7 +468,9 @@ fn labeled_attempt(spec: &str, bytes: &[u8]) -> serde_json::Value {
 ///
 /// `GetHandleInformation` on the inherited proxy must succeed first. That
 /// separates "API missing" (`unsupported`) from "not a handle here"
-/// (`denied`). The proxy handle is queried again after the foreign value.
+/// (`denied`). The unlisted value is checked with `DuplicateHandle`, which
+/// returns access denied or invalid handle without terminating the process.
+/// The proxy handle is queried again after the foreign value.
 fn unlisted_handle(payload: &str) -> serde_json::Value {
     #[cfg(windows)]
     {
@@ -663,7 +665,7 @@ fn observe_handle(value: u64, bytes: &[u8]) -> serde_json::Value {
     }
 }
 
-/// `GetHandleInformation` on each candidate the host did not inherit.
+/// `DuplicateHandle` on each candidate the host did not inherit.
 #[cfg(windows)]
 fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
     let proxy_spec = match std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV) {
@@ -736,13 +738,18 @@ fn unlisted_handle_windows(payload: &str) -> serde_json::Value {
             continue;
         };
         saw_candidate = true;
-        let info = handle_information(handle);
-        if !info.ok && (info.os == 5 || info.os == 6) {
+        let info = duplicate_same_access(handle);
+        if info.ok {
+            // The numeric value is some other open handle in this process.
+            continue;
+        }
+        if info.os == 5 || info.os == 6 {
             denied = true;
             os = info.os;
             error = info.error;
             break;
         }
+        error = info.error;
     }
     if !denied && saw_candidate {
         error = "every candidate was open in the guest".into();
@@ -793,6 +800,48 @@ struct HandleInfo {
     ok: bool,
     os: u32,
     error: String,
+}
+
+/// `DuplicateHandle` into this process. Success means the value is already
+/// open here; the duplicate is closed. Failure keeps the Win32 code (`5` or
+/// `6` means the value is not a usable handle here).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn duplicate_same_access(handle: *mut core::ffi::c_void) -> HandleInfo {
+    let mut copy = core::ptr::null_mut();
+    let ok = unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            handle,
+            GetCurrentProcess(),
+            &mut copy,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if ok == 0 {
+        return last_handle_info();
+    }
+    unsafe { CloseHandle(copy) };
+    HandleInfo {
+        ok: true,
+        os: 0,
+        error: String::new(),
+    }
+}
+
+/// Win32 error from the most recent call.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn last_handle_info() -> HandleInfo {
+    let err = std::io::Error::last_os_error();
+    let os = u32::try_from(err.raw_os_error().unwrap_or(0)).unwrap_or(0);
+    HandleInfo {
+        ok: false,
+        os,
+        error: err.to_string(),
+    }
 }
 
 /// Query `handle`. Failure keeps the Win32 code (`5` or `6` is a denial).
@@ -928,6 +977,8 @@ struct Overlapped {
 #[cfg(windows)]
 const HANDLE_FLAG_INHERIT: u32 = 0x1;
 #[cfg(windows)]
+const DUPLICATE_SAME_ACCESS: u32 = 0x2;
+#[cfg(windows)]
 const ERROR_IO_PENDING: i32 = 997;
 #[cfg(windows)]
 const WAIT_TIMEOUT: u32 = 258;
@@ -946,6 +997,16 @@ const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1_isize as *mut core::ffi:
 extern "system" {
     fn SetHandleInformation(handle: *mut core::ffi::c_void, mask: u32, flags: u32) -> i32;
     fn GetHandleInformation(handle: *mut core::ffi::c_void, flags: *mut u32) -> i32;
+    fn GetCurrentProcess() -> *mut core::ffi::c_void;
+    fn DuplicateHandle(
+        source_process: *mut core::ffi::c_void,
+        source: *mut core::ffi::c_void,
+        target_process: *mut core::ffi::c_void,
+        target: *mut *mut core::ffi::c_void,
+        access: u32,
+        inherit: i32,
+        options: u32,
+    ) -> i32;
     fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
     fn CreateEventW(
         attrs: *mut core::ffi::c_void,
