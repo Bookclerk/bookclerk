@@ -1598,6 +1598,8 @@ fn emit_spawn_line(message: &str) {
 #[cfg(windows)]
 const PLATFORM_SPAWN_DIAG_LINES: usize = 80;
 
+/// Ring of those lines. The timeout handler reprints it after the spawn future
+/// is dropped. Stderr is also flushed as each line is recorded.
 #[cfg(windows)]
 static PLATFORM_SPAWN_DIAG: std::sync::Mutex<std::collections::VecDeque<String>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
