@@ -700,9 +700,8 @@ required, and a leaf without it is not kept. Teardown writes `cgroup.kill`
 and waits until `cgroup.events` reports `populated 0` before removing the
 leaf. That is kernel ownership of the leaf: tasks that fork during the kill,
 and descendants that have called `setsid`, die with the leaf. If `cgroup.kill`
-is missing, the only fallback is `pidfd_open` plus `pidfd_send_signal` on
-that descriptor. A raw pid from a snapshot is not signalled. If neither
-mechanism exists, teardown returns an error that names it. Creating that
+is missing, teardown returns an error that says equivalent teardown is
+unsupported. Bookclerk does not signal pids read from `cgroup.procs`. Creating that
 leaf or writing `pids.max` is often refused inside desktop app
 cgroup scopes (browsers, IDEs). Bookclerk reports that and falls back to
 process-group SIGKILL. That fallback is a different path: a descendant that

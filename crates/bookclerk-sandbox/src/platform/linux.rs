@@ -635,29 +635,26 @@ pub fn create_session_cgroup(
 /// and dies with it. Without a delegated cgroup, process-group kill is a
 /// different path and does not own that descendant.
 ///
-/// When `cgroup.kill` is absent, the only fallback is `pidfd_open` on each
-/// current member and `pidfd_send_signal` on that file descriptor. A raw pid
-/// from the snapshot is never signalled. If neither mechanism is available,
-/// the error names what is missing.
+/// When `cgroup.kill` is absent, equivalent teardown is unsupported. Bookclerk
+/// does not signal pids read from `cgroup.procs`.
 ///
 /// A missing directory is success, so teardown is idempotent.
 ///
 /// # Errors
 ///
-/// Returns a string when `cgroup.kill` cannot be written, both kill mechanisms
-/// are missing, the leaf stays populated, or the empty directory cannot be
-/// removed.
+/// Returns a string when `cgroup.kill` is missing or cannot be written, the
+/// leaf stays populated, or the empty directory cannot be removed. A missing
+/// `cgroup.kill` says equivalent teardown is unsupported.
 pub fn destroy_session_cgroup(dir: &Path) -> Result<(), String> {
     if !dir.exists() {
         return Ok(());
     }
     let kill_file = dir.join("cgroup.kill");
-    if kill_file.is_file() {
-        std::fs::write(&kill_file, "1")
-            .map_err(|err| format!("write {}: {err}", kill_file.display()))?;
-    } else {
-        kill_members_by_pidfd(dir)?;
+    if !kill_file.is_file() {
+        return Err("cgroup.kill is missing; equivalent teardown is unsupported".into());
     }
+    std::fs::write(&kill_file, "1")
+        .map_err(|err| format!("write {}: {err}", kill_file.display()))?;
     wait_until_unpopulated(dir)?;
     match std::fs::remove_dir(dir) {
         Ok(()) => Ok(()),
@@ -698,78 +695,6 @@ fn wait_until_unpopulated(dir: &Path) -> Result<(), String> {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-}
-
-/// Open a pidfd for each member and signal that descriptor.
-///
-/// Used only when `cgroup.kill` is not on this kernel. The numeric pid is
-/// never passed to `kill`.
-fn kill_members_by_pidfd(dir: &Path) -> Result<(), String> {
-    let procs = dir.join("cgroup.procs");
-    if !procs.is_file() {
-        return Err("cgroup.kill is missing and pidfd fallback cannot read cgroup.procs".into());
-    }
-    let members = read_cgroup_procs(dir).map_err(|err| {
-        format!("cgroup.kill is missing and pidfd fallback could not read membership: {err}")
-    })?;
-    let host = std::process::id();
-    let mut handles = Vec::new();
-    for pid in members {
-        if pid == 0 || pid == host {
-            continue;
-        }
-        match pidfd_open(pid) {
-            Ok(fd) => handles.push(fd),
-            Err(err) if err.raw_os_error() == Some(libc::ESRCH) => {}
-            Err(err) if err.raw_os_error() == Some(libc::ENOSYS) => {
-                return Err("cgroup.kill is missing and pidfd_open is not available".into());
-            }
-            Err(err) => {
-                return Err(format!(
-                    "cgroup.kill is missing and pidfd_open({pid}) failed: {err}"
-                ));
-            }
-        }
-    }
-    for fd in &handles {
-        pidfd_send_signal(fd)?;
-    }
-    Ok(())
-}
-
-/// `pidfd_open(2)` for `pid`. The returned fd stays valid if the pid is reused.
-fn pidfd_open(pid: u32) -> Result<std::os::fd::OwnedFd, std::io::Error> {
-    use std::os::fd::FromRawFd;
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0u32) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as std::os::fd::RawFd) })
-}
-
-/// `pidfd_send_signal(2)` with `SIGKILL`. `ESRCH` means the task is already gone.
-fn pidfd_send_signal(fd: &std::os::fd::OwnedFd) -> Result<(), String> {
-    use std::os::fd::AsRawFd;
-    let rc = unsafe {
-        libc::syscall(
-            libc::SYS_pidfd_send_signal,
-            fd.as_raw_fd(),
-            libc::SIGKILL,
-            std::ptr::null::<libc::siginfo_t>(),
-            0u32,
-        )
-    };
-    if rc < 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(());
-        }
-        if err.raw_os_error() == Some(libc::ENOSYS) {
-            return Err("cgroup.kill is missing and pidfd_send_signal is not available".into());
-        }
-        return Err(format!("pidfd_send_signal failed: {err}"));
-    }
-    Ok(())
 }
 
 /// Pids listed in `dir/cgroup.procs`. A missing file is an empty set.
@@ -1196,9 +1121,32 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let err = destroy_session_cgroup(dir.path()).expect_err("not a cgroup");
         assert!(
-            err.contains("cgroup.kill") && err.contains("pidfd"),
-            "the error must name both missing mechanisms: {err}"
+            err.contains("cgroup.kill") && err.contains("unsupported"),
+            "the error must name cgroup.kill and unsupported: {err}"
         );
+    }
+
+    /// A fake membership list is not a reason to signal the pid it names.
+    #[test]
+    fn destroy_without_cgroup_kill_leaves_a_listed_pid_alive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep");
+        std::fs::write(dir.path().join("cgroup.procs"), child.id().to_string()).expect("procs");
+        let err = destroy_session_cgroup(dir.path()).expect_err("not a cgroup");
+        assert!(
+            err.contains("cgroup.kill") && err.contains("unsupported"),
+            "the error must name cgroup.kill and unsupported: {err}"
+        );
+        assert!(
+            child.try_wait().expect("status").is_none(),
+            "destroy signalled pid {} from cgroup.procs",
+            child.id()
+        );
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     /// `cgroup.kill` during fork churn removes that leaf and leaves another session up.

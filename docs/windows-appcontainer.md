@@ -134,8 +134,9 @@ cannot be created, the
 resources layer is reported not-applicable, process-group kill is the fallback
 (it does not cover `setsid`), and Required still rests on FS/net. When the
 leaf exists, teardown is `cgroup.kill` and a wait for `populated 0`. That
-owns the leaf, including a `setsid` descendant. It is a different path from
-process-group kill. macOS
+owns the leaf, including a `setsid` descendant. A missing `cgroup.kill` is
+unsupported; Bookclerk does not signal pids from a membership snapshot. It is
+a different path from process-group kill. macOS
 Seatbelt cannot enforce memory/CPU/pids — Bookclerk reports that layer as not
 applicable and does not fake enforcement.
 
