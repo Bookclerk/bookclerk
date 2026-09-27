@@ -721,29 +721,43 @@ impl PluginSession {
                 plugin.plugin_key().canonical()
             )));
         }
-        // Describe has not started. A revoke here changes the grant before
-        // registration; the re-check below fails the spawn instead of relying
-        // on a watcher event that already fired.
+        // Describe has not started. This hold is before the first grant read.
+        // `revoke_before_register_fails_startup` pauses here.
         wait_test_hold("BOOKCLERK_TEST_STARTUP_HOLD_DIR", None).await;
-        grant_still_current(&files_dir, plugin, config, &identity)?;
-        let spawned = held
-            .spawned
-            .take()
-            .ok_or_else(|| PluginError::message("plugin spawn already released"))?;
+        {
+            let _epoch = crate::authority::lock_grant_epoch();
+            grant_still_current(&files_dir, plugin, config, &identity)?;
+        }
+        // The first read matched. Release the epoch lock so a revoke can land,
+        // then re-read and register as one critical section. Describe starts
+        // only after that handshake.
+        note_test_hold_file("BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR", "validated");
+        wait_test_hold("BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR", None).await;
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) =
             oneshot::channel::<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>();
         let vat_account = account_id.to_string();
         let shutdown_tx = tx.clone();
-        let authority_fence = crate::authority::register_session_revisions_on(
-            plugin.plugin_key().canonical(),
-            &identity.grant_revision,
-            &identity.authority_revision,
-            Arc::new(move || {
-                let _ = shutdown_tx.send(Work::Shutdown);
-            }),
-            Arc::clone(&cancel),
-        );
+        let authority_fence = {
+            let _epoch = crate::authority::lock_grant_epoch();
+            if let Err(err) = grant_still_current(&files_dir, plugin, config, &identity) {
+                cancel.store(true, Ordering::SeqCst);
+                return Err(err);
+            }
+            crate::authority::register_session_revisions_on(
+                plugin.plugin_key().canonical(),
+                &identity.grant_revision,
+                &identity.authority_revision,
+                Arc::new(move || {
+                    let _ = shutdown_tx.send(Work::Shutdown);
+                }),
+                Arc::clone(&cancel),
+            )
+        };
+        let spawned = held
+            .spawned
+            .take()
+            .ok_or_else(|| PluginError::message("plugin spawn already released"))?;
         let owner = StartupOwner {
             active: true,
             cancel: Arc::clone(&cancel),
@@ -2178,6 +2192,19 @@ fn grant_still_current(
     Ok(())
 }
 
+/// Writes `name` under the directory named by `env_key`, when that variable is set.
+fn note_test_hold_file(env_key: &str, name: &str) {
+    let Ok(dir) = std::env::var(env_key) else {
+        return;
+    };
+    if dir.is_empty() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(name), b"1");
+}
+
 /// Block while `env_key` names a directory that has no `release` file.
 ///
 /// `cancel` unblocks a vat that is already running. Dropping the caller future
@@ -2211,6 +2238,7 @@ fn publish_test_hold_facts(
 ) {
     for key in [
         "BOOKCLERK_TEST_STARTUP_HOLD_DIR",
+        "BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR",
         "BOOKCLERK_TEST_DESCRIBE_HOLD_DIR",
     ] {
         let Ok(dir) = std::env::var(key) else {

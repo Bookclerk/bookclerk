@@ -645,6 +645,7 @@ struct ClearHoldEnv;
 impl Drop for ClearHoldEnv {
     fn drop(&mut self) {
         std::env::remove_var("BOOKCLERK_TEST_STARTUP_HOLD_DIR");
+        std::env::remove_var("BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR");
         std::env::remove_var("BOOKCLERK_TEST_DESCRIBE_HOLD_DIR");
     }
 }
@@ -885,6 +886,84 @@ async fn revoke_before_register_fails_startup() {
         "pre-registration revoke accepted a proxy"
     );
     step("revoke before register failed startup and removed the session");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revoke_after_validation_before_register_fails_startup() {
+    let _env = workerd_bin_lock().await;
+    let _clear = ClearHoldEnv;
+    let listener = Listener::bind(false).await;
+    let install = Install::new(listener.port);
+    let hold = tempfile::tempdir().expect("grant register hold dir");
+    std::env::set_var("BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR", hold.path());
+    let regs_before = bookclerk_plugin_host::live_session_count();
+    let mux_before = bookclerk_plugin_sdk::mux::live_mux_task_count();
+    let plugin = install.plugin();
+    let config = install.config.clone();
+    let spawned = tokio::spawn(async move {
+        PluginSession::spawn_with(
+            &plugin,
+            &config,
+            serde_json::json!({}),
+            HOST_SHARED_ACCOUNT,
+            &[],
+            SessionServices::default(),
+        )
+        .await
+    });
+    wait_until_holding(hold.path()).await;
+    assert!(
+        hold.path().join("validated").is_file(),
+        "register hold ran before the first grant read succeeded"
+    );
+    if bookclerk_plugin_host::live_session_count() != regs_before {
+        let _ = std::fs::write(hold.path().join("release"), b"1");
+        ng_harness::fail_deadline("register hold already published a live session");
+    }
+    let pids = held_pids(hold.path());
+    if pids.is_empty() {
+        let _ = std::fs::write(hold.path().join("release"), b"1");
+        ng_harness::fail_deadline("register hold published no sibling pids");
+    }
+    let cgroup = hold_pid(hold.path(), "gateway_pid")
+        .and_then(linux_session_cgroup)
+        .or_else(|| hold_pid(hold.path(), "guest_pid").and_then(linux_session_cgroup));
+    revoke_grant(&install);
+    std::fs::write(hold.path().join("release"), b"1").expect("release register hold");
+    let joined = tokio::time::timeout(SPAWN_TIMEOUT, spawned).await;
+    let result = match joined {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => ng_harness::fail_deadline(&format!("register-hold task panicked: {err}")),
+        Err(_) => ng_harness::fail_deadline("revoke-after-validation spawn hung"),
+    };
+    match result {
+        Ok(_) => ng_harness::fail_deadline("spawn succeeded after a post-validation revoke"),
+        Err(err) => {
+            let text = err.to_string();
+            if !text.contains("fenced") {
+                ng_harness::fail_deadline(&format!("expected a fenced startup failure: {text}"));
+            }
+        }
+    }
+    if bookclerk_plugin_host::live_session_count() != regs_before {
+        ng_harness::fail_deadline("post-validation revoke registered a live session");
+    }
+    assert_hold_cleaned(
+        install.files_dir(),
+        hold.path(),
+        &pids,
+        cgroup,
+        regs_before,
+        mux_before,
+        "revoke after validation",
+    )
+    .await;
+    assert_eq!(
+        listener.accepts(),
+        0,
+        "post-validation revoke accepted a proxy"
+    );
+    step("revoke after validation failed startup and removed the session");
 }
 
 /// `pids.max` is the pinned infrastructure thread budget plus `extraProcesses`.
