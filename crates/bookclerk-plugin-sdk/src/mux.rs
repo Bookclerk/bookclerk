@@ -305,7 +305,10 @@ pub struct MuxStream {
     announced: bool,
     /// Slot was inserted, so drop must remove it.
     inserted: bool,
+    /// Local `Close` was queued. Inbound EOF does not set this.
     closed: bool,
+    /// The peer stopped delivering bytes. Independent of outbound `Close`.
+    read_eof: bool,
 }
 
 impl MuxStream {
@@ -666,6 +669,7 @@ impl MuxStream {
             announced: false,
             inserted: false,
             closed: false,
+            read_eof: false,
         };
         (
             stream,
@@ -710,13 +714,22 @@ impl Drop for MuxStream {
         if self.inserted {
             self.shared.release_stream(self.id, self.generation);
         }
+        // `read_eof` is inbound only. A peer Close still needs this side's
+        // Close, or the generation's reservation stays charged.
+        let mut queued_close = false;
         if self.announced && !self.closed {
             self.queue_close();
             self.closed = true;
+            queued_close = true;
         } else if self.inserted && !self.announced {
             // No Close record will be queued. The admission permit ends when
             // the writer drops the credit hold.
             mark_book_close_done(&self.shared.writer_state, self.generation);
+        }
+        if self.inserted && !queued_close {
+            // Close was already queued. Wake the writer so it can drop the
+            // credit hold now that `credit_alive` is false.
+            let _ = self.shared.control_tx.try_send(Control::Wake);
         }
     }
 }
@@ -1755,7 +1768,7 @@ impl AsyncRead for MuxStream {
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(None) => {
-                self.closed = true;
+                self.read_eof = true;
                 Poll::Ready(Ok(()))
             }
             Poll::Pending => Poll::Pending,
@@ -1769,7 +1782,9 @@ impl AsyncWrite for MuxStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        if self.closed || self.peer_gone.load(Ordering::SeqCst) {
+        // `read_eof` and `peer_gone` reject further writes. `closed` is the
+        // outbound Close, which is queued separately in `poll_shutdown`.
+        if self.closed || self.read_eof || self.peer_gone.load(Ordering::SeqCst) {
             return Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "mux closed",
@@ -1914,6 +1929,84 @@ mod tests {
         let mut buf2 = [0u8; 5];
         c.read_exact(&mut buf2).await.expect("read");
         assert_eq!(&buf2, b"world");
+    }
+
+    fn bookkeeping_idle(mux: &Mux) -> bool {
+        lock_map(&mux.shared.map).is_empty()
+            && lock_records(&mux.shared.writer_state.records).is_empty()
+            && lock_credits(&mux.shared.writer_state.credits).is_empty()
+            && lock_closes(&mux.shared.writer_state.closes).is_empty()
+            && lock_local_gens(&mux.shared.writer_state.local_gens).is_empty()
+            && lock_pending_opens(&mux.shared.writer_state.pending_opens).is_empty()
+    }
+
+    async fn wait_bookkeeping_idle(mux: &Mux) {
+        let idle = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !bookkeeping_idle(mux) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            idle.is_ok(),
+            "bookkeeping did not return to baseline: map {} records {} credits {} closes {}",
+            lock_map(&mux.shared.map).len(),
+            lock_records(&mux.shared.writer_state.records).len(),
+            lock_credits(&mux.shared.writer_state.credits).len(),
+            lock_closes(&mux.shared.writer_state.closes).len(),
+        );
+    }
+
+    /// Peer Close, read-to-end, and drop must retire the generation. Otherwise
+    /// the 33rd open is rejected while the writer is healthy.
+    #[tokio::test]
+    async fn peer_close_read_to_end_drop_releases_admission() {
+        let (client, server) = pair();
+        for i in 0..(MAX_LIVE_STREAMS + 4) {
+            let mut local = client
+                .open()
+                .await
+                .unwrap_or_else(|err| panic!("open {i} after peer EOF drops: {err}"));
+            let mut remote = server.accept().await.expect("accept");
+            remote.shutdown().await.expect("peer close");
+            let mut buf = Vec::new();
+            local.read_to_end(&mut buf).await.expect("read eof");
+            assert!(buf.is_empty(), "peer close carried payload");
+            drop(local);
+            drop(remote);
+            wait_bookkeeping_idle(&client).await;
+            wait_bookkeeping_idle(&server).await;
+        }
+        let mut local = client.open().await.expect("open after the cap");
+        let mut remote = server.accept().await.expect("accept after the cap");
+        local.write_all(b"ok").await.expect("write");
+        local.shutdown().await.expect("local shutdown");
+        let mut buf = Vec::new();
+        remote.read_to_end(&mut buf).await.expect("echo read");
+        assert_eq!(buf, b"ok");
+        drop(local);
+        drop(remote);
+        wait_bookkeeping_idle(&client).await;
+        wait_bookkeeping_idle(&server).await;
+    }
+
+    /// Reading EOF must not make `shutdown` wait for a Close that was never queued.
+    #[tokio::test]
+    async fn peer_eof_then_shutdown_completes_and_releases_admission() {
+        let (client, server) = pair();
+        let mut local = client.open().await.expect("open");
+        let mut remote = server.accept().await.expect("accept");
+        remote.shutdown().await.expect("peer close");
+        let mut buf = Vec::new();
+        local.read_to_end(&mut buf).await.expect("read eof");
+        let shutdown = tokio::time::timeout(std::time::Duration::from_secs(2), local.shutdown())
+            .await
+            .expect("shutdown hung after peer EOF");
+        shutdown.expect("shutdown");
+        drop(local);
+        drop(remote);
+        wait_bookkeeping_idle(&client).await;
+        wait_bookkeeping_idle(&server).await;
     }
 
     #[tokio::test]
