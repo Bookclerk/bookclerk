@@ -1578,10 +1578,50 @@ fn path_is_safe_appcontainer_folder(
 const FILE_GENERIC_EXECUTE: u32 = 0x0012_00A0;
 
 /// Print one startup line and flush. Stderr is a pipe in CI.
+///
+/// The same line is kept in [`recent_platform_spawn_diagnostics`] so a spawn
+/// deadline can reprint profile and DACL stages after the future is dropped.
 #[cfg(windows)]
 fn emit_spawn_line(message: &str) {
     eprintln!("{message}");
     let _ = std::io::Write::flush(&mut std::io::stderr());
+    let mut ring = PLATFORM_SPAWN_DIAG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ring.len() >= PLATFORM_SPAWN_DIAG_LINES {
+        ring.pop_front();
+    }
+    ring.push_back(message.to_string());
+}
+
+/// Profile-create and DACL-mutex lines kept for a spawn deadline.
+#[cfg(windows)]
+const PLATFORM_SPAWN_DIAG_LINES: usize = 80;
+
+#[cfg(windows)]
+static PLATFORM_SPAWN_DIAG: std::sync::Mutex<std::collections::VecDeque<String>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// Startup lines recorded by AppContainer profile and DACL synchronization.
+///
+/// Empty off Windows. The lines are also printed as they happen; this copy
+/// survives for the timeout handler in the same process.
+#[must_use]
+pub fn recent_platform_spawn_diagnostics() -> String {
+    #[cfg(windows)]
+    {
+        PLATFORM_SPAWN_DIAG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    #[cfg(not(windows))]
+    {
+        String::new()
+    }
 }
 
 /// Cross-process + in-process serialization for Win32 DACL mutations.

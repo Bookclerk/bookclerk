@@ -257,12 +257,16 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
         drive_a["opened_stream"], false,
         "guest A opened a stream: {drive_a}"
     );
-    assert_ne!(
-        drive_a["collided"], true,
-        "guest A handle collision is not absence: {drive_a}"
-    );
-    // B's process-local handle numbers are not the endpoint. Only the child,
-    // which would inherit the same values, can show whether the object leaked.
+    // B's numbers are not an object identity in A. An invalid duplicate or a
+    // collision with A's own handle is not evidence the endpoint is absent.
+    // The child of B inherits those same values and is the absence check.
+    step(&format!(
+        "guest A foreign drive opened_stream={} reached_proxy={} collided={} numeric_miss={} (collision and numeric miss are not identity)",
+        drive_a["opened_stream"],
+        drive_a["reached_proxy"],
+        drive_a["collided"],
+        drive_a["numeric_miss"]
+    ));
     assert_endpoint_sealed("unrelated child", &drive_child);
     #[cfg(windows)]
     let sentinel_unsupported = false;

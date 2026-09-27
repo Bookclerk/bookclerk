@@ -59,6 +59,7 @@ pub use platform::{create_session_cgroup, destroy_session_cgroup};
 /// Host-owned Windows Job that holds both sibling `bookclerk-jail` processes.
 #[cfg(windows)]
 pub use platform::windows_launch::SessionJob;
+pub use platform::windows_spawn::recent_platform_spawn_diagnostics;
 /// Event the host waits on before starting a second Windows jail.
 #[cfg(windows)]
 pub use platform::windows_spawn::JailReady;

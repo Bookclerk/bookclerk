@@ -172,7 +172,12 @@ pub fn fail_deadline(what: &str) -> ! {
     if !diag.is_empty() {
         eprintln!("native_gateway: startup diagnostics before exit:\n{diag}");
     }
+    let platform = bookclerk_sandbox::recent_platform_spawn_diagnostics();
+    if !platform.is_empty() {
+        eprintln!("native_gateway: platform startup diagnostics before exit:\n{platform}");
+    }
     eprintln!("native_gateway: {what}");
+    let _ = std::io::Write::flush(&mut std::io::stderr());
     std::process::exit(1);
 }
 
@@ -351,6 +356,8 @@ pub async fn open_session(session: &PluginSession) {
 
 pub fn step(message: &str) {
     eprintln!("native_gateway: {message}");
+    // CI stderr is block-buffered, and `process::exit` does not flush it.
+    let _ = std::io::Write::flush(&mut std::io::stderr());
 }
 
 struct Proc {
