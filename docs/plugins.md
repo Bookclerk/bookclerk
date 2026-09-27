@@ -684,9 +684,18 @@ guest's `extraProcesses` allowance. It is not the Windows outer process count
 (5 + extra) and not the payload process count (3 + extra). `bookclerk-workerd`
 pins `worker_threads` and `max_blocking_threads`, so that budget does not grow
 with the host CPU count. A cgroup that already contains the host cannot
-enable domain controllers for its children. The session leaf is created in
-the nearest ancestor that can delegate `pids` (often the parent of the host
-cgroup). A controller file that is not present is skipped; `pids.max` is
+enable domain controllers for its children. The session leaf stays inside the
+process's current cgroup. Bookclerk does not walk to an ancestor or enable
+controllers on one. When that cgroup already delegates `pids` and has no
+member processes, the leaf is created there. When it has member processes,
+Bookclerk creates `bookclerk-host`, moves only this process and its
+descendants that are still in the cgroup, enables controllers on that cgroup,
+and creates the leaf beside `bookclerk-host`. A process that is not a
+descendant is not moved; the moves are rolled back and the leaf is not
+created. A later session whose current cgroup is `bookclerk-host` creates the
+leaf as a sibling when the immediate parent already delegates `pids`, and
+does not inspect the grandparent. A controller file that is not present is
+skipped; `pids.max` is
 required, and a leaf without it is not kept. Teardown writes `cgroup.kill`
 and waits until `cgroup.events` reports `populated 0` before removing the
 leaf. That is kernel ownership of the leaf: tasks that fork during the kill,
@@ -694,7 +703,7 @@ and descendants that have called `setsid`, die with the leaf. If `cgroup.kill`
 is missing, the only fallback is `pidfd_open` plus `pidfd_send_signal` on
 that descriptor. A raw pid from a snapshot is not signalled. If neither
 mechanism exists, teardown returns an error that names it. Creating that
-ancestor leaf or writing `pids.max` is often refused inside desktop app
+leaf or writing `pids.max` is often refused inside desktop app
 cgroup scopes (browsers, IDEs). Bookclerk reports that and falls back to
 process-group SIGKILL. That fallback is a different path: a descendant that
 has called `setsid` is outside the group, and without a delegated cgroup

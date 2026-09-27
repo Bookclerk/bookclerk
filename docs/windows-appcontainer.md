@@ -121,9 +121,12 @@ multi-tenant quota.
 
 Cross-platform: Linux applies the same Spec fields via cgroup v2 into an
 **exclusive** child cgroup when the hierarchy allows it (never onto a shared
-parent slice, and never a leaf that already exists). The leaf's parent is the
-nearest ancestor that can delegate controllers. The host's own cgroup is not
-that parent when it already has processes. `pids.max` counts threads.
+parent slice, and never a leaf that already exists). The leaf stays inside
+the process's current cgroup. Bookclerk does not place it on an ancestor.
+When that cgroup has member processes, the host process moves into
+`bookclerk-host` and the leaf is created beside it, still under the same
+parent, so that parent's limits and `cgroup.kill` still cover the session.
+`pids.max` counts threads.
 It is the infrastructure thread budget plus `extraProcesses`, not the Windows
 outer baseline (5 + extra). `bookclerk-workerd` pins its Tokio worker and
 blocking-thread counts so that budget does not grow with CPU count. If a leaf

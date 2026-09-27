@@ -351,36 +351,139 @@ fn enable_session_controllers(dir: &Path) {
     }
 }
 
-/// Parent directory for a session leaf.
+/// Directory name of the host process after it steps out of a populated cgroup.
+const HOST_CGROUP_NAME: &str = "bookclerk-host";
+
+/// Error used when this cgroup cannot delegate `pids` without leaving it.
+fn delegation_unavailable(parent: &Path, current: &Path) -> String {
+    format!(
+        "pids controller is not delegated under {} (current cgroup {})",
+        parent.display(),
+        current.display()
+    )
+}
+
+/// True when `dir` is the host child created inside an owned cgroup.
+fn is_host_cgroup(dir: &Path) -> bool {
+    dir.file_name().and_then(|name| name.to_str()) == Some(HOST_CGROUP_NAME)
+}
+
+/// Parent pid from `/proc/<pid>/stat`, after the command field.
+fn process_ppid(pid: u32) -> Option<u32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = text.rsplit_once(')')?.1;
+    let mut fields = rest.split_whitespace();
+    let _state = fields.next()?;
+    fields.next()?.parse().ok()
+}
+
+/// True when `pid` is `root` or a process-tree descendant of `root`.
+fn is_self_or_descendant(pid: u32, root: u32) -> bool {
+    if pid == root {
+        return true;
+    }
+    let mut cursor = pid;
+    for _ in 0..64 {
+        let Some(ppid) = process_ppid(cursor) else {
+            return false;
+        };
+        if ppid == root {
+            return true;
+        }
+        if ppid == 0 || ppid == cursor {
+            return false;
+        }
+        cursor = ppid;
+    }
+    false
+}
+
+/// Moves migrated processes back and deletes a host child this call created.
+fn rollback_host_migration(current: &Path, host: &Path, moved: &[u32], created_host: bool) {
+    for name in ["memory", "cpu", "pids"] {
+        let _ = std::fs::write(current.join("cgroup.subtree_control"), format!("-{name}"));
+    }
+    for pid in moved {
+        let _ = std::fs::write(current.join("cgroup.procs"), pid.to_string());
+    }
+    if created_host {
+        let _ = std::fs::remove_dir(host);
+    }
+}
+
+/// Directory that will own the session leaf: the current cgroup, or its parent
+/// when this process is already in `bookclerk-host`.
 ///
-/// A populated cgroup cannot enable domain controllers in `subtree_control`
-/// (the no-internal-process rule). Enabling `pids` there turns the cgroup into
-/// a threaded domain and its children into `domain invalid`, which cannot take
-/// members. Walk up to the nearest ancestor that has no member processes — or
-/// the root, which is exempt — enable the controllers there, and require
-/// `pids` in that ancestor's `subtree_control`.
-fn nearest_delegating_parent(current: &Path) -> std::path::PathBuf {
-    let root = Path::new("/sys/fs/cgroup");
-    let mut cursor = current.to_path_buf();
-    loop {
-        let exempt = cursor == root;
-        if exempt || !cgroup_populated(&cursor) {
-            enable_session_controllers(&cursor);
-            if subtree_has_controller(&cursor, "pids") {
-                return cursor;
-            }
+/// Never walks toward `/sys/fs/cgroup` and never writes `subtree_control` on
+/// an ancestor. A populated cgroup is delegated only after this process and
+/// its descendants have moved into `bookclerk-host`. A remaining
+/// non-descendant restores those moves and refuses the leaf.
+fn owned_session_parent(current: &Path) -> Result<std::path::PathBuf, String> {
+    if is_host_cgroup(current) {
+        let Some(parent) = current.parent() else {
+            return Err(delegation_unavailable(current, current));
+        };
+        if subtree_has_controller(parent, "pids") {
+            return Ok(parent.to_path_buf());
         }
-        if exempt {
-            break;
+        return Err(delegation_unavailable(parent, current));
+    }
+    if subtree_has_controller(current, "pids") && !cgroup_populated(current) {
+        return Ok(current.to_path_buf());
+    }
+    if !cgroup_populated(current) {
+        enable_session_controllers(current);
+        if subtree_has_controller(current, "pids") {
+            return Ok(current.to_path_buf());
         }
-        match cursor.parent() {
-            Some(parent) if parent.starts_with(root) => {
-                cursor = parent.to_path_buf();
+        return Err(delegation_unavailable(current, current));
+    }
+
+    let host = current.join(HOST_CGROUP_NAME);
+    let created_host = if host.is_dir() {
+        false
+    } else {
+        std::fs::create_dir(&host)
+            .map_err(|err| format!("could not create host cgroup {}: {err}", host.display()))?;
+        true
+    };
+    let self_pid = std::process::id();
+    let members = match read_cgroup_procs(current) {
+        Ok(members) => members,
+        Err(err) => {
+            if created_host {
+                let _ = std::fs::remove_dir(&host);
             }
-            _ => break,
+            return Err(err);
+        }
+    };
+    let mut moved = Vec::new();
+    for pid in members {
+        if !is_self_or_descendant(pid, self_pid) {
+            continue;
+        }
+        match std::fs::write(host.join("cgroup.procs"), pid.to_string()) {
+            Ok(()) => moved.push(pid),
+            Err(err) if err.raw_os_error() == Some(libc::ESRCH) => {}
+            Err(err) => {
+                rollback_host_migration(current, &host, &moved, created_host);
+                return Err(format!(
+                    "could not move pid {pid} into {}: {err}",
+                    host.display()
+                ));
+            }
         }
     }
-    current.to_path_buf()
+    if cgroup_populated(current) {
+        rollback_host_migration(current, &host, &moved, created_host);
+        return Err(delegation_unavailable(current, current));
+    }
+    enable_session_controllers(current);
+    if !subtree_has_controller(current, "pids") {
+        rollback_host_migration(current, &host, &moved, created_host);
+        return Err(delegation_unavailable(current, current));
+    }
+    Ok(current.to_path_buf())
 }
 
 /// Writes one controller file.
@@ -452,10 +555,12 @@ fn move_self_into_cgroup(dir: &Path) -> Result<(), String> {
 /// already exists so two sessions never share a leaf. `pids.max` is the thread
 /// budget in `limits.active_processes` (not the Windows process baseline).
 ///
-/// The leaf is created under the nearest ancestor that can delegate
-/// controllers, which may be an ancestor of this process. A populated cgroup
-/// cannot distribute domain controllers to children. The leaf is not created
-/// in that cgroup.
+/// The leaf stays inside this process's current cgroup. Bookclerk does not
+/// walk to an ancestor or enable controllers there. A populated cgroup gets a
+/// `bookclerk-host` child for this process and its descendants; the session
+/// leaf is created beside that child. A process that is not a descendant
+/// blocks delegation. When this process is already in `bookclerk-host` and the
+/// immediate parent delegates `pids`, the leaf is a sibling.
 ///
 /// Failure is best-effort (same posture as `try_apply_cgroup_v2`): callers treat
 /// `Err` as not-applicable and fall back to process-group kill, which does not
@@ -486,20 +591,9 @@ pub fn create_session_cgroup(
             current.display()
         ));
     }
-    let parent = nearest_delegating_parent(&current);
+    let parent = owned_session_parent(&current)?;
     if !subtree_has_controller(&parent, "pids") {
-        return Err(format!(
-            "pids controller is not delegated under {} (current cgroup {})",
-            parent.display(),
-            current.display()
-        ));
-    }
-    if parent != current {
-        tracing::debug!(
-            parent = %parent.display(),
-            current = %current.display(),
-            "session cgroup parent is an ancestor that can delegate controllers"
-        );
+        return Err(delegation_unavailable(&parent, &current));
     }
     let suffix = suffix
         .chars()
@@ -1071,7 +1165,7 @@ mod tests {
             Ok(dir) => dir,
             Err(err) => {
                 eprintln!(
-                    "delegated cgroup unavailable ({err}); exclusive leaf not enforced here. \
+                    "delegated cgroup unavailable ({err}); exclusive leaf enforcement was not asserted. \
                      process-group kill is the fallback and does not cover a descendant that calls setsid"
                 );
                 return;
@@ -1125,7 +1219,7 @@ mod tests {
             Ok(dir) => dir,
             Err(err) => {
                 eprintln!(
-                    "delegated cgroup unavailable ({err}); cgroup.kill was not asserted. \
+                    "delegated cgroup unavailable ({err}); cgroup.kill enforcement was not asserted. \
                      process-group kill is the fallback and does not cover a descendant that calls setsid"
                 );
                 return;
@@ -1173,6 +1267,308 @@ mod tests {
             "the other session's process survived its own cgroup.kill"
         );
         assert!(!other.exists(), "other session leaf remains");
+    }
+
+    /// Restrictive parent, populated host child, and a session leaf under that parent.
+    ///
+    /// The fixture is a child of the current cgroup's parent when that parent
+    /// already delegates `pids`. Product placement does not look at that
+    /// ancestor. A cgroup that cannot be delegated skips with a line that says
+    /// enforcement was not asserted.
+    #[test]
+    fn owned_subtree_session_leaf_stays_under_the_restrictive_parent() {
+        if std::env::var_os("BOOKCLERK_CGROUP_HELPER").is_some() {
+            cgroup_placement_helper();
+            return;
+        }
+        let Some(restrictive) = try_restrictive_parent("session leaf") else {
+            return;
+        };
+        let _cleanup = RemoveCgroupTree(restrictive.clone());
+        let report = std::env::temp_dir().join(format!(
+            "bookclerk-cgroup-report-{}-place",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&report);
+        let mut helper = spawn_cgroup_helper(&restrictive, &report, "place");
+        let text = wait_report(&report);
+        let leaf = report_field(&text, "leaf");
+        let sleeper: u32 = report_field(&text, "sleeper").parse().expect("sleeper pid");
+        let leaf = std::path::PathBuf::from(leaf);
+        assert_eq!(
+            leaf.parent(),
+            Some(restrictive.as_path()),
+            "session leaf escaped the restrictive cgroup: {}",
+            leaf.display()
+        );
+        assert!(
+            restrictive.join(HOST_CGROUP_NAME).is_dir(),
+            "host child was not created beside the session leaf"
+        );
+        assert_eq!(
+            std::fs::read_to_string(restrictive.join("pids.max"))
+                .expect("pids.max")
+                .trim(),
+            "64",
+            "creating the leaf rewrote the parent limit"
+        );
+        let cgroup = std::fs::read_to_string(format!("/proc/{sleeper}/cgroup")).unwrap_or_default();
+        assert!(
+            cgroup.contains(restrictive.file_name().unwrap().to_str().unwrap()),
+            "session process is not under the restrictive parent: {cgroup}"
+        );
+        assert!(
+            process_alive(sleeper),
+            "session process died before teardown"
+        );
+        std::fs::write(restrictive.join("cgroup.kill"), "1").expect("parent cgroup.kill");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while process_alive(sleeper) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            !process_alive(sleeper),
+            "parent cgroup.kill left session pid {sleeper} alive"
+        );
+        let _ = helper.wait();
+        eprintln!(
+            "session cgroup subtree enforcement was enforced; parent cgroup.kill stopped pid {sleeper}"
+        );
+    }
+
+    /// A pid that is not a descendant stays in the parent, and nothing is created outside it.
+    #[test]
+    fn foreign_pid_in_the_parent_refuses_the_session_leaf() {
+        if std::env::var_os("BOOKCLERK_CGROUP_HELPER").is_some() {
+            cgroup_placement_helper();
+            return;
+        }
+        let Some(restrictive) = try_restrictive_parent("foreign pid") else {
+            return;
+        };
+        let _cleanup = RemoveCgroupTree(restrictive.clone());
+        let owner = restrictive
+            .parent()
+            .expect("restrictive parent")
+            .to_path_buf();
+        let outside_before = cgroup_child_names(&owner);
+        let mut foreign = spawn_cgroup_member(&restrictive, "sleep");
+        let foreign_pid = foreign.id();
+        let report = std::env::temp_dir().join(format!(
+            "bookclerk-cgroup-report-{}-foreign",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&report);
+        let mut helper = spawn_cgroup_helper(&restrictive, &report, "foreign");
+        let text = wait_report(&report);
+        assert!(
+            text.contains("refused"),
+            "foreign pid did not refuse session placement: {text}"
+        );
+        assert!(
+            process_alive(foreign_pid),
+            "foreign pid {foreign_pid} died when placement was refused"
+        );
+        assert!(
+            !restrictive.join(HOST_CGROUP_NAME).exists(),
+            "refused placement left {}",
+            restrictive.join(HOST_CGROUP_NAME).display()
+        );
+        let outside_after = cgroup_child_names(&owner);
+        let extra: Vec<_> = outside_after
+            .iter()
+            .filter(|name| {
+                !outside_before.contains(name) && *name != restrictive.file_name().unwrap()
+            })
+            .cloned()
+            .collect();
+        assert!(
+            extra.is_empty(),
+            "placement created cgroups outside the restrictive parent: {extra:?}"
+        );
+        let _ = helper.wait();
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        eprintln!(
+            "session cgroup subtree enforcement was enforced; foreign pid {foreign_pid} stayed alive and placement was refused"
+        );
+    }
+
+    fn try_restrictive_parent(label: &str) -> Option<std::path::PathBuf> {
+        let current_rel = match current_cgroup_v2_path() {
+            Ok(path) => path,
+            Err(err) => {
+                eprintln!(
+                    "{label}: delegated cgroup unavailable ({err}); enforcement was not asserted"
+                );
+                return None;
+            }
+        };
+        let current = if current_rel.is_empty() || current_rel == "/" {
+            Path::new("/sys/fs/cgroup").to_path_buf()
+        } else {
+            Path::new("/sys/fs/cgroup").join(current_rel.trim_start_matches('/'))
+        };
+        let Some(owner) = current.parent() else {
+            eprintln!(
+                "{label}: delegated cgroup unavailable (no parent cgroup); enforcement was not asserted"
+            );
+            return None;
+        };
+        if !subtree_has_controller(owner, "pids") {
+            eprintln!(
+                "{label}: delegated cgroup unavailable (parent does not delegate pids); enforcement was not asserted"
+            );
+            return None;
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = owner.join(format!("bookclerk-test-restrictive-{nonce}"));
+        if let Err(err) = std::fs::create_dir(&dir) {
+            eprintln!(
+                "{label}: delegated cgroup unavailable ({err}); enforcement was not asserted"
+            );
+            return None;
+        }
+        let typ = std::fs::read_to_string(dir.join("cgroup.type")).unwrap_or_default();
+        if typ.contains("invalid") || std::fs::write(dir.join("pids.max"), "64").is_err() {
+            let _ = std::fs::remove_dir(&dir);
+            eprintln!(
+                "{label}: delegated cgroup unavailable (child cannot take pids.max, type {typ}); enforcement was not asserted"
+            );
+            return None;
+        }
+        Some(dir)
+    }
+
+    fn spawn_cgroup_helper(restrictive: &Path, report: &Path, mode: &str) -> std::process::Child {
+        let exe = std::env::current_exe().expect("test executable");
+        std::process::Command::new(exe)
+            .arg("platform::linux::tests::owned_subtree_session_leaf_stays_under_the_restrictive_parent")
+            .arg("--exact")
+            .env("BOOKCLERK_CGROUP_HELPER", mode)
+            .env("BOOKCLERK_CGROUP_RESTRICTIVE", restrictive)
+            .env("BOOKCLERK_CGROUP_REPORT", report)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("re-exec placement helper")
+    }
+
+    fn cgroup_placement_helper() {
+        let restrictive = std::path::PathBuf::from(
+            std::env::var("BOOKCLERK_CGROUP_RESTRICTIVE").expect("restrictive path"),
+        );
+        let report =
+            std::path::PathBuf::from(std::env::var("BOOKCLERK_CGROUP_REPORT").expect("report"));
+        let mode = std::env::var("BOOKCLERK_CGROUP_HELPER").unwrap_or_default();
+        let write_report = |text: String| {
+            let _ = std::fs::write(&report, text);
+        };
+        if let Err(err) = std::fs::write(
+            restrictive.join("cgroup.procs"),
+            std::process::id().to_string(),
+        ) {
+            write_report(format!("enter-failed {err}"));
+            return;
+        }
+        let limits = crate::ResourceLimits {
+            memory_bytes: None,
+            cpu_rate_percent: None,
+            active_processes: Some(32),
+        };
+        if mode == "foreign" {
+            match create_session_cgroup(&limits, "foreign-probe") {
+                Ok(dir) => write_report(format!("unexpected-ok {}", dir.display())),
+                Err(err) => write_report(format!("refused {err}")),
+            }
+            return;
+        }
+        let leaf = match create_session_cgroup(&limits, "owned") {
+            Ok(dir) => dir,
+            Err(err) => {
+                write_report(format!("create-failed {err}"));
+                return;
+            }
+        };
+        let mut sleeper = spawn_cgroup_member(&leaf, "sleep");
+        write_report(format!(
+            "leaf {}\nsleeper {}\n",
+            leaf.display(),
+            sleeper.id()
+        ));
+        let _ = sleeper.wait();
+    }
+
+    fn wait_report(path: &Path) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("placement helper wrote no report at {}", path.display());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    fn report_field(text: &str, key: &str) -> String {
+        text.lines()
+            .find_map(|line| {
+                line.strip_prefix(&format!("{key} "))
+                    .map(str::trim)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| panic!("report missing {key}: {text}"))
+    }
+
+    fn cgroup_child_names(dir: &Path) -> Vec<std::ffi::OsString> {
+        let mut names = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return names;
+        };
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                names.push(entry.file_name());
+            }
+        }
+        names
+    }
+
+    fn process_alive(pid: u32) -> bool {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    struct RemoveCgroupTree(std::path::PathBuf);
+
+    impl Drop for RemoveCgroupTree {
+        fn drop(&mut self) {
+            remove_cgroup_tree(&self.0);
+        }
+    }
+
+    fn remove_cgroup_tree(dir: &Path) {
+        if !dir.exists() {
+            return;
+        }
+        let _ = std::fs::write(dir.join("cgroup.kill"), "1");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while cgroup_populated(dir) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    remove_cgroup_tree(&entry.path());
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(dir);
     }
 
     /// Move a short-lived helper into `dir` and wait until it prints `ready`.
