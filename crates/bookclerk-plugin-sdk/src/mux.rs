@@ -2063,9 +2063,28 @@ mod tests {
         PROBE_OPEN_LOCK_ORDER.store(false, Ordering::SeqCst);
     }
 
+    /// Close that arrives before the write is `BrokenPipe`, and the slot is released.
+    #[tokio::test]
+    async fn peer_close_before_write_is_broken_pipe() {
+        let (client, server) = pair();
+        let mut local = client.open().await.expect("open");
+        let mut remote = server.accept().await.expect("accept");
+        remote.shutdown().await.expect("peer close");
+        let mut buf = Vec::new();
+        local.read_to_end(&mut buf).await.expect("read eof");
+        let err = local.write_all(b"x").await.expect_err("write after close");
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+        drop(local);
+        drop(remote);
+        wait_bookkeeping_idle(&client).await;
+        wait_bookkeeping_idle(&server).await;
+    }
+
     /// Concurrent open and writer progress on a multi-thread runtime.
     ///
-    /// The timeout runs on this thread, not on a worker blocked in `std::sync::Mutex`.
+    /// The server reads the expected byte before it closes, so a Close frame
+    /// cannot win the race against `write_all`. The timeout runs on this
+    /// thread, not on a worker blocked in `std::sync::Mutex`.
     #[test]
     fn open_and_writer_do_not_deadlock_on_generation_locks() {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -2075,26 +2094,102 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
-            rt.block_on(async {
-                let (client, server) = pair();
-                let accept = tokio::spawn(async move {
-                    for _ in 0..64 {
-                        let mut remote = server.accept().await.expect("accept");
-                        remote.shutdown().await.expect("peer close");
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rt.block_on(async {
+                    let (client, server) = pair();
+                    let server_task = server.clone();
+                    let accept = tokio::spawn(async move {
+                        for i in 0..64 {
+                            let mut remote = server_task.accept().await.unwrap_or_else(|err| {
+                                panic!("accept {i}: {err}");
+                            });
+                            let mut buf = [0u8; 1];
+                            remote
+                                .read_exact(&mut buf)
+                                .await
+                                .unwrap_or_else(|err| panic!("read {i}: {err}"));
+                            assert_eq!(buf, [b'x'], "byte {i}");
+                            remote
+                                .shutdown()
+                                .await
+                                .unwrap_or_else(|err| panic!("peer close {i}: {err}"));
+                        }
+                    });
+                    for i in 0..64 {
+                        let mut local = client
+                            .open()
+                            .await
+                            .unwrap_or_else(|err| panic!("open {i}: {err}"));
+                        local
+                            .write_all(b"x")
+                            .await
+                            .unwrap_or_else(|err| panic!("write {i}: {err}"));
+                        local
+                            .shutdown()
+                            .await
+                            .unwrap_or_else(|err| panic!("shutdown {i}: {err}"));
                     }
+                    accept
+                        .await
+                        .unwrap_or_else(|err| panic!("accept task: {err}"));
+                    ensure_admission_retired(&client)
+                        .await
+                        .unwrap_or_else(|err| panic!("client {err}"));
+                    ensure_admission_retired(&server)
+                        .await
+                        .unwrap_or_else(|err| panic!("server {err}"));
                 });
-                for _ in 0..64 {
-                    let mut local = client.open().await.expect("open");
-                    local.write_all(b"x").await.expect("write");
-                    local.shutdown().await.expect("shutdown");
-                }
-                accept.await.expect("accept task");
-            });
-            let _ = done_tx.send(());
+            }));
+            let message = match result {
+                Ok(()) => Ok(String::new()),
+                Err(payload) => Err(panic_payload(&payload)),
+            };
+            let _ = done_tx.send(message);
         });
-        done_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("generation lock order deadlocked");
+        match done_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(Ok(_)) => {}
+            Ok(Err(message)) => panic!("generation lock test failed: {message}"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("generation lock order deadlocked")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("generation lock test thread exited without a result")
+            }
+        }
+    }
+
+    /// Admission records are idle, or the error names the tables that remain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the tables that are still occupied after 500ms.
+    async fn ensure_admission_retired(mux: &Mux) -> std::result::Result<(), String> {
+        let idle = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            while !bookkeeping_idle(mux) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        if idle.is_err() {
+            return Err(format!(
+                "admission not retired: map {} records {} credits {} closes {}",
+                lock_map(&mux.shared.map).len(),
+                lock_records(&mux.shared.writer_state.records).len(),
+                lock_credits(&mux.shared.writer_state.credits).len(),
+                lock_closes(&mux.shared.writer_state.closes).len(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn panic_payload(payload: &Box<dyn std::any::Any + Send>) -> String {
+        if let Some(message) = payload.downcast_ref::<&str>() {
+            return (*message).to_string();
+        }
+        if let Some(message) = payload.downcast_ref::<String>() {
+            return message.clone();
+        }
+        "panic without a string payload".to_string()
     }
 
     fn current_thread_runtime() -> tokio::runtime::Runtime {
