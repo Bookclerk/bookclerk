@@ -222,9 +222,10 @@ Windows, two host-created AppContainers plus a session Job; no named-pipe
   directory is gone, and the guest cannot read gateway state or
   `WORKERD_GRANT_*` / `BOOKCLERK_JAIL_*` env;
 - two concurrent sessions cannot exercise each other's socket-proxy endpoint.
-  Each proxy answers a distinct channel tag through the production handoff;
-  a numeric fd or handle is not that identity. A test-only leak that supplies
-  B's actual endpoint makes the same absence check fail;
+  Each guest's configured channel answers only its own tag. The same probe
+  also checks additional inherited sockets or pipe handles. A jail handoff
+  that keeps A's configured channel and also inherits B's pipe makes that
+  absence check fail. A numeric fd or handle is not identity;
 - guest-exit / missing-workerd / mid-session kill fail closed.
 
 Nothing skips: a missing helper, runtime, confinement backend, startup failure

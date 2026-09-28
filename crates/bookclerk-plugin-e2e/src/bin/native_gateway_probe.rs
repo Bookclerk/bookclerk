@@ -24,6 +24,9 @@ const PLUGIN_ID: &str = "native_gateway_probe";
 const TEST_CHANNEL_HOST: &str = "bookclerk-test-channel";
 const TEST_CHANNEL_PORT: u16 = 1;
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bound for one extra inherited endpoint. The configured channel keeps
+/// [`IO_TIMEOUT`].
+const EXTRA_IDENT_TIMEOUT: Duration = Duration::from_secs(2);
 const AMBIENT_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn arg_spec(name: &str) -> CliArgSpec {
@@ -167,11 +170,38 @@ async fn hold_until_eof(host: &str, port: u16, payload: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// Ask the inherited proxy which channel it is.
+/// Ask every inherited proxy which channel it is.
 ///
-/// The tag comes from the server response. This process's environment does
-/// not carry it, and the numeric fd or handle is not compared.
+/// `tag` is the configured `BOOKCLERK_SOCKET_PROXY` channel. `tags` is that
+/// channel plus any other inherited socket or pipe pair. Each answer is the
+/// server's tag. This process's environment does not carry the tag, and a
+/// numeric fd or handle is not compared. Extra endpoints are opened before
+/// the SDK connect so that connect cannot consume the only descriptor first.
 async fn channel_ident() -> serde_json::Value {
+    let extras = discover_extra_channel_tags().await;
+    match configured_channel_tag().await {
+        Ok(tag) => {
+            let mut tags = Vec::with_capacity(1 + extras.len());
+            tags.push(tag.clone());
+            tags.extend(extras);
+            serde_json::json!({
+                "ok": true,
+                "tag": tag,
+                "tags": tags,
+                "error": "",
+            })
+        }
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "tag": "",
+            "tags": extras,
+            "error": error,
+        }),
+    }
+}
+
+/// Tag from the SDK connect on the configured proxy.
+async fn configured_channel_tag() -> Result<String, String> {
     let address = SocketAddress {
         hostname: TEST_CHANNEL_HOST.into(),
         port: TEST_CHANNEL_PORT,
@@ -183,12 +213,8 @@ async fn channel_ident() -> serde_json::Value {
     .await;
     let mut socket = match connected {
         Ok(Ok(socket)) => socket,
-        Ok(Err(err)) => {
-            return serde_json::json!({ "ok": false, "tag": "", "error": err.to_string() });
-        }
-        Err(_) => {
-            return serde_json::json!({ "ok": false, "tag": "", "error": "connect timed out" });
-        }
+        Ok(Err(err)) => return Err(err.to_string()),
+        Err(_) => return Err("connect timed out".into()),
     };
     let mut body = Vec::new();
     let mut buf = [0_u8; 128];
@@ -199,32 +225,279 @@ async fn channel_ident() -> serde_json::Value {
         match tokio::time::timeout(IO_TIMEOUT, socket.stream().read(&mut buf)).await {
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => body.extend_from_slice(&buf[..n]),
-            Ok(Err(err)) => {
-                return serde_json::json!({
-                    "ok": false,
-                    "tag": "",
-                    "error": format!("read tag: {err}"),
-                });
-            }
-            Err(_) => {
-                return serde_json::json!({ "ok": false, "tag": "", "error": "read timed out" });
-            }
+            Ok(Err(err)) => return Err(format!("read tag: {err}")),
+            Err(_) => return Err("read timed out".into()),
         }
     }
     let tag = String::from_utf8_lossy(&body).trim().to_string();
-    let safe = !tag.is_empty()
+    if channel_tag_is_safe(&tag) {
+        Ok(tag)
+    } else {
+        Err("unexpected tag bytes".into())
+    }
+}
+
+/// ASCII alphanumeric, `-`, or `_`, at most 64 bytes.
+fn channel_tag_is_safe(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 64
         && tag
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
-    serde_json::json!({
-        "ok": safe,
-        "tag": if safe { tag } else { String::new() },
-        "error": if safe {
-            String::new()
-        } else {
-            "unexpected tag bytes".to_string()
-        },
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Challenge, then mux Open/Data/CONNECT, then the response body tag.
+async fn mux_channel_tag(mux: bookclerk_plugin_sdk::mux::Mux) -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::time::timeout(EXTRA_IDENT_TIMEOUT, mux.open())
+        .await
+        .ok()?
+        .ok()?;
+    let req = connect_request(TEST_CHANNEL_HOST, TEST_CHANNEL_PORT);
+    tokio::time::timeout(EXTRA_IDENT_TIMEOUT, async {
+        stream.write_all(&req).await?;
+        stream.flush().await?;
+        std::io::Result::Ok(())
     })
+    .await
+    .ok()?
+    .ok()?;
+    let mut headers = Vec::new();
+    let mut tmp = [0u8; 1];
+    let header_read = async {
+        loop {
+            stream.read_exact(&mut tmp).await?;
+            headers.push(tmp[0]);
+            if headers.len() >= 4 && headers.ends_with(b"\r\n\r\n") {
+                return std::io::Result::Ok(());
+            }
+            if headers.len() > 8192 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "handshake too large",
+                ));
+            }
+        }
+    };
+    tokio::time::timeout(EXTRA_IDENT_TIMEOUT, header_read)
+        .await
+        .ok()?
+        .ok()?;
+    if !saw_http_200(&headers) {
+        return None;
+    }
+    let len = header_content_length(&headers)?;
+    if len == 0 || len > 64 {
+        return None;
+    }
+    let mut body = vec![0u8; len];
+    tokio::time::timeout(EXTRA_IDENT_TIMEOUT, stream.read_exact(&mut body))
+        .await
+        .ok()?
+        .ok()?;
+    let tag = String::from_utf8(body).ok()?;
+    let tag = tag.trim().to_string();
+    if channel_tag_is_safe(&tag) {
+        Some(tag)
+    } else {
+        None
+    }
+}
+
+/// `content-length` from a CONNECT response head.
+fn header_content_length(headers: &[u8]) -> Option<usize> {
+    let text = String::from_utf8_lossy(headers);
+    for line in text.split("\r\n") {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            return value.trim().parse().ok();
+        }
+    }
+    None
+}
+
+/// Tags from inherited endpoints other than the configured proxy.
+#[cfg(unix)]
+async fn discover_extra_channel_tags() -> Vec<String> {
+    let primary = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV)
+        .ok()
+        .and_then(|spec| {
+            spec.strip_prefix("fd:")
+                .and_then(|rest| rest.trim().parse::<i32>().ok())
+        });
+    let mut fds = Vec::new();
+    for fd in 3..64 {
+        if Some(fd) == primary || !fd_is_socket(fd) {
+            continue;
+        }
+        fds.push(fd);
+        if fds.len() == 4 {
+            break;
+        }
+    }
+    let mut tags = Vec::new();
+    for fd in fds {
+        if let Some(tag) = ident_extra_fd(fd).await {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+/// Write this process's session challenge, then read the proxy tag.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+async fn ident_extra_fd(fd: i32) -> Option<String> {
+    use std::os::fd::FromRawFd;
+    use tokio::io::AsyncWriteExt;
+
+    let challenge =
+        decode_challenge(&std::env::var(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV).ok()?).ok()?;
+    let duped = unsafe { libc::dup(fd) };
+    if duped < 0 {
+        return None;
+    }
+    let _ = unsafe { libc::fcntl(duped, libc::F_SETFD, libc::FD_CLOEXEC) };
+    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(duped) };
+    if std_stream.set_nonblocking(true).is_err() {
+        return None;
+    }
+    let tokio_stream = tokio::net::UnixStream::from_std(std_stream).ok()?;
+    let (reader, mut writer) = tokio::io::split(tokio_stream);
+    let wrote = tokio::time::timeout(EXTRA_IDENT_TIMEOUT, async {
+        writer.write_all(&challenge).await?;
+        writer.flush().await?;
+        std::io::Result::Ok(())
+    })
+    .await;
+    wrote.ok().and_then(|result| result.ok())?;
+    let mux = bookclerk_plugin_sdk::mux::Mux::client(reader, writer);
+    mux_channel_tag(mux).await
+}
+
+/// Tags from one extra inherited pipe pair, when the process has exactly one.
+#[cfg(windows)]
+async fn discover_extra_channel_tags() -> Vec<String> {
+    let Some((read, write)) = extra_inherited_pipe_pair() else {
+        return Vec::new();
+    };
+    match ident_extra_handle_pair(read, write).await {
+        Some(tag) => vec![tag],
+        None => Vec::new(),
+    }
+}
+
+/// No extra endpoint probe on this platform.
+#[cfg(not(any(unix, windows)))]
+async fn discover_extra_channel_tags() -> Vec<String> {
+    Vec::new()
+}
+
+/// `DuplicateHandle` scan for one read end and one write end that are not stdio
+/// and not the configured proxy. More than one of either end is not a pair.
+#[cfg(windows)]
+fn extra_inherited_pipe_pair() -> Option<(*mut core::ffi::c_void, *mut core::ffi::c_void)> {
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    for value in (4..=0x4000u64).step_by(4) {
+        if is_stdio_value(value) || session_owns_handle(value) {
+            continue;
+        }
+        let Ok(raw) = handle_ptr(value) else {
+            continue;
+        };
+        let Ok(copy) = duplicate_raw(raw) else {
+            continue;
+        };
+        if !is_pipe_handle(copy) {
+            drop(CloseEvent(copy));
+            continue;
+        }
+        match pipe_end_is_read(copy) {
+            Some(true) => reads.push(copy),
+            Some(false) => writes.push(copy),
+            None => drop(CloseEvent(copy)),
+        }
+        if reads.len() > 1 || writes.len() > 1 {
+            close_raw_handles(&reads);
+            close_raw_handles(&writes);
+            return None;
+        }
+    }
+    if reads.len() == 1 && writes.len() == 1 {
+        return Some((reads[0], writes[0]));
+    }
+    close_raw_handles(&reads);
+    close_raw_handles(&writes);
+    None
+}
+
+/// `PeekNamedPipe` succeeds on a read end and returns access denied on a write end.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn pipe_end_is_read(handle: *mut core::ffi::c_void) -> Option<bool> {
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    let mut available = 0u32;
+    let ok = unsafe {
+        PeekNamedPipe(
+            handle,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
+            &mut available,
+            core::ptr::null_mut(),
+        )
+    };
+    if ok != 0 {
+        return Some(true);
+    }
+    if unsafe { GetLastError() } == ERROR_ACCESS_DENIED {
+        return Some(false);
+    }
+    None
+}
+
+/// Close duplicated handles this scan will not adopt.
+#[cfg(windows)]
+fn close_raw_handles(handles: &[*mut core::ffi::c_void]) {
+    for handle in handles {
+        drop(CloseEvent(*handle));
+    }
+}
+
+/// Challenge on the write half, then the same mux tag read as the configured channel.
+#[cfg(windows)]
+async fn ident_extra_handle_pair(
+    read: *mut core::ffi::c_void,
+    write: *mut core::ffi::c_void,
+) -> Option<String> {
+    use tokio::io::AsyncWriteExt;
+
+    let read_pipe = match named_pipe_from_raw(read) {
+        Ok(pipe) => pipe,
+        Err(_) => {
+            drop(CloseEvent(write));
+            return None;
+        }
+    };
+    let mut write_pipe = match named_pipe_from_raw(write) {
+        Ok(pipe) => pipe,
+        Err(_) => return None,
+    };
+    let challenge =
+        decode_challenge(&std::env::var(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV).ok()?).ok()?;
+    let wrote = tokio::time::timeout(EXTRA_IDENT_TIMEOUT, async {
+        write_pipe.write_all(&challenge).await?;
+        write_pipe.flush().await?;
+        std::io::Result::Ok(())
+    })
+    .await;
+    wrote.ok().and_then(|result| result.ok())?;
+    let mux = bookclerk_plugin_sdk::mux::Mux::client(read_pipe, write_pipe);
+    mux_channel_tag(mux).await
 }
 
 /// Hex session challenge from the environment. Does not touch the proxy.
@@ -1558,6 +1831,14 @@ extern "system" {
     fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
     fn GetFileType(handle: *mut core::ffi::c_void) -> u32;
     fn GetLastError() -> u32;
+    fn PeekNamedPipe(
+        handle: *mut core::ffi::c_void,
+        buf: *mut u8,
+        buf_size: u32,
+        read: *mut u32,
+        available: *mut u32,
+        left: *mut u32,
+    ) -> i32;
     fn DuplicateHandle(
         source_process: *mut core::ffi::c_void,
         source: *mut core::ffi::c_void,

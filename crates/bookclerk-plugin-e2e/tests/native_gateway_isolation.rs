@@ -5,7 +5,9 @@
 //! `BOOKCLERK_SESSION_CHALLENGE` cannot complete a handshake on an endpoint it
 //! can see. After both sessions have completed that handshake, each guest asks
 //! the proxy it actually holds for that proxy's channel tag. A's tag is A's,
-//! not B's, whatever B's numeric fd or handle is. A child of B that does not
+//! not B's, whatever B's numeric fd or handle is. The same probe also
+//! authenticates any other inherited socket or pipe; production isolation
+//! leaves that set as the configured tag only. A child of B that does not
 //! inherit still cannot open B's endpoint. That child check is the
 //! parent-to-child boundary, not the A-to-B one.
 //!
@@ -254,6 +256,10 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     assert_eq!(ident_b["ok"], true, "B did not read its channel: {ident_b}");
     let reported_a = ident_a["tag"].as_str().unwrap_or("");
     let reported_b = ident_b["tag"].as_str().unwrap_or("");
+    let tags_a = channel::observed_channel_tags(&ident_a);
+    let tags_b = channel::observed_channel_tags(&ident_b);
+    let observed_a: Vec<&str> = tags_a.iter().map(String::as_str).collect();
+    let observed_b: Vec<&str> = tags_b.iter().map(String::as_str).collect();
     assert_eq!(
         reported_a, tag_a,
         "A's endpoint was not the channel handed to A: {ident_a}"
@@ -263,11 +269,19 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
         "B's endpoint was not the channel handed to B: {ident_b}"
     );
     assert!(
-        channel::foreign_channel_absent(reported_a, &tag_b),
+        observed_a.contains(&reported_a),
+        "A's configured tag was missing from the observed set: {ident_a}"
+    );
+    assert!(
+        observed_b.contains(&reported_b),
+        "B's configured tag was missing from the observed set: {ident_b}"
+    );
+    assert!(
+        channel::foreign_channel_absent(&observed_a, &tag_b),
         "A exercised B's endpoint tag={tag_b}: {ident_a}"
     );
     assert!(
-        channel::foreign_channel_absent(reported_b, &tag_a),
+        channel::foreign_channel_absent(&observed_b, &tag_a),
         "B exercised A's endpoint tag={tag_a}: {ident_b}"
     );
     let accepts_before_child = listener_b.accepts();
@@ -284,7 +298,7 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     #[cfg(not(windows))]
     let sentinel_unsupported = true;
     step(&format!(
-        "channel identity: A tag={reported_a} B tag={reported_b}; A did not report B; child opened_stream={} reached_proxy={} not_inherited={} collided={}; sentinel_unsupported={sentinel_unsupported}; numeric collision is not identity; B accepts unchanged",
+        "channel identity: A tag={reported_a} tags={observed_a:?} B tag={reported_b} tags={observed_b:?}; neither observed set contains the other session; child opened_stream={} reached_proxy={} not_inherited={} collided={}; sentinel_unsupported={sentinel_unsupported}; numeric collision is not identity; B accepts unchanged",
         drive_child["opened_stream"],
         drive_child["reached_proxy"],
         drive_child["not_inherited"],

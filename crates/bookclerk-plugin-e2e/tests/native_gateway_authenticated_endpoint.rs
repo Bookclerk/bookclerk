@@ -1,14 +1,16 @@
 //! The authenticated-endpoint probe must succeed on a real mux and must notice
 //! an intentional inherit leak.
 //!
-//! A second fixture supplies one session's real proxy endpoint, with one
-//! server reader, and checks that the channel-absence predicate fails. That
-//! spawn is not the jail and does not change its handle list.
+//! The leak fixture keeps endpoint A's configured channel working and also
+//! hands the guest endpoint B through `bookclerk-jail` (`preserve_fds` on Unix,
+//! `JailHandoff` extra handles on Windows). Both proxies share one challenge
+//! and answer different tags. The same `channel_ident` set used by the
+//! overlapping-session test must include B, so the absence check fails.
+//! Replacing A's endpoint with B is not this fixture.
 //!
-//! Each case has one server reader and one child client. The server has already
-//! passed the session challenge (`Mux::server` with no second reader). The
-//! child sends Open, then Data containing CONNECT. Raw HTTP on the pipe is not
-//! a probe.
+//! Each case has one server reader and one child client. The child sends the
+//! session challenge, then Open, then Data containing CONNECT. Raw HTTP on the
+//! pipe is not a probe.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -231,19 +233,33 @@ async fn windows_fixture(inherit: bool) -> serde_json::Value {
     outcome
 }
 
-fn assert_supplied_endpoint_is_visible(outcome: &serde_json::Value, foreign: &str) {
+fn assert_configured_and_extra_visible(outcome: &serde_json::Value) {
     let reported = outcome["tag"].as_str().unwrap_or("");
     assert_eq!(
-        reported, foreign,
-        "the supplied endpoint did not answer its own tag: {outcome}"
+        reported, "endpoint-a",
+        "the configured channel did not answer A's tag: {outcome}"
+    );
+    let tags = channel::observed_channel_tags(outcome);
+    let observed: Vec<&str> = tags.iter().map(String::as_str).collect();
+    assert!(
+        observed.contains(&"endpoint-a"),
+        "configured tag missing from the observed set: {outcome}"
     );
     assert!(
-        !channel::foreign_channel_absent(reported, foreign),
-        "absence assertion did not fail when B's endpoint was supplied: {outcome}"
+        observed.contains(&"endpoint-b"),
+        "extra inherited endpoint B was not observed: {outcome}"
     );
     assert!(
-        channel::foreign_channel_absent(reported, "endpoint-a"),
-        "a different tag must still count as absent: {outcome}"
+        !channel::foreign_channel_absent(&observed, "endpoint-b"),
+        "absence assertion did not fail when B's endpoint was also inherited: {outcome}"
+    );
+    assert!(
+        channel::foreign_channel_absent(&observed, "endpoint-z"),
+        "a tag outside the observed set must still count as absent: {outcome}"
+    );
+    eprintln!(
+        "leak channel configured={} tags={observed:?}",
+        outcome["tag"]
     );
 }
 
@@ -257,120 +273,289 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn spawn_channel_child(envs: &[(&'static str, String)]) -> std::process::Output {
-    let mut cmd = Command::new(probe_bin());
-    cmd.arg("--channel-ident")
-        .env_remove(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV)
-        .env_remove(bookclerk_plugin_sdk::SOCKET_PROXY_ENV)
-        .env_remove(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV);
-    for (key, value) in envs {
-        cmd.env(*key, value);
+fn jail_bin() -> PathBuf {
+    let probe = probe_bin();
+    let name = if cfg!(windows) {
+        "bookclerk-jail.exe"
+    } else {
+        "bookclerk-jail"
+    };
+    let mut candidates = Vec::new();
+    if let Some(dir) = probe.parent() {
+        candidates.push(dir.join(name));
+        if let Some(parent) = dir.parent() {
+            candidates.push(parent.join(name));
+        }
     }
-    cmd.output().expect("spawn channel child")
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| panic!("bookclerk-jail was not next to {}", probe.display()))
 }
 
-/// One production proxy reader and one child client holding that pipe.
-async fn finish_channel_child(
-    proxy: bookclerk_workerd::socket_proxy::ProxyServer,
-    envs: Vec<(&'static str, String)>,
-) -> serde_json::Value {
-    let output = tokio::task::spawn_blocking(move || spawn_channel_child(&envs))
-        .await
-        .expect("join");
-    let outcome = parse_probe(&output);
-    drop(proxy);
-    outcome
+fn leak_spec(probe: &std::path::Path, scratch: &std::path::Path) -> bookclerk_sandbox::Spec {
+    let mut reads = Vec::new();
+    if let Some(dir) = probe.parent() {
+        reads.push(dir.to_path_buf());
+    }
+    reads.push(probe.to_path_buf());
+    bookclerk_sandbox::Spec {
+        reads,
+        writes: vec![scratch.to_path_buf()],
+        net: bookclerk_sandbox::NetPolicy::Deny,
+        allow_exec: true,
+        system_paths: true,
+        enforcement: bookclerk_sandbox::Enforcement::Required,
+        unix_socket_dirs: Some(Vec::new()),
+        ..bookclerk_sandbox::Spec::new("test:endpoint-leak")
+    }
+}
+
+fn assert_leak_output(output: &std::process::Output) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "leak guest failed: status {}\nstdout {}\nstderr {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_probe(output)
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn set_cloexec(fd: i32) {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    assert!(flags >= 0, "F_GETFD");
+    assert_eq!(
+        unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) },
+        0,
+        "F_SETFD"
+    );
+}
+
+/// Dup both client sockets onto fd 3 and fd 4 without clobbering either source.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn place_leak_fds(fd_a: i32, fd_b: i32) -> std::io::Result<()> {
+    let a_tmp = unsafe { libc::fcntl(fd_a, libc::F_DUPFD_CLOEXEC, 5) };
+    let b_tmp = unsafe { libc::fcntl(fd_b, libc::F_DUPFD_CLOEXEC, 5) };
+    if a_tmp < 0 || b_tmp < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let placed = bookclerk_sandbox::inherit_fd_at(a_tmp, 3)
+        .and_then(|()| bookclerk_sandbox::inherit_fd_at(b_tmp, 4));
+    unsafe {
+        if a_tmp != 3 {
+            libc::close(a_tmp);
+        }
+        if b_tmp != 4 {
+            libc::close(b_tmp);
+        }
+        if fd_a > 4 {
+            libc::close(fd_a);
+        }
+        if fd_b > 4 && fd_b != fd_a {
+            libc::close(fd_b);
+        }
+    }
+    placed
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(unsafe_code)]
 async fn supplied_endpoint_fails_channel_absence() {
-    use std::os::fd::{FromRawFd, IntoRawFd};
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
 
-    let (client, server) = tokio::net::UnixStream::pair().expect("socketpair");
-    let client = client.into_std().expect("into_std");
-    let fd = client.into_raw_fd();
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    assert!(flags >= 0, "F_GETFD");
-    assert_eq!(
-        unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) },
-        0,
-        "F_SETFD"
-    );
-    let challenge = [0x11_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
-    let fence = Arc::new(AtomicBool::new(false));
-    let proxy = bookclerk_workerd::socket_proxy::spawn_link_with_challenge_tag(
-        server,
+    let scratch = tempfile::tempdir().expect("scratch");
+    let probe = probe_bin();
+    let mut spec = leak_spec(&probe, scratch.path());
+    spec.preserve_fds = vec![3, 4];
+    let spec_json = serde_json::to_string(&spec).expect("spec");
+    let (client_a, server_a) = tokio::net::UnixStream::pair().expect("socketpair a");
+    let (client_b, server_b) = tokio::net::UnixStream::pair().expect("socketpair b");
+    let client_a = client_a.into_std().expect("std a");
+    let client_b = client_b.into_std().expect("std b");
+    let fd_a = client_a.into_raw_fd();
+    let fd_b = client_b.into_raw_fd();
+    set_cloexec(fd_a);
+    set_cloexec(fd_b);
+    let challenge = [0x21_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+    let fence_a = Arc::new(AtomicBool::new(false));
+    let fence_b = Arc::new(AtomicBool::new(false));
+    let proxy_a = bookclerk_workerd::socket_proxy::spawn_link_with_challenge_tag(
+        server_a,
         bookclerk_plugin_manifest::EgressPolicy::deny(),
-        fence,
+        fence_a,
+        challenge,
+        "endpoint-a",
+    )
+    .expect("proxy a");
+    let proxy_b = bookclerk_workerd::socket_proxy::spawn_link_with_challenge_tag(
+        server_b,
+        bookclerk_plugin_manifest::EgressPolicy::deny(),
+        fence_b,
         challenge,
         "endpoint-b",
     )
-    .expect("proxy");
-    let outcome = finish_channel_child(
-        proxy,
-        vec![
-            (
-                bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
-                hex_encode(&challenge),
-            ),
-            (bookclerk_plugin_sdk::SOCKET_PROXY_ENV, format!("fd:{fd}")),
-        ],
-    )
-    .await;
-    assert_supplied_endpoint_is_visible(&outcome, "endpoint-b");
-    drop(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) });
+    .expect("proxy b");
+    let jail = jail_bin();
+    let mut cmd = Command::new(&jail);
+    cmd.arg(&probe)
+        .arg("--channel-ident")
+        .env(bookclerk_sandbox::SPEC_ENV, &spec_json)
+        .env(
+            bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
+            hex_encode(&challenge),
+        )
+        .env(bookclerk_plugin_sdk::SOCKET_PROXY_ENV, "fd:3")
+        .env_remove(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV)
+        .current_dir(scratch.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    unsafe {
+        cmd.pre_exec(move || place_leak_fds(fd_a, fd_b));
+    }
+    let output = tokio::task::spawn_blocking(move || cmd.output().expect("spawn jail"))
+        .await
+        .expect("join");
+    unsafe {
+        libc::close(fd_a);
+        libc::close(fd_b);
+    }
+    let outcome = assert_leak_output(&output);
+    assert_configured_and_extra_visible(&outcome);
+    drop(proxy_a);
+    drop(proxy_b);
 }
 
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn supplied_endpoint_fails_channel_absence() {
-    let pipes = bookclerk_sandbox::StdioEnds::pair_overlapped().expect("pipes");
-    pipes
-        .guest_stdin
-        .set_inheritable(true)
-        .expect("read inherit");
-    pipes
-        .guest_stdout
-        .set_inheritable(true)
-        .expect("write inherit");
-    let read_value = pipes.guest_stdin.handle_value();
-    let write_value = pipes.guest_stdout.handle_value();
-    let server_read = pipe_from_owned(pipes.host_stdout.into_owned_handle());
-    let server_write = pipe_from_owned(pipes.host_stdin.into_owned_handle());
-    let challenge = [0x11_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
-    let fence = Arc::new(AtomicBool::new(false));
-    let proxy = bookclerk_workerd::socket_proxy::spawn_halves_with_challenge_tag(
-        server_read,
-        server_write,
+    use std::io::Write;
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Stdio;
+
+    let scratch = tempfile::tempdir().expect("scratch");
+    let probe = probe_bin();
+    let spec = leak_spec(&probe, scratch.path());
+    let spec_json = serde_json::to_string(&spec).expect("spec");
+    let pipes_a = bookclerk_sandbox::StdioEnds::pair_overlapped().expect("pipes a");
+    let pipes_b = bookclerk_sandbox::StdioEnds::pair_overlapped().expect("pipes b");
+    for end in [
+        &pipes_a.guest_stdin,
+        &pipes_a.guest_stdout,
+        &pipes_b.guest_stdin,
+        &pipes_b.guest_stdout,
+    ] {
+        end.set_inheritable(false).expect("clear inherit");
+    }
+    let server_a_read = pipe_from_owned(pipes_a.host_stdout.into_owned_handle());
+    let server_a_write = pipe_from_owned(pipes_a.host_stdin.into_owned_handle());
+    let server_b_read = pipe_from_owned(pipes_b.host_stdout.into_owned_handle());
+    let server_b_write = pipe_from_owned(pipes_b.host_stdin.into_owned_handle());
+    let challenge = [0x21_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
+    let fence_a = Arc::new(AtomicBool::new(false));
+    let fence_b = Arc::new(AtomicBool::new(false));
+    let proxy_a = bookclerk_workerd::socket_proxy::spawn_halves_with_challenge_tag(
+        server_a_read,
+        server_a_write,
         bookclerk_plugin_manifest::EgressPolicy::deny(),
-        fence,
+        fence_a,
+        challenge,
+        "endpoint-a",
+    )
+    .expect("proxy a");
+    let proxy_b = bookclerk_workerd::socket_proxy::spawn_halves_with_challenge_tag(
+        server_b_read,
+        server_b_write,
+        bookclerk_plugin_manifest::EgressPolicy::deny(),
+        fence_b,
         challenge,
         "endpoint-b",
     )
-    .expect("proxy");
-    let outcome = finish_channel_child(
-        proxy,
-        vec![
-            (
-                bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
-                hex_encode(&challenge),
-            ),
-            (
-                bookclerk_plugin_sdk::SOCKET_PROXY_ENV,
-                format!("handle:{read_value}"),
-            ),
-            (
-                bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV,
-                format!("handle:{write_value}"),
-            ),
+    .expect("proxy b");
+    let jail = jail_bin();
+    let mut child = Command::new(&jail)
+        .arg(&probe)
+        .arg("--channel-ident")
+        .env(bookclerk_sandbox::SPEC_ENV, &spec_json)
+        .env(bookclerk_sandbox::JAIL_HANDOFF_ENV, "1")
+        .env(
+            bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV,
+            hex_encode(&challenge),
+        )
+        .env_remove(bookclerk_plugin_sdk::SOCKET_PROXY_ENV)
+        .env_remove(bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV)
+        .current_dir(scratch.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jail");
+    let target = child.as_raw_handle();
+    let a_read =
+        bookclerk_sandbox::duplicate_handle_into(pipes_a.guest_stdin.as_raw_handle(), target)
+            .expect("dup A read");
+    let a_write =
+        bookclerk_sandbox::duplicate_handle_into(pipes_a.guest_stdout.as_raw_handle(), target)
+            .expect("dup A write");
+    let b_read =
+        bookclerk_sandbox::duplicate_handle_into(pipes_b.guest_stdin.as_raw_handle(), target)
+            .expect("dup B read");
+    let b_write =
+        bookclerk_sandbox::duplicate_handle_into(pipes_b.guest_stdout.as_raw_handle(), target)
+            .expect("dup B write");
+    let handoff = bookclerk_sandbox::JailHandoff {
+        v: bookclerk_sandbox::JailHandoff::VERSION,
+        stdin: None,
+        stdout: None,
+        extra: vec![
+            bookclerk_sandbox::JailHandoffExtra {
+                env: bookclerk_plugin_sdk::SOCKET_PROXY_ENV.into(),
+                handle: a_read,
+            },
+            bookclerk_sandbox::JailHandoffExtra {
+                env: bookclerk_plugin_sdk::SOCKET_PROXY_WRITE_ENV.into(),
+                handle: a_write,
+            },
+            bookclerk_sandbox::JailHandoffExtra {
+                env: String::new(),
+                handle: b_read,
+            },
+            bookclerk_sandbox::JailHandoffExtra {
+                env: String::new(),
+                handle: b_write,
+            },
         ],
-    )
-    .await;
-    assert_supplied_endpoint_is_visible(&outcome, "endpoint-b");
-    drop(pipes.guest_stdin);
-    drop(pipes.guest_stdout);
+    };
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "{}", handoff.to_line().expect("handoff line")).expect("write handoff");
+        stdin.flush().expect("flush handoff");
+    }
+    let guest_a_read = pipes_a.guest_stdin;
+    let guest_a_write = pipes_a.guest_stdout;
+    let guest_b_read = pipes_b.guest_stdin;
+    let guest_b_write = pipes_b.guest_stdout;
+    let output = tokio::task::spawn_blocking(move || {
+        let output = child.wait_with_output().expect("wait jail");
+        drop(guest_a_read);
+        drop(guest_a_write);
+        drop(guest_b_read);
+        drop(guest_b_write);
+        output
+    })
+    .await
+    .expect("join");
+    let outcome = assert_leak_output(&output);
+    assert_configured_and_extra_visible(&outcome);
+    drop(proxy_a);
+    drop(proxy_b);
 }
 
 #[cfg(windows)]
