@@ -445,13 +445,16 @@ fn extra_discovery_note() -> String {
 /// `DuplicateHandle` scan for one read end and one write end that are not stdio
 /// and not the configured proxy. More than one of either end is not a pair.
 ///
-/// Synchronous pipes are guest stdio. Handles that fail `GetNamedPipeInfo` are
-/// sockets. Neither is an inherited socket-proxy endpoint. Copies this scan
-/// creates are skipped, or the copy is counted as a second pipe.
+/// Synchronous pipes are guest stdio. A write-only named pipe fails
+/// `GetNamedPipeInfo`, so that call does not decide membership. Direction
+/// does: one read end and one write end. Copies this scan creates are
+/// skipped, or the copy is counted as a second pipe.
 #[cfg(windows)]
 fn extra_inherited_pipe_pair() -> Option<(u64, u64)> {
     let mut reads = Vec::new();
     let mut writes = Vec::new();
+    let mut sync = 0u32;
+    let mut nodir = 0u32;
     // `DuplicateHandle` allocates a new value inside the scan range. Visiting
     // that copy again looks like another endpoint.
     let mut created = Vec::new();
@@ -466,17 +469,29 @@ fn extra_inherited_pipe_pair() -> Option<(u64, u64)> {
             continue;
         };
         created.push(handle_value(copy));
-        if !is_pipe_handle(copy) || !named_pipe_info_ok(copy) || pipe_is_synchronous(copy) {
+        if !is_pipe_handle(copy) {
+            drop(CloseEvent(copy));
+            continue;
+        }
+        if pipe_is_synchronous(copy) {
+            sync += 1;
             drop(CloseEvent(copy));
             continue;
         }
         match pipe_direction(copy) {
             Some(true) => reads.push(copy),
             Some(false) => writes.push(copy),
-            None => drop(CloseEvent(copy)),
+            None => {
+                nodir += 1;
+                drop(CloseEvent(copy));
+            }
         }
         if reads.len() > 1 || writes.len() > 1 {
-            let note = format!("ambiguous reads={} writes={}", reads.len(), writes.len());
+            let note = format!(
+                "ambiguous reads={} writes={} sync={sync} nodir={nodir}",
+                reads.len(),
+                writes.len()
+            );
             close_raw_handles(&reads);
             close_raw_handles(&writes);
             remember_extra_note(&note);
@@ -488,27 +503,12 @@ fn extra_inherited_pipe_pair() -> Option<(u64, u64)> {
     }
     close_raw_handles(&reads);
     close_raw_handles(&writes);
-    remember_extra_note("no-extra-pair");
+    remember_extra_note(&format!(
+        "no-extra-pair reads={} writes={} sync={sync} nodir={nodir}",
+        reads.len(),
+        writes.len()
+    ));
     None
-}
-
-/// `true` when `GetNamedPipeInfo` accepts `handle` (a pipe, not a socket).
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn named_pipe_info_ok(handle: *mut core::ffi::c_void) -> bool {
-    let mut flags = 0u32;
-    let mut out_size = 0u32;
-    let mut in_size = 0u32;
-    let mut instances = 0u32;
-    unsafe {
-        GetNamedPipeInfo(
-            handle,
-            &mut flags,
-            &mut out_size,
-            &mut in_size,
-            &mut instances,
-        ) != 0
-    }
 }
 
 /// Synchronous I/O is set on `CreatePipe` stdio and clear on overlapped proxy ends.
@@ -524,10 +524,17 @@ fn pipe_is_synchronous(handle: *mut core::ffi::c_void) -> bool {
     mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) != 0
 }
 
-/// Read end, write end, or neither when the access mask is duplex or unknown.
+/// Read end, write end, or neither when the pipe is duplex or unknown.
+///
+/// `PeekNamedPipe` reports access denied on a write-only end. That end also
+/// fails `GetNamedPipeInfo`, so the pipe-local configuration is the next
+/// check, then the access mask.
 #[cfg(windows)]
 fn pipe_direction(handle: *mut core::ffi::c_void) -> Option<bool> {
     if let Some(read) = pipe_end_is_read(handle) {
+        return Some(read);
+    }
+    if let Some(read) = pipe_direction_from_local(handle) {
         return Some(read);
     }
     const FILE_ACCESS_INFORMATION: u32 = 8;
@@ -543,34 +550,66 @@ fn pipe_direction(handle: *mut core::ffi::c_void) -> Option<bool> {
     }
 }
 
+/// Server inbound is the read end. Server outbound is the write end.
+#[cfg(windows)]
+fn pipe_direction_from_local(handle: *mut core::ffi::c_void) -> Option<bool> {
+    const FILE_PIPE_LOCAL_INFORMATION: u32 = 24;
+    const FILE_PIPE_INBOUND: u32 = 0;
+    const FILE_PIPE_OUTBOUND: u32 = 1;
+    const FILE_PIPE_CLIENT_END: u32 = 0;
+    const FILE_PIPE_SERVER_END: u32 = 1;
+    let mut fields = [0u32; 10];
+    if !query_file_words(handle, FILE_PIPE_LOCAL_INFORMATION, &mut fields) {
+        return None;
+    }
+    let configuration = fields[1];
+    let end = fields[9];
+    match (configuration, end) {
+        (FILE_PIPE_INBOUND, FILE_PIPE_SERVER_END) | (FILE_PIPE_OUTBOUND, FILE_PIPE_CLIENT_END) => {
+            Some(true)
+        }
+        (FILE_PIPE_OUTBOUND, FILE_PIPE_SERVER_END) | (FILE_PIPE_INBOUND, FILE_PIPE_CLIENT_END) => {
+            Some(false)
+        }
+        _ => None,
+    }
+}
+
 /// One `u32` from `NtQueryInformationFile`, when the query succeeds.
 #[cfg(windows)]
-#[allow(unsafe_code)]
 fn query_file_u32(handle: *mut core::ffi::c_void, class: u32) -> Option<u32> {
+    let mut value = [0u32; 1];
+    if query_file_words(handle, class, &mut value) {
+        Some(value[0])
+    } else {
+        None
+    }
+}
+
+/// `words` from `NtQueryInformationFile`, when the query succeeds.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn query_file_words(handle: *mut core::ffi::c_void, class: u32, words: &mut [u32]) -> bool {
     #[repr(C)]
     struct IoStatusBlock {
         status: isize,
         information: usize,
     }
-    let mut value = 0u32;
     let mut io = IoStatusBlock {
         status: 0,
         information: 0,
     };
+    let len = u32::try_from(words.len().saturating_mul(4)).unwrap_or(u32::MAX);
     let status = unsafe {
         NtQueryInformationFile(
             handle,
             (&mut io as *mut IoStatusBlock).cast(),
-            (&mut value as *mut u32).cast(),
-            4,
+            words.as_mut_ptr().cast(),
+            len,
             class,
         )
     };
-    if status < 0 {
-        None
-    } else {
-        Some(value)
-    }
+    status >= 0
 }
 
 /// Numeric value of a handle this process still owns.
@@ -1975,13 +2014,6 @@ extern "system" {
     fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
     fn GetFileType(handle: *mut core::ffi::c_void) -> u32;
     fn GetLastError() -> u32;
-    fn GetNamedPipeInfo(
-        handle: *mut core::ffi::c_void,
-        flags: *mut u32,
-        out_size: *mut u32,
-        in_size: *mut u32,
-        instances: *mut u32,
-    ) -> i32;
     fn PeekNamedPipe(
         handle: *mut core::ffi::c_void,
         buf: *mut u8,
