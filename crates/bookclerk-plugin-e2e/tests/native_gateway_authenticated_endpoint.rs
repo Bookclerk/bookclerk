@@ -1,16 +1,17 @@
 //! The authenticated-endpoint probe must succeed on a real mux and must notice
 //! one extra endpoint handed through the production guest launch.
 //!
-//! The extra-endpoint case keeps A's configured channel working. Endpoint B is
-//! authenticated with its own challenge in this process, then added to the
-//! guest handoff (`preserve_fds` fd 4 on Unix, `JailHandoff` extras on
-//! Windows) by `PluginSession::spawn_with`. After A has connected, the same
-//! `channel_ident` RPC used by the overlapping-session test reports B.
-//! Replaying A's challenge onto B is not this fixture. Replacing A's endpoint
-//! with B is not this fixture. On Windows the challenge write uses an event,
-//! not this process's I/O completion port: binding B's guest end here makes
-//! the guest's later association fail, and `channel_ident` reports
-//! `ident-failed` instead of B's tag.
+//! Endpoint B is authenticated with its own challenge in this process. The
+//! paired cases publish the same candidate metadata. One leaves the launcher
+//! on its normal exclusion path (no extra preserve fd, no inherited handles)
+//! and `channel_ident` must report that slot inaccessible. The other transfers
+//! B through `PluginSession::spawn_with` and the same RPC must report B's tag
+//! while A's channel still works. Transfer without candidate metadata is
+//! `not-run`, not absence. Replaying A's challenge onto B is not this fixture.
+//! Replacing A's endpoint with B is not this fixture. On Windows the challenge
+//! write uses an event, not this process's I/O completion port: binding B's
+//! guest end here makes the guest's later association fail, and
+//! `channel_ident` reports `ident-failed` instead of B's tag.
 //!
 //! The inherit cases have one server reader and one child client. The child
 //! sends Open, then Data containing CONNECT. Raw HTTP on the pipe is not a
@@ -31,6 +32,7 @@ use std::time::Duration;
 
 use bookclerk_plugin_host::{
     TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE, TEST_INJECT_EXTRA_ENDPOINT_ENV,
+    TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };
 use ng_harness::{open_session, probe, step, Install, Listener};
 
@@ -244,14 +246,29 @@ async fn windows_fixture(inherit: bool) -> serde_json::Value {
     outcome
 }
 
+/// One launcher at a time. These tests share the process environment.
+static ENDPOINT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Clears the host-only endpoint env even when the test panics.
 struct ClearHostEndpointEnv;
 
 impl Drop for ClearHostEndpointEnv {
     fn drop(&mut self) {
         std::env::remove_var(TEST_INJECT_EXTRA_ENDPOINT_ENV);
+        std::env::remove_var(TEST_OBSERVE_EXTRA_ENDPOINT_ENV);
         std::env::remove_var(TEST_CHANNEL_IDENT_ENV);
     }
+}
+
+/// What `channel_ident` must report for endpoint B.
+#[derive(Clone, Copy)]
+enum CandidateExpect {
+    /// Metadata set, transfer denied, slot inaccessible.
+    Excluded,
+    /// Metadata set, endpoint transferred, B's tag observed.
+    Included,
+    /// Endpoint transferred, metadata omitted. Not an observation.
+    NotRun,
 }
 
 fn challenge_accepted_count() -> usize {
@@ -368,18 +385,39 @@ async fn prepare_authenticated_extra(
     }
 }
 
-/// A's normal session keeps its own channel, and `channel_ident` still sees B.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn injected_endpoint_is_visible_after_authentication() {
+/// Publish candidate metadata, transfer permission, or both.
+fn publish_candidate_env(spec: &str, expect: CandidateExpect) {
+    std::env::remove_var(TEST_INJECT_EXTRA_ENDPOINT_ENV);
+    std::env::remove_var(TEST_OBSERVE_EXTRA_ENDPOINT_ENV);
+    let transfer = matches!(expect, CandidateExpect::Included | CandidateExpect::NotRun);
+    let observe = matches!(
+        expect,
+        CandidateExpect::Included | CandidateExpect::Excluded
+    );
+    if transfer {
+        std::env::set_var(TEST_INJECT_EXTRA_ENDPOINT_ENV, spec);
+    }
+    if observe {
+        let metadata = if cfg!(windows) && matches!(expect, CandidateExpect::Excluded) {
+            spec
+        } else {
+            "1"
+        };
+        std::env::set_var(TEST_OBSERVE_EXTRA_ENDPOINT_ENV, metadata);
+    }
+}
+
+/// A's session, B's pre-authenticated endpoint, and one `channel_ident` outcome.
+async fn candidate_case(expect: CandidateExpect) {
+    let _lock = ENDPOINT_ENV_LOCK.lock().await;
     let _guard = ClearHostEndpointEnv;
     std::env::set_var(TEST_CHANNEL_IDENT_ENV, "1");
-    std::env::remove_var(TEST_INJECT_EXTRA_ENDPOINT_ENV);
 
     let challenge_b = [0x5a_u8; bookclerk_plugin_sdk::SESSION_CHALLENGE_LEN];
     let before = challenge_accepted_count();
     let (proxy_b, spec, parent) = prepare_authenticated_extra(&challenge_b).await;
     wait_until_challenge_accepted(before).await;
-    std::env::set_var(TEST_INJECT_EXTRA_ENDPOINT_ENV, &spec);
+    publish_candidate_env(&spec, expect);
 
     let listener = Listener::bind(true).await;
     let install = Install::new(listener.port);
@@ -426,7 +464,7 @@ async fn injected_endpoint_is_visible_after_authentication() {
     let dir = session.session_dir().expect("session dir");
     let file_tag = std::fs::read_to_string(dir.join(TEST_CHANNEL_TAG_FILE))
         .unwrap_or_else(|err| panic!("channel tag in {}: {err}", dir.display()));
-    let file_tag = file_tag.trim();
+    let file_tag = file_tag.trim().to_string();
     assert_eq!(
         ident["tag"].as_str().unwrap_or(""),
         file_tag,
@@ -436,21 +474,8 @@ async fn injected_endpoint_is_visible_after_authentication() {
     let tags = channel::observed_channel_tags(&ident);
     let observed: Vec<&str> = tags.iter().map(String::as_str).collect();
     assert!(
-        observed.contains(&file_tag),
+        observed.iter().any(|tag| *tag == file_tag),
         "configured tag missing from the observed set: {ident}"
-    );
-    assert!(
-        observed.contains(&"endpoint-b"),
-        "handed endpoint B was not observed: {ident}"
-    );
-    assert_eq!(
-        channel::channel_endpoint_isolation(&ident, "endpoint-b"),
-        Ok(false),
-        "absence assertion did not detect B: {ident}"
-    );
-    assert!(
-        channel::foreign_channel_absent(&observed, "endpoint-z"),
-        "a tag outside the observed set must still count as absent: {ident}"
     );
     let env = probe(&session, "env_keys", 0, "").await;
     let published = |name: &str| {
@@ -458,21 +483,120 @@ async fn injected_endpoint_is_visible_after_authentication() {
             .as_array()
             .is_some_and(|keys| keys.iter().any(|key| key == name))
     };
-    assert!(
-        published(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV),
-        "guest env did not publish the extra endpoint read slot"
-    );
-    #[cfg(windows)]
-    assert!(
-        published(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV),
-        "guest env did not publish the extra endpoint write slot"
-    );
-    step(&format!(
-        "leak channel configured={} tags={observed:?} extra_status={} extra_error={} isolation=false",
-        ident["tag"], ident["extra_status"], ident["extra_error"]
-    ));
+    match expect {
+        CandidateExpect::Included => {
+            assert!(
+                observed.contains(&"endpoint-b"),
+                "handed endpoint B was not observed: {ident}"
+            );
+            assert_eq!(
+                channel::channel_endpoint_isolation(&ident, "endpoint-b"),
+                Ok(false),
+                "absence assertion did not detect B: {ident}"
+            );
+            assert!(
+                channel::foreign_channel_absent(&observed, "endpoint-z"),
+                "a tag outside the observed set must still count as absent: {ident}"
+            );
+            assert!(
+                published(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV),
+                "guest env did not publish candidate metadata: {env}"
+            );
+            assert!(
+                published(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV),
+                "guest env did not publish the transferred endpoint"
+            );
+            #[cfg(windows)]
+            {
+                assert!(published(
+                    bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_WRITE_ENV
+                ));
+                assert!(published(
+                    bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV
+                ));
+            }
+            step(&format!(
+                "included channel configured={} tags={observed:?} extra_status={} extra_error={} isolation=false",
+                ident["tag"], ident["extra_status"], ident["extra_error"]
+            ));
+        }
+        CandidateExpect::Excluded => {
+            assert!(
+                !observed.contains(&"endpoint-b"),
+                "excluded endpoint B was still observed: {ident}"
+            );
+            assert_eq!(ident["extra_status"], "absent", "{ident}");
+            assert_eq!(ident["extra_error"], "", "{ident}");
+            assert_eq!(
+                channel::channel_endpoint_isolation(&ident, "endpoint-b"),
+                Ok(true),
+                "exclusion was not a positive observation: {ident}"
+            );
+            assert!(
+                published(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV),
+                "excluded case dropped candidate metadata: {env}"
+            );
+            assert!(
+                !published(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV),
+                "excluded case still transferred the endpoint: {env}"
+            );
+            #[cfg(windows)]
+            {
+                assert!(published(
+                    bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_WRITE_ENV
+                ));
+                assert!(!published(
+                    bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV
+                ));
+            }
+            step(&format!(
+                "excluded channel configured={} tags={observed:?} extra_status={} extra_error={} isolation=true",
+                ident["tag"], ident["extra_status"], ident["extra_error"]
+            ));
+        }
+        CandidateExpect::NotRun => {
+            assert_eq!(ident["extra_status"], "not-run", "{ident}");
+            assert_eq!(ident["extra_error"], "", "{ident}");
+            let err = channel::channel_endpoint_isolation(&ident, "endpoint-b")
+                .expect_err("missing metadata counted as an observation");
+            assert!(
+                err.contains("not-run"),
+                "missing metadata was not not-run: {err}"
+            );
+            assert!(
+                !published(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV),
+                "not-run case published candidate metadata: {env}"
+            );
+            assert!(
+                published(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV),
+                "not-run case did not transfer the endpoint: {env}"
+            );
+            step(&format!(
+                "unadvertised transfer configured={} tags={observed:?} extra_status={} extra_error={}",
+                ident["tag"], ident["extra_status"], ident["extra_error"]
+            ));
+        }
+    }
     drop(proxy_b);
     drop(session);
+}
+
+/// Candidate metadata stays, the launcher does not transfer B, and the slot is inaccessible.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn excluded_candidate_is_inaccessible_after_authentication() {
+    candidate_case(CandidateExpect::Excluded).await;
+}
+
+/// The same candidate is transferred, and `channel_ident` reads B's tag.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn injected_endpoint_is_visible_after_authentication() {
+    candidate_case(CandidateExpect::Included).await;
+}
+
+/// Transfer without candidate metadata is not proof the endpoint is absent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transferred_endpoint_without_candidate_metadata_is_not_run() {
+    candidate_case(CandidateExpect::NotRun).await;
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

@@ -1283,9 +1283,9 @@ fn handoff_handles(
         return (Vec::new(), None, None);
     };
     let extra = handoff
-        .extra
-        .iter()
-        .map(|item| handle_from_u64(item.handle))
+        .inherited_extra_handles()
+        .into_iter()
+        .map(handle_from_u64)
         .collect();
     (
         extra,

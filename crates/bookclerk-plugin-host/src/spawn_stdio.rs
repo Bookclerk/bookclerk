@@ -58,7 +58,18 @@ pub const TEST_CHANNEL_TAG_FILE: &str = "channel-tag";
 /// `handle:<read>,handle:<write>` of the guest pipe ends in this process.
 /// The variable is not copied into the guest. Production leaves it unset, so
 /// the guest preserve list stays [`bookclerk_sandbox::GUEST_PROXY_FD`] only.
+/// Setting it transfers the endpoint. It does not, by itself, publish the
+/// candidate metadata the guest uses to observe that slot.
 pub const TEST_INJECT_EXTRA_ENDPOINT_ENV: &str = "BOOKCLERK_TEST_INJECT_EXTRA_ENDPOINT";
+
+/// Host-process request to publish candidate-endpoint observation metadata.
+///
+/// `1` or `true` names the fixed Unix slot, and on Windows the handles from
+/// [`TEST_INJECT_EXTRA_ENDPOINT_ENV`]. A Windows `handle:<read>,handle:<write>`
+/// value names that candidate without transferring it. The variable is not
+/// copied into the guest. Unset means the guest reports `not-run`, which is
+/// not proof the endpoint is absent.
+pub const TEST_OBSERVE_EXTRA_ENDPOINT_ENV: &str = "BOOKCLERK_TEST_OBSERVE_EXTRA_ENDPOINT";
 
 static SPAWN_DIAG: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static SPAWN_DIAG_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -1191,6 +1202,12 @@ fn inherit_unix_guest(cmd: &mut Command, rpc: DuplexLink, proxy: &DuplexLink) ->
         });
     }
     cmd.env(SOCKET_PROXY_ENV, format!("fd:{GUEST_PROXY_FD}"));
+    if matches!(observe_kind()?, ObserveKind::Slot) {
+        cmd.env(
+            bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV,
+            format!("fd:{}", bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD),
+        );
+    }
     if extra_fd.is_some() {
         cmd.env(
             bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV,
@@ -1292,6 +1309,131 @@ fn injected_windows_handles() -> Result<Option<(u64, u64)>> {
     }
 }
 
+/// Whether the host asked the guest to classify a known candidate slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObserveKind {
+    /// No candidate metadata. The guest must report `not-run`.
+    Off,
+    /// Publish the fixed Unix slot, or the injected Windows handles.
+    Slot,
+    /// Windows candidate handles in this process. Do not transfer them unless
+    /// [`TEST_INJECT_EXTRA_ENDPOINT_ENV`] names the same pair.
+    #[cfg(windows)]
+    Handles(u64, u64),
+}
+
+/// Parse [`TEST_OBSERVE_EXTRA_ENDPOINT_ENV`].
+fn parse_observe_request(value: Option<&str>) -> Result<ObserveKind> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(ObserveKind::Off);
+    };
+    if value == "1" || value == "true" {
+        return Ok(ObserveKind::Slot);
+    }
+    parse_observe_platform(value)
+}
+
+/// Observation metadata is not implemented on this platform.
+#[cfg(not(any(unix, windows)))]
+fn parse_observe_platform(value: &str) -> Result<ObserveKind> {
+    Err(PluginError::message(format!(
+        "{TEST_OBSERVE_EXTRA_ENDPOINT_ENV} is not supported on this platform, got {value}"
+    )))
+}
+
+/// Unix observation metadata is the fixed slot, not a handle spec.
+#[cfg(unix)]
+fn parse_observe_platform(value: &str) -> Result<ObserveKind> {
+    Err(PluginError::message(format!(
+        "{TEST_OBSERVE_EXTRA_ENDPOINT_ENV} must be 1 on unix, got {value}"
+    )))
+}
+
+/// Windows may name the candidate handles without transferring them.
+#[cfg(windows)]
+fn parse_observe_platform(value: &str) -> Result<ObserveKind> {
+    match parse_injected_handle_pair(value)? {
+        Some((read, write)) => Ok(ObserveKind::Handles(read, write)),
+        None => Err(PluginError::message(format!(
+            "{TEST_OBSERVE_EXTRA_ENDPOINT_ENV} must be 1 or handle:<read>,handle:<write>"
+        ))),
+    }
+}
+
+/// Host observation request. Unset is [`ObserveKind::Off`].
+fn observe_kind() -> Result<ObserveKind> {
+    match std::env::var(TEST_OBSERVE_EXTRA_ENDPOINT_ENV) {
+        Ok(value) => parse_observe_request(Some(&value)),
+        Err(std::env::VarError::NotPresent) => Ok(ObserveKind::Off),
+        Err(err) => Err(PluginError::message(format!(
+            "could not read {TEST_OBSERVE_EXTRA_ENDPOINT_ENV}: {err}"
+        ))),
+    }
+}
+
+/// How a Windows test extra endpoint is duplicated into the jail.
+#[cfg(windows)]
+struct WindowsExtraPlan {
+    /// Guest pipe ends in this process.
+    read: u64,
+    write: u64,
+    /// Keep duplicating until the jail value is outside the loader's range.
+    raise: bool,
+    /// Place the duplicates on the guest inherit list.
+    transfer: bool,
+    /// Publish candidate metadata for those jail values.
+    candidate: bool,
+}
+
+/// Separate transfer permission from candidate metadata.
+#[cfg(windows)]
+fn windows_extra_plan() -> Result<Option<WindowsExtraPlan>> {
+    let inject = injected_windows_handles()?;
+    let observe = observe_kind()?;
+    match (inject, observe) {
+        (None, ObserveKind::Off) => Ok(None),
+        (None, ObserveKind::Slot) => Err(PluginError::message(format!(
+            "{TEST_OBSERVE_EXTRA_ENDPOINT_ENV} is 1 but {TEST_INJECT_EXTRA_ENDPOINT_ENV} is unset; \
+             Windows observation needs handle:<read>,handle:<write>"
+        ))),
+        (Some((read, write)), ObserveKind::Off) => Ok(Some(WindowsExtraPlan {
+            read,
+            write,
+            raise: false,
+            transfer: true,
+            candidate: false,
+        })),
+        (Some((read, write)), ObserveKind::Slot) => Ok(Some(WindowsExtraPlan {
+            read,
+            write,
+            raise: false,
+            transfer: true,
+            candidate: true,
+        })),
+        (Some((read, write)), ObserveKind::Handles(observed_read, observed_write)) => {
+            if (read, write) != (observed_read, observed_write) {
+                return Err(PluginError::message(
+                    "observation metadata names a different endpoint than the transfer",
+                ));
+            }
+            Ok(Some(WindowsExtraPlan {
+                read,
+                write,
+                raise: false,
+                transfer: true,
+                candidate: true,
+            }))
+        }
+        (None, ObserveKind::Handles(read, write)) => Ok(Some(WindowsExtraPlan {
+            read,
+            write,
+            raise: true,
+            transfer: false,
+            candidate: true,
+        })),
+    }
+}
+
 /// `DuplicateHandle` source from a numeric handle in this process.
 #[cfg(windows)]
 fn raw_handle_from_u64(value: u64) -> std::os::windows::io::RawHandle {
@@ -1318,14 +1460,8 @@ async fn windows_handoff_gateway(
         stdin: None,
         stdout: None,
         extra: vec![
-            JailHandoffExtra {
-                env: GATEWAY_GUEST_RPC_ENV.into(),
-                handle: rpc_read_h,
-            },
-            JailHandoffExtra {
-                env: GATEWAY_GUEST_RPC_WRITE_ENV.into(),
-                handle: rpc_write_h,
-            },
+            JailHandoffExtra::inherited(GATEWAY_GUEST_RPC_ENV, rpc_read_h),
+            JailHandoffExtra::inherited(GATEWAY_GUEST_RPC_WRITE_ENV, rpc_write_h),
         ],
     };
     write_handoff_line(child, &handoff).await
@@ -1354,32 +1490,50 @@ async fn windows_handoff_guest(
             |err| PluginError::message(format!("DuplicateHandle guest proxy write: {err}")),
         )?;
     let mut extra = vec![
-        JailHandoffExtra {
-            env: SOCKET_PROXY_ENV.into(),
-            handle: proxy_read_h,
-        },
-        JailHandoffExtra {
-            env: bookclerk_sandbox::SOCKET_PROXY_WRITE_ENV.into(),
-            handle: proxy_write_h,
-        },
+        JailHandoffExtra::inherited(SOCKET_PROXY_ENV, proxy_read_h),
+        JailHandoffExtra::inherited(bookclerk_sandbox::SOCKET_PROXY_WRITE_ENV, proxy_write_h),
     ];
-    if let Some((read, write)) = injected_windows_handles()? {
-        let read_h = bookclerk_sandbox::duplicate_handle_into(raw_handle_from_u64(read), target)
-            .map_err(|err| {
-                PluginError::message(format!("DuplicateHandle test extra read: {err}"))
-            })?;
-        let write_h = bookclerk_sandbox::duplicate_handle_into(raw_handle_from_u64(write), target)
-            .map_err(|err| {
-                PluginError::message(format!("DuplicateHandle test extra write: {err}"))
-            })?;
-        extra.push(JailHandoffExtra {
-            env: bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV.into(),
-            handle: read_h,
-        });
-        extra.push(JailHandoffExtra {
-            env: bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV.into(),
-            handle: write_h,
-        });
+    if let Some(plan) = windows_extra_plan()? {
+        let WindowsExtraPlan {
+            read,
+            write,
+            raise,
+            transfer,
+            candidate,
+        } = plan;
+        let duplicate = |value: u64, what: &str| {
+            let raw = raw_handle_from_u64(value);
+            let duplicated = if raise {
+                bookclerk_sandbox::duplicate_handle_into_at_least(raw, target, 0x4000)
+            } else {
+                bookclerk_sandbox::duplicate_handle_into(raw, target)
+            };
+            duplicated.map_err(|err| {
+                PluginError::message(format!("DuplicateHandle test extra {what}: {err}"))
+            })
+        };
+        let read_h = duplicate(read, "read")?;
+        let write_h = duplicate(write, "write")?;
+        if transfer {
+            extra.push(JailHandoffExtra::inherited(
+                bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV,
+                read_h,
+            ));
+            extra.push(JailHandoffExtra::inherited(
+                bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV,
+                write_h,
+            ));
+        }
+        if candidate {
+            extra.push(JailHandoffExtra::named_only(
+                bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV,
+                read_h,
+            ));
+            extra.push(JailHandoffExtra::named_only(
+                bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_WRITE_ENV,
+                write_h,
+            ));
+        }
     }
     let handoff = JailHandoff {
         v: JailHandoff::VERSION,
@@ -1859,6 +2013,25 @@ mod tests {
         assert!(parse_injected_handle_pair("fd:4").is_err());
         assert!(parse_injected_handle_pair("handle:10").is_err());
         assert!(parse_injected_handle_pair("handle:10,fd:4").is_err());
+    }
+
+    #[test]
+    fn observe_metadata_is_not_transfer_permission() {
+        assert_eq!(parse_observe_request(None).unwrap(), ObserveKind::Off);
+        assert_eq!(parse_observe_request(Some("")).unwrap(), ObserveKind::Off);
+        assert_eq!(parse_observe_request(Some("1")).unwrap(), ObserveKind::Slot);
+        assert_eq!(
+            parse_observe_request(Some(" true ")).unwrap(),
+            ObserveKind::Slot
+        );
+        assert!(parse_observe_request(Some("fd:4")).is_err());
+        #[cfg(not(windows))]
+        assert!(parse_observe_request(Some("handle:10,handle:12")).is_err());
+        #[cfg(windows)]
+        assert_eq!(
+            parse_observe_request(Some("handle:10,handle:12")).unwrap(),
+            ObserveKind::Handles(10, 12)
+        );
     }
 
     #[test]

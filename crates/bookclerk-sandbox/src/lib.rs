@@ -52,8 +52,8 @@ pub use link::inherit_fd_at;
 
 #[cfg(windows)]
 pub use link::{
-    duplicate_handle_into, duplicate_handle_local, duplicate_owned_handle,
-    write_pipe_without_completion_port,
+    duplicate_handle_into, duplicate_handle_into_at_least, duplicate_handle_local,
+    duplicate_owned_handle, write_pipe_without_completion_port,
 };
 pub use platform::BACKEND;
 

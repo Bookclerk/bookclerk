@@ -778,10 +778,10 @@ fn inherited_pipe_echoes_under_deny_and_tcp_is_refused() {
         v: 1,
         stdin: None,
         stdout: None,
-        extra: vec![bookclerk_sandbox::JailHandoffExtra {
-            env: bookclerk_sandbox::SOCKET_PROXY_ENV.into(),
-            handle: guest_handle,
-        }],
+        extra: vec![bookclerk_sandbox::JailHandoffExtra::inherited(
+            bookclerk_sandbox::SOCKET_PROXY_ENV,
+            guest_handle,
+        )],
     };
     {
         let stdin = child.stdin.as_mut().expect("stdin");
@@ -849,10 +849,10 @@ fn inherited_pipe_crosses_two_appcontainers() {
             v: 1,
             stdin: None,
             stdout: None,
-            extra: vec![bookclerk_sandbox::JailHandoffExtra {
-                env: bookclerk_sandbox::SOCKET_PROXY_ENV.into(),
-                handle: handle_a,
-            }],
+            extra: vec![bookclerk_sandbox::JailHandoffExtra::inherited(
+                bookclerk_sandbox::SOCKET_PROXY_ENV,
+                handle_a,
+            )],
         }
         .to_line()
         .expect("line")
@@ -883,10 +883,10 @@ fn inherited_pipe_crosses_two_appcontainers() {
             v: 1,
             stdin: None,
             stdout: None,
-            extra: vec![bookclerk_sandbox::JailHandoffExtra {
-                env: bookclerk_sandbox::SOCKET_PROXY_ENV.into(),
-                handle: handle_b,
-            }],
+            extra: vec![bookclerk_sandbox::JailHandoffExtra::inherited(
+                bookclerk_sandbox::SOCKET_PROXY_ENV,
+                handle_b,
+            )],
         }
         .to_line()
         .expect("line")

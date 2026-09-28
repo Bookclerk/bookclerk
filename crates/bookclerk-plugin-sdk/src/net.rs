@@ -57,14 +57,28 @@ pub const SESSION_CHALLENGE_LEN: usize = 32;
 /// Test-only extra endpoint inherited beside [`SOCKET_PROXY_ENV`].
 ///
 /// Unix value is `fd:<n>`. Windows value is `handle:<n>`, with the write half
-/// in [`TEST_EXTRA_ENDPOINT_WRITE_ENV`]. Production hosts leave both unset.
-/// The guest reads a channel tag from that one slot and does not write
-/// [`SESSION_CHALLENGE_ENV`] to it: the fixture authenticates the endpoint
-/// with its own challenge before the guest opens the mux.
+/// in [`TEST_EXTRA_ENDPOINT_WRITE_ENV`]. The launcher sets these only when it
+/// actually transferred the endpoint. Unset is not an observation: the guest
+/// classifies the slot named by [`TEST_EXTRA_CANDIDATE_ENV`] instead, and
+/// reports `not-run` when that metadata is missing. The guest does not write
+/// [`SESSION_CHALLENGE_ENV`] to the extra slot: the fixture authenticates the
+/// endpoint with its own challenge before the guest opens the mux.
 pub const TEST_EXTRA_ENDPOINT_ENV: &str = "BOOKCLERK_TEST_EXTRA_ENDPOINT";
 
 /// Windows write half of [`TEST_EXTRA_ENDPOINT_ENV`] (`handle:<n>`).
 pub const TEST_EXTRA_ENDPOINT_WRITE_ENV: &str = "BOOKCLERK_TEST_EXTRA_ENDPOINT_WRITE";
+
+/// Test-only identity of the candidate endpoint slot to classify.
+///
+/// Unix value is `fd:<n>`. Windows value is `handle:<n>`, with the write half
+/// in [`TEST_EXTRA_CANDIDATE_WRITE_ENV`]. This names the slot. It does not
+/// grant the launcher permission to transfer the endpoint. Missing metadata
+/// is `not-run`, not proof the endpoint is absent. A live object at the slot
+/// that is not the candidate is an identification failure, not absence.
+pub const TEST_EXTRA_CANDIDATE_ENV: &str = "BOOKCLERK_TEST_EXTRA_CANDIDATE";
+
+/// Windows write half of [`TEST_EXTRA_CANDIDATE_ENV`] (`handle:<n>`).
+pub const TEST_EXTRA_CANDIDATE_WRITE_ENV: &str = "BOOKCLERK_TEST_EXTRA_CANDIDATE_WRITE";
 
 /// True when [`NESTED_NATIVE_JAIL_ENV`] is `1`.
 #[must_use]

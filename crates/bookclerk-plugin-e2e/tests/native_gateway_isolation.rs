@@ -5,11 +5,12 @@
 //! `BOOKCLERK_SESSION_CHALLENGE` cannot complete a handshake on an endpoint it
 //! can see. After both sessions have completed that handshake, each guest asks
 //! the proxy it actually holds for that proxy's channel tag. A's tag is A's,
-//! not B's, whatever B's numeric fd or handle is. The same RPC reports
-//! `extra_status = absent` because production handoff does not add the
-//! test-only extra endpoint. A missing or failed observation is not absence.
-//! A child of B that does not inherit still cannot open B's endpoint. That
-//! child check is the parent-to-child boundary, not the A-to-B one.
+//! not B's, whatever B's numeric fd or handle is. These sessions do not
+//! publish candidate-endpoint metadata, so the same RPC reports
+//! `extra_status = not-run`. That is not proof the other session's endpoint
+//! is absent. A child of B that does not inherit still cannot open B's
+//! endpoint. That child check is the parent-to-child boundary, not the A-to-B
+//! one.
 //!
 //! On Windows, inheritable event sentinels are created before `Install::spawn`
 //! and are not placed on `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
@@ -277,14 +278,26 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
         "B's configured tag was missing from the observed set: {ident_b}"
     );
     assert_eq!(
-        channel::channel_endpoint_isolation(&ident_a, &tag_b),
-        Ok(true),
-        "A did not prove B's endpoint was absent: {ident_a}"
+        ident_a["extra_status"], "not-run",
+        "missing candidate metadata was treated as an observation: {ident_a}"
     );
+    assert_eq!(ident_a["extra_error"], "", "{ident_a}");
     assert_eq!(
-        channel::channel_endpoint_isolation(&ident_b, &tag_a),
-        Ok(true),
-        "B did not prove A's endpoint was absent: {ident_b}"
+        ident_b["extra_status"], "not-run",
+        "missing candidate metadata was treated as an observation: {ident_b}"
+    );
+    assert_eq!(ident_b["extra_error"], "", "{ident_b}");
+    let missing_a = channel::channel_endpoint_isolation(&ident_a, &tag_b)
+        .expect_err("A treated missing metadata as endpoint exclusion");
+    let missing_b = channel::channel_endpoint_isolation(&ident_b, &tag_a)
+        .expect_err("B treated missing metadata as endpoint exclusion");
+    assert!(
+        missing_a.contains("not-run"),
+        "A's missing metadata was not not-run: {missing_a}"
+    );
+    assert!(
+        missing_b.contains("not-run"),
+        "B's missing metadata was not not-run: {missing_b}"
     );
     let accepts_before_child = listener_b.accepts();
     let drive_child = probe(&session_b, "unrelated_drive", listener_b.port, "").await;
@@ -300,7 +313,7 @@ async fn concurrent_sessions_keep_separate_grants_and_state() {
     #[cfg(not(windows))]
     let sentinel_unsupported = true;
     step(&format!(
-        "channel identity: A tag={reported_a} tags={observed_a:?} extra_status={} B tag={reported_b} tags={observed_b:?} extra_status={}; both extra endpoints absent; child opened_stream={} reached_proxy={} not_inherited={} collided={}; sentinel_unsupported={sentinel_unsupported}; numeric collision is not identity; B accepts unchanged",
+        "channel identity: A tag={reported_a} tags={observed_a:?} extra_status={} B tag={reported_b} tags={observed_b:?} extra_status={}; extra_status=not-run is not endpoint absence; child opened_stream={} reached_proxy={} not_inherited={} collided={}; sentinel_unsupported={sentinel_unsupported}; numeric collision is not identity; B accepts unchanged",
         ident_a["extra_status"], ident_b["extra_status"],
         drive_child["opened_stream"],
         drive_child["reached_proxy"],

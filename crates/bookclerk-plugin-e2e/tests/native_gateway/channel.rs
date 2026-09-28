@@ -2,9 +2,10 @@
 //!
 //! The tag is the answer from the server that owns the pipe. A numeric fd or
 //! handle in some other process is not that identity. `tags` is every channel
-//! the probe actually reached. `extra_status` says whether the one handed
-//! extra endpoint was absent, observed, or not identified. A missing status
-//! is not absence.
+//! the probe actually reached. `extra_status = absent` means the named
+//! candidate slot was checked and was inaccessible. `not-run` means the
+//! candidate metadata was missing. A numeric collision is `ident-failed`.
+//! None of those is an empty tag list pretending the endpoint was checked.
 
 /// `true` when every observed tag is a real answer and none of them is `foreign`.
 ///
@@ -23,11 +24,12 @@ pub fn foreign_channel_absent(observed: &[&str], foreign: &str) -> bool {
 /// Isolation of `foreign` against one `channel_ident` outcome.
 ///
 /// `Ok(true)` means `extra_status` is `absent`, `extra_error` is empty, and
-/// every observed tag is a real answer other than `foreign`. `Ok(false)`
-/// means `extra_status` is `observed`, `extra_error` is empty, and `foreign`
-/// is one of those tags. Every other shape is an error: discovery did not
-/// run, identification failed, the tag set is empty, or the status and the
-/// tags disagree. An error is not a successful observation.
+/// every observed tag is a real answer other than `foreign`. That `absent`
+/// is a checked inaccessible slot, not missing metadata. `Ok(false)` means
+/// `extra_status` is `observed`, `extra_error` is empty, and `foreign` is one
+/// of those tags. Every other shape is an error: discovery did not run,
+/// identification failed, the tag set is empty, or the status and the tags
+/// disagree. An error is not a successful observation.
 pub fn channel_endpoint_isolation(
     outcome: &serde_json::Value,
     foreign: &str,

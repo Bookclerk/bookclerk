@@ -7,6 +7,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -174,11 +175,14 @@ async fn hold_until_eof(host: &str, port: u16, payload: &str) -> Result<(), Stri
 /// each is.
 ///
 /// `tag` is the configured `BOOKCLERK_SOCKET_PROXY` channel. `tags` adds the
-/// tag from [`bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV`] when that slot
-/// is set. The extra slot is opened without writing
+/// tag from the candidate slot named by
+/// [`bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV`] when that slot is open
+/// and answers. The extra slot is opened without writing
 /// [`bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV`]: the fixture authenticated
-/// that endpoint with its own challenge before this process started. An unset
-/// slot is `extra_status = absent`. A present slot that cannot be identified
+/// that endpoint with its own challenge before this process started. Missing
+/// candidate metadata is `extra_status = not-run`, not absence.
+/// [`bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV`] records a transfer and is
+/// not itself an observation. A slot that is present but is not the candidate
 /// is `ident-failed`, and `ok` is false even when the configured tag was read.
 /// This process's environment does not carry either tag, and a numeric fd or
 /// handle is not compared.
@@ -222,6 +226,14 @@ struct ExtraSeen {
 }
 
 impl ExtraSeen {
+    fn not_run() -> Self {
+        Self {
+            status: "not-run",
+            error: String::new(),
+            tag: None,
+        }
+    }
+
     fn absent() -> Self {
         Self {
             status: "absent",
@@ -374,48 +386,75 @@ fn header_content_length(headers: &[u8]) -> Option<usize> {
     None
 }
 
-/// Read the channel tag on the one test-handed endpoint, without a challenge.
+/// Candidate slot classified before this process opens any other descriptor.
+enum EarlyExtra {
+    /// [`bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV`] was unset.
+    NotRun,
+    /// The named slot was checked and is not open in this process.
+    Absent,
+    /// The slot is open but is not the candidate, or the metadata is unusable.
+    Failed(String),
+    /// Dup of the candidate socket, taken once by the mux read.
+    #[cfg(unix)]
+    Socket(std::sync::atomic::AtomicI32),
+    /// Candidate pipe values that were open when this process started.
+    #[cfg(windows)]
+    Pipes { read: u64, write: u64 },
+}
+
+static EARLY_EXTRA: OnceLock<EarlyExtra> = OnceLock::new();
+static EARLY_UNCLASSIFIED: EarlyExtra = EarlyExtra::NotRun;
+
+/// Classify the candidate before the runtime can reuse a closed number.
+fn classify_candidate_before_runtime() {
+    let _ = EARLY_EXTRA.set(classify_candidate());
+}
+
+fn early_extra() -> &'static EarlyExtra {
+    EARLY_EXTRA.get().unwrap_or(&EARLY_UNCLASSIFIED)
+}
+
+/// `Some` when a transfer advertisement names a different slot than the candidate.
+fn transferred_endpoint_disagrees(read: &str, write: Option<&str>) -> Option<String> {
+    let advertised = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV);
+    let advertised_write = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV);
+    if advertised.is_none() && advertised_write.is_none() {
+        return None;
+    }
+    if advertised.as_deref() == Some(read) && advertised_write.as_deref() == write {
+        None
+    } else {
+        Some("transferred endpoint does not match the candidate metadata".into())
+    }
+}
+
+/// Read the channel tag on the candidate slot, without a challenge.
 ///
-/// Unset env is `absent`. A slot that is present but unusable is
-/// `ident-failed`. Neither result is an empty tag list pretending the
-/// endpoint was checked and found missing.
+/// Missing candidate metadata is `not-run`. An inaccessible slot is `absent`.
+/// A live object that is not the candidate is `ident-failed`. Unset
+/// [`bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV`] is not an observation.
+#[cfg(unix)]
+async fn observe_handed_extra_endpoint() -> ExtraSeen {
+    match early_extra() {
+        EarlyExtra::NotRun => ExtraSeen::not_run(),
+        EarlyExtra::Absent => ExtraSeen::absent(),
+        EarlyExtra::Failed(error) => ExtraSeen::failed(error.clone()),
+        EarlyExtra::Socket(slot) => observe_saved_socket(slot).await,
+    }
+}
+
+/// Mux-read the socket dup captured at process start.
 #[cfg(unix)]
 #[allow(unsafe_code)]
-async fn observe_handed_extra_endpoint() -> ExtraSeen {
+async fn observe_saved_socket(slot: &std::sync::atomic::AtomicI32) -> ExtraSeen {
     use std::os::fd::FromRawFd;
+    use std::sync::atomic::Ordering;
 
-    let read = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV);
-    let write = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV);
-    if read.is_none() && write.is_none() {
-        return ExtraSeen::absent();
+    let fd = slot.swap(-1, Ordering::AcqRel);
+    if fd < 0 {
+        return ExtraSeen::failed("candidate socket was already read");
     }
-    if write.is_some() {
-        return ExtraSeen::failed("unix extra endpoint must not set a write handle");
-    }
-    let Some(spec) = read else {
-        return ExtraSeen::failed("extra endpoint write is set without a read slot");
-    };
-    let Some(rest) = spec.strip_prefix("fd:") else {
-        return ExtraSeen::failed("extra endpoint is not fd:<n>");
-    };
-    let Ok(fd) = rest.trim().parse::<i32>() else {
-        return ExtraSeen::failed("extra endpoint fd is not a number");
-    };
-    if fd < 3 {
-        return ExtraSeen::failed("extra endpoint fd collides with a standard stream");
-    }
-    if configured_proxy_fd() == Some(fd) {
-        return ExtraSeen::failed("extra endpoint is the configured proxy");
-    }
-    let duped = unsafe { libc::dup(fd) };
-    if duped < 0 {
-        return ExtraSeen::failed(format!(
-            "dup extra endpoint: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let _ = unsafe { libc::fcntl(duped, libc::F_SETFD, libc::FD_CLOEXEC) };
-    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(duped) };
+    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
     if let Err(err) = std_stream.set_nonblocking(true) {
         return ExtraSeen::failed(format!("extra endpoint nonblocking: {err}"));
     }
@@ -431,6 +470,59 @@ async fn observe_handed_extra_endpoint() -> ExtraSeen {
     }
 }
 
+/// `F_GETFD` / `fstat` before any library opens a descriptor.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn classify_candidate() -> EarlyExtra {
+    let read = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV);
+    let write = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_WRITE_ENV);
+    if read.is_none() && write.is_none() {
+        return EarlyExtra::NotRun;
+    }
+    if write.is_some() {
+        return EarlyExtra::Failed("unix candidate must not set a write handle".into());
+    }
+    let Some(spec) = read else {
+        return EarlyExtra::Failed("candidate write is set without a read slot".into());
+    };
+    if let Some(error) = transferred_endpoint_disagrees(&spec, None) {
+        return EarlyExtra::Failed(error);
+    }
+    let Some(rest) = spec.strip_prefix("fd:") else {
+        return EarlyExtra::Failed("candidate is not fd:<n>".into());
+    };
+    let Ok(fd) = rest.trim().parse::<i32>() else {
+        return EarlyExtra::Failed("candidate fd is not a number".into());
+    };
+    if fd < 3 {
+        return EarlyExtra::Failed("candidate fd collides with a standard stream".into());
+    }
+    if configured_proxy_fd() == Some(fd) {
+        return EarlyExtra::Failed("candidate fd is the configured proxy".into());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EBADF) {
+            return EarlyExtra::Absent;
+        }
+        return EarlyExtra::Failed(format!("candidate fd status: {err}"));
+    }
+    if !fd_is_socket(fd) {
+        return EarlyExtra::Failed(format!(
+            "numeric collision: fd {fd} is open but is not the candidate socket"
+        ));
+    }
+    let duped = unsafe { libc::dup(fd) };
+    if duped < 0 {
+        return EarlyExtra::Failed(format!(
+            "dup candidate: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let _ = unsafe { libc::fcntl(duped, libc::F_SETFD, libc::FD_CLOEXEC) };
+    EarlyExtra::Socket(std::sync::atomic::AtomicI32::new(duped))
+}
+
 /// Configured `BOOKCLERK_SOCKET_PROXY` fd, when that env names one.
 #[cfg(unix)]
 fn configured_proxy_fd() -> Option<i32> {
@@ -440,22 +532,48 @@ fn configured_proxy_fd() -> Option<i32> {
     })
 }
 
-/// Read the channel tag on the one test-handed pipe pair, without a challenge.
+/// Read the channel tag on the candidate pipe pair, without a challenge.
 #[cfg(windows)]
 async fn observe_handed_extra_endpoint() -> ExtraSeen {
-    let read_spec = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV);
-    let write_spec = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV);
+    match early_extra() {
+        EarlyExtra::NotRun => ExtraSeen::not_run(),
+        EarlyExtra::Absent => ExtraSeen::absent(),
+        EarlyExtra::Failed(error) => ExtraSeen::failed(error.clone()),
+        EarlyExtra::Pipes { read, write } => observe_saved_pipes(*read, *write).await,
+    }
+}
+
+/// What a candidate handle was at process start.
+#[cfg(windows)]
+enum CandidateSlot {
+    /// `DuplicateHandle` failed with `ERROR_INVALID_HANDLE`.
+    Invalid,
+    /// The value is a pipe and can be read later.
+    Pipe,
+}
+
+/// `GetHandleInformation` + `GetFileType` before this process creates other handles.
+///
+/// Does not duplicate the handle or call `CreateIoCompletionPort`. The
+/// original stays unassociated so the later mux client can bind it.
+#[cfg(windows)]
+fn classify_candidate() -> EarlyExtra {
+    let read_spec = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV);
+    let write_spec = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_WRITE_ENV);
     if read_spec.is_none() && write_spec.is_none() {
-        return ExtraSeen::absent();
+        return EarlyExtra::NotRun;
     }
     let (Some(read_spec), Some(write_spec)) = (read_spec, write_spec) else {
-        return ExtraSeen::failed("extra endpoint is missing a read or write handle");
+        return EarlyExtra::Failed("candidate is missing a read or write handle".into());
     };
+    if let Some(error) = transferred_endpoint_disagrees(&read_spec, Some(&write_spec)) {
+        return EarlyExtra::Failed(error);
+    }
     let Some(read) = spec_handle_value(&read_spec) else {
-        return ExtraSeen::failed("extra endpoint read handle is not handle:<n>");
+        return EarlyExtra::Failed("candidate read handle is not handle:<n>".into());
     };
     let Some(write) = spec_handle_value(&write_spec) else {
-        return ExtraSeen::failed("extra endpoint write handle is not handle:<n>");
+        return EarlyExtra::Failed("candidate write handle is not handle:<n>".into());
     };
     if read == write
         || is_stdio_value(read)
@@ -463,8 +581,49 @@ async fn observe_handed_extra_endpoint() -> ExtraSeen {
         || session_owns_handle(read)
         || session_owns_handle(write)
     {
-        return ExtraSeen::failed("extra endpoint collides with stdio or the configured proxy");
+        return EarlyExtra::Failed("candidate collides with stdio or the configured proxy".into());
     }
+    match (probe_candidate_handle(read), probe_candidate_handle(write)) {
+        (Ok(CandidateSlot::Invalid), Ok(CandidateSlot::Invalid)) => EarlyExtra::Absent,
+        (Ok(CandidateSlot::Pipe), Ok(CandidateSlot::Pipe)) => EarlyExtra::Pipes { read, write },
+        (Ok(CandidateSlot::Invalid), Ok(CandidateSlot::Pipe))
+        | (Ok(CandidateSlot::Pipe), Ok(CandidateSlot::Invalid)) => {
+            EarlyExtra::Failed("candidate handles disagree; one is open and one is not".into())
+        }
+        (Err(error), _) | (_, Err(error)) => EarlyExtra::Failed(error),
+    }
+}
+
+/// Invalid means the value is not open here. Any other object is a collision.
+#[cfg(windows)]
+fn probe_candidate_handle(value: u64) -> Result<CandidateSlot, String> {
+    const ERROR_INVALID_HANDLE: u32 = 6;
+    let raw = handle_ptr(value)?;
+    let info = handle_information(raw);
+    if !info.ok {
+        if info.os == ERROR_INVALID_HANDLE {
+            return Ok(CandidateSlot::Invalid);
+        }
+        return Err(format!(
+            "numeric collision or unusable candidate handle {value:#x}: {} (os {})",
+            info.error, info.os
+        ));
+    }
+    match file_type(raw) {
+        Ok(kind) if is_pipe_type(kind) => Ok(CandidateSlot::Pipe),
+        Ok(kind) => Err(format!(
+            "numeric collision: handle {value:#x} is file type {kind:#x}, not the candidate pipe"
+        )),
+        Err(ERROR_INVALID_HANDLE) => Err(format!(
+            "numeric collision: handle {value:#x} is not a pipe (GetFileType os {ERROR_INVALID_HANDLE})"
+        )),
+        Err(os) => Err(format!("candidate handle {value:#x} GetFileType os {os}")),
+    }
+}
+
+/// Mux-read the pipes classified at startup. This is their first completion-port association.
+#[cfg(windows)]
+async fn observe_saved_pipes(read: u64, write: u64) -> ExtraSeen {
     let Ok(read_ptr) = handle_ptr(read) else {
         return ExtraSeen::failed("extra endpoint read handle does not fit a pointer");
     };
@@ -489,15 +648,29 @@ async fn observe_handed_extra_endpoint() -> ExtraSeen {
     }
 }
 
-/// No handed extra endpoint on this platform.
+/// No candidate classification on this platform.
+#[cfg(not(any(unix, windows)))]
+fn classify_candidate() -> EarlyExtra {
+    let read = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV);
+    let write = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_WRITE_ENV);
+    if read.is_none() && write.is_none() {
+        EarlyExtra::NotRun
+    } else {
+        EarlyExtra::Failed("extra endpoint observation is not implemented on this platform".into())
+    }
+}
+
+/// Missing metadata is `not-run`. A set candidate cannot be classified here.
 #[cfg(not(any(unix, windows)))]
 async fn observe_handed_extra_endpoint() -> ExtraSeen {
-    let read = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV);
-    let write = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV);
-    if read.is_none() && write.is_none() {
-        ExtraSeen::absent()
-    } else {
-        ExtraSeen::failed("extra endpoint observation is not implemented on this platform")
+    match early_extra() {
+        EarlyExtra::NotRun => ExtraSeen::not_run(),
+        EarlyExtra::Absent => ExtraSeen::absent(),
+        EarlyExtra::Failed(error) => ExtraSeen::failed(error.clone()),
+        #[cfg(unix)]
+        EarlyExtra::Socket(_) => ExtraSeen::failed("unix candidate on a non-unix build"),
+        #[cfg(windows)]
+        EarlyExtra::Pipes { .. } => ExtraSeen::failed("windows candidate on a non-windows build"),
     }
 }
 
@@ -2382,8 +2555,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("BOOKCLERK_PROBE_EXIT").is_some() {
         return Ok(());
     }
-    // Classify inheritance before the runtime opens descriptors. Tokio would
-    // otherwise reuse a low fd number and a sealed proxy would look open.
+    // Classify the candidate before the runtime opens descriptors. A closed
+    // slot the loader or Tokio reused is a numeric collision, not absence.
+    classify_candidate_before_runtime();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--endpoint-connect") {
         let spec = args.get(1).map(String::as_str).unwrap_or("");

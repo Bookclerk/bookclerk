@@ -221,18 +221,25 @@ Windows, two host-created AppContainers plus a session Job; no named-pipe
 - both `gateway_pid()` and `guest_pid()` exit after drop, the host session
   directory is gone, and the guest cannot read gateway state or
   `WORKERD_GRANT_*` / `BOOKCLERK_JAIL_*` env;
-- two concurrent sessions cannot exercise each other's socket-proxy endpoint.
-  After both sessions authenticate and complete a connect, `channel_ident`
-  via `cli_invoke` reports each configured tag and `extra_status=absent`.
-  A separate test injects one already-authenticated extra endpoint (its own
-  challenge; A's challenge is not replayed onto B) through the guest jail
-  handoff — test-only preserve of fd 4, or `JailHandoff` extras on Windows —
-  and the same RPC reports that tag. On Windows the challenge is written with
-  an event so that guest end is not bound to the test process's I/O completion
-  port; binding it makes the guest report `ident-failed` instead of the tag.
-  Production spawn does not add the slot.
-  A skipped or failed observation is not absence. A numeric fd or handle is
-  not identity;
+- two concurrent sessions cannot exercise each other's grants or gateway
+  state. After both authenticate and complete a connect, `channel_ident`
+  via `cli_invoke` reports each configured tag. Those sessions do not publish
+  candidate-endpoint metadata, so `extra_status=not-run`. That status is not
+  proof that the other session's endpoint is absent;
+- a paired fixture keeps one pre-authenticated endpoint B (its own challenge;
+  A's challenge is not replayed onto B) and publishes the same candidate
+  metadata in both cases, through the same `cli_invoke` path. The normal
+  launcher path does not preserve the test-only extra fd and does not list
+  B's handles, and the RPC reports `extra_status=absent` because that slot
+  is inaccessible. A live object at the slot that is not the candidate is
+  `ident-failed` (numeric collision), not absence. When the fixture also
+  transfers B through the guest jail handoff, the same RPC reports B's tag
+  while A still answers. Transfer without the candidate metadata stays
+  `not-run` even though the endpoint was handed off. On Windows the
+  challenge is written with an event so that guest end is not bound to the
+  test process's I/O completion port; binding it makes the guest report
+  `ident-failed` instead of the tag. Production spawn does not add the slot.
+  A numeric fd or handle is not identity;
 - guest-exit / missing-workerd / mid-session kill fail closed.
 
 Nothing skips: a missing helper, runtime, confinement backend, startup failure

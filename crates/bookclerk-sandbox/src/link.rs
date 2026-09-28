@@ -72,7 +72,12 @@ pub const GATEWAY_PROXY_FD: i32 = 4;
 /// Child fd the native guest uses for the proxy mux (`BOOKCLERK_SOCKET_PROXY`).
 pub const GUEST_PROXY_FD: i32 = 3;
 /// Test-only extra endpoint in the native guest. Production preserve lists omit it.
-pub const TEST_EXTRA_ENDPOINT_FD: i32 = 4;
+///
+/// The slot sits above the descriptors a dynamic loader opens after the jail
+/// closes every fd it does not preserve. A low number would be reused by that
+/// loader; an open non-socket there is a numeric collision, not proof the
+/// endpoint is absent. Production guests still preserve only [`GUEST_PROXY_FD`].
+pub const TEST_EXTRA_ENDPOINT_FD: i32 = 128;
 
 /// Serialize macOS descriptor allocation with in-process `Command` spawns.
 ///
@@ -180,7 +185,9 @@ impl std::str::FromStr for LinkSpec {
 ///
 /// The host derives every handle from values it just duplicated with
 /// `duplicate_handle_into` (Windows). The jail is the sole spawner and marks
-/// them inheritable immediately before `CreateProcess`.
+/// the inherited entries inheritable immediately before `CreateProcess`.
+/// Entries with `inherit: false` are named in the child environment and are
+/// not placed on the inherit list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JailHandoff {
     /// Wire version. Only `1` is accepted.
@@ -191,18 +198,76 @@ pub struct JailHandoff {
     /// Guest stdout handle (RPC write end), when the jail should not create a pipe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stdout: Option<u64>,
-    /// Extra inheritable handles exported as `env=handle:<value>`.
+    /// Extra handles exported as `env=handle:<value>`.
+    ///
+    /// [`JailHandoffExtra::inherit`] decides which of these are placed on
+    /// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. The others are only named in the
+    /// child environment.
     #[serde(default)]
     pub extra: Vec<JailHandoffExtra>,
 }
 
-/// One extra inherited handle named in the child environment.
+/// Serde default: a handoff extra is inherited unless the payload says otherwise.
+fn inherit_by_default() -> bool {
+    true
+}
+
+/// Skip the inherit flag when it is the default.
+fn inherit_is_default(value: &bool) -> bool {
+    *value
+}
+
+/// One extra handle named in the child environment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JailHandoffExtra {
     /// Environment variable the child should see (`BOOKCLERK_SOCKET_PROXY`, …).
     pub env: String,
     /// Handle value in the jail process (already duplicated).
     pub handle: u64,
+    /// When false, the child learns `handle:<value>` and the handle stays off
+    /// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
+    #[serde(
+        default = "inherit_by_default",
+        skip_serializing_if = "inherit_is_default"
+    )]
+    pub inherit: bool,
+}
+
+impl JailHandoffExtra {
+    /// Inherited handle. The child receives the object and `env=handle:<value>`.
+    #[must_use]
+    pub fn inherited(env: impl Into<String>, handle: u64) -> Self {
+        Self {
+            env: env.into(),
+            handle,
+            inherit: true,
+        }
+    }
+
+    /// Name the handle in the child environment without inheriting the object.
+    #[must_use]
+    pub fn named_only(env: impl Into<String>, handle: u64) -> Self {
+        Self {
+            env: env.into(),
+            handle,
+            inherit: false,
+        }
+    }
+}
+
+impl JailHandoff {
+    /// Handle values `CreateProcess` should list.
+    ///
+    /// `inherit: false` entries stay in this process. They are still exported
+    /// as environment variables by the jail.
+    #[must_use]
+    pub fn inherited_extra_handles(&self) -> Vec<u64> {
+        self.extra
+            .iter()
+            .filter(|item| item.inherit)
+            .map(|item| item.handle)
+            .collect()
+    }
 }
 
 impl JailHandoff {
@@ -517,6 +582,25 @@ pub fn duplicate_handle_into(
     target: std::os::windows::io::RawHandle,
 ) -> io::Result<u64> {
     windows::duplicate_handle_into(handle, target)
+}
+
+/// Duplicate `handle` into `target` until the new value is at least `min`.
+///
+/// Lower duplicates are closed in `target`. The returned handle stays open
+/// there and is not inheritable. A guest that does not inherit this value
+/// will not confuse it with a handle the loader opened in the low range.
+///
+/// # Errors
+///
+/// Returns an I/O error when `DuplicateHandle` fails or no value reaches `min`
+/// within the attempt limit.
+#[cfg(windows)]
+pub fn duplicate_handle_into_at_least(
+    handle: std::os::windows::io::RawHandle,
+    target: std::os::windows::io::RawHandle,
+    min: u64,
+) -> io::Result<u64> {
+    windows::duplicate_handle_into_at_least(handle, target, min)
 }
 
 /// Duplicate `handle` into this process. The copy is not inheritable.
@@ -1192,6 +1276,55 @@ mod windows {
         Ok(dest.0 as usize as u64)
     }
 
+    /// Keep duplicating `handle` into `target` until the value is `>= min`.
+    pub(super) fn duplicate_handle_into_at_least(
+        handle: RawHandle,
+        target: RawHandle,
+        min: u64,
+    ) -> io::Result<u64> {
+        use windows::Win32::Foundation::DUPLICATE_CLOSE_SOURCE;
+
+        const MAX_ATTEMPTS: usize = 8192;
+        let mut low = Vec::new();
+        let close_low = |values: &[u64]| -> io::Result<()> {
+            for value in values {
+                let mut dest = HANDLE::default();
+                unsafe {
+                    DuplicateHandle(
+                        HANDLE(target),
+                        HANDLE(*value as usize as *mut std::ffi::c_void),
+                        GetCurrentProcess(),
+                        &mut dest,
+                        0,
+                        false,
+                        DUPLICATE_CLOSE_SOURCE,
+                    )
+                    .map_err(io::Error::other)?;
+                    CloseHandle(dest).map_err(io::Error::other)?;
+                }
+            }
+            Ok(())
+        };
+        let result = (|| {
+            for _ in 0..MAX_ATTEMPTS {
+                let value = duplicate_handle_into(handle, target)?;
+                if value >= min {
+                    return Ok(value);
+                }
+                low.push(value);
+            }
+            Err(io::Error::other(format!(
+                "could not duplicate a handle at or above {min:#x}"
+            )))
+        })();
+        let closed = close_low(&low);
+        match (result, closed) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err),
+        }
+    }
+
     /// Anonymous open of the pipe name fails; the inherited handle still carries bytes.
     #[cfg(test)]
     pub(super) fn creator_dacl_blocks_anonymous_and_keeps_the_handle() -> io::Result<()> {
@@ -1383,10 +1516,7 @@ mod tests {
             v: 1,
             stdin: Some(11),
             stdout: Some(12),
-            extra: vec![JailHandoffExtra {
-                env: SOCKET_PROXY_ENV.into(),
-                handle: 13,
-            }],
+            extra: vec![JailHandoffExtra::inherited(SOCKET_PROXY_ENV, 13)],
         };
         let line = handoff.to_line().expect("encode");
         assert!(line.len() < JailHandoff::MAX_LINE_BYTES);
@@ -1395,6 +1525,32 @@ mod tests {
         assert!(err.to_string().contains("version"), "{err}");
         let huge = "x".repeat(JailHandoff::MAX_LINE_BYTES + 1);
         assert!(JailHandoff::from_line(&huge).is_err());
+    }
+
+    #[test]
+    fn named_only_handles_stay_off_the_inherit_list() {
+        let handoff = JailHandoff {
+            v: 1,
+            stdin: None,
+            stdout: None,
+            extra: vec![
+                JailHandoffExtra::inherited(SOCKET_PROXY_ENV, 10),
+                JailHandoffExtra::named_only("BOOKCLERK_TEST_EXTRA_CANDIDATE", 10),
+                JailHandoffExtra::named_only("BOOKCLERK_TEST_EXTRA_CANDIDATE_WRITE", 99),
+            ],
+        };
+        assert_eq!(handoff.inherited_extra_handles(), vec![10]);
+        let decoded = JailHandoff::from_line(&handoff.to_line().expect("encode")).expect("decode");
+        assert!(decoded.extra[0].inherit);
+        assert!(!decoded.extra[1].inherit);
+        assert!(!decoded.extra[2].inherit);
+        assert_eq!(decoded.inherited_extra_handles(), vec![10]);
+        let legacy = JailHandoff::from_line(
+            r#"{"v":1,"extra":[{"env":"BOOKCLERK_SOCKET_PROXY","handle":13}]}"#,
+        )
+        .expect("legacy");
+        assert!(legacy.extra[0].inherit);
+        assert_eq!(legacy.inherited_extra_handles(), vec![13]);
     }
 
     #[cfg(unix)]
