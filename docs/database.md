@@ -226,8 +226,9 @@ and `bookclerk db`. SQL-v1 / `SQL_CONTRACT_VERSION = 1` is the SQL
 grammar/ABI, not a library schema freeze.
 
 **Compiled features**: `sqlx-postgres` + `runtime-tokio-rustls` are enabled on
-the `sea-orm` workspace dependency. `sqlx-sqlite` is intentionally excluded to
-avoid the `libsqlite3-sys` link conflict with `rusqlite 0.39`.
+the `sea-orm` workspace dependency. `sqlx-sqlite` is intentionally excluded
+because SeaORM 2.0’s driver currently fails to compile against `sea-query`
+1.0.x (`Value` payload boxing change).
 
 ## D1 caveats
 
