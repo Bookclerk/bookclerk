@@ -135,7 +135,6 @@ impl SqliteProxy {
     /// Returns when this connection refuses the query-deadline progress
     /// handler. rusqlite 0.38+ returns that error when the handle is not owned
     /// by this [`Connection`], which would leave statements without a deadline.
-    #[must_use]
     pub fn new(conn: Connection) -> rusqlite::Result<Self> {
         // TRUNCATE journal serializes writers. Two LibraryStores (or CLI +
         // daemon) on one file wait here through BEGIN IMMEDIATE. 250ms was
