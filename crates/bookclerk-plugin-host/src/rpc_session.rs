@@ -541,8 +541,12 @@ pub struct PluginSession {
     account_id: String,
     /// Expanded executor identity (not a PID).
     session_key: String,
-    /// Guest child PID, when the OS still reports one after spawn.
+    /// Native guest PID (sibling) or the single child when there is no sibling.
     guest_pid: Option<u32>,
+    /// Gateway / Cap'n Proto child PID for native-behind-workerd.
+    gateway_pid: Option<u32>,
+    /// Host-owned gateway session directory (native-behind-workerd).
+    session_dir: Option<std::path::PathBuf>,
     /// Negotiated scalar limits.
     limits: ScalarLimits,
     /// Intersected RPC features.
@@ -553,6 +557,9 @@ pub struct PluginSession {
     grant: crate::PluginGrant,
     /// Guest TMPDIR.
     scratch: std::path::PathBuf,
+    /// Private pathname-socket directory for this native guest.
+    #[cfg(unix)]
+    guest_ipc_dir: Option<std::path::PathBuf>,
     /// Spawn config JSON captured at spawn.
     spawn_config: Value,
     /// Cancelled when effective authority for this PluginKey changes.
@@ -619,9 +626,9 @@ impl PluginSession {
     ///
     /// This is the one place every product spawn passes through: the
     /// [`SpawnPlan`] resolved here decides that a `runtime = "native"` manifest
-    /// is fronted by `bookclerk-workerd` (its executable exported as
-    /// `BOOKCLERK_NATIVE_BACKEND`) unless `services.spawn_transport` opted into
-    /// the diagnostic direct transport.
+    /// is fronted by `bookclerk-workerd` (host-spawned sibling jails joined by
+    /// inherited links) unless `services.spawn_transport` opted into the
+    /// diagnostic direct transport.
     ///
     /// # Errors
     ///
@@ -655,6 +662,10 @@ impl PluginSession {
     }
 
     /// Connects Cap'n Proto over the spawned stdio and negotiates `describe`.
+    ///
+    /// A [`StartupOwner`] is registered before describe. Dropping this future,
+    /// a failed ready delivery, or a grant change tears the siblings, proxy,
+    /// and session directory down instead of entering the work loop.
     async fn connect_spawned(
         spawned: crate::spawn_stdio::SpawnedStdio,
         plugin: &DiscoveredPlugin,
@@ -668,6 +679,11 @@ impl PluginSession {
         let alias = spawned.alias.clone();
         let data = spawned.data.clone();
         let scratch = spawned.scratch.clone();
+        #[cfg(unix)]
+        let guest_ipc_dir = spawned
+            .guest_ipc
+            .as_ref()
+            .and_then(|dir| dir.path().map(std::path::Path::to_path_buf));
         let grant = spawned.grant.clone();
         // `EVENTS` needs all three: a host outbox, a manifest producer, and
         // the operator grant covering that producer.
@@ -677,61 +693,119 @@ impl PluginSession {
         let spawn_config = spawned.spawn_config.clone();
         #[cfg(windows)]
         let package_sid = spawned.package_sid.clone();
-        let guest_pid = spawned.child.id();
+        let guest_pid = spawned.guest_pid;
+        let gateway_pid = spawned.gateway_pid;
+        let session_dir = spawned.session_dir.clone();
         let instance_key = plugin_instance_key(&id, account_id);
         let identity = ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
             .with_overlay_config(config)
             .with_persisted_and_effective(&spawned.persisted_grant, &spawned.grant);
+        let files_dir = spawned.files_dir.clone();
+        let cancel = Arc::clone(&spawned.cancel);
+        publish_test_hold_facts(gateway_pid, guest_pid, {
+            #[cfg(windows)]
+            {
+                package_sid.as_deref()
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        });
+        let mut held = SpawnHold {
+            spawned: Some(spawned),
+        };
         if identity.grant_revision.is_empty() {
             return Err(PluginError::message(format!(
                 "plugin `{}` spawn is missing an authority revision",
                 plugin.plugin_key().canonical()
             )));
         }
-        let files_dir = spawned.files_dir.clone();
+        // Describe has not started. This hold is before the first grant read.
+        // `revoke_before_register_fails_startup` pauses here.
+        wait_test_hold("BOOKCLERK_TEST_STARTUP_HOLD_DIR", None).await;
+        {
+            let _epoch = crate::authority::lock_grant_epoch();
+            grant_still_current(&files_dir, plugin, config, &identity)?;
+        }
+        // The first read matched. Release the epoch lock so a revoke can land,
+        // then re-read and register as one critical section. Describe starts
+        // only after that handshake.
+        note_test_hold_file("BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR", "validated");
+        wait_test_hold("BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR", None).await;
         let (tx, rx) = mpsc::unbounded_channel();
-        let (ready_tx, ready_rx) =
+        let (ready_tx, mut ready_rx) =
             oneshot::channel::<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>();
         let vat_account = account_id.to_string();
+        let shutdown_tx = tx.clone();
+        let authority_fence = {
+            let _epoch = crate::authority::lock_grant_epoch();
+            if let Err(err) = grant_still_current(&files_dir, plugin, config, &identity) {
+                cancel.store(true, Ordering::SeqCst);
+                return Err(err);
+            }
+            crate::authority::register_session_revisions_on(
+                plugin.plugin_key().canonical(),
+                &identity.grant_revision,
+                &identity.authority_revision,
+                Arc::new(move || {
+                    let _ = shutdown_tx.send(Work::Shutdown);
+                }),
+                Arc::clone(&cancel),
+            )
+        };
+        let spawned = held
+            .spawned
+            .take()
+            .ok_or_else(|| PluginError::message("plugin spawn already released"))?;
+        let owner = StartupOwner {
+            active: true,
+            cancel: Arc::clone(&cancel),
+            shutdown: tx.clone(),
+            fence: Some(authority_fence),
+        };
+        let guard = SpawnGuard {
+            spawned: Some(spawned),
+        };
         thread::Builder::new()
             .name(vat_thread_name(&id))
-            .spawn(move || vat_thread(spawned, manifest, vat_account, events, rx, ready_tx))
+            .spawn(move || vat_thread(guard, manifest, vat_account, events, rx, ready_tx))
             .map_err(|err| PluginError::message(format!("plugin vat thread: {err}")))?;
-        // Live-session registration happens after describe succeeds; pre-register
-        // failures must not call unregister_session.
-        let (desc, limits, features) = ready_rx
-            .await
-            .map_err(|err| PluginError::message(format!("plugin vat dropped: {err}")))??;
+        crate::spawn_stdio::note_spawn_stage(&format!(
+            "describe wait plugin={id} gateway_pid={} guest_pid={}",
+            gateway_pid.unwrap_or(0),
+            guest_pid.unwrap_or(0)
+        ));
+        let describe_started = tokio::time::Instant::now();
+        let ready = loop {
+            tokio::select! {
+                ready = &mut ready_rx => break ready,
+                () = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                    crate::spawn_stdio::note_spawn_stage(&format!(
+                        "describe still waiting plugin={id} gateway_pid={} guest_pid={} elapsed_ms={}",
+                        gateway_pid.unwrap_or(0),
+                        guest_pid.unwrap_or(0),
+                        describe_started.elapsed().as_millis()
+                    ));
+                }
+            }
+        };
+        let (desc, limits, features) = match ready {
+            Ok(Ok(ready)) => ready,
+            Ok(Err(err)) => return Err(err),
+            Err(err) => {
+                return Err(PluginError::message(format!("plugin vat dropped: {err}")));
+            }
+        };
+        crate::spawn_stdio::note_spawn_stage(&format!("describe ready plugin={id}"));
         if desc.api_version != PRODUCT_API_VERSION {
-            let _ = tx.send(Work::Shutdown);
             return Err(PluginError::message(format!(
                 "plugin `{id}` describe apiVersion {} is not {PRODUCT_API_VERSION}",
                 desc.api_version
             )));
         }
-        match crate::consent::spawn_grant(&files_dir, plugin) {
-            Ok(fresh) => {
-                let effective = crate::spawn_stdio::effective_spawn_grant(&fresh, plugin, config);
-                if crate::authority::authority_revision(&effective) == identity.authority_revision {
-                } else {
-                    let _ = tx.send(Work::Shutdown);
-                    return Err(crate::authority::fenced_error());
-                }
-            }
-            Err(err) => {
-                let _ = tx.send(Work::Shutdown);
-                return Err(err);
-            }
-        }
-        let shutdown_tx = tx.clone();
-        let authority_fence = crate::authority::register_session_revisions(
-            plugin.plugin_key().canonical(),
-            &identity.grant_revision,
-            &identity.authority_revision,
-            Arc::new(move || {
-                let _ = shutdown_tx.send(Work::Shutdown);
-            }),
-        );
+        grant_still_current(&files_dir, plugin, config, &identity)?;
+        let authority_fence = owner.disarm();
         Ok(Self {
             tx,
             id,
@@ -741,11 +815,15 @@ impl PluginSession {
             account_id: account_id.to_string(),
             session_key: identity.session_key(),
             guest_pid,
+            gateway_pid,
+            session_dir,
             limits,
             features,
             describe: desc,
             grant,
             scratch,
+            #[cfg(unix)]
+            guest_ipc_dir,
             spawn_config,
             authority_fence,
             #[cfg(windows)]
@@ -771,10 +849,22 @@ impl PluginSession {
         &self.session_key
     }
 
-    /// Guest child PID for this isolate, when known.
+    /// Native guest PID (sibling jail) or the single child when there is none.
     #[must_use]
     pub fn guest_pid(&self) -> Option<u32> {
         self.guest_pid
+    }
+
+    /// Gateway / Cap'n Proto child PID for native-behind-workerd, when known.
+    #[must_use]
+    pub fn gateway_pid(&self) -> Option<u32> {
+        self.gateway_pid
+    }
+
+    /// Host-owned gateway session directory, when this session has a sibling.
+    #[must_use]
+    pub fn session_dir(&self) -> Option<&std::path::Path> {
+        self.session_dir.as_deref()
     }
 
     /// Negotiated scalar limits.
@@ -817,8 +907,16 @@ impl PluginSession {
         self.tx
             .send(build(reply))
             .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
-        rx.await
-            .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
+        let result = rx
+            .await
+            .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?;
+        // The vat can observe the guest's reply in the same turn the cancel
+        // flag is set. Deliver the fence, not a result from a revoked grant.
+        if crate::authority::is_fenced(&self.authority_fence) {
+            let _ = self.tx.send(Work::Shutdown);
+            return Err(crate::authority::fenced_error());
+        }
+        result
     }
 
     /// Opens the session's primary entrypoints with the granted binding
@@ -954,6 +1052,19 @@ impl PluginSession {
     #[must_use]
     pub fn scratch_dir(&self) -> &std::path::Path {
         &self.scratch
+    }
+
+    /// Directory the guest may use for pathname sockets, when this session has one.
+    #[must_use]
+    pub fn guest_ipc_dir(&self) -> Option<&std::path::Path> {
+        #[cfg(unix)]
+        {
+            self.guest_ipc_dir.as_deref()
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// AppContainer package SID when the guest is jailed on Windows.
@@ -1550,6 +1661,7 @@ impl PluginSession {
 
 impl Drop for PluginSession {
     fn drop(&mut self) {
+        self.authority_fence.store(true, Ordering::SeqCst);
         crate::authority::unregister_session(&self.authority_fence);
         let _ = self.tx.send(Work::Shutdown);
     }
@@ -1863,6 +1975,27 @@ fn missing_entrypoint(name: &str) -> PluginError {
     PluginError::message(format!("plugin exported no `{name}` entrypoint"))
 }
 
+/// Removes a host-owned session directory when the vat thread exits.
+struct RemoveOnDrop(std::path::PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        // `workerd` keeps this directory as its cwd until it exits. The Linux
+        // session cgroup is destroyed first so members, including a descendant
+        // that left the process group, are dead before this removal. The first
+        // `remove_dir_all` can still lose that race (`EBUSY`); retry until it
+        // is gone.
+        for attempt in 0..40 {
+            match std::fs::remove_dir_all(&self.0) {
+                Ok(()) => return,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) if attempt == 39 => return,
+                Err(_) => thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    }
+}
+
 /// Dedicated `open` for a database adapter: returns the `databaseAdapter`
 /// entrypoint or fails closed.
 async fn open_database_adapter(
@@ -1882,6 +2015,90 @@ async fn open_database_adapter(
         .ok_or_else(|| missing_entrypoint("databaseAdapter"))
 }
 
+/// True when the gateway or native guest has already exited.
+///
+/// On Unix this uses `waitid(WNOWAIT)` so the zombie keeps the start time
+/// recorded at spawn. [`reap_siblings`] signals the process group only while
+/// that start time matches, then reaps. A `setsid` descendant is outside the
+/// group and is not owned here unless a delegated cgroup contains it.
+fn sibling_exited(
+    gateway: &mut tokio::process::Child,
+    guest: Option<&mut tokio::process::Child>,
+) -> bool {
+    #[cfg(unix)]
+    {
+        fn gone(child: &tokio::process::Child) -> bool {
+            match child.id() {
+                Some(pid) => crate::spawn_stdio::exited_without_reaping(pid),
+                None => true,
+            }
+        }
+        gone(gateway) || guest.as_deref().is_some_and(gone)
+    }
+    #[cfg(not(unix))]
+    {
+        gateway.try_wait().ok().flatten().is_some()
+            || guest.is_some_and(|child| child.try_wait().ok().flatten().is_some())
+    }
+}
+
+/// Kills both siblings and waits until they exit.
+///
+/// On Unix the spawn put each child in its own process group. The signal uses
+/// the pid and start time recorded at spawn. The leader is still a zombie at
+/// this point (`waitid` `WNOWAIT`), so the start time is readable. A recycled
+/// pid is not signalled. `wait` reaps only after the group signal. A
+/// descendant that called `setsid` is outside the group; without a delegated
+/// cgroup this does not own it.
+async fn reap_siblings(
+    gateway: &mut tokio::process::Child,
+    guest: &mut Option<tokio::process::Child>,
+    identities: &crate::spawn_stdio::SiblingIdentities,
+) {
+    identities.kill_matching();
+    let _ = gateway.start_kill();
+    if let Some(child) = guest.as_mut() {
+        let _ = child.start_kill();
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(5), gateway.wait()).await;
+    if let Some(child) = guest.as_mut() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+    }
+}
+
+/// Resolves when the gateway or native guest exits.
+async fn sibling_exit(
+    gateway: &mut tokio::process::Child,
+    guest: &mut Option<tokio::process::Child>,
+) {
+    loop {
+        if sibling_exited(gateway, guest.as_mut()) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// Races guest work against session revocation and sibling exit.
+///
+/// Per-call cancellation is a separate flag. This helper always watches the
+/// session fence, so a caller is answered even when the guest never replies.
+async fn with_session<T>(
+    session_cancel: &Arc<AtomicBool>,
+    gateway: &mut tokio::process::Child,
+    guest: &mut Option<tokio::process::Child>,
+    fut: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        () = wait_flag(Arc::clone(session_cancel)) => Err(crate::authority::fenced_error()),
+        () = sibling_exit(gateway, guest) => {
+            Err(PluginError::unavailable("plugin process exited"))
+        }
+        result = fut => result,
+    }
+}
+
 /// Short OS thread name (Linux `TASK_COMM_LEN` is 16 bytes including NUL).
 fn vat_thread_name(plugin_key: &str) -> String {
     let alias = plugin_key.rsplit('#').next().unwrap_or("plugin");
@@ -1890,20 +2107,199 @@ fn vat_thread_name(plugin_key: &str) -> String {
     name
 }
 
+/// Owns the spawned siblings until the vat thread takes them.
+///
+/// Drop kills the children, aborts the proxy, rolls back the ACL journal, and
+/// removes the session directory when `connect_spawned` never starts the vat.
+struct SpawnHold {
+    spawned: Option<crate::spawn_stdio::SpawnedStdio>,
+}
+
+impl Drop for SpawnHold {
+    fn drop(&mut self) {
+        if let Some(spawned) = self.spawned.take() {
+            abandon_spawned(spawned);
+        }
+    }
+}
+
+/// Same cleanup as [`SpawnHold`], moved into the vat thread.
+///
+/// The thread takes the child on entry. If the thread fails to start, this
+/// drop is what tears the siblings down.
+struct SpawnGuard {
+    spawned: Option<crate::spawn_stdio::SpawnedStdio>,
+}
+
+impl Drop for SpawnGuard {
+    fn drop(&mut self) {
+        if let Some(spawned) = self.spawned.take() {
+            abandon_spawned(spawned);
+        }
+    }
+}
+
+/// Registered before describe. Drop fences the session and asks the vat to exit
+/// so an abandoned `spawn_with` cannot leave the work loop running.
+struct StartupOwner {
+    active: bool,
+    cancel: Arc<AtomicBool>,
+    shutdown: mpsc::UnboundedSender<Work>,
+    fence: Option<Arc<AtomicBool>>,
+}
+
+impl StartupOwner {
+    /// Transfer the fence to the returned session. Later drops do not unregister it.
+    fn disarm(mut self) -> Arc<AtomicBool> {
+        self.active = false;
+        self.fence
+            .take()
+            .unwrap_or_else(|| Arc::clone(&self.cancel))
+    }
+}
+
+impl Drop for StartupOwner {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.cancel.store(true, Ordering::SeqCst);
+        let _ = self.shutdown.send(Work::Shutdown);
+        if let Some(fence) = self.fence.take() {
+            crate::authority::unregister_session(&fence);
+        }
+    }
+}
+
+/// Kill both siblings, abort the proxy, and remove host-owned session state.
+fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
+    spawned.identities.kill_matching();
+    let _ = spawned.child.start_kill();
+    if let Some(guest) = spawned.guest.as_mut() {
+        let _ = guest.start_kill();
+    }
+    drop(spawned.proxy.take());
+    #[cfg(windows)]
+    drop(spawned.session_job.take());
+    #[cfg(target_os = "linux")]
+    drop(spawned.session_cgroup.take());
+    let dir = spawned.session_dir.take();
+    drop(spawned);
+    if let Some(dir) = dir {
+        for _ in 0..100 {
+            if !dir.exists() || std::fs::remove_dir_all(&dir).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// True when the grant file still matches the revision captured at spawn.
+fn grant_still_current(
+    files_dir: &std::path::Path,
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+    identity: &ExecutorIdentity,
+) -> Result<()> {
+    let persisted = crate::consent::spawn_grant(files_dir, plugin)?;
+    let effective = crate::spawn_stdio::effective_spawn_grant(&persisted, plugin, config);
+    let grant_rev = crate::consent::grant_revision(&persisted);
+    let authority_rev = crate::authority::authority_revision(&effective);
+    if grant_rev != identity.grant_revision || authority_rev != identity.authority_revision {
+        return Err(crate::authority::fenced_error());
+    }
+    Ok(())
+}
+
+/// Writes `name` under the directory named by `env_key`, when that variable is set.
+fn note_test_hold_file(env_key: &str, name: &str) {
+    let Ok(dir) = std::env::var(env_key) else {
+        return;
+    };
+    if dir.is_empty() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(name), b"1");
+}
+
+/// Block while `env_key` names a directory that has no `release` file.
+///
+/// `cancel` unblocks a vat that is already running. Dropping the caller future
+/// is enough for the pre-registration hold, because that future owns the siblings.
+async fn wait_test_hold(env_key: &str, cancel: Option<&Arc<AtomicBool>>) {
+    let Ok(dir) = std::env::var(env_key) else {
+        return;
+    };
+    if dir.is_empty() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("holding"), b"1");
+    loop {
+        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return;
+        }
+        if dir.join("release").is_file() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Record pids (and the Windows package SID) for an armed test hold.
+fn publish_test_hold_facts(
+    gateway_pid: Option<u32>,
+    guest_pid: Option<u32>,
+    package_sid: Option<&str>,
+) {
+    for key in [
+        "BOOKCLERK_TEST_STARTUP_HOLD_DIR",
+        "BOOKCLERK_TEST_GRANT_REGISTER_HOLD_DIR",
+        "BOOKCLERK_TEST_DESCRIBE_HOLD_DIR",
+    ] {
+        let Ok(dir) = std::env::var(key) else {
+            continue;
+        };
+        if dir.is_empty() {
+            continue;
+        }
+        let dir = std::path::PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        if let Some(pid) = gateway_pid {
+            let _ = std::fs::write(dir.join("gateway_pid"), pid.to_string());
+        }
+        if let Some(pid) = guest_pid {
+            let _ = std::fs::write(dir.join("guest_pid"), pid.to_string());
+        }
+        if let Some(sid) = package_sid {
+            let _ = std::fs::write(dir.join("package_sid"), sid);
+        }
+    }
+}
+
 fn vat_thread(
-    spawned: crate::spawn_stdio::SpawnedStdio,
+    mut guard: SpawnGuard,
     manifest: PluginManifest,
     account_id: String,
     events: Option<EventOutbox>,
     mut rx: mpsc::UnboundedReceiver<Work>,
     ready: oneshot::Sender<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>,
 ) {
+    let Some(spawned) = guard.spawned.take() else {
+        let _ = ready.send(Err(PluginError::message("plugin spawn already released")));
+        return;
+    };
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(rt) => rt,
         Err(err) => {
+            abandon_spawned(spawned);
             let _ = ready.send(Err(PluginError::message(format!("plugin runtime: {err}"))));
             return;
         }
@@ -1913,31 +2309,90 @@ fn vat_thread(
         local
             .run_until(async move {
                 let grant = spawned.grant;
+                let mut remove_session_dir = spawned.session_dir.map(RemoveOnDrop);
+                #[cfg(target_os = "linux")]
+                let mut session_cgroup = spawned.session_cgroup;
+                #[cfg(windows)]
+                let _session_job = spawned.session_job;
+                let session_cancel = Arc::clone(&spawned.cancel);
+                let _proxy = spawned.proxy;
+                let identities = spawned.identities.clone();
                 let mut child = spawned.child;
+                let mut guest = spawned.guest;
                 let stderr_tail = spawned.stderr_tail;
                 let (client, rpc) =
                     connect_plugin(spawned.stdout, spawned.stdin, MAX_STREAM_WINDOW_BYTES);
                 tokio::task::spawn_local(rpc);
-                let client = match client.describe().await {
+                // A sibling that exits before describe completes must fail the
+                // spawn. Cap'n Proto does not always surface that EOF (seen on
+                // macOS), so the wait is raced with process exit.
+                wait_test_hold(
+                    "BOOKCLERK_TEST_DESCRIBE_HOLD_DIR",
+                    Some(&session_cancel),
+                )
+                .await;
+                if session_cancel.load(Ordering::SeqCst) {
+                    #[cfg(windows)]
+                    drop(_session_job);
+                    reap_siblings(&mut child, &mut guest, &identities).await;
+                    #[cfg(target_os = "linux")]
+                    drop(session_cgroup.take());
+                    drop(remove_session_dir.take());
+                    let _ = ready.send(Err(crate::authority::fenced_error()));
+                    return;
+                }
+                let described = tokio::select! {
+                    biased;
+                    () = wait_flag(Arc::clone(&session_cancel)) => {
+                        Err(crate::authority::fenced_error())
+                    }
+                    result = client.describe() => result.map_err(map_abi),
+                    () = sibling_exit(&mut child, &mut guest) => {
+                        Err(PluginError::unavailable(
+                            "native guest RPC transport closed",
+                        ))
+                    }
+                };
+                let client = match described {
                     Ok(desc) => match negotiate_describe(&desc, &manifest, &grant) {
                         Ok((limits, features)) => {
                             let client = client.with_limits(limits);
-                            let _ = ready.send(Ok((desc, limits, features)));
+                            if ready.send(Ok((desc, limits, features))).is_err() {
+                                #[cfg(windows)]
+                                drop(_session_job);
+                                reap_siblings(&mut child, &mut guest, &identities).await;
+                                #[cfg(target_os = "linux")]
+                                drop(session_cgroup.take());
+                                drop(remove_session_dir.take());
+                                return;
+                            }
                             client
                         }
                         Err(err) => {
+                            #[cfg(windows)]
+                            drop(_session_job);
+                            reap_siblings(&mut child, &mut guest, &identities).await;
+                            #[cfg(target_os = "linux")]
+                            drop(session_cgroup.take());
+                            drop(remove_session_dir.take());
                             let _ = ready.send(Err(err));
                             return;
                         }
                     },
                     Err(err) => {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        let extra =
-                            crate::spawn_stdio::spawn_failure_detail(&mut child, &stderr_tail);
-                        let _ = ready.send(Err(crate::spawn_stdio::with_spawn_detail(
-                            map_abi(err),
-                            extra,
-                        )));
+                        let extra = crate::spawn_stdio::spawn_failure_detail(
+                            &mut child,
+                            guest.as_mut(),
+                            &stderr_tail,
+                        );
+                        #[cfg(windows)]
+                        drop(_session_job);
+                        reap_siblings(&mut child, &mut guest, &identities).await;
+                        #[cfg(target_os = "linux")]
+                        drop(session_cgroup.take());
+                        drop(remove_session_dir.take());
+                        let _ = ready.send(Err(crate::spawn_stdio::with_spawn_detail(err, extra)));
                         return;
                     }
                 };
@@ -1958,42 +2413,125 @@ fn vat_thread(
                     String,
                     Box<dyn bookclerk_plugin_abi::AdapterTransaction>,
                 > = std::collections::HashMap::new();
-                while let Some(work) = rx.recv().await {
+                loop {
+                    // Observe exit without reaping so the group kill still sees
+                    // the leader start time. Tokio `Child::wait` is
+                    // cancellation-safe; a cancelled wait does not drop zombie
+                    // status.
+                    if sibling_exited(&mut child, guest.as_mut()) {
+                        tracing::info!("sibling exited; ending plugin vat");
+                        break;
+                    }
+                    if session_cancel.load(Ordering::SeqCst) {
+                        tracing::info!("session cancelled; ending plugin vat");
+                        break;
+                    }
+                    let work = tokio::select! {
+                        biased;
+                        () = wait_flag(Arc::clone(&session_cancel)) => {
+                            tracing::info!("session cancelled while idle; ending plugin vat");
+                            break;
+                        }
+                        () = sibling_exit(&mut child, &mut guest) => {
+                            tracing::info!("sibling exited while idle; ending plugin vat");
+                            break;
+                        }
+                        work = rx.recv() => work,
+                    };
+                    let Some(work) = work else {
+                        break;
+                    };
                     match work {
                         Work::Shutdown => break,
                         Work::Describe { reply } => {
-                            let _ = reply.send(client.describe().await.map_err(map_abi));
+                            let described = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                result = client.describe() => result.map_err(map_abi),
+                            };
+                            let dead = described.is_err();
+                            let _ = reply.send(described);
+                            if session_cancel.load(Ordering::SeqCst)
+                                || (dead && sibling_exited(&mut child, guest.as_mut()))
+                            {
+                                break;
+                            }
                         }
                         Work::Open { values, reply } => {
-                            let out = primary_entrypoints(
-                                &client,
-                                &account_id,
-                                &mut primary,
-                                Some(values),
-                            )
-                            .await
-                            .map(|_| ());
+                            let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                result = primary_entrypoints(
+                                    &client,
+                                    &account_id,
+                                    &mut primary,
+                                    Some(values),
+                                ) => result.map(|_| ()),
+                            };
                             let _ = reply.send(out);
+                            if session_cancel.load(Ordering::SeqCst) {
+                                break;
+                            }
                         }
                         Work::Head { key, reply } => {
-                            let out = match storage(&client, &account_id, &mut primary).await {
-                                Ok(d) => d.head(&key).await.map_err(map_abi),
-                                Err(err) => Err(err),
+                            let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                result = async {
+                                    match storage(&client, &account_id, &mut primary).await {
+                                        Ok(d) => d.head(&key).await.map_err(map_abi),
+                                        Err(err) => Err(err),
+                                    }
+                                } => result,
                             };
                             let _ = reply.send(out);
+                            if session_cancel.load(Ordering::SeqCst) {
+                                break;
+                            }
                         }
                         Work::List { options, reply } => {
-                            let out = match storage(&client, &account_id, &mut primary).await {
-                                Ok(d) => d.list(options).await.map_err(map_abi),
-                                Err(err) => Err(err),
-                            };
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match storage(&client, &account_id, &mut primary).await {
+                                        Ok(d) => d.list(options).await.map_err(map_abi),
+                                        Err(err) => Err(err),
+                                    }
+                                },
+                            )
+                            .await;
                             let _ = reply.send(out);
                         }
                         Work::GetStream { key, range, reply } => {
-                            let out = match storage(&client, &account_id, &mut primary).await {
-                                Ok(d) => d.get(&key, range).await.map_err(map_abi),
-                                Err(err) => Err(err),
-                            };
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match storage(&client, &account_id, &mut primary).await {
+                                        Ok(d) => d.get(&key, range).await.map_err(map_abi),
+                                        Err(err) => Err(err),
+                                    }
+                                },
+                            )
+                            .await;
                             let _ = reply.send(out);
                         }
                         Work::PutStream {
@@ -2002,28 +2540,52 @@ fn vat_thread(
                             options,
                             reply,
                         } => {
-                            let out = match storage(&client, &account_id, &mut primary).await {
-                                Ok(d) => d.put(&key, body, options).await.map_err(map_abi),
-                                Err(err) => Err(err),
-                            };
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match storage(&client, &account_id, &mut primary).await {
+                                        Ok(d) => d.put(&key, body, options).await.map_err(map_abi),
+                                        Err(err) => Err(err),
+                                    }
+                                },
+                            )
+                            .await;
                             let _ = reply.send(out);
                         }
                         Work::Copy { from, to, reply } => {
-                            let out = match storage(&client, &account_id, &mut primary).await {
-                                Ok(d) => d
-                                    .copy(&from, &to)
-                                    .await
-                                    .map(|r| r.bytes_copied)
-                                    .map_err(map_abi),
-                                Err(err) => Err(err),
-                            };
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match storage(&client, &account_id, &mut primary).await {
+                                        Ok(d) => d
+                                            .copy(&from, &to)
+                                            .await
+                                            .map(|r| r.bytes_copied)
+                                            .map_err(map_abi),
+                                        Err(err) => Err(err),
+                                    }
+                                },
+                            )
+                            .await;
                             let _ = reply.send(out);
                         }
                         Work::Delete { key, reply } => {
-                            let out = match storage(&client, &account_id, &mut primary).await {
-                                Ok(d) => d.delete(&key).await.map_err(map_abi),
-                                Err(err) => Err(err),
-                            };
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match storage(&client, &account_id, &mut primary).await {
+                                        Ok(d) => d.delete(&key).await.map_err(map_abi),
+                                        Err(err) => Err(err),
+                                    }
+                                },
+                            )
+                            .await;
                             let _ = reply.send(out);
                         }
                         Work::StreamCopy {
@@ -2036,7 +2598,14 @@ fn vat_thread(
                         } => {
                             let host_deadline = lease.deadline_unix_ms;
                             let job_cancel = Arc::clone(&cancel);
-                            let dest = match storage(&client, &account_id, &mut primary).await {
+                            let dest = match with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                storage(&client, &account_id, &mut primary),
+                            )
+                            .await
+                            {
                                 Ok(d) => d.clone(),
                                 Err(err) => {
                                     let _ = reply.send(Err(err));
@@ -2051,6 +2620,13 @@ fn vat_thread(
                             );
                             let events = primary.events_for(&job_invocation);
                             let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
                                 () = wait_flag(Arc::clone(&cancel)) => {
                                     Err(PluginError::from_abi(Some("cancelled"), "fence lost"))
                                 }
@@ -2075,48 +2651,71 @@ fn vat_thread(
                             let _ = reply.send(out);
                         }
                         Work::Storefront { call } => {
-                            let stub = primary_entrypoints(
-                                &client,
-                                &account_id,
-                                &mut primary,
-                                None,
+                            let _ = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    let stub = primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    .and_then(|eps| {
+                                        eps.storefront
+                                            .clone()
+                                            .ok_or_else(|| missing_entrypoint("storefront"))
+                                    })
+                                    .map(|stub| {
+                                        Box::new(stub)
+                                            as Box<dyn bookclerk_plugin_sdk::ContentSource>
+                                    })
+                                    .map_err(host_err_to_abi);
+                                    call(stub).await;
+                                    Ok(())
+                                },
                             )
-                            .await
-                            .and_then(|eps| {
-                                eps.storefront
-                                    .clone()
-                                    .ok_or_else(|| missing_entrypoint("storefront"))
-                            })
-                            .map(|stub| {
-                                Box::new(stub) as Box<dyn bookclerk_plugin_sdk::ContentSource>
-                            })
-                            .map_err(host_err_to_abi);
-                            call(stub).await;
+                            .await;
                         }
                         Work::RemoteLibrary { call, cancel } => {
-                            let stub = primary_entrypoints(
-                                &client,
-                                &account_id,
-                                &mut primary,
-                                None,
-                            )
-                            .await
-                            .and_then(|eps| {
-                                eps.remote_library
-                                    .clone()
-                                    .ok_or_else(|| missing_entrypoint("remoteLibrary"))
-                            })
-                            .map(|stub| {
-                                Box::new(stub) as Box<dyn bookclerk_plugin_sdk::RemoteLibrary>
-                            })
-                            .map_err(host_err_to_abi);
                             tokio::select! {
-                                () = wait_flag(Arc::clone(&cancel)) => {
-                                    // The captured reply sender drops with the
-                                    // future, surfacing "fence lost" to the caller.
-                                    tracing::debug!("remoteLibrary call aborted: fence lost");
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    tracing::debug!("remoteLibrary call aborted: session fence");
                                 }
-                                () = call(stub) => {}
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    tracing::debug!("remoteLibrary call aborted: sibling exited");
+                                }
+                                () = async {
+                                    let stub = primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    .and_then(|eps| {
+                                        eps.remote_library
+                                            .clone()
+                                            .ok_or_else(|| missing_entrypoint("remoteLibrary"))
+                                    })
+                                    .map(|stub| {
+                                        Box::new(stub)
+                                            as Box<dyn bookclerk_plugin_sdk::RemoteLibrary>
+                                    })
+                                    .map_err(host_err_to_abi);
+                                    tokio::select! {
+                                        biased;
+                                        () = wait_flag(Arc::clone(&cancel)) => {
+                                            tracing::debug!(
+                                                "remoteLibrary call aborted: fence lost"
+                                            );
+                                        }
+                                        () = call(stub) => {}
+                                    }
+                                } => {}
                             }
                         }
                         Work::DeliverEvents {
@@ -2124,116 +2723,178 @@ fn vat_thread(
                             cancel,
                             reply,
                         } => {
-                            let consumer = primary_entrypoints(
-                                &client,
-                                &account_id,
-                                &mut primary,
-                                None,
-                            )
-                            .await
-                            .and_then(|eps| {
-                                eps.event_consumer
-                                    .clone()
-                                    .ok_or_else(|| missing_entrypoint("eventConsumer"))
-                            });
-                            let out = match consumer {
-                                Err(err) => Err(err),
-                                Ok(consumer) => tokio::select! {
-                                    () = wait_flag(Arc::clone(&cancel)) => {
-                                        Err(PluginError::from_abi(Some("cancelled"), "fence lost"))
+                            let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                result = async {
+                                    let consumer = primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    .and_then(|eps| {
+                                        eps.event_consumer
+                                            .clone()
+                                            .ok_or_else(|| missing_entrypoint("eventConsumer"))
+                                    });
+                                    match consumer {
+                                        Err(err) => Err(err),
+                                        Ok(consumer) => tokio::select! {
+                                            biased;
+                                            () = wait_flag(Arc::clone(&cancel)) => {
+                                                Err(PluginError::from_abi(
+                                                    Some("cancelled"),
+                                                    "fence lost",
+                                                ))
+                                            }
+                                            out = consumer.event(batch) => out.map_err(map_abi),
+                                        },
                                     }
-                                    out = consumer.event(batch) => out.map_err(map_abi),
-                                },
+                                } => result,
                             };
                             let _ = reply.send(out);
                         }
                         Work::CliDescribe { reply } => {
-                            let out = match primary_entrypoints(
-                                &client,
-                                &account_id,
-                                &mut primary,
-                                None,
-                            )
-                            .await
-                            {
-                                Ok(eps) => match eps.cli.as_ref() {
-                                    Some(cli) => cli.describe().await.map_err(map_abi),
-                                    None => Ok(bookclerk_plugin_sdk::CliSchema::default()),
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(eps) => match eps.cli.as_ref() {
+                                            Some(cli) => cli.describe().await.map_err(map_abi),
+                                            None => {
+                                                Ok(bookclerk_plugin_sdk::CliSchema::default())
+                                            }
+                                        },
+                                        Err(err) => Err(err),
+                                    }
                                 },
-                                Err(err) => Err(err),
-                            };
+                            )
+                            .await;
                             let _ = reply.send(out);
                         }
                         Work::CliInvoke { params, reply } => {
-                            let out = match primary_entrypoints(
-                                &client,
-                                &account_id,
-                                &mut primary,
-                                None,
-                            )
-                            .await
-                            {
-                                Ok(eps) => match eps.cli.as_ref() {
-                                    Some(cli) => cli.invoke(params).await.map_err(map_abi),
-                                    None => Err(missing_entrypoint("cli")),
-                                },
-                                Err(err) => Err(err),
+                            let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                result = async {
+                                    match primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(eps) => match eps.cli.as_ref() {
+                                            Some(cli) => cli.invoke(params).await.map_err(map_abi),
+                                            None => Err(missing_entrypoint("cli")),
+                                        },
+                                        Err(err) => Err(err),
+                                    }
+                                } => result,
                             };
                             let _ = reply.send(out);
+                            if session_cancel.load(Ordering::SeqCst) {
+                                break;
+                            }
                         }
                         Work::OidcClients { reply } => {
-                            let out = match primary_entrypoints(
-                                &client,
-                                &account_id,
-                                &mut primary,
-                                None,
-                            )
-                            .await
-                            {
-                                Ok(eps) => match eps.oidc.as_ref() {
-                                    Some(oidc) => oidc.clients().await.map_err(map_abi),
-                                    None => Ok(Vec::new()),
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(eps) => match eps.oidc.as_ref() {
+                                            Some(oidc) => oidc.clients().await.map_err(map_abi),
+                                            None => Ok(Vec::new()),
+                                        },
+                                        Err(err) => Err(err),
+                                    }
                                 },
-                                Err(err) => Err(err),
-                            };
+                            )
+                            .await;
                             let _ = reply.send(out);
                         }
                         Work::OidcAuthenticate { params, reply } => {
-                            let out = match primary_entrypoints(
-                                &client,
-                                &account_id,
-                                &mut primary,
-                                None,
-                            )
-                            .await
-                            {
-                                Ok(eps) => match eps.oidc.as_ref() {
-                                    Some(oidc) => {
-                                        oidc.authenticate_user(params).await.map_err(map_abi)
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    match primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(eps) => match eps.oidc.as_ref() {
+                                            Some(oidc) => {
+                                                oidc.authenticate_user(params).await.map_err(map_abi)
+                                            }
+                                            None => Err(missing_entrypoint("oidc")),
+                                        },
+                                        Err(err) => Err(err),
                                     }
-                                    None => Err(missing_entrypoint("oidc")),
                                 },
-                                Err(err) => Err(err),
-                            };
+                            )
+                            .await;
                             let _ = reply.send(out);
                         }
                         Work::DatabaseMigrations { binding, reply } => {
-                            let _ = reply.send(
-                                client
-                                    .database_migrations(&binding)
-                                    .await
-                                    .map_err(map_abi),
-                            );
+                            let out = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    client
+                                        .database_migrations(&binding)
+                                        .await
+                                        .map_err(map_abi)
+                                },
+                            )
+                            .await;
+                            let _ = reply.send(out);
                         }
                         Work::DbOpen { values, reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let db = open_database_adapter(&client, &account_id, values).await?;
                                 let handle = db.open_session_handle().await.map_err(map_abi)?;
                                 db_session = Some(handle.session);
                                 db_host_session = Some(handle.host);
                                 db_txn = None;
                                 Ok(())
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
@@ -2242,61 +2903,61 @@ fn vat_thread(
                             unit_ref,
                             reply,
                         } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let db = open_database_adapter(&client, &account_id, values).await?;
                                 db.drop_unit(&unit_ref).await.map_err(map_abi)
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
                         Work::DbCapabilities { reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 match db_session.as_mut() {
                                     Some(s) => s.capabilities().await.map_err(map_abi),
                                     None => Err(PluginError::message("database session not open")),
                                 }
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
                         Work::DbBootstrap { reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 match db_session.as_mut() {
                                     Some(s) => s.bootstrap().await.map_err(map_abi),
                                     None => Err(PluginError::message("database session not open")),
                                 }
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
                         Work::DbBegin { isolation, reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let host = db_host_session.as_ref().ok_or_else(|| {
                                     PluginError::message("database session not open")
                                 })?;
                                 db_txn = Some(host.begin(isolation).await.map_err(map_abi)?);
                                 Ok(())
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
                         Work::DbCommit { reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let txn = db_txn.take().ok_or_else(|| {
                                     PluginError::message("database transaction not open")
                                 })?;
                                 txn.commit().await.map_err(map_abi)
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
                         Work::DbRollback { reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let txn = db_txn.take().ok_or_else(|| {
                                     PluginError::message("database transaction not open")
                                 })?;
                                 txn.rollback().await.map_err(map_abi)
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
@@ -2306,6 +2967,13 @@ fn vat_thread(
                             reply,
                         } => {
                             let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
                                 () = wait_flag(Arc::clone(&cancel)) => {
                                     Err(PluginError::from_abi(Some("cancelled"), "rpc cancelled"))
                                 }
@@ -2326,6 +2994,13 @@ fn vat_thread(
                             reply,
                         } => {
                             let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
                                 () = wait_flag(Arc::clone(&cancel)) => {
                                     Err(PluginError::from_abi(Some("cancelled"), "rpc cancelled"))
                                 }
@@ -2344,6 +3019,13 @@ fn vat_thread(
                             reply,
                         } => {
                             let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
                                 () = wait_flag(Arc::clone(&cancel)) => {
                                     Err(PluginError::from_abi(Some("cancelled"), "rpc cancelled"))
                                 }
@@ -2365,7 +3047,7 @@ fn vat_thread(
                             values,
                             reply,
                         } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let db = open_database_adapter(&client, &account_id, values).await?;
                                 let handle = db.open_session_handle().await.map_err(map_abi)?;
                                 let caps = handle.session.capabilities().await.map_err(map_abi)?;
@@ -2382,7 +3064,7 @@ fn vat_thread(
                                     },
                                 );
                                 Ok(caps)
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
@@ -2393,6 +3075,13 @@ fn vat_thread(
                             reply,
                         } => {
                             let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
                                 () = wait_flag(Arc::clone(&cancel)) => {
                                     Err(PluginError::from_abi(Some("cancelled"), "rpc cancelled"))
                                 }
@@ -2414,6 +3103,13 @@ fn vat_thread(
                             reply,
                         } => {
                             let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
                                 () = wait_flag(Arc::clone(&cancel)) => {
                                     Err(PluginError::from_abi(Some("cancelled"), "rpc cancelled"))
                                 }
@@ -2429,7 +3125,7 @@ fn vat_thread(
                             let _ = reply.send(out);
                         }
                         Work::DbBeginBinding { name, isolation, reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let host = db_bindings.get(&name).ok_or_else(|| {
                                     PluginError::message(format!(
                                         "database binding `{name}` session not open",
@@ -2438,7 +3134,7 @@ fn vat_thread(
                                 let txn = host.host.begin(isolation).await.map_err(map_abi)?;
                                 db_binding_txns.insert(name, txn);
                                 Ok(())
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
@@ -2447,7 +3143,7 @@ fn vat_thread(
                             kind,
                             reply,
                         } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 match binding.as_deref() {
                                     None => {
                                         if let Some(txn) = db_txn.as_mut() {
@@ -2470,31 +3166,31 @@ fn vat_thread(
                                         }
                                     }
                                 }
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
                         Work::DbCommitBinding { name, reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let txn = db_binding_txns.remove(&name).ok_or_else(|| {
                                     PluginError::message(format!(
                                         "database binding `{name}` transaction not open",
                                     ))
                                 })?;
                                 txn.commit().await.map_err(map_abi)
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
                         Work::DbRollbackBinding { name, reply } => {
-                            let out = async {
+                            let out = with_session(&session_cancel, &mut child, &mut guest, async {
                                 let txn = db_binding_txns.remove(&name).ok_or_else(|| {
                                     PluginError::message(format!(
                                         "database binding `{name}` transaction not open",
                                     ))
                                 })?;
                                 txn.rollback().await.map_err(map_abi)
-                            }
+                            })
                             .await;
                             let _ = reply.send(out);
                         }
@@ -2505,6 +3201,13 @@ fn vat_thread(
                             reply,
                         } => {
                             let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
                                 () = wait_flag(Arc::clone(&cancel)) => {
                                     Err(PluginError::from_abi(Some("cancelled"), "rpc cancelled"))
                                 }
@@ -2521,7 +3224,14 @@ fn vat_thread(
                         }
                     }
                 }
+                #[cfg(windows)]
+                drop(_session_job);
+                reap_siblings(&mut child, &mut guest, &identities).await;
                 drop(child);
+                drop(guest);
+                #[cfg(target_os = "linux")]
+                drop(session_cgroup.take());
+                drop(remove_session_dir.take());
             })
             .await;
     });
@@ -3154,6 +3864,59 @@ mode = "deny"
         tokio::time::timeout(Duration::from_secs(2), wait)
             .await
             .expect("wait_flag hung");
+    }
+
+    #[tokio::test]
+    async fn with_session_stops_a_stalled_guest_call() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut gateway = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep");
+        let mut guest = None;
+        let err = with_session(
+            &flag,
+            &mut gateway,
+            &mut guest,
+            std::future::pending::<Result<()>>(),
+        )
+        .await
+        .expect_err("session fence");
+        assert!(
+            err.to_string().contains("fenced"),
+            "storage/cli/oidc/database dispatch must surface the fence: {err}"
+        );
+        let _ = gateway.kill().await;
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut gateway = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep");
+        let pid = gateway.id().expect("pid");
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        });
+        let mut guest = None;
+        let err = tokio::time::timeout(
+            Duration::from_secs(2),
+            with_session(
+                &flag,
+                &mut gateway,
+                &mut guest,
+                std::future::pending::<Result<()>>(),
+            ),
+        )
+        .await
+        .expect("sibling exit did not unblock the stalled call")
+        .expect_err("sibling");
+        assert!(
+            err.to_string().contains("exited"),
+            "stalled dispatch must stop when a sibling exits: {err}"
+        );
     }
 
     #[tokio::test]

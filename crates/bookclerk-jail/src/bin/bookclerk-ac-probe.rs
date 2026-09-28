@@ -36,7 +36,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     use std::env;
     use std::fs;
-    use std::io::{self, Write};
+    use std::io::{self, Read, Write};
     use std::path::PathBuf;
     use std::process::Command;
     use std::time::Duration;
@@ -54,6 +54,9 @@ fn run() -> Result<(), String> {
     let mut spawn_child = false;
     let mut exit_immediately = false;
     let mut hold_ms: Option<u64> = None;
+    let mut after_hold: Option<PathBuf> = None;
+    let mut loopback_self = false;
+    let mut connect_tcp: Option<(String, u16)> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -111,12 +114,48 @@ fn run() -> Result<(), String> {
                         .map_err(|err| format!("bad --hold-ms: {err}"))?,
                 );
             }
+            "--after-hold" => {
+                after_hold = Some(PathBuf::from(
+                    args.next().ok_or("--after-hold needs a path")?,
+                ));
+            }
+            "--loopback-self" => loopback_self = true,
+            "--connect-tcp" => {
+                let host = args.next().ok_or("--connect-tcp needs host")?;
+                let port: u16 = args
+                    .next()
+                    .ok_or("--connect-tcp needs port")?
+                    .parse()
+                    .map_err(|err| format!("bad --connect-tcp port: {err}"))?;
+                connect_tcp = Some((host, port));
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
 
     if exit_immediately {
         return Ok(());
+    }
+
+    if let Some((host, port)) = connect_tcp {
+        use std::net::TcpStream;
+        let mut stream = TcpStream::connect((host.as_str(), port))
+            .map_err(|err| format!("connect-tcp {host}:{port}: {err}"))?;
+        stream
+            .write_all(b"ping")
+            .map_err(|err| format!("connect-tcp write: {err}"))?;
+        let mut buf = [0u8; 4];
+        stream
+            .read_exact(&mut buf)
+            .map_err(|err| format!("connect-tcp read: {err}"))?;
+        if &buf != b"ping" {
+            return Err(format!("connect-tcp echo mismatch: {buf:?}"));
+        }
+        return Ok(());
+    }
+
+    if loopback_self {
+        return run_loopback_self();
     }
 
     if let Some(path) = &wait_before {
@@ -219,6 +258,13 @@ fn run() -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(ms));
     }
 
+    if let Some(path) = &after_hold {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        fs::write(path, b"done").map_err(|err| format!("after-hold {}: {err}", path.display()))?;
+    }
+
     if let Some(path) = &wait_after {
         wait_until(
             || path.exists(),
@@ -247,6 +293,60 @@ fn run() -> Result<(), String> {
         stdout.flush().map_err(|err| err.to_string())?;
     }
 
+    Ok(())
+}
+
+#[cfg(windows)]
+/// Bind `127.0.0.1:0` and have a same-container child connect back (E3).
+fn run_loopback_self() -> Result<(), String> {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::process::Command;
+    use std::time::Duration;
+
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).map_err(|err| format!("bind loopback: {err}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|err| format!("local_addr: {err}"))?
+        .port();
+    listener
+        .set_nonblocking(false)
+        .map_err(|err| format!("set blocking: {err}"))?;
+    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let mut child = Command::new(&exe)
+        .arg("--connect-tcp")
+        .arg("127.0.0.1")
+        .arg(port.to_string())
+        .spawn()
+        .map_err(|err| format!("spawn connect child: {err}"))?;
+    let (mut stream, _) = listener
+        .accept()
+        .map_err(|err| format!("accept loopback: {err}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|err| format!("read timeout: {err}"))?;
+    let mut buf = [0u8; 4];
+    stream
+        .read_exact(&mut buf)
+        .map_err(|err| format!("loopback read: {err}"))?;
+    stream
+        .write_all(&buf)
+        .map_err(|err| format!("loopback write: {err}"))?;
+    let status = child
+        .wait()
+        .map_err(|err| format!("wait connect child: {err}"))?;
+    if !status.success() {
+        return Err(format!("connect child failed: {status:?}"));
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "loopback_ok": true,
+            "port": port,
+            "is_app_container": token_is_app_container()?,
+        })
+    );
     Ok(())
 }
 

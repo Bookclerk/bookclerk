@@ -50,7 +50,11 @@ pub enum SpawnPathError {
 /// fallback resolves the volume-relative final path from the open handle,
 /// re-attaches the caller's drive, and accepts it only when it opens as the
 /// very same file (volume serial + file index); otherwise the original error
-/// stands.
+/// stands. `GetFinalPathNameByHandleW` follows reparse points; a junction to
+/// another volume yields a different identity and falls back to the original
+/// error. Callers that later reopen the returned path by name (rather than by
+/// the handle used here) still see the usual TOCTOU gap — this helper proves
+/// identity at the moment of canonicalize, not at a later open.
 ///
 /// # Errors
 ///
@@ -380,6 +384,36 @@ pub fn require_helper_beside_or_absolute(
     require_spawn_executable(&path)
 }
 
+/// Path passed to `CreateProcess`, `Command`, or a child that parses Win32 paths.
+///
+/// Windows canonical paths use the `\\?\` prefix. An AppContainer can open
+/// that form for read and still be denied process creation
+/// (`ERROR_ACCESS_DENIED`). Pinned `workerd` rejects the same prefix: its
+/// filesystem parser treats `?` as the first component and aborts. The prefix
+/// is removed only after callers have already canonicalized, so the Win32 path
+/// names the same resolved file. Other platforms return `path` unchanged.
+#[must_use]
+pub fn create_process_path(path: &Path) -> PathBuf {
+    strip_verbatim_prefix(path)
+}
+
+/// `\\?\` / `\\?\UNC\` → the Win32 path of an already-canonical file.
+///
+/// Non-Windows builds return `path` unchanged.
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.as_os_str().to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,5 +578,30 @@ mod tests {
             Err(SpawnPathError::NotFile(_))
         ));
         std::env::set_current_dir(prev).expect("restore cwd");
+    }
+
+    #[test]
+    fn create_process_path_strips_verbatim_prefix() {
+        let drive = Path::new(r"\\?\C:\work\workerd.exe");
+        let unc = Path::new(r"\\?\UNC\server\share\workerd.exe");
+        let plain = Path::new(r"C:\work\workerd.exe");
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                create_process_path(drive),
+                PathBuf::from(r"C:\work\workerd.exe")
+            );
+            assert_eq!(
+                create_process_path(unc),
+                PathBuf::from(r"\\server\share\workerd.exe")
+            );
+            assert_eq!(create_process_path(plain), plain);
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(create_process_path(drive), drive);
+            assert_eq!(create_process_path(unc), unc);
+            assert_eq!(create_process_path(plain), plain);
+        }
     }
 }

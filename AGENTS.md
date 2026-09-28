@@ -54,9 +54,10 @@ Four binaries (the workspace `default-members`):
   Policy travels as JSON in `BOOKCLERK_JAIL_SPEC`. See
   `docs/plugins.md#the-guest-jail`.
 - `bookclerk-workerd` — the front door every plugin is spawned through: loads
-  `runtime = "workerd"` isolates and fronts `runtime = "native"` guests
-  (`BOOKCLERK_NATIVE_BACKEND`); ships beside hosts with the pinned `workerd`
-  binary, and both are required in every isolation mode (direct native spawn is
+  `runtime = "workerd"` isolates and fronts `runtime = "native"` guests as a
+  sibling jail joined by inherited `fd:` / `handle:` links; ships beside
+  hosts with the pinned `workerd` binary, and both are required in every
+  isolation mode (direct native spawn is
   `SpawnTransport::DirectNativeDiagnostic`, tests only).
 
 Optional companion (workspace member, not a default-member):

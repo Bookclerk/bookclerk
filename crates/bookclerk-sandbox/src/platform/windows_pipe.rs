@@ -25,6 +25,23 @@ pub struct NamedPipeSecurity {
 }
 
 impl NamedPipeSecurity {
+    /// DACL for a host-created RPC or proxy pipe.
+    ///
+    /// Grants the creating user, SYSTEM, and Administrators. Everyone,
+    /// Anonymous, and All Application Packages are absent. The AppContainer
+    /// guest uses the inherited handle; it does not open the pipe by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SandboxError::Backend`] when the process token has no SID or
+    /// Win32 rejects the SDDL.
+    #[cfg(windows)]
+    pub fn for_creator() -> Result<Self, SandboxError> {
+        let sid = current_user_sid()?;
+        let sddl = format!("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{sid})");
+        Self::from_sddl(&sddl)
+    }
+
     /// Build attributes that allow `package_sid` to open a duplex named pipe.
     ///
     /// # Errors
@@ -35,6 +52,18 @@ impl NamedPipeSecurity {
         validate_package_sid(package_sid)?;
         let sddl = sddl_for_package(package_sid);
         Self::from_sddl(&sddl)
+    }
+
+    /// Pointer to the `SECURITY_ATTRIBUTES` for `CreateNamedPipeW`.
+    ///
+    /// The kernel copies the descriptor during the call. Keep `self` alive
+    /// until `CreateNamedPipeW` returns.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn as_security_attributes(
+        &mut self,
+    ) -> *const windows::Win32::Security::SECURITY_ATTRIBUTES {
+        &self.attrs
     }
 
     /// Raw pointer for Tokio `create_with_security_attributes_raw` / Win32.
@@ -127,6 +156,87 @@ impl Drop for NamedPipeSecurity {
     }
 }
 
+/// SID of the process token's user, safe to interpolate into SDDL.
+#[cfg(windows)]
+fn current_user_sid() -> Result<String, SandboxError> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(|err| {
+            SandboxError::Backend {
+                label: "named-pipe".into(),
+                backend: "token",
+                detail: format!("OpenProcessToken failed: {err}"),
+            }
+        })?;
+        let mut needed = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut needed);
+        if needed == 0 {
+            let _ = CloseHandle(token);
+            return Err(SandboxError::Backend {
+                label: "named-pipe".into(),
+                backend: "token",
+                detail: "TokenUser query returned no buffer".into(),
+            });
+        }
+        let mut buf = vec![0u8; needed as usize];
+        if let Err(err) = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buf.as_mut_ptr().cast()),
+            needed,
+            &mut needed,
+        ) {
+            let _ = CloseHandle(token);
+            return Err(SandboxError::Backend {
+                label: "named-pipe".into(),
+                backend: "token",
+                detail: format!("GetTokenInformation failed: {err}"),
+            });
+        }
+        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let mut wide = PWSTR::null();
+        if let Err(err) = ConvertSidToStringSidW(user.User.Sid, &mut wide) {
+            let _ = CloseHandle(token);
+            return Err(SandboxError::Backend {
+                label: "named-pipe".into(),
+                backend: "token",
+                detail: format!("ConvertSidToStringSidW failed: {err}"),
+            });
+        }
+        let text = wide.to_string().unwrap_or_default();
+        if !wide.is_null() {
+            let _ = LocalFree(Some(HLOCAL(wide.as_ptr().cast())));
+        }
+        let _ = CloseHandle(token);
+        if !sid_is_sddl_safe(&text) {
+            return Err(SandboxError::Backend {
+                label: "named-pipe".into(),
+                backend: "token",
+                detail: format!("process user SID is not a safe SDDL literal: {text:?}"),
+            });
+        }
+        Ok(text)
+    }
+}
+
+/// `S-1-…` with digits and hyphens only, so it cannot close an SDDL ACE.
+#[cfg(any(windows, test))]
+fn sid_is_sddl_safe(sid: &str) -> bool {
+    let Some(rest) = sid.strip_prefix("S-") else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest.chars().all(|c| c.is_ascii_digit() || c == '-')
+        && !rest.contains("--")
+        && !rest.ends_with('-')
+}
+
 /// AppContainer Package SIDs are `S-1-15-2-…` (capability SIDs use `S-1-15-3-`).
 fn validate_package_sid(sid: &str) -> Result<(), SandboxError> {
     if !sid.starts_with("S-1-15-2-") {
@@ -177,6 +287,14 @@ mod tests {
     fn rejects_sddl_metacharacters() {
         assert!(validate_package_sid("S-1-15-2-1)(A;;GA;;;WD").is_err());
         assert!(validate_package_sid("S-1-15-2-1;GA").is_err());
+    }
+
+    #[test]
+    fn user_sid_literal_rejects_sddl_metacharacters() {
+        assert!(sid_is_sddl_safe("S-1-5-21-1-2-3"));
+        assert!(!sid_is_sddl_safe("S-1-5-21-1)(A;;GA;;;WD"));
+        assert!(!sid_is_sddl_safe("WD"));
+        assert!(!sid_is_sddl_safe("S-"));
     }
 
     #[test]

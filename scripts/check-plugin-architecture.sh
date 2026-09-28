@@ -153,10 +153,11 @@ else
   ok "SDK HTTP honors SOCKET_PROXY on Unix and Windows"
 fi
 
-if ! grep -n 'allow(unsafe_code)' crates/bookclerk-workerd/src/pipe_bind.rs >/dev/null 2>&1; then
+if ! grep -n 'allow(unsafe_code)' crates/bookclerk-sandbox/src/link.rs >/dev/null 2>&1 \
+  || ! grep -n 'CreateNamedPipeW' crates/bookclerk-sandbox/src/link.rs >/dev/null 2>&1; then
   fail "Windows named-pipe CreateNamedPipe is missing allow(unsafe_code)"
 else
-  ok "Windows named-pipe SOCKET_PROXY allows the CreateNamedPipe FFI sink"
+  ok "host sibling links create named pipes under allow(unsafe_code)"
 fi
 
 if grep -B2 'impl GrantedListener for tokio::net::UnixListener' crates/bookclerk-workerd/src/granted.rs \
@@ -166,10 +167,11 @@ else
   fail "GRANTED UnixListener is compiled on Windows (tokio UnixListener is Unix-only)"
 fi
 
-if grep -n 'nested_enforcement_required' crates/bookclerk-workerd/src/native_guest.rs >/dev/null; then
-  ok "nested Deny fail-closes when jail is missing and enforcement is required"
+if grep -n 'fn front_door_unavailable' crates/bookclerk-plugin-host/src/spawn_plan.rs >/dev/null \
+  && grep -n 'refusing to start plugin' crates/bookclerk-plugin-host/src/spawn_plan.rs >/dev/null; then
+  ok "missing workerd front door fail-closes in every isolation mode"
 else
-  fail "nested jail missing-helper path no longer fail-closes"
+  fail "missing workerd front door no longer fail-closes"
 fi
 
 if grep -n 'upsert_event_subscriber(&node_id, &plugin.manifest.id' crates/bookclerkd/src/event_worker.rs >/dev/null; then
@@ -190,10 +192,17 @@ else
   ok "OIDC plugin-owned clients key on PluginKey"
 fi
 
-if ! grep -n 'socket_proxy::spawn_windows' crates/bookclerk-workerd/src/main.rs >/dev/null 2>&1; then
-  fail "Windows SOCKET_PROXY accept loop is not started from bookclerk-workerd"
+if grep -n 'socket_proxy::spawn_windows' crates/bookclerk-workerd/src/main.rs >/dev/null 2>&1 \
+  || grep -n 'CreateNamedPipe' crates/bookclerk-workerd/src/*.rs >/dev/null 2>&1; then
+  fail "bookclerk-workerd binds a named-pipe accept loop (sibling links are host-created)"
 else
-  ok "Windows SOCKET_PROXY accept loop is wired in the launcher"
+  ok "bookclerk-workerd does not bind a named-pipe accept loop"
+fi
+
+if ! grep -n 'InheritedDuplex::open' crates/bookclerk-workerd/src/main.rs >/dev/null 2>&1; then
+  fail "native-behind-workerd does not open the host-inherited sibling link"
+else
+  ok "native-behind-workerd opens the host-inherited sibling link"
 fi
 
 # Native guests must not open ambient TCP (reqwest::Client) in product src.

@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 
-use bookclerk_sandbox::{Enforcement, NetPolicy, Spec, SPEC_ENV};
+use bookclerk_sandbox::{CpuRate, Enforcement, NetPolicy, Spec, SPEC_ENV};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Semaphore;
 
@@ -364,10 +364,13 @@ impl MediaPool {
             Some(jail) => format!("{} -- {}", jail.display(), launch.bin.display()),
             None => launch.bin.display().to_string(),
         };
-        let mut child = command.spawn().map_err(|err| MediaError::Worker {
-            job: label,
-            detail: format!("could not spawn {spawned}: {err}"),
-        })?;
+        let mut child =
+            bookclerk_sandbox::with_fd_spawn_lock(|| command.spawn()).map_err(|err| {
+                MediaError::Worker {
+                    job: label,
+                    detail: format!("could not spawn {spawned}: {err}"),
+                }
+            })?;
         if let Some(stderr) = child.stderr.take() {
             forward_worker_stderr(label, stderr);
         }
@@ -563,7 +566,10 @@ fn media_job_spec(job: &MediaJob, confinement: Confinement) -> Spec {
         // Leave unset: Windows Job uses media label heuristics; Linux skips cgroup.
         memory_bytes: None,
         active_processes: None,
-        cpu_rate_percent: None,
+        cpu_rate_percent: CpuRate::Unspecified,
+        inherit_handles: Vec::new(),
+        cgroup_dir: None,
+        unix_socket_dirs: None,
     }
 }
 

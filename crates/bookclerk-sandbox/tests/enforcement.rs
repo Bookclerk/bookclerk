@@ -88,6 +88,8 @@ fn helper_entry_point() {
         "network_outbound_listen" => child_network_outbound_listen(&allowed),
         "media_worker_shape" => child_media_worker_shape(&allowed, &denied),
         "plugin_guest_shape" => child_plugin_guest_shape(&allowed),
+        #[cfg(target_os = "macos")]
+        "guest_pathname_ipc" => child_guest_pathname_ipc(&allowed, &denied),
         other => Err(format!("unknown helper role {other}")),
     };
 
@@ -512,6 +514,166 @@ fn required_enforcement_fails_when_backend_is_missing() {
             .expect_err("Required must fail without a backend");
         assert!(err.to_string().contains("not enforced"), "got: {err}");
     }
+}
+
+/// Required Seatbelt: the guest may use one private IPC directory and nothing else.
+///
+/// TCP smoke is a different policy. This case binds and connects pathname
+/// sockets inside the directory, then proves bind and connect outside it fail.
+/// A missing Seatbelt is a skip only when enforcement is not demanded.
+#[cfg(target_os = "macos")]
+#[test]
+fn required_seatbelt_allows_only_the_guest_ipc_directory() {
+    if !backend_enforces_filesystem() {
+        eprintln!("skipping: no filesystem confinement on this host");
+        return;
+    }
+
+    let ipc = bookclerk_sandbox::create_guest_ipc_dir().expect("guest ipc dir");
+    let outside = std::path::PathBuf::from(format!(
+        "/tmp/bc-out-{:08x}",
+        std::process::id().wrapping_mul(0x9E37)
+    ));
+    let _cleanup_ipc = RemoveDir(&ipc);
+    let _cleanup_outside = RemoveDir(&outside);
+    std::fs::create_dir_all(&outside).expect("outside dir");
+    let listener = std::os::unix::net::UnixListener::bind(outside.join("outside.sock"))
+        .expect("outside listener");
+
+    let output = run_helper("guest_pathname_ipc", Path::new(&ipc), &outside);
+    drop(listener);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success()
+        && stderr.contains("Seatbelt cannot be applied")
+        && !enforcement_demanded()
+    {
+        eprintln!("skipping: Seatbelt cannot be applied\n{stderr}");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "helper failed\nstdout: {}\nstderr: {stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+}
+
+/// Removes a directory when the test returns, including on assertion failure.
+#[cfg(target_os = "macos")]
+struct RemoveDir<'a>(&'a Path);
+
+#[cfg(target_os = "macos")]
+impl Drop for RemoveDir<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.0);
+    }
+}
+
+/// Bind and connect inside `ipc`; refuse both against `outside`.
+#[cfg(target_os = "macos")]
+fn child_guest_pathname_ipc(ipc: &Path, outside: &Path) -> Result<(), String> {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::time::Duration;
+
+    let report = Policy::new("guest-ipc")
+        .write(ipc)
+        .unix_socket_dirs(Some(vec![ipc.to_path_buf()]))
+        .net(NetPolicy::Deny)
+        .enforcement(Enforcement::Required)
+        .system_paths(true)
+        .confine_current_process()
+        .map_err(|err| {
+            let msg = err.to_string();
+            if msg.contains("sandbox_init") || msg.contains("seatbelt") {
+                format!("Seatbelt cannot be applied: {msg}")
+            } else {
+                format!("confinement failed: {msg}")
+            }
+        })?;
+    if !report.is_confined() {
+        return Err(format!(
+            "Seatbelt cannot be applied: report says unconfined: {}",
+            report.summary()
+        ));
+    }
+
+    exchange_unix(
+        &ipc.join("cb.sock"),
+        b"oauth",
+        b"code",
+        Duration::from_secs(2),
+    )?;
+    exchange_unix(
+        &ipc.join(".s.PGSQL.5432"),
+        b"SELECT 1",
+        b"1",
+        Duration::from_secs(2),
+    )?;
+
+    if UnixListener::bind(outside.join("nope.sock")).is_ok() {
+        return Err("bound a pathname socket outside the guest IPC directory".into());
+    }
+    if UnixStream::connect(outside.join("outside.sock")).is_ok() {
+        return Err("connected to a pathname socket outside the guest IPC directory".into());
+    }
+    Ok(())
+}
+
+/// Bind `path`, exchange `request` for `response` on one connection.
+#[cfg(target_os = "macos")]
+fn exchange_unix(
+    path: &Path,
+    request: &[u8],
+    response: &[u8],
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    let listener =
+        UnixListener::bind(path).map_err(|err| format!("bind {}: {err}", path.display()))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let expected = request.to_vec();
+    let reply = response.to_vec();
+    std::thread::spawn(move || {
+        let result = (|| {
+            let (mut stream, _) = listener.accept().map_err(|err| format!("accept: {err}"))?;
+            stream
+                .set_read_timeout(Some(timeout))
+                .map_err(|err| format!("server read timeout: {err}"))?;
+            let mut buf = vec![0_u8; expected.len()];
+            stream
+                .read_exact(&mut buf)
+                .map_err(|err| format!("server read: {err}"))?;
+            if buf != expected {
+                return Err(format!("expected {expected:?}, got {buf:?}"));
+            }
+            stream
+                .write_all(&reply)
+                .map_err(|err| format!("server write: {err}"))?;
+            Ok(())
+        })();
+        let _ = tx.send(result);
+    });
+    let mut client =
+        UnixStream::connect(path).map_err(|err| format!("connect {}: {err}", path.display()))?;
+    client
+        .set_read_timeout(Some(timeout))
+        .map_err(|err| format!("client read timeout: {err}"))?;
+    client
+        .write_all(request)
+        .map_err(|err| format!("client write {}: {err}", path.display()))?;
+    let mut buf = vec![0_u8; response.len()];
+    client
+        .read_exact(&mut buf)
+        .map_err(|err| format!("client read {}: {err}", path.display()))?;
+    if buf != response {
+        return Err(format!(
+            "{} exchange got {buf:?}, expected {response:?}",
+            path.display()
+        ));
+    }
+    rx.recv_timeout(timeout)
+        .map_err(|_| format!("{} accept timed out", path.display()))?
 }
 
 /// Pick a port below the kernel's ephemeral range for Landlock fixed-port probes.

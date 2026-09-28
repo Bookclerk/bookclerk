@@ -155,6 +155,9 @@ packages = [
 # the fixture guest. They select `native_gateway`, not the staged e2e suite.
 paths = [
     "crates/bookclerk-plugin-e2e/tests/native_gateway.rs",
+    "crates/bookclerk-plugin-e2e/tests/native_gateway_isolation.rs",
+    "crates/bookclerk-plugin-e2e/tests/native_gateway_lifecycle.rs",
+    "crates/bookclerk-plugin-e2e/tests/native_gateway_authenticated_endpoint.rs",
     "crates/bookclerk-plugin-e2e/tests/native_gateway/**",
     "crates/bookclerk-plugin-e2e/src/bin/native_gateway_probe.rs",
 ]
@@ -204,3 +207,8 @@ reason = "schema tool input at run time, not a test; the derived layout JSON is 
 package = "bookclerk-plugin-catalog"
 reference = "bookclerk-dev"
 reason = "package-name string in install-path test data, not a launched executable"
+
+[[reviewed]]
+package = "bookclerk-plugin-e2e"
+reference = "bookclerk-jail"
+reason = "PluginSession::spawn_with launches bookclerk-jail; the native_gateway smoke already builds that binary, and this crate is excluded from rust_test"

@@ -45,8 +45,24 @@ use tracing::{info, warn};
 
 use crate::manifest_env::load_manifest;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// `DETACHED_PROCESS`. `CREATE_NO_WINDOW` still starts conhost.exe, which
+/// consumes a Job active-process slot.
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(bookclerk_sandbox::GATEWAY_WORKER_THREADS)
+        .max_blocking_threads(bookclerk_sandbox::GATEWAY_MAX_BLOCKING_THREADS)
+        .enable_all()
+        .thread_name("bookclerk-workerd")
+        .build()
+        .context("build the bookclerk-workerd runtime")?;
+    runtime.block_on(run())
+}
+
+/// Gateway process body on the pinned runtime.
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -59,21 +75,20 @@ async fn main() -> Result<()> {
     let root = plugin_root()?;
     let manifest = load_manifest(&root)?;
 
-    if let Some(backend) = std::env::var_os("BOOKCLERK_NATIVE_BACKEND") {
-        let backend = PathBuf::from(backend);
-        let backend = bookclerk_sandbox::require_spawn_executable(&backend).with_context(|| {
-            format!(
-                "BOOKCLERK_NATIVE_BACKEND={} is not a usable native backend",
-                backend.display()
-            )
-        })?;
-        return run_native_behind_workerd(&backend, &root, &manifest).await;
+    if let Ok(rpc_spec) = std::env::var(bookclerk_sandbox::GATEWAY_GUEST_RPC_ENV) {
+        if rpc_spec.is_empty() {
+            bail!(
+                "{} must name an inherited link",
+                bookclerk_sandbox::GATEWAY_GUEST_RPC_ENV
+            );
+        }
+        return run_native_behind_workerd(&rpc_spec, &root, &manifest).await;
     }
 
     let workerd_meta = manifest
         .workerd
         .as_ref()
-        .context("bookclerk-workerd requires runtime = \"workerd\" and [workerd] table (or BOOKCLERK_NATIVE_BACKEND)")?;
+        .context("bookclerk-workerd requires runtime = \"workerd\" and [workerd] table (or BOOKCLERK_GATEWAY_GUEST_RPC)")?;
 
     if workerd_meta.compatibility_date.as_str() > BUNDLED_WORKERD_COMPAT_DATE {
         warn!(
@@ -180,7 +195,7 @@ fn workerd_serve_command(
     workerd_bin: &Path,
     generated: &config::GeneratedConfig,
     root: &Path,
-) -> Result<tokio::process::Command> {
+) -> Result<(tokio::process::Command, PathBuf)> {
     let bin = bookclerk_sandbox::require_spawn_executable(workerd_bin)
         .with_context(|| format!("validate workerd binary {}", workerd_bin.display()))?;
     let config_path =
@@ -189,20 +204,47 @@ fn workerd_serve_command(
     let import_path = bookclerk_sandbox::require_absolute_spawn_path(&generated.import_path)
         .context("validate workerd --import-path")?;
 
-    let mut cmd = tokio::process::Command::new(&bin);
+    // Win32 form: an AppContainer CreateProcess on a `\\?\` path is access-denied
+    // even when the same file is readable, and workerd's kj parser aborts when
+    // the first component is `?`. Strip the prefix only after the checks above.
+    // DETACHED_PROCESS keeps conhost out of the gateway Job's active-process
+    // cap (`CREATE_NO_WINDOW` does not). Stdin is a pipe, not `Stdio::null()`:
+    // null opens `\\.\NUL`, and an AppContainer token is denied that device
+    // (`ERROR_ACCESS_DENIED`) before `CreateProcess` runs.
+    // [`spawn_workerd_process`] drops the write end so the child still sees EOF.
+    let spawn_bin = bookclerk_sandbox::create_process_path(&bin);
+    let config_arg = bookclerk_sandbox::create_process_path(&config_path);
+    let import_arg = bookclerk_sandbox::create_process_path(&import_path);
+    let cwd = bookclerk_sandbox::create_process_path(&generated.state_dir);
+    let plugin_root = bookclerk_sandbox::create_process_path(root);
+    let mut cmd = tokio::process::Command::new(&spawn_bin);
+    #[cfg(windows)]
+    cmd.creation_flags(DETACHED_PROCESS);
     cmd.arg("serve")
         // Unlocks the egress worker's `$experimental` inbound CONNECT handler.
         .arg(bookclerk_workerd::WORKERD_SERVE_EXPERIMENTAL);
-    cmd.arg(&config_path)
+    cmd.arg(&config_arg)
         // Cap'n Proto `/modules/…` embeds resolve against the RO install root.
-        .arg(format!("--import-path={}", import_path.display()))
-        .current_dir(&generated.state_dir)
-        .stdin(Stdio::null())
+        .arg(format!("--import-path={}", import_arg.display()))
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("BOOKCLERK_PLUGIN_ROOT", root)
+        .env("BOOKCLERK_PLUGIN_ROOT", &plugin_root)
         .kill_on_drop(true);
-    Ok(cmd)
+    Ok((cmd, spawn_bin))
+}
+
+/// Spawns `workerd serve` and closes stdin so the child reads EOF.
+///
+/// # Errors
+///
+/// Returns an error when the operating system refuses to create the process.
+fn spawn_workerd_process(cmd: &mut tokio::process::Command, spawn_bin: &Path) -> Result<Child> {
+    let mut child = bookclerk_sandbox::with_fd_spawn_lock(|| cmd.spawn())
+        .with_context(|| format!("spawn {}", spawn_bin.display()))?;
+    drop(child.stdin.take());
+    Ok(child)
 }
 
 /// Materializes config, spawns workerd, mediates host stdio ↔ bridge HTTP, then kills the child.
@@ -271,7 +313,7 @@ async fn run_isolate(
         Some(state_dir.as_path()),
     )?;
 
-    let mut cmd = workerd_serve_command(workerd_bin, &generated, root)?;
+    let (mut cmd, spawn_bin) = workerd_serve_command(workerd_bin, &generated, root)?;
 
     #[cfg(unix)]
     if let Some(ref listener) = rpc_listener {
@@ -279,9 +321,7 @@ async fn run_isolate(
         cmd.arg(format!("--socket-fd=rpc={}", listener.as_raw_fd()));
     }
 
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawn {}", workerd_bin.display()))?;
+    let mut child = spawn_workerd_process(&mut cmd, &spawn_bin)?;
 
     // workerd now owns the listening socket; close our copy after spawn.
     drop(rpc_listener);
@@ -307,19 +347,68 @@ async fn run_isolate(
     result
 }
 
-/// Host-owned native-behind-workerd: workerd control plane + verified native guest.
+/// Host-owned native-behind-workerd: workerd control plane plus inherited guest links.
 ///
-/// `BOOKCLERK_NATIVE_BACKEND` names the verified executable. Plugin input cannot
-/// choose it or weaken the sandbox. The launcher connects to the guest's Cap'n
-/// Proto vat and forwards every entrypoint call typed; only `describe` /
-/// `open` policy and `shutdown` pass through the adapter isolate. Direct Cap'n
-/// Proto remains a host-selected fallback, never plugin-selectable.
+/// The host spawned the native backend as a sibling jail. This launcher never
+/// sees the backend path: [`bookclerk_sandbox::GATEWAY_GUEST_RPC_ENV`] is the
+/// Cap'n Proto link. The production host serves the CONNECT mux itself
+/// (Windows AppContainers cannot dial host loopback). When
+/// [`bookclerk_sandbox::GATEWAY_PROXY_ENV`] is set, this process serves it
+/// instead — unjailed conformance spawns. On Windows the RPC link is two
+/// unidirectional pipes ([`bookclerk_sandbox::GATEWAY_GUEST_RPC_WRITE_ENV`]
+/// is the write half). Plugin input cannot choose either link. Only
+/// `describe` / `open` policy and `shutdown` pass through the adapter isolate.
 async fn run_native_behind_workerd(
-    backend: &Path,
+    rpc_spec: &str,
     root: &Path,
     manifest: &PluginManifest,
 ) -> Result<()> {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
     use bookclerk_plugin_manifest::WorkerdLimits;
+    use bookclerk_workerd::inherited_link::InheritedDuplex;
+
+    let proxy_spec = std::env::var(bookclerk_sandbox::GATEWAY_PROXY_ENV).ok();
+    #[cfg(not(windows))]
+    let proxy = match proxy_spec.as_deref() {
+        Some(spec) => Some(InheritedDuplex::open(spec).context("open inherited proxy link")?),
+        None => None,
+    };
+    #[cfg(windows)]
+    let proxy_halves = match proxy_spec.as_deref() {
+        Some(spec) => {
+            let write_spec = std::env::var(bookclerk_sandbox::GATEWAY_PROXY_WRITE_ENV)
+                .with_context(|| {
+                    format!(
+                        "{} is required on Windows when {} is set",
+                        bookclerk_sandbox::GATEWAY_PROXY_WRITE_ENV,
+                        bookclerk_sandbox::GATEWAY_PROXY_ENV
+                    )
+                })?;
+            Some(
+                InheritedDuplex::open_halves(spec, &write_spec)
+                    .context("open inherited proxy pipes")?,
+            )
+        }
+        None => None,
+    };
+    #[cfg(windows)]
+    let (guest_stdout, guest_stdin) = {
+        let write_spec = std::env::var(bookclerk_sandbox::GATEWAY_GUEST_RPC_WRITE_ENV)
+            .with_context(|| {
+                format!(
+                    "{} is required on Windows",
+                    bookclerk_sandbox::GATEWAY_GUEST_RPC_WRITE_ENV
+                )
+            })?;
+        InheritedDuplex::open_halves(rpc_spec, &write_spec)
+            .context("open inherited guest RPC pipes")?
+    };
+    #[cfg(not(windows))]
+    let (guest_stdout, guest_stdin) = InheritedDuplex::open(rpc_spec)
+        .context("open inherited guest RPC link")?
+        .into_split();
 
     let workerd_bin = resolve_workerd_binary()?;
     let grant = OperatorGrantEnv::from_env();
@@ -327,65 +416,12 @@ async fn run_native_behind_workerd(
     let limits = grant.apply_limits(WorkerdLimits::default().effective());
     info!(
         plugin = %manifest.id,
-        backend = %backend.display(),
         workerd = %workerd_bin.display(),
         "starting native-behind-workerd isolate"
     );
 
-    let state_dir = config::workerd_state_dir(root)?;
-    let _state_cleanup = RemoveDirOnDrop(state_dir.clone());
+    let state_dir = config::host_state_dir()?;
     let bridge_token = generate_bridge_token();
-
-    #[cfg(unix)]
-    let socket_proxy =
-        bookclerk_workerd::unix_bind::bind_socket_proxy(&state_dir).context("bind socket proxy")?;
-    #[cfg(unix)]
-    let inherit_fds = {
-        use std::os::fd::AsRawFd;
-        let mut fds = Vec::new();
-        if let Some(ref dir) = socket_proxy.inherit_dir {
-            bookclerk_workerd::unix_bind::clear_cloexec(dir.as_raw_fd())
-                .context("clear CLOEXEC on socket-proxy dir fd")?;
-            fds.push(dir.as_raw_fd());
-        }
-        fds
-    };
-    #[cfg(windows)]
-    let socket_proxy = {
-        let sid = std::env::var(bookclerk_workerd::native_guest::NESTED_AC_SID_ENV).ok();
-        bookclerk_workerd::pipe_bind::bind_socket_proxy(sid.as_deref())
-            .context("bind socket proxy named pipe")?
-    };
-    #[cfg(not(any(unix, windows)))]
-    let inherit_fds: Vec<i32> = Vec::new();
-    #[cfg(windows)]
-    let inherit_fds: Vec<i32> = Vec::new();
-
-    let mut guest_cmd = bookclerk_workerd::native_guest::native_guest_command(
-        backend,
-        root,
-        &state_dir,
-        &inherit_fds,
-    )?;
-    #[cfg(unix)]
-    {
-        guest_cmd.env(
-            bookclerk_workerd::socket_proxy::SOCKET_PROXY_ENV,
-            &socket_proxy.spec,
-        );
-    }
-    #[cfg(windows)]
-    {
-        guest_cmd.env(
-            bookclerk_workerd::socket_proxy::SOCKET_PROXY_ENV,
-            &socket_proxy.spec,
-        );
-    }
-    let mut guest = guest_cmd
-        .spawn()
-        .with_context(|| format!("spawn native guest {}", backend.display()))?;
-    let guest_stdin = guest.stdin.take().context("native guest stdin")?;
-    let guest_stdout = guest.stdout.take().context("native guest stdout")?;
 
     #[cfg(unix)]
     let (listen, rpc_listener) = {
@@ -436,7 +472,7 @@ async fn run_native_behind_workerd(
         Some(state_dir.as_path()),
     )?;
 
-    let mut cmd = workerd_serve_command(&workerd_bin, &generated, root)?;
+    let (mut cmd, spawn_bin) = workerd_serve_command(&workerd_bin, &generated, root)?;
 
     #[cfg(unix)]
     if let Some(ref listener) = rpc_listener {
@@ -444,40 +480,34 @@ async fn run_native_behind_workerd(
         cmd.arg(format!("--socket-fd=rpc={}", listener.as_raw_fd()));
     }
 
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawn {}", workerd_bin.display()))?;
+    let mut child = spawn_workerd_process(&mut cmd, &spawn_bin)?;
     drop(rpc_listener);
     forward_child_logs(&mut child);
     wait_for_bridge(&generated.listen, &bridge_token)
         .await
         .context("workerd bridge /health did not become ready")?;
 
-    #[cfg(unix)]
-    let socket_fence = {
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-        let fence = Arc::new(AtomicBool::new(false));
-        bookclerk_workerd::socket_proxy::spawn_unix(
-            socket_proxy.listener,
+    let socket_fence = Arc::new(AtomicBool::new(false));
+    #[cfg(not(windows))]
+    let proxy_server = if let Some(proxy) = proxy {
+        Some(bookclerk_workerd::socket_proxy::spawn_link(
+            proxy,
             egress.policy().clone(),
-            Arc::clone(&fence),
-        )?;
-        fence
+            Arc::clone(&socket_fence),
+        )?)
+    } else {
+        None
     };
     #[cfg(windows)]
-    let socket_fence = {
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-        let fence = Arc::new(AtomicBool::new(false));
-        bookclerk_workerd::socket_proxy::spawn_windows(
-            socket_proxy.first,
-            socket_proxy.name,
-            socket_proxy.package_sid,
+    let proxy_server = if let Some((proxy_read, proxy_write)) = proxy_halves {
+        Some(bookclerk_workerd::socket_proxy::spawn_halves(
+            proxy_read,
+            proxy_write,
             egress.policy().clone(),
-            Arc::clone(&fence),
-        )?;
-        fence
+            Arc::clone(&socket_fence),
+        )?)
+    } else {
+        None
     };
 
     let result = mediate_native(
@@ -493,28 +523,28 @@ async fn run_native_behind_workerd(
     )
     .await;
 
-    #[cfg(unix)]
     socket_fence.store(true, std::sync::atomic::Ordering::SeqCst);
-    #[cfg(windows)]
-    socket_fence.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(proxy_server);
 
     let _ = child.kill().await;
     let _ = child.wait().await;
-    let _ = guest.kill().await;
-    let _ = guest.wait().await;
     result
 }
 
 /// Cap'n Proto stdio with the native guest's vat as the typed data plane.
-async fn mediate_native(
+async fn mediate_native<R, W>(
     port: u16,
     token: String,
     #[cfg(unix)] granted_unix: Option<std::os::unix::net::UnixListener>,
     #[cfg(not(unix))] granted_tcp: Option<std::net::TcpListener>,
-    guest_stdout: tokio::process::ChildStdout,
-    guest_stdin: tokio::process::ChildStdin,
+    guest_stdout: R,
+    guest_stdin: W,
     capabilities: bookclerk_plugin_abi::PluginCapabilities,
-) -> Result<()> {
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin + 'static,
+    W: tokio::io::AsyncWrite + Unpin + 'static,
+{
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -533,7 +563,7 @@ async fn mediate_native(
     local
         .run_until(async move {
             let (client, rpc) = connect_plugin(guest_stdout, guest_stdin, MAX_STREAM_WINDOW_BYTES);
-            tokio::task::spawn_local(rpc);
+            let rpc_task = tokio::task::spawn_local(rpc);
             #[cfg(unix)]
             {
                 let std_listener = granted_unix.context("missing granted unix listener")?;
@@ -548,7 +578,15 @@ async fn mediate_native(
                 let listener = tokio::net::TcpListener::from_std(std_listener)?;
                 spawn_granted(listener, token, Rc::clone(&table));
             }
-            mediate_bridge_stdio(http, table, capabilities, Backend::Native(client)).await
+            let mediate = mediate_bridge_stdio(http, table, capabilities, Backend::Native(client));
+            tokio::select! {
+                result = mediate => result,
+                rpc = rpc_task => match rpc {
+                    Ok(Ok(())) => anyhow::bail!("native guest RPC transport closed"),
+                    Ok(Err(err)) => anyhow::bail!("native guest RPC transport: {err}"),
+                    Err(err) => anyhow::bail!("native guest RPC task: {err}"),
+                },
+            }
         })
         .await
 }

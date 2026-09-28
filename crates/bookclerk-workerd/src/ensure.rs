@@ -310,10 +310,10 @@ fn stamp_matches(bin: &Path) -> Result<bool> {
 fn probe_version(bin: &Path) -> Result<bool> {
     let bin = bookclerk_sandbox::require_spawn_executable(bin)
         .with_context(|| format!("validate workerd binary {}", bin.display()))?;
-    let output = std::process::Command::new(&bin)
-        .arg("--version")
-        .output()
-        .with_context(|| format!("run {} --version", bin.display()))?;
+    let output = bookclerk_sandbox::with_fd_spawn_lock(|| {
+        std::process::Command::new(&bin).arg("--version").output()
+    })
+    .with_context(|| format!("run {} --version", bin.display()))?;
     if !output.status.success() {
         return Ok(false);
     }

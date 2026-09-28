@@ -131,7 +131,7 @@ pub enum NetworkMode {
     /// For **workerd**, pair with `domains` (isolate hostname allowlist;
     /// required and validated). For **native**, do **not** set `domains`;
     /// declare `tcp` for mediated `connect()`. Ambient internet sockets are
-    /// not a grant (native-behind-workerd nested jail is `NetPolicy::Deny`).
+    /// not a grant (native-behind-workerd sibling jail is `NetPolicy::Deny`).
     Outbound,
 }
 

@@ -27,10 +27,11 @@
 //! guest exits, instead of confining itself and `exec`ing.
 
 use std::ffi::OsString;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use bookclerk_sandbox::{Spec, SPEC_ENV};
+use bookclerk_sandbox::{JailHandoff, Spec, JAIL_HANDOFF_ENV, SPEC_ENV};
 
 mod fds;
 
@@ -52,13 +53,20 @@ fn main() -> ExitCode {
         return fail(&err);
     }
 
+    let handoff = match read_jail_handoff() {
+        Ok(handoff) => handoff,
+        Err(err) => return fail(&err),
+    };
+    apply_handoff_env(handoff.as_ref());
+
     #[cfg(windows)]
     {
-        windows_run(&spec, &program, &args)
+        windows_run(&spec, &program, &args, handoff.as_ref())
     }
 
     #[cfg(not(windows))]
     {
+        let _ = handoff;
         if let Err(err) = confine(&spec) {
             return fail(&err);
         }
@@ -66,9 +74,52 @@ fn main() -> ExitCode {
     }
 }
 
+/// Read one bounded JSON [`JailHandoff`] line when `BOOKCLERK_JAIL_HANDOFF=1`.
+fn read_jail_handoff() -> Result<Option<JailHandoff>, String> {
+    match std::env::var(JAIL_HANDOFF_ENV) {
+        Ok(value) if value == "1" => {
+            let mut line = String::new();
+            std::io::stdin()
+                .lock()
+                .read_line(&mut line)
+                .map_err(|err| format!("could not read {JAIL_HANDOFF_ENV} line: {err}"))?;
+            if line.len() > JailHandoff::MAX_LINE_BYTES {
+                return Err(format!("{JAIL_HANDOFF_ENV} line exceeds 8 KiB"));
+            }
+            JailHandoff::from_line(&line)
+                .map(Some)
+                .map_err(|err| err.to_string())
+        }
+        Ok(value) if value.is_empty() => Ok(None),
+        Ok(value) => Err(format!(
+            "{JAIL_HANDOFF_ENV} must be 1 if set, got {value:?}"
+        )),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(err) => Err(format!("could not read {JAIL_HANDOFF_ENV}: {err}")),
+    }
+}
+
+/// Export `handle:<n>` values and drop the one-shot handoff flag.
+fn apply_handoff_env(handoff: Option<&JailHandoff>) {
+    if let Some(handoff) = handoff {
+        for extra in &handoff.extra {
+            if extra.env.is_empty() {
+                continue;
+            }
+            std::env::set_var(&extra.env, format!("handle:{}", extra.handle));
+        }
+    }
+    std::env::remove_var(JAIL_HANDOFF_ENV);
+}
+
 /// Launch the guest inside an AppContainer and forward its exit status.
 #[cfg(windows)]
-fn windows_run(spec: &Spec, program: &Path, args: &[OsString]) -> ExitCode {
+fn windows_run(
+    spec: &Spec,
+    program: &Path,
+    args: &[OsString],
+    handoff: Option<&JailHandoff>,
+) -> ExitCode {
     use bookclerk_sandbox::Enforcement;
 
     let missing = missing_paths(spec);
@@ -87,6 +138,14 @@ fn windows_run(spec: &Spec, program: &Path, args: &[OsString]) -> ExitCode {
     match policy.enforcement_mode() {
         Enforcement::Disabled => {
             eprintln!("bookclerk-jail: AppContainer disabled; running guest unconfined");
+            if let Some(handoff) = handoff {
+                return match bookclerk_sandbox::spawn::run_unconfined_with_handoff(
+                    program, args, handoff,
+                ) {
+                    Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+                    Err(err) => fail(&err.to_string()),
+                };
+            }
             return exec_status(program, args);
         }
         Enforcement::Required | Enforcement::BestEffort => {}
@@ -130,8 +189,15 @@ fn windows_run(spec: &Spec, program: &Path, args: &[OsString]) -> ExitCode {
     // which drops SPEC_ENV). CreateProcess with an explicit env block also
     // omits this; remove it from the jail process for the Disabled fallback.
     std::env::remove_var(SPEC_ENV);
+    std::env::remove_var(JAIL_HANDOFF_ENV);
 
-    match bookclerk_sandbox::spawn::run_appcontainer(&policy, program, args, Some(&session)) {
+    match bookclerk_sandbox::spawn::run_appcontainer_with_handoff(
+        &policy,
+        program,
+        args,
+        Some(&session),
+        handoff,
+    ) {
         Ok(code) => {
             eprintln!("bookclerk-jail: AppContainer guest exited with status {code}");
             // Drop session after the guest (and Job Object) so a jail-owned
@@ -230,7 +296,11 @@ fn exec(program: &Path, args: &[OsString]) -> ExitCode {
 
     // The guest has no use for the spec, and not passing it on keeps a plugin
     // from learning the shape of its own jail.
-    let err = Command::new(program).args(args).env_remove(SPEC_ENV).exec();
+    let err = Command::new(program)
+        .args(args)
+        .env_remove(SPEC_ENV)
+        .env_remove(JAIL_HANDOFF_ENV)
+        .exec();
     fail(&format!("could not exec {}: {err}", program.display()))
 }
 
@@ -241,6 +311,7 @@ fn exec_status(program: &Path, args: &[OsString]) -> ExitCode {
     let status = match Command::new(program)
         .args(args)
         .env_remove(SPEC_ENV)
+        .env_remove(JAIL_HANDOFF_ENV)
         .status()
     {
         Ok(status) => status,
@@ -301,6 +372,12 @@ mod tests {
     fn a_malformed_spec_is_refused() {
         let err = read_spec(Ok("{not json".to_string())).expect_err("must fail");
         assert!(err.contains("could not parse"), "{err}");
+    }
+
+    #[test]
+    fn handoff_line_rejects_bad_version() {
+        let err = JailHandoff::from_line(r#"{"v":9}"#).expect_err("v=9");
+        assert!(err.to_string().contains("version"), "{err}");
     }
 
     #[test]

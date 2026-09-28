@@ -21,7 +21,8 @@ pub mod windows_launch;
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{
-    capabilities, confine_current_process, system_read_paths, system_write_paths, BACKEND,
+    capabilities, confine_current_process, create_session_cgroup, destroy_session_cgroup,
+    system_read_paths, system_write_paths, BACKEND,
 };
 
 #[cfg(target_os = "macos")]

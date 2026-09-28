@@ -52,7 +52,7 @@ pub enum Backend {
     /// Cap'n Proto `POST /invoke` (or a streamed body route) on the bridge
     /// worker.
     Author,
-    /// Verified native guest (`BOOKCLERK_NATIVE_BACKEND`): entrypoint calls
+    /// Verified native guest (inherited `BOOKCLERK_GATEWAY_GUEST_RPC`): entrypoint calls
     /// are typed Cap'n Proto forwards to the guest's own capabilities. The
     /// client must have been created with `connect_plugin` on this `LocalSet`
     /// and its RPC future spawned locally.

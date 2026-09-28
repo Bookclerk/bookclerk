@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-10
+- **Updated:** 2026-09-25 (native-behind-workerd is a host-spawned sibling
+  jail, not a nested child of `bookclerk-workerd`)
 - **Supersedes:** role / factory / `HOST.notify` sections of
   [`plugin-workers-rpc-workerd.md`](plugin-workers-rpc-workerd.md)
   (`api_version = 2`). Isolation, jail, network consent, workerd pin, and
@@ -82,24 +84,24 @@ payloads for several storefront / integration surfaces, and a reverse
    `SpawnTransport::DirectNativeDiagnostic` only (tests / diagnostics).
 
 7. **Three-path conformance.** Shared vectors run against (a) workerd
-   author fixtures, (b) workerd → broker → nested-jailed native backend,
-   and (c) diagnostic direct Cap'n Proto — **for every surface those
-   fixtures support** (storefront/CLI and jobs on all three paths; events
-   and named-database binding vectors on workerd author fixtures; product
-   sqlite `databaseAdapter` on native-behind-workerd). Path (b)'s OS
-   confinement is the nested `NetPolicy::Deny` around the native child
-   inside `bookclerk-workerd` (the harness does not separately spawn
-   `bookclerk-jail`). Shared helpers in
-   `crates/bookclerk-workerd/tests/conformance.rs` plus
+   author fixtures, (b) workerd → broker → host-spawned sibling-jailed
+   native backend, and (c) diagnostic direct Cap'n Proto — **for every
+   surface those fixtures support** (storefront/CLI and jobs on all three
+   paths; events and named-database binding vectors on workerd author
+   fixtures; product sqlite `databaseAdapter` on native-behind-workerd).
+   Path (b)'s OS confinement is the sibling `NetPolicy::Deny` jail the host
+   starts next to the gateway (the launcher never nests `bookclerk-jail`).
+   Shared helpers in `crates/bookclerk-workerd/tests/conformance.rs` plus
    `bookclerk-workerd-native-fixture` keep the transports honest.
 
 8. **One network policy engine.** `fetch()`, workerd `connect()`, and the
    native-behind-workerd socket proxy consume the same `EgressPolicy`:
    fetch hosts, TCP `host+ports`, redirect consent, and CIDR address-space
    grants. Fetch does not imply TCP. Default address space is public
-   Internet only. Native guests are nested under `NetPolicy::Deny` and must
-   use the SDK socket capability; the launcher jail stays `OutboundListen`
-   for the RPC bridge. Grant mutation is live: `plugin-grants.json` changes
+   Internet only. Native guests are sibling-jailed under `NetPolicy::Deny`
+   and must use the SDK socket capability over an inherited `fd:` /
+   `handle:` mux; the launcher jail stays `OutboundListen` for the RPC
+   bridge. Grant mutation is live: `plugin-grants.json` changes
    fence running vats immediately (vat shutdown + kill child + drop the
    socket proxy and granted channels), including CLI writes observed by
    `bookclerkd`. Idle mediated TCP is interrupted on the fence; enforcement

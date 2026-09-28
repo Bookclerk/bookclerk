@@ -57,7 +57,7 @@ Runtimes in `plugin.toml`:
 
 | `runtime` | How it runs |
 | --- | --- |
-| `native` | OS binary speaking the same Workers RPC ABI (spawned through `bookclerk-jail`) |
+| `native` | OS binary speaking the same Workers RPC ABI. The host starts two sibling jails: `bookclerk-workerd` (control plane) and the native backend, joined by inherited duplex links |
 | `workerd` | Author `modules/` loaded by first-party [`bookclerk-workerd`](../crates/bookclerk-workerd/) — **one jail + one isolate per plugin** (local embed, not Cloudflare cloud execution) |
 
 For the product overview see the [documentation index](README.md). Built-in
@@ -253,6 +253,7 @@ $FILES_DIR/
   plugins/<PluginKey fs-id>/     # immutable install tree (guest cwd, read-only)
   plugin-state/<PluginKey fs-id>/data
   plugin-state/<PluginKey fs-id>/tmp
+  plugin-state/<PluginKey fs-id>/session-<nonce>/  # host-owned; native-behind only
   install-ledger.json            # host-owned trust anchor (not receipt.json)
   .plugin-mutation.lock          # OS advisory lock for local install/remove
   .plugin-hold/                  # held trees/state during remove transactions
@@ -287,15 +288,39 @@ cannot redirect `--purge-state` onto another PluginKey.
 ## The guest jail
 
 Every external guest is started by **`bookclerk-jail`**, a small launcher that
-applies a confinement policy to itself and then `exec`s **`bookclerk-workerd`**
-— the front door for every plugin. For `runtime = "workerd"` it loads the
-author's isolate; for `runtime = "native"` it spawns the native Cap'n Proto
-guest itself (`BOOKCLERK_NATIVE_BACKEND`) and forwards every entrypoint family
-typed while the isolate stays the control plane. `runtime` only selects the
-backend behind the isolate. What the jail grants is decided entirely by the
-host, and the whole launcher tree (`bookclerk-workerd`, the pinned `workerd`,
-the native backend) runs inside the one jail. Workerd is not a substitute for
-the jail — one jail + one isolate per plugin.
+applies a confinement policy to itself and then `exec`s the program the host
+named. **`bookclerk-workerd`** is the front door: for `runtime = "workerd"` it
+loads the author's isolate; for `runtime = "native"` the host also starts the
+native backend as a **sibling** jail. Guest RPC is a host-created inherited
+link (`BOOKCLERK_GATEWAY_GUEST_RPC` on the gateway; the guest uses stdin and
+stdout). The CONNECT mux (`BOOKCLERK_SOCKET_PROXY` on the guest) is served by
+the **unsandboxed host**. An AppContainer cannot dial the host's loopback, so
+the jailed gateway must not be the process that connects granted TCP, and
+Bookclerk does not add a machine-wide loopback exemption. Unjailed conformance
+spawns may still hand that mux to `bookclerk-workerd`
+(`BOOKCLERK_GATEWAY_PROXY`). On Unix each link is one duplex socket
+(`fd:<n>`). On Windows each link is two unidirectional pipes so a concurrent
+read cannot lock the write (`BOOKCLERK_GATEWAY_GUEST_RPC` is the gateway read
+half and `BOOKCLERK_GATEWAY_GUEST_RPC_WRITE` is the write half; the guest
+proxy write half is `BOOKCLERK_SOCKET_PROXY_WRITE`). `bookclerk-workerd` never
+nests a second jail.
+
+Nesting is impossible on two of the three production OSes. A Seatbelt
+process cannot apply a second profile (`sandbox_init` returns EPERM even
+when the outer profile is `(allow default)`). A Windows AppContainer cannot
+create a second container, and named pipes do not connect across different
+AppContainers (Win10 1709+). Linux Landlock domains can stack, which is why
+the old nested topology appeared to work there. The host therefore applies
+each jail once from an unsandboxed parent on every OS.
+
+What each jail grants is decided entirely by the host. The gateway jail is
+`OutboundListen` (loopback RPC bridge to the pinned `workerd`); it may write
+only the host-owned `plugin-state/<PluginKey fs-id>/session-<nonce>/`
+directory (`0700`, also `BOOKCLERK_WORKERD_STATE_DIR` and the gateway's
+`TMPDIR`). The native sibling is `NetPolicy::Deny` and must use the SDK
+socket proxy over the inherited link. The guest's `TMPDIR` stays its own
+`tmp/` scratch, so it cannot read gateway state. Workerd is not a substitute
+for the jail.
 
 Direct host↔native Cap'n Proto (no `bookclerk-workerd` in between) exists only
 as `SpawnTransport::DirectNativeDiagnostic` on `SessionServices`, used by jail
@@ -305,13 +330,18 @@ spawn error in **every** isolation mode (`refusing to start plugin … the
 bookclerk-workerd front door … is unavailable`); nothing falls back to direct
 native.
 
-A guest gets four paths and nothing else:
+A native guest gets three paths and nothing else:
 
 | Path | Access | Also known to the guest as |
 | --- | --- | --- |
 | its install directory | read-only | `cwd` |
 | `…/plugin-state/<PluginKey fs-id>/data` | read/write | `HOME`, and `plugin_data_dir` on the wire |
 | `…/plugin-state/<PluginKey fs-id>/tmp` | read/write | `TMPDIR` / `TEMP` / `TMP`; fetch scratch is `tmp/fetch` |
+
+The host-owned `session-<nonce>/` directory is **not** on that list. It is
+the gateway's `TMPDIR` / `BOOKCLERK_WORKERD_STATE_DIR` (granted sockets live
+there). The guest jail has no read of it. The vat removes the directory when
+the session drops.
 
 Plus the system read paths every process needs to start (the loader, shared
 libraries, the CA bundle — including `/var/lib/ca-certificates` on
@@ -385,10 +415,12 @@ across the spawn would be readable inside the jail whatever the policy said —
 `master.key` included — and no grant could take it back.
 
 So the launcher closes every descriptor above stdin, stdout and stderr before it
-applies the policy, and refuses to hand over at all if it cannot enumerate them.
-Nothing leaks today, because Rust opens files `O_CLOEXEC`; the point is that this
-stops being a property of every library the host links, re-checked on every
-dependency bump, and becomes a property of the jail.
+applies the policy — except the host-listed `preserve_fds` (gateway 3 and 4,
+guest 3) that carry the inherited RPC and proxy links — and refuses to hand
+over at all if it cannot enumerate them. Nothing else leaks today, because
+Rust opens files `O_CLOEXEC`; the point is that this stops being a property
+of every library the host links, re-checked on every dependency bump, and
+becomes a property of the jail.
 
 ### Declaring what a plugin needs
 
@@ -409,7 +441,7 @@ tcp = [{ host = "db.example.com", ports = [5432] }]  # optional; fetch does not 
 address_cidrs = ["10.0.60.100/32"]                   # optional; default is public Internet only
 ```
 
-**Native** (nested jail denies ambient `AF_INET`; SDK sockets share the same policy):
+**Native** (sibling jail denies ambient `AF_INET`; SDK sockets share the same policy):
 
 ```toml
 runtime = "native"
@@ -423,14 +455,14 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 
 | Network `mode` | Native-behind-workerd | Workerd |
 | --- | --- | --- |
-| `deny` | nested guest jail `NetPolicy::Deny`; no socket proxy grants | OS jail stays `OutboundListen` for the RPC bridge; isolate `globalOutbound` → blocked |
-| `outbound` | nested guest jail still `Deny`; TCP via `bookclerk_plugin_sdk::connect` → HTTP CONNECT proxy (Unix socket / Windows named pipe) | isolate `globalOutbound` → egress worker; `fetch()` and `connect()` share one `EgressPolicy` |
+| `deny` | sibling guest jail `NetPolicy::Deny`; no socket proxy grants | OS jail stays `OutboundListen` for the RPC bridge; isolate `globalOutbound` → blocked |
+| `outbound` | sibling guest jail still `Deny`; TCP via `bookclerk_plugin_sdk::connect` → multiplexed CONNECT on the inherited `fd:`/`handle:` link | isolate `globalOutbound` → egress worker; `fetch()` and `connect()` share one `EgressPolicy` |
 
 `capabilities.network.domains` is the **fetch** allowlist (workerd only). Raw TCP is `capabilities.network.tcp` (`host` + `ports`). The operator may add extra fetch hosts, TCP targets, and CIDRs; the guest `describe()` cannot. Default address-space policy is public Internet only — loopback, RFC1918, link-local, ULA, and metadata stay denied unless an explicit CIDR is granted. `allow_undeclared_public_redirects` lets fetch redirects leave the domain allowlist for **public** destinations only; it never implies those special ranges.
 
 When you need enforceable hostname allowlists for `fetch()`, ship a **workerd** plugin. Native plugins that need networking must use the SDK socket capability.
 
-The native path is exercised end to end on Linux, macOS and Windows by `cargo test -p bookclerk-plugin-e2e --test native_gateway`: a granted loopback port round-trips through the proxy, an ungranted live port is refused with `403`, and a direct socket from the nested jail is blocked (see [ci.md](ci.md#native-behind-workerd-gateway-smoke)).
+The native path is exercised end to end on Linux, macOS and Windows by `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`: a granted loopback port round-trips through the proxy, an ungranted live port is refused with `403`, a direct socket from the sibling jail is blocked, both pids and the host session directory go away on drop, and concurrent sessions cannot read each other's gateway state (see [ci.md](ci.md#native-behind-workerd-gateway-smoke)).
 
 Workerd egress matching (shared `EgressPolicy` + `bridge/egress.js`):
 
@@ -531,10 +563,14 @@ capability names (`internetClient`, `privateNetworkClientServer`, …), places t
 guest in a kill-on-close Job Object, and proxies stdio until the guest exits.
 
 Native-behind-workerd guests get a **second** AppContainer (`NetPolicy::Deny`,
-no `internetClient` SIDs). The host pre-creates that profile so the SOCKET_PROXY
-named pipe can be ACL'd to the nested Package SID before the guest starts.
-OAuth callback pipes use the same nested SID. Isolation::Required fails closed
-if the nested profile cannot be created.
+no `internetClient` SIDs), spawned by the host as a sibling of the gateway
+container. IPC is an inherited duplex (Windows handle handoff through
+`bookclerk-jail`); the guest never opens a named pipe. OAuth callback pipes
+use the guest Package SID. Isolation::Required fails closed if either
+profile cannot be created. Windows `Isolation::Off` still requires
+`bookclerk-jail.exe` beside the host so handle handoff can run with
+`Enforcement::Disabled`. A host-owned session Job (`KILL_ON_JOB_CLOSE`)
+covers both jail processes.
 
 #### Job Object launch ordering
 
@@ -563,13 +599,21 @@ System32 / WinSxS / Program Files / ProgramData\Microsoft, resolved via
 runtime access (loading system DLLs / `cmd.exe`) comes from existing OS ACLs
 such as ALL APPLICATION PACKAGES. Explicit policy paths are temporarily ACLed
 for the Package SID. Cross-process DACL read/modify/write is serialized with the
-named mutex `Local\bookclerk-dacl-tx` (plus an in-process lock). Revoking an ACE
-does **not** invalidate handles the guest already opened.
+named mutex `Local\bookclerk-dacl-tx` (plus an in-process lock; 120s fail-closed
+wait). Ancestor traverse ACEs (`FILE_TRAVERSE`, no inheritance) are written
+with `SetKernelObjectSecurity` so Windows does not propagate inheritable ACEs
+through large parents such as the user temp directory or a build tree while
+the mutex is held. Leaf directory grants still inherit onto their children.
+Revoking an ACE does **not** invalidate handles the guest already opened.
 
 Plugin hosts create the AppContainer profile up front, put
 `windows_profile_name` on the jail `Spec`, and delete the profile when the
-plugin client drops. Media jobs leave that field unset so the jail creates a
-unique profile per job.
+plugin client drops. Native-behind-workerd sessions create **two** profiles
+(gateway + guest) and one session Job that both `bookclerk-jail.exe`
+processes join. The host starts the guest jail only after the gateway jail
+has `CreateProcess`ed its child, so the two launches do not hold
+`Local\bookclerk-dacl-tx` at the same time. Media jobs leave that field unset
+so the jail creates a unique profile per job.
 
 Fetch scratch and plugin state are the spawn-time `data` / `tmp` grants (already
 ACLed for the Package SID). SQLite adds file-level ACLs for `library.db` and
@@ -587,8 +631,15 @@ stack (Audible LoginServer). `loginStart` carries `callback_ipc` +
 
 On Windows the named pipe is created with a Package-SID DACL (plus SYSTEM /
 Administrators / Creator Owner) and a Low mandatory integrity label so the
-AppContainer guest can open it; remote clients are rejected. Unix sockets stay
-mode `0600` under the plugin scratch dir.
+AppContainer guest can open it; remote clients are rejected. On Unix the host
+creates one mode `0700` directory, short enough that `{dir}/.s.PGSQL.<port>`
+fits in a macOS `sockaddr_un` (104-byte `sun_path`). That directory is the
+guest's only pathname-socket grant and a write; `/tmp` itself and the gateway
+session directory are not. Each OAuth callback proxy binds its own socket
+file in that directory. The name is shorter than `.s.PGSQL.65535`, and an
+occupied name is left in place. Linux Postgres still binds through
+`/proc/self/fd`; macOS Postgres binds in the same directory. A path that
+does not fit fails with the length and the directory that was too long.
 
 This is required on Windows AppContainer (host↔guest loopback is blocked even
 with Full caps / CheckNetIsolation) and is used on all OSes for a uniform
@@ -605,18 +656,66 @@ logical CPU**; values above 100 request multi-core bandwidth up to
 (Job `CpuRate` is scaled by core count so the meaning matches Linux cgroup
 `cpu.max`; Job memory is **job-wide** commit charge, matching Linux
 `memory.max`). Operator grants expose an **extra** process/thread budget
-(`extraProcesses`, default **2**) above launcher overhead (native **1**,
-workerd **2**); Spec `active_processes` = overhead + extra (capped at 64).
+(`extraProcesses`, default **2**) above launcher overhead (direct-native **1**,
+workerd isolate **2**, native-behind payload **3** split as gateway **2** +
+guest **1 + extra**). Spec `active_processes` = overhead + extra (capped at
+64). The Windows **outer** session Job counts both `bookclerk-jail`
+supervisors as well, so its cap is **5 + extra** (still capped at 64). That
+outer Job is the only sibling Job that sets the CPU hard cap. Gateway and
+guest specs set CPU to `"off"` so a nested Job is not filled with the plugin
+label default (80). Omitted or null stays unspecified and still takes that
+default; a JSON number is a percent. A standalone jail (no outer Job) still
+sets CPU on its own Job.
+Linux `pids.max` is a thread budget and is **not** given this Windows process
+count. Creating the outer Job under `isolation = "required"` fails the spawn
+before either sibling starts. `best-effort` continues without an outer Job
+only when the kernel reports that Job control as unsupported, and the session
+records that absence.
 Workerd consent does not edit process budget (host-managed headroom). Workerd
 guests use isolate `cpu_ms` for the script budget; their jail CPU rate comes
 from the host default / `[plugins.jail]` per-jail ceiling (default **80**)
 rather than a per-plugin `cpuRatePercent`. On Linux the Spec fields are applied
-best-effort via a dedicated cgroup v2 child (never written onto a shared parent
-slice). Creating that child or writing `memory.max` / `cpu.max` / `pids.max` is
-often refused inside desktop app cgroup scopes (browsers, IDEs); Bookclerk then
-reports resources as not applicable and still enforces filesystem, syscall, and
-network jail. On macOS Seatbelt they are ignored (documented as unsupported — FS/net
-only). `[plugins.jail].cpu_rate_percent` is a **per-jail ceiling** only (not a
+best-effort via an exclusive cgroup v2 leaf (never written onto a shared parent
+slice). The leaf name includes the plugin id, the host pid, and a per-session
+nonce; creating a leaf that already exists fails, and two sessions of the same
+plugin do not share one. `pids.max` is the infrastructure thread budget
+(pinned `bookclerk-workerd` workers and blocking threads, the pinned
+`workerd` process, the guest runtime, and the jail supervisors) plus the
+guest's `extraProcesses` allowance. It is not the Windows outer process count
+(5 + extra) and not the payload process count (3 + extra). `bookclerk-workerd`
+pins `worker_threads` and `max_blocking_threads`, so that budget does not grow
+with the host CPU count. A cgroup that already contains the host cannot
+enable domain controllers for its children. The session leaf stays inside the
+process's current cgroup. Bookclerk does not walk to an ancestor or enable
+controllers on one. When that cgroup already delegates `pids` and has no
+member processes, the leaf is created there. When it has member processes,
+Bookclerk creates `bookclerk-host`, moves only this process and its
+descendants that are still in the cgroup, enables controllers on that cgroup,
+and creates the leaf beside `bookclerk-host`. A process that is not a
+descendant is not moved; the moves are rolled back and the leaf is not
+created. A later session whose current cgroup is `bookclerk-host` creates the
+leaf as a sibling when the immediate parent already delegates `pids`, and
+does not inspect the grandparent. A controller file that is not present is
+skipped; `pids.max` is
+required, and a leaf without it is not kept. Teardown writes `cgroup.kill`
+and waits until `cgroup.events` reports `populated 0` before removing the
+leaf. That is kernel ownership of the leaf: tasks that fork during the kill,
+and descendants that have called `setsid`, die with the leaf. If `cgroup.kill`
+is missing, teardown returns an error that says equivalent teardown is
+unsupported. Bookclerk does not signal pids read from `cgroup.procs`. Creating that
+leaf or writing `pids.max` is often refused inside desktop app
+cgroup scopes (browsers, IDEs). Bookclerk reports that and falls back to
+process-group SIGKILL. That fallback is a different path: a descendant that
+has called `setsid` is outside the group, and without a delegated cgroup
+this path does not own it. The host
+records each leader's pid and start time (`/proc/<pid>/stat` starttime on
+Linux, `proc_pidinfo` on macOS). It observes leader exit with `waitid`
+`WNOWAIT` so the zombie still has that start time, signals the group only
+while the start time matches, and reaps afterward. It does not signal a
+process-group id whose start time is gone.
+Tokio `Child::wait` is cancellation-safe; cancelling it does not drop zombie
+status. On macOS Seatbelt the resource fields are ignored (documented as
+unsupported — FS/net only). `[plugins.jail].cpu_rate_percent` is a **per-jail ceiling** only (not a
 cumulative reservation; default 80). Quotas cap how fast a guest may burn CPU;
 if many plugins’ ceilings sum above host capacity, the OS scheduler shares
 cycles among runnable guests. Each plugin's `data/` and `tmp/` directories are
@@ -723,6 +822,7 @@ $BOOKCLERK_FILES_DIR/
   plugin-state/pk-<fs-id>/
     data/                               # host-created: guest state, its HOME
     tmp/                                # host-created: guest scratch, its TMPDIR
+    session-<nonce>/                    # host-created: gateway only; removed on drop
 ```
 
 Workerd (script archive — no per-OS binary required):
@@ -945,9 +1045,9 @@ plugin behaviour if overrides remove capabilities the guest needs.
 
 Domain allowlists and TCP grants are enforced for **both** workerd and
 native-behind-workerd guests through one canonical `EgressPolicy` (workerd
-`EGRESS_POLICY` / `BOOKCLERK_WORKERD_GRANT_POLICY`; native CONNECT proxy —
-Unix domain socket or Windows named pipe). Direct-native diagnostic transport
-is test-only and still uses the OS jail mapping. Redirect hops stay on the
+`EGRESS_POLICY` / `BOOKCLERK_WORKERD_GRANT_POLICY`; native CONNECT mux on the
+inherited `fd:` / `handle:` link). Direct-native diagnostic transport is
+test-only and still uses the OS jail mapping. Redirect hops stay on the
 fetch allowlist unless the operator grants undeclared public redirects;
 address-space policy still applies.
 
@@ -1070,17 +1170,34 @@ invocation. Media flows through those streams. Progress, checkpoints,
 completion, retry class, and cancellation stay job state — not chunk messages.
 
 Workerd is the **control-plane** front door (invocation / policy / binding /
-lifecycle / outcome) for **every** plugin: the host spawns `bookclerk-workerd`
-and nothing else. Isolate vs native-jail vs future container are backends the
-launcher selects from `runtime`. For a native guest the launcher speaks typed
-Cap'n Proto to it directly and forwards every `Entrypoints` family (event
-consumer, job runner, storefront, storage, database adapter, remote library,
-CLI, OIDC) without entering JavaScript; the adapter isolate only decides
-`describe` (merged against `PLUGIN_DESCRIBE`) and `open` policy (`POST /open`
-→ `openInvocation`) and receives `shutdown`. Direct host↔native Cap'n Proto is
-not a product path: it exists only as `SpawnTransport::DirectNativeDiagnostic`
-for tests and diagnostics, and a missing `bookclerk-workerd` / `workerd` is a
-hard spawn error in every isolation mode. The OS jail is still required.
+lifecycle / outcome) for **every** plugin. The host always spawns
+`bookclerk-workerd` through `bookclerk-jail`. For `runtime = "native"` it
+also spawns the backend as a sibling jail and hands both children the
+inherited RPC and proxy links; the launcher never sees `BOOKCLERK_NATIVE_BACKEND`
+and never starts the guest itself. Isolate vs native-jail vs future container
+are backends the host selects from `runtime`. For a native guest the launcher
+speaks typed Cap'n Proto over the inherited RPC link and forwards every
+`Entrypoints` family (event consumer, job runner, storefront, storage,
+database adapter, remote library, CLI, OIDC) without entering JavaScript; the
+adapter isolate only decides `describe` (merged against `PLUGIN_DESCRIBE`) and
+`open` policy (`POST /open` → `openInvocation`) and receives `shutdown`.
+Direct host↔native Cap'n Proto is not a product path: it exists only as
+`SpawnTransport::DirectNativeDiagnostic` for tests and diagnostics, and a
+missing `bookclerk-workerd` / `workerd` is a hard spawn error in every
+isolation mode. The OS jail is still required. Windows `Isolation::Off`
+still requires `bookclerk-jail` beside the host.
+
+Native plugins must be rebuilt against this SDK. Production transport is the
+mux `fd:` / `handle:` link and `PluginSocket::into_stream`. `into_split` and
+`into_unix_stream` are Unix pathname sockets only; they return an
+unsupported-transport error on a mux link and do not open a TCP socket.
+The host gives each guest a fresh challenge (`BOOKCLERK_SESSION_CHALLENGE`)
+and reads those bytes before it serves the proxy. An unrelated child, or the
+other session's guest, cannot complete that challenge. The numeric descriptor
+is not the session. On macOS, socket and pipe creation holds a process-wide
+lock from allocation through `FD_CLOEXEC` and through in-process
+`Command::spawn`, because macOS has no `SOCK_CLOEXEC`. The SDK sets
+`FD_CLOEXEC` again when it adopts an inherited descriptor.
 
 List pagination is **opaque and bounded**. Missing/stale cursors return
 `invalid_cursor` (never silently restart at page one). Concurrent mutation is
@@ -1101,7 +1218,7 @@ provenance-qualified identity / declared `entrypoints` + triggers, required `rpc
 | Runtime | Wire |
 | --- | --- |
 | **workerd** | Isolate keeps `RpcTarget` stubs; `bookclerk-workerd` serves Bookclerk Cap'n Proto on stdio and talks HTTP/JSRPC to the isolate with streamed bodies (`capnpConnectHost = "plugin"` on the rpc socket). Author methods travel as one `POST /invoke` Cap'n `$Params` body. |
-| **native** (behind workerd) | Guest SDK `serve` serves `schema/plugin.capnp` (`capnp-rpc`) with windowed byte streams on its stdio; `bookclerk-workerd` owns that stdio, forwards every entrypoint family typed, and serves the host on its own stdio. `ExecutorIdentity.runtime_backend = "native-behind-workerd"` |
+| **native** (behind workerd) | Guest SDK `serve` serves `schema/plugin.capnp` (`capnp-rpc`) with windowed byte streams on stdin/stdout (the inherited RPC link); `bookclerk-workerd` owns the other end, forwards every entrypoint family typed, and serves the host on its own stdio. CONNECT uses the inherited mux link. `ExecutorIdentity.runtime_backend = "native-behind-workerd"` |
 | **native** (direct, diagnostic) | Same guest wire, host connected to the guest's stdio with no launcher in between. `SpawnTransport::DirectNativeDiagnostic` only (`runtime_backend = "native-direct"`) |
 
 FD passing / `localPath` remain native-only optimizations behind the stream

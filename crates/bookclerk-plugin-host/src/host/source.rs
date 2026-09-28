@@ -202,9 +202,13 @@ impl ExternalSource {
         self.session.require_binding("oauth")?;
         // Host owns the browser TCP listener and forwards bytes to the guest
         // over IPC — required under Windows AppContainer loopback isolation.
+        let ipc_root = self
+            .session
+            .guest_ipc_dir()
+            .unwrap_or_else(|| self.session.scratch_dir());
         let proxy = crate::callback_proxy::CallbackProxy::start(
             opts.callback_bind.as_deref(),
-            self.session.scratch_dir(),
+            ipc_root,
             self.session.package_sid(),
         )
         .await

@@ -2,7 +2,9 @@
 
 - **Status:** Accepted (partially superseded)
 - **Date:** 2026-08-09
-- **Updated:** 2026-08-15 (`api_version = 2` freeze: workerd control-plane front door, typed errors, JobInvocation, backend-neutral bindings)
+- **Updated:** 2026-09-25 (native-behind-workerd is two host-spawned sibling
+  jails joined by inherited links; nesting is removed because Seatbelt and
+  AppContainer cannot re-apply / cross-connect)
 - **Superseded in part by:** [`plugin-capabilities-v3.md`](plugin-capabilities-v3.md)
   (2026-09-10) for product `api_version = 3` — capability entrypoints, typed
   Cap'n payloads, `env.EVENTS` / outbox replace role factories and
@@ -46,9 +48,11 @@ contract must be **identical** across runtimes.
      adapter sees private `AdapterEnv.PLUGIN_DESCRIBE` (the manifest
      projection) and answers `describe` / `open` policy for native guests. Do
      **not** freeze `env.NATIVE_PLUGIN`. The host executor owns the process
-     tree and outer sandbox; it launches workerd and the launcher, which
-     launches the verified native guest. Plugin-controlled input cannot choose
-     the executable or weaken the sandbox.
+     tree and both sandboxes; it launches `bookclerk-workerd` and the verified
+     native guest as **sibling** jails joined by host-created inherited links.
+     The launcher never nests a jail and never chooses the backend path.
+     Plugin-controlled input cannot choose the executable or weaken the
+     sandbox.
    - **Native:** guests serve [`plugin.capnp`](../../crates/bookclerk-plugin-abi/schema/plugin.capnp)
      via `capnp-rpc` (`serve`). They do **not** speak newline JSON as the
      product ABI. Native DRM plugins do not implement Cloudflare’s private
@@ -136,19 +140,57 @@ Every guest is an **external** (jailed) subprocess, including platform sqlite/lo
 
 ## Follow-ups (deferred)
 
-The native-behind-workerd executor is now the production path: the host spawns
-every plugin through `bookclerk-workerd` (`SpawnPlan` in
-`bookclerk-plugin-host`), `runtime = "native"` only selects the backend behind
-the isolate, and a missing `bookclerk-workerd` / pinned `workerd` is a hard
-spawn error in every `[plugins].isolation` mode. Direct host↔native Cap'n
-Proto survives only as `SpawnTransport::DirectNativeDiagnostic` for tests and
-diagnostics; no product binary selects it.
+The native-behind-workerd executor is now the production path: the host
+spawns every plugin through `bookclerk-workerd` (`SpawnPlan` in
+`bookclerk-plugin-host`), `runtime = "native"` only selects the backend
+behind the isolate, and a missing `bookclerk-workerd` / pinned `workerd` is
+a hard spawn error in every `[plugins].isolation` mode. Direct host↔native
+Cap'n Proto survives only as `SpawnTransport::DirectNativeDiagnostic` for
+tests and diagnostics; no product binary selects it.
 
-Native-behind-workerd guests are wrapped in a nested `NetPolicy::Deny` jail
-(`bookclerk-workerd` `native_guest.rs`) and must use the SDK `SOCKET_PROXY`
-for any egress; the launcher jail stays `OutboundListen` so
-`bookclerk-workerd` can bind the host↔isolate RPC bridge. Still deferred:
-OAuth/listen broker, container executor, and VPS benchmarks.
+Native-behind-workerd guests are a **sibling** `NetPolicy::Deny` jail the
+host starts next to the gateway, not a child of `bookclerk-workerd`.
+`native_guest.rs` is gone. IPC is host-created links delivered as
+`fd:<n>` / `handle:<n>` (`BOOKCLERK_GATEWAY_GUEST_RPC`,
+`BOOKCLERK_SOCKET_PROXY`). The production CONNECT mux is served by the
+unsandboxed host so granted loopback dials do not depend on AppContainer
+loopback (no CheckNetIsolation exemption). Unjailed conformance may still
+pass `BOOKCLERK_GATEWAY_PROXY` into `bookclerk-workerd`. Unix links are
+socketpairs. Windows links are two unidirectional pipes
+(`BOOKCLERK_GATEWAY_GUEST_RPC` read half,
+`BOOKCLERK_GATEWAY_GUEST_RPC_WRITE` write half, guest proxy write half
+`BOOKCLERK_SOCKET_PROXY_WRITE`) so a concurrent read cannot lock the write.
+The guest has no
+ambient `AF_INET` and no named endpoint. The gateway jail stays
+`OutboundListen` so `bookclerk-workerd` can bind the host↔isolate RPC
+bridge. Gateway `TMPDIR` is a host-owned `session-<nonce>/` directory;
+guest `TMPDIR` is its own scratch.
+
+### Why nesting was removed
+
+A confined process cannot apply a second OS jail on macOS or Windows:
+
+- **macOS Seatbelt.** `sandbox_init` from inside an existing sandbox returns
+  EPERM. Apple DTS and Seatbelt notes state a process cannot re-apply or
+  tighten a profile. Nested `sandbox-exec` fails even when the outer
+  profile is `(allow default)`. Profile tuning cannot fix this.
+- **Windows AppContainer.** Pipes created inside a container must use
+  `\\.\pipe\LOCAL\`, and pipes cannot be used between different
+  AppContainers (Win10 1709+). Creating a nested container from inside one
+  also fails. Host↔container loopback stays blocked; same-container
+  loopback (launcher → `workerd`) is the E3 contract.
+- **Linux** Landlock domains stack and seccomp Deny only bans
+  `socket(AF_INET/AF_INET6/AF_PACKET)`, which is why the nested topology
+  passed there and hid the other two OSes.
+
+The replacement applies each jail once from the unsandboxed host and
+reproduces the **intersection** of the old two layers (not a copy of the
+inner `deny_spec_with`). Windows `Isolation::Off` still requires
+`bookclerk-jail.exe` beside the host so handle handoff can run with
+`Enforcement::Disabled`.
+
+Still deferred: OAuth/listen broker beyond the existing callback proxy,
+container executor, and VPS benchmarks.
 
 Instances are keyed by `(plugin_id, account_id)`. Shared-isolate concurrent
 principals are not a proven isolation boundary (stubs are transferable).
