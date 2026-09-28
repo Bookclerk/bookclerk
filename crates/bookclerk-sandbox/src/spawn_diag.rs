@@ -381,11 +381,24 @@ mod tests {
                 let prefix = &secret[..secret.len().min(16)];
                 assert!(
                     !event.contains(prefix),
-                    "{label} emission kept {prefix}: {event}"
+                    "{label} emission kept a challenge prefix ({} bytes)",
+                    event.len()
                 );
-                assert!(!snap.contains(prefix), "{label} snapshot kept {prefix}");
-                assert!(!event.contains(&secret), "{label}: {event}");
-                assert!(!snap.contains(&secret), "{label}");
+                assert!(
+                    !snap.contains(prefix),
+                    "{label} snapshot kept a challenge prefix ({} bytes)",
+                    snap.len()
+                );
+                assert!(
+                    !event.contains(&secret),
+                    "{label} emission kept the challenge ({} bytes)",
+                    event.len()
+                );
+                assert!(
+                    !snap.contains(&secret),
+                    "{label} snapshot kept the challenge ({} bytes)",
+                    snap.len()
+                );
             }
         }
 

@@ -1766,11 +1766,16 @@ mod tests {
         let prefix = &secret[..secret.len().min(16)];
         assert!(
             !event.contains(prefix),
-            "stage event kept {prefix}: {event}"
+            "stage event kept a challenge prefix ({} bytes)",
+            event.len()
         );
         let snap = recent_spawn_diagnostics();
         assert!(snap.len() <= SPAWN_DIAG_TOTAL_BYTES);
-        assert!(!snap.contains(prefix), "stage snapshot kept {prefix}");
+        assert!(
+            !snap.contains(prefix),
+            "stage snapshot kept a challenge prefix ({} bytes)",
+            snap.len()
+        );
         assert!(!event.contains('Ã'), "{event}");
         assert!(!snap.contains('Ã'));
         if expect_marker {
