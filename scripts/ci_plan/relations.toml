@@ -207,3 +207,8 @@ reason = "schema tool input at run time, not a test; the derived layout JSON is 
 package = "bookclerk-plugin-catalog"
 reference = "bookclerk-dev"
 reason = "package-name string in install-path test data, not a launched executable"
+
+[[reviewed]]
+package = "bookclerk-plugin-e2e"
+reference = "bookclerk-jail"
+reason = "the authenticated-endpoint leak test execs the production launcher; the native_gateway smoke already builds that binary, and this crate is excluded from rust_test"
