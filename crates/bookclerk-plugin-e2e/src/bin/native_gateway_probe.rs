@@ -552,10 +552,13 @@ enum CandidateSlot {
     Pipe,
 }
 
-/// `GetHandleInformation` + `GetFileType` before this process creates other handles.
+/// `DuplicateHandle`, then `GetFileType` on the original, before this process
+/// creates other handles.
 ///
-/// Does not duplicate the handle or call `CreateIoCompletionPort`. The
-/// original stays unassociated so the later mux client can bind it.
+/// `GetHandleInformation` on a value this process does not own raises the Job
+/// invalid-handle exception (`0xC0000008`) and kills the guest. `DuplicateHandle`
+/// returns Win32 6 for that value and does not raise. The copy is closed before
+/// `GetFileType`. The original is not passed to `CreateIoCompletionPort`.
 #[cfg(windows)]
 fn classify_candidate() -> EarlyExtra {
     let read_spec = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_CANDIDATE_ENV);
@@ -595,29 +598,32 @@ fn classify_candidate() -> EarlyExtra {
 }
 
 /// Invalid means the value is not open here. Any other object is a collision.
+///
+/// `DuplicateHandle` is the open check. Win32 6 is an inaccessible slot. Win32 5
+/// and every other failure stay identification failures. The copy is closed
+/// before `GetFileType` runs on the original, which is then known to be open.
 #[cfg(windows)]
 fn probe_candidate_handle(value: u64) -> Result<CandidateSlot, String> {
     const ERROR_INVALID_HANDLE: u32 = 6;
     let raw = handle_ptr(value)?;
-    let info = handle_information(raw);
-    if !info.ok {
-        if info.os == ERROR_INVALID_HANDLE {
-            return Ok(CandidateSlot::Invalid);
+    match duplicate_raw(raw) {
+        Ok(copy) => drop(CloseEvent(copy)),
+        Err(info) if info.os == ERROR_INVALID_HANDLE => return Ok(CandidateSlot::Invalid),
+        Err(info) => {
+            return Err(format!(
+                "numeric collision or unusable candidate handle {value:#x}: {} (os {})",
+                info.error, info.os
+            ));
         }
-        return Err(format!(
-            "numeric collision or unusable candidate handle {value:#x}: {} (os {})",
-            info.error, info.os
-        ));
     }
     match file_type(raw) {
         Ok(kind) if is_pipe_type(kind) => Ok(CandidateSlot::Pipe),
         Ok(kind) => Err(format!(
             "numeric collision: handle {value:#x} is file type {kind:#x}, not the candidate pipe"
         )),
-        Err(ERROR_INVALID_HANDLE) => Err(format!(
-            "numeric collision: handle {value:#x} is not a pipe (GetFileType os {ERROR_INVALID_HANDLE})"
+        Err(os) => Err(format!(
+            "numeric collision: handle {value:#x} GetFileType os {os}"
         )),
-        Err(os) => Err(format!("candidate handle {value:#x} GetFileType os {os}")),
     }
 }
 
