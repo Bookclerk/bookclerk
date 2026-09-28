@@ -189,6 +189,7 @@ async fn channel_ident() -> serde_json::Value {
                 "tag": tag,
                 "tags": tags,
                 "error": "",
+                "extra_note": extra_discovery_note(),
             })
         }
         Err(error) => serde_json::json!({
@@ -196,6 +197,7 @@ async fn channel_ident() -> serde_json::Value {
             "tag": "",
             "tags": extras,
             "error": error,
+            "extra_note": extra_discovery_note(),
         }),
     }
 }
@@ -379,14 +381,27 @@ async fn ident_extra_fd(fd: i32) -> Option<String> {
 }
 
 /// Tags from one extra inherited pipe pair, when the process has exactly one.
+///
+/// The pair is captured in `main` before the Tokio runtime starts. Reactor
+/// handles also report `FILE_TYPE_PIPE` and would otherwise exhaust the
+/// one-pair rule.
 #[cfg(windows)]
 async fn discover_extra_channel_tags() -> Vec<String> {
-    let Some((read, write)) = extra_inherited_pipe_pair() else {
+    let Some((read, write)) = EXTRA_PIPE_PAIR.lock().ok().and_then(|mut slot| slot.take()) else {
+        return Vec::new();
+    };
+    let Ok(read) = handle_ptr(read) else {
+        return Vec::new();
+    };
+    let Ok(write) = handle_ptr(write) else {
         return Vec::new();
     };
     match ident_extra_handle_pair(read, write).await {
         Some(tag) => vec![tag],
-        None => Vec::new(),
+        None => {
+            remember_extra_note("ident-failed");
+            Vec::new()
+        }
     }
 }
 
@@ -396,10 +411,44 @@ async fn discover_extra_channel_tags() -> Vec<String> {
     Vec::new()
 }
 
+/// Read and write handle values captured before the async runtime starts.
+#[cfg(windows)]
+static EXTRA_PIPE_PAIR: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+
+/// Why an extra endpoint was not added to the observed tags.
+#[cfg(windows)]
+static EXTRA_NOTE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Record `note` for the channel-ident JSON.
+#[cfg(windows)]
+fn remember_extra_note(note: &str) {
+    if let Ok(mut slot) = EXTRA_NOTE.lock() {
+        *slot = note.to_string();
+    }
+}
+
+/// Note from the Windows extra-pipe scan. Empty when no scan ran.
+#[cfg(windows)]
+fn extra_discovery_note() -> String {
+    EXTRA_NOTE
+        .lock()
+        .map(|slot| slot.clone())
+        .unwrap_or_default()
+}
+
+/// Note from the Windows extra-pipe scan. Empty on other platforms.
+#[cfg(not(windows))]
+fn extra_discovery_note() -> String {
+    String::new()
+}
+
 /// `DuplicateHandle` scan for one read end and one write end that are not stdio
 /// and not the configured proxy. More than one of either end is not a pair.
+///
+/// Synchronous pipes are guest stdio. Handles that fail `GetNamedPipeInfo` are
+/// sockets. Neither is an inherited socket-proxy endpoint.
 #[cfg(windows)]
-fn extra_inherited_pipe_pair() -> Option<(*mut core::ffi::c_void, *mut core::ffi::c_void)> {
+fn extra_inherited_pipe_pair() -> Option<(u64, u64)> {
     let mut reads = Vec::new();
     let mut writes = Vec::new();
     for value in (4..=0x4000u64).step_by(4) {
@@ -412,11 +461,11 @@ fn extra_inherited_pipe_pair() -> Option<(*mut core::ffi::c_void, *mut core::ffi
         let Ok(copy) = duplicate_raw(raw) else {
             continue;
         };
-        if !is_pipe_handle(copy) {
+        if !is_pipe_handle(copy) || !named_pipe_info_ok(copy) || pipe_is_synchronous(copy) {
             drop(CloseEvent(copy));
             continue;
         }
-        match pipe_end_is_read(copy) {
+        match pipe_direction(copy) {
             Some(true) => reads.push(copy),
             Some(false) => writes.push(copy),
             None => drop(CloseEvent(copy)),
@@ -424,15 +473,104 @@ fn extra_inherited_pipe_pair() -> Option<(*mut core::ffi::c_void, *mut core::ffi
         if reads.len() > 1 || writes.len() > 1 {
             close_raw_handles(&reads);
             close_raw_handles(&writes);
+            remember_extra_note("ambiguous");
             return None;
         }
     }
     if reads.len() == 1 && writes.len() == 1 {
-        return Some((reads[0], writes[0]));
+        return Some((handle_value(reads[0]), handle_value(writes[0])));
     }
     close_raw_handles(&reads);
     close_raw_handles(&writes);
+    remember_extra_note("no-extra-pair");
     None
+}
+
+/// `true` when `GetNamedPipeInfo` accepts `handle` (a pipe, not a socket).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn named_pipe_info_ok(handle: *mut core::ffi::c_void) -> bool {
+    let mut flags = 0u32;
+    let mut out_size = 0u32;
+    let mut in_size = 0u32;
+    let mut instances = 0u32;
+    unsafe {
+        GetNamedPipeInfo(
+            handle,
+            &mut flags,
+            &mut out_size,
+            &mut in_size,
+            &mut instances,
+        ) != 0
+    }
+}
+
+/// Synchronous I/O is set on `CreatePipe` stdio and clear on overlapped proxy ends.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn pipe_is_synchronous(handle: *mut core::ffi::c_void) -> bool {
+    const FILE_MODE_INFORMATION: u32 = 16;
+    const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x10;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+    let Some(mode) = query_file_u32(handle, FILE_MODE_INFORMATION) else {
+        return false;
+    };
+    mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) != 0
+}
+
+/// Read end, write end, or neither when the access mask is duplex or unknown.
+#[cfg(windows)]
+fn pipe_direction(handle: *mut core::ffi::c_void) -> Option<bool> {
+    if let Some(read) = pipe_end_is_read(handle) {
+        return Some(read);
+    }
+    const FILE_ACCESS_INFORMATION: u32 = 8;
+    const FILE_READ_DATA: u32 = 0x1;
+    const FILE_WRITE_DATA: u32 = 0x2;
+    let access = query_file_u32(handle, FILE_ACCESS_INFORMATION)?;
+    let read = access & FILE_READ_DATA != 0;
+    let write = access & FILE_WRITE_DATA != 0;
+    match (read, write) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+/// One `u32` from `NtQueryInformationFile`, when the query succeeds.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn query_file_u32(handle: *mut core::ffi::c_void, class: u32) -> Option<u32> {
+    #[repr(C)]
+    struct IoStatusBlock {
+        status: isize,
+        information: usize,
+    }
+    let mut value = 0u32;
+    let mut io = IoStatusBlock {
+        status: 0,
+        information: 0,
+    };
+    let status = unsafe {
+        NtQueryInformationFile(
+            handle,
+            (&mut io as *mut IoStatusBlock).cast(),
+            (&mut value as *mut u32).cast(),
+            4,
+            class,
+        )
+    };
+    if status < 0 {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// Numeric value of a handle this process still owns.
+#[cfg(windows)]
+fn handle_value(handle: *mut core::ffi::c_void) -> u64 {
+    handle as usize as u64
 }
 
 /// `PeekNamedPipe` succeeds on a read end and returns access denied on a write end.
@@ -1831,6 +1969,13 @@ extern "system" {
     fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
     fn GetFileType(handle: *mut core::ffi::c_void) -> u32;
     fn GetLastError() -> u32;
+    fn GetNamedPipeInfo(
+        handle: *mut core::ffi::c_void,
+        flags: *mut u32,
+        out_size: *mut u32,
+        in_size: *mut u32,
+        instances: *mut u32,
+    ) -> i32;
     fn PeekNamedPipe(
         handle: *mut core::ffi::c_void,
         buf: *mut u8,
@@ -1878,6 +2023,18 @@ extern "system" {
     fn WaitForSingleObject(handle: *mut core::ffi::c_void, millis: u32) -> u32;
     fn CancelIoEx(handle: *mut core::ffi::c_void, overlapped: *mut Overlapped) -> i32;
     fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+}
+
+#[cfg(windows)]
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtQueryInformationFile(
+        handle: *mut core::ffi::c_void,
+        io_status: *mut core::ffi::c_void,
+        info: *mut core::ffi::c_void,
+        len: u32,
+        class: u32,
+    ) -> i32;
 }
 
 /// One Job slot: this probe, not `cmd /c` and not `ping.exe`.
@@ -2392,6 +2549,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Classify inheritance before the runtime opens descriptors. Tokio would
     // otherwise reuse a low fd number and a sealed proxy would look open.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Reactor sockets also look like pipes. Capture the extra endpoint first.
+    #[cfg(windows)]
+    if args.first().map(String::as_str) == Some("--channel-ident") {
+        if let Ok(mut slot) = EXTRA_PIPE_PAIR.lock() {
+            *slot = extra_inherited_pipe_pair();
+        }
+    }
     if args.first().map(String::as_str) == Some("--endpoint-connect") {
         let spec = args.get(1).map(String::as_str).unwrap_or("");
         let write_spec = args.get(2).map(String::as_str).unwrap_or("");
