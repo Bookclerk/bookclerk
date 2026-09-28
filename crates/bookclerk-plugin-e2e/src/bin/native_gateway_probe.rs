@@ -446,13 +446,17 @@ fn extra_discovery_note() -> String {
 /// and not the configured proxy. More than one of either end is not a pair.
 ///
 /// Synchronous pipes are guest stdio. Handles that fail `GetNamedPipeInfo` are
-/// sockets. Neither is an inherited socket-proxy endpoint.
+/// sockets. Neither is an inherited socket-proxy endpoint. Copies this scan
+/// creates are skipped, or the copy is counted as a second pipe.
 #[cfg(windows)]
 fn extra_inherited_pipe_pair() -> Option<(u64, u64)> {
     let mut reads = Vec::new();
     let mut writes = Vec::new();
+    // `DuplicateHandle` allocates a new value inside the scan range. Visiting
+    // that copy again looks like another endpoint.
+    let mut created = Vec::new();
     for value in (4..=0x4000u64).step_by(4) {
-        if is_stdio_value(value) || session_owns_handle(value) {
+        if created.contains(&value) || is_stdio_value(value) || session_owns_handle(value) {
             continue;
         }
         let Ok(raw) = handle_ptr(value) else {
@@ -461,6 +465,7 @@ fn extra_inherited_pipe_pair() -> Option<(u64, u64)> {
         let Ok(copy) = duplicate_raw(raw) else {
             continue;
         };
+        created.push(handle_value(copy));
         if !is_pipe_handle(copy) || !named_pipe_info_ok(copy) || pipe_is_synchronous(copy) {
             drop(CloseEvent(copy));
             continue;
@@ -471,9 +476,10 @@ fn extra_inherited_pipe_pair() -> Option<(u64, u64)> {
             None => drop(CloseEvent(copy)),
         }
         if reads.len() > 1 || writes.len() > 1 {
+            let note = format!("ambiguous reads={} writes={}", reads.len(), writes.len());
             close_raw_handles(&reads);
             close_raw_handles(&writes);
-            remember_extra_note("ambiguous");
+            remember_extra_note(&note);
             return None;
         }
     }
