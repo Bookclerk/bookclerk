@@ -2273,9 +2273,10 @@ fn query_windows_job() -> serde_json::Value {
 
 /// OAuth callback tunnel plus the probe's Unix socket mock in the guest IPC directory.
 ///
-/// `payload` is the host callback socket (`cb.sock` or a Windows pipe). The
-/// guest binds `{GUEST_IPC_DIR}/.s.PGSQL.5432`, accepts one client, and accepts
-/// one tunneled browser stream. `PGOK` is this mock, not the PostgreSQL adapter.
+/// `payload` is the host callback socket: a short unique file in the guest IPC
+/// directory, or a Windows pipe. The guest binds `{GUEST_IPC_DIR}/.s.PGSQL.5432`,
+/// accepts one client, and accepts one tunneled browser stream. `PGOK` is this
+/// mock, not the PostgreSQL adapter.
 async fn serve_ipc(callback: &str) -> serde_json::Value {
     #[cfg(unix)]
     {
