@@ -9,13 +9,30 @@ the author model and the [Workers RPC ADR](adr/plugin-workers-rpc-workerd.md)
 for the decision record.
 
 ```
-host ──stdio Cap'n Proto (plugin.capnp)──▶ bookclerk-workerd
+host ──stdio Cap'n Proto (plugin.capnp)──▶ bookclerk-jail ──▶ bookclerk-workerd
                                               │ loopback HTTP, Bearer BRIDGE_TOKEN
                                               ▼
                                    bridge.js ──Workers RPC──▶ adapter isolate ──Workers RPC──▶ author classes
                                               ▲
                      granted channel (isolate → launcher) ◀── GRANTED service binding
 ```
+
+For `runtime = "native"` the host also starts a **sibling** `bookclerk-jail`
+around the backend. The launcher does not spawn, resolve, or exec that
+binary (`BOOKCLERK_NATIVE_BACKEND` is gone). The host creates the links
+and inherits them into both children. Unix RPC is one socketpair. Windows
+RPC is two unidirectional pipes (synchronous guest ends, overlapped
+gateway ends) so a blocking stdin read cannot lock stdout.
+
+| Link | Gateway env | Guest |
+| --- | --- | --- |
+| RPC (Cap'n Proto) | Unix `BOOKCLERK_GATEWAY_GUEST_RPC=fd:3`. Windows `BOOKCLERK_GATEWAY_GUEST_RPC=handle:<read>` and `BOOKCLERK_GATEWAY_GUEST_RPC_WRITE=handle:<write>` | stdin + stdout |
+| CONNECT mux | Production: served by the unsandboxed host (no gateway env). Unjailed conformance may set Unix `BOOKCLERK_GATEWAY_PROXY=fd:4` or Windows `BOOKCLERK_GATEWAY_PROXY=handle:<read>` plus `BOOKCLERK_GATEWAY_PROXY_WRITE=handle:<write>` | Unix `BOOKCLERK_SOCKET_PROXY=fd:3`. Windows `BOOKCLERK_SOCKET_PROXY=handle:<read>` and `BOOKCLERK_SOCKET_PROXY_WRITE=handle:<write>` |
+
+`BOOKCLERK_WORKERD_STATE_DIR` is the host-owned `session-<nonce>/` directory
+(also the gateway `TMPDIR`). The guest `TMPDIR` is its own scratch, so it
+cannot read gateway state. See [plugins.md](plugins.md#the-guest-jail) and
+the [Workers RPC ADR](adr/plugin-workers-rpc-workerd.md).
 
 The launcher is a `PluginWorker` toward the host. Every host call is turned
 into exactly one HTTP request to the isolate; the isolate keeps no cross-request
@@ -122,8 +139,10 @@ Streams are never capabilities on this transport: `Destination.get`,
 | `AdapterDatabaseSession` | all 10 (`X-Bookclerk-Target`) | the `AdapterDatabaseSession` object `openSession` returned |
 
 Native-behind-workerd guests never touch `/invoke`: the launcher forwards
-their entrypoint families as typed Cap'n Proto straight from its own vat
-(`Backend::Native`), and only the control plane reaches the isolate.
+their entrypoint families as typed Cap'n Proto over the inherited RPC link
+(`Backend::Native`), and only the control plane reaches the isolate. CONNECT
+authorization is unchanged (`socket_proxy::handle_client` on mux-accepted
+streams).
 
 ## Granted channel (isolate → launcher)
 

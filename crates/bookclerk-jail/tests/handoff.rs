@@ -6,6 +6,7 @@
 //! that stops at the handoff, which is the failure mode that matters.
 
 #![cfg(unix)]
+#![allow(unsafe_code)] // CommandExt::pre_exec + dup2 for E4 inherited-link proof.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -13,6 +14,7 @@ use std::process::{Command, Output};
 use bookclerk_sandbox::{Enforcement, NetPolicy, Spec};
 
 const JAIL: &str = env!("CARGO_BIN_EXE_bookclerk-jail");
+const LINK_PROBE: &str = env!("CARGO_BIN_EXE_bookclerk-link-probe");
 
 /// Whether this host can enforce a filesystem allowlist.
 ///
@@ -320,4 +322,152 @@ fn no_spec_means_no_guest() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// E4: a Deny jail echoes over an inherited socketpair and cannot open AF_INET.
+///
+/// fd 5 is inherited without being listed in `preserve_fds` and must be closed.
+#[test]
+fn inherited_socketpair_echoes_under_deny_and_unlisted_fd_is_closed() {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    if !confinement_available() {
+        eprintln!("skipping: no filesystem confinement on this host");
+        return;
+    }
+
+    let jail = tempfile::tempdir().expect("tempdir");
+    let probe = jail.path().join("link-probe");
+    std::fs::copy(LINK_PROBE, &probe).expect("copy probe into jail");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let (host_end, guest_end) = bookclerk_sandbox::DuplexLink::pair().expect("socketpair");
+    let leak = tempfile::NamedTempFile::new().expect("leak file");
+    std::fs::write(leak.path(), b"leaked\n").expect("write leak");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+    let port = listener.local_addr().expect("addr").port();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let accept_count = Arc::clone(&accepts);
+    thread::spawn(move || {
+        let _ = listener.set_nonblocking(true);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(8) {
+            if listener.accept().is_ok() {
+                accept_count.fetch_add(1, Ordering::SeqCst);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
+
+    let spec = Spec {
+        writes: vec![jail.path().to_path_buf()],
+        net: NetPolicy::Deny,
+        allow_exec: true,
+        enforcement: Enforcement::Required,
+        preserve_fds: vec![3],
+        ..Spec::new("test:e4-sibling-link")
+    };
+
+    let guest_fd = guest_end.as_raw_fd();
+    let leak_fd = leak.as_file().as_raw_fd();
+    let mut cmd = Command::new(JAIL);
+    cmd.arg(&probe)
+        .arg("--echo-fd")
+        .arg("3")
+        .arg("--deny-tcp")
+        .arg("127.0.0.1")
+        .arg(port.to_string())
+        .arg("--closed-fd")
+        .arg("5")
+        .env(
+            bookclerk_sandbox::SPEC_ENV,
+            serde_json::to_string(&spec).expect("encode spec"),
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    unsafe {
+        cmd.pre_exec(move || {
+            bookclerk_sandbox::inherit_fd_at(guest_fd, 3)?;
+            if libc::dup2(leak_fd, 5) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let flags = libc::fcntl(5, libc::F_GETFD);
+            if flags < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(5, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd.spawn().expect("spawn jail");
+    let mut host = std::fs::File::from(host_end.into_owned_fd());
+    host.write_all(b"ping").expect("host write");
+    let echo = thread::spawn(move || {
+        let mut buf = [0u8; 4];
+        host.read_exact(&mut buf).map(|()| buf)
+    });
+    let start = Instant::now();
+    let buf = loop {
+        if echo.is_finished() {
+            break echo
+                .join()
+                .expect("echo thread")
+                .unwrap_or_else(|err| panic!("host read echo: {err}"));
+        }
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            let stdout = child.stdout.take().map(|mut s| {
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+                buf
+            });
+            let stderr = child.stderr.take().map(|mut s| {
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+                buf
+            });
+            panic!(
+                "jail exited {status} before echo\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&stdout.unwrap_or_default()),
+                String::from_utf8_lossy(&stderr.unwrap_or_default())
+            );
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "timed out waiting for inherited-fd echo"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(&buf, b"ping");
+    drop(guest_end);
+
+    let output = child.wait_with_output().expect("wait jail");
+    assert_ok(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"tcp_denied\":true") || stdout.contains("\"tcp_denied\": true"),
+        "probe must report denied TCP: {stdout}"
+    );
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        0,
+        "Deny guest must not reach the listener"
+    );
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_secs(2),
+    )
+    .expect("harness must still reach the listener");
 }

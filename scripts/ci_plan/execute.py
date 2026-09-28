@@ -72,10 +72,15 @@ CONFINEMENT_PACKAGES = (
     "bookclerk-media-worker",
     "bookclerk-jail",
 )
-# Staged-installation targets of the e2e crate. `native_gateway` is its own
+# Staged-installation targets of the e2e crate. `native_gateway*` is its own
 # check (three OSes) and must not run again here.
 E2E_STAGED_TARGETS = ("--lib", "--test", "staged_plugins", "--test", "installed_plugin_path")
-NATIVE_GATEWAY_TEST = "native_gateway"
+NATIVE_GATEWAY_TESTS = (
+    "native_gateway",
+    "native_gateway_isolation",
+    "native_gateway_lifecycle",
+    "native_gateway_authenticated_endpoint",
+)
 POSTGRES_STEPS: dict[str, tuple[str, list[str]]] = {
     "library_queue": (
         "Postgres job-queue tests",
@@ -514,10 +519,12 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
     if check == "confinement":
         env: dict[str, str] = {"BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT": "1"}
         test = ["cargo", "test", *_pkg_args(CONFINEMENT_PACKAGES)]
+        # `--nocapture` keeps cgroup skip and enforcement lines in the job log.
         if ctx.os_name == "Windows":
-            test += ["--", "--test-threads=1"]
+            test += ["--", "--test-threads=1", "--nocapture"]
         else:
             env["BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT"] = "1"
+            test += ["--", "--nocapture"]
         return [
             Command("clippy (confinement)", ["cargo", "clippy", *_pkg_args(CONFINEMENT_PACKAGES), "--all-targets", "--", "-D", "warnings"]),
             Command("confinement tests", test, env=env),
@@ -533,13 +540,36 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
                 ),
                 Command("clippy bookclerk-plugin-host --lib", ["cargo", "clippy", "-p", "bookclerk-plugin-host", "--lib", "--", "-D", "warnings"]),
                 Command("named-pipe SOCKET_PROXY", ["cargo", "test", "-p", "bookclerk-workerd", "--lib"]),
+                # Alone, before the suite. The suite still runs this test in
+                # its original order (shared serialization lock with Job extras).
+                Command(
+                    "lifecycle churn alone",
+                    [
+                        "cargo",
+                        "test",
+                        "-p",
+                        E2E_PACKAGE,
+                        "--test",
+                        "native_gateway_lifecycle",
+                        "--",
+                        "sequential_and_concurrent_spawn_cycles_do_not_leak",
+                        "--exact",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ],
+                    env=runtime_env,
+                ),
             ]
         elif ctx.os_name == "Darwin":
             cmds.append(Command("bookclerk-workerd lib tests", ["cargo", "test", "-p", "bookclerk-workerd", "--lib"]))
+        smoke = ["cargo", "test", "-p", E2E_PACKAGE]
+        for target in NATIVE_GATEWAY_TESTS:
+            smoke.extend(["--test", target])
+        smoke.extend(["--", "--nocapture"])
         cmds.append(
             Command(
                 "native-behind-workerd gateway smoke",
-                ["cargo", "test", "-p", E2E_PACKAGE, "--test", NATIVE_GATEWAY_TEST, "--", "--nocapture"],
+                smoke,
                 env=runtime_env,
             )
         )

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Enforcement, NetPolicy, Policy};
+use crate::{CpuRate, Enforcement, NetPolicy, Policy};
 
 /// Reserved descriptor number for a native SCM_RIGHTS side channel (fd 3).
 ///
@@ -98,8 +98,37 @@ pub struct Spec {
     /// Object hard cap, scaled by logical CPU count so the same percent means
     /// one-core bandwidth (see [`crate::windows_job_cpu_rate`]). macOS Seatbelt
     /// cannot enforce this (see docs).
+    ///
+    /// Omitted and `null` are unspecified (the label default). A number is a
+    /// percent. `"off"` disables the rate so a nested Job is not filled with
+    /// the plugin default.
+    #[serde(default, skip_serializing_if = "CpuRate::is_unspecified")]
+    pub cpu_rate_percent: CpuRate,
+    /// Windows handles the jail must put on the child's inherit list.
+    ///
+    /// The host never marks these inheritable itself. It duplicates them into
+    /// `bookclerk-jail` with `duplicate_handle_into` and names them here / in
+    /// the stdin handoff line so the jail can add them to
+    /// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inherit_handles: Vec<u64>,
+    /// Linux cgroup v2 leaf both sibling jails join (session aggregate limits).
+    ///
+    /// When set, the jail moves into this directory instead of creating
+    /// `bookclerk-<pid>`. The host writes the ceilings; the jail must not
+    /// overwrite them with a per-process budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_rate_percent: Option<u32>,
+    pub cgroup_dir: Option<PathBuf>,
+    /// macOS Seatbelt pathname Unix-socket directories.
+    ///
+    /// `None` (default, omitted on the wire) keeps the historical rule: bind
+    /// and connect under every writable path. `Some(dirs)` allows UDS only in
+    /// those directories (`Some([])` grants none). The native-behind-workerd
+    /// gateway sets the host-chosen session directory. `build_spec_with_grant`
+    /// starts the Deny guest at `Some([])`; the host then replaces that with
+    /// the guest's private IPC directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unix_socket_dirs: Option<Vec<PathBuf>>,
 }
 
 /// Default for [`Spec::system_paths`]: include system library/loader paths.
@@ -123,7 +152,10 @@ impl Spec {
             windows_profile_name: None,
             memory_bytes: None,
             active_processes: None,
-            cpu_rate_percent: None,
+            cpu_rate_percent: CpuRate::Unspecified,
+            inherit_handles: Vec::new(),
+            cgroup_dir: None,
+            unix_socket_dirs: None,
         }
     }
 
@@ -139,7 +171,9 @@ impl Spec {
             .enforcement(self.enforcement)
             .memory_bytes(self.memory_bytes)
             .active_processes(self.active_processes)
-            .cpu_rate_percent(self.cpu_rate_percent)
+            .cpu_rate(self.cpu_rate_percent)
+            .unix_socket_dirs(self.unix_socket_dirs.clone())
+            .cgroup_dir(self.cgroup_dir.clone())
     }
 }
 
@@ -161,7 +195,10 @@ mod tests {
             windows_profile_name: None,
             memory_bytes: Some(512 * 1024 * 1024),
             active_processes: Some(8),
-            cpu_rate_percent: Some(80),
+            cpu_rate_percent: CpuRate::Percent(80),
+            inherit_handles: vec![42],
+            cgroup_dir: Some(PathBuf::from("/sys/fs/cgroup/bookclerk-session")),
+            unix_socket_dirs: Some(vec![PathBuf::from("/tmp/session")]),
         };
         let json = serde_json::to_string(&spec).expect("encode");
         assert_eq!(
@@ -186,6 +223,39 @@ mod tests {
     }
 
     #[test]
+    fn cpu_rate_wire_keeps_omitted_null_number_and_off_distinct() {
+        let omitted = serde_json::from_str::<Spec>(r#"{"label":"probe"}"#).expect("omitted");
+        assert_eq!(omitted.cpu_rate_percent, CpuRate::Unspecified);
+        assert!(!serde_json::to_string(&Spec::new("probe"))
+            .expect("encode")
+            .contains("cpu_rate_percent"));
+
+        let null = serde_json::from_str::<Spec>(r#"{"label":"probe","cpu_rate_percent":null}"#)
+            .expect("null");
+        assert_eq!(null.cpu_rate_percent, CpuRate::Unspecified);
+
+        let percent = serde_json::from_str::<Spec>(r#"{"label":"probe","cpu_rate_percent":40}"#)
+            .expect("number");
+        assert_eq!(percent.cpu_rate_percent, CpuRate::Percent(40));
+
+        let off = serde_json::from_str::<Spec>(r#"{"label":"probe","cpu_rate_percent":"off"}"#)
+            .expect("off");
+        assert_eq!(off.cpu_rate_percent, CpuRate::Disabled);
+        let encoded = serde_json::to_value(&off).expect("encode off");
+        assert_eq!(encoded["cpu_rate_percent"], "off");
+
+        let resolved = off.policy().resolved_job_limits();
+        assert_eq!(resolved.cpu_rate_percent, None);
+        assert_eq!(
+            Spec::new("plugin:echo")
+                .policy()
+                .resolved_job_limits()
+                .cpu_rate_percent,
+            Some(80)
+        );
+    }
+
+    #[test]
     fn a_bare_spec_grants_nothing_but_keeps_the_system_set() {
         let json = r#"{"label":"minimal"}"#;
         let spec: Spec = serde_json::from_str(json).expect("decode");
@@ -197,6 +267,20 @@ mod tests {
         // so the omitted default has to be the permissive one.
         assert!(spec.system_paths);
         assert_eq!(spec.enforcement, Enforcement::Required);
+        assert!(spec.inherit_handles.is_empty());
+        assert_eq!(spec.cgroup_dir, None);
+        assert_eq!(spec.unix_socket_dirs, None);
+    }
+
+    #[test]
+    fn omitted_sibling_fields_stay_backward_compatible() {
+        let spec: Spec = serde_json::from_str(
+            r#"{"label":"probe","reads":[],"writes":[],"net":"deny","allow_exec":true}"#,
+        )
+        .expect("decode");
+        assert!(spec.inherit_handles.is_empty());
+        assert_eq!(spec.cgroup_dir, None);
+        assert_eq!(spec.unix_socket_dirs, None);
     }
 
     #[test]

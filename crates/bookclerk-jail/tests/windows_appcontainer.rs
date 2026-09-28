@@ -13,11 +13,12 @@ use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use bookclerk_sandbox::{Enforcement, NetPolicy, Spec};
+use bookclerk_sandbox::{CpuRate, Enforcement, NetPolicy, Spec};
 use serde_json::Value;
 
 const JAIL: &str = env!("CARGO_BIN_EXE_bookclerk-jail");
 const PROBE: &str = env!("CARGO_BIN_EXE_bookclerk-ac-probe");
+const LINK_PROBE: &str = env!("CARGO_BIN_EXE_bookclerk-link-probe");
 
 fn spawn_enforcement_demanded() -> bool {
     std::env::var("BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT")
@@ -43,7 +44,7 @@ fn assert_spawn_capable() {
 /// Serializes this file's tests onto one rustc test thread.
 ///
 /// Each jailed child contends for session mutex `Local\bookclerk-dacl-tx`
-/// (30s fail-closed). Parallel tests in this binary otherwise time out
+/// (120s fail-closed). Parallel tests in this binary otherwise time out
 /// waiting for a sibling's ACL grant/revoke.
 fn begin_appcontainer_test() -> MutexGuard<'static, ()> {
     assert_spawn_capable();
@@ -71,7 +72,10 @@ fn base_spec(label: &str, reads: Vec<PathBuf>, writes: Vec<PathBuf>) -> Spec {
         windows_profile_name: None,
         memory_bytes: None,
         active_processes: None,
-        cpu_rate_percent: None,
+        cpu_rate_percent: CpuRate::Unspecified,
+        inherit_handles: Vec::new(),
+        cgroup_dir: None,
+        unix_socket_dirs: None,
     }
 }
 
@@ -699,4 +703,364 @@ fn named_acl_mutex_serializes_cross_process_grant_revoke() {
     );
     drop(sa);
     drop(sb);
+}
+
+/// E2: host `DuplicateHandle`s a duplex pipe into `bookclerk-jail`; the Deny
+/// AppContainer child echoes and cannot connect to a live loopback listener.
+#[test]
+fn inherited_pipe_echoes_under_deny_and_tcp_is_refused() {
+    use std::io::{Read, Write};
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    struct StopAccept(Arc<AtomicBool>);
+    impl Drop for StopAccept {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let _serial = begin_appcontainer_test();
+    let root = tempfile::tempdir().expect("tempdir");
+    let allowed = root.path().join("allowed");
+    std::fs::create_dir_all(&allowed).expect("allowed");
+    let spec = base_spec("test:e2-handoff", vec![], vec![allowed]);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+    let port = listener.local_addr().expect("addr").port();
+    listener.set_nonblocking(true).expect("nonblocking");
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let accept_count = Arc::clone(&accepts);
+    let stop_accept = Arc::new(AtomicBool::new(false));
+    let stop_flag = Arc::clone(&stop_accept);
+    thread::spawn(move || {
+        while !stop_flag.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok(_) => {
+                    accept_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
+    // Keep the listener open until this guard drops, including after a panic.
+    let _stop_accept = StopAccept(stop_accept);
+
+    let (host_end, guest_end) = bookclerk_sandbox::DuplexLink::pair().expect("duplex");
+    let mut child = Command::new(JAIL)
+        .arg(LINK_PROBE)
+        .arg("--echo-handle")
+        .arg("--deny-tcp")
+        .arg("127.0.0.1")
+        .arg(port.to_string())
+        .env(
+            bookclerk_sandbox::SPEC_ENV,
+            serde_json::to_string(&spec).expect("encode"),
+        )
+        .env(bookclerk_sandbox::JAIL_HANDOFF_ENV, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jail");
+
+    let guest_handle =
+        bookclerk_sandbox::duplicate_handle_into(guest_end.as_raw_handle(), child.as_raw_handle())
+            .expect("DuplicateHandle into jail");
+    drop(guest_end);
+
+    let handoff = bookclerk_sandbox::JailHandoff {
+        v: 1,
+        stdin: None,
+        stdout: None,
+        extra: vec![bookclerk_sandbox::JailHandoffExtra::inherited(
+            bookclerk_sandbox::SOCKET_PROXY_ENV,
+            guest_handle,
+        )],
+    };
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "{}", handoff.to_line().expect("line")).expect("write handoff");
+        stdin.flush().expect("flush");
+    }
+
+    let mut host = std::fs::File::from(host_end.into_owned_handle());
+    host.write_all(b"ping").expect("host write");
+    host.flush().expect("host flush");
+    let mut buf = [0u8; 4];
+    host.read_exact(&mut buf).expect("host read echo");
+    assert_eq!(&buf, b"ping");
+
+    let output = child.wait_with_output().expect("wait");
+    let report = assert_probe_ok(&output);
+    assert_eq!(report["tcp_denied"], true);
+    assert_eq!(accepts.load(Ordering::SeqCst), 0);
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_secs(2),
+    )
+    .expect("harness must still reach the listener");
+}
+
+/// E2b: both ends of a host-created pipe live in different Deny AppContainers.
+#[test]
+fn inherited_pipe_crosses_two_appcontainers() {
+    use std::io::Write;
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Stdio;
+
+    let _serial = begin_appcontainer_test();
+    let root = tempfile::tempdir().expect("tempdir");
+    let allowed_a = root.path().join("a");
+    let allowed_b = root.path().join("b");
+    std::fs::create_dir_all(&allowed_a).expect("a");
+    std::fs::create_dir_all(&allowed_b).expect("b");
+    let spec_a = base_spec("test:e2b-a", vec![], vec![allowed_a]);
+    let spec_b = base_spec("test:e2b-b", vec![], vec![allowed_b]);
+
+    let (end_a, end_b) = bookclerk_sandbox::DuplexLink::pair().expect("duplex");
+
+    let mut echo = Command::new(JAIL)
+        .arg(LINK_PROBE)
+        .arg("--echo-handle")
+        .env(
+            bookclerk_sandbox::SPEC_ENV,
+            serde_json::to_string(&spec_a).expect("encode"),
+        )
+        .env(bookclerk_sandbox::JAIL_HANDOFF_ENV, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn echo jail");
+    let handle_a =
+        bookclerk_sandbox::duplicate_handle_into(end_a.as_raw_handle(), echo.as_raw_handle())
+            .expect("dup A");
+    drop(end_a);
+    writeln!(
+        echo.stdin.as_mut().expect("stdin"),
+        "{}",
+        bookclerk_sandbox::JailHandoff {
+            v: 1,
+            stdin: None,
+            stdout: None,
+            extra: vec![bookclerk_sandbox::JailHandoffExtra::inherited(
+                bookclerk_sandbox::SOCKET_PROXY_ENV,
+                handle_a,
+            )],
+        }
+        .to_line()
+        .expect("line")
+    )
+    .expect("handoff A");
+
+    let mut sender = Command::new(JAIL)
+        .arg(LINK_PROBE)
+        .arg("--send-ping")
+        .env(
+            bookclerk_sandbox::SPEC_ENV,
+            serde_json::to_string(&spec_b).expect("encode"),
+        )
+        .env(bookclerk_sandbox::JAIL_HANDOFF_ENV, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn send jail");
+    let handle_b =
+        bookclerk_sandbox::duplicate_handle_into(end_b.as_raw_handle(), sender.as_raw_handle())
+            .expect("dup B");
+    drop(end_b);
+    writeln!(
+        sender.stdin.as_mut().expect("stdin"),
+        "{}",
+        bookclerk_sandbox::JailHandoff {
+            v: 1,
+            stdin: None,
+            stdout: None,
+            extra: vec![bookclerk_sandbox::JailHandoffExtra::inherited(
+                bookclerk_sandbox::SOCKET_PROXY_ENV,
+                handle_b,
+            )],
+        }
+        .to_line()
+        .expect("line")
+    )
+    .expect("handoff B");
+
+    let out_b = sender.wait_with_output().expect("wait B");
+    let out_a = echo.wait_with_output().expect("wait A");
+    assert_probe_ok(&out_a);
+    assert_probe_ok(&out_b);
+}
+
+/// E3: same AppContainer child can bind loopback and connect to itself.
+#[test]
+fn same_appcontainer_loopback_round_trips() {
+    let _serial = begin_appcontainer_test();
+    let root = tempfile::tempdir().expect("tempdir");
+    let allowed = root.path().join("allowed");
+    std::fs::create_dir_all(&allowed).expect("allowed");
+    let spec = Spec {
+        net: NetPolicy::OutboundListen,
+        ..base_spec("test:e3-loopback", vec![], vec![allowed])
+    };
+    let report = assert_probe_ok(&run_jailed_probe(&spec, &["--loopback-self"]));
+    assert_eq!(report["loopback_ok"], true);
+    assert_eq!(report["is_app_container"], true);
+}
+
+/// E5: a host Job with `KILL_ON_JOB_CLOSE` wrapping `bookclerk-jail` kills the
+/// nested AppContainer guest when the host Job is closed.
+#[test]
+fn host_job_kill_on_close_terminates_jail_tree() {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Stdio;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    let _serial = begin_appcontainer_test();
+    let root = tempfile::tempdir().expect("tempdir");
+    let allowed = root.path().join("allowed");
+    std::fs::create_dir_all(&allowed).expect("allowed");
+    let spec = base_spec("test:e5-host-job", vec![], vec![allowed.clone()]);
+
+    let job = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.expect("CreateJobObjectW");
+    unsafe {
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+        .expect("SetInformationJobObject");
+    }
+
+    let holding = allowed.join("holding");
+    let finished = allowed.join("finished");
+    let mut child = Command::new(JAIL)
+        .arg(PROBE)
+        .arg("--hold-ms")
+        .arg("30000")
+        .arg("--signal")
+        .arg(&holding)
+        .arg("--after-hold")
+        .arg(&finished)
+        .env(
+            bookclerk_sandbox::SPEC_ENV,
+            serde_json::to_string(&spec).expect("encode"),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn jail");
+
+    unsafe {
+        AssignProcessToJobObject(job, HANDLE(child.as_raw_handle()))
+            .expect("AssignProcessToJobObject");
+    }
+
+    // Drain both pipes. An unread stdout/stderr buffer can stall the guest
+    // before it reaches the hold, which looks like a fast exit.
+    let stdout = child.stdout.take().expect("stdout");
+    let stderr = child.stderr.take().expect("stderr");
+    let stdout_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let stderr_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let stdout_for_drain = Arc::clone(&stdout_buf);
+    let stderr_for_drain = Arc::clone(&stderr_buf);
+    let drain_out = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut std::io::BufReader::new(stdout), &mut buf);
+        if let Ok(mut slot) = stdout_for_drain.lock() {
+            *slot = buf;
+        }
+    });
+    let drain_err = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut std::io::BufReader::new(stderr), &mut buf);
+        if let Ok(mut slot) = stderr_for_drain.lock() {
+            *slot = buf;
+        }
+    });
+
+    let signaled = std::time::Instant::now();
+    while !holding.exists() {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            let _ = drain_out.join();
+            let _ = drain_err.join();
+            let err = stderr_buf
+                .lock()
+                .ok()
+                .map(|buf| String::from_utf8_lossy(&buf).into_owned());
+            panic!(
+                "jail exited before the guest entered the hold: {status:?}\nstderr={}",
+                err.unwrap_or_default()
+            );
+        }
+        assert!(
+            signaled.elapsed() < Duration::from_secs(60),
+            "guest never reached the pre-hold signal"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // Close only after the guest is inside the hold. Windows reports
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE as exit code 0, so the proof is that
+    // the post-hold marker is never written.
+    unsafe {
+        let _ = CloseHandle(job);
+    }
+
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => break status,
+            None => {
+                assert!(
+                    start.elapsed() < Duration::from_secs(15),
+                    "host Job close must kill bookclerk-jail"
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    let _ = drain_out.join();
+    let _ = drain_err.join();
+    let err = stderr_buf
+        .lock()
+        .ok()
+        .map(|buf| String::from_utf8_lossy(&buf).into_owned())
+        .unwrap_or_default();
+    let out = stdout_buf
+        .lock()
+        .ok()
+        .map(|buf| String::from_utf8_lossy(&buf).into_owned())
+        .unwrap_or_default();
+    assert!(
+        !finished.exists(),
+        "guest finished the hold after host Job close: {status:?}\nstderr={err}\nstdout={out}"
+    );
+    let report = first_json_line(&out);
+    let guest_pid = report["pid"].as_u64().expect("guest pid") as u32;
+    let guest_deadline = std::time::Instant::now();
+    while process_alive(guest_pid) {
+        assert!(
+            guest_deadline.elapsed() < Duration::from_secs(5),
+            "guest pid {guest_pid} still alive after host Job close\nstderr={err}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
 }

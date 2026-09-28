@@ -25,15 +25,57 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Deserializer, Visitor};
+use serde::{Deserialize, Serialize, Serializer};
 
+#[cfg(unix)]
+mod guest_ipc;
+mod link;
 mod platform;
+mod spawn_diag;
 mod spawn_path;
 mod spec;
 
+#[cfg(unix)]
+pub use guest_ipc::{create_guest_ipc_dir, ensure_guest_ipc_fits, MACOS_SUN_PATH_CAPACITY};
+
+pub use link::{
+    with_fd_spawn_lock, DuplexHalf, DuplexLink, JailHandoff, JailHandoffExtra, LinkSpec,
+    LinkSpecError, StdioEnds, GATEWAY_GUEST_RPC_ENV, GATEWAY_GUEST_RPC_WRITE_ENV,
+    GATEWAY_PROXY_ENV, GATEWAY_PROXY_FD, GATEWAY_PROXY_WRITE_ENV, GATEWAY_RPC_FD, GUEST_PROXY_FD,
+    JAIL_HANDOFF_ENV, SOCKET_PROXY_ENV, SOCKET_PROXY_WRITE_ENV, TEST_EXTRA_ENDPOINT_FD,
+    WORKERD_STATE_DIR_ENV,
+};
+
+#[cfg(unix)]
+pub use link::inherit_fd_at;
+
+#[cfg(windows)]
+pub use link::{
+    duplicate_handle_into, duplicate_handle_into_at_least, duplicate_handle_local,
+    duplicate_owned_handle, write_pipe_without_completion_port,
+};
 pub use platform::BACKEND;
+
+/// Linux session-cgroup constructor used by the plugin host.
+#[cfg(target_os = "linux")]
+pub use platform::{create_session_cgroup, destroy_session_cgroup};
+
+/// Host-owned Windows Job that holds both sibling `bookclerk-jail` processes.
+#[cfg(windows)]
+pub use platform::windows_launch::SessionJob;
+pub use platform::windows_spawn::recent_platform_spawn_diagnostics;
+/// Event the host waits on before starting a second Windows jail.
+#[cfg(windows)]
+pub use platform::windows_spawn::JailReady;
+pub use spawn_diag::{
+    join_capped_lines, push_capped_line, record_spawn_diagnostic, redact_capped,
+    redact_diagnostic_text, snapshot_spawn_diagnostics, spawn_diag_raw_stderr,
+    spawn_diag_stderr_enabled, truncate_utf8, SPAWN_DIAG_MAX_LINES, SPAWN_DIAG_RECORD_BYTES,
+    SPAWN_DIAG_TOTAL_BYTES,
+};
 pub use spawn_path::{
-    canonicalize, require_absolute_or_name, require_absolute_spawn_path,
+    canonicalize, create_process_path, require_absolute_or_name, require_absolute_spawn_path,
     require_existing_regular_file, require_helper_beside_or_absolute, require_spawn_executable,
     require_under_root, SpawnPathError,
 };
@@ -49,13 +91,17 @@ pub use spec::{Spec, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV, SPEC_ENV};
 pub mod spawn {
     pub use crate::platform::windows_pipe::NamedPipeSecurity;
     pub use crate::platform::windows_spawn::{
-        grant_path_access, is_os_managed_path, plan_appcontainer, profile_name_for_label,
-        run_appcontainer, unique_profile_moniker, AclGrant, AppContainerLaunch,
-        AppContainerSession,
+        grant_path_access, is_os_managed_path, plan_acl_journal, plan_appcontainer,
+        profile_name_for_label, revoke_acl_journal, run_appcontainer,
+        run_appcontainer_with_handoff, run_unconfined_with_handoff, unique_profile_moniker,
+        AclGrant, AclJournalEntry, AppContainerLaunch, AppContainerSession,
     };
 
     #[cfg(windows)]
     pub use crate::platform::windows_spawn::dacl_mentions_sid;
+
+    #[cfg(windows)]
+    pub use crate::platform::windows_launch::{spawn_with_handle_list, HandleListChild};
 
     /// Former name of [`run_appcontainer`]; kept as a thin alias for callers.
     pub use run_appcontainer as spawn_appcontainer;
@@ -125,8 +171,12 @@ pub struct Policy {
     memory_bytes: Option<u64>,
     /// Optional cap on concurrent processes in the jail.
     active_processes: Option<u32>,
-    /// Optional CPU hard-cap as percent of one logical CPU (1..=cores×100).
-    cpu_rate_percent: Option<u32>,
+    /// CPU hard-cap: unspecified (label default), off, or a percent.
+    cpu_rate: CpuRate,
+    /// macOS Seatbelt pathname Unix-socket directories (`None` = writable paths).
+    unix_socket_dirs: Option<Vec<PathBuf>>,
+    /// Linux cgroup v2 leaf to join instead of creating `bookclerk-<pid>`.
+    cgroup_dir: Option<PathBuf>,
 }
 
 /// Number of logical CPUs visible to this process (at least 1).
@@ -144,6 +194,145 @@ pub fn host_logical_cpus() -> u32 {
 #[must_use]
 pub fn host_cpu_rate_max() -> u32 {
     host_logical_cpus().saturating_mul(100)
+}
+
+/// Tokio worker threads for `bookclerk-workerd`.
+///
+/// Fixed so a session `pids.max` does not grow with [`host_logical_cpus`].
+pub const GATEWAY_WORKER_THREADS: usize = 2;
+
+/// Blocking-pool ceiling for `bookclerk-workerd`.
+pub const GATEWAY_MAX_BLOCKING_THREADS: usize = 4;
+
+/// Threads reserved for one native-behind-workerd session before `extraProcesses`.
+///
+/// Covers the pinned gateway runtime ([`GATEWAY_WORKER_THREADS`] plus
+/// [`GATEWAY_MAX_BLOCKING_THREADS`]), the pinned Cloudflare `workerd` process,
+/// the native guest's current-thread runtime, and the two jail supervisors.
+/// This is not the Windows outer process baseline (5 + extra) and not the
+/// payload process count (3 + extra). `pids.max` counts threads; guest
+/// `extraProcesses` are added on top of this budget.
+pub const INFRASTRUCTURE_THREAD_BUDGET: u32 =
+    (GATEWAY_WORKER_THREADS + GATEWAY_MAX_BLOCKING_THREADS + 16 + 4 + 4) as u32;
+
+/// CPU hard-cap carried on a [`Spec`] before label defaults are applied.
+///
+/// Omitted and JSON `null` are [`Self::Unspecified`] (the label default). A
+/// JSON number is [`Self::Percent`]. [`Self::Disabled`] is the string `"off"`
+/// and must not be filled from the label: sibling inner Jobs use it so they
+/// do not pick up the plugin default of 80 under an outer cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CpuRate {
+    /// Use [`label_resource_defaults`] when resolving a Job.
+    #[default]
+    Unspecified,
+    /// Do not apply a CPU rate, and do not substitute the label default.
+    Disabled,
+    /// Percent of one logical CPU, clamped to `1..=`[`host_cpu_rate_max`] when
+    /// the policy is built.
+    Percent(u32),
+}
+
+impl CpuRate {
+    /// Percent when this is [`Self::Percent`]. Unspecified and disabled are
+    /// both absent until [`Self::resolve`].
+    #[must_use]
+    pub fn percent(self) -> Option<u32> {
+        match self {
+            Self::Percent(percent) => Some(percent),
+            Self::Unspecified | Self::Disabled => None,
+        }
+    }
+
+    /// Label default for unspecified, nothing for disabled, the percent otherwise.
+    #[must_use]
+    pub fn resolve(self, label_default: Option<u32>) -> Option<u32> {
+        match self {
+            Self::Unspecified => label_default,
+            Self::Disabled => None,
+            Self::Percent(percent) => Some(percent),
+        }
+    }
+
+    /// True when the wire value was omitted or null.
+    fn is_unspecified(&self) -> bool {
+        matches!(self, Self::Unspecified)
+    }
+}
+
+impl Serialize for CpuRate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Unspecified => serializer.serialize_none(),
+            Self::Disabled => serializer.serialize_str("off"),
+            Self::Percent(percent) => serializer.serialize_u32(*percent),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CpuRate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CpuRateVisitor;
+
+        impl Visitor<'_> for CpuRateVisitor {
+            type Value = CpuRate;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a CPU percent, \"off\", or null")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(CpuRate::Unspecified)
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(CpuRate::Unspecified)
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let percent = u32::try_from(value).map_err(E::custom)?;
+                Ok(CpuRate::Percent(percent))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let percent = u32::try_from(value).map_err(E::custom)?;
+                Ok(CpuRate::Percent(percent))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value == "off" {
+                    Ok(CpuRate::Disabled)
+                } else {
+                    Err(E::custom(format!(
+                        "cpu_rate_percent must be a number or \"off\", got {value}"
+                    )))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(CpuRateVisitor)
+    }
 }
 
 /// Optional OS resource ceilings carried on a [`Policy`] / [`Spec`].
@@ -234,7 +423,9 @@ impl Policy {
             enforcement: Enforcement::Required,
             memory_bytes: None,
             active_processes: None,
-            cpu_rate_percent: None,
+            cpu_rate: CpuRate::Unspecified,
+            unix_socket_dirs: None,
+            cgroup_dir: None,
         }
     }
 
@@ -318,14 +509,60 @@ impl Policy {
         self
     }
 
-    /// CPU hard-cap percent of one logical CPU (`None` = platform default / unset).
-    ///
-    /// Clamped to `1..=`[`host_cpu_rate_max`] (100 × logical CPUs).
+    /// CPU hard-cap. [`CpuRate::Unspecified`] takes the label default;
+    /// [`CpuRate::Disabled`] stays off. A percent is clamped to
+    /// `1..=`[`host_cpu_rate_max`].
     #[must_use]
-    pub fn cpu_rate_percent(mut self, percent: Option<u32>) -> Self {
+    pub fn cpu_rate(mut self, rate: CpuRate) -> Self {
         let max = host_cpu_rate_max();
-        self.cpu_rate_percent = percent.map(|p| p.clamp(1, max));
+        self.cpu_rate = match rate {
+            CpuRate::Percent(percent) => CpuRate::Percent(percent.clamp(1, max)),
+            other => other,
+        };
         self
+    }
+
+    /// CPU hard-cap percent of one logical CPU.
+    ///
+    /// `None` is unspecified (the label default), not disabled. Use
+    /// [`Self::cpu_rate`]`(`[`CpuRate::Disabled`]`)` to keep a nested Job from
+    /// inheriting that default. A percent is clamped to `1..=`[`host_cpu_rate_max`].
+    #[must_use]
+    pub fn cpu_rate_percent(self, percent: Option<u32>) -> Self {
+        self.cpu_rate(match percent {
+            Some(percent) => CpuRate::Percent(percent),
+            None => CpuRate::Unspecified,
+        })
+    }
+
+    /// Restrict pathname Unix sockets to `dirs` (`Some([])` denies them).
+    ///
+    /// `None` (the default) keeps the historical Seatbelt rule: UDS under every
+    /// writable path. Hosts that want an explicit list — the native-behind-workerd
+    /// gateway session directory, or no UDS for a Deny guest — set this.
+    #[must_use]
+    pub fn unix_socket_dirs(mut self, dirs: Option<Vec<PathBuf>>) -> Self {
+        self.unix_socket_dirs = dirs;
+        self
+    }
+
+    /// Join this cgroup v2 leaf instead of creating `bookclerk-<pid>`.
+    #[must_use]
+    pub fn cgroup_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.cgroup_dir = dir;
+        self
+    }
+
+    /// Explicit Unix-socket directories, or `None` for the writable-path default.
+    #[must_use]
+    pub fn unix_socket_dirs_opt(&self) -> Option<&[PathBuf]> {
+        self.unix_socket_dirs.as_deref()
+    }
+
+    /// Optional session cgroup to join (Linux).
+    #[must_use]
+    pub fn cgroup_dir_opt(&self) -> Option<&std::path::Path> {
+        self.cgroup_dir.as_deref()
     }
 
     /// Diagnostics label supplied to [`Self::new`] (logs / doctor output only).
@@ -339,7 +576,7 @@ impl Policy {
     pub fn resource_limits(&self) -> ResourceLimits {
         ResourceLimits {
             memory_bytes: self.memory_bytes,
-            cpu_rate_percent: self.cpu_rate_percent,
+            cpu_rate_percent: self.cpu_rate.percent(),
             active_processes: self.active_processes,
         }
     }
@@ -359,7 +596,7 @@ impl Policy {
         let defaults = label_resource_defaults(&self.label);
         ResourceLimits {
             memory_bytes: self.memory_bytes.or(defaults.memory_bytes),
-            cpu_rate_percent: self.cpu_rate_percent.or(defaults.cpu_rate_percent),
+            cpu_rate_percent: self.cpu_rate.resolve(defaults.cpu_rate_percent),
             active_processes: self.active_processes.or(defaults.active_processes),
         }
     }
@@ -953,5 +1190,18 @@ mod tests {
         assert_eq!(windows_job_cpu_rate(50, 0), 5_000); // cores treated as 1
                                                         // Cap at full machine.
         assert_eq!(windows_job_cpu_rate(10_000, 4), 10_000);
+    }
+
+    #[test]
+    fn disabled_cpu_rate_stays_unset_and_unspecified_uses_the_plugin_default() {
+        let disabled = Policy::new("plugin:echo").cpu_rate(CpuRate::Disabled);
+        assert_eq!(disabled.resource_limits().cpu_rate_percent, None);
+        assert_eq!(disabled.resolved_job_limits().cpu_rate_percent, None);
+
+        let unspecified = Policy::new("plugin:echo").cpu_rate_percent(None);
+        assert_eq!(unspecified.resolved_job_limits().cpu_rate_percent, Some(80));
+
+        let percent = Policy::new("plugin:echo").cpu_rate(CpuRate::Percent(25));
+        assert_eq!(percent.resolved_job_limits().cpu_rate_percent, Some(25));
     }
 }

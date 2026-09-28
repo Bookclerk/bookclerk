@@ -191,14 +191,19 @@ fn build_profile(policy: &Policy) -> String {
     // Writable paths must also be readable; SBPL treats the two separately.
     push_paths(&mut out, "file-read* file-write*", &writes, &[]);
     // Pathname Unix sockets are files in SBPL's eyes but gated by the network
-    // operations, which the rules above scope to IP (or not at all). Allow
-    // binding and connecting to sockets inside the writable tree only, in
-    // every mode — Linux Landlock likewise leaves pathname sockets under
-    // filesystem rules. A path filter never matches an IP socket, so this
-    // grants no TCP/UDP reach. The native-behind-workerd socket proxy relies
-    // on it: the launcher binds it in its state dir and the nested
-    // deny-network guest connects to it.
-    push_paths(&mut out, "network-bind network-outbound", &writes, &[]);
+    // operations, which the rules above scope to IP (or not at all). A path
+    // filter never matches an IP socket, so this grants no TCP/UDP reach.
+    //
+    // `unix_socket_dirs = None` keeps the historical writable-path rule so
+    // isolate workerd (`granted.sock` under scratch) stays green until the
+    // host sets an explicit list. `Some(dirs)` is the sibling-sandbox contract:
+    // the gateway names its session directory, and the Deny guest names only
+    // its private IPC directory (OAuth callback and the Postgres mediator).
+    let uds = match policy.unix_socket_dirs_opt() {
+        Some(dirs) => crate::resolve_all(dirs.iter().map(std::path::PathBuf::as_path)),
+        None => writes.clone(),
+    };
+    push_paths(&mut out, "network-bind network-outbound", &uds, &[]);
 
     out
 }
@@ -317,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn unix_sockets_are_scoped_to_writable_paths_in_every_mode() {
+    fn unix_sockets_default_to_writable_paths_until_the_host_lists_them() {
         let dir = tempfile::tempdir().expect("tempdir");
         for net in [
             NetPolicy::Deny,
@@ -343,6 +348,39 @@ mod tests {
         }
         let profile = build_profile(&Policy::new("test").system_paths(false));
         assert!(!profile.contains("network-bind"), "{profile}");
+    }
+
+    #[test]
+    fn unix_sockets_are_scoped_to_unix_socket_dirs_when_set() {
+        let writes = tempfile::tempdir().expect("writes");
+        let sockets = tempfile::tempdir().expect("sockets");
+        let profile = build_profile(
+            &Policy::new("test")
+                .system_paths(false)
+                .write(writes.path())
+                .unix_socket_dirs(Some(vec![sockets.path().to_path_buf()])),
+        );
+        let body = rule_body(&profile, "network-bind network-outbound");
+        let physical = std::fs::canonicalize(sockets.path()).expect("canonicalize");
+        assert!(
+            body.contains(&physical.display().to_string()),
+            "UDS rule should name the session dir: {profile}"
+        );
+        let write_physical = std::fs::canonicalize(writes.path()).expect("canonicalize writes");
+        assert!(
+            !body.contains(&write_physical.display().to_string()),
+            "UDS must not cover every writable path when unix_socket_dirs is set: {profile}"
+        );
+        let none = build_profile(
+            &Policy::new("test")
+                .system_paths(false)
+                .write(writes.path())
+                .unix_socket_dirs(Some(Vec::new())),
+        );
+        assert!(
+            !none.contains("network-bind network-outbound"),
+            "empty unix_socket_dirs grants no UDS: {none}"
+        );
     }
 
     #[test]

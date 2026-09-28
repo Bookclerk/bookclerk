@@ -239,6 +239,9 @@ than restoring one. Upgrade the engine, or lower `isolation` deliberately.
   plus the OS facility (journald / macOS `os_log` / Windows Event Log). Guest
   jail/media-worker lines are captured and re-emitted as tracing events; ANSI
   from piped guests is stripped so JSON does not contain `\u001b` CSI escapes.
+  Spawn-stage text is the same kind of event (`bookclerk::spawn`). It is not
+  mixed in as raw stderr unless `BOOKCLERK_SPAWN_DIAG` is `1`, `true`, or
+  `stderr`.
 - **CLI** (`bookclerk`) prints human command output only. Tracing is off until
   `-v` / `-vv` / `-vvv` (or `BOOKCLERK_LOG` / `RUST_LOG`).
 - `BOOKCLERK_LOG` → `RUST_LOG` → daemon default `bookclerk=info,warn`

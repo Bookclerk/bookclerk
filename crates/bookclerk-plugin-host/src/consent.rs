@@ -85,16 +85,38 @@ pub const PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT: u32 = 2;
 pub const PLUGIN_JAIL_EXTRA_PROCESSES_MAX: u32 = 62;
 /// Absolute OS jail PID ceiling (`overhead + extra`, inclusive).
 pub const PLUGIN_JAIL_ACTIVE_PROCESSES_MAX: u32 = 64;
-
-/// Fixed jail occupancy for the launcher / primary guest tree.
+/// Windows outer session Job processes before the granted extra budget.
 ///
-/// Workerd isolate: `bookclerk-workerd` plus the `workerd` child (2 PIDs).
-/// Native behind workerd (the product path for `runtime = "native"`): launcher,
-/// `workerd`, and the native guest (3 PIDs). Direct native (diagnostic
-/// transport): `bookclerk-jail` execs the guest (1 PID).
+/// Both `bookclerk-jail` supervisors, `bookclerk-workerd`, the pinned
+/// `workerd`, and the native guest. Payload overhead stays 3
+/// ([`GuestRuntimeKind::process_overhead`]); this baseline is only the outer
+/// Windows Job. Linux `pids.max` counts threads and must not use this number.
+pub const WINDOWS_SESSION_PROCESS_BASELINE: u32 = 5;
+
+/// Fixed payload occupancy for the launcher / primary guest tree.
+///
+/// Workerd isolate: `bookclerk-workerd` plus the `workerd` child (2).
+/// Native behind workerd: those two plus the native guest (3). Direct native
+/// (diagnostic transport): the guest (1). The Windows outer Job adds the two
+/// jail supervisors on top of the native-behind payload; see
+/// [`WINDOWS_SESSION_PROCESS_BASELINE`].
 #[must_use]
 pub fn jail_process_overhead(runtime: GuestRuntimeKind) -> u32 {
     runtime.process_overhead()
+}
+
+/// Windows outer session Job active-process cap: baseline 5 plus `extra`.
+///
+/// `extra` is clamped to [`PLUGIN_JAIL_EXTRA_PROCESSES_MAX`]. The sum is
+/// clamped to [`PLUGIN_JAIL_ACTIVE_PROCESSES_MAX`]. Inner jail caps are not
+/// inflated by this baseline: the gateway stays at 2 and the guest stays at
+/// 1 plus the same extra budget.
+#[must_use]
+pub fn windows_session_active_processes(extra: u32) -> u32 {
+    let extra = extra.min(PLUGIN_JAIL_EXTRA_PROCESSES_MAX);
+    WINDOWS_SESSION_PROCESS_BASELINE
+        .saturating_add(extra)
+        .min(PLUGIN_JAIL_ACTIVE_PROCESSES_MAX)
 }
 
 /// Clamp an operator/manifest extra-process budget (`0..=`[`PLUGIN_JAIL_EXTRA_PROCESSES_MAX`]).
@@ -4516,5 +4538,34 @@ mode = "deny"
         }"#;
         let grant: PluginGrant = serde_json::from_str(json).unwrap();
         assert_eq!(grant.schema_version, 0);
+    }
+
+    #[test]
+    fn windows_outer_job_adds_supervisors_without_changing_payload_overhead() {
+        assert_eq!(GuestRuntimeKind::NativeBehindWorkerd.process_overhead(), 3);
+        assert_eq!(WINDOWS_SESSION_PROCESS_BASELINE, 5);
+        // extras 0, 1, and the default of 2. The absolute max clamps 5+62.
+        assert_eq!(windows_session_active_processes(0), 5);
+        assert_eq!(windows_session_active_processes(1), 6);
+        assert_eq!(
+            windows_session_active_processes(PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT),
+            7
+        );
+        assert_eq!(
+            windows_session_active_processes(PLUGIN_JAIL_EXTRA_PROCESSES_MAX),
+            PLUGIN_JAIL_ACTIVE_PROCESSES_MAX
+        );
+        assert_eq!(
+            active_processes_for(GuestRuntimeKind::NativeDirect, 0),
+            1,
+            "guest inner cap is the guest plus extras, not the outer baseline"
+        );
+        assert_eq!(
+            active_processes_for(
+                GuestRuntimeKind::Workerd,
+                PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT
+            ),
+            4
+        );
     }
 }

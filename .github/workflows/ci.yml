@@ -318,6 +318,7 @@ jobs:
   native-gateway:
     name: native-behind-workerd gateway (${{ matrix.os }})
     needs: plan
+    timeout-minutes: 45
     if: needs.plan.outputs.job_native_gateway == 'true'
     runs-on: ${{ matrix.os }}
     strategy:

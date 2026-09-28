@@ -1,9 +1,9 @@
 //! The workerd front door is the only product transport.
 //!
-//! A `runtime = "native"` manifest is launched as `bookclerk-workerd` with the
-//! native executable exported as `BOOKCLERK_NATIVE_BACKEND`; only the
-//! diagnostic transport yields the raw command. When `bookclerk-workerd` (or
-//! the pinned `workerd`) cannot be found, spawn refuses in every isolation
+//! A `runtime = "native"` manifest is launched as host-spawned siblings
+//! (`bookclerk-workerd` + the native backend) joined by inherited links; only
+//! the diagnostic transport yields the raw command. When `bookclerk-workerd`
+//! (or the pinned `workerd`) cannot be found, spawn refuses in every isolation
 //! mode instead of falling back to direct native.
 
 use std::path::{Path, PathBuf};

@@ -14,8 +14,8 @@
 //! - **Python + outbound** workerd guests also receive
 //!   [`PYODIDE_EGRESS_HOSTS`] in consent and egress lists.
 //!
-//! Native-behind-workerd guests use the same policy through the host socket
-//! proxy; ambient `AF_INET`/`AF_INET6` is denied by the nested jail. See
+//! Native-behind-workerd guests use the same policy through the inherited
+//! CONNECT mux; ambient `AF_INET`/`AF_INET6` is denied by the sibling jail. See
 //! [`crate::NetworkMode`] and [`crate::PluginManifest::validate`].
 
 use serde::{Deserialize, Serialize};

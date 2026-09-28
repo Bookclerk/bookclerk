@@ -225,13 +225,13 @@ pub fn upload_file_path(local_path: Option<&str>) -> Result<UploadFile> {
 ///
 /// # Errors
 ///
-/// This function does not fail; it always returns the owned descriptor and
-/// `/dev/fd/<n>` path for the received file descriptor.
+/// Returns [`SdkError`] when `FD_CLOEXEC` cannot be set on `fd`.
 fn owned_fd_path(fd: i32) -> Result<(std::os::fd::OwnedFd, PathBuf)> {
     use std::os::fd::{AsRawFd, FromRawFd};
 
     // SAFETY: fd was received from the host for this RPC and is not used elsewhere.
     let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    crate::net::set_inherited_cloexec(owned.as_raw_fd())?;
     let path = fd_proc_path(owned.as_raw_fd());
     Ok((owned, path))
 }

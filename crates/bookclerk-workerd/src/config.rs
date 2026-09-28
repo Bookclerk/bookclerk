@@ -696,7 +696,8 @@ pub fn workerd_state_dir(plugin_root: &Path) -> Result<PathBuf> {
 /// Uses `state_dir` when provided; otherwise allocates via [`workerd_state_dir`].
 ///
 /// Always returns a canonical absolute path so later `ensure_dir_under` /
-/// `write_file_under` barriers can fire.
+/// `write_file_under` barriers can fire. Native-behind-workerd callers pass
+/// the host session dir after [`validate_host_state_dir`].
 fn resolve_state_dir(root: &Path, state_dir: Option<&Path>) -> Result<PathBuf> {
     let dir = match state_dir {
         Some(dir) => {
@@ -707,6 +708,83 @@ fn resolve_state_dir(root: &Path, state_dir: Option<&Path>) -> Result<PathBuf> {
     };
     bookclerk_sandbox::canonicalize(&dir)
         .with_context(|| format!("canonicalize state dir {}", dir.display()))
+}
+
+/// Env var the host sets to the per-session workerd state directory.
+pub const WORKERD_STATE_DIR_ENV: &str = bookclerk_sandbox::WORKERD_STATE_DIR_ENV;
+
+/// Host-chosen session directory from [`WORKERD_STATE_DIR_ENV`].
+///
+/// # Errors
+///
+/// Returns an error when the variable is unset or [`validate_host_state_dir`]
+/// rejects the path.
+pub fn host_state_dir() -> Result<PathBuf> {
+    let raw = std::env::var_os(WORKERD_STATE_DIR_ENV).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{WORKERD_STATE_DIR_ENV} is required for native-behind-workerd (the host owns the session directory)"
+        )
+    })?;
+    validate_host_state_dir(Path::new(&raw))
+}
+
+/// Require `dir` to be an existing owner-only directory under `$TMPDIR`.
+///
+/// # Errors
+///
+/// Returns an error when the path is relative, contains `..`, is not a
+/// directory, escapes the process temp root, or cannot be chmodded owner-only.
+pub fn validate_host_state_dir(dir: &Path) -> Result<PathBuf> {
+    let tmp_root = process_tmp_root().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{WORKERD_STATE_DIR_ENV} requires TMPDIR/TEMP/TMP so the session dir can be checked"
+        )
+    })?;
+    validate_host_state_dir_under(dir, &tmp_root)
+}
+
+/// Same checks as [`validate_host_state_dir`] against an explicit temp root.
+///
+/// Tests pass `tmp_root` directly so they do not retarget process `TMPDIR`
+/// (parallel tests create directories there).
+fn validate_host_state_dir_under(dir: &Path, tmp_root: &Path) -> Result<PathBuf> {
+    if dir.components().any(|c| matches!(c, Component::ParentDir)) {
+        bail!("refusing path with '..': {}", dir.display());
+    }
+    if !dir.is_absolute() {
+        bail!(
+            "{WORKERD_STATE_DIR_ENV} must be an absolute directory, got {}",
+            dir.display()
+        );
+    }
+    if !dir.is_dir() {
+        bail!(
+            "{WORKERD_STATE_DIR_ENV} is not a directory: {}",
+            dir.display()
+        );
+    }
+    let tmp_root = bookclerk_sandbox::canonicalize(tmp_root)
+        .with_context(|| format!("canonicalize temp root {}", tmp_root.display()))?;
+    ensure_owner_only_dir(dir)?;
+    let canon = bookclerk_sandbox::canonicalize(dir)
+        .with_context(|| format!("canonicalize state dir {}", dir.display()))?;
+    if !canon.starts_with(&tmp_root) {
+        bail!(
+            "{WORKERD_STATE_DIR_ENV} {} is not under the process temp root {}",
+            canon.display(),
+            tmp_root.display()
+        );
+    }
+    Ok(canon)
+}
+
+/// `$TMPDIR`, else `TEMP`, else `TMP`. Empty values are ignored.
+fn process_tmp_root() -> Option<PathBuf> {
+    std::env::var_os("TMPDIR")
+        .or_else(|| std::env::var_os("TEMP"))
+        .or_else(|| std::env::var_os("TMP"))
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
 }
 
 /// How the bridge HTTP socket is exposed to `bookclerk-workerd`.
@@ -2435,5 +2513,29 @@ mode = "deny"
             .mode()
             & 0o777;
         assert_eq!(cfg_mode, 0o600);
+    }
+
+    #[test]
+    fn validate_host_state_dir_requires_absolute_dir_under_tmpdir() {
+        // Pass the fixture as the temp root. Setting process TMPDIR makes
+        // parallel tests nest their temp dirs inside a directory this test deletes.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let session = tmp.path().join("session-ab12");
+        std::fs::create_dir(&session).expect("mkdir");
+        let canon = validate_host_state_dir_under(&session, tmp.path()).expect("valid session");
+        assert!(canon.ends_with("session-ab12"));
+
+        let escaped = tmp.path().parent().expect("parent").join("outside-session");
+        std::fs::create_dir_all(&escaped).expect("outside");
+        let err = validate_host_state_dir_under(&escaped, tmp.path()).expect_err("escape");
+        assert!(
+            err.to_string().contains("not under the process temp root"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&escaped);
+
+        let err = validate_host_state_dir_under(Path::new("relative/session"), tmp.path())
+            .expect_err("relative");
+        assert!(err.to_string().contains("absolute"), "{err}");
     }
 }

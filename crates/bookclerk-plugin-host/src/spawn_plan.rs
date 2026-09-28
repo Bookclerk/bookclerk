@@ -24,21 +24,6 @@ pub const WORKERD_LAUNCHER_ENV: &str = "BOOKCLERK_PLUGIN_WORKERD";
 /// Override for the pinned Cloudflare `workerd` binary, honoured by
 /// `bookclerk-workerd` and forwarded to it by the host.
 pub const WORKERD_BIN_ENV: &str = "BOOKCLERK_WORKERD_BIN";
-/// Environment variable naming the native backend `bookclerk-workerd` fronts.
-pub const NATIVE_BACKEND_ENV: &str = "BOOKCLERK_NATIVE_BACKEND";
-/// Set to `1` so `bookclerk-workerd` wraps the native backend in nested
-/// `NetPolicy::Deny`. Independent of the outer launcher jail.
-pub const NESTED_NATIVE_JAIL_ENV: &str = "BOOKCLERK_NESTED_NATIVE_JAIL";
-/// Jail helper used to wrap the native backend (same env as the outer launcher).
-pub const NESTED_JAIL_BIN_ENV: &str = "BOOKCLERK_PLUGIN_JAIL";
-/// `required` makes nested jail failures fail closed (outer Isolation::Required).
-pub const NESTED_JAIL_ENFORCEMENT_ENV: &str = "BOOKCLERK_NESTED_JAIL_ENFORCEMENT";
-/// Pre-created nested AppContainer profile moniker (Windows).
-#[cfg(windows)]
-pub const NESTED_AC_PROFILE_ENV: &str = "BOOKCLERK_NESTED_AC_PROFILE";
-/// Nested AppContainer Package SID for the SOCKET_PROXY named-pipe DACL (Windows).
-#[cfg(windows)]
-pub const NESTED_AC_SID_ENV: &str = "BOOKCLERK_NESTED_AC_SID";
 
 /// Which transport a spawn uses to reach the guest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,12 +61,15 @@ impl GuestRuntimeKind {
         }
     }
 
-    /// Fixed jail occupancy of the launcher tree before any guest-owned
-    /// children or threads.
+    /// Payload occupancy before guest-owned children.
     ///
-    /// `NativeDirect`: `bookclerk-jail` execs the guest (1). `Workerd`:
-    /// `bookclerk-workerd` plus the `workerd` child (2). `NativeBehindWorkerd`:
-    /// launcher, `workerd`, and the native guest (3).
+    /// `NativeDirect`: the guest (1). `Workerd`: `bookclerk-workerd` plus the
+    /// pinned `workerd` (2). `NativeBehindWorkerd`: gateway payload (2) plus
+    /// the native guest (1) = 3. This count does **not** include the two
+    /// `bookclerk-jail` supervisors. The Windows outer session Job adds those
+    /// supervisors ([`crate::consent::WINDOWS_SESSION_PROCESS_BASELINE`]); Linux
+    /// `pids.max` stays on a thread budget and must not reuse the Windows
+    /// process total.
     #[must_use]
     pub fn process_overhead(self) -> u32 {
         match self {
@@ -180,8 +168,8 @@ pub struct SpawnPlan {
     pub launcher: PathBuf,
     /// Arguments after `launcher` (manifest `args`; diagnostic transport only).
     pub args: Vec<String>,
-    /// Native executable `bookclerk-workerd` fronts, exported as
-    /// [`NATIVE_BACKEND_ENV`]. `None` for author isolates and direct native.
+    /// Native executable the host spawns as the sibling guest. `None` for
+    /// author isolates and direct native.
     pub native_backend: Option<PathBuf>,
     /// Pinned `workerd` the launcher will spawn (must stay readable in the jail).
     pub workerd_bin: Option<PathBuf>,
@@ -267,46 +255,30 @@ impl SpawnPlan {
     }
 
     /// Executable paths the jail must let the launcher tree read and exec.
+    ///
+    /// For [`GuestRuntimeKind::NativeBehindWorkerd`] this is the union of
+    /// [`Self::gateway_executable_reads`] and [`Self::guest_executable_reads`].
     #[must_use]
     pub fn executable_reads(&self) -> Vec<PathBuf> {
-        let mut reads = vec![self.launcher.clone()];
-        reads.extend(self.native_backend.iter().cloned());
-        reads.extend(self.workerd_bin.iter().cloned());
-        reads.extend(self.nested_jail_helper());
+        let mut reads = self.gateway_executable_reads();
+        reads.extend(self.guest_executable_reads());
         reads
     }
 
-    /// `bookclerk-jail` that `bookclerk-workerd` execs around the native backend.
+    /// Executables the gateway jail may read: `bookclerk-workerd` and `workerd`.
     ///
-    /// Nested Deny is a second launcher process. The outer jail must grant
-    /// this path or a confined workerd gets `EACCES` on spawn.
-    ///
-    /// Selection matches `bookclerk-workerd`'s `find_jail`: absolute existing
-    /// file override, or the helper beside the workerd launcher — never a bare
-    /// PATH name that the child would later reject.
+    /// Direct native uses the guest command as the (only) launcher.
     #[must_use]
-    pub fn nested_jail_helper(&self) -> Option<PathBuf> {
-        self.native_backend.as_ref()?;
-        let name = format!("bookclerk-jail{}", std::env::consts::EXE_SUFFIX);
-        if let Some(path) = std::env::var_os(NESTED_JAIL_BIN_ENV) {
-            let path = PathBuf::from(path);
-            if let Ok(path) = bookclerk_sandbox::require_helper_beside_or_absolute(
-                &path,
-                &name,
-                Some(self.launcher.as_path()),
-            ) {
-                return Some(path);
-            }
-        }
-        self.launcher.parent().and_then(|dir| {
-            let candidate = dir.join(&name);
-            bookclerk_sandbox::require_helper_beside_or_absolute(
-                &candidate,
-                &name,
-                Some(&self.launcher),
-            )
-            .ok()
-        })
+    pub fn gateway_executable_reads(&self) -> Vec<PathBuf> {
+        let mut reads = vec![self.launcher.clone()];
+        reads.extend(self.workerd_bin.iter().cloned());
+        reads
+    }
+
+    /// Executables the native sibling jail may read (the backend only).
+    #[must_use]
+    pub fn guest_executable_reads(&self) -> Vec<PathBuf> {
+        self.native_backend.iter().cloned().collect()
     }
 }
 
@@ -485,10 +457,11 @@ mode = "deny"
         assert!(plan.fronted_by_workerd());
         assert!(plan.args.is_empty());
         assert!(plan.executable_reads().contains(&plugin.command));
-        assert!(
-            plan.nested_jail_helper().is_some(),
-            "nested jail helper must be granted beside the workerd launcher"
-        );
+        assert!(plan
+            .gateway_executable_reads()
+            .contains(&front_door.launcher));
+        assert!(!plan.gateway_executable_reads().contains(&plugin.command));
+        assert_eq!(plan.guest_executable_reads(), vec![plugin.command.clone()]);
     }
 
     #[test]

@@ -63,6 +63,7 @@ mod fetch_dir;
 pub mod http;
 mod json;
 mod manifest_caps;
+pub mod mux;
 pub mod net;
 mod pass_fd;
 pub mod protocol;
@@ -81,8 +82,10 @@ pub use json::{decode as decode_json, encode as encode_json, encode_atomic_resul
 pub use manifest_caps::manifest_capabilities;
 pub use net::{
     connect as connect_socket, nested_native_jail_requested, ConnectOptions, PluginSocket,
-    SecureTransport, SocketAddress, NESTED_NATIVE_JAIL_ENV, SOCKET_PROXY_ABSTRACT_PREFIX,
-    SOCKET_PROXY_ENV,
+    SecureTransport, SocketAddress, GUEST_IPC_DIR_ENV, NESTED_NATIVE_JAIL_ENV,
+    SESSION_CHALLENGE_ENV, SESSION_CHALLENGE_LEN, SOCKET_PROXY_ABSTRACT_PREFIX, SOCKET_PROXY_ENV,
+    SOCKET_PROXY_WRITE_ENV, TEST_EXTRA_CANDIDATE_ENV, TEST_EXTRA_CANDIDATE_WRITE_ENV,
+    TEST_EXTRA_ENDPOINT_ENV, TEST_EXTRA_ENDPOINT_WRITE_ENV,
 };
 pub use pass_fd::{fd_proc_path, recv_passed_fd, PLUGIN_FD_CHANNEL, PLUGIN_FD_CHANNEL_ENV};
 pub use protocol::{

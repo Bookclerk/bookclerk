@@ -28,8 +28,10 @@
 //! 2. [`spawn_grant_watcher`] observes `$BOOKCLERK_FILES_DIR/plugin-grants.json`
 //!    so `bookclerk plugins approve` in the CLI process fences sessions owned
 //!    by `bookclerkd`.
-//! 3. New spawns re-read the grant file and refuse to return a session whose
-//!    revision no longer matches disk.
+//! 3. New spawns re-read the grant file while holding the same lock the watcher
+//!    holds across the fingerprint update and [`apply_grant_store`], then
+//!    register only when that re-read still matches. A revoke in between is
+//!    not registered.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -67,6 +69,25 @@ struct LiveSession {
 fn live() -> &'static Mutex<Vec<LiveSession>> {
     static LIVE: OnceLock<Mutex<Vec<LiveSession>>> = OnceLock::new();
     LIVE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Serializes a grant-file generation with live-session registration.
+///
+/// [`watch_grants_loop`] holds this lock from the fingerprint comparison
+/// through [`apply_grant_store`]. Spawn holds it from the decisive re-read
+/// through the live-table insert. Those two critical sections cannot overlap,
+/// so a revoke cannot update the fingerprint and then miss a session that
+/// registers afterwards.
+fn grant_epoch() -> &'static Mutex<()> {
+    static EPOCH: OnceLock<Mutex<()>> = OnceLock::new();
+    EPOCH.get_or_init(|| Mutex::new(()))
+}
+
+/// Locks the grant epoch, recovering the guard if a previous holder panicked.
+pub(crate) fn lock_grant_epoch() -> std::sync::MutexGuard<'static, ()> {
+    grant_epoch()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// In-process wake for [`watch_grants_loop`] (same-process `save`).
@@ -118,7 +139,28 @@ pub fn register_session_revisions(
     revision: &str,
     shutdown: SessionShutdown,
 ) -> Arc<AtomicBool> {
-    let cancelled = Arc::new(AtomicBool::new(false));
+    register_session_revisions_on(
+        plugin_key,
+        grant_revision,
+        revision,
+        shutdown,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+/// [`register_session_revisions`] using a cancel flag the proxy already holds.
+///
+/// Authority revocation stores `true` on `cancelled` before the shutdown hook
+/// runs, so describe, ordinary RPCs, and the host proxy observe it without
+/// waiting for the vat work queue.
+#[must_use]
+pub fn register_session_revisions_on(
+    plugin_key: &str,
+    grant_revision: &str,
+    revision: &str,
+    shutdown: SessionShutdown,
+    cancelled: Arc<AtomicBool>,
+) -> Arc<AtomicBool> {
     if let Ok(mut guard) = live().lock() {
         guard.push(LiveSession {
             plugin_key: plugin_key.to_string(),
@@ -136,6 +178,12 @@ pub fn unregister_session(flag: &Arc<AtomicBool>) {
     if let Ok(mut guard) = live().lock() {
         guard.retain(|s| !Arc::ptr_eq(&s.cancelled, flag));
     }
+}
+
+/// Sessions currently registered with the process-wide authority table.
+#[must_use]
+pub fn live_session_count() -> usize {
+    live().lock().map(|guard| guard.len()).unwrap_or(0)
 }
 
 /// Fences every live session for `plugin_key` (grant/authority change).
@@ -233,6 +281,7 @@ pub fn live_authority_snapshot() -> Vec<(String, String)> {
 /// Unreadable / malformed files are left untouched for this tick so a
 /// torn write cannot mass-fence. [`PluginGrantStore::save`] writes atomically.
 pub fn reconcile_grants_from_disk(files_dir: &Path) {
+    let _epoch = lock_grant_epoch();
     match PluginGrantStore::load(files_dir) {
         Ok(store) => apply_grant_store(&store),
         Err(err) => tracing::warn!(
@@ -261,15 +310,18 @@ fn grants_fingerprint(path: &Path) -> String {
 pub async fn watch_grants_loop(files_dir: PathBuf, stop: Arc<AtomicBool>) {
     let path = PluginGrantStore::path(&files_dir);
     let mut last = String::new();
-    match PluginGrantStore::load(&files_dir) {
-        Ok(store) => {
-            apply_grant_store(&store);
-            last = grants_fingerprint(&path);
+    {
+        let _epoch = lock_grant_epoch();
+        match PluginGrantStore::load(&files_dir) {
+            Ok(store) => {
+                apply_grant_store(&store);
+                last = grants_fingerprint(&path);
+            }
+            Err(err) => tracing::warn!(
+                error = %err,
+                "plugin grant store unreadable at watch start; retrying on later ticks"
+            ),
         }
-        Err(err) => tracing::warn!(
-            error = %err,
-            "plugin grant store unreadable at watch start; retrying on later ticks"
-        ),
     }
     while !stop.load(Ordering::SeqCst) {
         tokio::select! {
@@ -279,6 +331,7 @@ pub async fn watch_grants_loop(files_dir: PathBuf, stop: Arc<AtomicBool>) {
         if stop.load(Ordering::SeqCst) {
             break;
         }
+        let _epoch = lock_grant_epoch();
         let next = grants_fingerprint(&path);
         if next == last {
             continue;

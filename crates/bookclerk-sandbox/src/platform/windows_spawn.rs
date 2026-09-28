@@ -39,9 +39,7 @@
 #![cfg_attr(windows, allow(unsafe_code))] // Win32 ACL revoke uses raw SID/ACL APIs.
 
 use std::ffi::OsString;
-use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{NetPolicy, Policy, SandboxError};
 
@@ -202,6 +200,36 @@ impl AppContainerSession {
         self.delete_on_drop
     }
 
+    /// Profile folder and its `Temp` directory, when Windows can resolve them.
+    ///
+    /// These are the paths the jail grants for the launch. The host journal
+    /// revokes them after the jail process is gone.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn profile_directories(&self) -> Vec<PathBuf> {
+        use rappct::AppContainerProfile;
+        use rappct::AppContainerSid;
+
+        let profile = AppContainerProfile {
+            name: self.profile_name.clone(),
+            sid: AppContainerSid::from_sddl(&self.package_sid),
+        };
+        match profile.folder_path() {
+            Ok(folder) => {
+                let temp = folder.join("Temp");
+                vec![folder, temp]
+            }
+            Err(err) => {
+                tracing::debug!(
+                    profile = %self.profile_name,
+                    error = %err,
+                    "AppContainer profile folder is not available for the ACL journal"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// Relinquish deletion ownership (e.g. transfer to another owner).
     pub fn disarm_delete(&mut self) {
         self.delete_on_drop = false;
@@ -232,16 +260,30 @@ impl AppContainerSession {
                     ),
                 });
             }
-            let profile = AppContainerProfile::ensure(
-                profile_name,
-                &format!("Bookclerk {display_label}"),
-                Some("Bookclerk plugin / media guest AppContainer"),
-            )
+            // CreateAppContainerProfile / DeleteAppContainerProfile are not
+            // thread-safe. Overlapping launches (the lifecycle churn's four
+            // concurrent sessions, plus each jail's attach) must queue on the
+            // same mutex as DACL updates. The lock covers only this call:
+            // holding it across jail-ready would deadlock the jail's attach.
+            emit_spawn_line(&format!(
+                "bookclerk-spawn: appcontainer profile create begin name={profile_name}"
+            ));
+            let profile = {
+                let _lock = acl_api_lock();
+                AppContainerProfile::ensure(
+                    profile_name,
+                    &format!("Bookclerk {display_label}"),
+                    Some("Bookclerk plugin / media guest AppContainer"),
+                )
+            }
             .map_err(|err| SandboxError::Backend {
                 label: display_label.to_string(),
                 backend: "appcontainer",
                 detail: format!("CreateAppContainerProfile failed: {err}"),
             })?;
+            emit_spawn_line(&format!(
+                "bookclerk-spawn: appcontainer profile create end name={profile_name}"
+            ));
             Ok(Self {
                 profile_name: profile_name.to_string(),
                 package_sid: profile.sid.as_string().to_string(),
@@ -269,7 +311,19 @@ impl AppContainerSession {
             name: self.profile_name.clone(),
             sid: AppContainerSid::from_sddl(&self.package_sid),
         };
-        if let Err(err) = profile.delete() {
+        emit_spawn_line(&format!(
+            "bookclerk-spawn: appcontainer profile delete begin name={}",
+            self.profile_name
+        ));
+        let deleted = {
+            let _lock = acl_api_lock();
+            profile.delete()
+        };
+        emit_spawn_line(&format!(
+            "bookclerk-spawn: appcontainer profile delete end name={}",
+            self.profile_name
+        ));
+        if let Err(err) = deleted {
             tracing::warn!(
                 profile = %self.profile_name,
                 error = %err,
@@ -303,6 +357,12 @@ pub struct AclGrant {
     #[cfg(windows)]
     /// Whether `path` was a directory at grant time (affects revoke inheritance).
     is_dir: bool,
+    #[cfg(windows)]
+    /// When true, revoke uses `SetSecurityInfo`, which propagates inheritable
+    /// ACEs onto existing children. Ancestor traverse grants set this false and
+    /// revoke with `SetKernelObjectSecurity` so a broad parent (`%TEMP%`, a
+    /// build tree) is not walked while `Local\bookclerk-dacl-tx` is held.
+    propagate: bool,
     /// False for ambient OS runtime paths where no ACE was written.
     #[cfg(windows)]
     active: bool,
@@ -343,7 +403,9 @@ impl Drop for AclGrant {
             if !self.active {
                 return;
             }
-            if let Err(err) = revoke_package_access(&self.path, &self.package_sid, self.is_dir) {
+            if let Err(err) =
+                revoke_package_access(&self.path, &self.package_sid, self.is_dir, self.propagate)
+            {
                 tracing::warn!(
                     path = %self.path.display(),
                     error = %err,
@@ -352,6 +414,135 @@ impl Drop for AclGrant {
             }
         }
     }
+}
+
+/// One planned DACL mutation for a session's package SID.
+///
+/// The host builds this from the spec it already handed to the jail. Revoke
+/// matches only `package_sid`, so a second live session on the same path keeps
+/// its grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AclJournalEntry {
+    /// Filesystem path the jail was going to ACE.
+    pub path: PathBuf,
+    /// Package SID trustee. Revoke removes only this trustee.
+    pub package_sid: String,
+    /// Directory at grant time. Selects the revoke inheritance flag.
+    pub is_dir: bool,
+    /// `true` for inheritable leaf grants (`SetSecurityInfo` on revoke).
+    /// Ancestor traverse is `false` (`SetKernelObjectSecurity`).
+    pub propagate: bool,
+}
+
+/// Planned ACL mutations for one sibling, derived from `spec`.
+///
+/// Ambient OS paths are omitted. `profile_dirs` are extra inheritable write
+/// grants (the AppContainer folder and `Temp`). Ancestor traverse entries use
+/// `propagate = false`.
+#[must_use]
+pub fn plan_acl_journal(
+    spec: &crate::Spec,
+    package_sid: &str,
+    program: Option<&Path>,
+    profile_dirs: &[PathBuf],
+) -> Vec<AclJournalEntry> {
+    let mut entries = Vec::new();
+    let mut granted = std::collections::HashSet::new();
+    let mut allowlisted = Vec::new();
+
+    for path in &spec.writes {
+        if is_os_managed_path(path) || !granted.insert(path.clone()) {
+            continue;
+        }
+        let is_dir = path.is_dir();
+        allowlisted.push(path.clone());
+        entries.push(AclJournalEntry {
+            path: path.clone(),
+            package_sid: package_sid.to_string(),
+            is_dir,
+            propagate: is_dir,
+        });
+    }
+    for path in &spec.reads {
+        if is_os_managed_path(path) || !granted.insert(path.clone()) {
+            continue;
+        }
+        let is_dir = path.is_dir();
+        allowlisted.push(path.clone());
+        entries.push(AclJournalEntry {
+            path: path.clone(),
+            package_sid: package_sid.to_string(),
+            is_dir,
+            propagate: is_dir,
+        });
+    }
+
+    let mut seen_ancestors = std::collections::HashSet::new();
+    for path in &allowlisted {
+        for ancestor in ancestor_directories(path) {
+            if !seen_ancestors.insert(ancestor.clone()) || is_os_managed_path(&ancestor) {
+                continue;
+            }
+            entries.push(AclJournalEntry {
+                path: ancestor,
+                package_sid: package_sid.to_string(),
+                is_dir: true,
+                propagate: false,
+            });
+        }
+    }
+
+    if let Some(program) = program {
+        if !is_os_managed_path(program) && granted.insert(program.to_path_buf()) {
+            entries.push(AclJournalEntry {
+                path: program.to_path_buf(),
+                package_sid: package_sid.to_string(),
+                is_dir: false,
+                propagate: false,
+            });
+        }
+    }
+
+    for path in profile_dirs {
+        if !granted.insert(path.clone()) {
+            continue;
+        }
+        entries.push(AclJournalEntry {
+            path: path.clone(),
+            package_sid: package_sid.to_string(),
+            is_dir: true,
+            propagate: true,
+        });
+    }
+    entries
+}
+
+/// Revoke every entry. A missing path is success. A second call is a no-op
+/// for SIDs that are already gone.
+///
+/// # Errors
+///
+/// Returns [`SandboxError::Backend`] when a present path cannot be updated.
+pub fn revoke_acl_journal(entries: &[AclJournalEntry]) -> Result<(), SandboxError> {
+    #[cfg(windows)]
+    {
+        for entry in entries {
+            if !entry.path.exists() {
+                continue;
+            }
+            revoke_package_access(
+                &entry.path,
+                &entry.package_sid,
+                entry.is_dir,
+                entry.propagate,
+            )?;
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = entries;
+    }
+    Ok(())
 }
 
 /// Grant the Package SID access to `path` for one RPC / spawn allowlist entry.
@@ -392,6 +583,7 @@ pub fn grant_path_access(
                     path: path.to_path_buf(),
                     package_sid: package_sid.to_string(),
                     is_dir: path.is_dir(),
+                    propagate: false,
                     active: false,
                 });
             }
@@ -402,6 +594,8 @@ pub fn grant_path_access(
             path: path.to_path_buf(),
             package_sid: package_sid.to_string(),
             is_dir: path.is_dir(),
+            // Directory grants from `grant_to_package` are inheritable.
+            propagate: path.is_dir(),
             active: true,
         })
     }
@@ -438,18 +632,64 @@ pub fn run_appcontainer(
     args: &[OsString],
     session: Option<&AppContainerSession>,
 ) -> Result<u32, SandboxError> {
+    run_appcontainer_with_handoff(policy, program, args, session, None)
+}
+
+/// [`run_appcontainer`] plus an optional host [`crate::JailHandoff`] of inherited handles.
+///
+/// # Errors
+///
+/// Returns [`SandboxError::Backend`] when the profile, ACLs, or CreateProcess
+/// step fails. On non-Windows hosts this always fails.
+pub fn run_appcontainer_with_handoff(
+    policy: &Policy,
+    program: &Path,
+    args: &[OsString],
+    session: Option<&AppContainerSession>,
+    handoff: Option<&crate::JailHandoff>,
+) -> Result<u32, SandboxError> {
     #[cfg(windows)]
     {
-        run_appcontainer_windows(policy, program, args, session)
+        run_appcontainer_windows(policy, program, args, session, handoff)
     }
     #[cfg(not(windows))]
     {
-        let _ = (program, args, session);
+        let _ = (program, args, session, handoff);
         let _ = plan_appcontainer(policy);
         Err(SandboxError::Backend {
             label: policy.label().to_string(),
             backend: "appcontainer",
             detail: "AppContainer CreateProcess is only available on Windows".to_string(),
+        })
+    }
+}
+
+/// Launch without an AppContainer, inheriting the host-duplicated handoff handles.
+///
+/// Used when `[plugins].isolation = off` on Windows: the jail is still the
+/// sole `CreateProcess` so `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` can name the
+/// session links. There is no package SID and no ACL mutation.
+///
+/// # Errors
+///
+/// Returns [`SandboxError::Backend`] when CreateProcess fails. On non-Windows
+/// hosts this always fails.
+pub fn run_unconfined_with_handoff(
+    program: &Path,
+    args: &[OsString],
+    handoff: &crate::JailHandoff,
+) -> Result<u32, SandboxError> {
+    #[cfg(windows)]
+    {
+        run_unconfined_windows(program, args, handoff)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (program, args, handoff);
+        Err(SandboxError::Backend {
+            label: "unconfined".to_string(),
+            backend: "appcontainer",
+            detail: "Windows handle handoff is only available on Windows".to_string(),
         })
     }
 }
@@ -637,6 +877,7 @@ fn run_appcontainer_windows(
     program: &Path,
     args: &[OsString],
     session: Option<&AppContainerSession>,
+    handoff: Option<&crate::JailHandoff>,
 ) -> Result<u32, SandboxError> {
     use std::io::{self, Read, Write};
     use std::thread;
@@ -725,6 +966,7 @@ fn run_appcontainer_windows(
             path,
             package_sid: package_sid.clone(),
             is_dir,
+            propagate: is_dir,
             active: true,
         });
     }
@@ -765,13 +1007,17 @@ fn run_appcontainer_windows(
             path,
             package_sid: package_sid.clone(),
             is_dir,
+            propagate: is_dir,
             active: true,
         });
     }
 
     // AppContainers cannot walk into a granted leaf without FILE_TRAVERSE on
     // each ancestor. Directory grants inherit onto children, so ancestors get
-    // no-inheritance traverse only — never `%TEMP%` itself.
+    // no-inheritance traverse only — never `%TEMP%` itself. The write does not
+    // use `SetSecurityInfo`: that API propagates every inheritable ACE already
+    // on the parent, and doing so on `%TEMP%` or a build tree holds
+    // `Local\bookclerk-dacl-tx` for the whole walk.
     let mut seen_ancestors = std::collections::HashSet::new();
     for path in &allowlisted {
         for ancestor in ancestor_directories(path) {
@@ -786,6 +1032,7 @@ fn run_appcontainer_windows(
                     path: ancestor,
                     package_sid: package_sid.clone(),
                     is_dir: true,
+                    propagate: false,
                     active: true,
                 }),
                 Err(err) => {
@@ -816,6 +1063,7 @@ fn run_appcontainer_windows(
                 path: program.to_path_buf(),
                 package_sid: package_sid.clone(),
                 is_dir: false,
+                propagate: false,
                 active: true,
             }),
             Err(err) => {
@@ -840,6 +1088,7 @@ fn run_appcontainer_windows(
                     path: path.clone(),
                     package_sid: package_sid.clone(),
                     is_dir: true,
+                    propagate: true,
                     active: true,
                 }),
                 Err(err) => {
@@ -861,13 +1110,17 @@ fn run_appcontainer_windows(
     // argv[0] (the program image) so Rust/C argv parsing lines up.
     let cmdline = windows_command_line(program, args);
     let job_limits = job_limits_for_policy(policy);
+    let (extra_handles, explicit_stdin, explicit_stdout) = handoff_handles(handoff);
     let request = LaunchRequest {
         exe: program,
         cmdline,
         cwd,
         env: child_env,
-        sec: &sec,
+        sec: Some(&sec),
         job: job_limits,
+        extra_handles,
+        explicit_stdin,
+        explicit_stdout,
     };
 
     let mut io = match launch_appcontainer_guest(request) {
@@ -881,6 +1134,9 @@ fn run_appcontainer_windows(
             });
         }
     };
+    // Grants are done. Let a sibling jail's ACL proceed. The event is
+    // session-local and is not inherited by the AppContainer child.
+    signal_jail_ready();
 
     let mut child_stdin = io.stdin.take();
     let mut child_stdout = io.stdout.take();
@@ -941,6 +1197,101 @@ fn run_appcontainer_windows(
         "AppContainer guest exited"
     );
     Ok(code)
+}
+
+/// Launch without AppContainer, inheriting handoff handles and pumping stdio.
+#[cfg(windows)]
+fn run_unconfined_windows(
+    program: &Path,
+    args: &[OsString],
+    handoff: &crate::JailHandoff,
+) -> Result<u32, SandboxError> {
+    use std::io::{self, Read, Write};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::windows_launch::{launch_appcontainer_guest, LaunchRequest};
+
+    let cmdline = windows_command_line(program, args);
+    let cwd = std::env::current_dir().map_err(|err| SandboxError::Backend {
+        label: "unconfined".into(),
+        backend: "appcontainer",
+        detail: format!("current_dir: {err}"),
+    })?;
+    let env = appcontainer_child_env(std::env::vars_os(), &cwd, &std::env::temp_dir());
+    let (extra_handles, explicit_stdin, explicit_stdout) = handoff_handles(Some(handoff));
+    let request = LaunchRequest {
+        exe: program,
+        cmdline,
+        cwd,
+        env,
+        sec: None,
+        job: super::windows_launch::JobResourceLimits::default(),
+        extra_handles,
+        explicit_stdin,
+        explicit_stdout,
+    };
+    let mut io = launch_appcontainer_guest(request).map_err(|err| SandboxError::Backend {
+        label: "unconfined".into(),
+        backend: "appcontainer",
+        detail: format!("CreateProcess (unconfined handoff) failed: {err}"),
+    })?;
+    signal_jail_ready();
+    let mut child_stdin = io.stdin.take();
+    let mut child_stdout = io.stdout.take();
+    let mut child_stderr = io.stderr.take();
+    let t_in = thread::spawn(move || {
+        if let Some(mut dest) = child_stdin.take() {
+            let _ = io::copy(&mut io::stdin(), &mut dest);
+            let _ = dest.flush();
+        }
+    });
+    let t_out = thread::spawn(move || {
+        if let Some(mut src) = child_stdout.take() {
+            let _ = copy_flushing(&mut src, &mut io::stdout());
+        }
+    });
+    let t_err = thread::spawn(move || {
+        if let Some(src) = child_stderr.take() {
+            let mut limited = src.take(1024 * 1024);
+            let _ = copy_flushing(&mut limited, &mut io::stderr());
+        }
+    });
+    let wait_result = io.wait(None);
+    join_proxy_timeout(t_out, Duration::from_secs(2));
+    join_proxy_timeout(t_err, Duration::from_secs(2));
+    drop(t_in);
+    wait_result.map_err(|err| SandboxError::Backend {
+        label: "unconfined".into(),
+        backend: "appcontainer",
+        detail: format!("waiting for unconfined guest failed: {err}"),
+    })
+}
+
+/// Decode [`crate::JailHandoff`] handle integers into Win32 [`HANDLE`]s.
+#[cfg(windows)]
+fn handoff_handles(
+    handoff: Option<&crate::JailHandoff>,
+) -> (
+    Vec<windows::Win32::Foundation::HANDLE>,
+    Option<windows::Win32::Foundation::HANDLE>,
+    Option<windows::Win32::Foundation::HANDLE>,
+) {
+    use super::windows_launch::handle_from_u64;
+
+    let Some(handoff) = handoff else {
+        return (Vec::new(), None, None);
+    };
+    let extra = handoff
+        .inherited_extra_handles()
+        .into_iter()
+        .map(handle_from_u64)
+        .collect();
+    (
+        extra,
+        handoff.stdin.map(handle_from_u64),
+        handoff.stdout.map(handle_from_u64),
+    )
 }
 
 /// Join a stdio proxy briefly after the guest exits; detach if it does not
@@ -1068,6 +1419,7 @@ fn appcontainer_child_env(
     let replaced = |key: &OsString| {
         let key = key.to_string_lossy();
         key.eq_ignore_ascii_case(crate::SPEC_ENV)
+            || key.eq_ignore_ascii_case(crate::JAIL_HANDOFF_ENV)
             || APPCONTAINER_PROFILE_ENV
                 .iter()
                 .any(|k| key.eq_ignore_ascii_case(k))
@@ -1225,6 +1577,26 @@ fn path_is_safe_appcontainer_folder(
 #[cfg(windows)]
 const FILE_GENERIC_EXECUTE: u32 = 0x0012_00A0;
 
+/// Record one profile or DACL stage.
+///
+/// The line is a tracing event and a byte-capped ring entry. Raw stderr is
+/// diagnostic mode, or this process's captured jail pipe. See
+/// [`crate::record_spawn_diagnostic`].
+#[cfg(windows)]
+fn emit_spawn_line(message: &str) {
+    crate::record_spawn_diagnostic(message);
+}
+
+/// Startup lines recorded by AppContainer profile, DACL, and proxy stages.
+///
+/// Byte-capped. Raw copies are not written to the daemon log unless
+/// `BOOKCLERK_SPAWN_DIAG` is set. A jailed child's own copy stays on its
+/// stderr pipe so the host forwarder can re-emit it as tracing.
+#[must_use]
+pub fn recent_platform_spawn_diagnostics() -> String {
+    crate::snapshot_spawn_diagnostics()
+}
+
 /// Cross-process + in-process serialization for Win32 DACL mutations.
 ///
 /// Concurrent `SetNamedSecurityInfo` / `SetEntriesInAcl` on the same path (e.g.
@@ -1233,7 +1605,7 @@ const FILE_GENERIC_EXECUTE: u32 = 0x0012_00A0;
 /// A process-local `Mutex` alone is insufficient: each `bookclerk-jail` child
 /// (and separate CLI/daemon instances) can race on the same directory. The
 /// named mutex `Local\bookclerk-dacl-tx` (session-local namespace) covers every
-/// complete DACL read/modify/write; acquisition uses a 30s timeout and fails
+/// complete DACL read/modify/write; acquisition uses a 120s timeout and fails
 /// closed with an actionable error.
 #[cfg(windows)]
 fn acl_api_lock() -> AclApiLock {
@@ -1254,7 +1626,7 @@ pub struct AclApiLock {
 
 #[cfg(windows)]
 impl AclApiLock {
-    /// Acquires both mutexes or fails closed after a 30-second timeout.
+    /// Acquires both mutexes or fails closed after a 120-second timeout.
     ///
     /// # Errors
     ///
@@ -1291,8 +1663,22 @@ impl AclApiLock {
             }
         })?;
 
-        const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
-        let wait = unsafe { WaitForSingleObject(mutex, ACL_MUTEX_TIMEOUT_MS) };
+        // Per acquisition, and still fail-closed. Four concurrent jail launches
+        // queue here; the host's jail-ready deadline is longer than this wait.
+        const ACL_MUTEX_TIMEOUT_MS: u32 = 120_000;
+        let started = std::time::Instant::now();
+        let immediate = unsafe { WaitForSingleObject(mutex, 0) };
+        let wait = if immediate == WAIT_TIMEOUT {
+            emit_spawn_line("bookclerk-spawn: dacl mutex wait begin");
+            let wait = unsafe { WaitForSingleObject(mutex, ACL_MUTEX_TIMEOUT_MS) };
+            emit_spawn_line(&format!(
+                "bookclerk-spawn: dacl mutex wait end elapsed_ms={}",
+                started.elapsed().as_millis()
+            ));
+            wait
+        } else {
+            immediate
+        };
         if wait == WAIT_FAILED {
             let _ = unsafe { CloseHandle(mutex) };
             return Err(SandboxError::Backend {
@@ -1306,9 +1692,11 @@ impl AclApiLock {
             return Err(SandboxError::Backend {
                 label: "appcontainer".into(),
                 backend: "appcontainer",
-                detail: "timed out after 30s waiting for Local\\bookclerk-dacl-tx \
-                         (another Bookclerk process is mutating DACLs)"
-                    .into(),
+                detail: format!(
+                    "timed out after {}s waiting for Local\\bookclerk-dacl-tx \
+                     (another Bookclerk process is mutating DACLs)",
+                    ACL_MUTEX_TIMEOUT_MS / 1000
+                ),
             });
         }
         if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED_0 {
@@ -1340,6 +1728,113 @@ impl Drop for AclApiLock {
     }
 }
 
+/// Session-local event signaled after this process `CreateProcess`es its child.
+///
+/// The plugin host creates one named `Local\bookclerk-jail-ready-<pid>` event
+/// before it writes the jail handoff, then waits until this process signals
+/// it after `CreateProcess`. That sequences sibling `bookclerk-jail` processes
+/// so their DACL grants do not overlap for the whole 120s
+/// `Local\bookclerk-dacl-tx` timeout.
+/// The event is not placed on the AppContainer handle list and its default
+/// DACL does not grant the Package SID.
+#[cfg(windows)]
+pub struct JailReady {
+    /// Manual-reset event handle stored as an integer so the value is `Send`.
+    handle: isize,
+}
+
+#[cfg(windows)]
+impl JailReady {
+    /// Create an unsignaled manual-reset event named for `pid`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when `CreateEventW` fails.
+    pub fn create(pid: u32) -> std::io::Result<Self> {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::Threading::CreateEventW;
+
+        let name = jail_ready_name(pid);
+        let event = unsafe { CreateEventW(None, true, false, PCWSTR(name.as_ptr())) }
+            .map_err(std::io::Error::other)?;
+        Ok(Self {
+            handle: event.0 as isize,
+        })
+    }
+
+    /// `true` when the jail has signaled the event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when `WaitForSingleObject` fails.
+    pub fn is_signaled(&self) -> std::io::Result<bool> {
+        use windows::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows::Win32::System::Threading::WaitForSingleObject;
+
+        let wait = unsafe { WaitForSingleObject(self.as_handle(), 0) };
+        if wait == WAIT_OBJECT_0 {
+            Ok(true)
+        } else if wait == WAIT_TIMEOUT {
+            Ok(false)
+        } else {
+            Err(std::io::Error::other(format!(
+                "WaitForSingleObject(jail ready) returned {wait:?}"
+            )))
+        }
+    }
+
+    /// Raw event handle for `WaitForSingleObject`.
+    fn as_handle(&self) -> windows::Win32::Foundation::HANDLE {
+        windows::Win32::Foundation::HANDLE(self.handle as *mut std::ffi::c_void)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JailReady {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(self.as_handle());
+            }
+            self.handle = 0;
+        }
+    }
+}
+
+/// NUL-terminated `Local\bookclerk-jail-ready-<pid>` name.
+#[cfg(windows)]
+fn jail_ready_name(pid: u32) -> Vec<u16> {
+    format!("Local\\bookclerk-jail-ready-{pid}")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+/// Signal [`JailReady`] for this process when the host created one.
+///
+/// Missing event is success: jail tests and media launches have no waiter.
+#[cfg(windows)]
+fn signal_jail_ready() {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        GetCurrentProcessId, OpenEventW, SetEvent, EVENT_MODIFY_STATE, SYNCHRONIZATION_SYNCHRONIZE,
+    };
+
+    let name = jail_ready_name(unsafe { GetCurrentProcessId() });
+    let Ok(event) = (unsafe {
+        OpenEventW(
+            EVENT_MODIFY_STATE | SYNCHRONIZATION_SYNCHRONIZE,
+            false,
+            PCWSTR(name.as_ptr()),
+        )
+    }) else {
+        return;
+    };
+    let _ = unsafe { SetEvent(event) };
+    let _ = unsafe { CloseHandle(event) };
+}
+
 /// Build CreateProcess `lpCommandLine` including argv[0].
 ///
 /// The argument immediately after `cmd`'s `/C` or `/K` is joined **raw**: wrapping
@@ -1364,13 +1859,12 @@ fn windows_command_line(program: &Path, args: &[OsString]) -> String {
     line
 }
 
-/// Parent directories of `path` up to (but not including) the drive root.
-#[cfg(windows)]
+/// Parent directories of `path` up to (but not including) the filesystem root.
 fn ancestor_directories(path: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut cur = path;
     while let Some(parent) = cur.parent() {
-        if parent.as_os_str().is_empty() {
+        if parent.as_os_str().is_empty() || parent == Path::new("/") {
             break;
         }
         let text = parent.to_string_lossy();
@@ -1427,6 +1921,39 @@ fn open_path_for_dacl(path: &Path) -> Result<windows::Win32::Foundation::HANDLE,
     Ok(handle)
 }
 
+/// Write `dacl` onto `handle` without propagating inheritable ACEs to children.
+///
+/// `SetSecurityInfo` walks existing children whenever the DACL contains
+/// inheritable ACEs. Ancestor traverse grants sit on broad directories and
+/// must not hold the DACL mutex for that walk. `SetKernelObjectSecurity`
+/// updates this object only.
+///
+/// # Errors
+///
+/// Returns the Win32 error from security-descriptor setup or the write.
+#[cfg(windows)]
+fn set_dacl_no_propagate(
+    handle: windows::Win32::Foundation::HANDLE,
+    dacl: *const windows::Win32::Security::ACL,
+) -> Result<(), windows::core::Error> {
+    use std::ptr;
+
+    use windows::Win32::Security::{
+        InitializeSecurityDescriptor, SetKernelObjectSecurity, SetSecurityDescriptorDacl,
+        DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR,
+    };
+
+    // `SECURITY_DESCRIPTOR_REVISION` from `winnt.h`.
+    const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
+    let mut descriptor = SECURITY_DESCRIPTOR::default();
+    unsafe {
+        let psd = PSECURITY_DESCRIPTOR(ptr::addr_of_mut!(descriptor).cast());
+        InitializeSecurityDescriptor(psd, SECURITY_DESCRIPTOR_REVISION)?;
+        SetSecurityDescriptorDacl(psd, true, Some(dacl), false)?;
+        SetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, psd)
+    }
+}
+
 /// Grant traverse/list on a directory with **no** inheritance.
 #[cfg(windows)]
 fn grant_directory_traverse_no_inherit(package_sid: &str, path: &Path) -> Result<(), SandboxError> {
@@ -1435,9 +1962,8 @@ fn grant_directory_traverse_no_inherit(package_sid: &str, path: &Path) -> Result
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, LocalFree, HLOCAL};
     use windows::Win32::Security::Authorization::{
-        ConvertStringSidToSidW, GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo,
-        EXPLICIT_ACCESS_W, GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
-        TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
+        ConvertStringSidToSidW, GetSecurityInfo, SetEntriesInAclW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+        SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
     };
     use windows::Win32::Security::{ACE_FLAGS, ACL, DACL_SECURITY_INFORMATION, PSID};
     use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
@@ -1517,25 +2043,17 @@ fn grant_directory_traverse_no_inherit(package_sid: &str, path: &Path) -> Result
             });
         }
 
-        let st3 = SetSecurityInfo(
-            handle,
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            None,
-            None,
-            Some(new_dacl as *const ACL),
-            None,
-        );
+        let wrote = set_dacl_no_propagate(handle, new_dacl);
         let _ = LocalFree(Some(HLOCAL(new_dacl.cast())));
         let _ = LocalFree(Some(HLOCAL(p_sd.0)));
         let _ = LocalFree(Some(HLOCAL(psid.0)));
         let _ = CloseHandle(handle);
-        if st3.0 != 0 {
+        if let Err(err) = wrote {
             return Err(SandboxError::Backend {
                 label: "appcontainer".into(),
                 backend: "appcontainer",
                 detail: format!(
-                    "SetSecurityInfo(traverse {}) failed: {st3:?}",
+                    "SetKernelObjectSecurity(traverse {}) failed: {err}",
                     path.display()
                 ),
             });
@@ -1643,10 +2161,23 @@ fn grant_package_access(package_sid: &str, path: &Path, write: bool) -> Result<(
 #[cfg(windows)]
 /// Revokes matching Package SID ACEs from the DACL on `path`.
 ///
+/// When `propagate` is false the new DACL is written with
+/// `SetKernelObjectSecurity` so inheritable ACEs already on a directory are
+/// not pushed to its children. Inheritable directory grants pass `true` and
+/// still use `SetSecurityInfo`.
+///
 /// # Errors
 ///
 /// Returns [`SandboxError::Backend`] when Win32 DACL APIs fail.
-fn revoke_package_access(path: &Path, package_sid: &str, is_dir: bool) -> Result<(), SandboxError> {
+fn revoke_package_access(
+    path: &Path,
+    package_sid: &str,
+    is_dir: bool,
+    propagate: bool,
+) -> Result<(), SandboxError> {
+    if !path.exists() {
+        return Ok(());
+    }
     use std::ptr;
 
     use windows::core::{PCWSTR, PWSTR};
@@ -1728,35 +2259,56 @@ fn revoke_package_access(path: &Path, package_sid: &str, is_dir: bool) -> Result
             });
         }
 
-        let st3 = SetSecurityInfo(
-            handle,
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            None,
-            None,
-            Some(new_dacl as *const ACL),
-            None,
-        );
-        let _ = LocalFree(Some(HLOCAL(new_dacl as *mut _)));
+        // Traverse ACEs are not inheritable. Rewriting them with SetSecurityInfo
+        // still propagates every other inheritable ACE on a broad parent.
+        let wrote = if is_dir && !propagate {
+            set_dacl_no_propagate(handle, new_dacl).map_err(|err| {
+                format!(
+                    "SetKernelObjectSecurity(REVOKE {}) failed: {err}",
+                    path.display()
+                )
+            })
+        } else {
+            let st3 = SetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(new_dacl as *const ACL),
+                None,
+            );
+            if st3.0 != 0 {
+                Err(format!(
+                    "SetSecurityInfo(REVOKE {}) failed: {st3:?}",
+                    path.display()
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        let _ = LocalFree(Some(HLOCAL(new_dacl.cast())));
         let _ = LocalFree(Some(HLOCAL(p_sd.0)));
         let _ = LocalFree(Some(HLOCAL(psid.0)));
         let _ = CloseHandle(handle);
-        if st3.0 != 0 {
+        if let Err(detail) = wrote {
             return Err(SandboxError::Backend {
                 label: "appcontainer".to_string(),
                 backend: "appcontainer",
-                detail: format!("SetSecurityInfo(REVOKE) failed: {st3:?}"),
+                detail,
             });
         }
     }
     Ok(())
 }
 
-/// Return whether `package_sid` still appears in the DACL SDDL for `path`.
+/// DACL SDDL for `path`, used to prove a traverse grant did not rewrite children.
 ///
-/// Used by integration tests to prove temporary ACEs are cleaned up.
+/// # Errors
+///
+/// Returns [`SandboxError::Backend`] when the security descriptor cannot be read.
 #[cfg(windows)]
-pub fn dacl_mentions_sid(path: &Path, package_sid: &str) -> Result<bool, SandboxError> {
+fn dacl_sddl(path: &Path) -> Result<String, SandboxError> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
 
@@ -1815,10 +2367,23 @@ pub fn dacl_mentions_sid(path: &Path, package_sid: &str) -> Result<bool, Sandbox
         let slice = std::slice::from_raw_parts(sddl.0, len);
         let text = String::from_utf16_lossy(slice);
         let _ = LocalFree(Some(HLOCAL(sddl.0.cast())));
-        Ok(text
-            .to_ascii_lowercase()
-            .contains(&package_sid.to_ascii_lowercase()))
+        Ok(text)
     }
+}
+
+/// Return whether `package_sid` still appears in the DACL SDDL for `path`.
+///
+/// Used by integration tests to prove temporary ACEs are cleaned up.
+///
+/// # Errors
+///
+/// Returns [`SandboxError::Backend`] when the security descriptor cannot be read.
+#[cfg(windows)]
+pub fn dacl_mentions_sid(path: &Path, package_sid: &str) -> Result<bool, SandboxError> {
+    let text = dacl_sddl(path)?;
+    Ok(text
+        .to_ascii_lowercase()
+        .contains(&package_sid.to_ascii_lowercase()))
 }
 
 #[cfg(windows)]
@@ -1839,6 +2404,7 @@ mod tests {
             ("TEMP", "C:\\Users\\host\\Temp"),
             ("tmp", "C:\\Users\\host\\Temp"),
             (crate::SPEC_ENV, "{\"label\":\"x\"}"),
+            (crate::JAIL_HANDOFF_ENV, "1"),
         ]
         .map(|(k, v)| (OsString::from(k), OsString::from(v)));
         let folder = Path::new("C:\\Users\\host\\AppData\\Local\\Packages\\bc.x\\AC");
@@ -1866,6 +2432,11 @@ mod tests {
             get(crate::SPEC_ENV),
             None,
             "the jail spec must not reach the guest"
+        );
+        assert_eq!(
+            get(crate::JAIL_HANDOFF_ENV),
+            None,
+            "the jail handoff flag must not reach the guest"
         );
     }
 
@@ -1963,5 +2534,201 @@ mod tests {
             sid,
             Some(packages.as_path())
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn jail_ready_event_starts_clear_and_signals() {
+        let ready = JailReady::create(std::process::id()).expect("create");
+        assert!(!ready.is_signaled().expect("poll"));
+        signal_jail_ready();
+        assert!(ready.is_signaled().expect("signaled"));
+    }
+
+    /// Ancestor traverse must add `FILE_TRAVERSE` on the directory itself and
+    /// leave children untouched. `SetSecurityInfo` would rewrite every child
+    /// while holding the session DACL mutex.
+    #[cfg(windows)]
+    #[test]
+    fn traverse_grant_does_not_rewrite_child_dacl() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir(&parent).expect("parent");
+        let child = parent.join("child.txt");
+        std::fs::write(&child, b"x").expect("child");
+        let before = dacl_sddl(&child).expect("child dacl before");
+
+        let session = AppContainerSession::create("traverse-no-propagate").expect("profile");
+        grant_directory_traverse_no_inherit(session.package_sid(), &parent)
+            .expect("traverse grant");
+        let during = dacl_sddl(&child).expect("child dacl during");
+        assert_eq!(before, during, "traverse grant rewrote the child DACL");
+        assert!(
+            dacl_mentions_sid(&parent, session.package_sid()).expect("parent dacl"),
+            "parent is missing the traverse ACE"
+        );
+
+        revoke_package_access(&parent, session.package_sid(), true, false).expect("revoke");
+        assert!(
+            !dacl_mentions_sid(&parent, session.package_sid()).expect("parent dacl after revoke"),
+            "traverse ACE survived revoke"
+        );
+        let after = dacl_sddl(&child).expect("child dacl after");
+        assert_eq!(before, after, "revoke rewrote the child DACL");
+    }
+
+    #[test]
+    fn journal_lists_leaves_ancestors_and_profile_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let leaf = dir.path().join("install");
+        std::fs::create_dir(&leaf).expect("leaf");
+        let nested = leaf.join("guest");
+        std::fs::create_dir(&nested).expect("nested");
+        let program = nested.join("guest.bin");
+        std::fs::write(&program, b"x").expect("program");
+        let profile = dir.path().join("profile");
+        let mut spec = crate::Spec::new("journal");
+        spec.writes.push(leaf.clone());
+        spec.reads.push(nested.clone());
+        let entries = plan_acl_journal(
+            &spec,
+            "S-1-15-2-test",
+            Some(&program),
+            std::slice::from_ref(&profile),
+        );
+        let find = |path: &Path, propagate: bool| {
+            entries
+                .iter()
+                .find(|entry| entry.path == path && entry.propagate == propagate)
+        };
+        let write = find(&leaf, true).expect("write leaf");
+        assert!(write.is_dir);
+        assert_eq!(write.package_sid, "S-1-15-2-test");
+        assert!(find(&nested, true).is_some(), "read directory");
+        assert!(find(&program, false).is_some(), "executable");
+        let profile_entry = find(&profile, true).expect("profile dir");
+        assert!(profile_entry.is_dir);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.path == dir.path() && !entry.propagate),
+            "ancestor traverse is not inheritable"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.path == leaf && !entry.propagate),
+            "a granted directory that parents another grant also gets no-inherit traverse"
+        );
+    }
+
+    /// ACE list from a DACL SDDL. `AI` / `P` control flags and trailing NULs
+    /// are not ACEs; Windows sets `AI` after an inherit/revoke pass.
+    #[cfg(windows)]
+    fn dacl_ace_list(sddl: &str) -> &str {
+        let sddl = sddl.trim_matches('\0');
+        match sddl.find('(') {
+            Some(start) => sddl[start..].trim_end_matches('\0'),
+            None => sddl,
+        }
+    }
+
+    /// Job kill skips jail `Drop`. The host journal is the revoke that still
+    /// runs, and it must leave a second session's SID in place.
+    #[cfg(windows)]
+    #[test]
+    fn host_journal_revoke_is_idempotent_and_keeps_the_other_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let leaf = dir.path().join("install");
+        std::fs::create_dir(&leaf).expect("leaf");
+        let profile = dir.path().join("profile");
+        std::fs::create_dir(&profile).expect("profile");
+        let mut spec = crate::Spec::new("journal-live");
+        spec.writes.push(leaf.clone());
+
+        let session_a = AppContainerSession::create("journal-a").expect("profile a");
+        let session_b = AppContainerSession::create("journal-b").expect("profile b");
+        let journal_a = plan_acl_journal(
+            &spec,
+            session_a.package_sid(),
+            None,
+            std::slice::from_ref(&profile),
+        );
+        let journal_b = plan_acl_journal(
+            &spec,
+            session_b.package_sid(),
+            None,
+            std::slice::from_ref(&profile),
+        );
+
+        let before_child = {
+            let child = leaf.join("inherited.txt");
+            std::fs::write(&child, b"before").expect("child");
+            let sddl = dacl_sddl(&child).expect("baseline child");
+            std::fs::remove_file(&child).expect("remove baseline child");
+            sddl
+        };
+
+        for entry in journal_a.iter().chain(journal_b.iter()) {
+            if entry.propagate {
+                let grant =
+                    grant_path_access(&entry.package_sid, &entry.path, true).expect("leaf grant");
+                // Forced supervisor death: the jail's Drop never runs.
+                std::mem::forget(grant);
+            } else if entry.is_dir {
+                grant_directory_traverse_no_inherit(&entry.package_sid, &entry.path)
+                    .expect("ancestor");
+            }
+        }
+
+        let inherited = leaf.join("inherited.txt");
+        std::fs::write(&inherited, b"after").expect("inherited");
+        assert!(
+            dacl_mentions_sid(&leaf, session_a.package_sid()).expect("leaf a"),
+            "session A leaf grant missing"
+        );
+        assert!(
+            dacl_mentions_sid(&leaf, session_b.package_sid()).expect("leaf b"),
+            "session B leaf grant missing"
+        );
+        assert!(
+            dacl_mentions_sid(&inherited, session_a.package_sid()).expect("inherited a"),
+            "inheritable leaf ACE did not reach the new child"
+        );
+        assert!(
+            dacl_mentions_sid(dir.path(), session_a.package_sid()).expect("ancestor a"),
+            "ancestor traverse missing"
+        );
+
+        revoke_acl_journal(&journal_a).expect("revoke A");
+        assert!(!dacl_mentions_sid(&leaf, session_a.package_sid()).expect("leaf a gone"));
+        assert!(!dacl_mentions_sid(&inherited, session_a.package_sid()).expect("child a gone"));
+        assert!(!dacl_mentions_sid(dir.path(), session_a.package_sid()).expect("ancestor a gone"));
+        assert!(
+            dacl_mentions_sid(&leaf, session_b.package_sid()).expect("leaf b stays"),
+            "revoking A removed session B"
+        );
+        assert!(dacl_mentions_sid(&inherited, session_b.package_sid()).expect("child b stays"));
+        revoke_acl_journal(&journal_a).expect("second revoke is idempotent");
+        assert!(dacl_mentions_sid(&leaf, session_b.package_sid()).expect("B after second revoke"));
+
+        // Injected launch failure: revoke a path that was never created.
+        let mut partial = journal_b.clone();
+        partial.push(AclJournalEntry {
+            path: dir.path().join("missing-on-failed-launch"),
+            package_sid: session_b.package_sid().to_string(),
+            is_dir: true,
+            propagate: true,
+        });
+        revoke_acl_journal(&partial).expect("missing path is success");
+        assert!(!dacl_mentions_sid(&leaf, session_b.package_sid()).expect("B revoked"));
+        assert!(!dacl_mentions_sid(&inherited, session_b.package_sid()).expect("child B revoked"));
+        let fresh = leaf.join("after-revoke.txt");
+        std::fs::write(&fresh, b"fresh").expect("fresh");
+        assert_eq!(
+            dacl_ace_list(&dacl_sddl(&fresh).expect("fresh dacl")),
+            dacl_ace_list(&before_child),
+            "inheritable leaf ACEs survived revoke"
+        );
     }
 }

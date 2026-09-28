@@ -143,7 +143,7 @@ async fn ensure_forwarder(host: String, port: u16) -> Result<String, DbErr> {
 
 #[cfg(unix)]
 fn open_mediator() -> Result<Mediator, DbErr> {
-    let dir = mediator_dir();
+    let dir = mediator_dir()?;
     std::fs::create_dir_all(&dir).map_err(|err| {
         DbErr::Custom(format!(
             "postgres socket mediator mkdir {}: {err}",
@@ -165,18 +165,34 @@ fn open_mediator() -> Result<Mediator, DbErr> {
 }
 
 #[cfg(unix)]
-fn mediator_dir() -> PathBuf {
+fn mediator_dir() -> Result<PathBuf, DbErr> {
     #[cfg(target_os = "linux")]
     {
         let base = std::env::var_os("TMPDIR")
             .or_else(|| std::env::var_os("TMP"))
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        base.join(format!("pg-uds-{}", std::process::id()))
+        Ok(base.join(format!("pg-uds-{}", std::process::id())))
     }
     #[cfg(not(target_os = "linux"))]
     {
-        PathBuf::from(format!("/tmp/bc-pg-{}", std::process::id()))
+        let dir = std::env::var_os(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV).ok_or_else(|| {
+            DbErr::Custom(format!(
+                "{} is required for the macOS postgres mediator; /tmp is not a guest write",
+                bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV
+            ))
+        })?;
+        let dir = PathBuf::from(dir);
+        let socket = dir.join(".s.PGSQL.65535");
+        let len = socket.as_os_str().len();
+        if len >= sun_path_capacity() {
+            return Err(DbErr::Custom(format!(
+                "postgres socket path length {len} does not fit sockaddr_un capacity {}; directory {} is too long",
+                sun_path_capacity(),
+                dir.display()
+            )));
+        }
+        Ok(dir)
     }
 }
 
@@ -339,8 +355,12 @@ async fn splice_to_proxy(
         bookclerk_plugin_sdk::ConnectOptions::default(),
     )
     .await?;
+    // `fd:` / `handle:` proxies are mux streams. `PluginSocket::into_split`
+    // only accepts a pathname Unix socket and panics on a mux link, which
+    // sqlx reports as "connection reset by peer".
+    let remote = remote.into_stream();
     let (mut lr, mut lw) = local.into_split();
-    let (mut rr, mut rw) = remote.into_split();
+    let (mut rr, mut rw) = tokio::io::split(remote);
     let _ = tokio::join!(
         tokio::io::copy(&mut lr, &mut rw),
         tokio::io::copy(&mut rr, &mut lw),
@@ -483,6 +503,10 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
+        // Linux splices through `/proc/self/fd`. macOS binds in the guest IPC
+        // directory, which has to fit `sockaddr_un`, so the fixture stays under
+        // `/tmp` rather than a long `TMPDIR`.
+        #[cfg(target_os = "linux")]
         let dir = std::env::temp_dir().join(format!(
             "pg-med-{}-{}",
             std::process::id(),
@@ -491,7 +515,15 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
+        #[cfg(not(target_os = "linux"))]
+        let dir = std::path::PathBuf::from(format!("/tmp/bc-med-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(not(target_os = "linux"))]
+        let previous_ipc = {
+            let previous = std::env::var_os(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV);
+            std::env::set_var(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV, &dir);
+            previous
+        };
         let proxy_path = dir.join("proxy.sock");
         let listener = tokio::net::UnixListener::bind(&proxy_path).unwrap();
         let server = tokio::spawn(async move {
@@ -532,6 +564,42 @@ mod tests {
         assert_eq!(&buf[..n], b"SQL");
         server.await.unwrap();
         std::env::remove_var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV);
+        #[cfg(not(target_os = "linux"))]
+        match previous_ipc {
+            Some(value) => std::env::set_var(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV, value),
+            None => std::env::remove_var(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV),
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `mediator_dir` is called directly so a prior splice cannot hide a missing env.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn mediator_dir_requires_guest_ipc_and_rejects_a_long_path() {
+        let _guard = SOCKET_PROXY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV);
+        std::env::remove_var(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV);
+        let missing = mediator_dir().expect_err("missing guest ipc dir");
+        assert!(
+            missing
+                .to_string()
+                .contains(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV),
+            "{missing}"
+        );
+
+        let long = format!("/tmp/{}", "a".repeat(120));
+        std::env::set_var(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV, &long);
+        let err = mediator_dir().expect_err("long directory");
+        let msg = err.to_string();
+        assert!(msg.contains("too long"), "{msg}");
+        assert!(msg.contains(&long), "{msg}");
+        assert!(msg.contains(&sun_path_capacity().to_string()), "{msg}");
+
+        match previous {
+            Some(value) => std::env::set_var(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV, value),
+            None => std::env::remove_var(bookclerk_plugin_sdk::GUEST_IPC_DIR_ENV),
+        }
     }
 }

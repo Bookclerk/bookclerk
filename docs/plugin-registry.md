@@ -237,7 +237,7 @@ mode = "outbound"
 domains = ["api.example.com"]
 ```
 
-**Native** (nested jail denies ambient `AF_INET`; SDK sockets share the same policy):
+**Native** (sibling jail denies ambient `AF_INET`; SDK sockets share the same policy):
 
 ```toml
 runtime = "native"

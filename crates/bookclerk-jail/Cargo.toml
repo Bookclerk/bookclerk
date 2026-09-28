@@ -20,6 +20,10 @@ path = "src/bin/bookclerk-ac-probe.rs"
 name = "bookclerk-acl-race"
 path = "src/bin/bookclerk-acl-race.rs"
 
+[[bin]]
+name = "bookclerk-link-probe"
+path = "src/bin/bookclerk-link-probe.rs"
+
 [dependencies]
 bookclerk-sandbox.workspace = true
 serde_json.workspace = true
@@ -31,6 +35,7 @@ libc = "0.2"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
 

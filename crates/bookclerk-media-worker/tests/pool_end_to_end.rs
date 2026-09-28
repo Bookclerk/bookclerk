@@ -17,7 +17,7 @@ use bookclerk_media::{
 const WORKER: &str = env!("CARGO_BIN_EXE_bookclerk-media-worker");
 
 /// On Windows, AppContainer DACL mutations share `Local\bookclerk-dacl-tx`
-/// (30s fail-closed). Parallel pool tests each spawn jailed workers and
+/// (120s fail-closed). Parallel pool tests each spawn jailed workers and
 /// otherwise time out waiting for a sibling. A tokio mutex is used so the
 /// lock can be held across `.await` without parking a runtime worker.
 #[cfg(windows)]

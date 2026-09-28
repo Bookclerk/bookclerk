@@ -255,21 +255,15 @@ mode = "deny"
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
-                .env("BOOKCLERK_PLUGIN_ROOT", &root)
-                .env("BOOKCLERK_WORKERD_BIN", &workerd)
-                .env("BOOKCLERK_NATIVE_BACKEND", &guest)
-                .env("BOOKCLERK_OUTPUT_LOCAL_ROOT", &out)
-                .env("TMPDIR", tmp.path())
-                .env("HOME", tmp.path())
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .kill_on_drop(true)
-                .spawn()
-                .expect("spawn native-behind-workerd");
-            let stdin = child.stdin.take().expect("stdin");
-            let stdout = child.stdout.take().expect("stdout");
+            let mut child = spawn_native_behind_workerd(
+                &workerd,
+                &root,
+                &guest,
+                tmp.path(),
+                &[("BOOKCLERK_OUTPUT_LOCAL_ROOT", out.as_path())],
+            );
+            let stdin = child.gateway.stdin.take().expect("stdin");
+            let stdout = child.gateway.stdout.take().expect("stdout");
             let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
             tokio::task::spawn_local(rpc);
             let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())
@@ -279,7 +273,7 @@ mode = "deny"
             assert_eq!(desc.api_version, PRODUCT_API_VERSION);
             assert_eq!(desc.id, "local");
             destination_roundtrip(&client).await;
-            let _ = child.kill().await;
+            let _ = child.gateway.kill().await;
         })
         .await;
 }
@@ -666,20 +660,9 @@ supports_suspend = true
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
-                .env("BOOKCLERK_PLUGIN_ROOT", &root)
-                .env("BOOKCLERK_WORKERD_BIN", &workerd)
-                .env("BOOKCLERK_NATIVE_BACKEND", &guest)
-                .env("TMPDIR", tmp.path())
-                .env("HOME", tmp.path())
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .kill_on_drop(true)
-                .spawn()
-                .expect("spawn native-behind-workerd echo");
-            let stdin = child.stdin.take().expect("stdin");
-            let stdout = child.stdout.take().expect("stdout");
+            let mut child = spawn_native_behind_workerd(&workerd, &root, &guest, tmp.path(), &[]);
+            let stdin = child.gateway.stdin.take().expect("stdin");
+            let stdout = child.gateway.stdout.take().expect("stdout");
             let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
             tokio::task::spawn_local(rpc);
             let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())
@@ -688,7 +671,7 @@ supports_suspend = true
                 .expect("describe");
             assert_eq!(desc.api_version, PRODUCT_API_VERSION);
             event_result_vectors(&client).await;
-            let _ = child.kill().await;
+            let _ = child.gateway.kill().await;
         })
         .await;
 }
@@ -700,29 +683,538 @@ fn find_sqlite_guest() -> Option<PathBuf> {
     bookclerk_sandbox::require_spawn_executable(&candidate).ok()
 }
 
-/// Spawns `bookclerk-workerd` in native mode over `guest` with the manifest
-/// at `root`, plus extra guest environment.
+/// Gateway + sibling guest joined by inherited RPC/proxy links.
+struct NativeBehind {
+    gateway: GatewayProc,
+    #[cfg(unix)]
+    _guest: tokio::process::Child,
+    #[cfg(windows)]
+    _guest: Option<bookclerk_sandbox::spawn::HandleListChild>,
+}
+
+impl NativeBehind {
+    async fn kill(&mut self) {
+        let _ = self.gateway.kill().await;
+        #[cfg(unix)]
+        {
+            let _ = self._guest.kill().await;
+        }
+        #[cfg(windows)]
+        {
+            self._guest.take();
+        }
+    }
+}
+
+#[cfg(unix)]
+type GatewayProc = tokio::process::Child;
+
+#[cfg(windows)]
+struct GatewayProc {
+    _proc: Option<bookclerk_sandbox::spawn::HandleListChild>,
+    stdin: Option<PipeWriter>,
+    stdout: Option<PipeReader>,
+}
+
+#[cfg(windows)]
+impl GatewayProc {
+    async fn kill(&mut self) -> std::io::Result<()> {
+        self._proc.take();
+        Ok(())
+    }
+}
+
+/// Spawns `bookclerk-workerd` as a link-driven gateway and `guest` as its sibling.
+///
+/// Extra environment is applied to the native guest (sqlite path, local output).
 fn spawn_native_behind_workerd(
     workerd: &Path,
     root: &Path,
     guest: &Path,
     tmp: &Path,
     extra_env: &[(&str, &Path)],
+) -> NativeBehind {
+    let session = tmp.join(format!(
+        "session-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    create_dir_test(&session);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o700))
+            .expect("chmod session");
+    }
+
+    #[cfg(unix)]
+    let (gateway, guest_child) = {
+        use bookclerk_sandbox::DuplexLink;
+        let (proxy_gw, proxy_guest) = DuplexLink::pair().expect("proxy link");
+        let (rpc_gw, rpc_guest) = DuplexLink::pair().expect("rpc link");
+        let guest_child = spawn_sibling_guest(guest, rpc_guest, &proxy_guest, tmp, extra_env);
+        let gateway = spawn_sibling_gateway(workerd, root, &session, &rpc_gw, &proxy_gw);
+        drop(rpc_gw);
+        drop(proxy_gw);
+        drop(proxy_guest);
+        (gateway, guest_child)
+    };
+    #[cfg(windows)]
+    let (gateway, guest_child) = {
+        use bookclerk_sandbox::StdioEnds;
+        let StdioEnds {
+            host_stdin: rpc_write,
+            host_stdout: rpc_read,
+            guest_stdin,
+            guest_stdout,
+        } = StdioEnds::pair().expect("rpc pipes");
+        let StdioEnds {
+            host_stdin: proxy_write,
+            host_stdout: proxy_read,
+            guest_stdin: proxy_guest_read,
+            guest_stdout: proxy_guest_write,
+        } = StdioEnds::pair_overlapped().expect("proxy pipes");
+        let guest_child = spawn_sibling_guest(
+            guest,
+            guest_stdin,
+            guest_stdout,
+            proxy_guest_read,
+            proxy_guest_write,
+            tmp,
+            extra_env,
+        );
+        let gateway = spawn_sibling_gateway(
+            workerd,
+            root,
+            &session,
+            &rpc_read,
+            &rpc_write,
+            &proxy_read,
+            &proxy_write,
+        );
+        drop((rpc_read, rpc_write, proxy_read, proxy_write));
+        (gateway, guest_child)
+    };
+    NativeBehind {
+        gateway,
+        #[cfg(unix)]
+        _guest: guest_child,
+        #[cfg(windows)]
+        _guest: Some(guest_child),
+    }
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn spawn_sibling_guest(
+    guest: &Path,
+    rpc: bookclerk_sandbox::DuplexLink,
+    proxy: &bookclerk_sandbox::DuplexLink,
+    tmp: &Path,
+    extra_env: &[(&str, &Path)],
 ) -> tokio::process::Child {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"));
-    cmd.env("BOOKCLERK_PLUGIN_ROOT", root)
-        .env("BOOKCLERK_WORKERD_BIN", workerd)
-        .env("BOOKCLERK_NATIVE_BACKEND", guest)
+    use bookclerk_sandbox::{inherit_fd_at, GUEST_PROXY_FD, SOCKET_PROXY_ENV};
+
+    let stdin = rpc.try_clone().expect("dup rpc for stdin");
+    let proxy_src = proxy.as_raw_fd();
+    let mut cmd = Command::new(guest);
+    cmd.stdin(Stdio::from(stdin.into_owned_fd()))
+        .stdout(Stdio::from(rpc.into_owned_fd()))
+        .stderr(Stdio::inherit())
         .env("TMPDIR", tmp)
         .env("HOME", tmp)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .env(SOCKET_PROXY_ENV, format!("fd:{GUEST_PROXY_FD}"))
         .kill_on_drop(true);
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
-    cmd.spawn().expect("spawn native-behind-workerd")
+    unsafe {
+        cmd.pre_exec(move || inherit_fd_at(proxy_src, GUEST_PROXY_FD));
+    }
+    cmd.spawn().expect("spawn sibling guest")
+}
+
+#[cfg(windows)]
+fn spawn_sibling_guest(
+    guest: &Path,
+    rpc_stdin: bookclerk_sandbox::DuplexHalf,
+    rpc_stdout: bookclerk_sandbox::DuplexHalf,
+    proxy_read: bookclerk_sandbox::DuplexHalf,
+    proxy_write: bookclerk_sandbox::DuplexHalf,
+    tmp: &Path,
+    extra_env: &[(&str, &Path)],
+) -> bookclerk_sandbox::spawn::HandleListChild {
+    use bookclerk_sandbox::{SOCKET_PROXY_ENV, SOCKET_PROXY_WRITE_ENV};
+
+    let proxy_read_dup = duplicate_half(&proxy_read);
+    let proxy_write_dup = duplicate_half(&proxy_write);
+    let proxy_read_value = raw_value(&proxy_read_dup);
+    let proxy_write_value = raw_value(&proxy_write_dup);
+    drop(proxy_read);
+    drop(proxy_write);
+    let mut env = process_env();
+    upsert_env(&mut env, "TMP", tmp.as_os_str());
+    upsert_env(&mut env, "TEMP", tmp.as_os_str());
+    upsert_env(&mut env, "HOME", tmp.as_os_str());
+    upsert_env(
+        &mut env,
+        SOCKET_PROXY_ENV,
+        std::ffi::OsStr::new(&format!("handle:{proxy_read_value}")),
+    );
+    upsert_env(
+        &mut env,
+        SOCKET_PROXY_WRITE_ENV,
+        std::ffi::OsStr::new(&format!("handle:{proxy_write_value}")),
+    );
+    for (key, value) in extra_env {
+        upsert_env(&mut env, key, value.as_os_str());
+    }
+    let stdin = rpc_stdin.into_owned_handle();
+    let stdout = rpc_stdout.into_owned_handle();
+    let mut child = bookclerk_sandbox::spawn::spawn_with_handle_list(
+        guest,
+        tmp,
+        env,
+        Some(stdin),
+        Some(stdout),
+        vec![proxy_read_dup, proxy_write_dup],
+    )
+    .expect("spawn sibling guest");
+    drain_stderr(child.take_stderr());
+    child
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn spawn_sibling_gateway(
+    workerd: &Path,
+    root: &Path,
+    session: &Path,
+    rpc: &bookclerk_sandbox::DuplexLink,
+    proxy: &bookclerk_sandbox::DuplexLink,
+) -> tokio::process::Child {
+    use bookclerk_sandbox::{
+        inherit_fd_at, GATEWAY_GUEST_RPC_ENV, GATEWAY_PROXY_ENV, GATEWAY_PROXY_FD, GATEWAY_RPC_FD,
+        WORKERD_STATE_DIR_ENV,
+    };
+
+    let rpc_src = rpc.as_raw_fd();
+    let proxy_src = proxy.as_raw_fd();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"));
+    cmd.env("BOOKCLERK_PLUGIN_ROOT", root)
+        .env("BOOKCLERK_WORKERD_BIN", workerd)
+        .env(GATEWAY_GUEST_RPC_ENV, format!("fd:{GATEWAY_RPC_FD}"))
+        .env(GATEWAY_PROXY_ENV, format!("fd:{GATEWAY_PROXY_FD}"))
+        .env(WORKERD_STATE_DIR_ENV, session)
+        .env("TMPDIR", session)
+        .env("HOME", session)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    unsafe {
+        cmd.pre_exec(move || {
+            inherit_fd_at(rpc_src, GATEWAY_RPC_FD)?;
+            inherit_fd_at(proxy_src, GATEWAY_PROXY_FD)?;
+            Ok(())
+        });
+    }
+    cmd.spawn().expect("spawn native-behind-workerd gateway")
+}
+
+#[cfg(windows)]
+fn spawn_sibling_gateway(
+    workerd: &Path,
+    root: &Path,
+    session: &Path,
+    rpc_read: &bookclerk_sandbox::DuplexHalf,
+    rpc_write: &bookclerk_sandbox::DuplexHalf,
+    proxy_read: &bookclerk_sandbox::DuplexHalf,
+    proxy_write: &bookclerk_sandbox::DuplexHalf,
+) -> GatewayProc {
+    use bookclerk_sandbox::{
+        GATEWAY_GUEST_RPC_ENV, GATEWAY_GUEST_RPC_WRITE_ENV, GATEWAY_PROXY_ENV,
+        GATEWAY_PROXY_WRITE_ENV, WORKERD_STATE_DIR_ENV,
+    };
+
+    let rpc_read_dup = duplicate_half(rpc_read);
+    let rpc_write_dup = duplicate_half(rpc_write);
+    let proxy_read_dup = duplicate_half(proxy_read);
+    let proxy_write_dup = duplicate_half(proxy_write);
+    let rpc_read_value = raw_value(&rpc_read_dup);
+    let rpc_write_value = raw_value(&rpc_write_dup);
+    let proxy_read_value = raw_value(&proxy_read_dup);
+    let proxy_write_value = raw_value(&proxy_write_dup);
+    let mut env = process_env();
+    upsert_env(&mut env, "BOOKCLERK_PLUGIN_ROOT", root.as_os_str());
+    upsert_env(&mut env, "BOOKCLERK_WORKERD_BIN", workerd.as_os_str());
+    upsert_env(
+        &mut env,
+        GATEWAY_GUEST_RPC_ENV,
+        std::ffi::OsStr::new(&format!("handle:{rpc_read_value}")),
+    );
+    upsert_env(
+        &mut env,
+        GATEWAY_GUEST_RPC_WRITE_ENV,
+        std::ffi::OsStr::new(&format!("handle:{rpc_write_value}")),
+    );
+    upsert_env(
+        &mut env,
+        GATEWAY_PROXY_ENV,
+        std::ffi::OsStr::new(&format!("handle:{proxy_read_value}")),
+    );
+    upsert_env(
+        &mut env,
+        GATEWAY_PROXY_WRITE_ENV,
+        std::ffi::OsStr::new(&format!("handle:{proxy_write_value}")),
+    );
+    upsert_env(&mut env, WORKERD_STATE_DIR_ENV, session.as_os_str());
+    upsert_env(&mut env, "TMP", session.as_os_str());
+    upsert_env(&mut env, "TEMP", session.as_os_str());
+    upsert_env(&mut env, "HOME", session.as_os_str());
+    let mut child = bookclerk_sandbox::spawn::spawn_with_handle_list(
+        Path::new(env!("CARGO_BIN_EXE_bookclerk-workerd")),
+        session,
+        env,
+        None,
+        None,
+        vec![rpc_read_dup, rpc_write_dup, proxy_read_dup, proxy_write_dup],
+    )
+    .expect("spawn native-behind-workerd gateway");
+    let stdin = child.take_stdin().map(spawn_writer);
+    let stdout = child.take_stdout().map(spawn_reader);
+    drain_stderr(child.take_stderr());
+    GatewayProc {
+        _proc: Some(child),
+        stdin,
+        stdout,
+    }
+}
+
+#[cfg(windows)]
+fn process_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    std::env::vars_os().collect()
+}
+
+#[cfg(windows)]
+fn upsert_env(
+    env: &mut Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    key: &str,
+    value: &std::ffi::OsStr,
+) {
+    env.retain(|(existing, _)| existing != std::ffi::OsStr::new(key));
+    env.push((key.into(), value.to_os_string()));
+}
+
+#[cfg(windows)]
+fn duplicate_half(link: &bookclerk_sandbox::DuplexHalf) -> std::os::windows::io::OwnedHandle {
+    bookclerk_sandbox::duplicate_owned_handle(link.as_raw_handle()).expect("duplicate sibling pipe")
+}
+
+#[cfg(windows)]
+fn raw_value(handle: &std::os::windows::io::OwnedHandle) -> u64 {
+    use std::os::windows::io::AsRawHandle;
+    handle.as_raw_handle() as usize as u64
+}
+
+#[cfg(windows)]
+fn drain_stderr(stderr: Option<std::fs::File>) {
+    let Some(mut stderr) = stderr else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut stderr, &mut std::io::stderr());
+    });
+}
+
+/// Bytes read from a child pipe on a background thread.
+#[cfg(windows)]
+struct PipeReader {
+    rx: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    buf: Vec<u8>,
+    pos: usize,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
+    eof: bool,
+}
+
+#[cfg(windows)]
+fn spawn_reader(mut file: std::fs::File) -> PipeReader {
+    let (tx, rx) = std::sync::mpsc::sync_channel(32);
+    let waker = Arc::new(Mutex::new(None));
+    let wake_slot = Arc::clone(&waker);
+    std::thread::spawn(move || {
+        let mut buf = [0_u8; 8192];
+        loop {
+            match std::io::Read::read(&mut file, &mut buf) {
+                Ok(0) => {
+                    let _ = tx.send(Ok(Vec::new()));
+                    wake(&wake_slot);
+                    break;
+                }
+                Ok(n) => {
+                    if tx.send(Ok(buf[..n].to_vec())).is_err() {
+                        break;
+                    }
+                    wake(&wake_slot);
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(err));
+                    wake(&wake_slot);
+                    break;
+                }
+            }
+        }
+    });
+    PipeReader {
+        rx,
+        buf: Vec::new(),
+        pos: 0,
+        waker,
+        eof: false,
+    }
+}
+
+#[cfg(windows)]
+impl tokio::io::AsyncRead for PipeReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        out: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.eof {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        if self.pos >= self.buf.len() {
+            match recv_chunk(&self.rx, &self.waker, cx) {
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+                std::task::Poll::Ready(Ok(None)) => {
+                    self.eof = true;
+                    return std::task::Poll::Ready(Ok(()));
+                }
+                std::task::Poll::Ready(Ok(Some(chunk))) => {
+                    self.buf = chunk;
+                    self.pos = 0;
+                }
+                std::task::Poll::Ready(Err(err)) => return std::task::Poll::Ready(Err(err)),
+            }
+        }
+        let n = (self.buf.len() - self.pos).min(out.remaining());
+        out.put_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// Bytes written to a child pipe on a background thread.
+#[cfg(windows)]
+struct PipeWriter {
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
+}
+
+#[cfg(windows)]
+fn spawn_writer(mut file: std::fs::File) -> PipeWriter {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(32);
+    let waker = Arc::new(Mutex::new(None));
+    let wake_slot = Arc::clone(&waker);
+    std::thread::spawn(move || {
+        while let Ok(chunk) = rx.recv() {
+            wake(&wake_slot);
+            if chunk.is_empty() || std::io::Write::write_all(&mut file, &chunk).is_err() {
+                break;
+            }
+            let _ = std::io::Write::flush(&mut file);
+        }
+    });
+    PipeWriter { tx, waker }
+}
+
+#[cfg(windows)]
+impl tokio::io::AsyncWrite for PipeWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if buf.is_empty() {
+            return std::task::Poll::Ready(Ok(0));
+        }
+        match self.tx.try_send(buf.to_vec()) {
+            Ok(()) => std::task::Poll::Ready(Ok(buf.len())),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => std::task::Poll::Ready(Err(
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "child stdin closed"),
+            )),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                if let Ok(mut slot) = self.waker.lock() {
+                    *slot = Some(cx.waker().clone());
+                }
+                match self.tx.try_send(buf.to_vec()) {
+                    Ok(()) => std::task::Poll::Ready(Ok(buf.len())),
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => std::task::Poll::Pending,
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        std::task::Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "child stdin closed",
+                        )))
+                    }
+                }
+            }
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let _ = self.tx.try_send(Vec::new());
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(windows)]
+fn recv_chunk(
+    rx: &std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    waker: &Mutex<Option<std::task::Waker>>,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<std::io::Result<Option<Vec<u8>>>> {
+    match rx.try_recv() {
+        Ok(Ok(chunk)) if chunk.is_empty() => std::task::Poll::Ready(Ok(None)),
+        Ok(Ok(chunk)) => std::task::Poll::Ready(Ok(Some(chunk))),
+        Ok(Err(err)) => std::task::Poll::Ready(Err(err)),
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => std::task::Poll::Ready(Ok(None)),
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            if let Ok(mut slot) = waker.lock() {
+                *slot = Some(cx.waker().clone());
+            }
+            match rx.try_recv() {
+                Ok(Ok(chunk)) if chunk.is_empty() => std::task::Poll::Ready(Ok(None)),
+                Ok(Ok(chunk)) => std::task::Poll::Ready(Ok(Some(chunk))),
+                Ok(Err(err)) => std::task::Poll::Ready(Err(err)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    std::task::Poll::Ready(Ok(None))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => std::task::Poll::Pending,
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wake(slot: &Mutex<Option<std::task::Waker>>) {
+    if let Ok(mut guard) = slot.lock() {
+        if let Some(waker) = guard.take() {
+            waker.wake();
+        }
+    }
 }
 
 /// One typed `SELECT 1` batch with a hash-bound proof, as the host would send.
@@ -839,8 +1331,8 @@ mode = "deny"
                 tmp.path(),
                 &[("BOOKCLERK_SQLITE_PATH", workerd_db.as_path())],
             );
-            let stdin = child.stdin.take().expect("stdin");
-            let stdout = child.stdout.take().expect("stdout");
+            let stdin = child.gateway.stdin.take().expect("stdin");
+            let stdout = child.gateway.stdout.take().expect("stdout");
             let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
             tokio::task::spawn_local(rpc);
             let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())
@@ -905,8 +1397,8 @@ mode = "deny"
                 tmp.path(),
                 &[("BOOKCLERK_OUTPUT_LOCAL_ROOT", out.as_path())],
             );
-            let stdin = child.stdin.take().expect("stdin");
-            let stdout = child.stdout.take().expect("stdout");
+            let stdin = child.gateway.stdin.take().expect("stdin");
+            let stdout = child.gateway.stdout.take().expect("stdout");
             let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
             tokio::task::spawn_local(rpc);
             let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())
@@ -1023,11 +1515,11 @@ async fn spawn_native_fixture_direct(tmp: &Path) -> (tokio::process::Child, Plug
 async fn spawn_native_fixture_behind_workerd(
     workerd: &Path,
     tmp: &Path,
-) -> (tokio::process::Child, PluginClient) {
+) -> (NativeBehind, PluginClient) {
     let mut child =
         spawn_native_behind_workerd(workerd, &native_fixture_root(), &native_fixture(), tmp, &[]);
-    let stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
+    let stdin = child.gateway.stdin.take().expect("stdin");
+    let stdout = child.gateway.stdout.take().expect("stdout");
     let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
     tokio::task::spawn_local(rpc);
     let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())

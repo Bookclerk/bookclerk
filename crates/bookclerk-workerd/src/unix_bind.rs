@@ -2,29 +2,23 @@
 //!
 //! Cargo sets `TMPDIR` to workspace `.tmp` (see `.cargo/config.toml`).
 //! On GitHub Actions that prefix is already ~42 bytes
-//! (`/home/runner/work/bookclerk/bookclerk/.tmp`). Plugin scratch adds
-//! `plugin-state/<fs_id>/tmp/<workerd-leaf>/sockets.sock`, which overflows
-//! Linux's 108-byte `sun_path` (std rejects the path *before* `bind(2)` with
-//! "path must be shorter than SUN_LEN"). Connect has the same limit, so a
-//! `/proc/self/fd` bind trick is not enough for peers that still pass the
-//! absolute path.
+//! (`/home/runner/work/bookclerk/bookclerk/.tmp`). Plugin scratch plus a
+//! workerd leaf used to overflow Linux's 108-byte `sun_path`.
 //!
-//! Linux GRANTED (workerd ↔ launcher) stays `unix-abstract:` — workerd is not
-//! inside the nested native Landlock domain. The native TCP proxy cannot: Landlock
-//! ABI 6 `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET` (applied by every jail, including
-//! nested `NetPolicy::Deny`) refuses abstract connect to sockets created outside
-//! the guest's domain. Production `BOOKCLERK_SOCKET_PROXY` is therefore a
-//! pathname under `state_dir`, named as `/proc/self/fd/{n}/sockets.sock` so
-//! `sun_path` stays short; the nested jail inherits directory fd `{n}`.
-//! Other Unix: bind a pathname under `state_dir` and pass a **relative**
-//! `unix:granted.sock` to workerd (cwd is `state_dir`).
+//! Linux GRANTED (workerd ↔ launcher) stays `unix-abstract:` — workerd is a
+//! child of this launcher, not a sibling guest. Other Unix: bind a pathname
+//! under the host-chosen session dir and pass a **relative** `unix:granted.sock`
+//! to workerd (cwd is that directory).
+//!
+//! Native-behind-workerd no longer binds a named socket-proxy listener. The
+//! host delivers an inherited duplex (`fd:` / `handle:`) and
+//! [`crate::socket_proxy::spawn_link`] multiplexes CONNECT streams over it.
 //!
 //! Do not fall back to `std::env::temp_dir()`: inside `bookclerk-workerd` that
-//! is the guest scratch (`TMPDIR`), which is the same overflowing prefix.
+//! is the process scratch (`TMPDIR`).
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::fs::File;
 use std::io;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
@@ -34,27 +28,8 @@ use rand::RngCore;
 #[cfg(not(target_os = "linux"))]
 use std::sync::Mutex;
 
-/// Prefix the native SDK still accepts for tests and non-Linux fallbacks.
-///
-/// Production Linux `BOOKCLERK_SOCKET_PROXY` is a `/proc/self/fd/` pathname, not
-/// this prefix: nested Landlock ABI 6 scopes abstract sockets out of the guest.
-pub const SOCKET_PROXY_ABSTRACT_PREFIX: &str = "abstract:";
-
-/// Bound native TCP proxy and the directory fd the nested guest must inherit.
-pub struct BoundSocketProxy {
-    /// Value for [`crate::socket_proxy::SOCKET_PROXY_ENV`].
-    pub spec: String,
-    /// Listener the launcher serves HTTP CONNECT on.
-    pub listener: UnixListener,
-    /// Open `state_dir`; keep until the nested guest is spawned, `O_CLOEXEC` off.
-    pub inherit_dir: Option<File>,
-}
-
 /// Pathname leaf for the GRANTED channel on non-Linux Unix.
 pub const GRANTED_SOCK_FILE: &str = "granted.sock";
-
-/// Pathname leaf for the native TCP proxy on non-Linux Unix.
-pub const SOCKET_PROXY_SOCK_FILE: &str = "sockets.sock";
 
 /// workerd / KJ address for a relative GRANTED pathname (cwd = state dir).
 pub const GRANTED_RELATIVE_ADDR: &str = "unix:granted.sock";
@@ -65,18 +40,38 @@ static CHDIR_BIND: Mutex<()> = Mutex::new(());
 
 /// Clears `FD_CLOEXEC` so a spawned child inherits `fd`.
 ///
-/// Used for the nested guest's socket-proxy directory fd.
+/// Used for the workerd `--socket-fd` RPC listener.
 ///
 /// # Errors
 ///
 /// Returns when `fcntl` `F_GETFD` / `F_SETFD` fails.
 #[allow(unsafe_code)]
 pub fn clear_cloexec(fd: std::os::fd::RawFd) -> io::Result<()> {
+    set_fd_cloexec(fd, false)
+}
+
+/// Sets `FD_CLOEXEC` so a later `workerd` spawn cannot keep a sibling link open.
+///
+/// # Errors
+///
+/// Returns when `fcntl` `F_GETFD` / `F_SETFD` fails.
+#[allow(unsafe_code)]
+pub fn set_cloexec(fd: std::os::fd::RawFd) -> io::Result<()> {
+    set_fd_cloexec(fd, true)
+}
+
+#[allow(unsafe_code)]
+fn set_fd_cloexec(fd: std::os::fd::RawFd, cloexec: bool) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
     }
-    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+    let next = if cloexec {
+        flags | libc::FD_CLOEXEC
+    } else {
+        flags & !libc::FD_CLOEXEC
+    };
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, next) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -112,45 +107,6 @@ pub fn bind_granted(state_dir: &Path) -> io::Result<(String, UnixListener)> {
         let path = state_dir.join(GRANTED_SOCK_FILE);
         let listener = bind_pathname(&path)?;
         Ok((GRANTED_RELATIVE_ADDR.to_string(), listener))
-    }
-}
-
-/// Binds the native-behind-workerd TCP proxy.
-///
-/// Linux: pathname socket in `state_dir`, advertised as `/proc/self/fd/{n}/…`
-/// so `sun_path` cannot overflow Cargo's long `TMPDIR`. The nested guest
-/// inherits directory fd `{n}` (see [`BoundSocketProxy::inherit_dir`]).
-/// Other Unix: absolute pathname (callers keep the leaf short).
-///
-/// # Errors
-///
-/// Returns an I/O error when `state_dir` cannot be opened or the listener
-/// cannot be bound.
-pub fn bind_socket_proxy(state_dir: &Path) -> io::Result<BoundSocketProxy> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-        std::fs::create_dir_all(state_dir)?;
-        let path = state_dir.join(SOCKET_PROXY_SOCK_FILE);
-        let _ = std::fs::remove_file(&path);
-        let dir = File::open(state_dir)?;
-        let spec = format!("/proc/self/fd/{}/{SOCKET_PROXY_SOCK_FILE}", dir.as_raw_fd());
-        let listener = UnixListener::bind(&spec)?;
-        Ok(BoundSocketProxy {
-            spec,
-            listener,
-            inherit_dir: Some(dir),
-        })
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let path = state_dir.join(SOCKET_PROXY_SOCK_FILE);
-        let listener = bind_pathname(&path)?;
-        Ok(BoundSocketProxy {
-            spec: path.to_string_lossy().into_owned(),
-            listener,
-            inherit_dir: None,
-        })
     }
 }
 
@@ -277,118 +233,6 @@ mod tests {
             "workerd GRANTED must be unix-abstract, got {addr}"
         );
         assert!(addr.len() < 48, "unix-abstract address too long: {addr}");
-    }
-
-    #[test]
-    fn bind_socket_proxy_uses_proc_fd_pathname() {
-        use std::os::fd::AsRawFd;
-
-        let dir = tempfile::tempdir().expect("tmpdir");
-        let proxy = bind_socket_proxy(dir.path()).expect("proxy");
-        assert!(
-            proxy.spec.starts_with("/proc/self/fd/"),
-            "nested Landlock scopes abstract sockets; BOOKCLERK_SOCKET_PROXY must be a /proc/self/fd pathname, got {}",
-            proxy.spec
-        );
-        assert!(
-            !proxy.spec.starts_with(SOCKET_PROXY_ABSTRACT_PREFIX),
-            "abstract SOCKET_PROXY is unreachable from nested Deny: {}",
-            proxy.spec
-        );
-        assert!(
-            proxy.spec.len() < 108,
-            "proc-fd proxy path must stay under sun_path: {}",
-            proxy.spec
-        );
-        let inherit = proxy.inherit_dir.as_ref().expect("inherit dir fd");
-        assert_eq!(
-            proxy.spec,
-            format!(
-                "/proc/self/fd/{}/{SOCKET_PROXY_SOCK_FILE}",
-                inherit.as_raw_fd()
-            )
-        );
-        let _client = UnixStream::connect(&proxy.spec).expect("connect via proc fd");
-        let (_server, _) = proxy.listener.accept().expect("accept");
-    }
-
-    #[test]
-    fn bind_socket_proxy_survives_github_actions_sun_len() {
-        let base = tempfile::tempdir().expect("tmpdir");
-        let long = base
-            .path()
-            .join("gha-sunlen")
-            .join("x".repeat(48))
-            .join("plugin-state/pk-6fbbb9ca1420cebb/tmp")
-            .join("we940186f8b9f");
-        std::fs::create_dir_all(&long).expect("mkdir");
-        let absolute = long.join(SOCKET_PROXY_SOCK_FILE);
-        assert!(
-            absolute.as_os_str().len() >= 108,
-            "fixture must overflow sun_path: {} ({})",
-            absolute.display(),
-            absolute.as_os_str().len()
-        );
-        let proxy = bind_socket_proxy(&long).expect("proxy on overflowing state_dir");
-        assert!(
-            proxy.spec.len() < 108,
-            "advertised spec overflowed sun_path: {}",
-            proxy.spec
-        );
-        let _client = UnixStream::connect(&proxy.spec).expect("connect");
-        let (_server, _) = proxy.listener.accept().expect("accept");
-    }
-
-    #[test]
-    fn github_actions_cargo_tmpdir_overflows_sockaddr_un() {
-        // Path from CI on 4043a3c8 (postgres LIKE spawn):
-        // bind socket proxy .../.tmp/.tmpOjHB9L/plugin-state/pk-…/tmp/we…/sockets.sock
-        let granted = Path::new("/home/runner/work/bookclerk/bookclerk/.tmp/.tmpOjHB9L")
-            .join("plugin-state/pk-6fbbb9ca1420cebb/tmp")
-            .join("we940186f8b9f")
-            .join(SOCKET_PROXY_SOCK_FILE);
-        let len = granted.to_string_lossy().len();
-        assert!(
-            len >= 108,
-            "fixture must model the GHA overflow ({len} bytes): {}",
-            granted.display()
-        );
-    }
-
-    #[test]
-    fn child_process_connects_through_inherited_dir_fd() {
-        use std::os::fd::AsRawFd;
-        use std::process::{Command, Stdio};
-        use std::thread;
-
-        let dir = tempfile::tempdir().expect("tmpdir");
-        let proxy = bind_socket_proxy(dir.path()).expect("proxy");
-        let inherit = proxy.inherit_dir.as_ref().expect("dir");
-        clear_cloexec(inherit.as_raw_fd()).expect("clear CLOEXEC");
-        let spec = proxy.spec.clone();
-        let listener = proxy.listener.try_clone().expect("clone listener");
-        let server = thread::spawn(move || {
-            let (_stream, _) = listener.accept().expect("accept");
-        });
-        let output = {
-            Command::new("python3")
-                .args([
-                    "-c",
-                    "import os, socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ['BC_SOCK'])",
-                ])
-                .env("BC_SOCK", &spec)
-                .stdin(Stdio::null())
-                .output()
-                .expect("python3")
-        };
-        assert!(
-            output.status.success(),
-            "child connect {spec}: status={:?} stdout={} stderr={}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        server.join().expect("server");
     }
 
     #[test]
