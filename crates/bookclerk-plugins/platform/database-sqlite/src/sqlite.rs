@@ -129,8 +129,14 @@ impl SqliteProxy {
     /// Wraps an already-opened rusqlite connection for SeaORM proxy queries.
     ///
     /// Call after the host applies schema (see [`open`] / [`open_memory`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns when this connection refuses the query-deadline progress
+    /// handler. rusqlite 0.38+ returns that error when the handle is not owned
+    /// by this [`Connection`], which would leave statements without a deadline.
     #[must_use]
-    pub fn new(conn: Connection) -> Self {
+    pub fn new(conn: Connection) -> rusqlite::Result<Self> {
         // TRUNCATE journal serializes writers. Two LibraryStores (or CLI +
         // daemon) on one file wait here through BEGIN IMMEDIATE. 250ms was
         // shorter than catalog paging under CI `spawn_blocking`, which turned
@@ -147,13 +153,13 @@ impl SqliteProxy {
                     .unwrap_or_else(|e| e.into_inner())
                     .deadline_expired()
             }),
-        );
-        Self {
+        )?;
+        Ok(Self {
             conn: Arc::new(Mutex::new(SqliteState { conn, txn_depth: 0 })),
             txn_gate: Arc::new(AsyncMutex::new(())),
             txn_lease: Arc::new(Mutex::new(None)),
             budget,
-        }
+        })
     }
 
     /// Copies the current request budget onto this connection.
@@ -270,7 +276,8 @@ fn validated_db_path(path: &Path) -> std::result::Result<PathBuf, DbErr> {
 /// # Errors
 ///
 /// Returns [`DbErr`] when the parent directory cannot be created, the file
-/// cannot be opened, or the SeaORM proxy cannot connect.
+/// cannot be opened, the query-deadline handler cannot be installed, or the
+/// SeaORM proxy cannot connect.
 pub async fn open(path: &Path) -> std::result::Result<DatabaseConnection, DbErr> {
     let path = validated_db_path(path)?;
     if let Some(parent) = path.parent() {
@@ -285,7 +292,7 @@ pub async fn open(path: &Path) -> std::result::Result<DatabaseConnection, DbErr>
         .map_err(rusqlite_db_err)?;
     let db = Database::connect_proxy(
         DbBackend::Sqlite,
-        Arc::new(Box::new(SqliteProxy::new(conn))),
+        Arc::new(Box::new(SqliteProxy::new(conn).map_err(rusqlite_db_err)?)),
     )
     .await?;
     db.ping().await?;
@@ -341,12 +348,13 @@ pub async fn open_memory() -> bookclerk_library::Result<DatabaseConnection> {
 ///
 /// # Errors
 ///
-/// Returns [`DbErr`] when the SeaORM proxy fails.
+/// Returns [`DbErr`] when the in-memory database cannot be opened, the
+/// query-deadline handler cannot be installed, or the SeaORM proxy fails.
 pub async fn open_memory_unmigrated() -> std::result::Result<DatabaseConnection, DbErr> {
     let conn = rusqlite::Connection::open_in_memory().map_err(rusqlite_db_err)?;
     let db = Database::connect_proxy(
         DbBackend::Sqlite,
-        Arc::new(Box::new(SqliteProxy::new(conn))),
+        Arc::new(Box::new(SqliteProxy::new(conn).map_err(rusqlite_db_err)?)),
     )
     .await?;
     db.ping().await?;

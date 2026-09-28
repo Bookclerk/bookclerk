@@ -52,13 +52,13 @@ link two `links = "sqlite3"` crates in one binary.
 
 Bookclerk therefore:
 
-- Pins workspace `rusqlite` to **0.37** so it shares `libsqlite3-sys` 0.35
+- Pins workspace `rusqlite` to **0.39** so it shares `libsqlite3-sys` 0.37
   with a single SQLite link. Host schema apply no longer uses
   `rusqlite_migration`.
 - Vendors `audible-rs` under [`third_party/audible-rs`](../third_party/audible-rs)
   (see `BOOKCLERK_PATCH.md` there). The plugin uses audible-rs as a library
   (`default-features = false`); its optional `cli` feature still pins
-  `rusqlite` 0.37 so a CLI rebuild would share the same SQLite link.
+  `rusqlite` 0.39 so a CLI rebuild would share the same SQLite link.
 - Uses SeaORM’s **`proxy`** backend for both local SQLite (rusqlite wrapper) and
   D1 (HTTP). SeaORM 2.0’s `sqlx-sqlite` feature is not enabled: it currently
   fails to compile against `sea-query` 1.0.x (`Value` payload boxing change).
@@ -227,7 +227,7 @@ grammar/ABI, not a library schema freeze.
 
 **Compiled features**: `sqlx-postgres` + `runtime-tokio-rustls` are enabled on
 the `sea-orm` workspace dependency. `sqlx-sqlite` is intentionally excluded to
-avoid the `libsqlite3-sys` link conflict with `rusqlite 0.37`.
+avoid the `libsqlite3-sys` link conflict with `rusqlite 0.39`.
 
 ## D1 caveats
 

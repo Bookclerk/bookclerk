@@ -29,7 +29,7 @@ metadata only — IdentityTokens are not converted; use `auth login` or
 
 Passphrase: set `BOOKCLERK_AUTH_PASSWORD` (env-only) to wrap `master.key` at
 rest (strongly recommended for production). Bookclerk's library DB uses
-workspace `rusqlite` 0.37; audible-rs is a library-only dependency here
+workspace `rusqlite` 0.39; audible-rs is a library-only dependency here
 (`default-features = false`) and does not link SQLite unless `--features cli`.
 
 ## Login modes
