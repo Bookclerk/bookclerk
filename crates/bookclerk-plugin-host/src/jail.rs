@@ -701,12 +701,31 @@ fn confined_starts(
         if let Some(dir) = ipc_dir {
             apply_guest_ipc(&mut spec, dir);
         }
+        extend_preserve_for_test_extra(
+            &mut spec.preserve_fds,
+            std::env::var(crate::spawn_stdio::TEST_INJECT_EXTRA_ENDPOINT_ENV)
+                .ok()
+                .as_deref(),
+        );
         Start::Confined {
             launcher,
             spec: Box::new(spec),
         }
     });
     (gateway, guest)
+}
+
+/// Add the test-only extra endpoint fd when `inject` names a Unix `fd:`.
+///
+/// Windows handoff values do not change the preserve list. An empty or
+/// missing inject leaves the production list unchanged.
+fn extend_preserve_for_test_extra(preserve: &mut Vec<i32>, inject: Option<&str>) {
+    let Some(value) = inject.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if value.starts_with("fd:") && !preserve.contains(&bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD) {
+        preserve.push(bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD);
+    }
 }
 
 /// Create the gateway profile and, for siblings, a distinct guest profile.
@@ -1279,6 +1298,25 @@ fn resolved_local_output_root(config: &Config) -> PathBuf {
 mod tests {
     use super::*;
     use bookclerk_config::Paths;
+
+    #[test]
+    fn test_extra_fd_is_preserved_only_for_a_unix_inject() {
+        let mut preserve = vec![bookclerk_sandbox::GUEST_PROXY_FD];
+        extend_preserve_for_test_extra(&mut preserve, None);
+        extend_preserve_for_test_extra(&mut preserve, Some(""));
+        extend_preserve_for_test_extra(&mut preserve, Some("handle:10,handle:12"));
+        assert_eq!(preserve, vec![bookclerk_sandbox::GUEST_PROXY_FD]);
+        extend_preserve_for_test_extra(&mut preserve, Some("fd:15"));
+        assert_eq!(
+            preserve,
+            vec![
+                bookclerk_sandbox::GUEST_PROXY_FD,
+                bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD
+            ]
+        );
+        extend_preserve_for_test_extra(&mut preserve, Some("fd:16"));
+        assert_eq!(preserve.len(), 2, "the extra fd is listed once");
+    }
 
     fn config_at(files: &Path) -> Config {
         Config {

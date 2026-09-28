@@ -170,36 +170,89 @@ async fn hold_until_eof(host: &str, port: u16, payload: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// Ask every inherited proxy which channel it is.
+/// Ask the configured proxy, and one test-handed extra endpoint, which channel
+/// each is.
 ///
-/// `tag` is the configured `BOOKCLERK_SOCKET_PROXY` channel. `tags` is that
-/// channel plus any other inherited socket or pipe pair. Each answer is the
-/// server's tag. This process's environment does not carry the tag, and a
-/// numeric fd or handle is not compared. Extra endpoints are opened before
-/// the SDK connect so that connect cannot consume the only descriptor first.
+/// `tag` is the configured `BOOKCLERK_SOCKET_PROXY` channel. `tags` adds the
+/// tag from [`bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV`] when that slot
+/// is set. The extra slot is opened without writing
+/// [`bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV`]: the fixture authenticated
+/// that endpoint with its own challenge before this process started. An unset
+/// slot is `extra_status = absent`. A present slot that cannot be identified
+/// is `ident-failed`, and `ok` is false even when the configured tag was read.
+/// This process's environment does not carry either tag, and a numeric fd or
+/// handle is not compared.
 async fn channel_ident() -> serde_json::Value {
-    let extras = discover_extra_channel_tags().await;
+    let extra = observe_handed_extra_endpoint().await;
     match configured_channel_tag().await {
         Ok(tag) => {
-            let mut tags = Vec::with_capacity(1 + extras.len());
+            let mut tags = Vec::with_capacity(2);
             tags.push(tag.clone());
-            tags.extend(extras);
+            if let Some(extra_tag) = extra.tag.clone() {
+                tags.push(extra_tag);
+            }
             serde_json::json!({
-                "ok": true,
+                "ok": extra.status != "ident-failed",
                 "tag": tag,
                 "tags": tags,
                 "error": "",
-                "extra_note": extra_discovery_note(),
+                "extra_status": extra.status,
+                "extra_error": extra.error,
             })
         }
-        Err(error) => serde_json::json!({
-            "ok": false,
-            "tag": "",
-            "tags": extras,
-            "error": error,
-            "extra_note": extra_discovery_note(),
-        }),
+        Err(error) => {
+            let tags: Vec<String> = extra.tag.clone().into_iter().collect();
+            serde_json::json!({
+                "ok": false,
+                "tag": "",
+                "tags": tags,
+                "error": error,
+                "extra_status": extra.status,
+                "extra_error": extra.error,
+            })
+        }
     }
+}
+
+/// Result of reading the one handed extra endpoint.
+struct ExtraSeen {
+    status: &'static str,
+    error: String,
+    tag: Option<String>,
+}
+
+impl ExtraSeen {
+    fn absent() -> Self {
+        Self {
+            status: "absent",
+            error: String::new(),
+            tag: None,
+        }
+    }
+
+    fn observed(tag: String) -> Self {
+        Self {
+            status: "observed",
+            error: String::new(),
+            tag: Some(tag),
+        }
+    }
+
+    fn failed(error: impl Into<String>) -> Self {
+        Self {
+            status: "ident-failed",
+            error: error.into(),
+            tag: None,
+        }
+    }
+}
+
+/// Non-empty trimmed env value.
+fn trimmed_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Tag from the SDK connect on the configured proxy.
@@ -321,366 +374,131 @@ fn header_content_length(headers: &[u8]) -> Option<usize> {
     None
 }
 
-/// Tags from inherited endpoints other than the configured proxy.
-#[cfg(unix)]
-async fn discover_extra_channel_tags() -> Vec<String> {
-    let primary = std::env::var(bookclerk_plugin_sdk::SOCKET_PROXY_ENV)
-        .ok()
-        .and_then(|spec| {
-            spec.strip_prefix("fd:")
-                .and_then(|rest| rest.trim().parse::<i32>().ok())
-        });
-    let mut fds = Vec::new();
-    for fd in 3..64 {
-        if Some(fd) == primary || !fd_is_socket(fd) {
-            continue;
-        }
-        fds.push(fd);
-        if fds.len() == 4 {
-            break;
-        }
-    }
-    let mut tags = Vec::new();
-    for fd in fds {
-        if let Some(tag) = ident_extra_fd(fd).await {
-            tags.push(tag);
-        }
-    }
-    tags
-}
-
-/// Write this process's session challenge, then read the proxy tag.
+/// Read the channel tag on the one test-handed endpoint, without a challenge.
+///
+/// Unset env is `absent`. A slot that is present but unusable is
+/// `ident-failed`. Neither result is an empty tag list pretending the
+/// endpoint was checked and found missing.
 #[cfg(unix)]
 #[allow(unsafe_code)]
-async fn ident_extra_fd(fd: i32) -> Option<String> {
+async fn observe_handed_extra_endpoint() -> ExtraSeen {
     use std::os::fd::FromRawFd;
-    use tokio::io::AsyncWriteExt;
 
-    let challenge =
-        decode_challenge(&std::env::var(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV).ok()?).ok()?;
+    let read = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV);
+    let write = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV);
+    if read.is_none() && write.is_none() {
+        return ExtraSeen::absent();
+    }
+    if write.is_some() {
+        return ExtraSeen::failed("unix extra endpoint must not set a write handle");
+    }
+    let Some(spec) = read else {
+        return ExtraSeen::failed("extra endpoint write is set without a read slot");
+    };
+    let Some(rest) = spec.strip_prefix("fd:") else {
+        return ExtraSeen::failed("extra endpoint is not fd:<n>");
+    };
+    let Ok(fd) = rest.trim().parse::<i32>() else {
+        return ExtraSeen::failed("extra endpoint fd is not a number");
+    };
+    if fd < 3 {
+        return ExtraSeen::failed("extra endpoint fd collides with a standard stream");
+    }
+    if configured_proxy_fd() == Some(fd) {
+        return ExtraSeen::failed("extra endpoint is the configured proxy");
+    }
     let duped = unsafe { libc::dup(fd) };
     if duped < 0 {
-        return None;
+        return ExtraSeen::failed(format!(
+            "dup extra endpoint: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     let _ = unsafe { libc::fcntl(duped, libc::F_SETFD, libc::FD_CLOEXEC) };
     let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(duped) };
-    if std_stream.set_nonblocking(true).is_err() {
-        return None;
+    if let Err(err) = std_stream.set_nonblocking(true) {
+        return ExtraSeen::failed(format!("extra endpoint nonblocking: {err}"));
     }
-    let tokio_stream = tokio::net::UnixStream::from_std(std_stream).ok()?;
-    let (reader, mut writer) = tokio::io::split(tokio_stream);
-    let wrote = tokio::time::timeout(EXTRA_IDENT_TIMEOUT, async {
-        writer.write_all(&challenge).await?;
-        writer.flush().await?;
-        std::io::Result::Ok(())
-    })
-    .await;
-    wrote.ok().and_then(|result| result.ok())?;
+    let tokio_stream = match tokio::net::UnixStream::from_std(std_stream) {
+        Ok(stream) => stream,
+        Err(err) => return ExtraSeen::failed(format!("extra endpoint wrap: {err}")),
+    };
+    let (reader, writer) = tokio::io::split(tokio_stream);
     let mux = bookclerk_plugin_sdk::mux::Mux::client(reader, writer);
-    mux_channel_tag(mux).await
-}
-
-/// Tags from one extra inherited pipe pair, when the process has exactly one.
-///
-/// The pair is captured in `main` before the Tokio runtime starts. Reactor
-/// handles also report `FILE_TYPE_PIPE` and would otherwise exhaust the
-/// one-pair rule.
-#[cfg(windows)]
-async fn discover_extra_channel_tags() -> Vec<String> {
-    let Some((read, write)) = EXTRA_PIPE_PAIR.lock().ok().and_then(|mut slot| slot.take()) else {
-        return Vec::new();
-    };
-    let Ok(read) = handle_ptr(read) else {
-        return Vec::new();
-    };
-    let Ok(write) = handle_ptr(write) else {
-        return Vec::new();
-    };
-    match ident_extra_handle_pair(read, write).await {
-        Some(tag) => vec![tag],
-        None => {
-            remember_extra_note("ident-failed");
-            Vec::new()
-        }
+    match mux_channel_tag(mux).await {
+        Some(tag) => ExtraSeen::observed(tag),
+        None => ExtraSeen::failed("extra endpoint did not return a channel tag"),
     }
 }
 
-/// No extra endpoint probe on this platform.
-#[cfg(not(any(unix, windows)))]
-async fn discover_extra_channel_tags() -> Vec<String> {
-    Vec::new()
-}
-
-/// Read and write handle values captured before the async runtime starts.
-#[cfg(windows)]
-static EXTRA_PIPE_PAIR: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
-
-/// Why an extra endpoint was not added to the observed tags.
-#[cfg(windows)]
-static EXTRA_NOTE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-
-/// Record `note` for the channel-ident JSON.
-#[cfg(windows)]
-fn remember_extra_note(note: &str) {
-    if let Ok(mut slot) = EXTRA_NOTE.lock() {
-        *slot = note.to_string();
-    }
-}
-
-/// Note from the Windows extra-pipe scan. Empty when no scan ran.
-#[cfg(windows)]
-fn extra_discovery_note() -> String {
-    EXTRA_NOTE
-        .lock()
-        .map(|slot| slot.clone())
-        .unwrap_or_default()
-}
-
-/// Note from the Windows extra-pipe scan. Empty on other platforms.
-#[cfg(not(windows))]
-fn extra_discovery_note() -> String {
-    String::new()
-}
-
-/// `DuplicateHandle` scan for one read end and one write end that are not stdio
-/// and not the configured proxy. More than one of either end is not a pair.
-///
-/// Synchronous pipes are guest stdio. A write-only named pipe fails
-/// `GetNamedPipeInfo`, so that call does not decide membership. Direction
-/// does: one read end and one write end. Copies this scan creates are
-/// skipped, or the copy is counted as a second pipe.
-#[cfg(windows)]
-fn extra_inherited_pipe_pair() -> Option<(u64, u64)> {
-    let mut reads = Vec::new();
-    let mut writes = Vec::new();
-    let mut sync = 0u32;
-    let mut nodir = 0u32;
-    // `DuplicateHandle` allocates a new value inside the scan range. Visiting
-    // that copy again looks like another endpoint.
-    let mut created = Vec::new();
-    for value in (4..=0x4000u64).step_by(4) {
-        if created.contains(&value) || is_stdio_value(value) || session_owns_handle(value) {
-            continue;
-        }
-        let Ok(raw) = handle_ptr(value) else {
-            continue;
-        };
-        let Ok(copy) = duplicate_raw(raw) else {
-            continue;
-        };
-        created.push(handle_value(copy));
-        if !is_pipe_handle(copy) {
-            drop(CloseEvent(copy));
-            continue;
-        }
-        if pipe_is_synchronous(copy) {
-            sync += 1;
-            drop(CloseEvent(copy));
-            continue;
-        }
-        match pipe_direction(copy) {
-            Some(true) => reads.push(copy),
-            Some(false) => writes.push(copy),
-            None => {
-                nodir += 1;
-                drop(CloseEvent(copy));
-            }
-        }
-        if reads.len() > 1 || writes.len() > 1 {
-            let note = format!(
-                "ambiguous reads={} writes={} sync={sync} nodir={nodir}",
-                reads.len(),
-                writes.len()
-            );
-            close_raw_handles(&reads);
-            close_raw_handles(&writes);
-            remember_extra_note(&note);
-            return None;
-        }
-    }
-    if reads.len() == 1 && writes.len() == 1 {
-        return Some((handle_value(reads[0]), handle_value(writes[0])));
-    }
-    close_raw_handles(&reads);
-    close_raw_handles(&writes);
-    remember_extra_note(&format!(
-        "no-extra-pair reads={} writes={} sync={sync} nodir={nodir}",
-        reads.len(),
-        writes.len()
-    ));
-    None
-}
-
-/// Synchronous I/O is set on `CreatePipe` stdio and clear on overlapped proxy ends.
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn pipe_is_synchronous(handle: *mut core::ffi::c_void) -> bool {
-    const FILE_MODE_INFORMATION: u32 = 16;
-    const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x10;
-    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
-    let Some(mode) = query_file_u32(handle, FILE_MODE_INFORMATION) else {
-        return false;
-    };
-    mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) != 0
-}
-
-/// Read end, write end, or neither when the pipe is duplex or unknown.
-///
-/// `PeekNamedPipe` reports access denied on a write-only end. That end also
-/// fails `GetNamedPipeInfo`, so the pipe-local configuration is the next
-/// check, then the access mask.
-#[cfg(windows)]
-fn pipe_direction(handle: *mut core::ffi::c_void) -> Option<bool> {
-    if let Some(read) = pipe_end_is_read(handle) {
-        return Some(read);
-    }
-    if let Some(read) = pipe_direction_from_local(handle) {
-        return Some(read);
-    }
-    const FILE_ACCESS_INFORMATION: u32 = 8;
-    const FILE_READ_DATA: u32 = 0x1;
-    const FILE_WRITE_DATA: u32 = 0x2;
-    let access = query_file_u32(handle, FILE_ACCESS_INFORMATION)?;
-    let read = access & FILE_READ_DATA != 0;
-    let write = access & FILE_WRITE_DATA != 0;
-    match (read, write) {
-        (true, false) => Some(true),
-        (false, true) => Some(false),
-        _ => None,
-    }
-}
-
-/// Server inbound is the read end. Server outbound is the write end.
-#[cfg(windows)]
-fn pipe_direction_from_local(handle: *mut core::ffi::c_void) -> Option<bool> {
-    const FILE_PIPE_LOCAL_INFORMATION: u32 = 24;
-    const FILE_PIPE_INBOUND: u32 = 0;
-    const FILE_PIPE_OUTBOUND: u32 = 1;
-    const FILE_PIPE_CLIENT_END: u32 = 0;
-    const FILE_PIPE_SERVER_END: u32 = 1;
-    let mut fields = [0u32; 10];
-    if !query_file_words(handle, FILE_PIPE_LOCAL_INFORMATION, &mut fields) {
-        return None;
-    }
-    let configuration = fields[1];
-    let end = fields[9];
-    match (configuration, end) {
-        (FILE_PIPE_INBOUND, FILE_PIPE_SERVER_END) | (FILE_PIPE_OUTBOUND, FILE_PIPE_CLIENT_END) => {
-            Some(true)
-        }
-        (FILE_PIPE_OUTBOUND, FILE_PIPE_SERVER_END) | (FILE_PIPE_INBOUND, FILE_PIPE_CLIENT_END) => {
-            Some(false)
-        }
-        _ => None,
-    }
-}
-
-/// One `u32` from `NtQueryInformationFile`, when the query succeeds.
-#[cfg(windows)]
-fn query_file_u32(handle: *mut core::ffi::c_void, class: u32) -> Option<u32> {
-    let mut value = [0u32; 1];
-    if query_file_words(handle, class, &mut value) {
-        Some(value[0])
-    } else {
-        None
-    }
-}
-
-/// `words` from `NtQueryInformationFile`, when the query succeeds.
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn query_file_words(handle: *mut core::ffi::c_void, class: u32, words: &mut [u32]) -> bool {
-    #[repr(C)]
-    struct IoStatusBlock {
-        status: isize,
-        information: usize,
-    }
-    let mut io = IoStatusBlock {
-        status: 0,
-        information: 0,
-    };
-    let len = u32::try_from(words.len().saturating_mul(4)).unwrap_or(u32::MAX);
-    let status = unsafe {
-        NtQueryInformationFile(
-            handle,
-            (&mut io as *mut IoStatusBlock).cast(),
-            words.as_mut_ptr().cast(),
-            len,
-            class,
-        )
-    };
-    status >= 0
-}
-
-/// Numeric value of a handle this process still owns.
-#[cfg(windows)]
-fn handle_value(handle: *mut core::ffi::c_void) -> u64 {
-    handle as usize as u64
-}
-
-/// `PeekNamedPipe` succeeds on a read end and returns access denied on a write end.
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn pipe_end_is_read(handle: *mut core::ffi::c_void) -> Option<bool> {
-    const ERROR_ACCESS_DENIED: u32 = 5;
-    let mut available = 0u32;
-    let ok = unsafe {
-        PeekNamedPipe(
-            handle,
-            core::ptr::null_mut(),
-            0,
-            core::ptr::null_mut(),
-            &mut available,
-            core::ptr::null_mut(),
-        )
-    };
-    if ok != 0 {
-        return Some(true);
-    }
-    if unsafe { GetLastError() } == ERROR_ACCESS_DENIED {
-        return Some(false);
-    }
-    None
-}
-
-/// Close duplicated handles this scan will not adopt.
-#[cfg(windows)]
-fn close_raw_handles(handles: &[*mut core::ffi::c_void]) {
-    for handle in handles {
-        drop(CloseEvent(*handle));
-    }
-}
-
-/// Challenge on the write half, then the same mux tag read as the configured channel.
-#[cfg(windows)]
-async fn ident_extra_handle_pair(
-    read: *mut core::ffi::c_void,
-    write: *mut core::ffi::c_void,
-) -> Option<String> {
-    use tokio::io::AsyncWriteExt;
-
-    let read_pipe = match named_pipe_from_raw(read) {
-        Ok(pipe) => pipe,
-        Err(_) => {
-            drop(CloseEvent(write));
-            return None;
-        }
-    };
-    let mut write_pipe = match named_pipe_from_raw(write) {
-        Ok(pipe) => pipe,
-        Err(_) => return None,
-    };
-    let challenge =
-        decode_challenge(&std::env::var(bookclerk_plugin_sdk::SESSION_CHALLENGE_ENV).ok()?).ok()?;
-    let wrote = tokio::time::timeout(EXTRA_IDENT_TIMEOUT, async {
-        write_pipe.write_all(&challenge).await?;
-        write_pipe.flush().await?;
-        std::io::Result::Ok(())
+/// Configured `BOOKCLERK_SOCKET_PROXY` fd, when that env names one.
+#[cfg(unix)]
+fn configured_proxy_fd() -> Option<i32> {
+    trimmed_env(bookclerk_plugin_sdk::SOCKET_PROXY_ENV).and_then(|spec| {
+        spec.strip_prefix("fd:")
+            .and_then(|rest| rest.trim().parse::<i32>().ok())
     })
-    .await;
-    wrote.ok().and_then(|result| result.ok())?;
+}
+
+/// Read the channel tag on the one test-handed pipe pair, without a challenge.
+#[cfg(windows)]
+async fn observe_handed_extra_endpoint() -> ExtraSeen {
+    let read_spec = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV);
+    let write_spec = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV);
+    if read_spec.is_none() && write_spec.is_none() {
+        return ExtraSeen::absent();
+    }
+    let (Some(read_spec), Some(write_spec)) = (read_spec, write_spec) else {
+        return ExtraSeen::failed("extra endpoint is missing a read or write handle");
+    };
+    let Some(read) = spec_handle_value(&read_spec) else {
+        return ExtraSeen::failed("extra endpoint read handle is not handle:<n>");
+    };
+    let Some(write) = spec_handle_value(&write_spec) else {
+        return ExtraSeen::failed("extra endpoint write handle is not handle:<n>");
+    };
+    if read == write
+        || is_stdio_value(read)
+        || is_stdio_value(write)
+        || session_owns_handle(read)
+        || session_owns_handle(write)
+    {
+        return ExtraSeen::failed("extra endpoint collides with stdio or the configured proxy");
+    }
+    let Ok(read_ptr) = handle_ptr(read) else {
+        return ExtraSeen::failed("extra endpoint read handle does not fit a pointer");
+    };
+    let Ok(write_ptr) = handle_ptr(write) else {
+        return ExtraSeen::failed("extra endpoint write handle does not fit a pointer");
+    };
+    let read_pipe = match named_pipe_from_raw(read_ptr) {
+        Ok(pipe) => pipe,
+        Err(err) => {
+            drop(CloseEvent(write_ptr));
+            return ExtraSeen::failed(format!("extra endpoint read pipe: {err}"));
+        }
+    };
+    let write_pipe = match named_pipe_from_raw(write_ptr) {
+        Ok(pipe) => pipe,
+        Err(err) => return ExtraSeen::failed(format!("extra endpoint write pipe: {err}")),
+    };
     let mux = bookclerk_plugin_sdk::mux::Mux::client(read_pipe, write_pipe);
-    mux_channel_tag(mux).await
+    match mux_channel_tag(mux).await {
+        Some(tag) => ExtraSeen::observed(tag),
+        None => ExtraSeen::failed("extra endpoint did not return a channel tag"),
+    }
+}
+
+/// No handed extra endpoint on this platform.
+#[cfg(not(any(unix, windows)))]
+async fn observe_handed_extra_endpoint() -> ExtraSeen {
+    let read = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV);
+    let write = trimmed_env(bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV);
+    if read.is_none() && write.is_none() {
+        ExtraSeen::absent()
+    } else {
+        ExtraSeen::failed("extra endpoint observation is not implemented on this platform")
+    }
 }
 
 /// Hex session challenge from the environment. Does not touch the proxy.
@@ -2014,14 +1832,6 @@ extern "system" {
     fn GetStdHandle(kind: u32) -> *mut core::ffi::c_void;
     fn GetFileType(handle: *mut core::ffi::c_void) -> u32;
     fn GetLastError() -> u32;
-    fn PeekNamedPipe(
-        handle: *mut core::ffi::c_void,
-        buf: *mut u8,
-        buf_size: u32,
-        read: *mut u32,
-        available: *mut u32,
-        left: *mut u32,
-    ) -> i32;
     fn DuplicateHandle(
         source_process: *mut core::ffi::c_void,
         source: *mut core::ffi::c_void,
@@ -2061,18 +1871,6 @@ extern "system" {
     fn WaitForSingleObject(handle: *mut core::ffi::c_void, millis: u32) -> u32;
     fn CancelIoEx(handle: *mut core::ffi::c_void, overlapped: *mut Overlapped) -> i32;
     fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
-}
-
-#[cfg(windows)]
-#[link(name = "ntdll")]
-extern "system" {
-    fn NtQueryInformationFile(
-        handle: *mut core::ffi::c_void,
-        io_status: *mut core::ffi::c_void,
-        info: *mut core::ffi::c_void,
-        len: u32,
-        class: u32,
-    ) -> i32;
 }
 
 /// One Job slot: this probe, not `cmd /c` and not `ping.exe`.
@@ -2587,13 +2385,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Classify inheritance before the runtime opens descriptors. Tokio would
     // otherwise reuse a low fd number and a sealed proxy would look open.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // Reactor sockets also look like pipes. Capture the extra endpoint first.
-    #[cfg(windows)]
-    if args.first().map(String::as_str) == Some("--channel-ident") {
-        if let Ok(mut slot) = EXTRA_PIPE_PAIR.lock() {
-            *slot = extra_inherited_pipe_pair();
-        }
-    }
     if args.first().map(String::as_str) == Some("--endpoint-connect") {
         let spec = args.get(1).map(String::as_str).unwrap_or("");
         let write_spec = args.get(2).map(String::as_str).unwrap_or("");

@@ -137,6 +137,7 @@ pub use spawn_plan::{
 };
 pub use spawn_stdio::{
     note_spawn_stage, recent_spawn_diagnostics, TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE,
+    TEST_INJECT_EXTRA_ENDPOINT_ENV,
 };
 
 /// Register discovered external plugins into the in-process registries.

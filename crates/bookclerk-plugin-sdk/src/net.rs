@@ -54,6 +54,18 @@ pub const SESSION_CHALLENGE_ENV: &str = "BOOKCLERK_SESSION_CHALLENGE";
 /// Length of [`SESSION_CHALLENGE_ENV`] before hex encoding.
 pub const SESSION_CHALLENGE_LEN: usize = 32;
 
+/// Test-only extra endpoint inherited beside [`SOCKET_PROXY_ENV`].
+///
+/// Unix value is `fd:<n>`. Windows value is `handle:<n>`, with the write half
+/// in [`TEST_EXTRA_ENDPOINT_WRITE_ENV`]. Production hosts leave both unset.
+/// The guest reads a channel tag from that one slot and does not write
+/// [`SESSION_CHALLENGE_ENV`] to it: the fixture authenticates the endpoint
+/// with its own challenge before the guest opens the mux.
+pub const TEST_EXTRA_ENDPOINT_ENV: &str = "BOOKCLERK_TEST_EXTRA_ENDPOINT";
+
+/// Windows write half of [`TEST_EXTRA_ENDPOINT_ENV`] (`handle:<n>`).
+pub const TEST_EXTRA_ENDPOINT_WRITE_ENV: &str = "BOOKCLERK_TEST_EXTRA_ENDPOINT_WRITE";
+
 /// True when [`NESTED_NATIVE_JAIL_ENV`] is `1`.
 #[must_use]
 pub fn nested_native_jail_requested() -> bool {

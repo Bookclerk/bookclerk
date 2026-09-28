@@ -52,6 +52,14 @@ pub const TEST_CHANNEL_IDENT_ENV: &str = "BOOKCLERK_TEST_CHANNEL_IDENT";
 /// Session-directory file holding the tag when [`TEST_CHANNEL_IDENT_ENV`] is set.
 pub const TEST_CHANNEL_TAG_FILE: &str = "channel-tag";
 
+/// Host-process description of one extra endpoint to add to the guest handoff.
+///
+/// Unix: `fd:<n>` of a socket in this process. Windows:
+/// `handle:<read>,handle:<write>` of the guest pipe ends in this process.
+/// The variable is not copied into the guest. Production leaves it unset, so
+/// the guest preserve list stays [`bookclerk_sandbox::GUEST_PROXY_FD`] only.
+pub const TEST_INJECT_EXTRA_ENDPOINT_ENV: &str = "BOOKCLERK_TEST_INJECT_EXTRA_ENDPOINT";
+
 static SPAWN_DIAG: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static SPAWN_DIAG_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -1161,17 +1169,133 @@ fn inherit_unix_guest(cmd: &mut Command, rpc: DuplexLink, proxy: &DuplexLink) ->
     cmd.stdin(Stdio::from(rpc_in.into_owned_fd()));
     cmd.stdout(Stdio::from(rpc.into_owned_fd()));
     let proxy_fd = proxy.as_raw_fd();
+    let extra_fd = injected_unix_fd()?;
+    if extra_fd == Some(proxy_fd) {
+        return Err(PluginError::message(
+            "test extra endpoint fd is the configured proxy socket",
+        ));
+    }
     unsafe {
         cmd.pre_exec(move || {
             bookclerk_sandbox::inherit_fd_at(proxy_fd, GUEST_PROXY_FD)?;
             if proxy_fd != GUEST_PROXY_FD {
                 libc::close(proxy_fd);
             }
+            if let Some(src) = extra_fd {
+                bookclerk_sandbox::inherit_fd_at(src, bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD)?;
+                if src != bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD {
+                    libc::close(src);
+                }
+            }
             Ok(())
         });
     }
     cmd.env(SOCKET_PROXY_ENV, format!("fd:{GUEST_PROXY_FD}"));
+    if extra_fd.is_some() {
+        cmd.env(
+            bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV,
+            format!("fd:{}", bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD),
+        );
+    }
     Ok(())
+}
+
+/// `fd:<n>` from [`TEST_INJECT_EXTRA_ENDPOINT_ENV`], or `None` when unset.
+///
+/// A Windows `handle:` value, a descriptor below 3, and the configured proxy
+/// fd are errors. Production leaves the variable unset.
+#[cfg(unix)]
+fn injected_unix_fd() -> Result<Option<i32>> {
+    match std::env::var(TEST_INJECT_EXTRA_ENDPOINT_ENV) {
+        Ok(value) => parse_injected_unix_fd(&value),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(err) => Err(PluginError::message(format!(
+            "could not read {TEST_INJECT_EXTRA_ENDPOINT_ENV}: {err}"
+        ))),
+    }
+}
+
+/// Parse a Unix inject spec. Empty is "do not inject".
+#[cfg(any(unix, test))]
+fn parse_injected_unix_fd(value: &str) -> Result<Option<i32>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let Some(rest) = value.strip_prefix("fd:") else {
+        return Err(PluginError::message(format!(
+            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} must be fd:<n> on unix"
+        )));
+    };
+    let fd: i32 = rest.trim().parse().map_err(|_| {
+        PluginError::message(format!(
+            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} has no file descriptor"
+        ))
+    })?;
+    if fd < 3 || fd == bookclerk_sandbox::GUEST_PROXY_FD {
+        return Err(PluginError::message(format!(
+            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} fd {fd} collides with stdio or the configured proxy"
+        )));
+    }
+    Ok(Some(fd))
+}
+
+/// `handle:<read>,handle:<write>` from [`TEST_INJECT_EXTRA_ENDPOINT_ENV`].
+///
+/// Empty is "do not inject". A Unix `fd:` value, a missing half, or the same
+/// handle twice is an error.
+#[cfg(any(windows, test))]
+fn parse_injected_handle_pair(value: &str) -> Result<Option<(u64, u64)>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let Some((read, write)) = value.split_once(',') else {
+        return Err(PluginError::message(format!(
+            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} must be handle:<read>,handle:<write>"
+        )));
+    };
+    let read = parse_handle_token(read)?;
+    let write = parse_handle_token(write)?;
+    if read == write {
+        return Err(PluginError::message(format!(
+            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} read and write handles are the same value"
+        )));
+    }
+    Ok(Some((read, write)))
+}
+
+/// One `handle:<n>` token.
+#[cfg(any(windows, test))]
+fn parse_handle_token(token: &str) -> Result<u64> {
+    let Some(rest) = token.trim().strip_prefix("handle:") else {
+        return Err(PluginError::message(format!(
+            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} must be handle:<read>,handle:<write>"
+        )));
+    };
+    rest.trim().parse().map_err(|_| {
+        PluginError::message(format!(
+            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} has no handle value"
+        ))
+    })
+}
+
+/// Guest pipe ends in this process, when the test inject env is set.
+#[cfg(windows)]
+fn injected_windows_handles() -> Result<Option<(u64, u64)>> {
+    match std::env::var(TEST_INJECT_EXTRA_ENDPOINT_ENV) {
+        Ok(value) => parse_injected_handle_pair(&value),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(err) => Err(PluginError::message(format!(
+            "could not read {TEST_INJECT_EXTRA_ENDPOINT_ENV}: {err}"
+        ))),
+    }
+}
+
+/// `DuplicateHandle` source from a numeric handle in this process.
+#[cfg(windows)]
+fn raw_handle_from_u64(value: u64) -> std::os::windows::io::RawHandle {
+    value as usize as std::os::windows::io::RawHandle
 }
 
 #[cfg(windows)]
@@ -1229,20 +1353,39 @@ async fn windows_handoff_guest(
         bookclerk_sandbox::duplicate_handle_into(proxy_write.as_raw_handle(), target).map_err(
             |err| PluginError::message(format!("DuplicateHandle guest proxy write: {err}")),
         )?;
+    let mut extra = vec![
+        JailHandoffExtra {
+            env: SOCKET_PROXY_ENV.into(),
+            handle: proxy_read_h,
+        },
+        JailHandoffExtra {
+            env: bookclerk_sandbox::SOCKET_PROXY_WRITE_ENV.into(),
+            handle: proxy_write_h,
+        },
+    ];
+    if let Some((read, write)) = injected_windows_handles()? {
+        let read_h = bookclerk_sandbox::duplicate_handle_into(raw_handle_from_u64(read), target)
+            .map_err(|err| {
+                PluginError::message(format!("DuplicateHandle test extra read: {err}"))
+            })?;
+        let write_h = bookclerk_sandbox::duplicate_handle_into(raw_handle_from_u64(write), target)
+            .map_err(|err| {
+                PluginError::message(format!("DuplicateHandle test extra write: {err}"))
+            })?;
+        extra.push(JailHandoffExtra {
+            env: bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_ENV.into(),
+            handle: read_h,
+        });
+        extra.push(JailHandoffExtra {
+            env: bookclerk_plugin_sdk::TEST_EXTRA_ENDPOINT_WRITE_ENV.into(),
+            handle: write_h,
+        });
+    }
     let handoff = JailHandoff {
         v: JailHandoff::VERSION,
         stdin: Some(rpc_in),
         stdout: Some(rpc_out),
-        extra: vec![
-            JailHandoffExtra {
-                env: SOCKET_PROXY_ENV.into(),
-                handle: proxy_read_h,
-            },
-            JailHandoffExtra {
-                env: bookclerk_sandbox::SOCKET_PROXY_WRITE_ENV.into(),
-                handle: proxy_write_h,
-            },
-        ],
+        extra,
     };
     write_handoff_line(child, &handoff).await?;
     if let Some(mut stdin) = child.stdin.take() {
@@ -1691,6 +1834,32 @@ fn stderr_tail_text(tail: &Arc<Mutex<VecDeque<String>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn injected_endpoint_specs_reject_the_other_platform_and_collisions() {
+        assert!(parse_injected_unix_fd("").unwrap().is_none());
+        assert!(parse_injected_unix_fd("   ").unwrap().is_none());
+        assert_eq!(parse_injected_unix_fd("fd:15").unwrap(), Some(15));
+        assert_eq!(parse_injected_unix_fd("fd:4").unwrap(), Some(4));
+        assert!(parse_injected_unix_fd("fd:3").is_err());
+        assert!(parse_injected_unix_fd("fd:0").is_err());
+        assert!(parse_injected_unix_fd("handle:10,handle:12").is_err());
+        assert!(parse_injected_unix_fd("fd:nope").is_err());
+
+        assert!(parse_injected_handle_pair("").unwrap().is_none());
+        assert_eq!(
+            parse_injected_handle_pair("handle:10,handle:12").unwrap(),
+            Some((10, 12))
+        );
+        assert_eq!(
+            parse_injected_handle_pair("  handle:10 , handle:12 ").unwrap(),
+            Some((10, 12))
+        );
+        assert!(parse_injected_handle_pair("handle:10,handle:10").is_err());
+        assert!(parse_injected_handle_pair("fd:4").is_err());
+        assert!(parse_injected_handle_pair("handle:10").is_err());
+        assert!(parse_injected_handle_pair("handle:10,fd:4").is_err());
+    }
 
     #[test]
     fn channel_tag_file_is_written_only_when_requested() {

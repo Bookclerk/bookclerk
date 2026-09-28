@@ -71,6 +71,8 @@ pub const GATEWAY_RPC_FD: i32 = 3;
 pub const GATEWAY_PROXY_FD: i32 = 4;
 /// Child fd the native guest uses for the proxy mux (`BOOKCLERK_SOCKET_PROXY`).
 pub const GUEST_PROXY_FD: i32 = 3;
+/// Test-only extra endpoint in the native guest. Production preserve lists omit it.
+pub const TEST_EXTRA_ENDPOINT_FD: i32 = 4;
 
 /// Serialize macOS descriptor allocation with in-process `Command` spawns.
 ///

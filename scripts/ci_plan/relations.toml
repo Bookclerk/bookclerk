@@ -211,4 +211,4 @@ reason = "package-name string in install-path test data, not a launched executab
 [[reviewed]]
 package = "bookclerk-plugin-e2e"
 reference = "bookclerk-jail"
-reason = "the authenticated-endpoint leak test execs the production launcher; the native_gateway smoke already builds that binary, and this crate is excluded from rust_test"
+reason = "PluginSession::spawn_with launches bookclerk-jail; the native_gateway smoke already builds that binary, and this crate is excluded from rust_test"
