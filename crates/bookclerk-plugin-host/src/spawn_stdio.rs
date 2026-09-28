@@ -20,9 +20,9 @@ use bookclerk_sandbox::GATEWAY_GUEST_RPC_WRITE_ENV;
 #[cfg(test)]
 use bookclerk_sandbox::GATEWAY_PROXY_ENV;
 use bookclerk_sandbox::{
-    join_capped_lines, push_capped_line, redact_diagnostic_text, spawn_diag_stderr_enabled,
-    truncate_utf8, with_fd_spawn_lock, GATEWAY_GUEST_RPC_ENV, SOCKET_PROXY_ENV,
-    SPAWN_DIAG_MAX_LINES, SPAWN_DIAG_RECORD_BYTES, SPAWN_DIAG_TOTAL_BYTES, WORKERD_STATE_DIR_ENV,
+    join_capped_lines, push_capped_line, redact_capped, spawn_diag_stderr_enabled, truncate_utf8,
+    with_fd_spawn_lock, GATEWAY_GUEST_RPC_ENV, SOCKET_PROXY_ENV, SPAWN_DIAG_MAX_LINES,
+    SPAWN_DIAG_RECORD_BYTES, SPAWN_DIAG_TOTAL_BYTES, WORKERD_STATE_DIR_ENV,
 };
 #[cfg(windows)]
 use bookclerk_sandbox::{DuplexHalf, StdioEnds};
@@ -78,13 +78,9 @@ pub fn recent_spawn_diagnostics() -> String {
         .unwrap_or_default()
 }
 
-/// Drop 64-hex session challenges and the challenge env name.
-fn redact_spawn_text(message: &str) -> String {
-    redact_diagnostic_text(message)
-}
-
 fn push_stage(message: &str) -> String {
-    let message = redact_spawn_text(truncate_utf8(message, SPAWN_DIAG_RECORD_BYTES));
+    // Classify a token that crosses the cap before any of its bytes are stored.
+    let message = redact_capped(message, SPAWN_DIAG_RECORD_BYTES);
     let seq = SPAWN_DIAG_SEQ.fetch_add(1, Ordering::Relaxed);
     let line = format!("bookclerk-spawn: stage {seq}: {message}");
     if let Ok(mut ring) = SPAWN_DIAG.lock() {
@@ -1718,7 +1714,7 @@ mod tests {
     fn spawn_diagnostics_redact_session_challenges() {
         let challenge = "ab".repeat(32);
         assert_eq!(challenge.len(), 64);
-        let line = redact_spawn_text(&format!(
+        let line = bookclerk_sandbox::redact_diagnostic_text(&format!(
             "café plugin=probe BOOKCLERK_SESSION_CHALLENGE={challenge} tail"
         ));
         assert!(!line.contains(&challenge));
@@ -1728,6 +1724,108 @@ mod tests {
         assert!(line.contains("café"));
         assert!(!line.contains('Ã'));
         assert!(!line.contains('©'));
+    }
+
+    #[test]
+    fn spawn_diagnostics_redact_tokens_that_cross_the_cap() {
+        let secret = "ab".repeat(32);
+        let across = format!("{}{secret}", "x".repeat(449));
+        assert_eq!(across.len(), 513);
+        assert_stage_redaction(&across, &secret, true);
+
+        let before = format!("before {secret} after");
+        assert_stage_redaction(&before, &secret, true);
+
+        let after_secret = "ef".repeat(32);
+        let after = format!("{}{after_secret}", "x".repeat(SPAWN_DIAG_RECORD_BYTES));
+        assert_stage_redaction(&after, &after_secret, false);
+
+        let env = format!("{}BOOKCLERK_SESSION_CHALLENGE", "n".repeat(500));
+        assert_stage_redaction(&env, "BOOKCLERK_SESSION_CHALLENGE", true);
+
+        let multi_secret = "12".repeat(32);
+        let multibyte = format!("{}{multi_secret}", "café".repeat(100));
+        assert_stage_redaction(&multibyte, &multi_secret, true);
+
+        let body63 = format!("{}c", "ab".repeat(31));
+        let hex63 = format!("{}{body63}", "q".repeat(449));
+        let event = capture_stage_event(&hex63);
+        assert!(event.contains(&body63), "{event}");
+        assert!(!event.contains("[redacted]"), "{event}");
+    }
+
+    fn assert_stage_redaction(message: &str, secret: &str, expect_marker: bool) {
+        let direct = redact_capped(message, SPAWN_DIAG_RECORD_BYTES);
+        assert!(direct.len() <= SPAWN_DIAG_RECORD_BYTES);
+        assert!(!direct.contains(&secret[..secret.len().min(16)]));
+        let event = capture_stage_event(message);
+        assert!(
+            event.contains(&direct),
+            "stage event dropped the capped redaction\nevent: {event}\ndirect: {direct}"
+        );
+        let prefix = &secret[..secret.len().min(16)];
+        assert!(
+            !event.contains(prefix),
+            "stage event kept {prefix}: {event}"
+        );
+        let snap = recent_spawn_diagnostics();
+        assert!(snap.len() <= SPAWN_DIAG_TOTAL_BYTES);
+        assert!(!snap.contains(prefix), "stage snapshot kept {prefix}");
+        assert!(!event.contains('Ã'), "{event}");
+        assert!(!snap.contains('Ã'));
+        if expect_marker {
+            assert!(
+                event.contains("[redacted"),
+                "stage event dropped the marker: {event}"
+            );
+        } else {
+            assert!(!event.contains("[redacted"), "{event}");
+        }
+    }
+
+    fn capture_stage_event(message: &str) -> String {
+        for _ in 0..40 {
+            let text = capture_stage_event_once(message);
+            if !text.is_empty() {
+                return text;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        String::new()
+    }
+
+    fn capture_stage_event_once(message: &str) -> String {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log buf").extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&bytes);
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new("bookclerk=info"))
+            .with_writer(move || Buf(Arc::clone(&sink)))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // Other tests emit this callsite with no subscriber, which caches
+            // the event as disabled for the process. Rebuild while this
+            // subscriber is installed so the line is actually recorded.
+            tracing::callsite::rebuild_interest_cache();
+            note_spawn_stage(message);
+        });
+        let text = String::from_utf8(bytes.lock().expect("log buf").clone()).expect("utf-8 log");
+        text
     }
 
     #[test]

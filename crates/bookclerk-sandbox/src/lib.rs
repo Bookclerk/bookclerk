@@ -65,9 +65,10 @@ pub use platform::windows_spawn::recent_platform_spawn_diagnostics;
 #[cfg(windows)]
 pub use platform::windows_spawn::JailReady;
 pub use spawn_diag::{
-    join_capped_lines, push_capped_line, record_spawn_diagnostic, redact_diagnostic_text,
-    snapshot_spawn_diagnostics, spawn_diag_raw_stderr, spawn_diag_stderr_enabled, truncate_utf8,
-    SPAWN_DIAG_MAX_LINES, SPAWN_DIAG_RECORD_BYTES, SPAWN_DIAG_TOTAL_BYTES,
+    join_capped_lines, push_capped_line, record_spawn_diagnostic, redact_capped,
+    redact_diagnostic_text, snapshot_spawn_diagnostics, spawn_diag_raw_stderr,
+    spawn_diag_stderr_enabled, truncate_utf8, SPAWN_DIAG_MAX_LINES, SPAWN_DIAG_RECORD_BYTES,
+    SPAWN_DIAG_TOTAL_BYTES,
 };
 pub use spawn_path::{
     canonicalize, create_process_path, require_absolute_or_name, require_absolute_spawn_path,
