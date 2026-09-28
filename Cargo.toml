@@ -134,7 +134,7 @@ tower-http = { version = "0.7", features = ["trace", "fs", "normalize-path"] }
 # DB / storage — rusqlite 0.37 shares libsqlite3-sys 0.35 with SeaORM's sqlx-sqlite
 # (rusqlite 0.40 needs ^0.38 and cannot coexist in one binary). Vendored audible-rs
 # under third_party/ matches this pin on its optional `cli` feature.
-rusqlite = { version = "0.37", features = ["bundled", "column_decltype", "hooks"] }
+rusqlite = { version = "0.39", features = ["bundled", "column_decltype", "hooks"] }
 sea-orm = { version = "2.0.0", default-features = false, features = [
     "macros",
     "with-chrono",
