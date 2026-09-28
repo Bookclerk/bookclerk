@@ -227,7 +227,10 @@ Windows, two host-created AppContainers plus a session Job; no named-pipe
   A separate test injects one already-authenticated extra endpoint (its own
   challenge; A's challenge is not replayed onto B) through the guest jail
   handoff — test-only preserve of fd 4, or `JailHandoff` extras on Windows —
-  and the same RPC reports that tag. Production spawn does not add the slot.
+  and the same RPC reports that tag. On Windows the challenge is written with
+  an event so that guest end is not bound to the test process's I/O completion
+  port; binding it makes the guest report `ident-failed` instead of the tag.
+  Production spawn does not add the slot.
   A skipped or failed observation is not absence. A numeric fd or handle is
   not identity;
 - guest-exit / missing-workerd / mid-session kill fail closed.

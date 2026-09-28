@@ -543,6 +543,28 @@ pub fn duplicate_owned_handle(
     Ok(unsafe { OwnedHandle::from_raw_handle(value as usize as RawHandle) })
 }
 
+/// Write `bytes` to an overlapped pipe without binding it to a completion port.
+///
+/// The write uses a non-inheritable duplicate and an event. `handle` stays
+/// open and is not passed to `CreateIoCompletionPort`. A file object can be
+/// associated with only one port: wrapping this end in Tokio here makes the
+/// process that later inherits a duplicate fail `CreateIoCompletionPort` with
+/// `ERROR_INVALID_PARAMETER` (87). Production guests are the first to
+/// associate their proxy ends. Tests that pre-authenticate an extra endpoint
+/// must use this instead of a Tokio pipe client.
+///
+/// # Errors
+///
+/// Returns an I/O error when the duplicate, the write, or the wait fails, or
+/// when a write completes with zero bytes.
+#[cfg(windows)]
+pub fn write_pipe_without_completion_port(
+    handle: std::os::windows::io::RawHandle,
+    bytes: &[u8],
+) -> io::Result<()> {
+    windows::write_pipe_without_completion_port(handle, bytes)
+}
+
 #[cfg(unix)]
 #[allow(unsafe_code)] // socketpair, pipe, dup2, fcntl.
 #[allow(clippy::missing_docs_in_private_items)]
@@ -957,6 +979,202 @@ mod windows {
         duplicate_handle_into(handle, unsafe { GetCurrentProcess() }.0 as RawHandle)
     }
 
+    /// Event-based write on a duplicate. See [`super::write_pipe_without_completion_port`].
+    pub(super) fn write_pipe_without_completion_port(
+        handle: RawHandle,
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::{ERROR_IO_PENDING, WAIT_OBJECT_0};
+        use windows::Win32::Storage::FileSystem::WriteFile;
+        use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
+        use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let value = duplicate_handle_local(handle)?;
+        let owned = unsafe { OwnedHandle::from_raw_handle(value as usize as RawHandle) };
+        let file = HANDLE(owned.as_raw_handle());
+        let event =
+            unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.map_err(io::Error::other)?;
+        let mut offset = 0usize;
+        let write_result = (|| -> io::Result<()> {
+            while offset < bytes.len() {
+                unsafe { ResetEvent(event) }.map_err(io::Error::other)?;
+                let mut overlapped = OVERLAPPED {
+                    hEvent: event,
+                    ..OVERLAPPED::default()
+                };
+                let end = offset + (bytes.len() - offset).min(16 * 1024);
+                let chunk = &bytes[offset..end];
+                let mut written = 0u32;
+                let write = unsafe {
+                    WriteFile(
+                        file,
+                        Some(chunk),
+                        Some(&mut written),
+                        Some(ptr::addr_of_mut!(overlapped)),
+                    )
+                };
+                let n = match write {
+                    Ok(()) => {
+                        if written == 0 {
+                            let mut transferred = 0u32;
+                            unsafe {
+                                GetOverlappedResult(
+                                    file,
+                                    ptr::addr_of!(overlapped),
+                                    &mut transferred,
+                                    false,
+                                )
+                            }
+                            .map_err(io::Error::other)?;
+                            transferred as usize
+                        } else {
+                            written as usize
+                        }
+                    }
+                    Err(err) if is_win32(&err, ERROR_IO_PENDING.0) => {
+                        let wait = unsafe { WaitForSingleObject(event, 5_000) };
+                        if wait != WAIT_OBJECT_0 {
+                            let _ = unsafe { CancelIoEx(file, Some(ptr::addr_of!(overlapped))) };
+                            let mut transferred = 0u32;
+                            let _ = unsafe {
+                                GetOverlappedResult(
+                                    file,
+                                    ptr::addr_of!(overlapped),
+                                    &mut transferred,
+                                    true,
+                                )
+                            };
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "overlapped pipe write did not complete",
+                            ));
+                        }
+                        let mut transferred = 0u32;
+                        unsafe {
+                            GetOverlappedResult(
+                                file,
+                                ptr::addr_of!(overlapped),
+                                &mut transferred,
+                                true,
+                            )
+                        }
+                        .map_err(io::Error::other)?;
+                        transferred as usize
+                    }
+                    Err(err) => return Err(io::Error::other(err)),
+                };
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "overlapped pipe write returned 0",
+                    ));
+                }
+                offset += n;
+            }
+            Ok(())
+        })();
+        close_if_valid(event);
+        write_result
+    }
+
+    /// Read `len` bytes with an event. The handle is not bound to a completion port.
+    #[cfg(test)]
+    pub(super) fn read_exact_without_completion_port(
+        handle: RawHandle,
+        len: usize,
+    ) -> io::Result<Vec<u8>> {
+        use windows::Win32::Foundation::{ERROR_IO_PENDING, WAIT_OBJECT_0};
+        use windows::Win32::Storage::FileSystem::ReadFile;
+        use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
+        use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+
+        let file = HANDLE(handle);
+        let event =
+            unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.map_err(io::Error::other)?;
+        let mut out = vec![0u8; len];
+        let mut offset = 0usize;
+        let read_result = (|| -> io::Result<()> {
+            while offset < len {
+                unsafe { ResetEvent(event) }.map_err(io::Error::other)?;
+                let mut overlapped = OVERLAPPED {
+                    hEvent: event,
+                    ..OVERLAPPED::default()
+                };
+                let mut got = 0u32;
+                let read = unsafe {
+                    ReadFile(
+                        file,
+                        Some(&mut out[offset..]),
+                        Some(&mut got),
+                        Some(ptr::addr_of_mut!(overlapped)),
+                    )
+                };
+                let n = match read {
+                    Ok(()) => got as usize,
+                    Err(err) if is_win32(&err, ERROR_IO_PENDING.0) => {
+                        let wait = unsafe { WaitForSingleObject(event, 5_000) };
+                        if wait != WAIT_OBJECT_0 {
+                            let _ = unsafe { CancelIoEx(file, Some(ptr::addr_of!(overlapped))) };
+                            let mut transferred = 0u32;
+                            let _ = unsafe {
+                                GetOverlappedResult(
+                                    file,
+                                    ptr::addr_of!(overlapped),
+                                    &mut transferred,
+                                    true,
+                                )
+                            };
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "overlapped pipe read did not complete",
+                            ));
+                        }
+                        let mut transferred = 0u32;
+                        unsafe {
+                            GetOverlappedResult(
+                                file,
+                                ptr::addr_of!(overlapped),
+                                &mut transferred,
+                                true,
+                            )
+                        }
+                        .map_err(io::Error::other)?;
+                        transferred as usize
+                    }
+                    Err(err) => return Err(io::Error::other(err)),
+                };
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "overlapped pipe read returned 0",
+                    ));
+                }
+                offset += n;
+            }
+            Ok(())
+        })();
+        close_if_valid(event);
+        read_result?;
+        Ok(out)
+    }
+
+    /// `CreateIoCompletionPort` on `handle` with a fresh port.
+    #[cfg(test)]
+    pub(super) fn completion_port_accepts(handle: RawHandle) -> io::Result<()> {
+        use windows::Win32::System::IO::CreateIoCompletionPort;
+
+        let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, 1) }
+            .map_err(io::Error::other)?;
+        let associated = unsafe { CreateIoCompletionPort(HANDLE(handle), Some(port), 1, 0) };
+        let result = associated.map(|_| ()).map_err(io::Error::other);
+        close_if_valid(port);
+        result
+    }
+
     pub(super) fn duplicate_handle_into(handle: RawHandle, target: RawHandle) -> io::Result<u64> {
         let mut dest = HANDLE::default();
         unsafe {
@@ -1242,5 +1460,24 @@ mod tests {
     #[test]
     fn named_pipe_dacl_rejects_anonymous_and_keeps_inherited_bytes() {
         windows::creator_dacl_blocks_anonymous_and_keeps_the_handle().expect("creator DACL");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_without_completion_port_leaves_the_pipe_end_associable() {
+        let pipes = StdioEnds::pair_overlapped().expect("pipes");
+        let payload = [0x5a_u8; 32];
+        write_pipe_without_completion_port(pipes.guest_stdout.as_raw_handle(), &payload)
+            .expect("write");
+        let got = windows::read_exact_without_completion_port(
+            pipes.host_stdout.as_raw_handle(),
+            payload.len(),
+        )
+        .expect("read");
+        assert_eq!(got, payload);
+        windows::completion_port_accepts(pipes.guest_stdout.as_raw_handle())
+            .expect("guest write end must still accept a completion port");
+        windows::completion_port_accepts(pipes.guest_stdin.as_raw_handle())
+            .expect("guest read end must accept a completion port");
     }
 }

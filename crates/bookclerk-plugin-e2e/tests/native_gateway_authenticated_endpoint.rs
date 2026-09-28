@@ -7,7 +7,10 @@
 //! Windows) by `PluginSession::spawn_with`. After A has connected, the same
 //! `channel_ident` RPC used by the overlapping-session test reports B.
 //! Replaying A's challenge onto B is not this fixture. Replacing A's endpoint
-//! with B is not this fixture.
+//! with B is not this fixture. On Windows the challenge write uses an event,
+//! not this process's I/O completion port: binding B's guest end here makes
+//! the guest's later association fail, and `channel_ident` reports
+//! `ident-failed` instead of B's tag.
 //!
 //! The inherit cases have one server reader and one child client. The child
 //! sends Open, then Data containing CONNECT. Raw HTTP on the pipe is not a
@@ -336,15 +339,14 @@ async fn prepare_authenticated_extra(
             "endpoint-b",
         )
         .expect("proxy b");
-        let dup = bookclerk_sandbox::duplicate_owned_handle(pipes.guest_stdout.as_raw_handle())
-            .expect("dup B write");
-        let mut writer = pipe_from_owned(dup);
-        writer
-            .write_all(challenge)
-            .await
-            .expect("write B challenge");
-        writer.flush().await.expect("flush B challenge");
-        drop(writer);
+        // Do not wrap this end in Tokio. That binds the file object to this
+        // process's completion port, and the guest then fails
+        // CreateIoCompletionPort with ERROR_INVALID_PARAMETER (87).
+        bookclerk_sandbox::write_pipe_without_completion_port(
+            pipes.guest_stdout.as_raw_handle(),
+            challenge,
+        )
+        .expect("write B challenge");
         let spec = format!(
             "handle:{},handle:{}",
             pipes.guest_stdin.handle_value(),

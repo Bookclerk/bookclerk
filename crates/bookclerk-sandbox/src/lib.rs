@@ -51,7 +51,10 @@ pub use link::{
 pub use link::inherit_fd_at;
 
 #[cfg(windows)]
-pub use link::{duplicate_handle_into, duplicate_handle_local, duplicate_owned_handle};
+pub use link::{
+    duplicate_handle_into, duplicate_handle_local, duplicate_owned_handle,
+    write_pipe_without_completion_port,
+};
 pub use platform::BACKEND;
 
 /// Linux session-cgroup constructor used by the plugin host.
