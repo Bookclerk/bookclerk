@@ -369,6 +369,9 @@ fn assert_endpoint_sealed(label: &str, outcome: &serde_json::Value) {
 /// Inheritable manual-reset events created before the guest is spawned.
 ///
 /// Drop closes them. They are not added to the process handle allowlist.
+/// Their values sit above the range a fresh guest allocates. A low value such
+/// as 208 can already name some other object in that guest, and
+/// `DuplicateHandle` then succeeds without inheriting the event.
 #[cfg(windows)]
 struct SentinelEvents {
     handles: Vec<usize>,
@@ -377,6 +380,11 @@ struct SentinelEvents {
 #[cfg(windows)]
 impl SentinelEvents {
     /// `count` unnamed manual-reset events, nonsignaled, `bInheritHandle = TRUE`.
+    ///
+    /// Low handle slots stay occupied until those events exist, then the
+    /// fillers are closed. The sentinels remain open and inheritable. A
+    /// duplicate of one of these values is the omitted event, not another
+    /// object that happened to reuse a low slot.
     #[allow(unsafe_code)]
     fn create(count: usize) -> Self {
         extern "system" {
@@ -386,6 +394,7 @@ impl SentinelEvents {
                 initial: i32,
                 name: *const u16,
             ) -> *mut core::ffi::c_void;
+            fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
         }
         #[repr(C)]
         struct SecurityAttributes {
@@ -393,14 +402,25 @@ impl SentinelEvents {
             lp_security_descriptor: *mut core::ffi::c_void,
             b_inherit_handle: i32,
         }
-        let mut created = Self {
-            handles: Vec::with_capacity(count),
-        };
-        for _ in 0..count {
+        /// Occupied low slots. Closed before spawn so they cannot be inherited.
+        struct CloseFillers(Vec<*mut core::ffi::c_void>);
+        impl Drop for CloseFillers {
+            fn drop(&mut self) {
+                extern "system" {
+                    fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+                }
+                for handle in self.0.drain(..) {
+                    unsafe {
+                        CloseHandle(handle);
+                    }
+                }
+            }
+        }
+        let open_event = |inherit: bool| {
             let mut attrs = SecurityAttributes {
                 n_length: std::mem::size_of::<SecurityAttributes>() as u32,
                 lp_security_descriptor: core::ptr::null_mut(),
-                b_inherit_handle: 1,
+                b_inherit_handle: i32::from(inherit),
             };
             let handle = unsafe {
                 CreateEventW(
@@ -415,8 +435,37 @@ impl SentinelEvents {
                 "CreateEventW failed: {}",
                 std::io::Error::last_os_error()
             );
-            created.handles.push(handle as usize);
+            handle
+        };
+        // Value 208 collided with an unrelated guest object on Windows CI.
+        // A fresh guest does not open enough handles to reach this value.
+        const MIN_VALUE: usize = 0x4000;
+        const MAX_ALLOCS: usize = 8192;
+        let mut fillers = CloseFillers(Vec::new());
+        let mut created = Self {
+            handles: Vec::with_capacity(count),
+        };
+        while created.handles.len() < count {
+            assert!(
+                fillers.0.len() + created.handles.len() < MAX_ALLOCS,
+                "could not allocate {count} sentinel handles at or above {MIN_VALUE:#x}"
+            );
+            let probe = open_event(false);
+            if (probe as usize) < MIN_VALUE {
+                fillers.0.push(probe);
+                continue;
+            }
+            unsafe {
+                CloseHandle(probe);
+            }
+            let handle = open_event(true);
+            if handle as usize >= MIN_VALUE {
+                created.handles.push(handle as usize);
+            } else {
+                fillers.0.push(handle);
+            }
         }
+        drop(fillers);
         created
     }
 
