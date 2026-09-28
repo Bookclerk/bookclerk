@@ -1188,16 +1188,7 @@ fn inherit_unix_guest(cmd: &mut Command, rpc: DuplexLink, proxy: &DuplexLink) ->
     }
     unsafe {
         cmd.pre_exec(move || {
-            bookclerk_sandbox::inherit_fd_at(proxy_fd, GUEST_PROXY_FD)?;
-            if proxy_fd != GUEST_PROXY_FD {
-                libc::close(proxy_fd);
-            }
-            if let Some(src) = extra_fd {
-                bookclerk_sandbox::inherit_fd_at(src, bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD)?;
-                if src != bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD {
-                    libc::close(src);
-                }
-            }
+            inherit_guest_proxy_and_extra(proxy_fd, extra_fd)?;
             Ok(())
         });
     }
@@ -1219,8 +1210,10 @@ fn inherit_unix_guest(cmd: &mut Command, rpc: DuplexLink, proxy: &DuplexLink) ->
 
 /// `fd:<n>` from [`TEST_INJECT_EXTRA_ENDPOINT_ENV`], or `None` when unset.
 ///
-/// A Windows `handle:` value, a descriptor below 3, and the configured proxy
-/// fd are errors. Production leaves the variable unset.
+/// A Windows `handle:` value and a descriptor below 3 are errors. The number
+/// may equal the guest proxy slot: [`inherit_guest_proxy_and_extra`] copies
+/// the socket before that slot is overwritten. The same descriptor as the
+/// configured proxy is rejected later. Production leaves the variable unset.
 #[cfg(unix)]
 fn injected_unix_fd() -> Result<Option<i32>> {
     match std::env::var(TEST_INJECT_EXTRA_ENDPOINT_ENV) {
@@ -1249,12 +1242,109 @@ fn parse_injected_unix_fd(value: &str) -> Result<Option<i32>> {
             "{TEST_INJECT_EXTRA_ENDPOINT_ENV} has no file descriptor"
         ))
     })?;
-    if fd < 3 || fd == bookclerk_sandbox::GUEST_PROXY_FD {
+    if fd < 3 {
         return Err(PluginError::message(format!(
-            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} fd {fd} collides with stdio or the configured proxy"
+            "{TEST_INJECT_EXTRA_ENDPOINT_ENV} fd {fd} collides with stdio"
         )));
     }
     Ok(Some(fd))
+}
+
+/// Place the proxy at `proxy_slot` and, when set, the extra socket at `extra_slot`.
+///
+/// Both objects are copied above the slots first. A source whose number is the
+/// proxy slot is therefore still the extra socket after the proxy move.
+#[cfg(unix)]
+fn inherit_guest_proxy_and_extra(
+    proxy_fd: std::os::fd::RawFd,
+    extra_fd: Option<std::os::fd::RawFd>,
+) -> std::io::Result<()> {
+    inherit_mapped_fds(
+        proxy_fd,
+        GUEST_PROXY_FD,
+        extra_fd,
+        bookclerk_sandbox::TEST_EXTRA_ENDPOINT_FD,
+    )
+}
+
+/// Copy `proxy_fd` onto `proxy_slot` and optional `extra_fd` onto `extra_slot`.
+#[cfg(unix)]
+fn inherit_mapped_fds(
+    proxy_fd: std::os::fd::RawFd,
+    proxy_slot: std::os::fd::RawFd,
+    extra_fd: Option<std::os::fd::RawFd>,
+    extra_slot: std::os::fd::RawFd,
+) -> std::io::Result<()> {
+    if extra_fd == Some(proxy_fd) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "extra fd is the proxy fd",
+        ));
+    }
+    if proxy_slot == extra_slot {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "proxy slot and extra slot are the same descriptor",
+        ));
+    }
+    let floor = proxy_slot.max(extra_slot).saturating_add(1);
+    let proxy_copy = dup_cloexec_at_least(proxy_fd, floor)?;
+    let extra_copy = match extra_fd {
+        Some(src) => match dup_cloexec_at_least(src, floor) {
+            Ok(copy) => Some(copy),
+            Err(err) => {
+                unsafe { libc::close(proxy_copy) };
+                return Err(err);
+            }
+        },
+        None => None,
+    };
+    let installed: std::io::Result<()> = (|| {
+        bookclerk_sandbox::inherit_fd_at(proxy_copy, proxy_slot)?;
+        if let Some(copy) = extra_copy {
+            bookclerk_sandbox::inherit_fd_at(copy, extra_slot)?;
+        }
+        Ok(())
+    })();
+    unsafe { libc::close(proxy_copy) };
+    if let Some(copy) = extra_copy {
+        unsafe { libc::close(copy) };
+    }
+    installed?;
+    close_unless_installed(proxy_fd, proxy_slot, extra_slot, extra_fd.is_some());
+    if let Some(src) = extra_fd {
+        close_unless_installed(src, proxy_slot, extra_slot, true);
+    }
+    Ok(())
+}
+
+/// Duplicate `fd` at or above `min`, with `FD_CLOEXEC` set on the copy.
+#[cfg(unix)]
+fn dup_cloexec_at_least(
+    fd: std::os::fd::RawFd,
+    min: std::os::fd::RawFd,
+) -> std::io::Result<std::os::fd::RawFd> {
+    let start = min.max(3);
+    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, start) };
+    if copy < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(copy)
+    }
+}
+
+/// Close a pre-move descriptor that is not one of the installed slots.
+#[cfg(unix)]
+fn close_unless_installed(
+    fd: std::os::fd::RawFd,
+    proxy_slot: std::os::fd::RawFd,
+    extra_slot: std::os::fd::RawFd,
+    extra_live: bool,
+) {
+    if fd == proxy_slot || (extra_live && fd == extra_slot) {
+        return;
+    }
+    unsafe { libc::close(fd) };
 }
 
 /// `handle:<read>,handle:<write>` from [`TEST_INJECT_EXTRA_ENDPOINT_ENV`].
@@ -1475,6 +1565,26 @@ async fn windows_handoff_guest(
     proxy_read: &DuplexHalf,
     proxy_write: &DuplexHalf,
 ) -> Result<()> {
+    // Build the handoff before any await. A raw process handle held across
+    // `.await` makes this future `!Send`.
+    let handoff = guest_jail_handoff(child, rpc_stdin, rpc_stdout, proxy_read, proxy_write)?;
+    write_handoff_line(child, &handoff).await?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.shutdown().await;
+    }
+    Ok(())
+}
+
+/// Duplicate guest handles into the jail. Sync so the process handle is not
+/// captured by the spawn future.
+#[cfg(windows)]
+fn guest_jail_handoff(
+    child: &Child,
+    rpc_stdin: &DuplexHalf,
+    rpc_stdout: &DuplexHalf,
+    proxy_read: &DuplexHalf,
+    proxy_write: &DuplexHalf,
+) -> Result<JailHandoff> {
     let target = process_handle(child)?;
     // Separate pipes. Duplicating one duplex end for both stdio handles lets a
     // synchronous read lock the write, and the inherit list also rejects a
@@ -1535,17 +1645,12 @@ async fn windows_handoff_guest(
             ));
         }
     }
-    let handoff = JailHandoff {
+    Ok(JailHandoff {
         v: JailHandoff::VERSION,
         stdin: Some(rpc_in),
         stdout: Some(rpc_out),
         extra,
-    };
-    write_handoff_line(child, &handoff).await?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.shutdown().await;
-    }
-    Ok(())
+    })
 }
 
 #[cfg(windows)]
@@ -1995,7 +2100,8 @@ mod tests {
         assert!(parse_injected_unix_fd("   ").unwrap().is_none());
         assert_eq!(parse_injected_unix_fd("fd:15").unwrap(), Some(15));
         assert_eq!(parse_injected_unix_fd("fd:4").unwrap(), Some(4));
-        assert!(parse_injected_unix_fd("fd:3").is_err());
+        assert_eq!(parse_injected_unix_fd("fd:3").unwrap(), Some(3));
+        assert!(parse_injected_unix_fd("fd:2").is_err());
         assert!(parse_injected_unix_fd("fd:0").is_err());
         assert!(parse_injected_unix_fd("handle:10,handle:12").is_err());
         assert!(parse_injected_unix_fd("fd:nope").is_err());
@@ -2013,6 +2119,68 @@ mod tests {
         assert!(parse_injected_handle_pair("fd:4").is_err());
         assert!(parse_injected_handle_pair("handle:10").is_err());
         assert!(parse_injected_handle_pair("handle:10,fd:4").is_err());
+    }
+
+    /// A parent descriptor numbered like the guest proxy slot must still be the
+    /// extra socket after the proxy is installed on that number.
+    #[cfg(unix)]
+    #[test]
+    fn extra_socket_kept_when_its_number_is_the_proxy_slot() {
+        use std::io::{Read, Write};
+        use std::os::fd::{FromRawFd, IntoRawFd, RawFd};
+        use std::os::unix::net::UnixStream;
+
+        fn stream_pair() -> (UnixStream, RawFd) {
+            let (host, guest) = UnixStream::pair().expect("socketpair");
+            host.set_nonblocking(true).expect("host nonblocking");
+            (host, guest.into_raw_fd())
+        }
+
+        let proxy_slot = std::fs::File::open("/dev/null")
+            .expect("reserve proxy slot")
+            .into_raw_fd();
+        let extra_slot = std::fs::File::open("/dev/null")
+            .expect("reserve extra slot")
+            .into_raw_fd();
+        let (mut proxy_host, mut proxy_guest) = stream_pair();
+        let (mut extra_host, extra_guest) = stream_pair();
+        let extra_src = if extra_guest == proxy_slot {
+            extra_guest
+        } else {
+            let rc = unsafe { libc::dup2(extra_guest, proxy_slot) };
+            assert!(
+                rc >= 0,
+                "dup2 extra onto proxy slot: {}",
+                std::io::Error::last_os_error()
+            );
+            unsafe { libc::close(extra_guest) };
+            proxy_slot
+        };
+        if proxy_guest == proxy_slot || proxy_guest == extra_slot {
+            let away = dup_cloexec_at_least(proxy_guest, proxy_slot.max(extra_slot) + 1)
+                .expect("move proxy off a slot");
+            unsafe { libc::close(proxy_guest) };
+            proxy_guest = away;
+        }
+
+        inherit_mapped_fds(proxy_guest, proxy_slot, Some(extra_src), extra_slot)
+            .expect("install proxy and extra");
+
+        proxy_host.write_all(b"P").expect("write proxy");
+        extra_host.write_all(b"E").expect("write extra");
+        let mut proxy_end = unsafe { UnixStream::from_raw_fd(proxy_slot) };
+        let mut extra_end = unsafe { UnixStream::from_raw_fd(extra_slot) };
+        proxy_end
+            .set_nonblocking(true)
+            .expect("proxy slot nonblocking");
+        extra_end
+            .set_nonblocking(true)
+            .expect("extra slot nonblocking");
+        let mut buf = [0u8; 1];
+        proxy_end.read_exact(&mut buf).expect("read proxy slot");
+        assert_eq!(buf, [b'P']);
+        extra_end.read_exact(&mut buf).expect("read extra slot");
+        assert_eq!(buf, [b'E']);
     }
 
     #[test]
