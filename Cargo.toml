@@ -190,7 +190,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 walkdir = "2"
 # Cross-platform advisory file locks (`lock_exclusive`) for host-local plugin
 # mutation serialization. Ownership is the OS lock, not the file's presence.
-fs4 = { version = "0.13", features = ["sync"] }
+fs4 = { version = "1.1", features = ["sync"] }
 
 # audible-rs — path-patched fork. Library-only by default (no CLI / rusqlite).
 # Upstream rev and Bookclerk patches: third_party/audible-rs/BOOKCLERK_PATCH.md.
