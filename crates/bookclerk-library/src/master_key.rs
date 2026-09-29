@@ -274,10 +274,14 @@ pub fn resolve_master_key_detailed(
 
 /// SHA-256 hex fingerprint of the unwrapped DEK.
 ///
-/// Password wrapping changes the file bytes and leaves this fingerprint stable.
+/// This identifies the cluster secret root. It is not a password hash: the
+/// passphrase, when set, is stretched with Argon2id before it unwraps this
+/// key. Wrapping changes the file bytes and leaves this fingerprint stable.
 #[must_use]
 pub fn master_key_fingerprint(key: &MasterKey) -> String {
     use sha2::{Digest, Sha256};
+    // Equality fingerprint of the 32-byte DEK, not a password KDF.
+    // codeql[rust/weak-sensitive-data-hashing]
     hex::encode(Sha256::digest(key.as_bytes()))
 }
 

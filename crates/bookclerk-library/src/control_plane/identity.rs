@@ -19,7 +19,7 @@ use crate::migrations::{unreleased_checksum, SCHEMA_VERSION};
 use crate::schema_state::SchemaState;
 use crate::store::LibraryStore;
 
-/// Bootstrap file under `$BOOKCLERK_FILES_DIR` that stores [`HostId`].
+/// Bootstrap file under `$BOOKCLERK_FILES_DIR` that stores the stable host id.
 pub const HOST_IDENTITY_FILE: &str = "host-identity.json";
 
 /// Identity file schema. Unknown versions fail closed.
