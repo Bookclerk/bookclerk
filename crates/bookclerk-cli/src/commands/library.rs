@@ -2,7 +2,7 @@
 
 use bookclerk_acquire::{
     acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library, AcquireRequest,
-    ConvertRequest, MatchStorageOptions, StorageIndex,
+    ConvertRequest, MatchStorageOptions,
 };
 use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
