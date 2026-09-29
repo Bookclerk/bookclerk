@@ -118,14 +118,20 @@ pending → running → succeeded
   The generation is a UUID bound in `storage_scan_generations` to that storage
   instance and the job. Object rows live in `storage_scan_rows`, not in the
   64 KiB checkpoint. Page inserts happen before the cursor advances; replaying
-  a page is idempotent. `run_acquire` performs one fenced scan and matches
-  against that index. A successful acquire deletes the generation. Startup
+  a page is idempotent.   `run_acquire` performs one fenced scan and matches
+  against that index. An `apply` checkpoint is adopted only when its
+  generation row still exists and is marked complete; a missing or incomplete
+  inventory is scanned again. A successful acquire, including one with no
+  targets, deletes the generation before the handler returns. Startup
   reclaim removes abandoned generations and does not remove one owned by a
   pending or running job. Local list indexes are node-local scratch and are
   not a portable checkpoint.
-- MP3 conversion counts input and encoder output against the job temp quota.
-  Scratch is `cache/convert`. The reservation is dropped only after the
-  directory is gone. Startup sweep includes `convert` and keeps directories
+- MP3 conversion counts input bytes, then reserves input plus the output
+  allowance (`min(input, quota - input)`) before encode. The worker stops
+  writing when the next chunk would pass that allowance, and dropping the
+  encode future kills the worker. Scratch is `cache/convert`. The reservation
+  is dropped only after the directory is gone. A cleanup failure keeps the
+  reservation. Startup sweep includes `convert` and keeps directories
   registered to an active job.
 - Reclaim also requires `lease_expires_at` to still be null or `<= now`, so a
   heartbeat that extends the same generation cannot be stolen.
