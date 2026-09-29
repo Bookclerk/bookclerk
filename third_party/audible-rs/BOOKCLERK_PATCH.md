@@ -11,8 +11,8 @@ crates, even when SeaORM's sqlx driver is unused.
 
 This vendored tree is identical to the pinned upstream revision except:
 
-1. `rusqlite` is lowered to `0.37` so the workspace shares one
-   `libsqlite3-sys` (`0.35`) **if** the optional `cli` feature is enabled.
+1. `rusqlite` is lowered to `0.39` so the workspace shares one
+   `libsqlite3-sys` (`0.37`) **if** the optional `cli` feature is enabled.
    Bookclerk's Audible plugin does not enable `cli`, so audible-rs does
    not link SQLite in the plugin binary.
 2. Auth-file salt/nonce generation uses `MaybeUninit` + `OsRng` instead of
