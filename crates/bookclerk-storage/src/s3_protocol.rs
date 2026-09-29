@@ -31,6 +31,13 @@ struct World {
     completes: Vec<String>,
     copy_parts: Vec<(String, String)>,
     hold_parts: bool,
+    fail_complete: bool,
+    /// Integrity PUTs wait until the test releases them, one permit at a time.
+    hold_integrity: bool,
+    /// Integrity PUTs fail after the body is already complete.
+    fail_integrity: bool,
+    held_integrity: Vec<Arc<Notify>>,
+    integrity_arrived: Arc<Notify>,
     part_gate: Arc<Notify>,
     first_part_started: Arc<Notify>,
 }
@@ -91,7 +98,7 @@ async fn serve(world: Arc<Mutex<World>>) -> String {
                     body.extend_from_slice(&buf[..n]);
                 }
                 body.truncate(content_len);
-                let key = path.trim_start_matches('/').to_string();
+                let key = percent_decode(path.trim_start_matches('/'));
                 let response = handle(method, &key, query, &headers, &body, &world).await;
                 let _ = socket.write_all(response.as_bytes()).await;
             });
@@ -106,9 +113,30 @@ fn query_map(query: &str) -> HashMap<String, String> {
         .filter(|pair| !pair.is_empty())
         .map(|pair| {
             let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-            (k.to_string(), v.to_string())
+            (percent_decode(k), percent_decode(v))
         })
         .collect()
+}
+
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(value) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or(""),
+                16,
+            ) {
+                out.push(value);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn xml_ok(body: &str) -> String {
@@ -201,6 +229,9 @@ async fn handle(
         );
     }
     if method == "POST" && q.contains_key("uploadId") {
+        if world.lock().await.fail_complete {
+            return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into();
+        }
         let upload_id = q.get("uploadId").cloned().unwrap_or_default();
         let mut world = world.lock().await;
         let Some(upload) = world.uploads.remove(&upload_id) else {
@@ -211,7 +242,8 @@ async fn handle(
         for part in upload.parts.values() {
             body.extend_from_slice(part);
         }
-        let etag = format!("\"multipart-{}\"", upload.parts.len());
+        // Content-derived, like a real multipart ETag, and not the SHA-256.
+        let etag = etag_for(&body);
         world.objects.insert(
             upload.key,
             Obj {
@@ -226,6 +258,10 @@ async fn handle(
         );
         return xml_ok(&xml);
     }
+    if method == "DELETE" && !q.contains_key("uploadId") {
+        world.lock().await.objects.remove(key);
+        return "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into();
+    }
     if method == "DELETE" && q.contains_key("uploadId") {
         let upload_id = q.get("uploadId").cloned().unwrap_or_default();
         let mut world = world.lock().await;
@@ -236,6 +272,21 @@ async fn handle(
         }
         return "HTTP/1.1 404 NoSuchUpload\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             .into();
+    }
+    if method == "GET" && q.contains_key("list-type") {
+        let prefix = q.get("prefix").cloned().unwrap_or_default();
+        let world = world.lock().await;
+        let mut xml = String::from(
+            "<?xml version=\"1.0\"?><ListBucketResult><IsTruncated>false</IsTruncated>",
+        );
+        for key in world.objects.keys() {
+            if prefix.is_empty() || key.contains(&prefix) {
+                let name = key.strip_prefix("library/").unwrap_or(key);
+                xml.push_str(&format!("<Contents><Key>{name}</Key></Contents>"));
+            }
+        }
+        xml.push_str("</ListBucketResult>");
+        return xml_ok(&xml);
     }
     if method == "HEAD" {
         let world = world.lock().await;
@@ -290,6 +341,30 @@ async fn handle(
         let xml = format!("<CopyObjectResult><ETag>{etag}</ETag></CopyObjectResult>");
         return xml_ok(&xml);
     }
+    if method == "PUT" && key.contains(".bookclerk-integrity/") {
+        let (fail, hold, release) = {
+            let mut world = world.lock().await;
+            if world.fail_integrity {
+                (true, false, None)
+            } else if world.hold_integrity {
+                let release = Arc::new(Notify::new());
+                world.held_integrity.push(Arc::clone(&release));
+                world.integrity_arrived.notify_one();
+                (false, true, Some(release))
+            } else {
+                (false, false, None)
+            }
+        };
+        if fail {
+            return "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .into();
+        }
+        if hold {
+            if let Some(release) = release {
+                release.notified().await;
+            }
+        }
+    }
     if method == "PUT" {
         let mut meta = HashMap::new();
         for (name, value) in headers {
@@ -336,6 +411,10 @@ fn slice_range(body: &[u8], header: &str) -> Vec<u8> {
 }
 
 async fn open_backend(url: &str, journal: &std::path::Path) -> S3Backend {
+    open_sized(url, journal, Some(4)).await
+}
+
+async fn open_sized(url: &str, journal: &std::path::Path, part_size: Option<usize>) -> S3Backend {
     let cfg = OutputS3Config {
         enabled: true,
         bucket: "library".into(),
@@ -352,10 +431,13 @@ async fn open_backend(url: &str, journal: &std::path::Path) -> S3Backend {
         session_token: None,
         label: None,
     };
-    S3Backend::from_parts_with_journal(&cfg, "", Some(&creds), journal)
+    let backend = S3Backend::from_parts_with_journal(&cfg, "", Some(&creds), journal)
         .await
-        .unwrap()
-        .with_part_size(4)
+        .unwrap();
+    match part_size {
+        Some(part_size) => backend.with_part_size(part_size),
+        None => backend,
+    }
 }
 
 fn new_world(hold_parts: bool) -> Arc<Mutex<World>> {
@@ -366,6 +448,11 @@ fn new_world(hold_parts: bool) -> Arc<Mutex<World>> {
         completes: Vec::new(),
         copy_parts: Vec::new(),
         hold_parts,
+        fail_complete: false,
+        hold_integrity: false,
+        fail_integrity: false,
+        held_integrity: Vec::new(),
+        integrity_arrived: Arc::new(Notify::new()),
         part_gate: Arc::new(Notify::new()),
         first_part_started: Arc::new(Notify::new()),
     }))
@@ -396,7 +483,7 @@ async fn multipart_digest_is_visible_to_a_reconstructed_backend() {
     let probe = again.probe("book.m4b").await.unwrap();
     assert_eq!(probe.meta.sha256_hex.as_deref(), Some(expect.as_str()));
     assert_ne!(probe.etag.as_deref(), Some(expect.as_str()));
-    assert!(probe.etag.as_deref().unwrap_or("").contains("multipart"));
+    assert!(probe.etag.as_deref().is_some_and(|etag| !etag.is_empty()));
 }
 
 #[tokio::test]
@@ -582,4 +669,298 @@ impl StorageBackend for ReplacingCopy {
     ) -> Result<crate::PutStreamResult> {
         self.inner.put_stream(key, body, meta).await
     }
+}
+
+fn sha(body: &[u8]) -> String {
+    hex::encode(Sha256::digest(body))
+}
+
+#[tokio::test]
+async fn failed_completion_does_not_attach_the_new_digest_to_the_old_object() {
+    let world = new_world(false);
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_backend(&url, dir.path()).await;
+    let body_a = b"aaaaaaaaaa";
+    backend
+        .put_stream(
+            "book.m4b",
+            Box::pin(std::io::Cursor::new(body_a.to_vec())),
+            ObjectMeta {
+                content_length: Some(body_a.len() as u64),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
+        .unwrap();
+    world.lock().await.fail_complete = true;
+    let body_b = b"bbbbbbbbbb";
+    let err = backend
+        .put_stream(
+            "book.m4b",
+            Box::pin(std::io::Cursor::new(body_b.to_vec())),
+            ObjectMeta {
+                content_length: Some(body_b.len() as u64),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("500") || matches!(err, StorageError::S3(_)),
+        "{err}"
+    );
+    let probe = backend.probe("book.m4b").await.unwrap();
+    let body = backend.get("book.m4b").await.unwrap();
+    assert_eq!(body.as_ref(), body_a);
+    assert_eq!(probe.meta.sha256_hex.as_deref(), Some(sha(body_a).as_str()));
+    assert_eq!(sha(body.as_ref()), sha(body_a));
+    assert_ne!(probe.meta.sha256_hex.as_deref(), Some(sha(body_b).as_str()));
+}
+
+#[tokio::test]
+async fn small_copy_and_delete_keep_integrity_bound_to_the_body() {
+    let world = new_world(false);
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_sized(&url, dir.path(), None).await;
+    let body = b"audiobook";
+    backend
+        .put_stream(
+            "stage.m4b",
+            Box::pin(std::io::Cursor::new(body.to_vec())),
+            ObjectMeta {
+                content_length: Some(body.len() as u64),
+                commit_token: Some("tok-1".into()),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
+        .unwrap();
+    backend.copy("stage.m4b", "final.m4b").await.unwrap();
+    drop(backend);
+    let again = open_sized(&url, dir.path(), None).await;
+    let probe = again.probe("final.m4b").await.unwrap();
+    assert_eq!(probe.meta.sha256_hex.as_deref(), Some(sha(body).as_str()));
+    assert_eq!(probe.meta.commit_token.as_deref(), Some("tok-1"));
+    again.delete("final.m4b").await.unwrap();
+    again
+        .put(
+            "final.m4b",
+            Bytes::from_static(b"audiobook"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+    let replaced = again.probe("final.m4b").await.unwrap();
+    assert_eq!(again.get("final.m4b").await.unwrap().as_ref(), body);
+    assert!(replaced.meta.sha256_hex.is_none());
+    assert!(replaced.meta.commit_token.is_none());
+}
+
+#[tokio::test]
+async fn opposite_completion_order_keeps_the_visible_bodys_digest() {
+    let world = new_world(false);
+    world.lock().await.hold_integrity = true;
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_backend(&url, dir.path()).await;
+    let body_a = b"aaaaaaaaaa".to_vec();
+    let body_b = b"bbbbbbbbbb".to_vec();
+    let first = tokio::spawn({
+        let backend = backend.clone();
+        let body_a = body_a.clone();
+        async move {
+            backend
+                .put_stream(
+                    "book.m4b",
+                    Box::pin(std::io::Cursor::new(body_a)),
+                    ObjectMeta {
+                        content_length: Some(10),
+                        commit_token: Some("tok-a".into()),
+                        ..ObjectMeta::default()
+                    },
+                )
+                .await
+        }
+    });
+    let second = tokio::spawn({
+        let backend = backend.clone();
+        let body_b = body_b.clone();
+        async move {
+            backend
+                .put_stream(
+                    "book.m4b",
+                    Box::pin(std::io::Cursor::new(body_b)),
+                    ObjectMeta {
+                        content_length: Some(10),
+                        commit_token: Some("tok-b".into()),
+                        ..ObjectMeta::default()
+                    },
+                )
+                .await
+        }
+    });
+    loop {
+        let ready = {
+            let world = world.lock().await;
+            let _arrived = &world.integrity_arrived;
+            world.completes.len() >= 2 && world.held_integrity.len() >= 2
+        };
+        if ready {
+            break;
+        }
+        if first.is_finished() && second.is_finished() {
+            panic!(
+                "uploads finished before both integrity records were held: {:?}",
+                world.lock().await.completes
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+    let visible = {
+        let world = world.lock().await;
+        world
+            .objects
+            .get("library/book.m4b")
+            .expect("completed object")
+            .body
+            .clone()
+    };
+    let releases = {
+        let mut world = world.lock().await;
+        std::mem::take(&mut world.held_integrity)
+    };
+    for release in releases.into_iter().rev() {
+        release.notify_one();
+    }
+    first.await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+    let probe = backend.probe("book.m4b").await.unwrap();
+    let got = backend.get("book.m4b").await.unwrap();
+    assert_eq!(got.as_ref(), visible.as_slice());
+    assert_eq!(
+        probe.meta.sha256_hex.as_deref(),
+        Some(sha(&visible).as_str())
+    );
+    assert_eq!(sha(got.as_ref()), sha(&visible));
+    if visible.as_slice() == body_a.as_slice() {
+        assert_eq!(probe.meta.commit_token.as_deref(), Some("tok-a"));
+        assert_ne!(
+            probe.meta.sha256_hex.as_deref(),
+            Some(sha(&body_b).as_str())
+        );
+    } else {
+        assert_eq!(probe.meta.commit_token.as_deref(), Some("tok-b"));
+        assert_ne!(
+            probe.meta.sha256_hex.as_deref(),
+            Some(sha(&body_a).as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn integrity_write_failure_does_not_keep_the_previous_digest() {
+    let world = new_world(false);
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_backend(&url, dir.path()).await;
+    let body_a = b"aaaaaaaaaa";
+    backend
+        .put_stream(
+            "book.m4b",
+            Box::pin(std::io::Cursor::new(body_a.to_vec())),
+            ObjectMeta {
+                content_length: Some(body_a.len() as u64),
+                commit_token: Some("tok-a".into()),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
+        .unwrap();
+    world.lock().await.fail_integrity = true;
+    let body_b = b"bbbbbbbbbb";
+    let err = backend
+        .put_stream(
+            "book.m4b",
+            Box::pin(std::io::Cursor::new(body_b.to_vec())),
+            ObjectMeta {
+                content_length: Some(body_b.len() as u64),
+                commit_token: Some("tok-b".into()),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::S3(_)), "{err}");
+    let got = backend.get("book.m4b").await.unwrap();
+    assert_eq!(got.as_ref(), body_b);
+    let probe = backend.probe("book.m4b").await.unwrap();
+    assert!(probe.meta.sha256_hex.is_none(), "{probe:?}");
+    assert!(probe.meta.commit_token.is_none(), "{probe:?}");
+    assert_ne!(probe.meta.sha256_hex.as_deref(), Some(sha(body_a).as_str()));
+}
+
+#[tokio::test]
+async fn unmatched_integrity_record_is_not_trusted() {
+    let world = new_world(false);
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_backend(&url, dir.path()).await;
+    let body = b"aaaaaaaaaa";
+    backend
+        .put_stream(
+            "book.m4b",
+            Box::pin(std::io::Cursor::new(body.to_vec())),
+            ObjectMeta {
+                content_length: Some(body.len() as u64),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
+        .unwrap();
+    let etag = backend.probe("book.m4b").await.unwrap().etag.unwrap();
+    let key = bound_integrity_key("book.m4b", &etag);
+    backend
+        .put(
+            &key,
+            Bytes::from_static(br#"{"etag":"other-version","sha256_hex":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","commit_token":"stale"}"#),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+    let probe = backend.probe("book.m4b").await.unwrap();
+    assert_eq!(backend.get("book.m4b").await.unwrap().as_ref(), body);
+    assert!(probe.meta.sha256_hex.is_none(), "{probe:?}");
+    assert!(probe.meta.commit_token.is_none(), "{probe:?}");
+}
+
+#[tokio::test]
+async fn deleting_one_key_leaves_another_keys_integrity() {
+    let world = new_world(false);
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_sized(&url, dir.path(), None).await;
+    for (key, token) in [("a.m4b", "tok-a"), ("b.m4b", "tok-b")] {
+        let body = key.as_bytes().to_vec();
+        backend
+            .put_stream(
+                key,
+                Box::pin(std::io::Cursor::new(body)),
+                ObjectMeta {
+                    content_length: Some(key.len() as u64),
+                    commit_token: Some(token.into()),
+                    ..ObjectMeta::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    backend.delete("a.m4b").await.unwrap();
+    let kept = backend.probe("b.m4b").await.unwrap();
+    assert_eq!(
+        kept.meta.sha256_hex.as_deref(),
+        Some(sha(b"b.m4b").as_str())
+    );
+    assert_eq!(kept.meta.commit_token.as_deref(), Some("tok-b"));
 }

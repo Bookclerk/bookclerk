@@ -383,12 +383,8 @@ impl S3Backend {
                 return Ok((0, hex::encode(Sha256::digest([]))));
             }
 
-            // User metadata is fixed at CreateMultipartUpload, before the body
-            // exists. Persist the verified digest as its own object first so a
-            // crash after completion can still be recognized by HEAD/probe.
-            self.put_integrity_sidecar(key, &meta).await?;
-
-            self.client
+            let completed_out = self
+                .client
                 .complete_multipart_upload()
                 .bucket(&self.bucket)
                 .key(&full_key)
@@ -401,6 +397,16 @@ impl S3Backend {
                 .send()
                 .await
                 .map_err(|err| StorageError::S3(err.to_string()))?;
+            let etag = completed_out.e_tag().unwrap_or("").to_string();
+            if etag.is_empty() {
+                return Err(StorageError::Integrity(
+                    "multipart complete returned no ETag; integrity was not published".into(),
+                ));
+            }
+            // Bind the digest to this ETag only after the body is the current
+            // object. A failed complete never writes it, so the previous
+            // version's record stays attached to the previous ETag.
+            self.put_bound_integrity(key, &etag, &meta).await?;
             guard.disarm();
             self.clear_orphan(&upload_id);
             Ok((total, digest))
@@ -444,7 +450,13 @@ impl S3Backend {
         }
     }
 
-    async fn copy_object_single(&self, from: &str, to: &str, source_etag: &str) -> Result<()> {
+    async fn copy_object_single(
+        &self,
+        from: &str,
+        to: &str,
+        source_etag: &str,
+        source_meta: &ObjectMeta,
+    ) -> Result<()> {
         self.client
             .copy_object()
             .bucket(&self.bucket)
@@ -455,6 +467,11 @@ impl S3Backend {
             .send()
             .await
             .map_err(|err| map_copy_failure(from, format!("{err:?}")))?;
+        if source_meta.sha256_hex.is_some() || source_meta.commit_token.is_some() {
+            let dest_etag = self.current_etag(to).await?;
+            self.put_bound_integrity(to, &dest_etag, source_meta)
+                .await?;
+        }
         Ok(())
     }
 
@@ -535,7 +552,8 @@ impl S3Backend {
                 start = end;
                 part_number += 1;
             }
-            self.client
+            let completed_out = self
+                .client
                 .complete_multipart_upload()
                 .bucket(&self.bucket)
                 .key(&full_to)
@@ -548,6 +566,13 @@ impl S3Backend {
                 .send()
                 .await
                 .map_err(|err| StorageError::S3(err.to_string()))?;
+            let etag = completed_out.e_tag().unwrap_or("").to_string();
+            if etag.is_empty() {
+                return Err(StorageError::Integrity(
+                    "multipart copy complete returned no ETag; integrity was not published".into(),
+                ));
+            }
+            self.put_bound_integrity(to, &etag, &probe.meta).await?;
             Ok(())
         };
         match copy.await {
@@ -568,7 +593,7 @@ impl S3Backend {
     /// whose owner lock is not held.
     ///
     /// Live uploads are left alone. Failed aborts stay on disk and stop being
-    /// retried after [`MAX_ORPHAN_ATTEMPTS`].
+    /// retried after 8 failed attempts.
     ///
     /// # Errors
     ///
@@ -627,21 +652,29 @@ impl S3Backend {
         }
     }
 
-    /// Writes the verified digest where a later probe can read it.
+    /// Writes digest and commit token for one object version.
     ///
-    /// `CreateMultipartUpload` cannot be updated with a digest computed from
-    /// the body. The sidecar is one small `PutObject` (not a copy of the
-    /// audiobook). Publication is not complete until this write succeeds.
-    async fn put_integrity_sidecar(&self, key: &str, meta: &ObjectMeta) -> Result<()> {
-        let sidecar = crate::bookclerk_meta_sidecar_key(key);
-        let payload = serde_json::to_vec(&ObjectMeta {
+    /// The record key includes the ETag. `probe` reads that key only when HEAD
+    /// returns the same ETag, so a failed or interleaved upload cannot attach
+    /// its digest to a different body.
+    async fn put_bound_integrity(&self, key: &str, etag: &str, meta: &ObjectMeta) -> Result<()> {
+        if etag.is_empty() {
+            return Err(StorageError::Integrity(
+                "refusing to store integrity without an object ETag".into(),
+            ));
+        }
+        if meta.sha256_hex.is_none() && meta.commit_token.is_none() {
+            return Ok(());
+        }
+        let record = BoundIntegrity {
+            etag: etag.to_string(),
             sha256_hex: meta.sha256_hex.clone(),
             commit_token: meta.commit_token.clone(),
-            ..ObjectMeta::default()
-        })
-        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
+        };
+        let payload = serde_json::to_vec(&record)
+            .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
         self.put_body(
-            &sidecar,
+            &bound_integrity_key(key, etag),
             ByteStream::from(Bytes::from(payload)),
             ObjectMeta {
                 content_type: Some("application/json".into()),
@@ -649,6 +682,103 @@ impl S3Backend {
             },
         )
         .await
+    }
+
+    async fn current_etag(&self, key: &str) -> Result<String> {
+        let out = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(self.full_key(key))
+            .send()
+            .await
+            .map_err(|err| StorageError::S3(err.to_string()))?;
+        out.e_tag()
+            .map(str::to_string)
+            .filter(|etag| !etag.is_empty())
+            .ok_or_else(|| StorageError::Integrity(format!("HEAD `{key}` returned no ETag")))
+    }
+
+    async fn read_bound_integrity(&self, key: &str, etag: &str) -> Result<Option<BoundIntegrity>> {
+        let out = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(self.full_key(&bound_integrity_key(key, etag)))
+            .send()
+            .await;
+        let out = match out {
+            Ok(out) => out,
+            Err(err) => {
+                let msg = err.to_string();
+                if msg.contains("NoSuchKey") || msg.contains("404") || msg.contains("NotFound") {
+                    return Ok(None);
+                }
+                return Err(StorageError::S3(msg));
+            }
+        };
+        let bytes = out
+            .body
+            .collect()
+            .await
+            .map_err(|err| StorageError::S3(err.to_string()))?
+            .into_bytes();
+        let parsed: BoundIntegrity = serde_json::from_slice(&bytes)
+            .map_err(|err| StorageError::Integrity(format!("integrity record: {err}")))?;
+        if parsed.etag != etag {
+            return Ok(None);
+        }
+        Ok(Some(parsed))
+    }
+
+    async fn delete_bound_integrity(&self, key: &str) -> Result<()> {
+        if key.contains(".bookclerk-integrity/") {
+            return Ok(());
+        }
+        let prefix = format!("{}.bookclerk-integrity/", self.full_key(key));
+        let mut token = None;
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix);
+            if let Some(token) = &token {
+                req = req.continuation_token(token);
+            }
+            let page = req
+                .send()
+                .await
+                .map_err(|err| StorageError::S3(err.to_string()))?;
+            for obj in page.contents() {
+                if let Some(name) = obj.key() {
+                    self.client
+                        .delete_object()
+                        .bucket(&self.bucket)
+                        .key(name)
+                        .send()
+                        .await
+                        .map_err(|err| StorageError::S3(err.to_string()))?;
+                }
+            }
+            if page.is_truncated().unwrap_or(false) {
+                token = page.next_continuation_token().map(str::to_string);
+                if token.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        let legacy = crate::bookclerk_meta_sidecar_key(key);
+        let _ = self
+            .client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(self.full_key(&legacy))
+            .send()
+            .await;
+        Ok(())
     }
 }
 
@@ -775,12 +905,14 @@ impl StorageBackend for S3Backend {
             commit_token,
             ..meta
         };
-        if meta.sha256_hex.is_none() && !key.ends_with(".bookclerk-meta.json") {
-            if let Ok(bytes) = self.get(&crate::bookclerk_meta_sidecar_key(key)).await {
-                if let Ok(parsed) = serde_json::from_slice::<ObjectMeta>(&bytes) {
-                    meta.sha256_hex = parsed.sha256_hex;
+        if !key.contains(".bookclerk-integrity/") {
+            if let Some(etag) = out.e_tag() {
+                if let Ok(Some(bound)) = self.read_bound_integrity(key, etag).await {
+                    if meta.sha256_hex.is_none() {
+                        meta.sha256_hex = bound.sha256_hex;
+                    }
                     if meta.commit_token.is_none() {
-                        meta.commit_token = parsed.commit_token;
+                        meta.commit_token = bound.commit_token;
                     }
                 }
             }
@@ -823,7 +955,7 @@ impl StorageBackend for S3Backend {
         if multipart {
             self.copy_multipart(from, to, &probe).await
         } else {
-            self.copy_object_single(from, to, &etag).await
+            self.copy_object_single(from, to, &etag, &probe.meta).await
         }
     }
 
@@ -835,6 +967,7 @@ impl StorageBackend for S3Backend {
             .send()
             .await
             .map_err(|err| StorageError::S3(err.to_string()))?;
+        self.delete_bound_integrity(key).await?;
         Ok(())
     }
 
@@ -1348,6 +1481,22 @@ impl Drop for MultipartGuard {
 
 #[cfg(test)]
 static SKIP_DROP_ABORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BoundIntegrity {
+    etag: String,
+    #[serde(default)]
+    sha256_hex: Option<String>,
+    #[serde(default)]
+    commit_token: Option<String>,
+}
+
+fn bound_integrity_key(key: &str, etag: &str) -> String {
+    format!(
+        "{key}.bookclerk-integrity/{}.json",
+        hex::encode(etag.as_bytes())
+    )
+}
 
 fn map_copy_failure(key: &str, msg: String) -> StorageError {
     if msg.contains("PreconditionFailed")
