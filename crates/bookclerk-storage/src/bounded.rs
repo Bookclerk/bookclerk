@@ -24,8 +24,8 @@ pub const MAX_LIST_PAGE: u32 = bookclerk_plugin_sdk::MAX_LIST_PAGE;
 
 /// Largest object this process will upload or server-copy.
 ///
-/// S3 allows 10,000 parts. Parts are [`crate::s3::MULTIPART_PART_SIZE`] (8 MiB),
-/// so the application ceiling is 80 GiB. AWS's own 5 TiB object maximum is wider;
+/// S3 allows 10,000 parts. Each part is 8 MiB, so the application ceiling is
+/// 80 GiB. AWS's own 5 TiB object maximum is wider;
 /// requests above this ceiling fail before any part buffer is filled.
 pub const MAX_SUPPORTED_OBJECT_BYTES: u64 =
     crate::s3::MULTIPART_PART_SIZE as u64 * crate::s3::S3_MAX_PARTS as u64;

@@ -29,14 +29,14 @@ pub struct StorageIndex {
 impl StorageIndex {
     /// Empty overlay.
     ///
-    /// This does not list `storage`. Call [`crate::storage_scan::scan_storage`]
+    /// This does not list `storage`. Call [`crate::scan_storage`]
     /// when identity matching needs a durable index. Exact keys are resolved
     /// with [`StorageBackend::exists`] at decision time.
     ///
     /// # Errors
     ///
     /// Always returns `Ok`. The storage argument is accepted so older call
-    /// sites keep compiling while they move to [`crate::storage_scan::scan_storage`].
+    /// sites keep compiling while they move to [`crate::scan_storage`].
     pub async fn from_storage(storage: &dyn StorageBackend) -> Result<Self> {
         let _ = storage.instance_id();
         Ok(Self::default())
