@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use bookclerk_acquire::{
     acquire_book_indexed, match_storage_to_library, AcquireRequest, MatchStorageOptions,
-    StorageIndex,
 };
 use bookclerk_config::BadBookAction;
 use bookclerk_library::{
@@ -514,7 +513,14 @@ pub async fn run_acquire(
         return Ok("nothing to acquire".into());
     }
 
-    let mut index = StorageIndex::from_storage(storage.as_ref()).await?;
+    let mut index = bookclerk_acquire::scan_storage(
+        &library,
+        storage.as_ref(),
+        ctx.map(|c| &c.fence),
+        ctx.and_then(|c| c.checkpoint.as_ref()),
+        true,
+    )
+    .await?;
     let mut ok = 0u32;
     let mut matched = 0u32;
     let mut failed = 0u32;

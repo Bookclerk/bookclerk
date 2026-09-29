@@ -1,5 +1,7 @@
 //! Convert acquired m4b/m4a to mp3 (classic LibationCli: `convert`).
 
+#![allow(clippy::missing_docs_in_private_items)]
+
 use std::path::PathBuf;
 
 use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
@@ -83,13 +85,32 @@ pub async fn convert_book(
     }
 
     let file_id = book.asin_or_isbn();
-    let work_dir = req.cache_dir.join("convert").join(file_id);
+    let work_dir = req.cache_dir.join("convert").join(format!(
+        "{file_id}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     tokio::fs::create_dir_all(&work_dir).await?;
     let input = work_dir.join(format!("{file_id}.{ext}"));
     let output = work_dir.join(format!("{file_id}.mp3"));
+    let mut scratch = ScratchDir::new(work_dir.clone());
 
-    let data = storage.get(key).await?;
-    tokio::fs::write(&input, &data).await?;
+    let (probe, mut body) = storage.get_stream(key, None).await?;
+    {
+        let mut file = tokio::fs::File::create(&input).await?;
+        let copied = tokio::io::copy(&mut body, &mut file).await?;
+        file.sync_all().await?;
+        if probe.size > 0 && copied != probe.size {
+            return Err(AcquireError::Storage(
+                bookclerk_storage::StorageError::Integrity(format!(
+                    "convert read {copied} bytes, source size is {}",
+                    probe.size
+                )),
+            ));
+        }
+    }
     encode_to_mp3(&input, &output, &req.lame, req.max_sample_rate).await?;
 
     let meta = ObjectMeta {
@@ -99,12 +120,9 @@ pub async fn convert_book(
         title: Some(book.title.clone()),
         creation_time: None,
         last_write_time: None,
+        ..Default::default()
     };
     storage.put_file(&mp3_key, &output, meta).await?;
-
-    if mp3_key != *key {
-        let _ = storage.delete(key).await;
-    }
 
     library
         .set_acquire_status(
@@ -116,13 +134,36 @@ pub async fn convert_book(
         )
         .await?;
 
-    if let Err(err) = tokio::fs::remove_dir_all(&work_dir).await {
-        tracing::warn!(
-            path = %work_dir.display(),
-            error = %err,
-            "failed to clean convert cache dir"
-        );
+    if mp3_key != *key {
+        let _ = storage.delete(key).await;
+    }
+    scratch.cleanup().await;
+    Ok(mp3_key)
+}
+
+/// Removes conversion scratch on drop and on explicit success.
+struct ScratchDir {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl ScratchDir {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, armed: true }
     }
 
-    Ok(mp3_key)
+    async fn cleanup(&mut self) {
+        if self.armed {
+            let _ = tokio::fs::remove_dir_all(&self.path).await;
+            self.armed = false;
+        }
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 }

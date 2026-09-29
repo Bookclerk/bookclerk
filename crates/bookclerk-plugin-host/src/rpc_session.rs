@@ -22,8 +22,7 @@ use bookclerk_plugin_sdk::{
     HostBindings, Invocation, JobInvocation, JobInvocationLease, ListOptions, ObjectMetadata, Oidc,
     OidcClientTemplate, OpenedEntrypoints, PluginCli, PluginClient, PluginDescribe, PutResult,
     ReadResult, ScalarLimits, Source, StreamCopySpec, WriteOptions, FEATURE_SCALAR_LIMITS,
-    FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use bookclerk_storage::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
@@ -31,7 +30,7 @@ use bookclerk_storage::{
 };
 use bytes::Bytes;
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::discover::DiscoveredPlugin;
@@ -3505,6 +3504,9 @@ impl PluginStorage {
             PluginError::Abi { code, message } if code == "invalid_cursor" => {
                 StorageError::InvalidCursor(message)
             }
+            PluginError::Abi { message, .. } if message.starts_with("integrity:") => {
+                StorageError::Integrity(message)
+            }
             other => StorageError::Other(anyhow!(other)),
         }
     }
@@ -3516,17 +3518,21 @@ impl StorageBackend for PluginStorage {
         "plugin"
     }
 
+    fn instance_id(&self) -> String {
+        format!(
+            "plugin:{}:{}",
+            self.session.instance_key(),
+            self.session.session_key()
+        )
+    }
+
     fn clone_box(&self) -> Box<dyn StorageBackend> {
         Box::new(self.clone())
     }
 
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> bookclerk_storage::Result<()> {
-        if data.len() > MAX_SCALAR_BYTES as usize {
-            return Err(StorageError::PayloadTooLarge(format!(
-                "scalar put of {} bytes exceeds {MAX_SCALAR_BYTES} (use put_stream)",
-                data.len()
-            )));
-        }
+        let limit = u64::from(self.session.limits().max_scalar_bytes);
+        bookclerk_storage::ensure_scalar_len(data.len(), limit)?;
         self.put_stream(key, Box::pin(std::io::Cursor::new(data)), meta)
             .await
             .map(|_| ())
@@ -3543,35 +3549,23 @@ impl StorageBackend for PluginStorage {
     }
 
     async fn get(&self, key: &str) -> bookclerk_storage::Result<Bytes> {
+        let limit = u64::from(self.session.limits().max_scalar_bytes);
         let probe = self.probe(key).await?;
-        if probe.size > u64::from(MAX_SCALAR_BYTES) {
-            return Err(StorageError::PayloadTooLarge(format!(
-                "scalar get of {} bytes exceeds {MAX_SCALAR_BYTES} (use get_stream)",
-                probe.size
+        bookclerk_storage::reject_scalar_hint(probe.size, limit)?;
+        let (opened, body) = self.get_stream(key, None).await?;
+        let data = bookclerk_storage::read_scalar_body(body, limit).await?;
+        if opened.size <= limit && data.len() as u64 != opened.size && opened.size > 0 {
+            return Err(StorageError::Integrity(format!(
+                "scalar get read {} bytes after HEAD reported {}",
+                data.len(),
+                opened.size
             )));
         }
-        let (_probe, mut body) = self.get_stream(key, None).await?;
-        let mut buf = Vec::new();
-        body.read_to_end(&mut buf).await?;
-        Ok(Bytes::from(buf))
+        Ok(data)
     }
 
     async fn exists(&self, key: &str) -> bookclerk_storage::Result<bool> {
         Ok(self.head(key).await?.is_some())
-    }
-
-    async fn list(&self, prefix: &str) -> bookclerk_storage::Result<Vec<ObjectInfo>> {
-        let mut out = Vec::new();
-        let mut cursor = None;
-        loop {
-            let page = self.list_page(prefix, cursor.as_deref(), 0).await?;
-            out.extend(page.objects);
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        Ok(out)
     }
 
     async fn probe(&self, key: &str) -> bookclerk_storage::Result<ObjectProbe> {
@@ -3639,6 +3633,9 @@ impl StorageBackend for PluginStorage {
         key: &str,
         range: Option<ByteRange>,
     ) -> bookclerk_storage::Result<(ObjectProbe, Pin<Box<dyn AsyncRead + Send>>)> {
+        if let Some(range) = range {
+            let _ = bookclerk_storage::normalize_range(Some(range), None)?;
+        }
         let abi_range = range.map(|r| AbiByteRange {
             offset: r.offset,
             length: r.length,
@@ -3661,6 +3658,10 @@ impl StorageBackend for PluginStorage {
         body: Pin<Box<dyn AsyncRead + Send>>,
         meta: ObjectMeta,
     ) -> bookclerk_storage::Result<PutStreamResult> {
+        let sha256 = match meta.sha256_hex.as_deref() {
+            Some(hex) => Some(bookclerk_storage::parse_sha256_hex(hex)?.to_vec()),
+            None => None,
+        };
         let put = self
             .session
             .call(|reply| Work::PutStream {
@@ -3669,8 +3670,8 @@ impl StorageBackend for PluginStorage {
                 options: WriteOptions {
                     content_type: meta.content_type,
                     content_length: meta.content_length,
-                    sha256: None,
-                    commit_token: None,
+                    sha256,
+                    commit_token: meta.commit_token,
                     stage_only: false,
                 },
                 reply,
@@ -3680,6 +3681,11 @@ impl StorageBackend for PluginStorage {
         Ok(PutStreamResult {
             bytes_written: put.bytes_written,
             etag: put.etag,
+            sha256_hex: put
+                .sha256
+                .as_deref()
+                .and_then(|raw| bookclerk_storage::sha256_field_from_raw(Some(raw)).ok())
+                .flatten(),
         })
     }
 
@@ -3701,13 +3707,20 @@ impl StorageBackend for PluginStorage {
 }
 
 fn meta_to_probe(meta: ObjectMetadata) -> ObjectProbe {
+    let sha256_hex = meta
+        .sha256
+        .as_deref()
+        .and_then(|raw| bookclerk_storage::sha256_field_from_raw(Some(raw)).ok())
+        .flatten();
     ObjectProbe {
         key: meta.key.clone(),
         size: meta.size,
         content_type: meta.content_type.clone(),
+        etag: meta.etag.clone(),
         meta: ObjectMeta {
             content_type: meta.content_type,
             content_length: Some(meta.size),
+            sha256_hex,
             ..Default::default()
         },
     }
@@ -3721,6 +3734,7 @@ mod tests {
         PRODUCT_API_VERSION,
     };
     use sea_orm::EntityTrait;
+    use tokio::io::AsyncReadExt;
 
     #[test]
     fn instance_key_separates_accounts() {

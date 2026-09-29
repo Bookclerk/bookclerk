@@ -795,4 +795,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_configuration_changes_doc
         ON configuration_changes(scope_type, scope_id, namespace, id)",
     ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS storage_scan_rows (
+        scan_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        identity TEXT NOT NULL,
+        object_key TEXT NOT NULL,
+        size INTEGER NOT NULL DEFAULT 0,
+        media_rank INTEGER NOT NULL DEFAULT 0,
+        is_audio INTEGER NOT NULL DEFAULT 0,
+        claimed INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (scan_id, kind, identity, object_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_storage_scan_identity ON storage_scan_rows(scan_id, kind, identity)",
+    ),
 ];

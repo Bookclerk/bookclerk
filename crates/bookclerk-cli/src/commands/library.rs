@@ -387,7 +387,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let mut index = if dry_run {
                 None
             } else {
-                Some(StorageIndex::from_storage(storage.as_ref()).await?)
+                Some(
+                    bookclerk_acquire::scan_storage(&store, storage.as_ref(), None, None, true)
+                        .await?,
+                )
             };
 
             let mut ok = 0u32;

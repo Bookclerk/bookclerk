@@ -17,6 +17,7 @@ bookclerk-config.workspace = true
 bookclerk-enrich.workspace = true
 bookclerk-media.workspace = true
 bookclerk-library.workspace = true
+bookclerk-plugin-abi.workspace = true
 bookclerk-naming.workspace = true
 bookclerk-source.workspace = true
 bookclerk-storage.workspace = true

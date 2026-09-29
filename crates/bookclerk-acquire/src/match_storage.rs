@@ -10,17 +10,19 @@
 //!    audio file, also moves known Audiobookshelf bare companions
 //!    (`metadata.json` / `cover.jpg`, …)
 
-use std::collections::{HashMap, HashSet};
+#![allow(clippy::missing_docs_in_private_items)]
+
+use std::collections::HashSet;
 
 use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
 use bookclerk_source::DownloadOptions;
-use bookclerk_storage::{bookclerk_meta_sidecar_key, is_audio_key, ObjectProbe, StorageBackend};
+use bookclerk_storage::{bookclerk_meta_sidecar_key, is_audio_key, StorageBackend};
 use tracing::{debug, info, warn};
 
 use crate::error::{AcquireError, Result};
 use crate::naming::sidecar_key;
 use crate::pipeline::planned_storage_key;
-use crate::reconcile::{extract_asins_from_key, request_from_book};
+use crate::reconcile::request_from_book;
 
 /// Known sidecar suffixes written next to a acquired audio file (stem-prefixed:
 /// `Title [ASIN].metadata.json`).
@@ -119,143 +121,129 @@ pub async fn match_storage_to_library(
     storage: &dyn StorageBackend,
     options: MatchStorageOptions,
 ) -> Result<MatchStorageSummary> {
-    // Single list pass — derive audio candidates without a second backend listing.
-    let all_objects = storage.list("").await?;
-    let all_keys: HashSet<String> = all_objects.iter().map(|o| o.key.clone()).collect();
-    let audio: Vec<_> = all_objects
-        .into_iter()
-        .filter(|o| is_audio_key(&o.key))
-        .collect();
-
-    // identity (uppercase) → best audio key
-    let mut by_id: HashMap<String, String> = HashMap::new();
-    let mut probed_keys = HashSet::new();
-
-    for obj in &audio {
-        probed_keys.insert(obj.key.clone());
-        let probe = match storage.probe(&obj.key).await {
-            Ok(p) => p,
-            Err(err) => {
-                warn!(key = %obj.key, error = %err, "storage probe failed; using path tokens only");
-                ObjectProbe {
-                    key: obj.key.clone(),
-                    size: obj.size,
-                    ..Default::default()
-                }
-            }
-        };
-        let mut ids = Vec::new();
-        if let Some(asin) = probe.meta.asin.as_deref() {
-            ids.push(asin.to_ascii_uppercase());
-        }
-        ids.extend(extract_asins_from_key(&obj.key));
-        for id in ids {
-            match by_id.get(&id) {
-                Some(existing) if media_rank(existing) <= media_rank(&obj.key) => {}
-                _ => {
-                    by_id.insert(id, obj.key.clone());
-                }
-            }
-        }
-    }
-
-    let books = library.list_books(options.account.as_deref()).await?;
+    let index = crate::storage_scan::scan_storage(library, storage, None, None, true).await?;
     let filter: HashSet<String> = options
         .asins
         .iter()
         .map(|a| a.to_ascii_uppercase())
         .collect();
     let mut summary = MatchStorageSummary::default();
-    let mut claimed_keys: HashSet<String> = HashSet::new();
-
-    for book in &books {
-        if !filter.is_empty() {
-            let ids = book_identity_tokens(book);
-            if !ids.iter().any(|id| filter.contains(id)) {
-                continue;
-            }
+    let mut after_id = None;
+    loop {
+        let books = library
+            .list_books_page(options.account.as_deref(), after_id, 64)
+            .await?;
+        if books.is_empty() {
+            break;
         }
+        after_id = books.last().map(|book| book.id);
+        for book in &books {
+            if !filter.is_empty() {
+                let ids = book_identity_tokens(book);
+                if !ids.iter().any(|id| filter.contains(id)) {
+                    continue;
+                }
+            }
 
-        let Some(mut key) = find_audio_for_book(book, &by_id, &all_keys) else {
-            if options.only_mark_found {
+            let Some(mut key) = find_audio_for_book(book, &index, storage, library).await else {
+                if options.only_mark_found {
+                    summary.unchanged += 1;
+                    continue;
+                }
+                if options.clear_missing && book.acquire_status == AcquireStatus::Acquired {
+                    let still_there = match book.storage_key.as_deref() {
+                        Some(key) => storage.exists(key).await?,
+                        None => false,
+                    };
+                    if still_there {
+                        summary.unchanged += 1;
+                        continue;
+                    }
+                    library
+                        .set_acquire_status(
+                            book.title_id(),
+                            &book.account_id,
+                            AcquireStatus::NotAcquired,
+                            None,
+                            None,
+                        )
+                        .await?;
+                    summary.cleared += 1;
+                } else {
+                    summary.unchanged += 1;
+                }
+                continue;
+            };
+
+            if options.only_clear_missing {
+                if let Some(scan_id) = index.scan_id() {
+                    let _ = library.storage_scan_claim(scan_id, &key).await;
+                }
                 summary.unchanged += 1;
                 continue;
             }
-            if options.clear_missing && book.acquire_status == AcquireStatus::Acquired {
+
+            if let Some(scan_id) = index.scan_id() {
+                let _ = library.storage_scan_claim(scan_id, &key).await;
+            }
+
+            if options.fix_layout {
+                let planned =
+                    planned_storage_key(library, &request_from_book(book, &options.download)).await;
+                if planned != key {
+                    match relocate_with_sidecars(storage, &key, &planned).await {
+                        Ok(()) => {
+                            debug!(from = %key, to = %planned, "relocated matched audio to template layout");
+                            key = planned;
+                            summary.relocated += 1;
+                        }
+                        Err(err) => {
+                            warn!(
+                                from = %key,
+                                to = %planned,
+                                error = %err,
+                                "failed to relocate matched audio; keeping existing key"
+                            );
+                        }
+                    }
+                }
+            }
+
+            let already = book.acquire_status == AcquireStatus::Acquired
+                && book.storage_key.as_deref() == Some(key.as_str());
+            if already {
+                summary.unchanged += 1;
+            } else {
                 library
                     .set_acquire_status(
                         book.title_id(),
                         &book.account_id,
-                        AcquireStatus::NotAcquired,
-                        None,
+                        AcquireStatus::Acquired,
+                        Some(&key),
                         None,
                     )
                     .await?;
-                summary.cleared += 1;
-            } else {
-                summary.unchanged += 1;
-            }
-            continue;
-        };
-
-        if options.only_clear_missing {
-            claimed_keys.insert(key);
-            summary.unchanged += 1;
-            continue;
-        }
-
-        claimed_keys.insert(key.clone());
-
-        if options.fix_layout {
-            let planned =
-                planned_storage_key(library, &request_from_book(book, &options.download)).await;
-            if planned != key {
-                match relocate_with_sidecars(storage, &all_keys, &key, &planned).await {
-                    Ok(()) => {
-                        debug!(from = %key, to = %planned, "relocated matched audio to template layout");
-                        key = planned;
-                        summary.relocated += 1;
-                    }
-                    Err(err) => {
-                        warn!(
-                            from = %key,
-                            to = %planned,
-                            error = %err,
-                            "failed to relocate matched audio; keeping existing key"
-                        );
-                    }
+                summary.matched += 1;
+                if let Some(scan_id) = index.scan_id() {
+                    let _ = library.storage_scan_claim(scan_id, &key).await;
                 }
+                info!(
+                    asin = %book.asin_or_isbn(),
+                    key = %key,
+                    "matched existing acquired media via storage probe"
+                );
             }
-        }
-
-        let already = book.acquire_status == AcquireStatus::Acquired
-            && book.storage_key.as_deref() == Some(key.as_str());
-        if already {
-            summary.unchanged += 1;
-        } else {
-            library
-                .set_acquire_status(
-                    book.title_id(),
-                    &book.account_id,
-                    AcquireStatus::Acquired,
-                    Some(&key),
-                    None,
-                )
-                .await?;
-            summary.matched += 1;
-            info!(
-                asin = %book.asin_or_isbn(),
-                key = %key,
-                "matched existing acquired media via storage probe"
-            );
         }
     }
 
-    summary.unmatched_files = probed_keys
-        .difference(&claimed_keys)
-        .count()
-        .try_into()
-        .unwrap_or(u32::MAX);
+    if let Some(scan_id) = index.scan_id() {
+        summary.unmatched_files = library
+            .storage_scan_unclaimed_audio(scan_id)
+            .await?
+            .try_into()
+            .unwrap_or(u32::MAX);
+        let _ = library.storage_scan_delete(scan_id).await;
+    }
 
     Ok(summary)
 }
@@ -283,20 +271,24 @@ fn book_identity_tokens(book: &BookRecord) -> Vec<String> {
 }
 
 /// Resolves a book’s audio key from a still-present `storage_key`, then identity-token lookup.
-fn find_audio_for_book(
+async fn find_audio_for_book(
     book: &BookRecord,
-    by_id: &HashMap<String, String>,
-    all_keys: &HashSet<String>,
+    index: &crate::reconcile::StorageIndex,
+    storage: &dyn StorageBackend,
+    library: &LibraryStore,
 ) -> Option<String> {
-    // Prefer an exact stored key when the object is still present.
     if let Some(key) = &book.storage_key {
-        if all_keys.contains(key) && is_audio_key(key) {
+        if is_audio_key(key) && storage.exists(key).await.unwrap_or(false) {
             return Some(key.clone());
         }
     }
     for id in book_identity_tokens(book) {
-        if let Some(key) = by_id.get(&id) {
-            return Some(key.clone());
+        if let Some(scan_id) = index.scan_id() {
+            if let Ok(Some(key)) = library.storage_scan_best_identity(scan_id, &id).await {
+                if is_audio_key(&key) && storage.exists(&key).await.unwrap_or(false) {
+                    return Some(key);
+                }
+            }
         }
     }
     None
@@ -305,7 +297,6 @@ fn find_audio_for_book(
 /// Renames audio and known companions; fails if the destination audio key already exists.
 async fn relocate_with_sidecars(
     storage: &dyn StorageBackend,
-    all_keys: &HashSet<String>,
     from_audio: &str,
     to_audio: &str,
 ) -> Result<()> {
@@ -320,9 +311,11 @@ async fn relocate_with_sidecars(
         ));
     }
 
+    let from_dir = parent_dir(from_audio);
+    let sole_audio = count_audio_in_dir(storage, from_dir).await? <= 1;
     storage.rename(from_audio, to_audio).await?;
 
-    let companions = accompanying_keys(all_keys, from_audio);
+    let companions = accompanying_keys(from_audio, sole_audio)?;
     for from_side in companions {
         if !storage.exists(&from_side).await.unwrap_or(false) {
             continue;
@@ -357,17 +350,8 @@ async fn relocate_with_sidecars(
 /// When the containing folder has exactly one audio object, also includes known
 /// Audiobookshelf bare companions (`metadata.json`, `cover.jpg`, …) — not every
 /// non-audio sibling.
-fn accompanying_keys(all_keys: &HashSet<String>, audio_key: &str) -> Vec<String> {
-    let stem = audio_key
-        .rsplit_once('.')
-        .map(|(s, _)| s)
-        .unwrap_or(audio_key);
-    let prefix = format!("{stem}.");
-    let mut out: Vec<String> = all_keys
-        .iter()
-        .filter(|k| k.as_str() != audio_key && k.starts_with(&prefix))
-        .cloned()
-        .collect();
+fn accompanying_keys(audio_key: &str, sole_audio: bool) -> Result<Vec<String>> {
+    let mut out = Vec::new();
 
     // Ensure known stem-prefixed suffixes are attempted even if listing raced.
     for suffix in SIDECAR_SUFFIXES {
@@ -380,11 +364,7 @@ fn accompanying_keys(all_keys: &HashSet<String>, audio_key: &str) -> Vec<String>
     }
 
     let from_dir = parent_dir(audio_key);
-    let audio_in_dir = all_keys
-        .iter()
-        .filter(|k| parent_dir(k) == from_dir && is_audio_key(k))
-        .count();
-    if audio_in_dir == 1 {
+    if sole_audio {
         // Sole audio → relocate known ABS bare companions only (allowlist).
         // Always attempt known names even if listing raced; relocate checks exists.
         for name in FOLDER_COMPANION_BASENAMES {
@@ -392,7 +372,49 @@ fn accompanying_keys(all_keys: &HashSet<String>, audio_key: &str) -> Vec<String>
         }
     }
 
-    out
+    Ok(out)
+}
+
+async fn count_audio_in_dir(storage: &dyn StorageBackend, dir: &str) -> Result<usize> {
+    let prefix = if dir.is_empty() {
+        String::new()
+    } else {
+        format!("{dir}/")
+    };
+    let mut audio = 0usize;
+    let mut cursor = None;
+    let mut hops = 0u32;
+    loop {
+        hops = hops.saturating_add(1);
+        if hops > 10_000 {
+            return Err(AcquireError::Storage(
+                bookclerk_storage::StorageError::InvalidCursor(
+                    "companion directory listing did not finish".into(),
+                ),
+            ));
+        }
+        let page = storage.list_page(&prefix, cursor.as_deref(), 64).await?;
+        for obj in page.objects {
+            if parent_dir(&obj.key) == dir && is_audio_key(&obj.key) {
+                audio += 1;
+                if audio > 1 {
+                    return Ok(audio);
+                }
+            }
+        }
+        match page.next_cursor {
+            Some(next) if cursor.as_deref() == Some(next.as_str()) => {
+                return Err(AcquireError::Storage(
+                    bookclerk_storage::StorageError::InvalidCursor(
+                        "companion directory cursor did not advance".into(),
+                    ),
+                ));
+            }
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    Ok(audio)
 }
 
 /// Rewrites a sidecar or bare-folder companion key to follow a renamed audio object.
@@ -438,24 +460,6 @@ fn join_key(dir: &str, name: &str) -> String {
 fn push_unique(out: &mut Vec<String>, key: String) {
     if !out.iter().any(|k| k == &key) {
         out.push(key);
-    }
-}
-
-/// Preference rank for audio extensions (`m4b` first); non-audio ranks last.
-fn media_rank(key: &str) -> u8 {
-    let ext = key
-        .rsplit_once('.')
-        .map(|(_, e)| e.to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "m4b" => 0,
-        "m4a" => 1,
-        "mp3" => 2,
-        "flac" => 3,
-        "aac" => 4,
-        "ogg" | "oga" => 5,
-        _ if is_audio_key(key) => 6,
-        _ => 9,
     }
 }
 
@@ -693,7 +697,16 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(summary.relocated, 1);
+        assert_eq!(
+            summary.relocated,
+            1,
+            "matched={} relocated={} cleared={} unchanged={} unmatched={}",
+            summary.matched,
+            summary.relocated,
+            summary.cleared,
+            summary.unchanged,
+            summary.unmatched_files
+        );
 
         let book = library
             .get_book("B00EXAMPLE1", "acct")

@@ -1,5 +1,7 @@
 //! Match existing acquired media in storage to library rows.
 
+#![allow(clippy::missing_docs_in_private_items)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -16,25 +18,43 @@ use crate::storage_key_with_rules;
 /// Index of storage object keys, keyed by ASIN found in the path.
 #[derive(Debug, Default, Clone)]
 pub struct StorageIndex {
-    /// ASIN (uppercase) → candidate storage keys.
+    /// ASIN (uppercase) → candidate storage keys written during this process.
     by_asin: HashMap<String, Vec<String>>,
-    /// All keys (for planned-key exact checks).
+    /// Keys inserted via [`Self::insert_key`], not a full inventory.
     all_keys: HashMap<String, ()>,
+    /// Durable scan generation in `storage_scan_rows`, when one was built.
+    scan_id: Option<String>,
 }
 
 impl StorageIndex {
-    /// Build an index by listing the storage backend.
+    /// Empty overlay.
+    ///
+    /// This does not list `storage`. Call [`crate::storage_scan::scan_storage`]
+    /// when identity matching needs a durable index. Exact keys are resolved
+    /// with [`StorageBackend::exists`] at decision time.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Always returns `Ok`. The storage argument is accepted so older call
+    /// sites keep compiling while they move to [`crate::storage_scan::scan_storage`].
     pub async fn from_storage(storage: &dyn StorageBackend) -> Result<Self> {
-        let objects = storage.list("").await?;
-        let mut index = Self::default();
-        for obj in objects {
-            index.insert_key(obj.key);
+        let _ = storage.instance_id();
+        Ok(Self::default())
+    }
+
+    /// Overlay plus a durable scan id.
+    #[must_use]
+    pub fn with_scan(scan_id: impl Into<String>) -> Self {
+        Self {
+            scan_id: Some(scan_id.into()),
+            ..Self::default()
         }
-        Ok(index)
+    }
+
+    /// Durable scan generation, when present.
+    #[must_use]
+    pub fn scan_id(&self) -> Option<&str> {
+        self.scan_id.as_deref()
     }
 
     /// Insert a storage key into the index (test helper / incremental).
@@ -125,79 +145,109 @@ pub async fn reconcile_library(
     storage: &dyn StorageBackend,
     options: ReconcileOptions,
 ) -> Result<ReconcileSummary> {
-    let index = StorageIndex::from_storage(storage).await?;
-    let books = library.list_books(options.account.as_deref()).await?;
+    let index = crate::storage_scan::scan_storage(library, storage, None, None, false).await?;
     let mut summary = ReconcileSummary::default();
-
-    for book in books {
-        if !options.asins.is_empty()
-            && !options.asins.iter().any(|a| {
-                a.eq_ignore_ascii_case(&book.uuid)
-                    || a.eq_ignore_ascii_case(&book.product_id)
-                    || book
-                        .isbn
-                        .as_ref()
-                        .is_some_and(|isbn| a.eq_ignore_ascii_case(isbn))
-                    || book
-                        .asin
-                        .as_ref()
-                        .is_some_and(|asin| a.eq_ignore_ascii_case(asin))
-            })
-        {
-            continue;
+    let mut after_id = None;
+    loop {
+        let books = library
+            .list_books_page(options.account.as_deref(), after_id, 64)
+            .await?;
+        if books.is_empty() {
+            break;
         }
-        let matched = find_existing_for_book(&index, library, &book, &options.download).await;
-        match matched {
-            Some(key) => {
-                if options.only_clear_missing {
-                    summary.unchanged += 1;
-                    continue;
-                }
-                let needs_update = book.acquire_status != AcquireStatus::Acquired
-                    || book.storage_key.as_deref() != Some(key.as_str());
-                if needs_update {
-                    library
-                        .set_acquire_status(
-                            book.title_id(),
-                            &book.account_id,
-                            AcquireStatus::Acquired,
-                            Some(&key),
-                            None,
-                        )
-                        .await?;
-                    summary.matched += 1;
-                    tracing::info!(
-                        asin = %book.asin_or_isbn(),
-                        key = %key,
-                        "matched existing acquired media"
-                    );
-                } else {
-                    summary.unchanged += 1;
-                }
+        after_id = books.last().map(|book| book.id);
+        for book in books {
+            summary = reconcile_one(library, storage, &index, &options, book, summary).await?;
+        }
+    }
+    if let Some(scan_id) = index.scan_id() {
+        let _ = library.storage_scan_delete(scan_id).await;
+    }
+    Ok(summary)
+}
+
+async fn reconcile_one(
+    library: &LibraryStore,
+    storage: &dyn StorageBackend,
+    index: &StorageIndex,
+    options: &ReconcileOptions,
+    book: BookRecord,
+    mut summary: ReconcileSummary,
+) -> Result<ReconcileSummary> {
+    if !options.asins.is_empty()
+        && !options.asins.iter().any(|a| {
+            a.eq_ignore_ascii_case(&book.uuid)
+                || a.eq_ignore_ascii_case(&book.product_id)
+                || book
+                    .isbn
+                    .as_ref()
+                    .is_some_and(|isbn| a.eq_ignore_ascii_case(isbn))
+                || book
+                    .asin
+                    .as_ref()
+                    .is_some_and(|asin| a.eq_ignore_ascii_case(asin))
+        })
+    {
+        return Ok(summary);
+    }
+    let matched = find_existing_for_book(index, storage, library, &book, &options.download).await;
+    match matched {
+        Some(key) => {
+            if options.only_clear_missing {
+                summary.unchanged += 1;
+                return Ok(summary);
             }
-            None => {
-                if options.only_mark_found {
+            let needs_update = book.acquire_status != AcquireStatus::Acquired
+                || book.storage_key.as_deref() != Some(key.as_str());
+            if needs_update {
+                library
+                    .set_acquire_status(
+                        book.title_id(),
+                        &book.account_id,
+                        AcquireStatus::Acquired,
+                        Some(&key),
+                        None,
+                    )
+                    .await?;
+                summary.matched += 1;
+                tracing::info!(
+                    asin = %book.asin_or_isbn(),
+                    key = %key,
+                    "matched existing acquired media"
+                );
+            } else {
+                summary.unchanged += 1;
+            }
+        }
+        None => {
+            if options.only_mark_found {
+                summary.unchanged += 1;
+                return Ok(summary);
+            }
+            if options.clear_missing && book.acquire_status == AcquireStatus::Acquired {
+                let still_there = match book.storage_key.as_deref() {
+                    Some(key) => storage.exists(key).await?,
+                    None => false,
+                };
+                if still_there {
                     summary.unchanged += 1;
-                    continue;
+                    return Ok(summary);
                 }
-                if options.clear_missing && book.acquire_status == AcquireStatus::Acquired {
-                    library
-                        .set_acquire_status(
-                            book.title_id(),
-                            &book.account_id,
-                            AcquireStatus::NotAcquired,
-                            None,
-                            None,
-                        )
-                        .await?;
-                    summary.cleared += 1;
-                } else {
-                    summary.unchanged += 1;
-                }
+                library
+                    .set_acquire_status(
+                        book.title_id(),
+                        &book.account_id,
+                        AcquireStatus::NotAcquired,
+                        None,
+                        None,
+                    )
+                    .await?;
+                summary.cleared += 1;
+            } else {
+                summary.unchanged += 1;
             }
         }
     }
-
     Ok(summary)
 }
 
@@ -207,19 +257,20 @@ pub async fn reconcile_library(
 /// via the same path planner as acquire.
 pub async fn find_existing_for_book(
     index: &StorageIndex,
+    storage: &dyn StorageBackend,
     library: &LibraryStore,
     book: &BookRecord,
     download: &DownloadOptions,
 ) -> Option<String> {
-    // 1. Exact stored key.
+    // 1. Exact stored key, confirmed against the backend now.
     if let Some(key) = &book.storage_key {
-        if index.contains_key(key) {
+        if key_present(index, storage, key).await {
             return Some(key.clone());
         }
     }
 
     let req = request_from_book(book, download);
-    if let Some(key) = find_existing_for_request(index, library, &req).await {
+    if let Some(key) = find_existing_for_request(index, storage, library, &req).await {
         return Some(key);
     }
 
@@ -233,11 +284,74 @@ pub async fn find_existing_for_book(
     .into_iter()
     .flatten()
     {
-        if let Some(key) = index.best_key_for_asin(id) {
-            return Some(key.to_string());
+        if let Some(key) = best_identity(index, storage, library, id).await {
+            return Some(key);
         }
     }
     None
+}
+
+async fn key_present(index: &StorageIndex, storage: &dyn StorageBackend, key: &str) -> bool {
+    if index.contains_key(key) {
+        return true;
+    }
+    storage.exists(key).await.unwrap_or(false)
+}
+
+async fn best_identity(
+    index: &StorageIndex,
+    storage: &dyn StorageBackend,
+    library: &LibraryStore,
+    id: &str,
+) -> Option<String> {
+    if let Some(key) = index.best_key_for_asin(id) {
+        if key_present(index, storage, key).await {
+            return Some(key.to_string());
+        }
+    }
+    if let Some(scan_id) = index.scan_id() {
+        if let Ok(Some(key)) = library.storage_scan_best_identity(scan_id, id).await {
+            if storage.exists(&key).await.unwrap_or(false) {
+                return Some(key);
+            }
+        }
+        return None;
+    }
+    stream_identity(storage, id).await
+}
+
+async fn stream_identity(storage: &dyn StorageBackend, id: &str) -> Option<String> {
+    let mut cursor = None;
+    let mut best: Option<(u8, String)> = None;
+    let mut hops = 0u32;
+    loop {
+        hops = hops.saturating_add(1);
+        if hops > 1_000_000 {
+            return None;
+        }
+        let page = storage.list_page("", cursor.as_deref(), 0).await.ok()?;
+        for obj in &page.objects {
+            if !extract_asins_from_key(&obj.key)
+                .iter()
+                .any(|found| found.eq_ignore_ascii_case(id))
+            {
+                continue;
+            }
+            let rank = media_rank(&obj.key);
+            if rank == 0 {
+                return Some(obj.key.clone());
+            }
+            if best.as_ref().is_none_or(|(prev, _)| rank < *prev) {
+                best = Some((rank, obj.key.clone()));
+            }
+        }
+        match page.next_cursor {
+            Some(next) if cursor.as_deref() == Some(next.as_str()) => return None,
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    best.map(|(_, key)| key)
 }
 
 /// Same as [`find_existing_for_book`] but for a acquire request before DB status is Acquired.
@@ -249,6 +363,7 @@ pub async fn find_existing_for_book(
 /// 4. ASIN token found anywhere in a storage key
 pub async fn find_existing_for_request(
     index: &StorageIndex,
+    storage: &dyn StorageBackend,
     library: &LibraryStore,
     req: &AcquireRequest,
 ) -> Option<String> {
@@ -261,14 +376,14 @@ pub async fn find_existing_for_request(
     };
 
     // 1. Exact planned path (current creation sanitization).
-    if let Some(key) = find_exact_planned(index, library, req, ext).await {
+    if let Some(key) = find_exact_planned(index, storage, library, req, ext).await {
         return Some(key);
     }
 
     // 2. Wildcard planned path — pickup liberations from another OS/backend.
     let wildcard_rules = reconciliation_wildcard_rules(&req.options.replacement_characters);
-    if let Some(key) = find_wildcard_planned(index, library, req, &wildcard_rules).await {
-        return Some(key.to_string());
+    if let Some(key) = find_wildcard_planned(index, storage, library, req, &wildcard_rules).await {
+        return Some(key);
     }
 
     // 3. When templates differ from profile defaults, probe raw template path without
@@ -292,7 +407,7 @@ pub async fn find_existing_for_request(
                 alt,
                 &req.options.replacement_characters,
             );
-            if index.contains_key(&key) {
+            if key_present(index, storage, &key).await {
                 return Some(key);
             }
         }
@@ -304,24 +419,52 @@ pub async fn find_existing_for_request(
                 alt,
                 &wildcard_rules,
             );
-            if let Some(key) = index.find_key_matching_pattern(&pattern) {
-                return Some(key.to_string());
+            if let Some(key) = find_pattern(storage, &pattern).await {
+                return Some(key);
             }
         }
     }
 
-    index.best_key_for_asin(&req.asin).map(str::to_string)
+    best_identity(index, storage, library, &req.asin).await
+}
+
+async fn find_pattern(storage: &dyn StorageBackend, pattern: &str) -> Option<String> {
+    let prefix = pattern
+        .split(bookclerk_config::RECONCILE_WILDCARD)
+        .next()
+        .unwrap_or("");
+    let mut cursor = None;
+    let mut hops = 0u32;
+    loop {
+        hops = hops.saturating_add(1);
+        if hops > 1_000_000 {
+            return None;
+        }
+        let page = storage.list_page(prefix, cursor.as_deref(), 0).await.ok()?;
+        for obj in &page.objects {
+            if bookclerk_config::key_matches_reconcile_pattern(pattern, &obj.key) {
+                return Some(obj.key.clone());
+            }
+        }
+        match page.next_cursor {
+            Some(next) if cursor.as_deref() == Some(next.as_str()) => return None,
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    None
 }
 
 /// Looks up the planned storage key (preferred ext, then alternates) in the index.
 async fn find_exact_planned(
     index: &StorageIndex,
+    storage: &dyn StorageBackend,
     library: &LibraryStore,
     req: &AcquireRequest,
     preferred_ext: &str,
 ) -> Option<String> {
     let planned = planned_storage_key_for(library, req, preferred_ext).await;
-    if index.contains_key(&planned) {
+    if key_present(index, storage, &planned).await {
         return Some(planned);
     }
     for alt in planned_extensions() {
@@ -329,23 +472,24 @@ async fn find_exact_planned(
             continue;
         }
         let key = planned_storage_key_for(library, req, alt).await;
-        if index.contains_key(&key) {
+        if key_present(index, storage, &key).await {
             return Some(key);
         }
     }
     None
 }
 
-/// Matches a planned key with wildcard replacement rules against indexed objects.
-async fn find_wildcard_planned<'a>(
-    index: &'a StorageIndex,
+/// Matches a planned key with wildcard replacement rules against paged objects.
+async fn find_wildcard_planned(
+    _index: &StorageIndex,
+    storage: &dyn StorageBackend,
     library: &LibraryStore,
     req: &AcquireRequest,
     wildcard_rules: &[bookclerk_config::ReplacementRule],
-) -> Option<&'a str> {
+) -> Option<String> {
     for alt in planned_extensions() {
         let pattern = planned_storage_key_with_rules(library, req, alt, wildcard_rules).await;
-        if let Some(key) = index.find_key_matching_pattern(&pattern) {
+        if let Some(key) = find_pattern(storage, &pattern).await {
             return Some(key);
         }
     }
@@ -459,7 +603,7 @@ fn pick_best_media_key(candidates: &[String]) -> Option<&str> {
 }
 
 /// Lower is better: packaged `m4b`/`m4a`/`mp3` beat DRM leftovers (`aaxc`).
-fn media_rank(key: &str) -> u8 {
+pub(crate) fn media_rank(key: &str) -> u8 {
     let ext = key.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "m4b" => 0,

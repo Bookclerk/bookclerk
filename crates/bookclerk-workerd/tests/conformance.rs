@@ -145,6 +145,87 @@ async fn destination_roundtrip(client: &PluginClient) {
     assert_eq!(buf2, b"abc", "bytes survive capability dispose");
 }
 
+async fn destination_ranges(client: &PluginClient) {
+    let dest = open_storage(client, "ranges").await;
+    dest.put(
+        "r/empty",
+        Box::pin(std::io::Cursor::new(Vec::<u8>::new())),
+        WriteOptions::default(),
+    )
+    .await
+    .expect("empty put");
+    let payload = b"abcdefghijklmnopqrstuvwxyz".to_vec();
+    dest.put(
+        "r/alpha",
+        Box::pin(std::io::Cursor::new(payload.clone())),
+        WriteOptions {
+            content_length: Some(payload.len() as u64),
+            ..WriteOptions::default()
+        },
+    )
+    .await
+    .expect("alpha put");
+    let head = dest.head("r/alpha").await.expect("head").expect("found");
+    assert_eq!(head.size, payload.len() as u64);
+    let exact = dest
+        .get(
+            "r/alpha",
+            Some(ByteRange {
+                offset: 2,
+                length: Some(3),
+            }),
+        )
+        .await
+        .expect("exact range");
+    assert_eq!(
+        exact.meta.size,
+        payload.len() as u64,
+        "size is the whole object"
+    );
+    let mut body = exact.body;
+    let mut buf = Vec::new();
+    body.read_to_end(&mut buf).await.unwrap();
+    assert_eq!(buf, b"cde");
+    let tail = dest
+        .get(
+            "r/alpha",
+            Some(ByteRange {
+                offset: 24,
+                length: None,
+            }),
+        )
+        .await
+        .expect("to end");
+    let mut body = tail.body;
+    buf.clear();
+    body.read_to_end(&mut buf).await.unwrap();
+    assert_eq!(buf, b"yz");
+    let past = dest
+        .get(
+            "r/alpha",
+            Some(ByteRange {
+                offset: 100,
+                length: None,
+            }),
+        )
+        .await;
+    let err = match past {
+        Ok(_) => panic!("range past end must fail"),
+        Err(err) => err,
+    };
+    assert!(
+        err.message.contains("past") || err.message.contains("range"),
+        "{}",
+        err.message
+    );
+    let empty = dest.get("r/empty", None).await.expect("empty get");
+    assert_eq!(empty.meta.size, 0);
+    let mut body = empty.body;
+    buf.clear();
+    body.read_to_end(&mut buf).await.unwrap();
+    assert!(buf.is_empty());
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn workerd_author_conformance_vectors() {
     let Some(workerd) = find_workerd() else {
@@ -217,6 +298,7 @@ async fn direct_capnp_local_conformance_vectors() {
             assert_eq!(desc.api_version, PRODUCT_API_VERSION);
             assert_eq!(desc.id, "local");
             destination_roundtrip(&client).await;
+            destination_ranges(&client).await;
             let _ = child.kill().await;
         })
         .await;
@@ -273,6 +355,7 @@ mode = "deny"
             assert_eq!(desc.api_version, PRODUCT_API_VERSION);
             assert_eq!(desc.id, "local");
             destination_roundtrip(&client).await;
+            destination_ranges(&client).await;
             let _ = child.gateway.kill().await;
         })
         .await;

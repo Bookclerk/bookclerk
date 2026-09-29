@@ -1,5 +1,7 @@
 //! AWS S3 / MinIO storage backend.
 
+#![allow(clippy::missing_docs_in_private_items)]
+
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -14,6 +16,7 @@ use aws_sdk_s3::Client;
 use bookclerk_config::OutputS3Config;
 use bytes::Bytes;
 use sea_orm::DatabaseConnection;
+use sha2::Digest;
 
 use crate::error::{Result, StorageError};
 use crate::s3_credentials::{load_s3_credentials, S3Credentials};
@@ -25,8 +28,11 @@ use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
 pub(crate) const MULTIPART_THRESHOLD: u64 = 100 * 1024 * 1024;
 
 /// Each part is read into a buffer this large at most. S3 requires 5 MiB minimum
-/// per part except the last.
+/// per part except the last. `8 MiB * S3_MAX_PARTS` is the application object ceiling.
 pub(crate) const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
+
+/// AWS multipart upload part-count ceiling.
+pub(crate) const S3_MAX_PARTS: i32 = 10_000;
 
 /// S3-compatible object storage.
 #[derive(Debug, Clone)]
@@ -37,6 +43,10 @@ pub struct S3Backend {
     bucket: String,
     /// Normalized key prefix prepended to every object key.
     prefix: String,
+    /// Region used in [`StorageBackend::instance_id`].
+    region: String,
+    /// Endpoint URL used in [`StorageBackend::instance_id`] (empty for AWS default).
+    endpoint: String,
 }
 
 impl S3Backend {
@@ -114,11 +124,23 @@ impl S3Backend {
         }
 
         let client = Client::from_conf(s3_config.build());
-        Ok(Self {
+        let backend = Self {
             client,
             bucket: cfg.bucket.clone(),
             prefix: crate::normalize_prefix(prefix),
-        })
+            region: cfg.region.clone(),
+            endpoint: cfg
+                .endpoint
+                .as_deref()
+                .map(normalize_s3_endpoint)
+                .unwrap_or_default(),
+        };
+        if let Some(dir) = orphan_dir() {
+            if let Err(err) = backend.retry_orphans(&dir).await {
+                tracing::warn!(error = %err, "multipart orphan retry failed");
+            }
+        }
+        Ok(backend)
     }
 
     /// Prepends the destination prefix to `key` (no-op when the prefix is empty).
@@ -258,13 +280,30 @@ impl S3Backend {
     }
 
     /// Streams `body` as multipart parts (bounded window; no full-object buffer).
+    ///
+    /// Returns `(bytes, sha256 hex)`. A dropped future aborts the upload via
+    /// [`MultipartGuard`]. Failed aborts leave the upload id in the orphan
+    /// directory when `BOOKCLERK_FILES_DIR` is set.
     async fn put_stream_multipart(
         &self,
         key: &str,
         mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
-        meta: ObjectMeta,
-    ) -> Result<u64> {
+        mut meta: ObjectMeta,
+    ) -> Result<(u64, String)> {
+        use sha2::{Digest, Sha256};
         use tokio::io::AsyncReadExt;
+
+        if let Some(expected) = meta.sha256_hex.as_deref() {
+            let _ = crate::bounded::parse_sha256_hex(expected)?;
+        }
+        if let Some(len) = meta.content_length {
+            if len > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
+                return Err(StorageError::PayloadTooLarge(format!(
+                    "object length {len} exceeds {}",
+                    crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+                )));
+            }
+        }
 
         let full_key = self.full_key(key);
         let created = apply_meta_multipart(
@@ -278,15 +317,24 @@ impl S3Backend {
         .await
         .map_err(|err| StorageError::S3(err.to_string()))?;
 
-        let upload_id = created.upload_id().ok_or_else(|| {
-            StorageError::S3("CreateMultipartUpload returned no upload id".into())
-        })?;
+        let upload_id = created
+            .upload_id()
+            .ok_or_else(|| StorageError::S3("CreateMultipartUpload returned no upload id".into()))?
+            .to_string();
+        record_orphan(&self.bucket, &full_key, &upload_id);
+        let mut guard = MultipartGuard::arm(
+            self.client.clone(),
+            self.bucket.clone(),
+            full_key.clone(),
+            upload_id.clone(),
+        );
 
         let upload = async {
             let mut part_number: i32 = 1;
             let mut completed = Vec::new();
             let mut buffer = vec![0u8; MULTIPART_PART_SIZE];
             let mut total = 0u64;
+            let mut hasher = Sha256::new();
 
             loop {
                 let mut filled = 0usize;
@@ -300,14 +348,29 @@ impl S3Backend {
                 if filled == 0 {
                     break;
                 }
-                total += filled as u64;
+                let next = total + filled as u64;
+                if let Some(expected) = meta.content_length {
+                    if next > expected {
+                        return Err(StorageError::Integrity(format!(
+                            "S3 upload exceeded declared length {expected}"
+                        )));
+                    }
+                }
+                if next > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES || part_number > S3_MAX_PARTS {
+                    return Err(StorageError::PayloadTooLarge(format!(
+                        "S3 upload exceeded {} bytes or {S3_MAX_PARTS} parts",
+                        crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+                    )));
+                }
+                hasher.update(&buffer[..filled]);
+                total = next;
 
                 let uploaded = self
                     .client
                     .upload_part()
                     .bucket(&self.bucket)
                     .key(&full_key)
-                    .upload_id(upload_id)
+                    .upload_id(&upload_id)
                     .part_number(part_number)
                     .body(ByteStream::from(Bytes::copy_from_slice(&buffer[..filled])))
                     .send()
@@ -326,24 +389,35 @@ impl S3Backend {
                 part_number += 1;
             }
 
+            let digest = hex::encode(hasher.finalize());
+            if let Some(expected) = meta.sha256_hex.as_deref() {
+                if !expected.eq_ignore_ascii_case(&digest) {
+                    return Err(StorageError::Integrity(
+                        "S3 upload sha256 does not match the body".into(),
+                    ));
+                }
+            }
+            if let Some(expected) = meta.content_length {
+                if total != expected {
+                    return Err(StorageError::Integrity(format!(
+                        "S3 upload wrote {total} bytes, expected {expected}"
+                    )));
+                }
+            }
+            meta.sha256_hex = Some(digest.clone());
+
             if completed.is_empty() {
-                self.client
-                    .abort_multipart_upload()
-                    .bucket(&self.bucket)
-                    .key(&full_key)
-                    .upload_id(upload_id)
-                    .send()
-                    .await
-                    .ok();
-                self.put(key, Bytes::new(), meta.clone()).await?;
-                return Ok(0);
+                self.abort_upload(&full_key, &upload_id).await;
+                guard.disarm();
+                self.put(key, Bytes::new(), meta).await?;
+                return Ok((0, hex::encode(Sha256::digest([]))));
             }
 
             self.client
                 .complete_multipart_upload()
                 .bucket(&self.bucket)
                 .key(&full_key)
-                .upload_id(upload_id)
+                .upload_id(&upload_id)
                 .multipart_upload(
                     CompletedMultipartUpload::builder()
                         .set_parts(Some(completed))
@@ -352,31 +426,182 @@ impl S3Backend {
                 .send()
                 .await
                 .map_err(|err| StorageError::S3(err.to_string()))?;
-            Ok(total)
+            guard.disarm();
+            clear_orphan(&upload_id);
+            Ok((total, digest))
         };
 
         match upload.await {
-            Ok(n) => Ok(n),
+            Ok(done) => Ok(done),
             Err(err) => {
-                if let Err(abort_err) = self
-                    .client
-                    .abort_multipart_upload()
-                    .bucket(&self.bucket)
-                    .key(&full_key)
-                    .upload_id(upload_id)
-                    .send()
-                    .await
-                {
-                    tracing::warn!(
-                        key = %full_key,
-                        upload_id,
-                        error = %abort_err,
-                        "failed to abort multipart upload after error"
-                    );
-                }
+                self.abort_upload(&full_key, &upload_id).await;
+                guard.disarm();
                 Err(err)
             }
         }
+    }
+
+    async fn abort_upload(&self, key: &str, upload_id: &str) {
+        match self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .send()
+            .await
+        {
+            Ok(_) => clear_orphan(upload_id),
+            Err(err) => {
+                let msg = err.to_string();
+                if msg.contains("NoSuchUpload") || msg.contains("404") {
+                    clear_orphan(upload_id);
+                } else {
+                    tracing::error!(
+                        key,
+                        upload_id,
+                        error = %err,
+                        "multipart abort failed; upload id retained for retry"
+                    );
+                }
+            }
+        }
+    }
+
+    async fn copy_object_single(&self, from: &str, to: &str) -> Result<()> {
+        self.client
+            .copy_object()
+            .bucket(&self.bucket)
+            .key(self.full_key(to))
+            .copy_source(encode_copy_source(&self.bucket, &self.full_key(from)))
+            .metadata_directive(aws_sdk_s3::types::MetadataDirective::Copy)
+            .send()
+            .await
+            .map_err(|err| map_missing(from, err.to_string()))?;
+        Ok(())
+    }
+
+    async fn copy_multipart(&self, from: &str, to: &str, probe: &ObjectProbe) -> Result<()> {
+        let full_from = self.full_key(from);
+        let full_to = self.full_key(to);
+        let source = encode_copy_source(&self.bucket, &full_from);
+        let created = apply_meta_multipart(
+            self.client
+                .create_multipart_upload()
+                .bucket(&self.bucket)
+                .key(&full_to),
+            &probe.meta,
+        )
+        .send()
+        .await
+        .map_err(|err| StorageError::S3(err.to_string()))?;
+        let upload_id = created
+            .upload_id()
+            .ok_or_else(|| StorageError::S3("CreateMultipartUpload returned no upload id".into()))?
+            .to_string();
+        record_orphan(&self.bucket, &full_to, &upload_id);
+        let mut guard = MultipartGuard::arm(
+            self.client.clone(),
+            self.bucket.clone(),
+            full_to.clone(),
+            upload_id.clone(),
+        );
+        let part_size = MULTIPART_PART_SIZE as u64;
+        let copy = async {
+            let mut completed = Vec::new();
+            let mut start = 0u64;
+            let mut part_number: i32 = 1;
+            while start < probe.size {
+                if part_number > S3_MAX_PARTS {
+                    return Err(StorageError::PayloadTooLarge(format!(
+                        "multipart copy needs more than {S3_MAX_PARTS} parts"
+                    )));
+                }
+                let end = (start + part_size).min(probe.size);
+                let last = end.saturating_sub(1);
+                let copied = self
+                    .client
+                    .upload_part_copy()
+                    .bucket(&self.bucket)
+                    .key(&full_to)
+                    .copy_source(&source)
+                    .copy_source_range(format!("bytes={start}-{last}"))
+                    .upload_id(&upload_id)
+                    .part_number(part_number)
+                    .send()
+                    .await
+                    .map_err(|err| StorageError::S3(err.to_string()))?;
+                let etag = copied
+                    .copy_part_result()
+                    .and_then(|part| part.e_tag())
+                    .ok_or_else(|| {
+                        StorageError::S3(format!("UploadPartCopy {part_number} returned no ETag"))
+                    })?;
+                completed.push(
+                    CompletedPart::builder()
+                        .part_number(part_number)
+                        .e_tag(etag)
+                        .build(),
+                );
+                start = end;
+                part_number += 1;
+            }
+            self.client
+                .complete_multipart_upload()
+                .bucket(&self.bucket)
+                .key(&full_to)
+                .upload_id(&upload_id)
+                .multipart_upload(
+                    CompletedMultipartUpload::builder()
+                        .set_parts(Some(completed))
+                        .build(),
+                )
+                .send()
+                .await
+                .map_err(|err| StorageError::S3(err.to_string()))?;
+            Ok(())
+        };
+        match copy.await {
+            Ok(()) => {
+                guard.disarm();
+                clear_orphan(&upload_id);
+                Ok(())
+            }
+            Err(err) => {
+                self.abort_upload(&full_to, &upload_id).await;
+                guard.disarm();
+                Err(err)
+            }
+        }
+    }
+
+    /// Aborts multipart uploads previously recorded for this bucket.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors reading the orphan directory. Individual abort
+    /// failures are retained and logged; they do not fail the sweep.
+    pub async fn retry_orphans(&self, dir: &std::path::Path) -> Result<usize> {
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+        let mut retried = 0usize;
+        for entry in std::fs::read_dir(dir).map_err(StorageError::Io)? {
+            let entry = entry.map_err(StorageError::Io)?;
+            let path = entry.path();
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<OrphanRecord>(&text) else {
+                continue;
+            };
+            if record.bucket != self.bucket {
+                continue;
+            }
+            retried += 1;
+            self.abort_upload(&record.key, &record.upload_id).await;
+        }
+        Ok(retried)
     }
 }
 
@@ -386,14 +611,34 @@ impl StorageBackend for S3Backend {
         "s3"
     }
 
+    fn instance_id(&self) -> String {
+        format!(
+            "s3:{}:{}:{}:{}",
+            self.endpoint, self.region, self.bucket, self.prefix
+        )
+    }
+
+    fn supports_server_copy(&self) -> bool {
+        true
+    }
+
     fn clone_box(&self) -> Box<dyn StorageBackend> {
         Box::new(self.clone())
     }
 
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
+        crate::bounded::ensure_scalar_len(data.len(), crate::bounded::MAX_SCALAR_OBJECT_BYTES)?;
         let mut meta = meta;
         if meta.content_length.is_none() {
             meta.content_length = Some(data.len() as u64);
+        }
+        if let Some(expected) = meta.sha256_hex.as_deref() {
+            let want = crate::bounded::parse_sha256_hex(expected)?;
+            if want.as_slice() != sha2::Sha256::digest(&data).as_slice() {
+                return Err(StorageError::Integrity(
+                    "scalar put sha256 does not match the buffer".into(),
+                ));
+            }
         }
         self.put_body(key, data.into(), meta).await
     }
@@ -426,27 +671,18 @@ impl StorageBackend for S3Backend {
     }
 
     async fn get(&self, key: &str) -> Result<Bytes> {
-        let out = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(self.full_key(key))
-            .send()
-            .await
-            .map_err(|err| {
-                let msg = err.to_string();
-                if msg.contains("NoSuchKey") || msg.contains("404") {
-                    StorageError::NotFound(key.into())
-                } else {
-                    StorageError::S3(msg)
-                }
-            })?;
-        let data = out
-            .body
-            .collect()
-            .await
-            .map_err(|err| StorageError::S3(err.to_string()))?
-            .into_bytes();
+        let probe = self.probe(key).await?;
+        crate::bounded::reject_scalar_hint(probe.size, crate::bounded::MAX_SCALAR_OBJECT_BYTES)?;
+        let (_opened, body) = self.get_stream(key, None).await?;
+        let data =
+            crate::bounded::read_scalar_body(body, crate::bounded::MAX_SCALAR_OBJECT_BYTES).await?;
+        if data.len() as u64 != probe.size {
+            return Err(StorageError::Integrity(format!(
+                "scalar get read {} bytes after HEAD reported {}",
+                data.len(),
+                probe.size
+            )));
+        }
         Ok(data)
     }
 
@@ -456,47 +692,6 @@ impl StorageBackend for S3Backend {
             Err(StorageError::NotFound(_)) => Ok(false),
             Err(err) => Err(err),
         }
-    }
-
-    async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>> {
-        let full_prefix = self.full_key(prefix);
-        let mut out = Vec::new();
-        let mut token: Option<String> = None;
-
-        loop {
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(&full_prefix);
-            if let Some(t) = &token {
-                req = req.continuation_token(t);
-            }
-            let resp = req
-                .send()
-                .await
-                .map_err(|err| StorageError::S3(err.to_string()))?;
-
-            for obj in resp.contents() {
-                let Some(raw_key) = obj.key() else { continue };
-                let key = raw_key
-                    .strip_prefix(&self.prefix)
-                    .unwrap_or(raw_key)
-                    .to_string();
-                out.push(ObjectInfo {
-                    key,
-                    size: obj.size().unwrap_or(0) as u64,
-                });
-            }
-
-            if resp.is_truncated().unwrap_or(false) {
-                token = resp.next_continuation_token().map(str::to_string);
-            } else {
-                break;
-            }
-        }
-
-        Ok(out)
     }
 
     async fn probe(&self, key: &str) -> Result<ObjectProbe> {
@@ -524,12 +719,21 @@ impl StorageBackend for S3Backend {
             title: meta_get(user_meta, "title"),
             creation_time: meta_get(user_meta, "creation-time"),
             last_write_time: meta_get(user_meta, "last-write-time"),
+            ..Default::default()
+        };
+        let sha256_hex = meta_get(user_meta, "sha256");
+        let commit_token = meta_get(user_meta, "commit-token");
+        let meta = ObjectMeta {
+            sha256_hex,
+            commit_token,
+            ..meta
         };
         Ok(ObjectProbe {
             key: key.to_string(),
             size: meta.content_length.unwrap_or(0),
             content_type: meta.content_type.clone(),
             meta,
+            etag: out.e_tag().map(str::to_string),
         })
     }
 
@@ -537,25 +741,18 @@ impl StorageBackend for S3Backend {
         if from == to {
             return Ok(());
         }
-        // Server-side copy — no object body download. MetadataDirective::COPY
-        // preserves x-amz-meta-* written at acquire time.
-        self.client
-            .copy_object()
-            .bucket(&self.bucket)
-            .key(self.full_key(to))
-            .copy_source(format!("{}/{}", self.bucket, self.full_key(from)))
-            .metadata_directive(aws_sdk_s3::types::MetadataDirective::Copy)
-            .send()
-            .await
-            .map_err(|err| {
-                let msg = err.to_string();
-                if msg.contains("NoSuchKey") || msg.contains("404") || msg.contains("NotFound") {
-                    StorageError::NotFound(from.into())
-                } else {
-                    StorageError::S3(msg)
-                }
-            })?;
-        Ok(())
+        let probe = self.probe(from).await?;
+        if probe.size > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
+            return Err(StorageError::PayloadTooLarge(format!(
+                "copy of {} bytes exceeds {}",
+                probe.size,
+                crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+            )));
+        }
+        if crate::bounded::copy_uses_single_request(probe.size) {
+            return self.copy_object_single(from, to).await;
+        }
+        self.copy_multipart(from, to, &probe).await
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
@@ -590,41 +787,79 @@ impl StorageBackend for S3Backend {
         limit: u32,
     ) -> Result<crate::ListPage> {
         let full_prefix = self.full_key(prefix);
-        let limit = if limit == 0 { 256 } else { limit };
-        let mut req = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix(&full_prefix)
-            .max_keys(i32::try_from(limit).unwrap_or(256));
-        if let Some(token) = cursor {
-            req = req.continuation_token(token);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|err| StorageError::S3(err.to_string()))?;
-        let mut objects = Vec::new();
-        for obj in resp.contents() {
-            let Some(raw_key) = obj.key() else { continue };
-            let key = raw_key
-                .strip_prefix(&self.prefix)
-                .unwrap_or(raw_key)
-                .to_string();
-            objects.push(ObjectInfo {
-                key,
-                size: obj.size().unwrap_or(0) as u64,
+        let limit = crate::bounded::clamp_page_limit(limit);
+        let mut token = cursor.map(str::to_string);
+        let mut empty_hops = 0u32;
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&full_prefix)
+                .max_keys(i32::try_from(limit).unwrap_or(256));
+            if let Some(token) = &token {
+                req = req.continuation_token(token);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|err| StorageError::S3(err.to_string()))?;
+            if resp.contents().len() > limit {
+                return Err(StorageError::PayloadTooLarge(format!(
+                    "S3 list page of {} objects exceeds {limit}",
+                    resp.contents().len()
+                )));
+            }
+            let mut objects = Vec::with_capacity(resp.contents().len());
+            for obj in resp.contents() {
+                let Some(raw_key) = obj.key() else { continue };
+                let key = raw_key
+                    .strip_prefix(&self.prefix)
+                    .unwrap_or(raw_key)
+                    .to_string();
+                objects.push(ObjectInfo {
+                    key,
+                    size: obj.size().unwrap_or(0) as u64,
+                });
+            }
+            let truncated = resp.is_truncated().unwrap_or(false);
+            let next = if truncated {
+                Some(
+                    resp.next_continuation_token()
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            StorageError::InvalidCursor(
+                                "S3 list page was truncated without a continuation token".into(),
+                            )
+                        })?,
+                )
+            } else {
+                None
+            };
+            if let (Some(prev), Some(next)) = (token.as_deref(), next.as_deref()) {
+                if prev == next {
+                    return Err(StorageError::InvalidCursor(
+                        "S3 continuation token did not advance".into(),
+                    ));
+                }
+            }
+            if objects.is_empty() {
+                if let Some(next) = next {
+                    empty_hops += 1;
+                    if empty_hops > 8 {
+                        return Err(StorageError::InvalidCursor(
+                            "S3 returned empty pages without finishing".into(),
+                        ));
+                    }
+                    token = Some(next);
+                    continue;
+                }
+            }
+            return Ok(crate::ListPage {
+                objects,
+                next_cursor: next,
             });
         }
-        let next_cursor = if resp.is_truncated().unwrap_or(false) {
-            resp.next_continuation_token().map(str::to_string)
-        } else {
-            None
-        };
-        Ok(crate::ListPage {
-            objects,
-            next_cursor,
-        })
     }
 
     async fn get_stream(
@@ -635,23 +870,15 @@ impl StorageBackend for S3Backend {
         ObjectProbe,
         std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
     )> {
+        let probe = self.probe(key).await?;
+        let span = crate::bounded::normalize_range(range, Some(probe.size))?;
         let mut req = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(self.full_key(key));
-        if let Some(range) = range {
-            let header = match range.length {
-                Some(len) if len > 0 => {
-                    format!(
-                        "bytes={}-{}",
-                        range.offset,
-                        range.offset.saturating_add(len - 1)
-                    )
-                }
-                _ => format!("bytes={}-", range.offset),
-            };
-            req = req.range(header);
+        if let Some(span) = span {
+            req = req.range(s3_range_header(span));
         }
         let out = req.send().await.map_err(|err| {
             let msg = err.to_string();
@@ -661,18 +888,6 @@ impl StorageBackend for S3Backend {
                 StorageError::S3(msg)
             }
         })?;
-        let size = out.content_length().unwrap_or(0) as u64;
-        let content_type = out.content_type().map(str::to_string);
-        let probe = ObjectProbe {
-            key: key.to_string(),
-            size,
-            content_type: content_type.clone(),
-            meta: ObjectMeta {
-                content_type,
-                content_length: Some(size),
-                ..Default::default()
-            },
-        };
         let reader = out.body.into_async_read();
         Ok((probe, Box::pin(reader)))
     }
@@ -683,10 +898,11 @@ impl StorageBackend for S3Backend {
         body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
         meta: ObjectMeta,
     ) -> Result<crate::PutStreamResult> {
-        let n = self.put_stream_multipart(key, body, meta).await?;
+        let (n, sha) = self.put_stream_multipart(key, body, meta).await?;
         Ok(crate::PutStreamResult {
             bytes_written: n,
             etag: None,
+            sha256_hex: Some(sha),
         })
     }
 }
@@ -720,6 +936,12 @@ fn apply_meta_put(mut req: PutObjectFluentBuilder, meta: &ObjectMeta) -> PutObje
             req = req.metadata("mtime", secs.to_string());
         }
     }
+    if let Some(sha) = &meta.sha256_hex {
+        req = req.metadata("sha256", sha.clone());
+    }
+    if let Some(token) = &meta.commit_token {
+        req = req.metadata("commit-token", token.clone());
+    }
     req
 }
 
@@ -746,6 +968,12 @@ fn apply_meta_multipart(
             req = req.metadata("mtime", secs.to_string());
         }
     }
+    if let Some(sha) = &meta.sha256_hex {
+        req = req.metadata("sha256", sha.clone());
+    }
+    if let Some(token) = &meta.commit_token {
+        req = req.metadata("commit-token", token.clone());
+    }
     req
 }
 
@@ -768,6 +996,147 @@ fn rfc3339_unix_secs(raw: &str) -> Option<u64> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|dt| dt.timestamp().max(0) as u64)
+}
+
+/// `bytes=start-end` (inclusive) or `bytes=start-` through EOF.
+pub(crate) fn s3_range_header(span: crate::bounded::ReadSpan) -> String {
+    match span {
+        crate::bounded::ReadSpan::ToEnd { offset } => format!("bytes={offset}-"),
+        crate::bounded::ReadSpan::Exact { offset, length } => {
+            let end = offset.saturating_add(length.saturating_sub(1));
+            format!("bytes={offset}-{end}")
+        }
+    }
+}
+
+fn encode_copy_source(bucket: &str, key: &str) -> String {
+    format!("{}/{}", encode_copy_token(bucket), encode_copy_token(key))
+}
+
+fn encode_copy_token(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn map_missing(key: &str, msg: String) -> StorageError {
+    if msg.contains("NoSuchKey") || msg.contains("404") || msg.contains("NotFound") {
+        StorageError::NotFound(key.into())
+    } else {
+        StorageError::S3(msg)
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OrphanRecord {
+    bucket: String,
+    key: String,
+    upload_id: String,
+    attempts: u32,
+}
+
+fn orphan_dir() -> Option<std::path::PathBuf> {
+    let root = std::env::var_os("BOOKCLERK_FILES_DIR")?;
+    Some(std::path::PathBuf::from(root).join("storage-orphans"))
+}
+
+fn orphan_path(upload_id: &str) -> Option<std::path::PathBuf> {
+    let dir = orphan_dir()?;
+    let name = hex::encode(sha2::Sha256::digest(upload_id.as_bytes()));
+    Some(dir.join(format!("{name}.json")))
+}
+
+fn record_orphan(bucket: &str, key: &str, upload_id: &str) {
+    let Some(path) = orphan_path(upload_id) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let record = OrphanRecord {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+        upload_id: upload_id.to_string(),
+        attempts: 0,
+    };
+    if let Ok(text) = serde_json::to_string(&record) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+fn clear_orphan(upload_id: &str) {
+    if let Some(path) = orphan_path(upload_id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+struct MultipartGuard {
+    client: Client,
+    bucket: String,
+    key: String,
+    upload_id: String,
+    armed: bool,
+}
+
+impl MultipartGuard {
+    fn arm(client: Client, bucket: String, key: String, upload_id: String) -> Self {
+        Self {
+            client,
+            bucket,
+            key,
+            upload_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for MultipartGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let client = self.client.clone();
+        let bucket = self.bucket.clone();
+        let key = self.key.clone();
+        let upload_id = self.upload_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let result = client
+                    .abort_multipart_upload()
+                    .bucket(bucket)
+                    .key(key)
+                    .upload_id(&upload_id)
+                    .send()
+                    .await;
+                match result {
+                    Ok(_) => clear_orphan(&upload_id),
+                    Err(err) => {
+                        tracing::error!(
+                            upload_id,
+                            error = %err,
+                            "dropped multipart upload abort failed; id retained"
+                        );
+                    }
+                }
+            });
+        } else {
+            tracing::error!(
+                upload_id,
+                "dropped multipart upload could not schedule abort; id retained"
+            );
+        }
+    }
 }
 
 /// Reads a metadata key, falling back to the lowercase form S3 may return.
@@ -823,5 +1192,28 @@ mod tests {
         assert!(!use_multipart(MULTIPART_THRESHOLD - 1));
         assert!(use_multipart(MULTIPART_THRESHOLD));
         assert!(use_multipart(5 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn copy_source_encodes_spaces_and_slashes() {
+        assert_eq!(
+            encode_copy_source("bucket", "a/b c.m4b"),
+            "bucket/a%2Fb%20c.m4b"
+        );
+    }
+
+    #[test]
+    fn range_header_matches_normalized_span() {
+        assert_eq!(
+            s3_range_header(crate::bounded::ReadSpan::ToEnd { offset: 4 }),
+            "bytes=4-"
+        );
+        assert_eq!(
+            s3_range_header(crate::bounded::ReadSpan::Exact {
+                offset: 4,
+                length: 2
+            }),
+            "bytes=4-5"
+        );
     }
 }

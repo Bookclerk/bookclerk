@@ -6982,6 +6982,7 @@ impl LibraryStore {
 
 pub(crate) mod event_outbox;
 pub(crate) mod plugin_databases;
+pub(crate) mod storage_scan;
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub(crate) mod job_queue;
 
