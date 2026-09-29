@@ -61,10 +61,27 @@ pub async fn scan_storage(
         Some(raw) => decode_prior(raw, &instance_id)?,
         None => fresh_checkpoint(&instance_id, node_local),
     };
-    bind_generation(library, &state, fence).await?;
-    if state.phase == "apply" {
-        return Ok(StorageIndex::with_scan(state.generation));
+    if prior.is_some() {
+        match library
+            .storage_scan_adoption(&state.generation)
+            .await
+            .map_err(|err| AcquireError::Other(anyhow::anyhow!("storage scan generation: {err}")))?
+        {
+            Some((bound_instance, true))
+                if state.phase == "apply" && bound_instance == instance_id =>
+            {
+                return Ok(StorageIndex::with_scan(state.generation));
+            }
+            Some((bound_instance, _)) if state.phase == "list" && bound_instance == instance_id => {
+            }
+            _ => {
+                // Missing, incomplete, or not a list resume. An apply checkpoint
+                // is not proof the inventory still exists.
+                state = fresh_checkpoint(&instance_id, node_local);
+            }
+        }
     }
+    bind_generation(library, &state, fence).await?;
     let mut restarted = false;
     loop {
         match page_scan(library, storage, fence, &mut state, probe_metadata).await {
@@ -81,6 +98,10 @@ pub async fn scan_storage(
     }
     state.phase = "apply".into();
     state.cursor = None;
+    library
+        .storage_scan_mark_complete(&state.generation)
+        .await
+        .map_err(|err| AcquireError::Other(anyhow::anyhow!("storage scan generation: {err}")))?;
     persist(library, fence, &state).await?;
     Ok(StorageIndex::with_scan(state.generation))
 }
@@ -466,6 +487,88 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+    }
+
+    fn apply_checkpoint(backend: &LocalFsBackend, generation: &str) -> JobCheckpoint {
+        let state = ScanCheckpoint {
+            v: SCAN_VERSION,
+            op: "storage_scan".into(),
+            instance_id: backend.instance_id(),
+            namespace: String::new(),
+            generation: generation.into(),
+            phase: "apply".into(),
+            cursor: None,
+            node_local: true,
+        };
+        JobCheckpoint {
+            schema_version: SCAN_VERSION,
+            json: serde_json::to_string(&state).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_apply_generation_rescans_instead_of_adopting_empty() {
+        let library = store().await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put("a.m4b", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let first_fence = running_fence(&library, "scan-a").await;
+        let first = scan_storage(&library, &backend, Some(&first_fence), None, false)
+            .await
+            .unwrap();
+        let first_id = first.scan_id().unwrap().to_string();
+        let prior = apply_checkpoint(&backend, &first_id);
+        let second_fence = running_fence(&library, "scan-b").await;
+        let adopted = scan_storage(&library, &backend, Some(&second_fence), Some(&prior), false)
+            .await
+            .unwrap();
+        assert_eq!(adopted.scan_id().unwrap(), first_id);
+
+        library.storage_scan_delete(&first_id).await.unwrap();
+        let recovered = scan_storage(&library, &backend, Some(&second_fence), Some(&prior), false)
+            .await
+            .unwrap();
+        let recovered_id = recovered.scan_id().unwrap();
+        assert_ne!(recovered_id, first_id);
+        assert_eq!(
+            library
+                .storage_scan_unclaimed_audio(recovered_id)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_apply_generation_is_not_adopted() {
+        let library = store().await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put("a.m4b", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let fence = running_fence(&library, "scan-incomplete").await;
+        library
+            .storage_scan_register("scan-open", &backend.instance_id(), Some(&fence.job_id))
+            .await
+            .unwrap();
+        let prior = apply_checkpoint(&backend, "scan-open");
+        let again = running_fence(&library, "scan-replay").await;
+        let recovered = scan_storage(&library, &backend, Some(&again), Some(&prior), false)
+            .await
+            .unwrap();
+        assert_ne!(recovered.scan_id().unwrap(), "scan-open");
+        assert_eq!(
+            library
+                .storage_scan_unclaimed_audio(recovered.scan_id().unwrap())
+                .await
+                .unwrap(),
+            1
         );
     }
 }

@@ -13,12 +13,14 @@ pub struct Model {
     /// Globally unique scan id.
     #[sea_orm(primary_key, auto_increment = false)]
     pub scan_id: String,
-    /// [`bookclerk_storage::StorageBackend::instance_id`] this generation lists.
+    /// Storage instance id (`StorageBackend::instance_id`) this generation lists.
     pub instance_id: String,
     /// Job id when the scan is fenced. Empty when the scan has no job.
     pub job_id: String,
     /// RFC 3339 heartbeat. Page ingestion updates this.
     pub updated_at: String,
+    /// 1 after the list phase finished and the inventory can be adopted.
+    pub completed: i64,
 }
 
 /// No declared relations.

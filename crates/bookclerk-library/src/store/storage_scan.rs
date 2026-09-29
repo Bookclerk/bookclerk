@@ -205,9 +205,41 @@ impl LibraryStore {
             instance_id: Set(instance_id.to_string()),
             job_id: Set(job_id),
             updated_at: Set(now),
+            completed: Set(0),
         };
         row.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
+    }
+
+    /// Marks a generation's inventory complete so a later checkpoint can adopt it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the update fails.
+    pub async fn storage_scan_mark_complete(&self, scan_id: &str) -> Result<()> {
+        storage_scan_generations::Entity::update_many()
+            .col_expr(
+                storage_scan_generations::Column::Completed,
+                sea_orm::sea_query::Expr::value(1i64),
+            )
+            .filter(storage_scan_generations::Column::ScanId.eq(scan_id))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Returns `(instance_id, completed)` when the generation row still exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn storage_scan_adoption(&self, scan_id: &str) -> Result<Option<(String, bool)>> {
+        let row = storage_scan_generations::Entity::find_by_id(scan_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(row.map(|row| (row.instance_id, row.completed != 0)))
     }
 
     /// Refreshes the generation heartbeat after a page is stored.

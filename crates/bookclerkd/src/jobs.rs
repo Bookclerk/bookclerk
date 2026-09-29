@@ -517,6 +517,9 @@ pub async fn run_acquire(
             elapsed_ms = started.elapsed().as_millis() as u64,
             "run_acquire finished: nothing to acquire"
         );
+        if let Some(scan_id) = index.scan_id() {
+            let _ = library.storage_scan_delete(scan_id).await;
+        }
         return Ok("nothing to acquire".into());
     }
 

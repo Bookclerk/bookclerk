@@ -816,7 +816,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         scan_id TEXT PRIMARY KEY NOT NULL,
         instance_id TEXT NOT NULL,
         job_id TEXT NOT NULL DEFAULT '',
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        completed INTEGER NOT NULL DEFAULT 0
     )",
     ),
 ];
