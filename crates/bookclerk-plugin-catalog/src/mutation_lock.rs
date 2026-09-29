@@ -21,8 +21,6 @@
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-use fs4::fs_std::FileExt;
-
 use crate::error::{CatalogError, Result};
 use crate::extract::require_under;
 
@@ -88,7 +86,7 @@ impl PluginMutationLock {
                     path.display()
                 ))
             })?;
-        file.lock_exclusive().map_err(|err| {
+        fs4::FileExt::lock(&file).map_err(|err| {
             CatalogError::message(format!(
                 "acquire plugin mutation lock {}: {err}",
                 path.display()
