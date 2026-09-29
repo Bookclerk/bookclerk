@@ -2,6 +2,7 @@
 //! journal reclaim. This is protocol evidence, not live AWS conformance.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bookclerk_config::OutputS3Config;
@@ -24,6 +25,14 @@ struct Upload {
     parts: std::collections::BTreeMap<i32, Vec<u8>>,
 }
 
+#[derive(Clone)]
+struct StreamSpec {
+    /// `Content-Length` to advertise. `None` omits the header.
+    claim: Option<u64>,
+    /// Bytes to try to write. May exceed `claim`.
+    total: u64,
+}
+
 struct World {
     objects: HashMap<String, Obj>,
     uploads: HashMap<String, Upload>,
@@ -38,6 +47,13 @@ struct World {
     fail_integrity: bool,
     held_integrity: Vec<Arc<Notify>>,
     integrity_arrived: Arc<Notify>,
+    /// After CopyObject commits, wait so a test can replace the destination.
+    hold_copy: bool,
+    copies_held: usize,
+    release_copy: bool,
+    /// When set, GET of an integrity key streams this body instead of the store.
+    stream_integrity: Option<StreamSpec>,
+    stream_bytes: Arc<AtomicUsize>,
     part_gate: Arc<Notify>,
     first_part_started: Arc<Notify>,
 }
@@ -99,6 +115,18 @@ async fn serve(world: Arc<Mutex<World>>) -> String {
                 }
                 body.truncate(content_len);
                 let key = percent_decode(path.trim_start_matches('/'));
+                let stream = {
+                    let world = world.lock().await;
+                    if method == "GET" && key.contains(".bookclerk-integrity/") {
+                        world.stream_integrity.clone()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(spec) = stream {
+                    stream_integrity(&mut socket, &spec, &world).await;
+                    return;
+                }
                 let response = handle(method, &key, query, &headers, &body, &world).await;
                 let _ = socket.write_all(response.as_bytes()).await;
             });
@@ -116,6 +144,37 @@ fn query_map(query: &str) -> HashMap<String, String> {
             (percent_decode(k), percent_decode(v))
         })
         .collect()
+}
+
+async fn stream_integrity(
+    socket: &mut tokio::net::TcpStream,
+    spec: &StreamSpec,
+    world: &Arc<Mutex<World>>,
+) {
+    use tokio::io::AsyncWriteExt;
+    let header = match spec.claim {
+        Some(len) => {
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n")
+        }
+        None => "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".into(),
+    };
+    if socket.write_all(header.as_bytes()).await.is_err() {
+        return;
+    }
+    let chunk = vec![b'x'; 4096];
+    let mut sent = 0u64;
+    while sent < spec.total {
+        let n = std::cmp::min(chunk.len() as u64, spec.total - sent) as usize;
+        if socket.write_all(&chunk[..n]).await.is_err() {
+            break;
+        }
+        sent += n as u64;
+        world
+            .lock()
+            .await
+            .stream_bytes
+            .fetch_add(n, Ordering::SeqCst);
+    }
 }
 
 fn percent_decode(raw: &str) -> String {
@@ -327,8 +386,8 @@ async fn handle(
             .get("x-amz-copy-source-if-match")
             .cloned()
             .unwrap_or_default();
-        let mut world = world.lock().await;
-        let Some(obj) = world.objects.get(&source_key).cloned_obj() else {
+        let mut guard = world.lock().await;
+        let Some(obj) = guard.objects.get(&source_key).cloned_obj() else {
             return "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .into();
         };
@@ -337,7 +396,20 @@ async fn handle(
                 .into();
         }
         let etag = obj.etag.clone();
-        world.objects.insert(key.to_string(), obj);
+        guard.objects.insert(key.to_string(), obj);
+        let hold = guard.hold_copy;
+        if hold {
+            guard.copies_held += 1;
+        }
+        drop(guard);
+        if hold {
+            loop {
+                if world.lock().await.release_copy {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        }
         let xml = format!("<CopyObjectResult><ETag>{etag}</ETag></CopyObjectResult>");
         return xml_ok(&xml);
     }
@@ -453,6 +525,11 @@ fn new_world(hold_parts: bool) -> Arc<Mutex<World>> {
         fail_integrity: false,
         held_integrity: Vec::new(),
         integrity_arrived: Arc::new(Notify::new()),
+        hold_copy: false,
+        copies_held: 0,
+        release_copy: false,
+        stream_integrity: None,
+        stream_bytes: Arc::new(AtomicUsize::new(0)),
         part_gate: Arc::new(Notify::new()),
         first_part_started: Arc::new(Notify::new()),
     }))
@@ -963,4 +1040,223 @@ async fn deleting_one_key_leaves_another_keys_integrity() {
         Some(sha(b"b.m4b").as_str())
     );
     assert_eq!(kept.meta.commit_token.as_deref(), Some("tok-b"));
+}
+
+#[tokio::test]
+async fn copy_binds_integrity_to_the_copy_response_not_a_later_head() {
+    let world = new_world(false);
+    world.lock().await.hold_copy = true;
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_sized(&url, dir.path(), None).await;
+    let source = b"audiobook";
+    backend
+        .put_stream(
+            "stage.m4b",
+            Box::pin(std::io::Cursor::new(source.to_vec())),
+            ObjectMeta {
+                content_length: Some(source.len() as u64),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
+        .unwrap();
+    let source_sha = sha(source);
+    let copy = tokio::spawn({
+        let backend = backend.clone();
+        async move { backend.copy("stage.m4b", "final.m4b").await }
+    });
+    loop {
+        if world.lock().await.copies_held >= 1 {
+            break;
+        }
+        if copy.is_finished() {
+            panic!(
+                "copy finished before the committed barrier: {:?}",
+                copy.await
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+    let replacement = b"REPLACED!";
+    assert_eq!(replacement.len(), source.len());
+    {
+        let mut world = world.lock().await;
+        let obj = world
+            .objects
+            .get_mut("library/final.m4b")
+            .expect("copy committed");
+        obj.body = replacement.to_vec();
+        obj.etag = "\"replaced\"".into();
+        obj.meta.clear();
+        world.release_copy = true;
+    }
+    copy.await.unwrap().unwrap();
+    let probe = backend.probe("final.m4b").await.unwrap();
+    let got = backend.get("final.m4b").await.unwrap();
+    assert_eq!(got.as_ref(), replacement);
+    assert_ne!(sha(got.as_ref()), source_sha);
+    assert!(
+        probe.meta.sha256_hex.is_none(),
+        "replacement HEAD reported the copied source digest: {probe:?}"
+    );
+    assert_ne!(probe.meta.sha256_hex.as_deref(), Some(source_sha.as_str()));
+}
+
+struct CountingReader {
+    left: usize,
+    pulled: Arc<AtomicUsize>,
+    chunk: u8,
+}
+
+impl tokio::io::AsyncRead for CountingReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.left == 0 || buf.remaining() == 0 {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        let n = std::cmp::min(self.left, buf.remaining());
+        let byte = self.chunk;
+        buf.put_slice(&vec![byte; n]);
+        self.left -= n;
+        self.pulled.fetch_add(n, Ordering::SeqCst);
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn integrity_reads_stop_at_the_metadata_cap() {
+    let cap = INTEGRITY_RECORD_MAX_BYTES;
+    let record = br#"{"etag":"\"abc\"","sha256_hex":"abcd","commit_token":"t"}"#;
+    let parsed = read_capped_record(
+        Some(record.len() as u64),
+        Box::pin(std::io::Cursor::new(record.to_vec())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(parsed.len(), record.len());
+
+    let pulled = Arc::new(AtomicUsize::new(0));
+    let err = read_capped_record(
+        Some(cap + 1),
+        Box::pin(CountingReader {
+            left: (cap as usize) * 8,
+            pulled: Arc::clone(&pulled),
+            chunk: b'A',
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, StorageError::PayloadTooLarge(_)), "{err}");
+    assert_eq!(
+        pulled.load(Ordering::SeqCst),
+        0,
+        "oversize hint must not be read"
+    );
+
+    let pulled = Arc::new(AtomicUsize::new(0));
+    let err = read_capped_record(
+        None,
+        Box::pin(CountingReader {
+            left: (cap as usize) * 8,
+            pulled: Arc::clone(&pulled),
+            chunk: b'B',
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, StorageError::PayloadTooLarge(_)), "{err}");
+    let absent = pulled.load(Ordering::SeqCst) as u64;
+    assert!(
+        absent > cap && absent <= cap + 8192,
+        "absent length pulled {absent}, cap {cap}"
+    );
+
+    let pulled = Arc::new(AtomicUsize::new(0));
+    let err = read_capped_record(
+        Some(16),
+        Box::pin(CountingReader {
+            left: (cap as usize) * 8,
+            pulled: Arc::clone(&pulled),
+            chunk: b'C',
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, StorageError::PayloadTooLarge(_)), "{err}");
+    let understated = pulled.load(Ordering::SeqCst) as u64;
+    assert!(
+        understated > cap && understated <= cap + 8192,
+        "understated length pulled {understated}, cap {cap}"
+    );
+}
+
+async fn probe_streamed_integrity(spec: StreamSpec) -> (StorageError, usize) {
+    let world = new_world(false);
+    {
+        let mut world = world.lock().await;
+        world.stream_integrity = Some(spec);
+        world.stream_bytes.store(0, Ordering::SeqCst);
+    }
+    let url = serve(Arc::clone(&world)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = open_sized(&url, dir.path(), None).await;
+    backend
+        .put_stream(
+            "book.m4b",
+            Box::pin(std::io::Cursor::new(b"audiobook".to_vec())),
+            ObjectMeta {
+                content_length: Some(9),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
+        .unwrap();
+    world.lock().await.stream_bytes.store(0, Ordering::SeqCst);
+    let err = backend.probe("book.m4b").await.unwrap_err();
+    let sent = world.lock().await.stream_bytes.load(Ordering::SeqCst);
+    (err, sent)
+}
+
+#[tokio::test]
+async fn streamed_integrity_records_are_not_fully_buffered() {
+    let cap = INTEGRITY_RECORD_MAX_BYTES;
+    let total = 8 * 1024 * 1024;
+    let (err, sent) = probe_streamed_integrity(StreamSpec {
+        claim: Some(cap + 1),
+        total,
+    })
+    .await;
+    assert!(matches!(err, StorageError::PayloadTooLarge(_)), "{err}");
+    assert!(
+        (sent as u64) < 1024 * 1024,
+        "limit+1 response sent {sent} of {total}"
+    );
+
+    let (err, sent) = probe_streamed_integrity(StreamSpec { claim: None, total }).await;
+    assert!(matches!(err, StorageError::PayloadTooLarge(_)), "{err}");
+    assert!(
+        (sent as u64) * 2 < total,
+        "absent Content-Length sent {sent} of {total}"
+    );
+
+    let (err, sent) = probe_streamed_integrity(StreamSpec {
+        claim: Some(16),
+        total,
+    })
+    .await;
+    assert!(
+        matches!(
+            err,
+            StorageError::PayloadTooLarge(_) | StorageError::Integrity(_)
+        ),
+        "{err}"
+    );
+    assert!(
+        (sent as u64) < 1024 * 1024,
+        "understated Content-Length sent {sent} of {total}"
+    );
 }

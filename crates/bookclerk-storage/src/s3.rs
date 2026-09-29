@@ -457,7 +457,8 @@ impl S3Backend {
         source_etag: &str,
         source_meta: &ObjectMeta,
     ) -> Result<()> {
-        self.client
+        let copied = self
+            .client
             .copy_object()
             .bucket(&self.bucket)
             .key(self.full_key(to))
@@ -468,9 +469,19 @@ impl S3Backend {
             .await
             .map_err(|err| map_copy_failure(from, format!("{err:?}")))?;
         if source_meta.sha256_hex.is_some() || source_meta.commit_token.is_some() {
-            let dest_etag = self.current_etag(to).await?;
-            self.put_bound_integrity(to, &dest_etag, source_meta)
-                .await?;
+            // The CopyObject response is the publication identity. A later HEAD
+            // can observe a replacement and must not label that body with this
+            // copy's digest.
+            let etag = copied
+                .copy_object_result()
+                .and_then(|result| result.e_tag())
+                .filter(|etag| !etag.is_empty())
+                .ok_or_else(|| {
+                    StorageError::Integrity(
+                        "CopyObject returned no ETag; integrity was not published".into(),
+                    )
+                })?;
+            self.put_bound_integrity(to, etag, source_meta).await?;
         }
         Ok(())
     }
@@ -684,21 +695,6 @@ impl S3Backend {
         .await
     }
 
-    async fn current_etag(&self, key: &str) -> Result<String> {
-        let out = self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(self.full_key(key))
-            .send()
-            .await
-            .map_err(|err| StorageError::S3(err.to_string()))?;
-        out.e_tag()
-            .map(str::to_string)
-            .filter(|etag| !etag.is_empty())
-            .ok_or_else(|| StorageError::Integrity(format!("HEAD `{key}` returned no ETag")))
-    }
-
     async fn read_bound_integrity(&self, key: &str, etag: &str) -> Result<Option<BoundIntegrity>> {
         let out = self
             .client
@@ -710,19 +706,15 @@ impl S3Backend {
         let out = match out {
             Ok(out) => out,
             Err(err) => {
-                let msg = err.to_string();
+                let msg = format!("{err:?}");
                 if msg.contains("NoSuchKey") || msg.contains("404") || msg.contains("NotFound") {
                     return Ok(None);
                 }
-                return Err(StorageError::S3(msg));
+                return Err(StorageError::S3(err.to_string()));
             }
         };
-        let bytes = out
-            .body
-            .collect()
-            .await
-            .map_err(|err| StorageError::S3(err.to_string()))?
-            .into_bytes();
+        let hint = out.content_length().map(|len| len as u64);
+        let bytes = read_capped_record(hint, Box::pin(out.body.into_async_read())).await?;
         let parsed: BoundIntegrity = serde_json::from_slice(&bytes)
             .map_err(|err| StorageError::Integrity(format!("integrity record: {err}")))?;
         if parsed.etag != etag {
@@ -907,7 +899,7 @@ impl StorageBackend for S3Backend {
         };
         if !key.contains(".bookclerk-integrity/") {
             if let Some(etag) = out.e_tag() {
-                if let Ok(Some(bound)) = self.read_bound_integrity(key, etag).await {
+                if let Some(bound) = self.read_bound_integrity(key, etag).await? {
                     if meta.sha256_hex.is_none() {
                         meta.sha256_hex = bound.sha256_hex;
                     }
@@ -1481,6 +1473,32 @@ impl Drop for MultipartGuard {
 
 #[cfg(test)]
 static SKIP_DROP_ABORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Integrity JSON is metadata, not a media object. Reads stop at this cap.
+const INTEGRITY_RECORD_MAX_BYTES: u64 = 64 * 1024;
+
+/// Reads one integrity record, counting bytes rather than trusting `Content-Length`.
+///
+/// A hint above the cap is rejected before the body is read. A missing or
+/// understated length still stops at [`INTEGRITY_RECORD_MAX_BYTES`] + 1.
+///
+/// # Errors
+///
+/// Returns [`StorageError::PayloadTooLarge`] when the record exceeds the cap,
+/// and [`StorageError::Io`] when the read fails.
+async fn read_capped_record(
+    hint: Option<u64>,
+    reader: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+) -> Result<bytes::Bytes> {
+    if let Some(hint) = hint {
+        if hint > INTEGRITY_RECORD_MAX_BYTES {
+            return Err(StorageError::PayloadTooLarge(format!(
+                "integrity record hint of {hint} bytes exceeds {INTEGRITY_RECORD_MAX_BYTES}"
+            )));
+        }
+    }
+    crate::bounded::read_scalar_body(reader, INTEGRITY_RECORD_MAX_BYTES).await
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct BoundIntegrity {
