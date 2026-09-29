@@ -27,6 +27,7 @@ pub fn encode_to_mp3_native(
     output: &Path,
     lame: &bookclerk_config::LameConfig,
     max_sample_rate: Option<u32>,
+    max_output_bytes: Option<u64>,
 ) -> Result<MediaOutcome> {
     if !input.exists() {
         return Err(MediaError::InputMissing(input.to_path_buf()));
@@ -159,6 +160,7 @@ pub fn encode_to_mp3_native(
         .map_err(|err| MediaError::Native(format!("lame build: {err:?}")))?;
 
     let mut out_file = File::create(output)?;
+    let mut output_written = 0u64;
     let mut mp3_chunk = Vec::new();
     let mut decoded_pcm: Vec<i16> = Vec::new();
     let mut encode_pcm: Vec<i16> = Vec::new();
@@ -210,6 +212,8 @@ pub fn encode_to_mp3_native(
             out_channels,
             &mut mp3_chunk,
             &mut out_file,
+            &mut output_written,
+            max_output_bytes,
         )?;
     }
 
@@ -218,7 +222,12 @@ pub fn encode_to_mp3_native(
     }
     if !encode_pcm.is_empty() {
         encode_pcm_chunk(&mut encoder, &encode_pcm, out_channels, &mut mp3_chunk)?;
-        out_file.write_all(&mp3_chunk)?;
+        write_output_within_budget(
+            &mut out_file,
+            &mp3_chunk,
+            &mut output_written,
+            max_output_bytes,
+        )?;
         mp3_chunk.clear();
         encode_pcm.clear();
     }
@@ -230,7 +239,12 @@ pub fn encode_to_mp3_native(
         .flush_to_vec::<FlushNoGap>(&mut mp3_chunk)
         .map_err(|err| MediaError::Native(format!("lame flush: {err:?}")))?;
     if !mp3_chunk.is_empty() {
-        out_file.write_all(&mp3_chunk)?;
+        write_output_within_budget(
+            &mut out_file,
+            &mp3_chunk,
+            &mut output_written,
+            max_output_bytes,
+        )?;
     }
     out_file.sync_all()?;
 
@@ -262,6 +276,8 @@ fn drain_encode_chunks(
     channels: u32,
     mp3_chunk: &mut Vec<u8>,
     out_file: &mut File,
+    written: &mut u64,
+    max_output_bytes: Option<u64>,
 ) -> Result<()> {
     const CHUNK: usize = 1152 * 8;
     let frame = channels as usize;
@@ -269,9 +285,34 @@ fn drain_encode_chunks(
         let take = CHUNK * frame;
         let chunk: Vec<i16> = pcm.drain(..take).collect();
         encode_pcm_chunk(encoder, &chunk, channels, mp3_chunk)?;
-        out_file.write_all(mp3_chunk)?;
+        write_output_within_budget(out_file, mp3_chunk, written, max_output_bytes)?;
         mp3_chunk.clear();
     }
+    Ok(())
+}
+
+/// Appends `data` only when the result stays within `max`.
+///
+/// The failing call writes nothing, so the file length never passes the budget.
+pub fn write_output_within_budget(
+    file: &mut impl Write,
+    data: &[u8],
+    written: &mut u64,
+    max: Option<u64>,
+) -> Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let next = written.saturating_add(data.len() as u64);
+    if let Some(max) = max {
+        if next > max {
+            return Err(MediaError::Native(format!(
+                "MP3 output of {next} bytes would exceed the {max} byte budget"
+            )));
+        }
+    }
+    file.write_all(data)?;
+    *written = next;
     Ok(())
 }
 
@@ -502,6 +543,7 @@ mod tests {
             &encoded,
             &bookclerk_config::LameConfig::default(),
             None,
+            None,
         )
         .expect("encode to mp3");
 
@@ -542,9 +584,48 @@ mod tests {
             &encoded,
             &bookclerk_config::LameConfig::default(),
             Some(22_050),
+            None,
         )
         .expect("encode to mp3 at a lower rate");
 
         assert!(std::fs::metadata(&encoded).expect("encoded file").len() > 500);
+    }
+
+    #[test]
+    fn encode_stops_before_the_output_file_passes_the_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.m4b");
+        let encoded = dir.path().join("encoded.mp3");
+        let sample_rate = 44_100usize;
+        let pcm: Vec<i16> = (0..sample_rate * 2)
+            .map(|n| {
+                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                let value = ((n as f32 / 40.0).sin() * 2_000.0) as i16;
+                value
+            })
+            .collect();
+        crate::package_m4b_from_pcm(
+            &pcm,
+            u32::try_from(sample_rate).expect("sample rate fits u32"),
+            1,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .expect("build source audiobook");
+        let budget = 256u64;
+        let err = encode_to_mp3_native(
+            &source,
+            &encoded,
+            &bookclerk_config::LameConfig::default(),
+            None,
+            Some(budget),
+        )
+        .expect_err("an expanding encode must stop at the output budget");
+        assert!(err.to_string().contains("budget"), "{err}");
+        let len = std::fs::metadata(&encoded).expect("partial output").len();
+        assert!(
+            len <= budget,
+            "output grew to {len} while the encoder was still inside the {budget} byte budget"
+        );
     }
 }

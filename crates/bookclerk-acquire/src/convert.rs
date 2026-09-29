@@ -113,8 +113,8 @@ pub async fn convert_book(
         req,
         &work_dir,
         &mp3_key,
-        |input, output| async move {
-            encode_to_mp3(&input, &output, &lame, max_sample_rate)
+        |input, output, allowance| async move {
+            encode_to_mp3(&input, &output, &lame, max_sample_rate, Some(allowance))
                 .await
                 .map(|_| ())
                 .map_err(|err| err.to_string())
@@ -134,7 +134,7 @@ pub(crate) async fn convert_with_encoder<F, Fut>(
     encode: F,
 ) -> Result<String>
 where
-    F: FnOnce(PathBuf, PathBuf) -> Fut,
+    F: FnOnce(PathBuf, PathBuf, u64) -> Fut,
     Fut: std::future::Future<Output = std::result::Result<(), String>>,
 {
     let key = book.storage_key.as_deref().unwrap_or("");
@@ -214,20 +214,40 @@ where
                 "convert source `{key}` was empty"
             )));
         }
-        let output_room = quota.saturating_sub(copied);
-        if output_room == 0 {
+        let output_allowance = copied.min(quota.saturating_sub(copied));
+        if output_allowance == 0 {
             return Err(AcquireError::Other(anyhow::anyhow!(
                 "convert quota has no room for encoder output ({copied} bytes already used)"
             )));
         }
-        encode(input.clone(), output.clone())
-            .await
-            .map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?;
+        let reserved_total = copied.saturating_add(output_allowance);
+        if let Some(job_id) = req.job_id.as_deref() {
+            library
+                .reserve_job_temp_path(
+                    job_id,
+                    &work_dir.display().to_string(),
+                    reserved_total,
+                    quota,
+                )
+                .await
+                .map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?;
+            reserved = true;
+        }
+        let encode_fut = encode(input.clone(), output.clone(), output_allowance);
+        tokio::pin!(encode_fut);
+        let encode_result = tokio::select! {
+            biased;
+            _ = wait_for_cancel(req.cancel.clone()) => {
+                Err("convert cancelled during encode".to_string())
+            }
+            result = encode_fut => result,
+        };
+        encode_result.map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?;
         let out_len = tokio::fs::metadata(&output).await?.len();
-        if copied.saturating_add(out_len) > quota {
+        if out_len > output_allowance {
             let _ = tokio::fs::remove_file(&output).await;
             return Err(AcquireError::Other(anyhow::anyhow!(
-                "encoder output is {out_len} bytes, remaining quota is {output_room}"
+                "encoder output is {out_len} bytes, reserved output allowance is {output_allowance}"
             )));
         }
         let meta = ObjectMeta {
@@ -256,10 +276,14 @@ where
     }
     .await;
 
-    let removed = match tokio::fs::remove_dir_all(work_dir).await {
-        Ok(()) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
-        Err(_) => false,
+    let removed = if scratch_delete_forced_failure() {
+        false
+    } else {
+        match tokio::fs::remove_dir_all(work_dir).await {
+            Ok(()) => true,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        }
     };
     if removed {
         scratch.disarm();
@@ -270,6 +294,9 @@ where
                     .await;
             }
         }
+    } else if scratch_delete_forced_failure() {
+        // Leave the files and the reservation. Drop must not delete them either.
+        scratch.disarm();
     }
     result
 }
@@ -290,6 +317,33 @@ impl ScratchDir {
     }
 }
 
+async fn wait_for_cancel(cancel: Option<Arc<AtomicBool>>) {
+    let Some(cancel) = cancel else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+fn scratch_delete_forced_failure() -> bool {
+    #[cfg(test)]
+    {
+        FAIL_SCRATCH_DELETE.load(Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
+static FAIL_SCRATCH_DELETE: AtomicBool = AtomicBool::new(false);
+
 impl Drop for ScratchDir {
     fn drop(&mut self) {
         if self.armed {
@@ -306,6 +360,8 @@ mod tests {
     use bookclerk_storage::{
         ByteRange, ListPage, LocalFsBackend, ObjectInfo, ObjectProbe, PutStreamResult, StorageError,
     };
+    use std::sync::atomic::AtomicU64;
+
     use bytes::Bytes;
 
     type SResult<T> = bookclerk_storage::Result<T>;
@@ -454,7 +510,7 @@ mod tests {
             &request(&cache, 8),
             &work,
             "book.mp3",
-            |_input, _output| async { Ok(()) },
+            |_input, _output, _allowance| async { Ok(()) },
         )
         .await
         .unwrap_err();
@@ -472,7 +528,7 @@ mod tests {
             &request(&cache, 10_000),
             &work,
             "book.mp3",
-            |_input, _output| async { Ok(()) },
+            |_input, _output, _allowance| async { Ok(()) },
         )
         .await
         .unwrap_err();
@@ -491,7 +547,7 @@ mod tests {
             &request(&cache, 8),
             &work,
             "book.mp3",
-            |_input, _output| async { Ok(()) },
+            |_input, _output, _allowance| async { Ok(()) },
         )
         .await
         .unwrap_err();
@@ -504,7 +560,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let err = convert_with_encoder(
+        convert_with_encoder(
             &store,
             &SizedSource {
                 inner: root.clone(),
@@ -514,15 +570,44 @@ mod tests {
             &request(&cache, 8),
             &work,
             "book.mp3",
-            |_input, output| async move {
-                tokio::fs::write(output, vec![0u8; 20]).await.unwrap();
+            |_input, output, allowance| async move {
+                let mut file = std::fs::File::create(&output).unwrap();
+                let mut written = 0u64;
+                let chunk = vec![7u8; 64];
+                let mut peak = 0u64;
+                while bookclerk_media::write_output_within_budget(
+                    &mut file,
+                    &chunk,
+                    &mut written,
+                    Some(allowance),
+                )
+                .is_ok()
+                {
+                    peak = peak.max(file.metadata().unwrap().len());
+                }
+                let huge = vec![9u8; allowance as usize + 4096];
+                assert!(bookclerk_media::write_output_within_budget(
+                    &mut file,
+                    &huge,
+                    &mut written,
+                    Some(allowance),
+                )
+                .is_err());
+                let len = file.metadata().unwrap().len();
+                assert!(
+                    peak <= allowance && len <= allowance,
+                    "peak {peak} len {len}"
+                );
                 Ok(())
             },
         )
         .await
-        .unwrap_err();
-        assert!(err.to_string().contains("encoder output"), "{err}");
-        assert!(!root.exists("book.mp3").await.unwrap());
+        .unwrap();
+        let published = tokio::fs::metadata(dir.path().join("store").join("book.mp3"))
+            .await
+            .unwrap()
+            .len();
+        assert!(published <= 4, "published {published}");
     }
 
     #[tokio::test]
@@ -569,7 +654,7 @@ mod tests {
             &req,
             &work,
             "book.mp3",
-            |_input, _output| async { Ok(()) },
+            |_input, _output, _allowance| async { Ok(()) },
         )
         .await
         .unwrap_err();
@@ -577,5 +662,232 @@ mod tests {
         assert!(store.list_job_temp_paths(&id).await.unwrap().is_empty());
         assert!(!work.exists());
         assert!(!root.exists("book.mp3").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn cancel_after_input_eof_drops_the_encoder_and_releases_the_reservation() {
+        let store = library().await;
+        let book = acquired_book(&store).await;
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    title: Some("cancel-encode".into()),
+                    ..JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 1,
+                max_pending: 4,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = created else {
+            panic!("expected a new job");
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let root = LocalFsBackend::new(dir.path().join("store")).unwrap();
+        root.put(
+            "book.m4b",
+            Bytes::from_static(b"1234"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut req = request(dir.path(), 10_000);
+        req.job_id = Some(id.clone());
+        req.cancel = Some(Arc::clone(&cancel));
+        let work = dir.path().join("convert").join("eof");
+        let dropped = Arc::new(AtomicBool::new(false));
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped_flag = Arc::clone(&dropped);
+        let cancel_flag = Arc::clone(&cancel);
+        let err = convert_with_encoder(
+            &store,
+            &SizedSource {
+                inner: root.clone(),
+                advertised: 4,
+            },
+            &book,
+            &req,
+            &work,
+            "book.mp3",
+            move |_input, _output, allowance| async move {
+                assert_eq!(allowance, 4);
+                let _flag = DropFlag(dropped_flag);
+                cancel_flag.store(true, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("cancelled"), "{err}");
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "encoder future was not dropped"
+        );
+        assert!(store.list_job_temp_paths(&id).await.unwrap().is_empty());
+        assert!(!work.exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_jobs_cannot_expand_past_their_reservations() {
+        let store = library().await;
+        let book = acquired_book(&store).await;
+        let dir = tempfile::tempdir().unwrap();
+        let root = LocalFsBackend::new(dir.path().join("store")).unwrap();
+        root.put(
+            "book.m4b",
+            Bytes::from_static(b"1234"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let quota = 20u64;
+        let peaks = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
+        let aggregate = Arc::new(AtomicU64::new(0));
+        let mut tasks = Vec::new();
+        for idx in 0..2 {
+            let store = store.clone();
+            let book = book.clone();
+            let root = root.clone();
+            let peaks = Arc::clone(&peaks);
+            let aggregate = Arc::clone(&aggregate);
+            let cache = dir.path().join(format!("cache-{idx}"));
+            let created = store
+                .enqueue_job(EnqueueJobSpec {
+                    kind: JobKind::Acquire,
+                    payload: JobPayload {
+                        title: Some(format!("convert-{idx}")),
+                        ..JobPayload::default()
+                    },
+                    priority: 0,
+                    max_attempts: 1,
+                    max_pending: 4,
+                    run_after: None,
+                })
+                .await
+                .unwrap();
+            let EnqueueOutcome::Created { id } = created else {
+                panic!("job");
+            };
+            tasks.push(tokio::spawn(async move {
+                let mut req = request(&cache, quota);
+                req.job_id = Some(id);
+                let work = cache.join("convert").join("job");
+                convert_with_encoder(
+                    &store,
+                    &SizedSource {
+                        inner: root,
+                        advertised: 4,
+                    },
+                    &book,
+                    &req,
+                    &work,
+                    &format!("out-{idx}.mp3"),
+                    |_input, output, allowance| async move {
+                        assert_eq!(
+                            allowance, 4,
+                            "output budget must match the reservation slice"
+                        );
+                        let mut file = std::fs::File::create(&output).unwrap();
+                        let mut written = 0u64;
+                        let chunk = vec![1u8; 64];
+                        let mut peak = 0u64;
+                        while bookclerk_media::write_output_within_budget(
+                            &mut file,
+                            &chunk,
+                            &mut written,
+                            Some(allowance),
+                        )
+                        .is_ok()
+                        {
+                            let len = file.metadata().unwrap().len();
+                            peak = peak.max(len);
+                            peaks[idx].store(len, Ordering::SeqCst);
+                            let sum =
+                                peaks[0].load(Ordering::SeqCst) + peaks[1].load(Ordering::SeqCst);
+                            aggregate.fetch_max(sum, Ordering::SeqCst);
+                            assert!(
+                                sum <= 8,
+                                "concurrent encoder output {sum} exceeded the reserved 8 bytes"
+                            );
+                        }
+                        assert!(peak <= allowance);
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap();
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let peak = aggregate.load(Ordering::SeqCst);
+        assert!(peak <= 8, "peak concurrent encoder output was {peak}");
+    }
+
+    #[tokio::test]
+    async fn failed_scratch_cleanup_keeps_the_reservation() {
+        let store = library().await;
+        let book = acquired_book(&store).await;
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    title: Some("cleanup".into()),
+                    ..JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 1,
+                max_pending: 4,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = created else {
+            panic!("job");
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let root = LocalFsBackend::new(dir.path().join("store")).unwrap();
+        root.put(
+            "book.m4b",
+            Bytes::from_static(b"1234"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        FAIL_SCRATCH_DELETE.store(true, Ordering::SeqCst);
+        let mut req = request(dir.path(), 100);
+        req.job_id = Some(id.clone());
+        let work = dir.path().join("convert").join("keep");
+        let result = convert_with_encoder(
+            &store,
+            &SizedSource {
+                inner: root,
+                advertised: 4,
+            },
+            &book,
+            &req,
+            &work,
+            "book.mp3",
+            |_input, output, allowance| async move {
+                std::fs::write(&output, vec![1u8; allowance as usize]).unwrap();
+                Ok(())
+            },
+        )
+        .await;
+        FAIL_SCRATCH_DELETE.store(false, Ordering::SeqCst);
+        assert!(result.is_ok(), "{result:?}");
+        assert!(!store.list_job_temp_paths(&id).await.unwrap().is_empty());
+        assert!(work.exists());
     }
 }

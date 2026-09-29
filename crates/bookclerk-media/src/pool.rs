@@ -869,6 +869,7 @@ mod tests {
                     output: output.clone(),
                     lame: Box::default(),
                     max_sample_rate: None,
+                    max_output_bytes: None,
                 })
                 .await
                 .expect_err("job should be refused");
@@ -1002,6 +1003,7 @@ mod tests {
                 output,
                 lame: Box::default(),
                 max_sample_rate: None,
+                max_output_bytes: None,
             })
             .await
             .expect_err("a worker that exits nonzero has not succeeded");
@@ -1162,6 +1164,7 @@ mod tests {
                 output,
                 lame: Box::default(),
                 max_sample_rate: None,
+                max_output_bytes: None,
             })
             .await;
         std::env::remove_var("BOOKCLERK_AUTH_PASSWORD");
