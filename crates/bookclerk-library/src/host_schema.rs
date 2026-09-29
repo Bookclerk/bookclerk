@@ -936,10 +936,6 @@ where
 }
 
 /// `CREATE TABLE IF NOT EXISTS bookclerk_schema_migrations`.
-///
-/// Guest DDL proofs are empty, so each `CREATE` reinserts catalog rows. A
-/// repeat ensure of this ledger table hits `bookclerk_sql_catalog`'s unique
-/// key after the first create committed; that repeat is success.
 pub(crate) async fn ensure_schema_migrations(db: &DatabaseConnection) -> Result<()> {
     let mut delay_ms = 20u64;
     let mut last_err = None;
@@ -949,7 +945,6 @@ pub(crate) async fn ensure_schema_migrations(db: &DatabaseConnection) -> Result<
             .map_err(LibraryError::from_db_err)
         {
             Ok(_) => return Ok(()),
-            Err(err) if ledger_catalog_already_recorded(&err) => return Ok(()),
             Err(err)
                 if attempt + 1 < 8
                     && matches!(
@@ -969,19 +964,12 @@ pub(crate) async fn ensure_schema_migrations(db: &DatabaseConnection) -> Result<
         .map_err(LibraryError::from_db_err)
     {
         Ok(_) => Ok(()),
-        Err(err) if ledger_catalog_already_recorded(&err) => Ok(()),
         Err(_) if last_err.is_some() => {
             // Peer created the table; a follow-up SELECT in the migrator confirms it.
             Ok(())
         }
         Err(err) => Err(err),
     }
-}
-
-/// True when a repeat ledger `CREATE` collided with catalog rows from the first.
-fn ledger_catalog_already_recorded(err: &LibraryError) -> bool {
-    let msg = err.to_string();
-    msg.contains("bookclerk_sql_catalog") && msg.contains("UNIQUE")
 }
 
 /// Runs `stmts` as one generic atomic execute plan (version marker last).

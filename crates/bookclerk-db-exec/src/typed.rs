@@ -70,20 +70,26 @@ async fn apply_binding_companions(
     action: &SchemaAction,
     apply_catalog: bool,
 ) -> Result<(), DbErr> {
+    let action = idempotent_create_action(txn, canonical, action).await?;
     let mut companions = if apply_catalog {
-        catalog_companions_for_action(canonical, Some(action))
+        catalog_companions_for_action(canonical, Some(&action))
     } else {
         Vec::new()
     };
     if backend == sea_orm::DatabaseBackend::Postgres {
         // Host/restore DDL is stamped `SchemaAction::None` (`bound_empty`).
         // Identity companions still parse canonical AUTOINCREMENT CREATE/DROP.
-        let identity = match action {
-            SchemaAction::Create { noop: true, .. } => Vec::new(),
-            SchemaAction::None => crate::schema_postgres::postgres_identity_companions(canonical),
-            _ => crate::schema_postgres::postgres_identity_companions_for_action(
+        let identity = match &action {
+            // A fingerprint match skips catalog inserts. Identity companions
+            // stay: they are `IF NOT EXISTS` / `OR REPLACE`, and a restore
+            // may have dropped `bookclerk_identity` while the catalog row
+            // still matches.
+            SchemaAction::Create { noop: true, .. } | SchemaAction::None => {
+                crate::schema_postgres::postgres_identity_companions(canonical)
+            }
+            other => crate::schema_postgres::postgres_identity_companions_for_action(
                 canonical,
-                Some(action),
+                Some(other),
             ),
         };
         companions.extend(identity);
@@ -164,6 +170,93 @@ pub async fn load_sql_type_env_capped(
             Err(err)
         }
     }
+}
+
+/// Repeat `CREATE TABLE IF NOT EXISTS` against the live catalog.
+///
+/// A matching fingerprint is a no-op (no second catalog insert). A different
+/// fingerprint, or a physical table whose columns are not the canonical ones,
+/// fails closed. The check uses the catalog and physical schemas, not an
+/// engine error string.
+///
+/// # Errors
+///
+/// Returns [`DbErr`] when the physical columns or catalog fingerprint do not
+/// match this `CREATE`, or when either snapshot cannot be read.
+async fn idempotent_create_action(
+    txn: &impl ConnectionTrait,
+    canonical: &str,
+    action: &SchemaAction,
+) -> Result<SchemaAction, DbErr> {
+    if matches!(action, SchemaAction::Create { noop: true, .. }) {
+        return Ok(action.clone());
+    }
+    let Some(schema) = parse_create_table_schema(canonical) else {
+        return Ok(action.clone());
+    };
+    if matches!(
+        schema.table.as_str(),
+        SQL_CATALOG_TABLE
+            | SQL_SCHEMA_TABLE
+            | bookclerk_plugin_abi::SQL_DDL_TABLE
+            | bookclerk_plugin_abi::SQL_IDENTITY_TABLE
+    ) {
+        return Ok(action.clone());
+    }
+    let physical = load_physical_sql_type_env(txn).await?;
+    if let Some(columns) = physical.table_columns(&schema.table) {
+        if !physical_columns_match(&schema.columns, columns) {
+            return Err(DbErr::Custom(format!(
+                "CREATE TABLE IF NOT EXISTS {} does not match the physical table",
+                schema.table
+            )));
+        }
+    }
+    let catalog = load_sql_type_env(txn).await?;
+    if let Some(existing) = catalog.fingerprint(&schema.table) {
+        if !create_fingerprint_matches(txn.get_database_backend(), canonical, &schema, existing) {
+            return Err(DbErr::Custom(format!(
+                "CREATE TABLE IF NOT EXISTS {} does not match the catalog schema",
+                schema.table
+            )));
+        }
+        return Ok(SchemaAction::Create {
+            schema: Box::new(schema),
+            fingerprint: existing.to_string(),
+            noop: true,
+        });
+    }
+    Ok(action.clone())
+}
+
+/// True when `existing` is this CREATE, including the Postgres-lowered spelling.
+///
+/// Host schema apply fingerprints the lowered statement. A later canonical
+/// `CREATE TABLE IF NOT EXISTS` is the same definition.
+fn create_fingerprint_matches(
+    backend: sea_orm::DatabaseBackend,
+    canonical: &str,
+    schema: &bookclerk_plugin_abi::CreateTableSchema,
+    existing: &str,
+) -> bool {
+    if existing == schema.fingerprint() {
+        return true;
+    }
+    for lowered in [
+        crate::schema_postgres::schema_sql_for_backend(backend, canonical),
+        crate::schema_postgres::lower_binding_sql_for_backend(backend, canonical),
+    ] {
+        if lowered.as_ref() == canonical {
+            continue;
+        }
+        let Some(parsed) = parse_create_table_schema(lowered.as_ref()) else {
+            continue;
+        };
+        if existing == parsed.fingerprint() {
+            return true;
+        }
+    }
+    false
 }
 
 fn catalog_missing_table(err: &DbErr) -> bool {

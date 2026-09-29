@@ -181,7 +181,25 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(
             check_argv(p, "release"), [["cargo", "build", "--release", "-p", "bookclerk-cli"]]
         )
-        self.assertEqual(p.prereqs("rust_test"), [])
+        # cluster_secret_startup launches the jailed sqlite guest through workerd.
+        self.assertEqual(
+            p.prereqs("rust_test"),
+            [
+                {
+                    "kind": "build",
+                    "why": ["bookclerk-cli tests launch them"],
+                    "packages": [
+                        "bookclerk-plugin-database-sqlite",
+                        "bookclerk-jail",
+                        "bookclerk-workerd",
+                    ],
+                },
+                {
+                    "kind": "ensure_workerd",
+                    "why": ["bookclerk-cli tests spawn through pinned workerd"],
+                },
+            ],
+        )
 
     def test_host_only(self) -> None:
         p = plan("crates/bookclerk-plugin-host/src/rpc.rs")
@@ -208,9 +226,17 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(p.params("e2e")["scope"], "full")
         self.assertEqual(
             sorted(p.lint_packages()),
-            # host: its tests spawn guests through the launcher (test_guests).
-            ["bookclerk-dev", "bookclerk-plugin-host", "bookclerk-plugin-tools", "bookclerk-workerd"],
+            # host and cli: their tests spawn guests through the launcher.
+            [
+                "bookclerk-cli",
+                "bookclerk-dev",
+                "bookclerk-plugin-host",
+                "bookclerk-plugin-tools",
+                "bookclerk-workerd",
+            ],
         )
+        self.assertFalse(p.packages["bookclerk-cli"].compiled)
+        self.assertTrue(p.packages["bookclerk-cli"].tests)
         self.assertFalse(p.packages["bookclerk-plugin-host"].compiled)
         build = next(x for x in p.prereqs("rust_test") if x["kind"] == "build")
         self.assertLessEqual(
@@ -316,7 +342,18 @@ class ScenarioTests(unittest.TestCase):
             - {sqlite}
         )
         self.assertIn("bookclerk-cli", production_only)
-        self.assertEqual(production_only & set(p.packages), set())
+        # CLI tests launch the sqlite guest, so that package is selected for
+        # its own tests. It is not pulled in through library's dev edge.
+        launchers = {
+            pkg
+            for pkg, spec in RELATIONS.test_guests.items()
+            if sqlite in spec.get("build", [])
+        }
+        self.assertIn("bookclerk-cli", launchers)
+        self.assertEqual((production_only - launchers) & set(p.packages), set())
+        cli = p.packages["bookclerk-cli"]
+        self.assertFalse(cli.compiled)
+        self.assertTrue(cli.tests)
 
     def test_database_changes_select_postgres_steps(self) -> None:
         guest = plan("crates/bookclerk-db-guest/src/session.rs")

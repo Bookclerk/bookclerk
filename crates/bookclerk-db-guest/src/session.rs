@@ -1723,7 +1723,7 @@ mod tests {
     use super::GuestStatement;
     use super::*;
     use bookclerk_plugin_abi::ExecuteRequest;
-    use sea_orm::{DbBackend, Statement};
+    use sea_orm::{ConnectionTrait, DbBackend, Statement};
     use std::sync::LazyLock;
     use tokio::sync::Mutex;
 
@@ -2652,5 +2652,143 @@ mod tests {
             rows.rows.is_empty(),
             "partial nested work must not persist after ROLLBACK poison: {rows:?}"
         );
+    }
+
+    fn ledger_create_request() -> ExecuteRequest {
+        use bookclerk_plugin_abi::{DbPlanStatementKind, DbResultSelection, TypedDbStatement};
+        ExecuteRequest {
+            operation_id: "ledger-create".into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: bookclerk_library::SCHEMA_MIGRATIONS_DDL.into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Execute,
+                max_rows: 0,
+                result_selection: DbResultSelection::AffectedRows,
+            }],
+            deadline_unix_ms: 0,
+        }
+    }
+
+    async fn guest_ledger_create(
+        db: &sea_orm::DatabaseConnection,
+    ) -> std::result::Result<(), String> {
+        guest_execute_request_on(db, stamp_req(ledger_create_request()).expect("stamp"))
+            .await
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    async fn ledger_catalog_count(db: &sea_orm::DatabaseConnection) -> i64 {
+        use sea_orm::ConnectionTrait;
+        let row = db
+            .query_one_raw(Statement::from_string(
+                db.get_database_backend(),
+                "SELECT COUNT(*) AS n FROM bookclerk_sql_catalog \
+                 WHERE table_name = 'bookclerk_schema_migrations'",
+            ))
+            .await
+            .expect("count catalog")
+            .expect("count row");
+        row.try_get("", "n").expect("n")
+    }
+
+    async fn assert_repeated_guest_ledger_init(db: &sea_orm::DatabaseConnection) {
+        guest_ledger_create(db)
+            .await
+            .expect("first guest ledger create");
+        let first = ledger_catalog_count(db).await;
+        assert!(
+            first >= 6,
+            "catalog should record ledger columns, got {first}"
+        );
+        guest_ledger_create(db)
+            .await
+            .expect("repeat guest ledger create");
+        assert_eq!(
+            ledger_catalog_count(db).await,
+            first,
+            "repeat CREATE IF NOT EXISTS must not insert catalog rows again"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_guest_ledger_create_is_idempotent_on_sqlite() {
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .expect("memory");
+        assert_repeated_guest_ledger_init(&db).await;
+        db.execute_unprepared(
+            "UPDATE bookclerk_sql_schema SET fingerprint = 'not-the-ledger' \
+             WHERE table_name = 'bookclerk_schema_migrations'",
+        )
+        .await
+        .expect("corrupt fingerprint");
+        let err = guest_ledger_create(&db)
+            .await
+            .expect_err("mismatched catalog must fail");
+        assert!(err.contains("does not match the catalog schema"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn guest_ledger_create_rejects_a_different_physical_table_on_sqlite() {
+        let db = bookclerk_plugin_database_sqlite::open_memory_unmigrated()
+            .await
+            .expect("memory");
+        db.execute_unprepared("CREATE TABLE bookclerk_schema_migrations (only_one INTEGER)")
+            .await
+            .expect("wrong physical ledger");
+        let err = guest_ledger_create(&db)
+            .await
+            .expect_err("physical mismatch must fail");
+        assert!(err.contains("does not match the physical table"), "{err}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
+    async fn repeated_guest_ledger_create_is_idempotent_on_postgres() {
+        let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL").expect("postgres url");
+        let admin = sea_orm::Database::connect(&url).await.expect("admin");
+        let name = format!("ledger_{}", uuid::Uuid::new_v4().simple());
+        admin
+            .execute_unprepared(&format!("CREATE DATABASE {name}"))
+            .await
+            .expect("create database");
+        let (base, query) = url
+            .split_once('?')
+            .map(|(b, q)| (b, Some(q)))
+            .unwrap_or((url.as_str(), None));
+        let trimmed = base.trim_end_matches('/');
+        let slash = trimmed.rfind('/').expect("db path");
+        let head = &trimmed[..slash];
+        let target = match query {
+            Some(q) => format!("{head}/{name}?{q}"),
+            None => format!("{head}/{name}"),
+        };
+        let db = sea_orm::Database::connect(&target).await.expect("db");
+        assert_repeated_guest_ledger_init(&db).await;
+        db.execute_unprepared(
+            "UPDATE bookclerk_sql_schema SET fingerprint = 'not-the-ledger' \
+             WHERE table_name = 'bookclerk_schema_migrations'",
+        )
+        .await
+        .expect("corrupt fingerprint");
+        let err = guest_ledger_create(&db)
+            .await
+            .expect_err("mismatched catalog must fail");
+        assert!(err.contains("does not match the catalog schema"), "{err}");
+        db.execute_unprepared("DROP TABLE bookclerk_schema_migrations")
+            .await
+            .ok();
+        db.execute_unprepared("DROP TABLE IF EXISTS bookclerk_sql_catalog")
+            .await
+            .ok();
+        db.execute_unprepared("CREATE TABLE bookclerk_schema_migrations (only_one INTEGER)")
+            .await
+            .expect("wrong physical ledger");
+        let err = guest_ledger_create(&db)
+            .await
+            .expect_err("physical mismatch must fail");
+        assert!(err.contains("does not match the physical table"), "{err}");
     }
 }
