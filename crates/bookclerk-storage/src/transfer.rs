@@ -195,7 +195,7 @@ async fn transfer_once(
         }
     }
     let stage_key = format!(".bookclerk-stage/{}/{}", uuid::Uuid::new_v4(), dest_key);
-    let mut stage = StageLease::arm(dest.clone_box(), stage_key.clone(), journal_dir);
+    let mut stage = StageLease::arm(dest.clone_box(), stage_key.clone(), journal_dir)?;
     let written = match dest.put_stream(&stage_key, body, meta.clone()).await {
         Ok(written) => written,
         Err(err) => {
@@ -231,19 +231,27 @@ struct StageRecord {
 }
 
 impl StageLease {
+    /// When `journal_dir` is set, a stage record must exist before the upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal I/O error and does not arm a lease that would upload
+    /// without crash recovery. `None` keeps process-lifetime cleanup only.
     fn arm(
         dest: Box<dyn StorageBackend>,
         key: String,
         journal_dir: Option<&std::path::Path>,
-    ) -> Self {
-        let journal =
-            journal_dir.and_then(|dir| StageRecord::create(dir, dest.as_ref(), &key).ok());
-        Self {
+    ) -> std::io::Result<Self> {
+        let journal = match journal_dir {
+            Some(dir) => Some(StageRecord::create(dir, dest.as_ref(), &key)?),
+            None => None,
+        };
+        Ok(Self {
             dest: Some(dest),
             key,
             journal,
             armed: true,
-        }
+        })
     }
 
     async fn cleanup_now(&mut self) {
@@ -308,12 +316,22 @@ impl StageRecord {
             dest.instance_id()
         )));
         let path = dir.join("stages").join(format!("{name}.json"));
+        let partial = dir.join("stages").join(format!("{name}.json.partial"));
         let body = serde_json::json!({
             "instance_id": dest.instance_id(),
             "stage_key": key,
             "owner_id": owner_id,
         });
-        std::fs::write(&path, body.to_string())?;
+        std::fs::write(&partial, body.to_string())?;
+        std::fs::File::open(&partial)?.sync_all()?;
+        pause_stage_record_publish(dir);
+        if let Err(err) = std::fs::rename(&partial, &path) {
+            let _ = std::fs::remove_file(&partial);
+            return Err(err);
+        }
+        if let Ok(dir_file) = std::fs::File::open(dir.join("stages")) {
+            let _ = dir_file.sync_all();
+        }
         Ok(Self { path, _lock: lock })
     }
 
@@ -329,6 +347,9 @@ async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path)
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if stage_record_in_progress(&path) {
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -351,6 +372,34 @@ async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path)
         if dest.delete(stage_key).await.is_ok() {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// Incomplete publication files are not records yet. The reaper must not
+/// rename them to `.corrupt` while the owner is still writing.
+fn stage_record_in_progress(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    !name.ends_with(".json") || name.ends_with(".partial") || name.ends_with(".tmp")
+}
+
+/// Test barrier: `dir/publish.pause` exists until the test deletes it.
+fn pause_stage_record_publish(dir: &std::path::Path) {
+    #[cfg(test)]
+    {
+        let gate = dir.join("publish.pause");
+        if !gate.exists() {
+            return;
+        }
+        let _ = std::fs::write(dir.join("publish.entered"), b"1");
+        while gate.exists() {
+            std::thread::yield_now();
+        }
+    }
+    #[cfg(not(test))]
+    {
+        let _ = dir;
     }
 }
 
@@ -1289,5 +1338,193 @@ mod tests {
         reap_abandoned_stages(&dst, &journal).await;
         wait_until_no_stage_files(dir.path().join("dst").as_path()).await;
         assert!(std::fs::read_dir(&stages).map(|rd| rd.count()).unwrap_or(0) == 0);
+    }
+
+    #[derive(Clone)]
+    struct CountPuts {
+        inner: LocalFsBackend,
+        puts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl StorageBackend for CountPuts {
+        fn name(&self) -> &'static str {
+            "count-puts"
+        }
+        fn instance_id(&self) -> String {
+            self.inner.instance_id()
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(self.clone())
+        }
+        async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
+            self.inner.put(key, data, meta).await
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> Result<bool> {
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<crate::ObjectInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            self.inner.probe(key).await
+        }
+        async fn copy(&self, from: &str, to: &str) -> Result<()> {
+            self.inner.copy(from, to).await
+        }
+        async fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> Result<crate::ListPage> {
+            self.inner.list_page(prefix, cursor, limit).await
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.inner.get_stream(key, range).await
+        }
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: ObjectMeta,
+        ) -> Result<PutStreamResult> {
+            self.puts.fetch_add(1, Ordering::SeqCst);
+            self.inner.put_stream(key, body, meta).await
+        }
+    }
+
+    #[tokio::test]
+    async fn unwritable_stage_journal_refuses_the_upload() {
+        let dir = tempdir().unwrap();
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"audio-bytes"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let puts = Arc::new(AtomicUsize::new(0));
+        let dst = CountPuts {
+            inner: LocalFsBackend::new(dir.path().join("dst")).unwrap(),
+            puts: Arc::clone(&puts),
+        };
+        let journal = dir.path().join("journal");
+        std::fs::write(&journal, b"not-a-directory").unwrap();
+        let err = transfer_object(
+            &src,
+            "book.m4b",
+            &dst,
+            "book.m4b",
+            ObjectMeta::default(),
+            &TransferOptions {
+                max_attempts: 1,
+                stage_journal_dir: Some(journal),
+                ..TransferOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, StorageError::Io(_)), "{err}");
+        assert_eq!(puts.load(Ordering::SeqCst), 0);
+        assert!(!dst.exists("book.m4b").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reaper_ignores_an_in_progress_stage_record() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("publish.pause"), b"1").unwrap();
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"audio-bytes"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let dst = LocalFsBackend::new(dir.path().join("dst")).unwrap();
+        let started = std::time::Instant::now();
+        let task = std::thread::spawn({
+            let src = src.clone();
+            let dst = dst.clone();
+            let journal = journal.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                runtime.block_on(async move {
+                    transfer_object(
+                        &src,
+                        "book.m4b",
+                        &dst,
+                        "out.m4b",
+                        ObjectMeta::default(),
+                        &TransferOptions {
+                            max_attempts: 1,
+                            attempt_timeout: None,
+                            stage_journal_dir: Some(journal),
+                            ..TransferOptions::default()
+                        },
+                    )
+                    .await
+                })
+            }
+        });
+        loop {
+            if journal.join("publish.entered").is_file() {
+                break;
+            }
+            if task.is_finished() {
+                panic!(
+                    "transfer finished before the publish barrier: {:?}",
+                    task.join()
+                );
+            }
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                panic!("publish barrier was not reached");
+            }
+            std::thread::yield_now();
+        }
+        reap_abandoned_stages(&dst, &journal).await;
+        let names: Vec<_> = std::fs::read_dir(journal.join("stages"))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|name| name.ends_with(".json.partial")),
+            "partial record missing: {names:?}"
+        );
+        assert!(
+            names.iter().all(|name| !name.contains("corrupt")),
+            "reaper quarantined an in-progress record: {names:?}"
+        );
+        std::fs::remove_file(journal.join("publish.pause")).unwrap();
+        task.join().unwrap().unwrap();
+        assert!(dst.exists("out.m4b").await.unwrap());
+        let quarantined = std::fs::read_dir(journal.join("stages"))
+            .map(|rd| {
+                rd.filter_map(|entry| entry.ok())
+                    .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+            })
+            .unwrap_or(false);
+        assert!(!quarantined, "reaper quarantined a published record");
     }
 }
