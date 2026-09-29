@@ -344,7 +344,7 @@ pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
     let path = master_key_path(files_dir);
     if !path.is_file() {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "master key file {} does not exist — start the CLI/daemon once to mint it",
+            "master key file {} does not exist — open the library on a new cluster to mint it",
             path.display()
         )));
     }

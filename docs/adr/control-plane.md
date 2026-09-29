@@ -147,13 +147,21 @@ Writes:
 - A mismatched revision inserts neither an audit row nor a
   `configuration_changes` row. The API returns 409 with `current_revision`.
 - Replaying the same operation id and request hash does not bump the revision.
-- A different body under the same operation id is an idempotency conflict and
-  does not change the document.
+  The receipt, including operation kind and request hash, is resolved after
+  authorization and payload validation and before the revision predicate, so a
+  later edit does not turn that retry into a conflict. A receipt for that
+  operation id still replays after `expires_at`; cleanup deletes other expired
+  receipts and keeps the current id.
+- A different body or operation kind under the same operation id is an
+  idempotency conflict and does not change the document.
 - An unsupported `schema_version` fails the read and the write. The stored
   JSON is left as it was.
 
-Import is `INSERT OR IGNORE`. A second import, including one with different
-TOML or environment values, returns the existing row.
+Import is one canonical batch: conditional `INSERT OR IGNORE` of the document
+plus the revision-1 audit row and change notice. A failed batch leaves none of
+those rows. A second import, including one with different TOML or environment
+values, returns the existing row and does not validate that obsolete seed.
+Concurrent initializers leave one document and one notice.
 
 ### Why `[events]`
 
@@ -183,8 +191,11 @@ Every process:
 - reads the document revision at startup (an offline process catches up by
   reading the current row, not by replaying notices);
 - re-reads at `CONFIG_RECONCILE_INTERVAL` (5 seconds) and overlays a newer
-  revision onto `Config.events`;
-- applies its own successful write immediately.
+  revision of the **same cluster id** onto `Config.events`. A stale read
+  cannot replace a newer body. Revisions from a different cluster are not
+  compared. Switching databases is an explicit swap and installs that
+  cluster's document even when its revision number is lower;
+- applies its own successful write immediately, under the same monotonic rule.
 
 A database connection observes a committed revision as soon as the batch
 commits. The 5 second interval is only the in-memory apply bound for a
@@ -232,8 +243,10 @@ not understand is not applied and is not rewritten.
 Cluster and host configuration writes in this spike require an operator
 principal (the local CLI or the daemon operator token on
 `PUT /api/config/domains/core.events` and `PATCH /api/settings` for
-`events.*`). Administrators and members are rejected before SQL. The response
-includes `revision` on success and `current_revision` on conflict.
+`events.*`). Administrators and members are rejected before SQL, including
+before a receipt replay. `PATCH /api/settings` rejects a body that mixes
+`events.*` with file-backed keys before either authority is written. The
+response includes `revision` on success and `current_revision` on conflict.
 
 ## Consequences
 
@@ -247,7 +260,10 @@ includes `revision` on success and `current_revision` on conflict.
 - `bookclerk config show` prints `events.authority = database` when the
   library can be read, and `transitional` when it cannot.
 - Single-host SQLite still starts by opening the local database, minting
-  `master.key` once, and writing `host-identity.json` once.
+  `master.key` once, and writing `host-identity.json` once. The CLI does that
+  alignment inside the library open, not before command dispatch. `config
+  master-key status` and `wrap` do not open the database and do not mint a
+  missing key.
 
 ## Remaining work
 

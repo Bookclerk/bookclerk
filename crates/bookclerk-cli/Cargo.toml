@@ -49,5 +49,8 @@ tracing.workspace = true
 ureq.workspace = true
 secrecy.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

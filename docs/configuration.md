@@ -130,9 +130,11 @@ bookclerk config set events.retention_days 14
 ```
 
 The daemon operator API is `GET` / `PUT /api/config/domains/core.events`
-(`expected_revision` plus the three fields). `PATCH /api/settings` still
-accepts `events.*` and writes them through the same compare-and-swap path
-instead of `config.toml`. `GET /api/settings` includes `events.revision` in
+(`expected_revision` plus the three fields). `PATCH /api/settings` accepts
+`events.*` through the same compare-and-swap path when the request does not
+also change file-backed keys. A mixed request is rejected before either
+authority is written. The Settings page saves file-backed keys and does not
+batch them with `events.*`. `GET /api/settings` includes `events.revision` in
 `effective`.
 
 Running processes re-read the document about every 5 seconds and on startup.
@@ -165,7 +167,11 @@ These stay outside the database because the process needs them before
 
 A second host joining an existing database must have the same `master.key`.
 Bookclerk does not mint a new key when the database already has a secret-root
-fingerprint. Copy `master.key` and the database settings. Omit
+fingerprint. The CLI aligns that root when a command opens the library, and
+does not mint or cache a key before command dispatch. `bookclerk config
+master-key status` and `bookclerk config master-key wrap` do not open the
+database; wrap fails when `master.key` is absent. Copy `master.key` and the
+database settings. Omit
 `host-identity.json` when the process should be a new host; copying that file
 reuses the host id. A file bound to a different cluster id fails without
 rewriting either side.

@@ -123,7 +123,11 @@ async fn main() -> anyhow::Result<()> {
         &config.events,
     )
     .await?;
-    bookclerk_library::control_plane::overlay_events(&mut config, &control_plane.events);
+    bookclerk_library::control_plane::overlay_events(
+        &mut config,
+        &control_plane.events,
+        &control_plane.cluster_id,
+    );
     tracing::info!(
         host_id = %control_plane.host.host_id,
         cluster_id = %control_plane.cluster_id,

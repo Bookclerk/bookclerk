@@ -24,11 +24,10 @@ pub use identity::{
     current_process_incarnation, host_identity_path, load_or_create_host_identity, HostIdentity,
     HostRecord, HOST_IDENTITY_FILE,
 };
-pub use secret::ClusterSecret;
+pub use secret::{align_secret_root, load_cluster_row, ClusterSecret};
 
 use documents::{import_if_absent, load_document, replace_document};
 use identity::heartbeat_process;
-use secret::align_secret_root;
 
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -235,13 +234,18 @@ pub async fn bootstrap_control_plane(
     })
 }
 
-/// Copies the authoritative events document onto `config`.
+/// Copies the authoritative events document onto `config` for `cluster_id`.
+///
+/// Revisions are only comparable within one cluster. Callers that switch
+/// databases pass the new cluster id explicitly.
 pub fn overlay_events(
     config: &mut bookclerk_config::Config,
     events: &ConfigurationDocument<EventsSettingsV1>,
+    cluster_id: &str,
 ) {
     events.body.apply_to(&mut config.events);
     config.events_revision = Some(events.revision);
+    config.events_authority = Some(cluster_id.to_string());
 }
 
 /// Loads the cluster events document.
@@ -260,22 +264,40 @@ pub async fn load_events(store: &LibraryStore) -> Result<ConfigurationDocument<E
 
 /// Inserts `[events]` when the cluster document is absent.
 ///
+/// An existing document is parsed and returned without reading the seed, so an
+/// obsolete or out-of-range TOML/environment value cannot fail startup.
+///
 /// # Errors
 ///
-/// Returns an error when the seed is invalid or the actor may not import.
+/// Returns an error when the stored document is invalid, or when the document
+/// is absent and the seed is invalid or the actor may not import.
 pub async fn import_events_if_absent(
     store: &LibraryStore,
     actor: &ConfigActor,
     seed: &bookclerk_config::EventsConfig,
     operation_id: &str,
 ) -> Result<ConfigurationDocument<EventsSettingsV1>> {
-    let body = EventsSettingsV1::from_config(seed)?;
+    let key = DocumentKey::cluster(EVENTS_NAMESPACE);
+    if let Some(existing) = load_document(store, &key).await? {
+        return parse_events(existing);
+    }
+    let body = match EventsSettingsV1::from_config(seed) {
+        Ok(body) => body,
+        Err(err) => {
+            // A concurrent initializer may have committed while this seed was
+            // rejected. The stored document wins; the seed is not applied.
+            if let Some(existing) = load_document(store, &key).await? {
+                return parse_events(existing);
+            }
+            return Err(err);
+        }
+    };
     let json = serde_json::to_string(&body)
         .map_err(|err| LibraryError::Other(anyhow::anyhow!("invalid configuration: {err}")))?;
     let stored = import_if_absent(
         store,
         actor,
-        &DocumentKey::cluster(EVENTS_NAMESPACE),
+        &key,
         EVENTS_SCHEMA_VERSION,
         &json,
         operation_id,

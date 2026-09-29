@@ -1336,7 +1336,11 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         &new_cfg.events,
     )
     .await?;
-    bookclerk_library::control_plane::overlay_events(&mut new_cfg, &control_plane.events);
+    bookclerk_library::control_plane::overlay_events(
+        &mut new_cfg,
+        &control_plane.events,
+        &control_plane.cluster_id,
+    );
 
     let candidate_auth = build_operator_auth(&new_cfg, &library_for_auth).await?;
     // Defense in depth: never publish a non-loopback listen with auth disabled
@@ -1394,7 +1398,17 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
             next.take_session_state_from(&previous).await;
             *auth_guard = Arc::new(next);
         }
-        *state.config.write().await = new_cfg.clone();
+        let fresh = crate::config_authority::load_events_publication(&library_for_auth).await?;
+        {
+            let mut config = state.config.write().await;
+            crate::config_authority::finish_reload_events(
+                &config,
+                &mut new_cfg,
+                &fresh,
+                db_plugin_changed,
+            );
+            *config = new_cfg.clone();
+        }
     }
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
@@ -3278,6 +3292,23 @@ async fn patch_settings(
             continue;
         }
         normalized_pairs.push((key.clone(), value.clone()));
+    }
+
+    // `core.events` and file-backed keys are different authorities. A later
+    // TOML or reload failure must not leave the events commit behind, so this
+    // spike rejects a mixed request before either side is written.
+    let touches_events = updates.iter().any(|(key, _)| key.starts_with("events."));
+    let touches_file = updates.iter().any(|(key, _)| !key.starts_with("events."));
+    if touches_events && touches_file {
+        tracing::warn!("rejected settings update that mixes core.events with file-backed keys");
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "mixed_configuration_authorities",
+                "message": "send core.events and file-backed settings in separate requests",
+            })),
+        )
+            .into_response());
     }
 
     let _reload_guard = state.reload_lock.lock().await;
@@ -6295,5 +6326,147 @@ mode = "deny"
             .await
             .unwrap();
         assert_eq!(cancel.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn mixed_settings_request_does_not_commit_events() {
+        use axum::extract::State;
+        use axum::http::StatusCode;
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            audit_count, bootstrap_control_plane, change_count, load_events, overlay_events,
+            EVENTS_NAMESPACE,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n\n[daemon.auth]\nenabled = true\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(&store, dir.path(), None, &cfg.events)
+            .await
+            .unwrap();
+        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        let original_retention = session.events.body.retention_days;
+        let requested = if original_retention == 14 { 15 } else { 14 };
+        let audits = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
+        let changes = change_count(&store, EVENTS_NAMESPACE).await.unwrap();
+        let toml_before = std::fs::read(dir.path().join("config.toml")).unwrap();
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+
+        let err = super::patch_settings(
+            State(state.clone()),
+            Json(super::PatchSettingsRequest {
+                settings: vec![
+                    super::SettingsUpdate {
+                        key: "events.retention_days".into(),
+                        value: requested.to_string(),
+                    },
+                    super::SettingsUpdate {
+                        key: "daemon.listen".into(),
+                        value: "0.0.0.0:8787".into(),
+                    },
+                    super::SettingsUpdate {
+                        key: "daemon.auth.enabled".into(),
+                        value: "false".into(),
+                    },
+                ],
+            }),
+        )
+        .await
+        .expect_err("mixed authorities");
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        use http_body_util::BodyExt;
+        let bytes = err.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "mixed_configuration_authorities");
+
+        let loaded = load_events(&store).await.unwrap();
+        assert_eq!(loaded.revision, session.events.revision);
+        assert_eq!(loaded.body.retention_days, original_retention);
+        assert_eq!(audit_count(&store, EVENTS_NAMESPACE).await.unwrap(), audits);
+        assert_eq!(
+            change_count(&store, EVENTS_NAMESPACE).await.unwrap(),
+            changes
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("config.toml")).unwrap(),
+            toml_before
+        );
+        let live = state.config.read().await;
+        assert_eq!(live.events.retention_days, original_retention);
+        assert_eq!(live.events_revision, Some(session.events.revision));
+        assert!(!live.daemon.listen.join_comma().contains("0.0.0.0"));
+        assert!(live.daemon.auth.enabled);
+    }
+
+    #[tokio::test]
+    async fn events_only_settings_patch_commits() {
+        use axum::extract::State;
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, load_events, overlay_events,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n\n[daemon.auth]\nenabled = true\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(&store, dir.path(), None, &cfg.events)
+            .await
+            .unwrap();
+        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        let requested = if session.events.body.retention_days == 14 {
+            15
+        } else {
+            14
+        };
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+        let ok = super::patch_settings(
+            State(state.clone()),
+            Json(super::PatchSettingsRequest {
+                settings: vec![super::SettingsUpdate {
+                    key: "events.retention_days".into(),
+                    value: requested.to_string(),
+                }],
+            }),
+        )
+        .await
+        .expect("events-only patch");
+        assert_eq!(
+            ok.0.effective
+                .get("events.retention_days")
+                .map(String::as_str),
+            Some(requested.to_string()).as_deref()
+        );
+        let loaded = load_events(&store).await.unwrap();
+        assert_eq!(loaded.body.retention_days, requested);
+        assert_eq!(loaded.revision, session.events.revision + 1);
+        let live = state.config.read().await;
+        assert_eq!(live.events.retention_days, requested);
+        assert_eq!(live.events_revision, Some(loaded.revision));
     }
 }

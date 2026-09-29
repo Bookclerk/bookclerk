@@ -61,9 +61,16 @@ pub struct Config {
     /// Revision of the DB-authoritative `[events]` document after overlay.
     ///
     /// Absent until control-plane bootstrap or reconcile loads `core.events`.
-    /// Not serialized to `config.toml`.
+    /// Not serialized to `config.toml`. Compared only with
+    /// [`Self::events_authority`].
     #[serde(skip)]
     pub events_revision: Option<i64>,
+    /// Cluster id that produced [`Self::events_revision`].
+    ///
+    /// A revision from another cluster is not newer or older; a database swap
+    /// replaces this authority explicitly. Not serialized to `config.toml`.
+    #[serde(skip)]
+    pub events_authority: Option<String>,
 }
 
 /// Auth encryption settings (`[auth]` section).

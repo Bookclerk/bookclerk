@@ -351,9 +351,276 @@ async fn import_is_idempotent_and_later_seeds_do_not_overwrite() {
 
     let mut config = bookclerk_config::Config::default();
     config.events.retention_days = 11;
-    overlay_events(&mut config, &again);
+    overlay_events(&mut config, &again, &session.cluster_id);
     assert_eq!(config.events.retention_days, 7);
     assert_eq!(config.events_revision, Some(1));
+    assert_eq!(
+        config.events_authority.as_deref(),
+        Some(session.cluster_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn replay_after_a_later_edit_returns_the_original_revision() {
+    let _guard = master_key_test_lock_async().await;
+    let store = memory_store().await;
+    let files = tempdir().unwrap();
+    let session = bootstrap_pair(&store, files.path()).await;
+    let expected = session.events.revision;
+    let first = replace_events(&store, &operator(), expected, &events(4), "op-a")
+        .await
+        .unwrap();
+    let EventsReplace::Applied(applied_a) = first else {
+        panic!("A should apply: {first:?}");
+    };
+    let second = replace_events(&store, &operator(), applied_a.revision, &events(6), "op-b")
+        .await
+        .unwrap();
+    let EventsReplace::Applied(applied_b) = second else {
+        panic!("B should apply: {second:?}");
+    };
+    let audits = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
+    let changes = change_count(&store, EVENTS_NAMESPACE).await.unwrap();
+    let replay = replace_events(&store, &operator(), expected, &events(4), "op-a")
+        .await
+        .unwrap();
+    assert_eq!(
+        replay,
+        EventsReplace::Replayed {
+            revision: applied_a.revision,
+        }
+    );
+    let loaded = load_events(&store).await.unwrap();
+    assert_eq!(loaded.revision, applied_b.revision);
+    assert_eq!(loaded.body.retention_days, 6);
+    assert_eq!(audit_count(&store, EVENTS_NAMESPACE).await.unwrap(), audits);
+    assert_eq!(
+        change_count(&store, EVENTS_NAMESPACE).await.unwrap(),
+        changes
+    );
+
+    let changed = replace_events(&store, &operator(), expected, &events(8), "op-a")
+        .await
+        .expect_err("different payload reuses the operation id");
+    assert!(
+        changed.to_string().contains("idempotency conflict"),
+        "{changed}"
+    );
+    assert_eq!(
+        load_events(&store).await.unwrap().revision,
+        applied_b.revision
+    );
+
+    let denied = replace_events(
+        &store,
+        &ConfigActor::Member {
+            id: "member".into(),
+        },
+        expected,
+        &events(4),
+        "op-a",
+    )
+    .await
+    .expect_err("member replay");
+    assert!(denied
+        .to_string()
+        .contains("unauthorized configuration write"));
+}
+
+#[tokio::test]
+async fn expired_receipt_for_the_same_operation_still_replays() {
+    let _guard = master_key_test_lock_async().await;
+    let store = memory_store().await;
+    let files = tempdir().unwrap();
+    let session = bootstrap_pair(&store, files.path()).await;
+    let applied = replace_events(
+        &store,
+        &operator(),
+        session.events.revision,
+        &events(4),
+        "op-expire",
+    )
+    .await
+    .unwrap();
+    let EventsReplace::Applied(applied) = applied else {
+        panic!("apply: {applied:?}");
+    };
+    let row = crate::entities::bookclerk_receipts::Entity::find_by_id("op-expire")
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut active: crate::entities::bookclerk_receipts::ActiveModel = row.into();
+    active.expires_at = Set("2000-01-01T00:00:00Z".into());
+    active.update(store.db()).await.unwrap();
+    let replay = replace_events(
+        &store,
+        &operator(),
+        session.events.revision,
+        &events(4),
+        "op-expire",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        replay,
+        EventsReplace::Replayed {
+            revision: applied.revision,
+        }
+    );
+    assert_eq!(
+        load_events(&store).await.unwrap().revision,
+        applied.revision
+    );
+}
+
+#[tokio::test]
+async fn existing_events_ignore_an_invalid_seed() {
+    let _guard = master_key_test_lock_async().await;
+    let store = memory_store().await;
+    let files = tempdir().unwrap();
+    let session = bootstrap_pair(&store, files.path()).await;
+    let audits = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
+    let changes = change_count(&store, EVENTS_NAMESPACE).await.unwrap();
+    let bad = EventsConfig {
+        retention_days: 0,
+        dead_letter_retention_days: 0,
+        concurrency: 33,
+    };
+    let again = bootstrap_control_plane(&store, files.path(), None, &bad)
+        .await
+        .expect("stored document is authoritative");
+    assert_eq!(again.events.revision, session.events.revision);
+    assert_eq!(again.events.body, session.events.body);
+    assert_eq!(audit_count(&store, EVENTS_NAMESPACE).await.unwrap(), audits);
+    assert_eq!(
+        change_count(&store, EVENTS_NAMESPACE).await.unwrap(),
+        changes
+    );
+}
+
+#[tokio::test]
+async fn first_import_rejects_an_invalid_seed() {
+    let _guard = master_key_test_lock_async().await;
+    let store = memory_store().await;
+    let files = tempdir().unwrap();
+    let err = bootstrap_control_plane(
+        &store,
+        files.path(),
+        None,
+        &EventsConfig {
+            retention_days: 0,
+            dead_letter_retention_days: 30,
+            concurrency: 1,
+        },
+    )
+    .await
+    .expect_err("invalid seed");
+    assert!(err.to_string().contains("retention_days"), "{err}");
+    let missing = load_events(&store).await.expect_err("no document");
+    assert!(missing.to_string().contains("not initialized"), "{missing}");
+    assert_eq!(audit_count(&store, EVENTS_NAMESPACE).await.unwrap(), 0);
+    assert_eq!(change_count(&store, EVENTS_NAMESPACE).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn initial_import_commits_document_audit_and_change_together() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let store = file_store(&path).await;
+    store
+        .db()
+        .execute_unprepared(
+            "CREATE TRIGGER fail_config_audit BEFORE INSERT ON configuration_audit \
+             BEGIN SELECT RAISE(ABORT, 'injected'); END",
+        )
+        .await
+        .unwrap();
+    let err = import_events_if_absent(
+        &store,
+        &ConfigActor::Bootstrap,
+        &EventsConfig::default(),
+        "import-fail",
+    )
+    .await
+    .expect_err("audit insert aborts the batch");
+    assert!(err.to_string().contains("injected"), "{err}");
+    assert!(load_events(&store).await.is_err());
+    assert_eq!(audit_count(&store, EVENTS_NAMESPACE).await.unwrap(), 0);
+    assert_eq!(change_count(&store, EVENTS_NAMESPACE).await.unwrap(), 0);
+
+    store
+        .db()
+        .execute_unprepared("DROP TRIGGER fail_config_audit")
+        .await
+        .unwrap();
+    let imported = import_events_if_absent(
+        &store,
+        &ConfigActor::Bootstrap,
+        &EventsConfig::default(),
+        "import-ok",
+    )
+    .await
+    .unwrap();
+    assert_eq!(imported.revision, 1);
+    assert_eq!(audit_count(&store, EVENTS_NAMESPACE).await.unwrap(), 1);
+    assert_eq!(change_count(&store, EVENTS_NAMESPACE).await.unwrap(), 1);
+
+    let other = file_store(&path).await;
+    let seen = load_events(&other).await.unwrap();
+    assert_eq!(seen, imported);
+    assert_eq!(audit_count(&other, EVENTS_NAMESPACE).await.unwrap(), 1);
+    assert_eq!(change_count(&other, EVENTS_NAMESPACE).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn concurrent_imports_leave_one_document_and_one_notice() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let store_a = file_store(&path).await;
+    let store_b = file_store(&path).await;
+    let left = tokio::spawn(async move {
+        import_events_if_absent(
+            &store_a,
+            &ConfigActor::Bootstrap,
+            &EventsConfig::default(),
+            "import-left",
+        )
+        .await
+    });
+    let right = tokio::spawn(async move {
+        import_events_if_absent(
+            &store_b,
+            &ConfigActor::Bootstrap,
+            &EventsConfig {
+                retention_days: 9,
+                dead_letter_retention_days: 30,
+                concurrency: 2,
+            },
+            "import-right",
+        )
+        .await
+    });
+    let left = left.await.unwrap().unwrap();
+    let right = right.await.unwrap().unwrap();
+    assert_eq!(left.revision, 1);
+    assert_eq!(right.revision, 1);
+    assert_eq!(left.body, right.body);
+    let check = file_store(&path).await;
+    assert_eq!(audit_count(&check, EVENTS_NAMESPACE).await.unwrap(), 1);
+    assert_eq!(change_count(&check, EVENTS_NAMESPACE).await.unwrap(), 1);
+    let rows = configuration_documents::Entity::find()
+        .all(check.db())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.namespace == EVENTS_NAMESPACE)
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -633,4 +900,126 @@ async fn postgres_control_plane_two_pools_share_events_and_reject_one_cas() {
     assert_eq!(from_a, from_b);
     assert_eq!(from_a.revision, expected + 1);
     assert!(from_a.body.retention_days == 8 || from_a.body.retention_days == 9);
+
+    let base = from_a.revision;
+    let next = replace_events(&store_a, &operator(), base, &events(11), "pg-seq-a")
+        .await
+        .unwrap();
+    let EventsReplace::Applied(applied_a) = next else {
+        panic!("sequential A should apply: {next:?}");
+    };
+    let later = replace_events(
+        &store_b,
+        &operator(),
+        applied_a.revision,
+        &events(12),
+        "pg-seq-b",
+    )
+    .await
+    .unwrap();
+    let EventsReplace::Applied(applied_b) = later else {
+        panic!("sequential B should apply: {later:?}");
+    };
+    let replay = replace_events(&store_a, &operator(), base, &events(11), "pg-seq-a")
+        .await
+        .unwrap();
+    assert_eq!(
+        replay,
+        EventsReplace::Replayed {
+            revision: applied_a.revision,
+        }
+    );
+    let after = load_events(&store_b).await.unwrap();
+    assert_eq!(after.revision, applied_b.revision);
+    assert_eq!(after.body.retention_days, 12);
+    let changed = replace_events(&store_b, &operator(), base, &events(13), "pg-seq-a")
+        .await
+        .expect_err("postgres payload mismatch");
+    assert!(
+        changed.to_string().contains("idempotency conflict"),
+        "{changed}"
+    );
+    assert_eq!(load_events(&store_a).await.unwrap().body.retention_days, 12);
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_initial_import_is_atomic_across_connections() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (store_a, store_b) = postgres_stores().await;
+    store_a
+        .db()
+        .execute_unprepared(
+            "CREATE OR REPLACE FUNCTION bookclerk_fail_config_audit() RETURNS trigger AS $$
+             BEGIN
+               RAISE EXCEPTION 'injected';
+             END;
+             $$ LANGUAGE plpgsql",
+        )
+        .await
+        .expect("fail function");
+    store_a
+        .db()
+        .execute_unprepared(
+            "CREATE TRIGGER fail_config_audit BEFORE INSERT ON configuration_audit
+             FOR EACH ROW EXECUTE FUNCTION bookclerk_fail_config_audit()",
+        )
+        .await
+        .expect("fail trigger");
+    let err = import_events_if_absent(
+        &store_a,
+        &ConfigActor::Bootstrap,
+        &EventsConfig::default(),
+        "pg-import-fail",
+    )
+    .await
+    .expect_err("injected audit failure");
+    assert!(err.to_string().contains("injected"), "{err}");
+    assert!(load_events(&store_b).await.is_err());
+    assert_eq!(audit_count(&store_b, EVENTS_NAMESPACE).await.unwrap(), 0);
+    assert_eq!(change_count(&store_b, EVENTS_NAMESPACE).await.unwrap(), 0);
+
+    store_a
+        .db()
+        .execute_unprepared("DROP TRIGGER fail_config_audit ON configuration_audit")
+        .await
+        .unwrap();
+    let left = {
+        let store = store_a.clone();
+        tokio::spawn(async move {
+            import_events_if_absent(
+                &store,
+                &ConfigActor::Bootstrap,
+                &EventsConfig::default(),
+                "pg-import-left",
+            )
+            .await
+        })
+    };
+    let right = {
+        let store = store_b.clone();
+        tokio::spawn(async move {
+            import_events_if_absent(
+                &store,
+                &ConfigActor::Bootstrap,
+                &EventsConfig {
+                    retention_days: 9,
+                    dead_letter_retention_days: 30,
+                    concurrency: 2,
+                },
+                "pg-import-right",
+            )
+            .await
+        })
+    };
+    left.await.unwrap().unwrap();
+    right.await.unwrap().unwrap();
+    assert_eq!(audit_count(&store_a, EVENTS_NAMESPACE).await.unwrap(), 1);
+    assert_eq!(change_count(&store_b, EVENTS_NAMESPACE).await.unwrap(), 1);
+    assert_eq!(
+        load_events(&store_a).await.unwrap(),
+        load_events(&store_b).await.unwrap()
+    );
 }

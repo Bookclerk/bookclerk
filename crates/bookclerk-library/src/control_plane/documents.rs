@@ -10,7 +10,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::batch::{self, exec, int, query, request, text};
-use crate::entities::configuration_documents;
+use crate::entities::{bookclerk_receipts, configuration_documents};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
@@ -34,6 +34,9 @@ const STATUS_OK: &str = "ok";
 
 /// Receipt status when the expected revision did not match.
 const STATUS_CONFLICT: &str = "conflict";
+
+/// `bookclerk_receipts.operation_kind` for a configuration replacement.
+const REPLACE_KIND: &str = "replaceConfiguration";
 
 /// Who is allowed to write a configuration document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,12 +171,14 @@ pub async fn load_document(
 
 /// Inserts `document_json` when the key is absent.
 ///
-/// A concurrent insert keeps the winner. This does not update an existing row.
+/// The document, its revision-1 audit row, and its change notice commit in one
+/// batch. A concurrent insert keeps the winner and does not add a second
+/// notice. This does not update an existing row.
 ///
 /// # Errors
 ///
 /// Returns an error when the actor may not import, the body is invalid, or the
-/// write fails.
+/// write fails. A failed batch leaves no document, audit, or change row.
 pub async fn import_if_absent(
     store: &LibraryStore,
     actor: &ConfigActor,
@@ -192,26 +197,70 @@ pub async fn import_if_absent(
         store,
         request(
             operation_id,
-            vec![exec(
-                "INSERT OR IGNORE INTO configuration_documents (
+            vec![
+                exec(
+                    "INSERT OR IGNORE INTO configuration_documents (
                     scope_type, scope_id, namespace, schema_version, revision,
                     document_json, updated_at, updated_by, write_operation_id
                 ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
-                vec![
-                    text(&key.scope_type),
-                    text(&key.scope_id),
-                    text(&key.namespace),
-                    int(schema_version),
-                    text(document_json),
-                    text(&now),
-                    text(actor.audit_id()),
-                    text(operation_id),
-                ],
-            )],
+                    vec![
+                        text(&key.scope_type),
+                        text(&key.scope_id),
+                        text(&key.namespace),
+                        int(schema_version),
+                        text(document_json),
+                        text(&now),
+                        text(actor.audit_id()),
+                        text(operation_id),
+                    ],
+                ),
+                exec(
+                    "INSERT INTO configuration_audit (
+                        scope_type, scope_id, namespace, schema_version, revision, actor, recorded_at
+                     ) SELECT scope_type, scope_id, namespace, schema_version, revision,
+                              updated_by, updated_at
+                       FROM configuration_documents
+                      WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                        AND write_operation_id = ? AND revision = 1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM configuration_audit
+                             WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND revision = 1
+                        )",
+                    vec![
+                        text(&key.scope_type),
+                        text(&key.scope_id),
+                        text(&key.namespace),
+                        text(operation_id),
+                        text(&key.scope_type),
+                        text(&key.scope_id),
+                        text(&key.namespace),
+                    ],
+                ),
+                exec(
+                    "INSERT INTO configuration_changes (
+                        scope_type, scope_id, namespace, revision, committed_at
+                     ) SELECT scope_type, scope_id, namespace, revision, updated_at
+                       FROM configuration_documents
+                      WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                        AND write_operation_id = ? AND revision = 1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM configuration_changes
+                             WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND revision = 1
+                        )",
+                    vec![
+                        text(&key.scope_type),
+                        text(&key.scope_id),
+                        text(&key.namespace),
+                        text(operation_id),
+                        text(&key.scope_type),
+                        text(&key.scope_id),
+                        text(&key.namespace),
+                    ],
+                ),
+            ],
         ),
     )
     .await?;
-    record_import_notice(store, key, operation_id).await?;
     load_document(store, key)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("configuration {}", key.namespace)))
@@ -219,9 +268,14 @@ pub async fn import_if_absent(
 
 /// Replaces one document when `expected_revision` is current.
 ///
-/// Validation and authorization run before the batch. A revision mismatch or a
-/// failed batch writes no audit row and no change notice. Replaying
-/// `operation_id` with the same request hash does not bump the revision.
+/// Authorization and payload validation run first. An existing receipt is then
+/// matched on operation kind and request hash before the revision predicate, so
+/// a later edit does not turn a retry of an earlier success into a conflict.
+/// A receipt for this operation id still replays after `expires_at`: durable
+/// cleanup deletes other expired receipts and keeps the current id so a retry
+/// matches. A different kind or hash is an idempotency conflict and writes
+/// nothing. A revision mismatch or a failed batch writes no audit row and no
+/// change notice.
 ///
 /// # Errors
 ///
@@ -241,6 +295,16 @@ pub async fn replace_document(
     if expected_revision < 1 {
         return Err(invalid("expected revision must be >= 1"));
     }
+    let request_hash = replacement_hash(
+        key,
+        schema_version,
+        expected_revision,
+        document_json,
+        actor.audit_id(),
+    );
+    if let Some(outcome) = existing_receipt_outcome(store, operation_id, &request_hash).await? {
+        return Ok(outcome);
+    }
     let current = load_document(store, key).await?.ok_or_else(|| {
         LibraryError::NotFound(format!(
             "configuration {} is not initialized",
@@ -250,18 +314,11 @@ pub async fn replace_document(
     if current.schema_version != schema_version {
         return Err(unsupported(&key.namespace, current.schema_version));
     }
-    if current.revision != expected_revision && current.write_operation_id != operation_id {
+    if current.revision != expected_revision {
         return Ok(ReplaceOutcome::Conflict {
             current_revision: current.revision,
         });
     }
-    let request_hash = replacement_hash(
-        key,
-        schema_version,
-        expected_revision,
-        document_json,
-        actor.audit_id(),
-    );
     let now = Utc::now().to_rfc3339();
     let expires = (Utc::now() + Duration::hours(24)).to_rfc3339();
     let slot = format!("config-cas:{operation_id}");
@@ -471,66 +528,47 @@ pub async fn audit_count(store: &LibraryStore, namespace: &str) -> Result<u64> {
         .map_err(LibraryError::Orm)
 }
 
-/// Writes the import audit and change notice when this operation won the insert.
-async fn record_import_notice(
+/// Resolves a prior receipt before a new compare-and-swap.
+///
+/// Kind and request hash must match. Expiry does not turn this operation id
+/// into a new attempt: cleanup keeps the current id so a retry still matches.
+async fn existing_receipt_outcome(
     store: &LibraryStore,
-    key: &DocumentKey,
     operation_id: &str,
-) -> Result<()> {
-    let op = format!("import-notice-{operation_id}");
-    batch::execute_host_batch(
-        store,
-        request(
-            &op,
-            vec![
-                exec(
-                    "INSERT INTO configuration_audit (
-                        scope_type, scope_id, namespace, schema_version, revision, actor, recorded_at
-                     ) SELECT scope_type, scope_id, namespace, schema_version, revision,
-                              updated_by, updated_at
-                       FROM configuration_documents
-                      WHERE scope_type = ? AND scope_id = ? AND namespace = ?
-                        AND write_operation_id = ? AND revision = 1
-                        AND NOT EXISTS (
-                            SELECT 1 FROM configuration_audit
-                             WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND revision = 1
-                        )",
-                    vec![
-                        text(&key.scope_type),
-                        text(&key.scope_id),
-                        text(&key.namespace),
-                        text(operation_id),
-                        text(&key.scope_type),
-                        text(&key.scope_id),
-                        text(&key.namespace),
-                    ],
-                ),
-                exec(
-                    "INSERT INTO configuration_changes (
-                        scope_type, scope_id, namespace, revision, committed_at
-                     ) SELECT scope_type, scope_id, namespace, revision, updated_at
-                       FROM configuration_documents
-                      WHERE scope_type = ? AND scope_id = ? AND namespace = ?
-                        AND write_operation_id = ? AND revision = 1
-                        AND NOT EXISTS (
-                            SELECT 1 FROM configuration_changes
-                             WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND revision = 1
-                        )",
-                    vec![
-                        text(&key.scope_type),
-                        text(&key.scope_id),
-                        text(&key.namespace),
-                        text(operation_id),
-                        text(&key.scope_type),
-                        text(&key.scope_id),
-                        text(&key.namespace),
-                    ],
-                ),
-            ],
-        ),
-    )
-    .await?;
-    Ok(())
+    request_hash: &str,
+) -> Result<Option<ReplaceOutcome>> {
+    let Some(receipt) = bookclerk_receipts::Entity::find_by_id(operation_id.to_string())
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+    else {
+        return Ok(None);
+    };
+    if receipt.operation_kind != REPLACE_KIND || receipt.request_hash != request_hash {
+        return Err(LibraryError::Conflict(format!(
+            "idempotency conflict: operation {operation_id} was already used for a different configuration write"
+        )));
+    }
+    let payload = receipt.payload.unwrap_or_default();
+    let parsed: ReceiptPayload = serde_json::from_str(&payload).map_err(|err| {
+        LibraryError::Other(anyhow::anyhow!(
+            "invalid configuration receipt payload: {err}"
+        ))
+    })?;
+    if receipt.status == STATUS_CONFLICT {
+        return Ok(Some(ReplaceOutcome::Conflict {
+            current_revision: parsed.revision,
+        }));
+    }
+    if receipt.status != STATUS_OK {
+        return Err(LibraryError::Other(anyhow::anyhow!(
+            "invalid configuration receipt status {}",
+            receipt.status
+        )));
+    }
+    Ok(Some(ReplaceOutcome::Replayed {
+        revision: parsed.revision,
+    }))
 }
 
 /// Maps a SeaORM row onto the domain document.
