@@ -69,7 +69,14 @@ async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
         plugin: String::new(),
     };
     let creds = ctx.credentials.as_ref().map(credentials_from_dto);
-    S3Backend::from_parts(&cfg, &ctx.prefix, creds.as_ref())
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            PluginError::internal("s3 destination has no HOME for multipart recovery")
+        })?;
+    let journal = home.join("multipart-journal");
+    S3Backend::from_parts_with_journal(&cfg, &ctx.prefix, creds.as_ref(), &journal)
         .await
         .map_err(|err| PluginError::internal(err.to_string()))
 }

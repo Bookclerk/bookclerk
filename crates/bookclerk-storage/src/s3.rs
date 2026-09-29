@@ -35,7 +35,7 @@ pub(crate) const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
 pub(crate) const S3_MAX_PARTS: i32 = 10_000;
 
 /// S3-compatible object storage.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct S3Backend {
     /// AWS SDK S3 client (endpoint/path-style already applied).
     client: Client,
@@ -47,6 +47,30 @@ pub struct S3Backend {
     region: String,
     /// Endpoint URL used in [`StorageBackend::instance_id`] (empty for AWS default).
     endpoint: String,
+    /// Granted directory for multipart recovery records. Absent means crash
+    /// recovery is not available; uploads are not described as recoverable.
+    journal: Option<std::sync::Arc<MultipartJournal>>,
+    /// Part size. Production uses [`MULTIPART_PART_SIZE`]; tests may shrink it.
+    part_size: usize,
+}
+
+impl std::fmt::Debug for S3Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Backend")
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("region", &self.region)
+            .field("endpoint", &self.endpoint)
+            .field("part_size", &self.part_size)
+            .field(
+                "journal",
+                &self
+                    .journal
+                    .as_ref()
+                    .map(|journal| journal.dir.display().to_string()),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl S3Backend {
@@ -73,7 +97,51 @@ impl S3Backend {
         Self::from_parts(cfg, prefix, creds.as_ref()).await
     }
 
+    /// Build with explicit credentials and a granted multipart journal directory.
+    ///
+    /// The directory must already be a location the process is allowed to
+    /// persist. For the destination guest that is its `HOME`, not the host
+    /// files directory. A journal that cannot be created or read fails
+    /// construction instead of claiming later recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client cannot be built, the journal directory
+    /// cannot be created, or reading existing records fails.
+    pub async fn from_parts_with_journal(
+        cfg: &OutputS3Config,
+        prefix: &str,
+        creds: Option<&S3Credentials>,
+        journal_dir: &std::path::Path,
+    ) -> Result<Self> {
+        let journal = MultipartJournal::open(
+            journal_dir,
+            cfg.endpoint
+                .as_deref()
+                .map(normalize_s3_endpoint)
+                .unwrap_or_default(),
+            &cfg.bucket,
+            crate::normalize_prefix(prefix),
+        )?;
+        let mut backend = Self::from_parts(cfg, prefix, creds).await?;
+        backend.journal = Some(std::sync::Arc::new(journal));
+        backend.retry_orphans().await?;
+        Ok(backend)
+    }
+
+    /// Overrides the multipart part size. Values below 1 are ignored.
+    #[must_use]
+    pub fn with_part_size(mut self, part_size: usize) -> Self {
+        if part_size > 0 {
+            self.part_size = part_size;
+        }
+        self
+    }
+
     /// Build with explicit credentials (external output guests).
+    ///
+    /// Without [`Self::from_parts_with_journal`], multipart uploads are not
+    /// recoverable after process death.
     ///
     /// # Errors
     ///
@@ -124,7 +192,7 @@ impl S3Backend {
         }
 
         let client = Client::from_conf(s3_config.build());
-        let backend = Self {
+        Ok(Self {
             client,
             bucket: cfg.bucket.clone(),
             prefix: crate::normalize_prefix(prefix),
@@ -134,13 +202,9 @@ impl S3Backend {
                 .as_deref()
                 .map(normalize_s3_endpoint)
                 .unwrap_or_default(),
-        };
-        if let Some(dir) = orphan_dir() {
-            if let Err(err) = backend.retry_orphans(&dir).await {
-                tracing::warn!(error = %err, "multipart orphan retry failed");
-            }
-        }
-        Ok(backend)
+            journal: None,
+            part_size: MULTIPART_PART_SIZE,
+        })
     }
 
     /// Prepends the destination prefix to `key` (no-op when the prefix is empty).
@@ -170,120 +234,22 @@ impl S3Backend {
     }
 
     /// Streams a local file as fixed-size parts (used above [`MULTIPART_THRESHOLD`]).
+    ///
+    /// Uses the same journal, digest, and abort path as [`Self::put_stream`].
     async fn put_file_multipart(&self, key: &str, path: &Path, meta: ObjectMeta) -> Result<()> {
-        use tokio::io::AsyncReadExt;
-
-        let full_key = self.full_key(key);
-        let created = apply_meta_multipart(
-            self.client
-                .create_multipart_upload()
-                .bucket(&self.bucket)
-                .key(&full_key),
-            &meta,
-        )
-        .send()
-        .await
-        .map_err(|err| StorageError::S3(err.to_string()))?;
-
-        let upload_id = created.upload_id().ok_or_else(|| {
-            StorageError::S3("CreateMultipartUpload returned no upload id".into())
-        })?;
-
-        let upload = async {
-            let mut file = tokio::fs::File::open(path).await?;
-            let mut part_number: i32 = 1;
-            let mut completed = Vec::new();
-            let mut buffer = vec![0u8; MULTIPART_PART_SIZE];
-
-            loop {
-                let mut filled = 0usize;
-                while filled < MULTIPART_PART_SIZE {
-                    let n = file.read(&mut buffer[filled..]).await?;
-                    if n == 0 {
-                        break;
-                    }
-                    filled += n;
-                }
-                if filled == 0 {
-                    break;
-                }
-
-                let uploaded = self
-                    .client
-                    .upload_part()
-                    .bucket(&self.bucket)
-                    .key(&full_key)
-                    .upload_id(upload_id)
-                    .part_number(part_number)
-                    .body(ByteStream::from(Bytes::copy_from_slice(&buffer[..filled])))
-                    .send()
-                    .await
-                    .map_err(|err| StorageError::S3(err.to_string()))?;
-
-                let etag = uploaded.e_tag().ok_or_else(|| {
-                    StorageError::S3(format!("UploadPart {part_number} returned no ETag"))
-                })?;
-                completed.push(
-                    CompletedPart::builder()
-                        .part_number(part_number)
-                        .e_tag(etag)
-                        .build(),
-                );
-                part_number += 1;
-            }
-
-            if completed.is_empty() {
-                return Err(StorageError::S3(format!(
-                    "refusing empty multipart upload for {}",
-                    path.display()
-                )));
-            }
-
-            self.client
-                .complete_multipart_upload()
-                .bucket(&self.bucket)
-                .key(&full_key)
-                .upload_id(upload_id)
-                .multipart_upload(
-                    CompletedMultipartUpload::builder()
-                        .set_parts(Some(completed))
-                        .build(),
-                )
-                .send()
-                .await
-                .map_err(|err| StorageError::S3(err.to_string()))?;
-            Ok(())
-        };
-
-        match upload.await {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                if let Err(abort_err) = self
-                    .client
-                    .abort_multipart_upload()
-                    .bucket(&self.bucket)
-                    .key(&full_key)
-                    .upload_id(upload_id)
-                    .send()
-                    .await
-                {
-                    tracing::warn!(
-                        key = %full_key,
-                        upload_id,
-                        error = %abort_err,
-                        "failed to abort multipart upload after error"
-                    );
-                }
-                Err(err)
-            }
-        }
+        let file = tokio::fs::File::open(path).await?;
+        self.put_stream_multipart(key, Box::pin(file), meta)
+            .await
+            .map(|_| ())
     }
 
     /// Streams `body` as multipart parts (bounded window; no full-object buffer).
     ///
     /// Returns `(bytes, sha256 hex)`. A dropped future aborts the upload via
-    /// [`MultipartGuard`]. Failed aborts leave the upload id in the orphan
-    /// directory when `BOOKCLERK_FILES_DIR` is set.
+    /// [`MultipartGuard`]. When a journal is configured, the upload id is
+    /// recorded before any part is sent. A failed journal write aborts the
+    /// upload. The whole-object SHA-256 is stored in a sidecar object before
+    /// `CompleteMultipartUpload`; a multipart ETag is not that digest.
     async fn put_stream_multipart(
         &self,
         key: &str,
@@ -321,24 +287,28 @@ impl S3Backend {
             .upload_id()
             .ok_or_else(|| StorageError::S3("CreateMultipartUpload returned no upload id".into()))?
             .to_string();
-        record_orphan(&self.bucket, &full_key, &upload_id);
+        if let Err(err) = self.record_orphan(&full_key, &upload_id) {
+            self.abort_upload(&full_key, &upload_id).await;
+            return Err(err);
+        }
         let mut guard = MultipartGuard::arm(
             self.client.clone(),
             self.bucket.clone(),
             full_key.clone(),
             upload_id.clone(),
+            self.journal.clone(),
         );
 
         let upload = async {
             let mut part_number: i32 = 1;
             let mut completed = Vec::new();
-            let mut buffer = vec![0u8; MULTIPART_PART_SIZE];
+            let mut buffer = vec![0u8; self.part_size];
             let mut total = 0u64;
             let mut hasher = Sha256::new();
 
             loop {
                 let mut filled = 0usize;
-                while filled < MULTIPART_PART_SIZE {
+                while filled < self.part_size {
                     let n = body.read(&mut buffer[filled..]).await?;
                     if n == 0 {
                         break;
@@ -413,6 +383,11 @@ impl S3Backend {
                 return Ok((0, hex::encode(Sha256::digest([]))));
             }
 
+            // User metadata is fixed at CreateMultipartUpload, before the body
+            // exists. Persist the verified digest as its own object first so a
+            // crash after completion can still be recognized by HEAD/probe.
+            self.put_integrity_sidecar(key, &meta).await?;
+
             self.client
                 .complete_multipart_upload()
                 .bucket(&self.bucket)
@@ -427,7 +402,7 @@ impl S3Backend {
                 .await
                 .map_err(|err| StorageError::S3(err.to_string()))?;
             guard.disarm();
-            clear_orphan(&upload_id);
+            self.clear_orphan(&upload_id);
             Ok((total, digest))
         };
 
@@ -451,12 +426,13 @@ impl S3Backend {
             .send()
             .await
         {
-            Ok(_) => clear_orphan(upload_id),
+            Ok(_) => self.clear_orphan(upload_id),
             Err(err) => {
                 let msg = err.to_string();
                 if msg.contains("NoSuchUpload") || msg.contains("404") {
-                    clear_orphan(upload_id);
+                    self.clear_orphan(upload_id);
                 } else {
+                    self.note_orphan_failure(upload_id);
                     tracing::error!(
                         key,
                         upload_id,
@@ -468,16 +444,17 @@ impl S3Backend {
         }
     }
 
-    async fn copy_object_single(&self, from: &str, to: &str) -> Result<()> {
+    async fn copy_object_single(&self, from: &str, to: &str, source_etag: &str) -> Result<()> {
         self.client
             .copy_object()
             .bucket(&self.bucket)
             .key(self.full_key(to))
             .copy_source(encode_copy_source(&self.bucket, &self.full_key(from)))
+            .copy_source_if_match(source_etag)
             .metadata_directive(aws_sdk_s3::types::MetadataDirective::Copy)
             .send()
             .await
-            .map_err(|err| map_missing(from, err.to_string()))?;
+            .map_err(|err| map_copy_failure(from, format!("{err:?}")))?;
         Ok(())
     }
 
@@ -499,14 +476,25 @@ impl S3Backend {
             .upload_id()
             .ok_or_else(|| StorageError::S3("CreateMultipartUpload returned no upload id".into()))?
             .to_string();
-        record_orphan(&self.bucket, &full_to, &upload_id);
+        if let Err(err) = self.record_orphan(&full_to, &upload_id) {
+            self.abort_upload(&full_to, &upload_id).await;
+            return Err(err);
+        }
         let mut guard = MultipartGuard::arm(
             self.client.clone(),
             self.bucket.clone(),
             full_to.clone(),
             upload_id.clone(),
+            self.journal.clone(),
         );
-        let part_size = MULTIPART_PART_SIZE as u64;
+        let part_size = self.part_size as u64;
+        let source_etag = probe
+            .etag
+            .clone()
+            .filter(|etag| !etag.is_empty())
+            .ok_or_else(|| {
+                StorageError::Integrity("refusing multipart copy without a source ETag".into())
+            })?;
         let copy = async {
             let mut completed = Vec::new();
             let mut start = 0u64;
@@ -525,12 +513,13 @@ impl S3Backend {
                     .bucket(&self.bucket)
                     .key(&full_to)
                     .copy_source(&source)
+                    .copy_source_if_match(&source_etag)
                     .copy_source_range(format!("bytes={start}-{last}"))
                     .upload_id(&upload_id)
                     .part_number(part_number)
                     .send()
                     .await
-                    .map_err(|err| StorageError::S3(err.to_string()))?;
+                    .map_err(|err| map_copy_failure(from, format!("{err:?}")))?;
                 let etag = copied
                     .copy_part_result()
                     .and_then(|part| part.e_tag())
@@ -564,7 +553,7 @@ impl S3Backend {
         match copy.await {
             Ok(()) => {
                 guard.disarm();
-                clear_orphan(&upload_id);
+                self.clear_orphan(&upload_id);
                 Ok(())
             }
             Err(err) => {
@@ -575,33 +564,91 @@ impl S3Backend {
         }
     }
 
-    /// Aborts multipart uploads previously recorded for this bucket.
+    /// Aborts multipart uploads recorded for this endpoint, bucket, and prefix
+    /// whose owner lock is not held.
+    ///
+    /// Live uploads are left alone. Failed aborts stay on disk and stop being
+    /// retried after [`MAX_ORPHAN_ATTEMPTS`].
     ///
     /// # Errors
     ///
-    /// Returns I/O errors reading the orphan directory. Individual abort
-    /// failures are retained and logged; they do not fail the sweep.
-    pub async fn retry_orphans(&self, dir: &std::path::Path) -> Result<usize> {
-        if !dir.is_dir() {
+    /// Returns I/O errors reading the journal directory.
+    pub async fn retry_orphans(&self) -> Result<usize> {
+        let Some(journal) = &self.journal else {
             return Ok(0);
-        }
+        };
         let mut retried = 0usize;
-        for entry in std::fs::read_dir(dir).map_err(StorageError::Io)? {
-            let entry = entry.map_err(StorageError::Io)?;
-            let path = entry.path();
-            let Ok(text) = std::fs::read_to_string(&path) else {
+        for (path, record) in journal.list_records()? {
+            if record.endpoint != self.endpoint
+                || record.bucket != self.bucket
+                || record.prefix != self.prefix
+            {
                 continue;
-            };
-            let Ok(record) = serde_json::from_str::<OrphanRecord>(&text) else {
+            }
+            if journal.owner_is_live(&record.owner_id) {
                 continue;
-            };
-            if record.bucket != self.bucket {
+            }
+            if record.attempts >= MAX_ORPHAN_ATTEMPTS {
+                tracing::error!(
+                    upload_id = %record.upload_id,
+                    attempts = record.attempts,
+                    "multipart cleanup exhausted its retry budget; record retained"
+                );
                 continue;
             }
             retried += 1;
             self.abort_upload(&record.key, &record.upload_id).await;
+            let _ = path;
         }
         Ok(retried)
+    }
+
+    fn record_orphan(&self, key: &str, upload_id: &str) -> Result<()> {
+        let Some(journal) = &self.journal else {
+            tracing::warn!(
+                key,
+                upload_id,
+                "multipart upload has no journal; process death cannot abort it"
+            );
+            return Ok(());
+        };
+        journal.record(key, upload_id)
+    }
+
+    fn clear_orphan(&self, upload_id: &str) {
+        if let Some(journal) = &self.journal {
+            journal.clear(upload_id);
+        }
+    }
+
+    fn note_orphan_failure(&self, upload_id: &str) {
+        if let Some(journal) = &self.journal {
+            journal.note_failure(upload_id);
+        }
+    }
+
+    /// Writes the verified digest where a later probe can read it.
+    ///
+    /// `CreateMultipartUpload` cannot be updated with a digest computed from
+    /// the body. The sidecar is one small `PutObject` (not a copy of the
+    /// audiobook). Publication is not complete until this write succeeds.
+    async fn put_integrity_sidecar(&self, key: &str, meta: &ObjectMeta) -> Result<()> {
+        let sidecar = crate::bookclerk_meta_sidecar_key(key);
+        let payload = serde_json::to_vec(&ObjectMeta {
+            sha256_hex: meta.sha256_hex.clone(),
+            commit_token: meta.commit_token.clone(),
+            ..ObjectMeta::default()
+        })
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
+        self.put_body(
+            &sidecar,
+            ByteStream::from(Bytes::from(payload)),
+            ObjectMeta {
+                content_type: Some("application/json".into()),
+                ..ObjectMeta::default()
+            },
+        )
+        .await
     }
 }
 
@@ -723,11 +770,21 @@ impl StorageBackend for S3Backend {
         };
         let sha256_hex = meta_get(user_meta, "sha256");
         let commit_token = meta_get(user_meta, "commit-token");
-        let meta = ObjectMeta {
+        let mut meta = ObjectMeta {
             sha256_hex,
             commit_token,
             ..meta
         };
+        if meta.sha256_hex.is_none() && !key.ends_with(".bookclerk-meta.json") {
+            if let Ok(bytes) = self.get(&crate::bookclerk_meta_sidecar_key(key)).await {
+                if let Ok(parsed) = serde_json::from_slice::<ObjectMeta>(&bytes) {
+                    meta.sha256_hex = parsed.sha256_hex;
+                    if meta.commit_token.is_none() {
+                        meta.commit_token = parsed.commit_token;
+                    }
+                }
+            }
+        }
         Ok(ObjectProbe {
             key: key.to_string(),
             size: meta.content_length.unwrap_or(0),
@@ -749,10 +806,25 @@ impl StorageBackend for S3Backend {
                 crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
             )));
         }
-        if crate::bounded::copy_uses_single_request(probe.size) {
-            return self.copy_object_single(from, to).await;
+        let etag = probe
+            .etag
+            .clone()
+            .filter(|etag| !etag.is_empty())
+            .ok_or_else(|| {
+                StorageError::Integrity("refusing server copy without a source ETag".into())
+            })?;
+        let multipart = if self.part_size == MULTIPART_PART_SIZE {
+            !crate::bounded::copy_uses_single_request(probe.size)
+        } else {
+            // Tests shrink the part size so a multipart copy can be exercised
+            // without a multi-gigabyte object. Production keeps the 5 GiB ceiling.
+            probe.size > self.part_size as u64
+        };
+        if multipart {
+            self.copy_multipart(from, to, &probe).await
+        } else {
+            self.copy_object_single(from, to, &etag).await
         }
-        self.copy_multipart(from, to, &probe).await
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
@@ -1034,46 +1106,161 @@ fn map_missing(key: &str, msg: String) -> StorageError {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+/// Stop automatic abort retries after this many failed attempts. The record stays.
+const MAX_ORPHAN_ATTEMPTS: u32 = 8;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct OrphanRecord {
+    #[serde(default)]
+    endpoint: String,
+    #[serde(default)]
     bucket: String,
+    #[serde(default)]
+    prefix: String,
+    #[serde(default)]
     key: String,
+    #[serde(default)]
     upload_id: String,
+    #[serde(default)]
+    owner_id: String,
+    #[serde(default)]
     attempts: u32,
 }
 
-fn orphan_dir() -> Option<std::path::PathBuf> {
-    let root = std::env::var_os("BOOKCLERK_FILES_DIR")?;
-    Some(std::path::PathBuf::from(root).join("storage-orphans"))
+struct MultipartJournal {
+    dir: std::path::PathBuf,
+    endpoint: String,
+    bucket: String,
+    prefix: String,
+    owner_id: String,
+    _lock: std::fs::File,
 }
 
-fn orphan_path(upload_id: &str) -> Option<std::path::PathBuf> {
-    let dir = orphan_dir()?;
-    let name = hex::encode(sha2::Sha256::digest(upload_id.as_bytes()));
-    Some(dir.join(format!("{name}.json")))
-}
-
-fn record_orphan(bucket: &str, key: &str, upload_id: &str) {
-    let Some(path) = orphan_path(upload_id) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let record = OrphanRecord {
-        bucket: bucket.to_string(),
-        key: key.to_string(),
-        upload_id: upload_id.to_string(),
-        attempts: 0,
-    };
-    if let Ok(text) = serde_json::to_string(&record) {
-        let _ = std::fs::write(path, text);
+impl std::fmt::Debug for MultipartJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultipartJournal")
+            .field("dir", &self.dir)
+            .field("endpoint", &self.endpoint)
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("owner_id", &self.owner_id)
+            .finish_non_exhaustive()
     }
 }
 
-fn clear_orphan(upload_id: &str) {
-    if let Some(path) = orphan_path(upload_id) {
-        let _ = std::fs::remove_file(path);
+impl MultipartJournal {
+    fn open(dir: &std::path::Path, endpoint: String, bucket: &str, prefix: String) -> Result<Self> {
+        std::fs::create_dir_all(dir.join("owners")).map_err(StorageError::Io)?;
+        std::fs::create_dir_all(dir.join("uploads")).map_err(StorageError::Io)?;
+        let owner_id = uuid::Uuid::new_v4().to_string();
+        let lock_path = dir.join("owners").join(format!("{owner_id}.lock"));
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(StorageError::Io)?;
+        fs4::FileExt::lock(&lock).map_err(StorageError::Io)?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            endpoint,
+            bucket: bucket.to_string(),
+            prefix,
+            owner_id,
+            _lock: lock,
+        })
+    }
+
+    fn record_path(&self, upload_id: &str) -> std::path::PathBuf {
+        let name = hex::encode(sha2::Sha256::digest(upload_id.as_bytes()));
+        self.dir.join("uploads").join(format!("{name}.json"))
+    }
+
+    fn record(&self, key: &str, upload_id: &str) -> Result<()> {
+        let path = self.record_path(upload_id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(StorageError::Io)?;
+        }
+        let record = OrphanRecord {
+            endpoint: self.endpoint.clone(),
+            bucket: self.bucket.clone(),
+            prefix: self.prefix.clone(),
+            key: key.to_string(),
+            upload_id: upload_id.to_string(),
+            owner_id: self.owner_id.clone(),
+            attempts: 0,
+        };
+        let text = serde_json::to_string(&record)
+            .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, text).map_err(StorageError::Io)?;
+        std::fs::rename(&tmp, &path).map_err(StorageError::Io)?;
+        Ok(())
+    }
+
+    fn clear(&self, upload_id: &str) {
+        let _ = std::fs::remove_file(self.record_path(upload_id));
+    }
+
+    fn note_failure(&self, upload_id: &str) {
+        let path = self.record_path(upload_id);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(mut record) = serde_json::from_str::<OrphanRecord>(&text) else {
+            return;
+        };
+        record.attempts = record.attempts.saturating_add(1);
+        if let Ok(text) = serde_json::to_string(&record) {
+            let _ = std::fs::write(path, text);
+        }
+    }
+
+    fn list_records(&self) -> Result<Vec<(std::path::PathBuf, OrphanRecord)>> {
+        let dir = self.dir.join("uploads");
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&dir).map_err(StorageError::Io)? {
+            let entry = entry.map_err(StorageError::Io)?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            match serde_json::from_str::<OrphanRecord>(&text) {
+                Ok(record) => out.push((path, record)),
+                Err(_) => {
+                    let _ = std::fs::rename(&path, path.with_extension("corrupt"));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn owner_is_live(&self, owner_id: &str) -> bool {
+        if owner_id.is_empty() {
+            return false;
+        }
+        let path = self.dir.join("owners").join(format!("{owner_id}.lock"));
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+        else {
+            return false;
+        };
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => {
+                let _ = fs4::FileExt::unlock(&file);
+                false
+            }
+            Err(_) => true,
+        }
     }
 }
 
@@ -1082,16 +1269,24 @@ struct MultipartGuard {
     bucket: String,
     key: String,
     upload_id: String,
+    journal: Option<std::sync::Arc<MultipartJournal>>,
     armed: bool,
 }
 
 impl MultipartGuard {
-    fn arm(client: Client, bucket: String, key: String, upload_id: String) -> Self {
+    fn arm(
+        client: Client,
+        bucket: String,
+        key: String,
+        upload_id: String,
+        journal: Option<std::sync::Arc<MultipartJournal>>,
+    ) -> Self {
         Self {
             client,
             bucket,
             key,
             upload_id,
+            journal,
             armed: true,
         }
     }
@@ -1106,10 +1301,15 @@ impl Drop for MultipartGuard {
         if !self.armed {
             return;
         }
+        #[cfg(test)]
+        if SKIP_DROP_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let client = self.client.clone();
         let bucket = self.bucket.clone();
         let key = self.key.clone();
         let upload_id = self.upload_id.clone();
+        let journal = self.journal.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let result = client
@@ -1120,8 +1320,15 @@ impl Drop for MultipartGuard {
                     .send()
                     .await;
                 match result {
-                    Ok(_) => clear_orphan(&upload_id),
+                    Ok(_) => {
+                        if let Some(journal) = journal {
+                            journal.clear(&upload_id);
+                        }
+                    }
                     Err(err) => {
+                        if let Some(journal) = journal {
+                            journal.note_failure(&upload_id);
+                        }
                         tracing::error!(
                             upload_id,
                             error = %err,
@@ -1136,6 +1343,20 @@ impl Drop for MultipartGuard {
                 "dropped multipart upload could not schedule abort; id retained"
             );
         }
+    }
+}
+
+#[cfg(test)]
+static SKIP_DROP_ABORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn map_copy_failure(key: &str, msg: String) -> StorageError {
+    if msg.contains("PreconditionFailed")
+        || msg.contains("412")
+        || msg.contains("ConditionalRequestConflict")
+    {
+        StorageError::Integrity(format!("source `{key}` changed during copy: {msg}"))
+    } else {
+        map_missing(key, msg)
     }
 }
 
@@ -1169,6 +1390,10 @@ pub(crate) async fn resolve_s3_credentials(
     }
     Ok(None)
 }
+
+#[cfg(test)]
+#[path = "s3_protocol.rs"]
+mod s3_protocol;
 
 #[cfg(test)]
 mod tests {
