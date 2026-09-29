@@ -279,3 +279,80 @@ impl PluginWorker for LocalRoot {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn open_at(root: &std::path::Path) -> LocalDestination {
+        std::env::set_var("BOOKCLERK_OUTPUT_LOCAL_ROOT", root);
+        LocalDestination::from_config(&ExtensibleConfig::default()).expect("destination")
+    }
+
+    async fn stage(dest: &LocalDestination, key: &str, body: &[u8], token: &str) -> PutResult {
+        dest.put(
+            key,
+            Box::pin(std::io::Cursor::new(body.to_vec())),
+            WriteOptions {
+                content_length: Some(body.len() as u64),
+                commit_token: Some(token.into()),
+                stage_only: true,
+                ..WriteOptions::default()
+            },
+        )
+        .await
+        .expect("stage")
+    }
+
+    #[tokio::test]
+    async fn commit_replay_after_rebuild_returns_digest_and_rejects_wrong_token() {
+        let _guard = ENV_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let key = "Author/book.m4b";
+        let body = b"audiobook-bytes";
+        let first = open_at(dir.path());
+        stage(&first, key, body, "tok-1").await;
+        let committed = first.commit(key, "tok-1").await.expect("commit");
+        assert!(committed.sha256.is_some());
+        assert_eq!(committed.bytes_written, body.len() as u64);
+        drop(first);
+
+        let second = open_at(dir.path());
+        let replay = second.commit(key, "tok-1").await.expect("replay commit");
+        assert_eq!(replay.sha256, committed.sha256);
+        assert_eq!(replay.bytes_written, body.len() as u64);
+        let wrong = second.commit(key, "tok-other").await.unwrap_err();
+        let text = wrong.to_string();
+        assert!(
+            text.contains("not commit") || text.contains("not_found") || text.contains("NotFound"),
+            "{text}"
+        );
+        std::env::remove_var("BOOKCLERK_OUTPUT_LOCAL_ROOT");
+    }
+
+    #[tokio::test]
+    async fn same_stem_companions_keep_distinct_commit_tokens() {
+        let _guard = ENV_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = open_at(dir.path());
+        stage(&dest, "Title/book.m4b", b"audio", "audio-tok").await;
+        stage(&dest, "Title/book.jpg", b"cover", "cover-tok").await;
+        stage(&dest, "Title/book.pdf", b"pdf", "pdf-tok").await;
+        let audio = dest.commit("Title/book.m4b", "audio-tok").await.unwrap();
+        let cover = dest.commit("Title/book.jpg", "cover-tok").await.unwrap();
+        let pdf = dest.commit("Title/book.pdf", "pdf-tok").await.unwrap();
+        assert_ne!(audio.sha256, cover.sha256);
+        assert_ne!(audio.sha256, pdf.sha256);
+        drop(dest);
+
+        let again = open_at(dir.path());
+        assert!(again.commit("Title/book.m4b", "audio-tok").await.is_ok());
+        assert!(again.commit("Title/book.jpg", "cover-tok").await.is_ok());
+        assert!(again.commit("Title/book.pdf", "pdf-tok").await.is_ok());
+        assert!(again.commit("Title/book.m4b", "cover-tok").await.is_err());
+        assert!(again.commit("Title/book.jpg", "audio-tok").await.is_err());
+        std::env::remove_var("BOOKCLERK_OUTPUT_LOCAL_ROOT");
+    }
+}

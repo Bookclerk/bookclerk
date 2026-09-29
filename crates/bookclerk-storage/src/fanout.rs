@@ -337,23 +337,45 @@ impl StorageBackend for FanoutBackend {
                 return Err(err);
             }
         };
-        guard.disarm();
+        // Children may still be flushing or completing after the source EOF.
+        // The guard stays armed through every join so a drop or a child error
+        // aborts the rest instead of detaching them.
         let mut last = crate::PutStreamResult {
             bytes_written: total,
             etag: None,
             sha256_hex: None,
         };
-        for join in joins {
+        let mut failure = None;
+        for join in joins.drain(..) {
+            if failure.is_some() {
+                guard.cancel_now();
+            }
             match join.await {
-                Ok(Ok(result)) => last = result,
-                Ok(Err(err)) => return Err(err),
+                Ok(Ok(result)) => {
+                    if failure.is_none() {
+                        last = result;
+                    }
+                }
+                Ok(Err(err)) => {
+                    if failure.is_none() {
+                        failure = Some(err);
+                        guard.cancel_now();
+                    }
+                }
                 Err(err) => {
-                    return Err(StorageError::Other(anyhow::anyhow!(
-                        "fan-out put_stream task: {err}"
-                    )));
+                    if failure.is_none() {
+                        failure = Some(StorageError::Other(anyhow::anyhow!(
+                            "fan-out put_stream task: {err}"
+                        )));
+                        guard.cancel_now();
+                    }
                 }
             }
         }
+        if let Some(err) = failure {
+            return Err(err);
+        }
+        guard.disarm();
         last.bytes_written = total;
         Ok(last)
     }
@@ -531,5 +553,183 @@ mod tests {
             .map(|o| o.key)
             .collect();
         assert_eq!(keys, vec!["a.m4b".to_string(), "b.m4b".to_string()]);
+    }
+
+    struct GatePut {
+        fail: bool,
+        entered: Arc<std::sync::atomic::AtomicUsize>,
+        ready: Arc<tokio::sync::Barrier>,
+        release: Arc<tokio::sync::Notify>,
+        published: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageBackend for GatePut {
+        fn name(&self) -> &'static str {
+            "gate"
+        }
+
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                fail: self.fail,
+                entered: Arc::clone(&self.entered),
+                ready: Arc::clone(&self.ready),
+                release: Arc::clone(&self.release),
+                published: Arc::clone(&self.published),
+            })
+        }
+
+        async fn put(&self, _: &str, _: Bytes, _: ObjectMeta) -> Result<()> {
+            Err(StorageError::Other(anyhow::anyhow!("unused")))
+        }
+
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            Err(StorageError::NotFound(key.into()))
+        }
+
+        async fn exists(&self, _: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        async fn list(&self, _: &str) -> Result<Vec<crate::ObjectInfo>> {
+            Ok(Vec::new())
+        }
+
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            Err(StorageError::NotFound(key.into()))
+        }
+
+        async fn copy(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn list_page(&self, _: &str, _: Option<&str>, _: u32) -> Result<crate::ListPage> {
+            Ok(crate::ListPage::default())
+        }
+
+        async fn get_stream(
+            &self,
+            key: &str,
+            _: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            Err(StorageError::NotFound(key.into()))
+        }
+
+        async fn put_stream(
+            &self,
+            _: &str,
+            mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            _: ObjectMeta,
+        ) -> Result<crate::PutStreamResult> {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 32];
+            loop {
+                if body.read(&mut buf).await? == 0 {
+                    break;
+                }
+            }
+            self.entered
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.ready.wait().await;
+            if self.fail {
+                return Err(StorageError::Io(std::io::Error::other(
+                    "child failed during finalization",
+                )));
+            }
+            self.release.notified().await;
+            self.published
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::PutStreamResult {
+                bytes_written: 4,
+                ..crate::PutStreamResult::default()
+            })
+        }
+    }
+
+    fn gate(
+        fail: bool,
+        entered: &Arc<std::sync::atomic::AtomicUsize>,
+        ready: &Arc<tokio::sync::Barrier>,
+        release: &Arc<tokio::sync::Notify>,
+        published: &Arc<std::sync::atomic::AtomicUsize>,
+    ) -> GatePut {
+        GatePut {
+            fail,
+            entered: Arc::clone(entered),
+            ready: Arc::clone(ready),
+            release: Arc::clone(release),
+            published: Arc::clone(published),
+        }
+    }
+
+    async fn wait_entered(entered: &std::sync::atomic::AtomicUsize, n: usize) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while entered.load(std::sync::atomic::Ordering::SeqCst) < n {
+            if tokio::time::Instant::now() > deadline {
+                panic!("children did not reach finalization");
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn drop_after_source_eof_aborts_children_still_finalizing() {
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ready = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fan = FanoutBackend::new(vec![
+            Box::new(gate(false, &entered, &ready, &release, &published)),
+            Box::new(gate(false, &entered, &ready, &release, &published)),
+        ])
+        .unwrap();
+        let entered_wait = Arc::clone(&entered);
+        let task = tokio::spawn(async move {
+            fan.put_stream(
+                "book.m4b",
+                Box::pin(std::io::Cursor::new(b"data".to_vec())),
+                ObjectMeta::default(),
+            )
+            .await
+        });
+        wait_entered(entered_wait.as_ref(), 2).await;
+        task.abort();
+        let _ = task.await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            published.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "aborted children must not publish after the parent is dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn child_finalization_error_aborts_blocked_sibling() {
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ready = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fan = FanoutBackend::new(vec![
+            Box::new(gate(true, &entered, &ready, &release, &published)),
+            Box::new(gate(false, &entered, &ready, &release, &published)),
+        ])
+        .unwrap();
+        let err = fan
+            .put_stream(
+                "book.m4b",
+                Box::pin(std::io::Cursor::new(b"data".to_vec())),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Io(_)), "{err}");
+        assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

@@ -11,7 +11,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,12 @@ pub(crate) const INDEX_CHUNK: usize = 2048;
 const MAGIC: &[u8; 4] = b"BCLI";
 const VERSION: u32 = 1;
 const HEADER_LEN: u64 = 32;
+/// Reject index records that would allocate an unbounded key buffer.
+const MAX_INDEX_KEY_LEN: usize = 64 * 1024;
+
+#[cfg(test)]
+static REBUILD_GATE: std::sync::Mutex<Option<std::sync::Arc<std::sync::Barrier>>> =
+    std::sync::Mutex::new(None);
 
 /// Build counters visible across `spawn_blocking` workers.
 #[cfg(test)]
@@ -118,17 +124,225 @@ fn rebuild_index(
     final_path: &Path,
 ) -> Result<()> {
     note_build();
-    let dir = final_path
-        .parent()
-        .ok_or_else(|| StorageError::InvalidKey("list index path".into()))?;
-    fs::create_dir_all(dir)?;
-    let runs = spill_runs(root, storage_prefix, list_prefix, dir)?;
-    let building = final_path.with_extension("idx.building");
-    merge_runs(&runs, &building)?;
-    for run in &runs {
-        let _ = fs::remove_file(run);
+    let index_root = prepare_index_root(root)?;
+    sweep_abandoned_builds(&index_root)?;
+    let build_id = uuid::Uuid::new_v4();
+    let build_dir = index_root.join("builds").join(build_id.to_string());
+    fs::create_dir_all(&build_dir)?;
+    let lock_path = build_dir.join("active.lock");
+    let build_lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    fs4::FileExt::lock(&build_lock)?;
+    let generation = claim_generation(&generation_path(final_path))?;
+    wait_for_test_gate();
+    let published = (|| {
+        let runs = spill_runs(root, storage_prefix, list_prefix, &build_dir)?;
+        let building = build_dir.join("index.building");
+        merge_runs(&runs, &building)?;
+        for run in &runs {
+            let _ = fs::remove_file(run);
+        }
+        ensure_published(&index_root, &build_dir, final_path, &building, generation)
+    })();
+    let _ = fs4::FileExt::unlock(&build_lock);
+    drop(build_lock);
+    let _ = fs::remove_dir_all(&build_dir);
+    published
+}
+
+fn wait_for_test_gate() {
+    #[cfg(test)]
+    {
+        let gate = REBUILD_GATE.lock().ok().and_then(|guard| guard.clone());
+        if let Some(gate) = gate {
+            gate.wait();
+        }
     }
-    fs::rename(&building, final_path)?;
+}
+
+fn prepare_index_root(root: &Path) -> Result<PathBuf> {
+    let dir = root.join(".bookclerk-list-index");
+    if fs::symlink_metadata(&dir)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(StorageError::InvalidKey(
+            "list index directory is a symlink".into(),
+        ));
+    }
+    fs::create_dir_all(&dir)?;
+    if fs::symlink_metadata(&dir)?.file_type().is_symlink() {
+        return Err(StorageError::InvalidKey(
+            "list index directory is a symlink".into(),
+        ));
+    }
+    let canon_root = fs::canonicalize(root)?;
+    let canon_dir = fs::canonicalize(&dir)?;
+    if !canon_dir.starts_with(&canon_root) {
+        return Err(StorageError::InvalidKey(
+            "list index directory escapes the storage root".into(),
+        ));
+    }
+    Ok(dir)
+}
+
+fn generation_path(final_path: &Path) -> PathBuf {
+    let name = final_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "index.idx".into());
+    final_path.with_file_name(format!("{name}.gen"))
+}
+
+fn claim_generation(path: &Path) -> Result<u64> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    fs4::FileExt::lock(&file)?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    let current = text.trim().parse::<u64>().unwrap_or(0);
+    let next = current.saturating_add(1);
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    write!(file, "{next}")?;
+    file.sync_all()?;
+    fs4::FileExt::unlock(&file)?;
+    Ok(next)
+}
+
+fn publish_if_current(final_path: &Path, building: &Path, generation: u64) -> Result<bool> {
+    let gen_path = generation_path(final_path);
+    let mut file = OpenOptions::new().read(true).write(true).open(&gen_path)?;
+    fs4::FileExt::lock(&file)?;
+    let current = read_generation(&mut file)?;
+    let published = if current == generation {
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(building, final_path)?;
+        true
+    } else {
+        false
+    };
+    fs4::FileExt::unlock(&file)?;
+    Ok(published)
+}
+
+fn read_generation(file: &mut File) -> Result<u64> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text.trim().parse::<u64>().unwrap_or(0))
+}
+
+/// Publish `generation` when it is still current. Otherwise wait until a newer
+/// build publishes, or publish this complete build when no other build is alive
+/// and the index file is still missing.
+fn ensure_published(
+    index_root: &Path,
+    build_dir: &Path,
+    final_path: &Path,
+    building: &Path,
+    generation: u64,
+) -> Result<()> {
+    if publish_if_current(final_path, building, generation)? || final_path.is_file() {
+        return Ok(());
+    }
+    for _ in 0..100_000 {
+        if final_path.is_file() {
+            return Ok(());
+        }
+        if other_builds_active(index_root, build_dir)? {
+            std::thread::yield_now();
+            continue;
+        }
+        let gen_path = generation_path(final_path);
+        let file = OpenOptions::new().read(true).write(true).open(&gen_path)?;
+        fs4::FileExt::lock(&file)?;
+        if final_path.is_file() {
+            fs4::FileExt::unlock(&file)?;
+            return Ok(());
+        }
+        if other_builds_active(index_root, build_dir)? {
+            fs4::FileExt::unlock(&file)?;
+            std::thread::yield_now();
+            continue;
+        }
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(building, final_path)?;
+        fs4::FileExt::unlock(&file)?;
+        return Ok(());
+    }
+    Err(StorageError::Other(anyhow::anyhow!(
+        "list index publication did not finish"
+    )))
+}
+
+fn other_builds_active(index_root: &Path, ours: &Path) -> Result<bool> {
+    let builds = index_root.join("builds");
+    let Ok(entries) = fs::read_dir(&builds) else {
+        return Ok(false);
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path == ours || !path.is_dir() {
+            continue;
+        }
+        let lock_path = path.join("active.lock");
+        let Ok(file) = OpenOptions::new().read(true).write(true).open(&lock_path) else {
+            continue;
+        };
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => {
+                let _ = fs4::FileExt::unlock(&file);
+            }
+            Err(_) => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
+fn sweep_abandoned_builds(index_root: &Path) -> Result<()> {
+    let builds = index_root.join("builds");
+    let Ok(entries) = fs::read_dir(&builds) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let lock_path = path.join("active.lock");
+        let Some(file) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .ok()
+        else {
+            let _ = fs::remove_dir_all(&path);
+            continue;
+        };
+        if let Ok(()) = fs4::FileExt::try_lock(&file) {
+            let _ = fs4::FileExt::unlock(&file);
+            drop(file);
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
     Ok(())
 }
 
@@ -254,6 +468,11 @@ fn read_record(input: &mut impl Read) -> Result<Option<(String, u64)>> {
         Err(err) => return Err(StorageError::Io(err)),
     }
     let len = u32::from_le_bytes(len_buf) as usize;
+    if len > MAX_INDEX_KEY_LEN {
+        return Err(StorageError::InvalidCursor(format!(
+            "list index record length {len} exceeds {MAX_INDEX_KEY_LEN}"
+        )));
+    }
     let mut key_buf = vec![0u8; len];
     input.read_exact(&mut key_buf)?;
     let key = String::from_utf8(key_buf)
@@ -552,4 +771,111 @@ fn read_page(path: &Path, cursor: Option<&str>, limit: usize) -> Result<ListPage
         objects,
         next_cursor,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    fn write_keys(root: &Path, keys: &[&str]) {
+        for key in keys {
+            let path = root.join(key);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, b"x").unwrap();
+        }
+    }
+
+    fn keys_of(page: &ListPage) -> Vec<String> {
+        page.objects.iter().map(|obj| obj.key.clone()).collect()
+    }
+
+    #[test]
+    fn concurrent_scans_keep_identical_and_distinct_prefixes_isolated() {
+        let root = tempfile::tempdir().unwrap();
+        write_keys(
+            root.path(),
+            &[
+                "same/a.txt",
+                "same/b.txt",
+                "same/c.txt",
+                "other/z.txt",
+                "left/one.txt",
+                "right/two.txt",
+            ],
+        );
+        let barrier = Arc::new(Barrier::new(4));
+        *REBUILD_GATE.lock().unwrap() = Some(Arc::clone(&barrier));
+        let root_path = root.path().to_path_buf();
+        let mut joins = Vec::new();
+        for prefix in ["same/", "same/", "left/", "right/"] {
+            let root_path = root_path.clone();
+            let prefix = prefix.to_string();
+            joins.push(thread::spawn(move || {
+                list_page_indexed(&root_path, "", &prefix, None, 100).unwrap()
+            }));
+        }
+        let pages: Vec<_> = joins.into_iter().map(|join| join.join().unwrap()).collect();
+        *REBUILD_GATE.lock().unwrap() = None;
+        assert_eq!(
+            keys_of(&pages[0]),
+            vec!["same/a.txt", "same/b.txt", "same/c.txt"]
+        );
+        assert_eq!(keys_of(&pages[1]), keys_of(&pages[0]));
+        assert_eq!(keys_of(&pages[2]), vec!["left/one.txt"]);
+        assert_eq!(keys_of(&pages[3]), vec!["right/two.txt"]);
+        let builds = root.path().join(".bookclerk-list-index").join("builds");
+        let leftover = fs::read_dir(&builds).map(|rd| rd.count()).unwrap_or(0);
+        assert_eq!(
+            leftover, 0,
+            "finished builds remove their scratch directories"
+        );
+    }
+
+    #[test]
+    fn sweep_removes_abandoned_build_scratch_and_keeps_a_locked_one() {
+        let root = tempfile::tempdir().unwrap();
+        let index = root.path().join(".bookclerk-list-index");
+        let abandoned = index.join("builds").join("abandoned");
+        let active = index.join("builds").join("active");
+        fs::create_dir_all(&abandoned).unwrap();
+        fs::create_dir_all(&active).unwrap();
+        fs::write(abandoned.join("run-0.bin"), b"stale").unwrap();
+        let lock_path = active.join("active.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        fs4::FileExt::lock(&lock).unwrap();
+        fs::write(active.join("run-0.bin"), b"live").unwrap();
+        sweep_abandoned_builds(&index).unwrap();
+        assert!(!abandoned.exists());
+        assert!(active.join("run-0.bin").is_file());
+        drop(lock);
+    }
+
+    #[test]
+    fn malformed_record_length_is_rejected() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&u32::MAX.to_le_bytes());
+        let err = read_record(&mut raw.as_slice()).unwrap_err();
+        assert!(matches!(err, StorageError::InvalidCursor(_)), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_index_directory_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join(".bookclerk-list-index"))
+            .unwrap();
+        let err = list_page_indexed(root.path(), "", "", None, 10).unwrap_err();
+        assert!(matches!(err, StorageError::InvalidKey(_)), "{err}");
+    }
 }

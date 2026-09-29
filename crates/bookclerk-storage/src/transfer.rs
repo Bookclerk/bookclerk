@@ -128,6 +128,16 @@ async fn transfer_once(
     if let Some(expected) = meta.sha256_hex.as_deref() {
         let _ = parse_sha256_hex(expected)?;
     }
+    if let (Some(expected), Some(source_sum)) = (
+        meta.sha256_hex.as_deref(),
+        before.meta.sha256_hex.as_deref(),
+    ) {
+        if !expected.eq_ignore_ascii_case(source_sum) {
+            return Err(StorageError::Integrity(
+                "expected digest conflicts with the source probe".into(),
+            ));
+        }
+    }
     if meta.sha256_hex.is_none() {
         meta.sha256_hex = before.meta.sha256_hex.clone();
     }
@@ -166,7 +176,34 @@ async fn transfer_once(
             let _ = ensure_scalar_len(0, MAX_SCALAR_OBJECT_BYTES);
         }
     }
-    let written = dest.put_stream(dest_key, body, meta.clone()).await?;
+    let stage_key = format!(".bookclerk-stage/{}/{}", uuid::Uuid::new_v4(), dest_key);
+    let written = match dest.put_stream(&stage_key, body, meta.clone()).await {
+        Ok(written) => written,
+        Err(err) => {
+            let _ = dest.delete(&stage_key).await;
+            return Err(err);
+        }
+    };
+    let verified = verify_staged(source, source_key, &before, &meta, &written).await;
+    if let Err(err) = verified {
+        let _ = dest.delete(&stage_key).await;
+        return Err(err);
+    }
+    if let Err(err) = publish_staged(dest, &stage_key, dest_key, &meta, &written).await {
+        let _ = dest.delete(&stage_key).await;
+        return Err(err);
+    }
+    let _ = dest.delete(&stage_key).await;
+    Ok(TransferOutcome::Streamed(written))
+}
+
+async fn verify_staged(
+    source: &dyn StorageBackend,
+    source_key: &str,
+    before: &crate::ObjectProbe,
+    meta: &ObjectMeta,
+    written: &PutStreamResult,
+) -> Result<()> {
     if let Some(expected) = meta.content_length {
         if written.bytes_written != expected {
             return Err(StorageError::Integrity(format!(
@@ -175,9 +212,12 @@ async fn transfer_once(
             )));
         }
     }
-    let after = source.probe(source_key).await?;
+    let after = source.probe(source_key).await.map_err(|err| {
+        StorageError::Integrity(format!(
+            "source `{source_key}` could not be confirmed after staging: {err}"
+        ))
+    })?;
     if after.size != before.size || after.etag != before.etag {
-        let _ = dest.delete(dest_key).await;
         return Err(StorageError::Integrity(format!(
             "source `{source_key}` changed during transfer"
         )));
@@ -185,13 +225,31 @@ async fn transfer_once(
     if let (Some(expected), Some(got)) = (meta.sha256_hex.as_deref(), written.sha256_hex.as_deref())
     {
         if !expected.eq_ignore_ascii_case(got) {
-            let _ = dest.delete(dest_key).await;
             return Err(StorageError::Integrity(
-                "destination digest does not match the source".into(),
+                "staged digest does not match the source".into(),
             ));
         }
     }
-    Ok(TransferOutcome::Streamed(written))
+    Ok(())
+}
+
+async fn publish_staged(
+    dest: &dyn StorageBackend,
+    stage_key: &str,
+    dest_key: &str,
+    meta: &ObjectMeta,
+    written: &PutStreamResult,
+) -> Result<()> {
+    if dest.supports_server_copy() {
+        dest.copy(stage_key, dest_key).await?;
+        return Ok(());
+    }
+    let mut publish_meta = meta.clone();
+    publish_meta.sha256_hex = written.sha256_hex.clone().or(publish_meta.sha256_hex);
+    publish_meta.content_length = Some(written.bytes_written);
+    let (_probe, body) = dest.get_stream(stage_key, None).await?;
+    dest.put_stream(dest_key, body, publish_meta).await?;
+    Ok(())
 }
 
 fn is_retryable(err: &StorageError) -> bool {
@@ -383,5 +441,185 @@ mod tests {
         .unwrap();
         assert_eq!(outcome, TransferOutcome::ServerCopy);
         assert!(backend.exists("b.m4b").await.unwrap());
+    }
+
+    struct FlipAfterOpen {
+        inner: LocalFsBackend,
+        probes: Arc<AtomicUsize>,
+        fail_final: bool,
+    }
+
+    #[async_trait]
+    impl StorageBackend for FlipAfterOpen {
+        fn name(&self) -> &'static str {
+            "flip"
+        }
+        fn instance_id(&self) -> String {
+            format!("flip:{}", self.inner.instance_id())
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                inner: self.inner.clone(),
+                probes: self.probes.clone(),
+                fail_final: self.fail_final,
+            })
+        }
+        async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
+            self.inner.put(key, data, meta).await
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> Result<bool> {
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<crate::ObjectInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            let n = self.probes.fetch_add(1, Ordering::SeqCst);
+            // Probe 0 is the pre-read HEAD. The post-stage probe is the next one.
+            if n >= 1 && self.fail_final {
+                return Err(StorageError::Io(std::io::Error::other(
+                    "final probe failed",
+                )));
+            }
+            if n >= 1 {
+                self.inner
+                    .put(
+                        key,
+                        Bytes::from_static(b"replaced-source-bytes"),
+                        ObjectMeta::default(),
+                    )
+                    .await?;
+            }
+            self.inner.probe(key).await
+        }
+        async fn copy(&self, from: &str, to: &str) -> Result<()> {
+            self.inner.copy(from, to).await
+        }
+        async fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> Result<crate::ListPage> {
+            self.inner.list_page(prefix, cursor, limit).await
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.inner.get_stream(key, range).await
+        }
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: ObjectMeta,
+        ) -> Result<PutStreamResult> {
+            self.inner.put_stream(key, body, meta).await
+        }
+    }
+
+    #[tokio::test]
+    async fn source_change_and_probe_failure_keep_the_existing_destination() {
+        let dir = tempdir().unwrap();
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"original"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let dst = LocalFsBackend::new(dir.path().join("dst")).unwrap();
+        dst.put(
+            "book.m4b",
+            Bytes::from_static(b"keeper"),
+            ObjectMeta {
+                commit_token: Some("other-writer".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let flipping = FlipAfterOpen {
+            inner: src.clone(),
+            probes: Arc::new(AtomicUsize::new(0)),
+            fail_final: false,
+        };
+        let err = transfer_object(
+            &flipping,
+            "book.m4b",
+            &dst,
+            "book.m4b",
+            ObjectMeta::default(),
+            &TransferOptions {
+                max_attempts: 1,
+                ..TransferOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, StorageError::Integrity(_)), "{err}");
+        assert_eq!(dst.get("book.m4b").await.unwrap().as_ref(), b"keeper");
+        fn assert_no_files(path: &std::path::Path) {
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    assert_no_files(&path);
+                } else {
+                    panic!("stage file left behind: {}", path.display());
+                }
+            }
+        }
+        assert_no_files(&dir.path().join("dst").join(".bookclerk-stage"));
+
+        dst.put(
+            "book.m4b",
+            Bytes::from_static(b"keeper"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"original"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let failing = FlipAfterOpen {
+            inner: src,
+            probes: Arc::new(AtomicUsize::new(0)),
+            fail_final: true,
+        };
+        let err = transfer_object(
+            &failing,
+            "book.m4b",
+            &dst,
+            "book.m4b",
+            ObjectMeta::default(),
+            &TransferOptions {
+                max_attempts: 1,
+                ..TransferOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, StorageError::Integrity(_)), "{err}");
+        assert_eq!(dst.get("book.m4b").await.unwrap().as_ref(), b"keeper");
+        assert_no_files(&dir.path().join("dst").join(".bookclerk-stage"));
     }
 }

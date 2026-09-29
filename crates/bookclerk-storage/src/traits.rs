@@ -76,14 +76,13 @@ pub fn is_audio_key(key: &str) -> bool {
     AUDIO_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e))
 }
 
-/// Sidecar key for local probe metadata (`stem.bookclerk-meta.json`).
+/// Sidecar key for probe metadata of this exact object (`{key}.bookclerk-meta.json`).
+///
+/// The record is not shared with another object that only shares a title stem.
+/// `book.m4b` and `book.jpg` keep separate integrity and commit metadata.
 #[must_use]
-pub fn bookclerk_meta_sidecar_key(audio_or_object_key: &str) -> String {
-    let base = audio_or_object_key
-        .rsplit_once('.')
-        .map(|(stem, _)| stem)
-        .unwrap_or(audio_or_object_key);
-    format!("{base}.bookclerk-meta.json")
+pub fn bookclerk_meta_sidecar_key(object_key: &str) -> String {
+    format!("{object_key}.bookclerk-meta.json")
 }
 
 /// Inclusive byte range for a streamed read.

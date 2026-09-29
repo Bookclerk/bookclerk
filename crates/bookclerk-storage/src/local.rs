@@ -328,7 +328,10 @@ impl StorageBackend for LocalFsBackend {
                 probe.meta.title = parsed.title.or(probe.meta.title);
                 probe.meta.creation_time = parsed.creation_time.or(probe.meta.creation_time);
                 probe.meta.last_write_time = parsed.last_write_time.or(probe.meta.last_write_time);
-                probe.content_type = parsed.content_type.or(probe.content_type);
+                probe.meta.sha256_hex = parsed.sha256_hex.or(probe.meta.sha256_hex);
+                probe.meta.commit_token = parsed.commit_token.or(probe.meta.commit_token);
+                probe.content_type = parsed.content_type.clone().or(probe.content_type);
+                probe.meta.content_type = parsed.content_type.or(probe.meta.content_type);
                 if parsed.content_length.is_some() {
                     probe.meta.content_length = parsed.content_length;
                 }
@@ -1098,5 +1101,98 @@ mod tests {
         assert!(matches!(err, StorageError::Io(_)));
         let got = backend.get("keep.bin").await.unwrap();
         assert_eq!(&got[..], b"original");
+    }
+
+    #[tokio::test]
+    async fn probe_round_trips_digest_and_commit_token_for_the_exact_object() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let audio = b"audio-body";
+        let cover = b"jpeg-body";
+        backend
+            .put_stream(
+                "Title/book.m4b",
+                Box::pin(std::io::Cursor::new(audio.to_vec())),
+                ObjectMeta {
+                    content_length: Some(audio.len() as u64),
+                    content_type: Some("audio/mp4".into()),
+                    commit_token: Some("audio-token".into()),
+                    asin: Some("B00AUDIO".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        backend
+            .put_stream(
+                "Title/book.jpg",
+                Box::pin(std::io::Cursor::new(cover.to_vec())),
+                ObjectMeta {
+                    content_length: Some(cover.len() as u64),
+                    content_type: Some("image/jpeg".into()),
+                    commit_token: Some("cover-token".into()),
+                    title: Some("Cover".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let audio_meta = bookclerk_meta_sidecar_key("Title/book.m4b");
+        let cover_meta = bookclerk_meta_sidecar_key("Title/book.jpg");
+        assert_ne!(audio_meta, cover_meta);
+        assert!(backend.exists(&audio_meta).await.unwrap());
+        assert!(backend.exists(&cover_meta).await.unwrap());
+
+        let rebuilt = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let audio_probe = rebuilt.probe("Title/book.m4b").await.unwrap();
+        let cover_probe = rebuilt.probe("Title/book.jpg").await.unwrap();
+        assert_eq!(
+            audio_probe.meta.commit_token.as_deref(),
+            Some("audio-token")
+        );
+        assert_eq!(
+            cover_probe.meta.commit_token.as_deref(),
+            Some("cover-token")
+        );
+        assert!(audio_probe.meta.sha256_hex.is_some());
+        assert_ne!(audio_probe.meta.sha256_hex, cover_probe.meta.sha256_hex);
+        assert_eq!(audio_probe.meta.asin.as_deref(), Some("B00AUDIO"));
+        assert_eq!(cover_probe.meta.title.as_deref(), Some("Cover"));
+
+        rebuilt
+            .copy("Title/book.m4b", "Other/book.m4b")
+            .await
+            .unwrap();
+        let copied = rebuilt.probe("Other/book.m4b").await.unwrap();
+        assert_eq!(copied.meta.commit_token.as_deref(), Some("audio-token"));
+        assert_eq!(copied.meta.sha256_hex, audio_probe.meta.sha256_hex);
+
+        rebuilt
+            .rename("Other/book.m4b", "Moved/book.m4b")
+            .await
+            .unwrap();
+        assert!(!rebuilt
+            .exists(&bookclerk_meta_sidecar_key("Other/book.m4b"))
+            .await
+            .unwrap());
+        let moved = rebuilt.probe("Moved/book.m4b").await.unwrap();
+        assert_eq!(moved.meta.sha256_hex, audio_probe.meta.sha256_hex);
+        rebuilt.delete("Moved/book.m4b").await.unwrap();
+        assert!(!rebuilt
+            .exists(&bookclerk_meta_sidecar_key("Moved/book.m4b"))
+            .await
+            .unwrap());
+
+        let missing = rebuilt.probe("Title/book.jpg").await.unwrap();
+        assert_eq!(missing.size, cover.len() as u64);
+        std::fs::write(
+            dir.path().join("Title/book.jpg.bookclerk-meta.json"),
+            b"{not-json",
+        )
+        .unwrap();
+        let corrupt = rebuilt.probe("Title/book.jpg").await.unwrap();
+        assert_eq!(corrupt.size, cover.len() as u64);
+        assert!(corrupt.meta.sha256_hex.is_none());
     }
 }
