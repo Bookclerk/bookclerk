@@ -114,10 +114,16 @@ pub async fn convert_book(
         &work_dir,
         &mp3_key,
         |input, output, allowance| async move {
-            encode_to_mp3(&input, &output, &lame, max_sample_rate, Some(allowance))
-                .await
-                .map(|_| ())
-                .map_err(|err| err.to_string())
+            encode_to_mp3(
+                &input,
+                &output,
+                &lame,
+                max_sample_rate,
+                allowance_cap(allowance),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|err| err.to_string())
         },
     )
     .await
@@ -214,24 +220,22 @@ where
                 "convert source `{key}` was empty"
             )));
         }
-        let output_allowance = copied.min(quota.saturating_sub(copied));
-        if output_allowance == 0 {
-            return Err(AcquireError::Other(anyhow::anyhow!(
-                "convert quota has no room for encoder output ({copied} bytes already used)"
-            )));
-        }
-        let reserved_total = copied.saturating_add(output_allowance);
-        if let Some(job_id) = req.job_id.as_deref() {
-            library
-                .reserve_job_temp_path(
-                    job_id,
-                    &work_dir.display().to_string(),
-                    reserved_total,
-                    quota,
-                )
-                .await
-                .map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?;
-            reserved = true;
+        let unlimited = req.temp_quota_bytes.is_none();
+        let output_allowance = encoder_output_allowance(copied, quota, unlimited)?;
+        if !unlimited {
+            let reserved_total = copied.saturating_add(output_allowance);
+            if let Some(job_id) = req.job_id.as_deref() {
+                library
+                    .reserve_job_temp_path(
+                        job_id,
+                        &work_dir.display().to_string(),
+                        reserved_total,
+                        quota,
+                    )
+                    .await
+                    .map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?;
+                reserved = true;
+            }
         }
         let encode_fut = encode(input.clone(), output.clone(), output_allowance);
         tokio::pin!(encode_fut);
@@ -314,6 +318,36 @@ impl ScratchDir {
 
     fn disarm(&mut self) {
         self.armed = false;
+    }
+}
+
+/// Output may exceed the input. Eight times the input covers a higher MP3
+/// bitrate than a compact source, and is still capped by the quota that
+/// remains after the input bytes. No configured quota passes `u64::MAX`,
+/// which [`allowance_cap`] turns into an absent worker cap.
+///
+/// # Errors
+///
+/// Returns an error when a configured quota has no bytes left for output.
+fn encoder_output_allowance(copied: u64, quota: u64, unlimited: bool) -> Result<u64> {
+    if unlimited {
+        return Ok(u64::MAX);
+    }
+    let remaining = quota.saturating_sub(copied);
+    if remaining == 0 {
+        return Err(AcquireError::Other(anyhow::anyhow!(
+            "convert quota has no room for encoder output ({copied} bytes already used)"
+        )));
+    }
+    Ok(copied.saturating_mul(8).min(remaining))
+}
+
+/// `u64::MAX` is the no-quota sentinel, not a byte ceiling.
+fn allowance_cap(allowance: u64) -> Option<u64> {
+    if allowance == u64::MAX {
+        None
+    } else {
+        Some(allowance)
     }
 }
 
@@ -719,7 +753,10 @@ mod tests {
             &work,
             "book.mp3",
             move |_input, _output, allowance| async move {
-                assert_eq!(allowance, 4);
+                assert!(
+                    allowance > 4,
+                    "output allowance {allowance} collapsed to the input"
+                );
                 let _flag = DropFlag(dropped_flag);
                 cancel_flag.store(true, Ordering::SeqCst);
                 std::future::pending::<()>().await;
@@ -750,7 +787,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let quota = 20u64;
+        let quota = 80u64;
         let peaks = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
         let aggregate = Arc::new(AtomicU64::new(0));
         let mut tasks = Vec::new();
@@ -793,10 +830,8 @@ mod tests {
                     &work,
                     &format!("out-{idx}.mp3"),
                     |_input, output, allowance| async move {
-                        assert_eq!(
-                            allowance, 4,
-                            "output budget must match the reservation slice"
-                        );
+                        assert_eq!(allowance, 32);
+                        assert!(allowance > 4);
                         let mut file = std::fs::File::create(&output).unwrap();
                         let mut written = 0u64;
                         let chunk = vec![1u8; 64];
@@ -816,8 +851,8 @@ mod tests {
                                 peaks[0].load(Ordering::SeqCst) + peaks[1].load(Ordering::SeqCst);
                             aggregate.fetch_max(sum, Ordering::SeqCst);
                             assert!(
-                                sum <= 8,
-                                "concurrent encoder output {sum} exceeded the reserved 8 bytes"
+                                sum <= 64,
+                                "concurrent encoder output {sum} exceeded the reserved 64 bytes"
                             );
                         }
                         assert!(peak <= allowance);
@@ -832,7 +867,108 @@ mod tests {
             task.await.unwrap();
         }
         let peak = aggregate.load(Ordering::SeqCst);
-        assert!(peak <= 8, "peak concurrent encoder output was {peak}");
+        assert!(peak <= 64, "peak concurrent encoder output was {peak}");
+    }
+
+    #[tokio::test]
+    async fn output_may_exceed_its_input_inside_the_quota() {
+        let store = library().await;
+        let book = acquired_book(&store).await;
+        let dir = tempfile::tempdir().unwrap();
+        let root = LocalFsBackend::new(dir.path().join("store")).unwrap();
+        root.put(
+            "book.m4b",
+            Bytes::from_static(b"1234"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    title: Some("expand".into()),
+                    ..JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 1,
+                max_pending: 4,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = created else {
+            panic!("job");
+        };
+        let mut req = request(dir.path(), 80);
+        req.job_id = Some(id);
+        let work = dir.path().join("convert").join("expand");
+        convert_with_encoder(
+            &store,
+            &SizedSource {
+                inner: root.clone(),
+                advertised: 4,
+            },
+            &book,
+            &req,
+            &work,
+            "book.mp3",
+            |_input, output, allowance| async move {
+                assert_eq!(allowance, 32);
+                assert!(allowance > 4);
+                std::fs::write(&output, vec![9u8; 20]).unwrap();
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        let published = tokio::fs::metadata(dir.path().join("store").join("book.mp3"))
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(published, 20);
+        assert!(published > 4);
+    }
+
+    #[tokio::test]
+    async fn no_quota_does_not_cap_output_at_the_input_size() {
+        let store = library().await;
+        let book = acquired_book(&store).await;
+        let dir = tempfile::tempdir().unwrap();
+        let root = LocalFsBackend::new(dir.path().join("store")).unwrap();
+        root.put(
+            "book.m4b",
+            Bytes::from_static(b"1234"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let mut req = request(dir.path(), 1);
+        req.temp_quota_bytes = None;
+        let work = dir.path().join("convert").join("unlimited");
+        convert_with_encoder(
+            &store,
+            &SizedSource {
+                inner: root.clone(),
+                advertised: 4,
+            },
+            &book,
+            &req,
+            &work,
+            "book.mp3",
+            |_input, output, allowance| async move {
+                assert_eq!(allowance, u64::MAX);
+                std::fs::write(&output, vec![3u8; 40]).unwrap();
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        let published = tokio::fs::metadata(dir.path().join("store").join("book.mp3"))
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(published, 40);
     }
 
     #[tokio::test]

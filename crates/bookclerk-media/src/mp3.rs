@@ -294,6 +294,12 @@ fn drain_encode_chunks(
 /// Appends `data` only when the result stays within `max`.
 ///
 /// The failing call writes nothing, so the file length never passes the budget.
+/// `max == None` does not impose a byte ceiling.
+///
+/// # Errors
+///
+/// Returns [`MediaError::Native`] when `written + data.len()` would exceed
+/// `max`. Returns [`MediaError::Io`] when the accepted bytes cannot be written.
 pub fn write_output_within_budget(
     file: &mut impl Write,
     data: &[u8],
@@ -627,5 +633,51 @@ mod tests {
             len <= budget,
             "output grew to {len} while the encoder was still inside the {budget} byte budget"
         );
+    }
+
+    /// A short source at a high constant bitrate can produce a larger MP3.
+    /// The worker cap must allow that expansion; capping at the input length
+    /// rejects a valid encode.
+    #[test]
+    fn high_bitrate_mp3_may_exceed_a_short_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.m4b");
+        let encoded = dir.path().join("encoded.mp3");
+        let sample_rate = 48_000usize;
+        let pcm = vec![0i16; 32];
+        crate::package_m4b_from_pcm(
+            &pcm,
+            u32::try_from(sample_rate).expect("rate"),
+            1,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .expect("tiny source");
+        let source_len = std::fs::metadata(&source).expect("source").len();
+        let lame = bookclerk_config::LameConfig {
+            constant_bitrate: true,
+            bitrate_kbps: 320,
+            ..bookclerk_config::LameConfig::default()
+        };
+        let capped = encode_to_mp3_native(&source, &encoded, &lame, None, Some(source_len));
+        let expanded = dir.path().join("expanded.mp3");
+        encode_to_mp3_native(
+            &source,
+            &expanded,
+            &lame,
+            None,
+            Some(source_len.saturating_mul(8).max(source_len + 1)),
+        )
+        .expect("encode within an expansion allowance");
+        let out_len = std::fs::metadata(&expanded).expect("mp3").len();
+        assert!(
+            out_len > source_len,
+            "expected the 320 kbps MP3 ({out_len}) to exceed the short source ({source_len})"
+        );
+        assert!(
+            capped.is_err(),
+            "capping the MP3 at the {source_len} byte source must fail when output is {out_len}"
+        );
+        assert!(out_len <= source_len.saturating_mul(8).max(source_len + 1));
     }
 }
