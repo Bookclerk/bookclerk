@@ -50,6 +50,7 @@ ureq.workspace = true
 secrecy.workspace = true
 
 [dev-dependencies]
+bookclerk-plugin-manifest.workspace = true
 tempfile.workspace = true
 
 [lints]

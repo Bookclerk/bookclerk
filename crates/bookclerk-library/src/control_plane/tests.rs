@@ -575,6 +575,145 @@ async fn initial_import_commits_document_audit_and_change_together() {
 }
 
 #[tokio::test]
+async fn retry_paused_after_empty_receipt_lookup_replays_without_writes() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let files = tempdir().unwrap();
+    let store = file_store(&path).await;
+    let session = bootstrap_pair(&store, files.path()).await;
+    let peer = file_store(&path).await;
+    let expected = session.events.revision;
+    let before_audit = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
+    let before_changes = change_count(&store, EVENTS_NAMESPACE).await.unwrap();
+    let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    super::documents::arm_empty_receipt_pause(super::documents::EmptyReceiptPause {
+        operation_id: "op-retry".into(),
+        arrived: arrived_tx,
+        release: release_rx,
+    })
+    .await;
+    let retry_store = file_store(&path).await;
+    let retry = tokio::spawn(async move {
+        replace_events(&retry_store, &operator(), expected, &events(4), "op-retry").await
+    });
+    arrived_rx
+        .await
+        .expect("retry reaches the empty receipt lookup");
+    let applied = replace_events(&peer, &operator(), expected, &events(4), "op-retry")
+        .await
+        .unwrap();
+    let EventsReplace::Applied(doc_a) = applied else {
+        panic!("original commit should apply: {applied:?}");
+    };
+    let later = replace_events(&store, &operator(), doc_a.revision, &events(6), "op-later")
+        .await
+        .unwrap();
+    let EventsReplace::Applied(doc_b) = later else {
+        panic!("later edit should apply: {later:?}");
+    };
+    release_tx.send(()).expect("release paused retry");
+    let replay = retry.await.unwrap().unwrap();
+    assert_eq!(
+        replay,
+        EventsReplace::Replayed {
+            revision: doc_a.revision,
+        }
+    );
+    let loaded = load_events(&store).await.unwrap();
+    assert_eq!(loaded.revision, doc_b.revision);
+    assert_eq!(loaded.body.retention_days, 6);
+    assert_eq!(
+        audit_count(&store, EVENTS_NAMESPACE).await.unwrap(),
+        before_audit + 2
+    );
+    assert_eq!(
+        change_count(&store, EVENTS_NAMESPACE).await.unwrap(),
+        before_changes + 2
+    );
+}
+
+#[tokio::test]
+async fn paused_retry_with_a_different_payload_is_an_idempotency_conflict() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let files = tempdir().unwrap();
+    let store = file_store(&path).await;
+    let session = bootstrap_pair(&store, files.path()).await;
+    let peer = file_store(&path).await;
+    let expected = session.events.revision;
+    let before_audit = audit_count(&store, EVENTS_NAMESPACE).await.unwrap();
+    let before_changes = change_count(&store, EVENTS_NAMESPACE).await.unwrap();
+    let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    super::documents::arm_empty_receipt_pause(super::documents::EmptyReceiptPause {
+        operation_id: "op-changed".into(),
+        arrived: arrived_tx,
+        release: release_rx,
+    })
+    .await;
+    let retry_store = file_store(&path).await;
+    let retry = tokio::spawn(async move {
+        replace_events(
+            &retry_store,
+            &operator(),
+            expected,
+            &events(8),
+            "op-changed",
+        )
+        .await
+    });
+    arrived_rx
+        .await
+        .expect("changed-payload retry reaches the empty lookup");
+    let applied = replace_events(&peer, &operator(), expected, &events(4), "op-changed")
+        .await
+        .unwrap();
+    let EventsReplace::Applied(doc_a) = applied else {
+        panic!("original commit should apply: {applied:?}");
+    };
+    release_tx.send(()).expect("release changed-payload retry");
+    let err = retry.await.unwrap().expect_err("different payload");
+    assert!(err.to_string().contains("idempotency conflict"), "{err}");
+    let loaded = load_events(&store).await.unwrap();
+    assert_eq!(loaded.revision, doc_a.revision);
+    assert_eq!(loaded.body.retention_days, 4);
+    assert_eq!(
+        audit_count(&store, EVENTS_NAMESPACE).await.unwrap(),
+        before_audit + 1
+    );
+    assert_eq!(
+        change_count(&store, EVENTS_NAMESPACE).await.unwrap(),
+        before_changes + 1
+    );
+}
+
+#[tokio::test]
+async fn begin_waits_for_a_peer_sqlite_writer() {
+    use sea_orm::TransactionTrait;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let holder = bookclerk_plugin_database_sqlite::open(&path).await.unwrap();
+    let waiter = bookclerk_plugin_database_sqlite::open(&path).await.unwrap();
+    let txn = holder.begin().await.expect("holder begin");
+    txn.execute_unprepared("CREATE TABLE hold_lock (id INTEGER PRIMARY KEY)")
+        .await
+        .unwrap();
+    let waiting = tokio::spawn(async move {
+        let txn = waiter.begin().await.expect("waiter begin");
+        txn.execute_unprepared("CREATE TABLE IF NOT EXISTS waiter_seen (id INTEGER PRIMARY KEY)")
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    txn.commit().await.unwrap();
+    waiting.await.unwrap();
+}
+
+#[tokio::test]
 async fn concurrent_imports_leave_one_document_and_one_notice() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempdir().unwrap();

@@ -62,6 +62,12 @@ pub(crate) struct LoadedEvents {
     pub document: bookclerk_library::control_plane::ConfigurationDocument<EventsSettingsV1>,
 }
 
+// While set on this task, publication reads fail before touching the database.
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static FAIL_EVENTS_PUBLICATION_READ: ();
+}
+
 /// Reads `core.events` and the cluster id that owns it.
 ///
 /// Callers keep this value and publish it later. A newer publication can land
@@ -75,6 +81,10 @@ pub(crate) struct LoadedEvents {
 pub(crate) async fn load_events_publication(
     library: &LibraryStore,
 ) -> anyhow::Result<LoadedEvents> {
+    #[cfg(test)]
+    if FAIL_EVENTS_PUBLICATION_READ.try_with(|_| ()).is_ok() {
+        anyhow::bail!("injected events publication read failure");
+    }
     let row = load_cluster_row(library)
         .await?
         .ok_or_else(|| anyhow::anyhow!("cluster identity is not initialized"))?;

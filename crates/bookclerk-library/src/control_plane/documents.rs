@@ -305,6 +305,8 @@ pub async fn replace_document(
     if let Some(outcome) = existing_receipt_outcome(store, operation_id, &request_hash).await? {
         return Ok(outcome);
     }
+    // A commit can land after the empty lookup and before the revision read.
+    pause_after_empty_receipt_lookup(operation_id).await;
     let current = load_document(store, key).await?.ok_or_else(|| {
         LibraryError::NotFound(format!(
             "configuration {} is not initialized",
@@ -315,6 +317,9 @@ pub async fn replace_document(
         return Err(unsupported(&key.namespace, current.schema_version));
     }
     if current.revision != expected_revision {
+        if let Some(outcome) = existing_receipt_outcome(store, operation_id, &request_hash).await? {
+            return Ok(outcome);
+        }
         return Ok(ReplaceOutcome::Conflict {
             current_revision: current.revision,
         });
@@ -526,6 +531,52 @@ pub async fn audit_count(store: &LibraryStore, namespace: &str) -> Result<u64> {
         .count(store.db())
         .await
         .map_err(LibraryError::Orm)
+}
+
+/// Test barrier between an empty receipt lookup and the revision read.
+///
+/// Production builds do nothing. Tests arm it so a peer can commit the same
+/// operation id before this caller treats the newer revision as a conflict.
+#[cfg(test)]
+async fn pause_after_empty_receipt_lookup(operation_id: &str) {
+    let matches = EMPTY_RECEIPT_PAUSE
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|pause| pause.operation_id == operation_id);
+    if !matches {
+        return;
+    }
+    let Some(pause) = EMPTY_RECEIPT_PAUSE.lock().await.take() else {
+        return;
+    };
+    let _ = pause.arrived.send(());
+    let _ = pause.release.await;
+}
+
+/// No pause outside tests.
+#[cfg(not(test))]
+async fn pause_after_empty_receipt_lookup(_operation_id: &str) {}
+
+/// One paused empty-receipt lookup.
+#[cfg(test)]
+pub(crate) struct EmptyReceiptPause {
+    /// Operation id that should pause. Other writers are not blocked.
+    pub operation_id: String,
+    /// Fired after the lookup observed no receipt.
+    pub arrived: tokio::sync::oneshot::Sender<()>,
+    /// Completes when the test has committed the original operation.
+    pub release: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+static EMPTY_RECEIPT_PAUSE: tokio::sync::Mutex<Option<EmptyReceiptPause>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// Arms the next empty receipt lookup to pause until `release` completes.
+#[cfg(test)]
+pub(crate) async fn arm_empty_receipt_pause(pause: EmptyReceiptPause) {
+    *EMPTY_RECEIPT_PAUSE.lock().await = Some(pause);
 }
 
 /// Resolves a prior receipt before a new compare-and-swap.

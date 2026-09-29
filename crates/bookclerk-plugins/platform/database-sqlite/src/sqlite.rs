@@ -28,6 +28,22 @@ use tokio::task::{try_id, Id as TaskId};
 /// Warn when a proxied statement takes longer than this many milliseconds.
 const SLOW_SQL_WARN_MS: u128 = 250;
 
+/// How long one `BEGIN IMMEDIATE` waits inside SQLite before returning busy.
+///
+/// The wait runs on a blocking thread. A multi-second timeout occupies that
+/// thread while the lock holder still needs the blocking pool to finish and
+/// commit, which under `cargo test --workspace` turns into `SQLITE_BUSY`.
+const BEGIN_BUSY_SLICE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How long [`SqliteProxy::begin`] keeps retrying file-lock contention.
+///
+/// Attempts sleep on the async runtime so the peer transaction can be
+/// scheduled. This is the bounded busy contract for two connections on one file.
+const BEGIN_CONTENTION_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Pause between `BEGIN IMMEDIATE` attempts after SQLite reports the file is locked.
+const BEGIN_CONTENTION_PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
+
 #[derive(Debug)]
 /// Shared rusqlite connection plus nested-transaction depth.
 struct SqliteState {
@@ -136,11 +152,10 @@ impl SqliteProxy {
     /// handler. rusqlite 0.38+ returns that error when the handle is not owned
     /// by this [`Connection`], which would leave statements without a deadline.
     pub fn new(conn: Connection) -> rusqlite::Result<Self> {
-        // TRUNCATE journal serializes writers. Two LibraryStores (or CLI +
-        // daemon) on one file wait here through BEGIN IMMEDIATE. 250ms was
-        // shorter than catalog paging under CI `spawn_blocking`, which turned
-        // snapshot CAS into SQLITE_BUSY instead of a lost update.
-        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+        // TRUNCATE journal serializes writers. Each attempt waits only
+        // [`BEGIN_BUSY_SLICE`]; [`SqliteProxy::begin`] retries on the async
+        // runtime up to [`BEGIN_CONTENTION_BUDGET`] so a peer can commit.
+        let _ = conn.busy_timeout(BEGIN_BUSY_SLICE);
         let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
         let budget = Arc::new(Mutex::new(ExecBudget::unlimited()));
         let handler_budget = Arc::clone(&budget);
@@ -588,12 +603,33 @@ impl ProxyDatabaseTrait for SqliteProxy {
         }
         let guard = self.txn_gate.clone().lock_owned().await;
         self.install_request_budget();
-        {
-            let mut state = self.lock_state();
-            if let Err(err) = state.begin() {
-                note_begin_failed(format_rusqlite_error(&err));
-                tracing::error!(error = %err, "sqlite begin failed");
-                return;
+        let started = Instant::now();
+        loop {
+            let conn = Arc::clone(&self.conn);
+            let begun = tokio::task::spawn_blocking(move || {
+                let mut state = conn.lock().unwrap_or_else(|err| err.into_inner());
+                state.begin()
+            })
+            .await;
+            match begun {
+                Ok(Ok(())) => break,
+                Ok(Err(err))
+                    if is_sqlite_lock_contention(&err)
+                        && started.elapsed() < BEGIN_CONTENTION_BUDGET =>
+                {
+                    tracing::debug!(error = %err, "sqlite begin waiting for the file lock");
+                    tokio::time::sleep(BEGIN_CONTENTION_PAUSE).await;
+                }
+                Ok(Err(err)) => {
+                    note_begin_failed(format_rusqlite_error(&err));
+                    tracing::error!(error = %err, "sqlite begin failed");
+                    return;
+                }
+                Err(err) => {
+                    note_begin_failed(format!("sqlite begin task failed: {err}"));
+                    tracing::error!(error = %err, "sqlite begin failed");
+                    return;
+                }
             }
         }
         *self.lock_lease() = Some(TxnLease {
@@ -659,6 +695,18 @@ impl ProxyDatabaseTrait for SqliteProxy {
         };
         self.release_lease_if_idle(depth);
     }
+}
+
+/// True when `err` is a file lock another connection still holds.
+fn is_sqlite_lock_contention(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(ffi, _)
+            if matches!(
+                ffi.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
 }
 
 /// Formats a rusqlite failure so guests can classify by `SQLITE_*` code.

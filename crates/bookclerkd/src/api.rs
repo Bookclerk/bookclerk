@@ -1364,6 +1364,11 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         || (candidate_auth.enabled && candidate_auth.token != old_token);
     let listen_changed = old_listen != new_cfg.daemon.listen;
 
+    // Read the candidate events document before any live swap. A database
+    // error here leaves integrations, sources, destinations, library, auth,
+    // and the media pool on the previous runtime.
+    let fresh = crate::config_authority::load_events_publication(&library_for_auth).await?;
+
     // Fail closed before publishing when the new listen set cannot bind at all
     // (ports we already hold are skipped — those need a post-rebind rollback).
     if listen_changed {
@@ -1398,7 +1403,6 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
             next.take_session_state_from(&previous).await;
             *auth_guard = Arc::new(next);
         }
-        let fresh = crate::config_authority::load_events_publication(&library_for_auth).await?;
         {
             let mut config = state.config.write().await;
             crate::config_authority::finish_reload_events(
@@ -6468,5 +6472,110 @@ mode = "deny"
         let live = state.config.read().await;
         assert_eq!(live.events.retention_days, requested);
         assert_eq!(live.events_revision, Some(loaded.revision));
+    }
+
+    #[tokio::test]
+    async fn reload_events_read_failure_keeps_the_previous_runtime() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        use async_trait::async_trait;
+        use bookclerk_integrations::{
+            DomainEvent, EventResult, Integration, IntegrationContext, IntegrationHealth,
+            IntegrationRegistry,
+        };
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, load_events, overlay_events,
+        };
+        use bookclerk_library::LibraryStore;
+
+        struct StopProbe {
+            stopped: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl Integration for StopProbe {
+            fn id(&self) -> &str {
+                "stop-probe"
+            }
+
+            async fn start(&self, _ctx: IntegrationContext) -> bookclerk_integrations::Result<()> {
+                Ok(())
+            }
+
+            async fn stop(&self) -> bookclerk_integrations::Result<()> {
+                self.stopped.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn health(&self) -> bookclerk_integrations::Result<IntegrationHealth> {
+                Ok(IntegrationHealth {
+                    id: "stop-probe".into(),
+                    enabled: true,
+                    ok: true,
+                    detail: None,
+                })
+            }
+
+            async fn deliver_domain_event(
+                &self,
+                _event: DomainEvent,
+            ) -> bookclerk_integrations::Result<EventResult> {
+                Ok(EventResult::Ack)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n\n[daemon.auth]\nenabled = false\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(&store, dir.path(), None, &cfg.events)
+            .await
+            .unwrap();
+        overlay_events(&mut cfg, &session.events, &session.cluster_id);
+        let revision = session.events.revision;
+        let retention = session.events.body.retention_days;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let mut app = crate::config_authority::control_plane_test_state(store.clone(), cfg);
+        app.integrations = Arc::new(tokio::sync::RwLock::new(IntegrationRegistry::new()));
+        app.integrations.write().await.register(Arc::new(StopProbe {
+            stopped: Arc::clone(&stopped),
+        }));
+        let state = Arc::new(app);
+        let auth_before = state.auth.read().await.token.clone();
+        let err = crate::config_authority::FAIL_EVENTS_PUBLICATION_READ
+            .scope((), super::reload_daemon_config_held(&state))
+            .await
+            .expect_err("injected read must fail the reload");
+        assert!(
+            err.to_string()
+                .contains("injected events publication read failure"),
+            "{err}"
+        );
+        assert!(
+            !stopped.load(Ordering::SeqCst),
+            "old integration was stopped"
+        );
+        assert_eq!(state.integrations.read().await.all().len(), 1);
+        assert_eq!(state.integrations.read().await.all()[0].id(), "stop-probe");
+        assert_eq!(state.auth.read().await.token, auth_before);
+        let live = state.config.read().await;
+        assert_eq!(live.events_revision, Some(revision));
+        assert_eq!(live.events.retention_days, retention);
+        assert_eq!(
+            live.events_authority.as_deref(),
+            Some(session.cluster_id.as_str())
+        );
+        let loaded = load_events(&store).await.unwrap();
+        assert_eq!(loaded.revision, revision);
+        assert_eq!(loaded.body.retention_days, retention);
     }
 }

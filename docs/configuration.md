@@ -138,6 +138,10 @@ batch them with `events.*`. `GET /api/settings` includes `events.revision` in
 `effective`.
 
 Running processes re-read the document about every 5 seconds and on startup.
+A reload reads that document before it replaces live integrations, sources,
+destinations, the library connection, or operator auth. If the read fails, the
+previous runtime stays in place. A newer revision of the same cluster is not
+replaced by the older snapshot.
 Retention and the in-flight cap apply on the next dispatcher tick. The number
 of local delivery tasks is chosen at process start. Other `[events]` neighbors
 in this file (`[library]`, `[jobs]`, sources, output, media, plugins,
