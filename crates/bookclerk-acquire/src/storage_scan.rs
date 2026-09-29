@@ -12,7 +12,6 @@
 use bookclerk_library::{JobFence, LibraryStore};
 use bookclerk_plugin_abi::{JobCheckpoint, MAX_CHECKPOINT_BYTES};
 use bookclerk_storage::{is_audio_key, StorageBackend, StorageError};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +61,7 @@ pub async fn scan_storage(
         Some(raw) => decode_prior(raw, &instance_id)?,
         None => fresh_checkpoint(&instance_id, node_local),
     };
+    bind_generation(library, &state, fence).await?;
     if state.phase == "apply" {
         return Ok(StorageIndex::with_scan(state.generation));
     }
@@ -72,6 +72,7 @@ pub async fn scan_storage(
             Err(AcquireError::Storage(StorageError::InvalidCursor(_))) if !restarted => {
                 library.storage_scan_delete(&state.generation).await?;
                 state = fresh_checkpoint(&instance_id, node_local);
+                bind_generation(library, &state, fence).await?;
                 restarted = true;
                 persist(library, fence, &state).await?;
             }
@@ -85,12 +86,22 @@ pub async fn scan_storage(
 }
 
 fn next_scan_id() -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    format!(
-        "scan-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
+    format!("scan-{}", uuid::Uuid::new_v4())
+}
+
+async fn bind_generation(
+    library: &LibraryStore,
+    state: &ScanCheckpoint,
+    fence: Option<&JobFence>,
+) -> Result<()> {
+    library
+        .storage_scan_register(
+            &state.generation,
+            &state.instance_id,
+            fence.map(|fence| fence.job_id.as_str()),
+        )
+        .await
+        .map_err(|err| AcquireError::Other(anyhow::anyhow!("storage scan generation: {err}")))
 }
 
 fn fresh_checkpoint(instance_id: &str, node_local: bool) -> ScanCheckpoint {
@@ -144,6 +155,17 @@ async fn page_scan(
                 "storage scan made no progress".into(),
             )));
         }
+        if let Some(fence) = fence {
+            if library
+                .job_cancel_requested(&fence.job_id)
+                .await
+                .map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?
+            {
+                return Err(AcquireError::Other(anyhow::anyhow!(
+                    "storage scan cancelled"
+                )));
+            }
+        }
         let page = storage
             .list_page(&state.namespace, state.cursor.as_deref(), 0)
             .await?;
@@ -183,6 +205,12 @@ async fn page_scan(
             }
             Some(next) => {
                 state.cursor = Some(next);
+                library
+                    .storage_scan_touch(&state.generation)
+                    .await
+                    .map_err(|err| {
+                        AcquireError::Other(anyhow::anyhow!("storage scan heartbeat: {err}"))
+                    })?;
                 persist(library, fence, state).await?;
             }
             None => break,
@@ -227,4 +255,217 @@ fn is_hidden_scan_key(key: &str) -> bool {
             || part == ".bookclerk-orphans"
             || (part.starts_with('.') && part.contains(".bookclerk-tmp-"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_library::{
+        EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass,
+    };
+    use bookclerk_plugin_abi::JobCheckpoint;
+    use bookclerk_storage::{LocalFsBackend, ObjectMeta, StorageBackend};
+    use bytes::Bytes;
+
+    async fn store() -> LibraryStore {
+        LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+    }
+
+    async fn running_fence(store: &LibraryStore, title: &str) -> bookclerk_library::JobFence {
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    title: Some(title.into()),
+                    ..JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 8,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = created else {
+            panic!("expected a new job");
+        };
+        let _ = id;
+        let job = store
+            .claim_next_job(JobResourceClass::Network, "worker-a", 60, "op-1")
+            .await
+            .unwrap()
+            .expect("claimed");
+        job.fence().expect("fence")
+    }
+
+    #[tokio::test]
+    async fn independent_scans_do_not_share_or_delete_generations() {
+        let library = store().await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put("a.m4b", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let first = scan_storage(&library, &backend, None, None, false)
+            .await
+            .unwrap();
+        let second = scan_storage(&library, &backend, None, None, false)
+            .await
+            .unwrap();
+        let first_id = first.scan_id().unwrap().to_string();
+        let second_id = second.scan_id().unwrap().to_string();
+        assert_ne!(first_id, second_id);
+        assert_eq!(first_id.len(), "scan-".len() + 36);
+        assert_eq!(library.storage_scan_generation_count().await.unwrap(), 2);
+        assert_eq!(
+            library
+                .storage_scan_unclaimed_audio(&first_id)
+                .await
+                .unwrap(),
+            1
+        );
+        library.storage_scan_delete(&first_id).await.unwrap();
+        assert_eq!(library.storage_scan_generation_count().await.unwrap(), 1);
+        assert_eq!(
+            library
+                .storage_scan_unclaimed_audio(&second_id)
+                .await
+                .unwrap(),
+            1
+        );
+        library
+            .storage_scan_put_object(&second_id, "a.m4b", 1, 0, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            library
+                .storage_scan_unclaimed_audio(&second_id)
+                .await
+                .unwrap(),
+            1,
+            "replaying an object row is idempotent"
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_drops_abandoned_generations_and_keeps_a_running_job() {
+        let library = store().await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put("a.m4b", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let fence = running_fence(&library, "live-scan").await;
+        let live = scan_storage(&library, &backend, Some(&fence), None, false)
+            .await
+            .unwrap();
+        let abandoned = scan_storage(&library, &backend, None, None, false)
+            .await
+            .unwrap();
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let removed = library
+            .storage_scan_reclaim_abandoned(&future)
+            .await
+            .unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(library.storage_scan_generation_count().await.unwrap(), 1);
+        assert_eq!(
+            library
+                .storage_scan_unclaimed_audio(live.scan_id().unwrap())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            library
+                .storage_scan_unclaimed_audio(abandoned.scan_id().unwrap())
+                .await
+                .unwrap(),
+            0
+        );
+        let past = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        assert_eq!(
+            library.storage_scan_reclaim_abandoned(&past).await.unwrap(),
+            0,
+            "a fresh jobless heartbeat is not abandoned"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_and_lost_fence_stop_the_scan() {
+        let library = store().await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put("a.m4b", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let fence = running_fence(&library, "cancel-scan").await;
+        library.request_job_cancel(&fence.job_id).await.unwrap();
+        let err = scan_storage(&library, &backend, Some(&fence), None, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cancelled"), "{err}");
+
+        let fence = running_fence(&library, "stale-fence").await;
+        let mut stale = fence.clone();
+        stale.generation += 1;
+        let err = scan_storage(&library, &backend, Some(&stale), None, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("fence"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn stale_cursor_restarts_once_with_a_new_generation() {
+        let library = store().await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put("a.m4b", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let prior_state = ScanCheckpoint {
+            v: SCAN_VERSION,
+            op: "storage_scan".into(),
+            instance_id: backend.instance_id(),
+            namespace: String::new(),
+            generation: "scan-stale".into(),
+            phase: "list".into(),
+            cursor: Some("missing-object".into()),
+            node_local: true,
+        };
+        library
+            .storage_scan_register("scan-stale", &backend.instance_id(), None)
+            .await
+            .unwrap();
+        library
+            .storage_scan_put_object("scan-stale", "ghost.m4b", 1, 0, true)
+            .await
+            .unwrap();
+        let prior = JobCheckpoint {
+            schema_version: SCAN_VERSION,
+            json: serde_json::to_string(&prior_state).unwrap(),
+        };
+        let index = scan_storage(&library, &backend, None, Some(&prior), false)
+            .await
+            .unwrap();
+        let id = index.scan_id().unwrap();
+        assert_ne!(id, "scan-stale");
+        assert_eq!(library.storage_scan_generation_count().await.unwrap(), 1);
+        assert_eq!(library.storage_scan_unclaimed_audio(id).await.unwrap(), 1);
+        assert_eq!(
+            library
+                .storage_scan_unclaimed_audio("scan-stale")
+                .await
+                .unwrap(),
+            0
+        );
+    }
 }

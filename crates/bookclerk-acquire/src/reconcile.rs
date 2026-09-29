@@ -120,6 +120,10 @@ pub struct ReconcileOptions {
     pub only_clear_missing: bool,
     /// Naming prefs (templates, podcast parent folder) for planned-path matching.
     pub download: DownloadOptions,
+    /// Lease fence when this reconcile is a phase of a durable job.
+    pub fence: Option<bookclerk_library::JobFence>,
+    /// Checkpoint to resume, when `fence` is set.
+    pub checkpoint: Option<bookclerk_plugin_abi::JobCheckpoint>,
 }
 
 impl Default for ReconcileOptions {
@@ -131,6 +135,8 @@ impl Default for ReconcileOptions {
             only_mark_found: false,
             only_clear_missing: false,
             download: DownloadOptions::default(),
+            fence: None,
+            checkpoint: None,
         }
     }
 }
@@ -145,7 +151,14 @@ pub async fn reconcile_library(
     storage: &dyn StorageBackend,
     options: ReconcileOptions,
 ) -> Result<ReconcileSummary> {
-    let index = crate::storage_scan::scan_storage(library, storage, None, None, false).await?;
+    let index = crate::storage_scan::scan_storage(
+        library,
+        storage,
+        options.fence.as_ref(),
+        options.checkpoint.as_ref(),
+        false,
+    )
+    .await?;
     let mut summary = ReconcileSummary::default();
     let mut after_id = None;
     loop {

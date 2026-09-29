@@ -43,9 +43,15 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
     let pruned = library.prune_terminal_jobs(cfg.jobs.retention_days).await?;
     let cache = cfg.download_cache_dir();
     let swept = sweep_orphan_temp_dirs(&library, &cache).await?;
+    let stale_before = (chrono::Utc::now()
+        - chrono::Duration::seconds(i64::try_from(cfg.jobs.lease_seconds).unwrap_or(60)))
+    .to_rfc3339();
+    let scans = library
+        .storage_scan_reclaim_abandoned(&stale_before)
+        .await?;
     info!(
         reclaimed,
-        orphans, pruned, swept, "job queue reconciled at startup"
+        orphans, pruned, swept, scans, "job queue reconciled at startup"
     );
     Ok(())
 }
@@ -67,7 +73,7 @@ pub async fn sweep_orphan_temp_dirs(
         }
     }
     let mut swept = 0u32;
-    for name in ["acquire", "acquire-pdf"] {
+    for name in ["acquire", "acquire-pdf", "convert"] {
         swept += sweep_dir(&cache_dir.join(name), &active_keep).await;
     }
     Ok(swept)
@@ -465,8 +471,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
         let orphan = cache.join("acquire").join("orphan-title");
+        let convert_orphan = cache.join("convert").join("dead-encode");
         let kept = cache.join("acquire").join("kept-title");
         tokio::fs::create_dir_all(&orphan).await.unwrap();
+        tokio::fs::create_dir_all(&convert_orphan).await.unwrap();
         tokio::fs::create_dir_all(&kept).await.unwrap();
         tokio::fs::write(orphan.join("x"), b"x").await.unwrap();
         tokio::fs::write(kept.join("y"), b"y").await.unwrap();
@@ -501,8 +509,9 @@ mod tests {
             .unwrap();
 
         let swept = sweep_orphan_temp_dirs(&store, &cache).await.unwrap();
-        assert_eq!(swept, 1);
+        assert_eq!(swept, 2);
         assert!(!orphan.exists());
+        assert!(!convert_orphan.exists());
         assert!(kept.exists());
     }
 

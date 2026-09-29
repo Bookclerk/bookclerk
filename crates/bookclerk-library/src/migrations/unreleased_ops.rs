@@ -811,4 +811,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_storage_scan_identity ON storage_scan_rows(scan_id, kind, identity)",
     ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS storage_scan_generations (
+        scan_id TEXT PRIMARY KEY NOT NULL,
+        instance_id TEXT NOT NULL,
+        job_id TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+    )",
+    ),
 ];

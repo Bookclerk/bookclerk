@@ -1347,6 +1347,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1766,6 +1767,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -2123,6 +2125,7 @@ dependencies = [
  "bytes",
  "chrono",
  "filetime",
+ "fs4 1.1.0",
  "hex",
  "http-body-util",
  "sea-orm",
@@ -2133,6 +2136,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

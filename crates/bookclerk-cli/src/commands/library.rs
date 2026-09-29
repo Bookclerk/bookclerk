@@ -496,6 +496,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     "acquire finished with {failed} failure(s) (acquired={ok} matched={matched})"
                 );
             }
+            if let Some(index) = index.as_ref() {
+                if let Some(scan_id) = index.scan_id() {
+                    let _ = store.storage_scan_delete(scan_id).await;
+                }
+            }
             Ok(())
         }
         LibraryCommand::SetStatus {
@@ -741,6 +746,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 force,
                 lame: config.output.lame.clone(),
                 max_sample_rate: config.output.max_sample_rate,
+                job_id: None,
+                temp_quota_bytes: Some(config.jobs.temp_quota_bytes),
+                cancel: None,
             };
             let total = targets.len();
             let mut batch = BatchProgress::new(total, "convert");

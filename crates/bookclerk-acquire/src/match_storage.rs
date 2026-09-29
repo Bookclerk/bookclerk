@@ -122,6 +122,26 @@ pub async fn match_storage_to_library(
     options: MatchStorageOptions,
 ) -> Result<MatchStorageSummary> {
     let index = crate::storage_scan::scan_storage(library, storage, None, None, true).await?;
+    let summary = match_storage_using_index(library, storage, options, &index).await?;
+    if let Some(scan_id) = index.scan_id() {
+        let _ = library.storage_scan_delete(scan_id).await;
+    }
+    Ok(summary)
+}
+
+/// Match library rows against an existing scan index.
+///
+/// Does not delete the generation. The caller finishes it when the job completes.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn match_storage_using_index(
+    library: &LibraryStore,
+    storage: &dyn StorageBackend,
+    options: MatchStorageOptions,
+    index: &crate::reconcile::StorageIndex,
+) -> Result<MatchStorageSummary> {
     let filter: HashSet<String> = options
         .asins
         .iter()
@@ -145,7 +165,7 @@ pub async fn match_storage_to_library(
                 }
             }
 
-            let Some(mut key) = find_audio_for_book(book, &index, storage, library).await else {
+            let Some(mut key) = find_audio_for_book(book, index, storage, library).await else {
                 if options.only_mark_found {
                     summary.unchanged += 1;
                     continue;
@@ -242,7 +262,6 @@ pub async fn match_storage_to_library(
             .await?
             .try_into()
             .unwrap_or(u32::MAX);
-        let _ = library.storage_scan_delete(scan_id).await;
     }
 
     Ok(summary)

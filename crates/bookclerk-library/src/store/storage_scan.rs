@@ -1,12 +1,13 @@
 //! Durable, paged storage-scan index on [`LibraryStore`].
 
+use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter,
     QueryOrder, QuerySelect,
 };
 
 use super::{map_book, LibraryStore};
-use crate::entities::{books, storage_scan_rows};
+use crate::entities::{books, storage_scan_generations, storage_scan_rows};
 use crate::error::{LibraryError, Result};
 use crate::models::BookRecord;
 
@@ -144,7 +145,7 @@ impl LibraryStore {
         Ok(count)
     }
 
-    /// Deletes every row for `scan_id`.
+    /// Deletes inventory rows and the generation ownership row for `scan_id`.
     ///
     /// # Errors
     ///
@@ -155,7 +156,122 @@ impl LibraryStore {
             .exec(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
+        storage_scan_generations::Entity::delete_many()
+            .filter(storage_scan_generations::Column::ScanId.eq(scan_id))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
         Ok(())
+    }
+
+    /// Binds `scan_id` to `instance_id` and an optional job.
+    ///
+    /// A second register for the same id and instance refreshes the heartbeat.
+    /// A different instance fails closed so a reused id cannot adopt another scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the write fails, or
+    /// [`LibraryError::Other`] when `instance_id` does not match the existing row.
+    pub async fn storage_scan_register(
+        &self,
+        scan_id: &str,
+        instance_id: &str,
+        job_id: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let job_id = job_id.unwrap_or("").to_string();
+        if let Some(existing) = storage_scan_generations::Entity::find_by_id(scan_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        {
+            if existing.instance_id != instance_id {
+                return Err(LibraryError::Other(anyhow::anyhow!(
+                    "storage scan `{scan_id}` is bound to `{}`, not `{instance_id}`",
+                    existing.instance_id
+                )));
+            }
+            let mut model: storage_scan_generations::ActiveModel = existing.into();
+            if !job_id.is_empty() {
+                model.job_id = Set(job_id);
+            }
+            model.updated_at = Set(now);
+            model.update(&self.db).await.map_err(LibraryError::Orm)?;
+            return Ok(());
+        }
+        let row = storage_scan_generations::ActiveModel {
+            scan_id: Set(scan_id.to_string()),
+            instance_id: Set(instance_id.to_string()),
+            job_id: Set(job_id),
+            updated_at: Set(now),
+        };
+        row.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Refreshes the generation heartbeat after a page is stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the update fails.
+    pub async fn storage_scan_touch(&self, scan_id: &str) -> Result<()> {
+        storage_scan_generations::Entity::update_many()
+            .col_expr(
+                storage_scan_generations::Column::UpdatedAt,
+                sea_orm::sea_query::Expr::value(Utc::now().to_rfc3339()),
+            )
+            .filter(storage_scan_generations::Column::ScanId.eq(scan_id))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// How many generation rows exist. Tests use this to bound retained scans.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the count fails.
+    pub async fn storage_scan_generation_count(&self) -> Result<u64> {
+        storage_scan_generations::Entity::find()
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)
+    }
+
+    /// Deletes generations that are not live resumable work.
+    ///
+    /// A generation with an active job is kept even when `updated_at` is older
+    /// than `stale_before`. A jobless generation is kept only while its
+    /// heartbeat is at least `stale_before`. Terminal, missing, and stale
+    /// jobless generations are removed with their inventory rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or delete fails.
+    pub async fn storage_scan_reclaim_abandoned(&self, stale_before: &str) -> Result<u64> {
+        let rows = storage_scan_generations::Entity::find()
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let mut removed = 0u64;
+        for row in rows {
+            let keep = if row.job_id.is_empty() {
+                row.updated_at.as_str() >= stale_before
+            } else {
+                matches!(
+                    self.get_job(&row.job_id).await?,
+                    Some(job) if job.state.is_active()
+                )
+            };
+            if keep {
+                continue;
+            }
+            self.storage_scan_delete(&row.scan_id).await?;
+            removed += 1;
+        }
+        Ok(removed)
     }
 
     /// Pages books by surrogate id so a scan does not load the catalog at once.
