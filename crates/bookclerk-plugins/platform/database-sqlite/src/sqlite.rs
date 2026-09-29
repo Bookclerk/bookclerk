@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -20,6 +20,7 @@ use sea_orm::{
     Database, DatabaseConnection, DbBackend, DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow,
     Statement, Value,
 };
+use tokio::sync::oneshot;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::OwnedMutexGuard;
 use tokio::task::{try_id, Id as TaskId};
@@ -627,32 +628,36 @@ impl ProxyDatabaseTrait for SqliteProxy {
                 tracing::error!("sqlite begin stopped at the request deadline");
                 return;
             }
-            // The attempt owns the gate until it is adopted or rolled back, so
-            // dropping this future cannot release the gate while `BEGIN` is
-            // still queued or while an abandoned transaction is still open.
-            let mut pending =
-                PendingBegin::new(Arc::clone(&self.conn), gate, self.connection_budget());
-            let begun = pending.run().await;
-            match begun {
-                Ok(BeginAttemptResult::Opened) if !self.begin_deadline_expired() => {
-                    let gate = pending.adopt();
+            // The blocking attempt owns `gate` from the moment it is queued.
+            // Dropping this future only drops the oneshot receiver, so a Tokio
+            // worker never waits for the blocking pool. The attempt rolls a
+            // successful `BEGIN` back before it releases the gate.
+            let (tx, rx) = oneshot::channel();
+            let conn = Arc::clone(&self.conn);
+            let budget = self.connection_budget();
+            let attempt_gate = gate;
+            tokio::task::spawn_blocking(move || blocking_begin(conn, attempt_gate, budget, tx));
+            match rx.await {
+                Ok(BeginHandoff::Opened(held)) => {
+                    if self.begin_deadline_expired() {
+                        note_begin_failed("deadline_exceeded: atomic deadline elapsed");
+                        tracing::error!("sqlite begin stopped at the request deadline");
+                        return;
+                    }
+                    let guard = held.adopt();
                     *self.lock_lease() = Some(TxnLease {
-                        _guard: gate,
+                        _guard: guard,
                         owner: try_id(),
                     });
                     return;
                 }
-                Ok(BeginAttemptResult::Opened) => {
-                    note_begin_failed("deadline_exceeded: atomic deadline elapsed");
-                    tracing::error!("sqlite begin stopped at the request deadline");
-                    return;
-                }
-                Ok(BeginAttemptResult::Busy(err)) if self.begin_may_retry(started) => {
+                Ok(BeginHandoff::Busy(err, returned)) if self.begin_may_retry(started) => {
                     tracing::debug!(error = %err, "sqlite begin waiting for the file lock");
-                    gate = pending.disarm();
+                    gate = returned;
                     tokio::time::sleep(self.begin_retry_pause()).await;
                 }
-                Ok(BeginAttemptResult::Busy(err) | BeginAttemptResult::Failed(err)) => {
+                Ok(BeginHandoff::Busy(err, returned) | BeginHandoff::Failed(err, returned)) => {
+                    drop(returned);
                     if self.begin_deadline_expired() {
                         note_begin_failed("deadline_exceeded: atomic deadline elapsed");
                         tracing::error!(error = %err, "sqlite begin stopped at the request deadline");
@@ -662,18 +667,14 @@ impl ProxyDatabaseTrait for SqliteProxy {
                     }
                     return;
                 }
-                Ok(BeginAttemptResult::Cancelled(why)) => {
-                    if why == "deadline" || self.begin_deadline_expired() {
-                        note_begin_failed("deadline_exceeded: atomic deadline elapsed");
-                        tracing::error!("sqlite begin stopped at the request deadline");
-                    } else {
-                        note_begin_failed(format!("sqlite begin cancelled: {why}"));
-                    }
+                Ok(BeginHandoff::Deadline) => {
+                    note_begin_failed("deadline_exceeded: atomic deadline elapsed");
+                    tracing::error!("sqlite begin stopped at the request deadline");
                     return;
                 }
-                Err(err) => {
-                    note_begin_failed(format!("sqlite begin task failed: {err}"));
-                    tracing::error!(error = %err, "sqlite begin failed");
+                Err(_closed) => {
+                    note_begin_failed("sqlite begin task failed");
+                    tracing::error!("sqlite begin task ended without a result");
                     return;
                 }
             }
@@ -739,223 +740,121 @@ impl ProxyDatabaseTrait for SqliteProxy {
     }
 }
 
-/// Outcome of one off-thread `BEGIN IMMEDIATE` attempt.
-enum BeginAttemptResult {
-    /// Transaction is open and this task must adopt it.
-    Opened,
-    /// File lock is held by another connection.
-    Busy(rusqlite::Error),
-    /// Engine rejected `BEGIN`.
-    Failed(rusqlite::Error),
-    /// The awaiting task was dropped, or the attempt rolled itself back.
-    Cancelled(&'static str),
+/// Result of one off-thread `BEGIN IMMEDIATE`, sent only if the waiter is still there.
+enum BeginHandoff {
+    /// Transaction is open. Drop rolls it back unless [`BeginHold::adopt`] runs.
+    Opened(BeginHold),
+    /// File lock is held by another connection. The gate comes back for a retry.
+    Busy(rusqlite::Error, OwnedMutexGuard<()>),
+    /// Engine rejected `BEGIN`. The gate comes back so the caller can drop it.
+    Failed(rusqlite::Error, OwnedMutexGuard<()>),
+    /// The armed request deadline elapsed before the transaction was adopted.
+    Deadline,
 }
 
-/// Phase of an off-thread `BEGIN` that can outlive the awaiting future.
-enum BeginPhaseKind {
-    /// Closure is queued or inside `BEGIN`.
-    Running,
-    /// `BEGIN` succeeded and nobody has adopted or rolled it back yet.
-    Open,
-    /// Attempt failed, was cancelled, or was rolled back.
-    Done,
-}
-
-/// Shared phase of one off-thread `BEGIN`.
-struct BeginPhase {
-    /// Where the blocking attempt is.
-    kind: BeginPhaseKind,
-    /// Set when the awaiting future is dropped before adopt.
-    cancelled: bool,
-}
-
-/// Shared with the blocking closure so drop can wait out a queued attempt.
-struct BeginAttempt {
-    /// Phase the blocking thread and the awaiting future both update.
-    phase: Mutex<BeginPhase>,
-    /// Wakes a drop that is waiting for the blocking thread to leave `Running`.
-    cv: Condvar,
-}
-
-impl BeginAttempt {
-    /// Starts in `Running` so drop waits until the blocking thread reports in.
-    fn new() -> Self {
-        Self {
-            phase: Mutex::new(BeginPhase {
-                kind: BeginPhaseKind::Running,
-                cancelled: false,
-            }),
-            cv: Condvar::new(),
-        }
-    }
-
-    /// Locks the phase, recovering from a poisoned mutex.
-    fn lock_phase(&self) -> std::sync::MutexGuard<'_, BeginPhase> {
-        self.phase.lock().unwrap_or_else(|err| err.into_inner())
-    }
-
-    /// Marks the attempt cancelled and rolls back a `BEGIN` that already landed.
-    fn cancel_and_rollback(&self, conn: &Arc<Mutex<SqliteState>>) {
-        let mut phase = self.lock_phase();
-        phase.cancelled = true;
-        while matches!(phase.kind, BeginPhaseKind::Running) {
-            phase = self.cv.wait(phase).unwrap_or_else(|err| err.into_inner());
-        }
-        if matches!(phase.kind, BeginPhaseKind::Open) {
-            drop(phase);
-            let mut state = conn.lock().unwrap_or_else(|err| err.into_inner());
-            if let Err(err) = state.rollback() {
-                tracing::error!(error = %err, "sqlite rollback of abandoned begin");
-            }
-            let mut phase = self.lock_phase();
-            phase.kind = BeginPhaseKind::Done;
-            self.cv.notify_all();
-        }
-    }
-}
-
-/// Owns one blocking `BEGIN` until it is adopted or rolled back.
+/// Gate plus rollback duty for one `BEGIN`.
 ///
-/// The gate lives here, not in the awaiting future. Drop waits until the
-/// blocking attempt leaves `Running`, rolls back a `BEGIN` that was published
-/// as `Open`, and only then releases the gate. A later request cannot enter
-/// the connection while that cleanup is still in progress.
-struct PendingBegin {
-    /// Shared rusqlite state for this attempt.
+/// Lives on the blocking thread until it is sent to the waiter. Drop rolls
+/// back an open transaction before releasing the gate, on whichever thread
+/// drops it. That drop does not wait for other blocking work.
+struct BeginHold {
+    /// Shared rusqlite state.
     conn: Arc<Mutex<SqliteState>>,
-    /// Phase shared with the blocking thread.
-    attempt: Arc<BeginAttempt>,
-    /// Request budget consulted before `BEGIN` and before adopt.
-    budget: Arc<ExecBudget>,
-    /// Exclusive connection gate. Taken on adopt or dropped after rollback.
+    /// Exclusive connection gate.
     gate: Option<OwnedMutexGuard<()>>,
-    /// Set once the caller stored a lease or took the gate back for a retry.
+    /// `BEGIN` succeeded and has not been adopted or rolled back yet.
+    open: bool,
+    /// The caller stored the gate in a transaction lease.
     adopted: bool,
 }
 
-impl PendingBegin {
-    /// Builds an attempt that holds `gate` until adopt, disarm, or drop.
-    fn new(
-        conn: Arc<Mutex<SqliteState>>,
-        gate: OwnedMutexGuard<()>,
-        budget: Arc<ExecBudget>,
-    ) -> Self {
-        Self {
-            conn,
-            attempt: Arc::new(BeginAttempt::new()),
-            budget,
-            gate: Some(gate),
-            adopted: false,
-        }
-    }
-
-    /// Runs `BEGIN IMMEDIATE` on the blocking pool.
-    async fn run(&self) -> Result<BeginAttemptResult, tokio::task::JoinError> {
-        let conn = Arc::clone(&self.conn);
-        let attempt = Arc::clone(&self.attempt);
-        let budget = Arc::clone(&self.budget);
-        tokio::task::spawn_blocking(move || blocking_begin(conn, attempt, budget)).await
-    }
-
-    /// Hands the open transaction's gate to the caller.
+impl BeginHold {
+    /// Keeps the open transaction and returns its gate.
     ///
     /// # Panics
     ///
     /// Panics if the gate was already taken.
-    fn adopt(&mut self) -> OwnedMutexGuard<()> {
+    fn adopt(mut self) -> OwnedMutexGuard<()> {
         self.adopted = true;
-        self.gate.take().expect("begin gate still held")
-    }
-
-    /// Rolls back an unadopted `BEGIN` and returns the gate for another attempt.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the gate was already taken.
-    fn disarm(&mut self) -> OwnedMutexGuard<()> {
-        if !self.adopted {
-            self.attempt.cancel_and_rollback(&self.conn);
-            self.adopted = true;
-        }
+        self.open = false;
         self.gate.take().expect("begin gate still held")
     }
 }
 
-impl Drop for PendingBegin {
+impl Drop for BeginHold {
     fn drop(&mut self) {
-        if !self.adopted {
-            self.attempt.cancel_and_rollback(&self.conn);
+        if self.open && !self.adopted {
+            let mut state = self.conn.lock().unwrap_or_else(|err| err.into_inner());
+            if let Err(err) = state.rollback() {
+                tracing::error!(error = %err, "sqlite rollback of abandoned begin");
+            }
         }
         drop(self.gate.take());
     }
 }
 
-/// `BEGIN IMMEDIATE` body. Signals completion even if this thread panics.
+/// `BEGIN IMMEDIATE` on the blocking pool.
 ///
-/// Rollback of a successful `BEGIN` happens before the phase leaves `Running`
-/// when the caller is already gone, so [`PendingBegin`] does not roll that
-/// transaction back again after another request may have started.
+/// The oneshot receiver is the cancellation signal. A closed receiver means
+/// the async waiter is gone: do not `BEGIN`, or roll back a `BEGIN` that
+/// already landed, then drop the gate. This function never waits for the waiter.
 fn blocking_begin(
     conn: Arc<Mutex<SqliteState>>,
-    attempt: Arc<BeginAttempt>,
+    gate: OwnedMutexGuard<()>,
     budget: Arc<ExecBudget>,
-) -> BeginAttemptResult {
-    /// Marks a still-running attempt done if this thread returns or panics.
-    struct FinishRunning<'a> {
-        /// Attempt whose `Running` phase this drop completes.
-        attempt: &'a BeginAttempt,
-    }
-    impl Drop for FinishRunning<'_> {
-        fn drop(&mut self) {
-            let mut phase = self.attempt.lock_phase();
-            if matches!(phase.kind, BeginPhaseKind::Running) {
-                phase.kind = BeginPhaseKind::Done;
-                self.attempt.cv.notify_all();
-            }
-        }
-    }
-    let _finish = FinishRunning { attempt: &attempt };
-    let cancel_before = pause_begin_for_test(BeginPausePoint::BeforeBegin);
-    {
-        let phase = attempt.lock_phase();
-        if phase.cancelled || cancel_before {
-            return BeginAttemptResult::Cancelled(if cancel_before {
-                "pause"
-            } else {
-                "dropped-before"
-            });
-        }
+    tx: oneshot::Sender<BeginHandoff>,
+) {
+    let mut hold = BeginHold {
+        conn,
+        gate: Some(gate),
+        open: false,
+        adopted: false,
+    };
+    pause_begin_for_test(BeginPausePoint::BeforeBegin);
+    if tx.is_closed() {
+        return;
     }
     if budget.deadline_expired() {
-        return BeginAttemptResult::Cancelled("deadline");
+        let _ = tx.send(BeginHandoff::Deadline);
+        return;
     }
     let began = {
-        let mut state = conn.lock().unwrap_or_else(|err| err.into_inner());
+        let mut state = hold.conn.lock().unwrap_or_else(|err| err.into_inner());
         state.begin()
     };
     match began {
-        Err(err) if is_sqlite_lock_contention(&err) => BeginAttemptResult::Busy(err),
-        Err(err) => BeginAttemptResult::Failed(err),
-        Ok(()) => {
-            let cancel_after = pause_begin_for_test(BeginPausePoint::AfterBegin);
-            let mut phase = attempt.lock_phase();
-            let deadline = budget.deadline_expired();
-            if phase.cancelled || cancel_after || deadline {
-                let why = if deadline {
-                    "deadline"
-                } else if cancel_after {
-                    "pause-after"
-                } else {
-                    "dropped-after"
-                };
-                drop(phase);
-                let mut state = conn.lock().unwrap_or_else(|err| err.into_inner());
-                let _ = state.rollback();
-                return BeginAttemptResult::Cancelled(why);
+        Err(err) if is_sqlite_lock_contention(&err) => {
+            if let Some(gate) = hold.gate.take() {
+                let _ = tx.send(BeginHandoff::Busy(err, gate));
             }
-            phase.kind = BeginPhaseKind::Open;
-            attempt.cv.notify_all();
-            BeginAttemptResult::Opened
+        }
+        Err(err) => {
+            if let Some(gate) = hold.gate.take() {
+                let _ = tx.send(BeginHandoff::Failed(err, gate));
+            }
+        }
+        Ok(()) => {
+            hold.open = true;
+            pause_begin_for_test(BeginPausePoint::AfterBegin);
+            if tx.is_closed() {
+                return;
+            }
+            if budget.deadline_expired() {
+                let _ = tx.send(BeginHandoff::Deadline);
+                return;
+            }
+            let conn = Arc::clone(&hold.conn);
+            let Some(gate) = hold.gate.take() else {
+                return;
+            };
+            hold.open = false;
+            let handed = BeginHold {
+                conn,
+                gate: Some(gate),
+                open: true,
+                adopted: false,
+            };
+            let _ = tx.send(BeginHandoff::Opened(handed));
         }
     }
 }
@@ -971,10 +870,12 @@ enum BeginPausePoint {
 
 #[cfg(test)]
 struct BeginPause {
+    /// Which point in `BEGIN` this pause occupies.
     point: BeginPausePoint,
+    /// Signaled once the blocking attempt is inside the pause.
     entered: std::sync::mpsc::Sender<()>,
-    /// `true` asks the attempt to cancel after this pause.
-    release: std::sync::mpsc::Receiver<bool>,
+    /// Released by the test after it has cancelled the waiter. Not a cancel flag.
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
@@ -984,7 +885,7 @@ static BEGIN_PAUSE: Mutex<Option<BeginPause>> = Mutex::new(None);
 fn arm_begin_pause(
     point: BeginPausePoint,
     entered: std::sync::mpsc::Sender<()>,
-    release: std::sync::mpsc::Receiver<bool>,
+    release: std::sync::mpsc::Receiver<()>,
 ) {
     *BEGIN_PAUSE.lock().unwrap_or_else(|err| err.into_inner()) = Some(BeginPause {
         point,
@@ -993,9 +894,12 @@ fn arm_begin_pause(
     });
 }
 
-/// Pauses if a test armed `point`. Returns whether that test requested cancel.
+/// Blocks the blocking thread at `point` until the test releases it.
+///
+/// The pause does not cancel the attempt. Cancellation is the dropped oneshot
+/// receiver, observed after this function returns.
 #[cfg(test)]
-fn pause_begin_for_test(point: BeginPausePoint) -> bool {
+fn pause_begin_for_test(point: BeginPausePoint) {
     let pause = {
         let mut slot = BEGIN_PAUSE.lock().unwrap_or_else(|err| err.into_inner());
         if slot.as_ref().is_some_and(|pause| pause.point == point) {
@@ -1006,16 +910,13 @@ fn pause_begin_for_test(point: BeginPausePoint) -> bool {
     };
     if let Some(pause) = pause {
         let _ = pause.entered.send(());
-        return pause.release.recv().unwrap_or(false);
+        let _ = pause.release.recv();
     }
-    false
 }
 
 /// Production builds never pause `BEGIN`.
 #[cfg(not(test))]
-fn pause_begin_for_test(_point: BeginPausePoint) -> bool {
-    false
-}
+fn pause_begin_for_test(_point: BeginPausePoint) {}
 
 /// True when `err` is a file lock another connection still holds.
 fn is_sqlite_lock_contention(err: &rusqlite::Error) -> bool {
@@ -1171,7 +1072,9 @@ mod tests {
 
     /// Aborts the in-flight begin and unblocks its pause if the test unwinds.
     struct InflightBegin {
-        release: Option<std::sync::mpsc::Sender<bool>>,
+        /// Unblocks the blocking thread. Does not itself mean cancel.
+        release: Option<std::sync::mpsc::Sender<()>>,
+        /// Waiter whose future is dropped on unwind.
         task: Option<tokio::task::JoinHandle<()>>,
     }
 
@@ -1181,13 +1084,13 @@ mod tests {
                 task.abort();
             }
             if let Some(tx) = self.release.take() {
-                let _ = tx.send(true);
+                let _ = tx.send(());
             }
         }
     }
 
-    fn release_paused_begin(release: std::sync::mpsc::Sender<bool>) {
-        let _ = release.send(true);
+    fn release_paused_begin(release: std::sync::mpsc::Sender<()>) {
+        let _ = release.send(());
     }
 
     async fn cancel_begin_at(point: super::BeginPausePoint, label: &str) {
@@ -1218,7 +1121,7 @@ mod tests {
         started_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap_or_else(|_| panic!("{label}: same-connection request did not start"));
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(
             !blocked.is_finished(),
             "{label}: another request finished while BEGIN was still in flight"
@@ -1226,10 +1129,21 @@ mod tests {
         let task = inflight.task.take().expect("begin task");
         let release = inflight.release.take().expect("pause release");
         task.abort();
-        release_paused_begin(release);
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        let joined = tokio::time::timeout(std::time::Duration::from_millis(500), task)
             .await
-            .unwrap_or_else(|_| panic!("{label}: cancelled begin did not finish"));
+            .unwrap_or_else(|_| panic!("{label}: cancelling BEGIN waited on the blocking thread"));
+        assert!(
+            joined
+                .expect_err("BEGIN finished instead of cancelling")
+                .is_cancelled(),
+            "{label}: BEGIN task was not cancelled"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !blocked.is_finished(),
+            "{label}: gate released before the blocking attempt cleaned up"
+        );
+        release_paused_begin(release);
         tokio::time::timeout(std::time::Duration::from_secs(3), blocked)
             .await
             .unwrap_or_else(|_| panic!("{label}: same connection still holds the write lock"))
@@ -1261,6 +1175,125 @@ mod tests {
             .unwrap_or_else(|err| err.into_inner()) = None;
         let _ = bookclerk_db_exec::take_txn_fault();
         deadline_stops_a_contended_begin().await;
+        queued_begin_cancel_on_a_saturated_pool_keeps_the_runtime_alive().await;
+    }
+
+    /// External watchdog around a current-thread runtime whose blocking pool has one thread.
+    async fn queued_begin_cancel_on_a_saturated_pool_keeps_the_runtime_alive() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                saturated_pool_begin_scenario,
+            ));
+            let _ = done_tx.send(result);
+        });
+        match done_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Ok(())) => {
+                let _ = worker.join();
+            }
+            Ok(Err(payload)) => {
+                let _ = worker.join();
+                std::panic::resume_unwind(payload);
+            }
+            Err(_) => {
+                eprintln!("watchdog: cancelling a queued BEGIN blocked the runtime");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    /// One blocking thread waits on an async signal. `BEGIN` queues behind it.
+    ///
+    /// Cancelling the waiter must let an async heartbeat keep advancing, then
+    /// both connections must be able to commit once the pool drains.
+    fn saturated_pool_begin_scenario() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .expect("current-thread runtime");
+        rt.block_on(async {
+            use sea_orm::ConnectionTrait;
+            use std::sync::atomic::{AtomicU64, Ordering};
+            let beats = std::sync::Arc::new(AtomicU64::new(0));
+            let beats_task = std::sync::Arc::clone(&beats);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                    beats_task.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+
+            let (db, peer, _dir) = open_pair().await;
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = entered_tx.send(());
+                let _ = go_rx.blocking_recv();
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("blocking pool was not occupied");
+
+            let same = db.clone();
+            let begin_task = tokio::spawn(async move {
+                use sea_orm::TransactionTrait;
+                let _ = db.begin().await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            assert!(
+                !begin_task.is_finished(),
+                "BEGIN ran while the only blocking thread was occupied"
+            );
+            let before = beats.load(Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert!(
+                beats.load(Ordering::SeqCst) > before,
+                "heartbeat stalled while BEGIN was queued"
+            );
+
+            begin_task.abort();
+            let joined = tokio::time::timeout(std::time::Duration::from_millis(500), begin_task)
+                .await
+                .expect("cancelling a queued BEGIN blocked the runtime");
+            assert!(
+                joined
+                    .expect_err("queued BEGIN finished instead of cancelling")
+                    .is_cancelled(),
+                "queued BEGIN task was not cancelled"
+            );
+            let before = beats.load(Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert!(
+                beats.load(Ordering::SeqCst) > before,
+                "heartbeat stalled after cancelling queued BEGIN"
+            );
+
+            let _ = go_tx.send(());
+            tokio::time::timeout(std::time::Duration::from_secs(2), blocker)
+                .await
+                .expect("pool occupant did not finish")
+                .expect("pool occupant panicked");
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                commit_marker(&same, "queued_same"),
+            )
+            .await
+            .expect("same connection still holds a transaction");
+            tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                commit_marker(&peer, "queued_peer"),
+            )
+            .await
+            .expect("peer connection still blocked");
+            peer.query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT COUNT(*) AS n FROM queued_same",
+            ))
+            .await
+            .expect("committed work is not visible")
+            .expect("committed table missing");
+        });
     }
 
     async fn deadline_stops_a_contended_begin() {

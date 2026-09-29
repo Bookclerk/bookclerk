@@ -2746,7 +2746,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
-    async fn repeated_guest_ledger_create_is_idempotent_on_postgres() {
+    async fn postgres_repeated_guest_ledger_create_is_idempotent() {
         let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL").expect("postgres url");
         let admin = sea_orm::Database::connect(&url).await.expect("admin");
         let name = format!("ledger_{}", uuid::Uuid::new_v4().simple());
