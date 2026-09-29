@@ -206,9 +206,14 @@ pub async fn acquire_book_indexed(
                     missing = missing.len(),
                     "syncing existing media to missing destinations (no store fetch)"
                 );
-                let written =
-                    sync_missing_destinations(destinations, source_kind, &source_key, &missing)
-                        .await?;
+                let written = sync_missing_destinations(
+                    destinations,
+                    source_kind,
+                    &source_key,
+                    &missing,
+                    &req.files_dir.join("stage-journal"),
+                )
+                .await?;
                 if let Some(idx) = index.as_mut() {
                     for key in &written {
                         idx.insert_key(key.clone());
@@ -696,6 +701,7 @@ async fn sync_missing_destinations(
     source_kind: OutputBackendKind,
     source_key: &str,
     missing: &[(OutputBackendKind, String)],
+    stage_journal: &Path,
 ) -> Result<Vec<String>> {
     let source = destinations.destination(source_kind).ok_or_else(|| {
         AcquireError::Other(anyhow::anyhow!(
@@ -732,6 +738,7 @@ async fn sync_missing_destinations(
             meta.clone(),
             &bookclerk_storage::TransferOptions {
                 max_attempts: DEST_WRITE_ATTEMPTS,
+                stage_journal_dir: Some(stage_journal.to_path_buf()),
                 ..bookclerk_storage::TransferOptions::default()
             },
         )
@@ -1162,6 +1169,7 @@ async fn store_plain_fetch(
                 &mp3_out,
                 &req.options.lame,
                 req.options.max_sample_rate,
+                None,
             )
             .await?;
             acquired_path = mp3_out;
@@ -1242,6 +1250,7 @@ async fn store_plain_fetch(
                     &mp3_path,
                     &req.options.lame,
                     req.options.max_sample_rate,
+                    None,
                 )
                 .await?;
                 chapter_path = mp3_path;

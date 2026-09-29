@@ -16,6 +16,8 @@
 
 use std::time::Duration;
 
+use sha2::Digest;
+
 use crate::bounded::{ensure_scalar_len, parse_sha256_hex, MAX_SCALAR_OBJECT_BYTES};
 use crate::error::{Result, StorageError};
 use crate::traits::{ObjectMeta, PutStreamResult, StorageBackend};
@@ -29,6 +31,9 @@ pub struct TransferOptions {
     pub backoff: Duration,
     /// Optional wall-clock budget for a single attempt.
     pub attempt_timeout: Option<Duration>,
+    /// Directory that records attempt-owned stages so a restarted process can
+    /// delete them. `None` still deletes on drop while this process is alive.
+    pub stage_journal_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for TransferOptions {
@@ -37,6 +42,7 @@ impl Default for TransferOptions {
             max_attempts: 3,
             backoff: Duration::from_millis(50),
             attempt_timeout: Some(Duration::from_secs(30 * 60)),
+            stage_journal_dir: None,
         }
     }
 }
@@ -78,13 +84,24 @@ pub async fn transfer_object(
         return Ok(TransferOutcome::ServerCopy);
     }
 
+    if let Some(dir) = &options.stage_journal_dir {
+        reap_abandoned_stages(dest, dir).await;
+    }
+
     let attempts = options.max_attempts.max(1);
     let mut last_err = None;
     for attempt in 1..=attempts {
         if attempt > 1 {
             tokio::time::sleep(options.backoff.saturating_mul(attempt - 1)).await;
         }
-        let fut = transfer_once(source, source_key, dest, dest_key, meta.clone());
+        let fut = transfer_once(
+            source,
+            source_key,
+            dest,
+            dest_key,
+            meta.clone(),
+            options.stage_journal_dir.as_deref(),
+        );
         let result = if let Some(limit) = options.attempt_timeout {
             match tokio::time::timeout(limit, fut).await {
                 Ok(inner) => inner,
@@ -123,6 +140,7 @@ async fn transfer_once(
     dest: &dyn StorageBackend,
     dest_key: &str,
     mut meta: ObjectMeta,
+    journal_dir: Option<&std::path::Path>,
 ) -> Result<TransferOutcome> {
     let before = source.probe(source_key).await?;
     if let Some(expected) = meta.sha256_hex.as_deref() {
@@ -177,24 +195,181 @@ async fn transfer_once(
         }
     }
     let stage_key = format!(".bookclerk-stage/{}/{}", uuid::Uuid::new_v4(), dest_key);
+    let mut stage = StageLease::arm(dest.clone_box(), stage_key.clone(), journal_dir);
     let written = match dest.put_stream(&stage_key, body, meta.clone()).await {
         Ok(written) => written,
         Err(err) => {
-            let _ = dest.delete(&stage_key).await;
+            stage.cleanup_now().await;
             return Err(err);
         }
     };
     let verified = verify_staged(source, source_key, &before, &meta, &written).await;
     if let Err(err) = verified {
-        let _ = dest.delete(&stage_key).await;
+        stage.cleanup_now().await;
         return Err(err);
     }
     if let Err(err) = publish_staged(dest, &stage_key, dest_key, &meta, &written).await {
-        let _ = dest.delete(&stage_key).await;
+        stage.cleanup_now().await;
         return Err(err);
     }
-    let _ = dest.delete(&stage_key).await;
+    stage.cleanup_now().await;
     Ok(TransferOutcome::Streamed(written))
+}
+
+/// Deletes `stage_key` on drop, including when an attempt timeout or caller
+/// cancel drops the future after the stage object exists.
+struct StageLease {
+    dest: Option<Box<dyn StorageBackend>>,
+    key: String,
+    journal: Option<StageRecord>,
+    armed: bool,
+}
+
+struct StageRecord {
+    path: std::path::PathBuf,
+    _lock: std::fs::File,
+}
+
+impl StageLease {
+    fn arm(
+        dest: Box<dyn StorageBackend>,
+        key: String,
+        journal_dir: Option<&std::path::Path>,
+    ) -> Self {
+        let journal =
+            journal_dir.and_then(|dir| StageRecord::create(dir, dest.as_ref(), &key).ok());
+        Self {
+            dest: Some(dest),
+            key,
+            journal,
+            armed: true,
+        }
+    }
+
+    async fn cleanup_now(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let deleted = if let Some(dest) = &self.dest {
+            dest.delete(&self.key).await.is_ok()
+        } else {
+            false
+        };
+        if deleted {
+            if let Some(record) = &self.journal {
+                record.clear();
+            }
+            self.armed = false;
+        }
+    }
+}
+
+impl Drop for StageLease {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(dest) = self.dest.take() else {
+            return;
+        };
+        let key = self.key.clone();
+        let record = self.journal.take();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if dest.delete(&key).await.is_ok() {
+                    if let Some(record) = record {
+                        record.clear();
+                    }
+                }
+            });
+        }
+    }
+}
+
+impl StageRecord {
+    fn create(
+        dir: &std::path::Path,
+        dest: &dyn StorageBackend,
+        key: &str,
+    ) -> std::io::Result<Self> {
+        let owner_id = uuid::Uuid::new_v4().to_string();
+        std::fs::create_dir_all(dir.join("owners"))?;
+        std::fs::create_dir_all(dir.join("stages"))?;
+        let lock_path = dir.join("owners").join(format!("{owner_id}.lock"));
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        fs4::FileExt::lock(&lock)?;
+        let name = hex::encode(sha2::Sha256::digest(format!(
+            "{}:{key}",
+            dest.instance_id()
+        )));
+        let path = dir.join("stages").join(format!("{name}.json"));
+        let body = serde_json::json!({
+            "instance_id": dest.instance_id(),
+            "stage_key": key,
+            "owner_id": owner_id,
+        });
+        std::fs::write(&path, body.to_string())?;
+        Ok(Self { path, _lock: lock })
+    }
+
+    fn clear(&self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path) {
+    let stages = dir.join("stages");
+    let Ok(entries) = std::fs::read_dir(&stages) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            let _ = std::fs::rename(&path, path.with_extension("corrupt"));
+            continue;
+        };
+        if value.get("instance_id").and_then(|v| v.as_str()) != Some(dest.instance_id().as_str()) {
+            continue;
+        }
+        let Some(owner) = value.get("owner_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(stage_key) = value.get("stage_key").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if stage_owner_live(dir, owner) {
+            continue;
+        }
+        if dest.delete(stage_key).await.is_ok() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn stage_owner_live(dir: &std::path::Path, owner_id: &str) -> bool {
+    let path = dir.join("owners").join(format!("{owner_id}.lock"));
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+    else {
+        return false;
+    };
+    match fs4::FileExt::try_lock(&file) {
+        Ok(()) => {
+            let _ = fs4::FileExt::unlock(&file);
+            false
+        }
+        Err(_) => true,
+    }
 }
 
 async fn verify_staged(
@@ -402,6 +577,7 @@ mod tests {
                 max_attempts: 1,
                 backoff: Duration::from_millis(1),
                 attempt_timeout: Some(Duration::from_secs(10)),
+                ..TransferOptions::default()
             },
         )
         .await
@@ -621,5 +797,497 @@ mod tests {
         assert!(matches!(err, StorageError::Integrity(_)), "{err}");
         assert_eq!(dst.get("book.m4b").await.unwrap().as_ref(), b"keeper");
         assert_no_files(&dir.path().join("dst").join(".bookclerk-stage"));
+    }
+
+    struct BlockFinalProbe {
+        inner: LocalFsBackend,
+        probes: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl StorageBackend for BlockFinalProbe {
+        fn name(&self) -> &'static str {
+            "block-probe"
+        }
+        fn instance_id(&self) -> String {
+            format!("block:{}", self.inner.instance_id())
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                inner: self.inner.clone(),
+                probes: Arc::clone(&self.probes),
+            })
+        }
+        async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
+            self.inner.put(key, data, meta).await
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> Result<bool> {
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<crate::ObjectInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            let n = self.probes.fetch_add(1, Ordering::SeqCst);
+            if n >= 1 {
+                std::future::pending::<()>().await;
+            }
+            self.inner.probe(key).await
+        }
+        async fn copy(&self, from: &str, to: &str) -> Result<()> {
+            self.inner.copy(from, to).await
+        }
+        async fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> Result<crate::ListPage> {
+            self.inner.list_page(prefix, cursor, limit).await
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.inner.get_stream(key, range).await
+        }
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: ObjectMeta,
+        ) -> Result<PutStreamResult> {
+            self.inner.put_stream(key, body, meta).await
+        }
+    }
+
+    async fn wait_until_no_stage_files(root: &std::path::Path) {
+        for _ in 0..200 {
+            let mut files = 0usize;
+            if let Ok(entries) = std::fs::read_dir(root.join(".bookclerk-stage")) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        if let Ok(inner) = std::fs::read_dir(entry.path()) {
+                            files += inner.count();
+                        }
+                    } else {
+                        files += 1;
+                    }
+                }
+            }
+            if files == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("stage objects remained after drop");
+    }
+
+    #[tokio::test]
+    async fn timeout_and_restart_do_not_keep_abandoned_stages() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let src_root = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src_root
+            .put(
+                "book.m4b",
+                Bytes::from_static(b"audio-bytes"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let dst = LocalFsBackend::new(dir.path().join("dst")).unwrap();
+        dst.put(
+            "book.m4b",
+            Bytes::from_static(b"keeper"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        for _ in 0..2 {
+            let blocked = BlockFinalProbe {
+                inner: src_root.clone(),
+                probes: Arc::new(AtomicUsize::new(0)),
+            };
+            let err = transfer_object(
+                &blocked,
+                "book.m4b",
+                &dst,
+                "book.m4b",
+                ObjectMeta::default(),
+                &TransferOptions {
+                    max_attempts: 1,
+                    attempt_timeout: Some(Duration::from_millis(50)),
+                    stage_journal_dir: Some(journal.clone()),
+                    ..TransferOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, StorageError::Io(_)), "{err}");
+            wait_until_no_stage_files(dir.path().join("dst").as_path()).await;
+        }
+        assert_eq!(dst.get("book.m4b").await.unwrap().as_ref(), b"keeper");
+
+        let orphan = ".bookclerk-stage/orphan-attempt/book.m4b";
+        dst.put(
+            orphan,
+            Bytes::from_static(b"abandoned-audiobook"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        std::fs::create_dir_all(journal.join("stages")).unwrap();
+        std::fs::write(
+            journal.join("stages").join("orphan.json"),
+            serde_json::json!({
+                "instance_id": dst.instance_id(),
+                "stage_key": orphan,
+                "owner_id": "dead-owner",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        reap_abandoned_stages(&dst, &journal).await;
+        assert!(!dst.exists(orphan).await.unwrap());
+
+        let live = ".bookclerk-stage/live-attempt/book.m4b";
+        dst.put(
+            live,
+            Bytes::from_static(b"still-copying"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        std::fs::create_dir_all(journal.join("owners")).unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(journal.join("owners").join("live-owner.lock"))
+            .unwrap();
+        fs4::FileExt::lock(&lock).unwrap();
+        std::fs::write(
+            journal.join("stages").join("live.json"),
+            serde_json::json!({
+                "instance_id": dst.instance_id(),
+                "stage_key": live,
+                "owner_id": "live-owner",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        reap_abandoned_stages(&dst, &journal).await;
+        assert_eq!(dst.get(live).await.unwrap().as_ref(), b"still-copying");
+        drop(lock);
+    }
+
+    #[derive(Clone)]
+    struct BlockPublish {
+        inner: LocalFsBackend,
+        started: Arc<AtomicUsize>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl StorageBackend for BlockPublish {
+        fn name(&self) -> &'static str {
+            "block-publish"
+        }
+        fn instance_id(&self) -> String {
+            format!("block-publish:{}", self.inner.instance_id())
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                inner: self.inner.clone(),
+                started: Arc::clone(&self.started),
+                release: Arc::clone(&self.release),
+            })
+        }
+        fn supports_server_copy(&self) -> bool {
+            true
+        }
+        async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
+            self.inner.put(key, data, meta).await
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> Result<bool> {
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<crate::ObjectInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            self.inner.probe(key).await
+        }
+        async fn copy(&self, from: &str, to: &str) -> Result<()> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            self.release.notified().await;
+            self.inner.copy(from, to).await
+        }
+        async fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> Result<crate::ListPage> {
+            self.inner.list_page(prefix, cursor, limit).await
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.inner.get_stream(key, range).await
+        }
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: ObjectMeta,
+        ) -> Result<PutStreamResult> {
+            self.inner.put_stream(key, body, meta).await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_during_publish_deletes_the_stage() {
+        let dir = tempdir().unwrap();
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"audio-bytes"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let started = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let dst = BlockPublish {
+            inner: LocalFsBackend::new(dir.path().join("dst")).unwrap(),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        };
+        dst.put(
+            "book.m4b",
+            Bytes::from_static(b"keeper"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let journal = dir.path().join("journal");
+        let task = tokio::spawn({
+            let src = src.clone();
+            let dst = dst.clone();
+            let journal = journal.clone();
+            async move {
+                transfer_object(
+                    &src,
+                    "book.m4b",
+                    &dst,
+                    "book.m4b",
+                    ObjectMeta::default(),
+                    &TransferOptions {
+                        max_attempts: 1,
+                        attempt_timeout: None,
+                        stage_journal_dir: Some(journal),
+                        ..TransferOptions::default()
+                    },
+                )
+                .await
+            }
+        });
+        loop {
+            if started.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            if task.is_finished() {
+                panic!("publish finished before the copy blocked: {:?}", task.await);
+            }
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        let _ = task.await;
+        wait_until_no_stage_files(dir.path().join("dst").as_path()).await;
+        assert_eq!(dst.get("book.m4b").await.unwrap().as_ref(), b"keeper");
+        release.notify_waiters();
+    }
+
+    #[derive(Clone)]
+    struct FailDelete {
+        inner: LocalFsBackend,
+        fail: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl StorageBackend for FailDelete {
+        fn name(&self) -> &'static str {
+            "fail-delete"
+        }
+        fn instance_id(&self) -> String {
+            self.inner.instance_id()
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                inner: self.inner.clone(),
+                fail: Arc::clone(&self.fail),
+            })
+        }
+        async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
+            self.inner.put(key, data, meta).await
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> Result<bool> {
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<crate::ObjectInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            self.inner.probe(key).await
+        }
+        async fn copy(&self, from: &str, to: &str) -> Result<()> {
+            self.inner.copy(from, to).await
+        }
+        async fn delete(&self, key: &str) -> Result<()> {
+            if key.contains(".bookclerk-stage") && self.fail.load(Ordering::SeqCst) > 0 {
+                return Err(StorageError::Io(std::io::Error::other("delete refused")));
+            }
+            self.inner.delete(key).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> Result<crate::ListPage> {
+            self.inner.list_page(prefix, cursor, limit).await
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.inner.get_stream(key, range).await
+        }
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: ObjectMeta,
+        ) -> Result<PutStreamResult> {
+            self.inner.put_stream(key, body, meta).await
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_stage_cleanup_is_retried_after_restart() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"audio-bytes"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let fail = Arc::new(AtomicUsize::new(1));
+        let dst = FailDelete {
+            inner: LocalFsBackend::new(dir.path().join("dst")).unwrap(),
+            fail: Arc::clone(&fail),
+        };
+        let blocked = BlockFinalProbe {
+            inner: src.clone(),
+            probes: Arc::new(AtomicUsize::new(0)),
+        };
+        let err = transfer_object(
+            &blocked,
+            "book.m4b",
+            &dst,
+            "book.m4b",
+            ObjectMeta::default(),
+            &TransferOptions {
+                max_attempts: 1,
+                attempt_timeout: Some(Duration::from_millis(50)),
+                stage_journal_dir: Some(journal.clone()),
+                ..TransferOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, StorageError::Io(_)), "{err}");
+        let stages = journal.join("stages");
+        let mut owner_free = false;
+        for _ in 0..1_000 {
+            let Some(path) = std::fs::read_dir(&stages).ok().and_then(|rd| {
+                rd.filter_map(|entry| entry.ok())
+                    .map(|entry| entry.path())
+                    .next()
+            }) else {
+                tokio::task::yield_now().await;
+                continue;
+            };
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let owner = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("owner_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                });
+            let Some(owner) = owner else {
+                tokio::task::yield_now().await;
+                continue;
+            };
+            if !stage_owner_live(&journal, &owner) {
+                owner_free = true;
+                let stage_key = serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("stage_key")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default();
+                assert!(
+                    dst.exists(&stage_key).await.unwrap(),
+                    "failed cleanup must leave the stage object"
+                );
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(owner_free, "stage owner lock was never released");
+        fail.store(0, Ordering::SeqCst);
+        reap_abandoned_stages(&dst, &journal).await;
+        wait_until_no_stage_files(dir.path().join("dst").as_path()).await;
+        assert!(std::fs::read_dir(&stages).map(|rd| rd.count()).unwrap_or(0) == 0);
     }
 }
