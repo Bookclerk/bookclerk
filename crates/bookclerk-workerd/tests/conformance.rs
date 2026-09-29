@@ -2194,6 +2194,10 @@ fn select_two_request() -> AdapterExecuteRequest {
         .with_proofs(vec![ResolvedStatement::bound_empty(sql)])
 }
 
+/// Partial measurement: gateway and guest only, and the guest is spawned with
+/// `Command` rather than the production sibling jail. See
+/// `bookclerk-plugin-host` `external_budget` for the acceptance harness.
+///
 /// Streams objects larger than a cgroup memory budget through native-behind-workerd
 /// and lists more than 100,000 keys through that guest.
 ///
@@ -2373,18 +2377,29 @@ mode = "deny"
             )
         })
         .await;
-    let artifact = PathBuf::from("/opt/cursor/artifacts/external-bounds.txt");
-    let _ = std::fs::create_dir_all("/opt/cursor/artifacts");
-    let mut file = std::fs::File::create(&artifact).expect("artifact");
-    writeln!(file, "{report}").unwrap();
-    eprintln!("{report}");
+    if let Some(dir) = std::env::var_os("BOOKCLERK_RESOURCE_ARTIFACT_DIR") {
+        let artifact = PathBuf::from(dir).join("external-bounds-partial.txt");
+        if let Some(parent) = artifact.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::File::create(&artifact) {
+            writeln!(
+                file,
+                "partial=gateway-and-guest-only command-spawn\n{report}"
+            )
+            .ok();
+        }
+    }
+    eprintln!("partial=gateway-and-guest-only command-spawn {report}");
     let _ = std::fs::remove_dir(&cgroup);
 }
 
+#[cfg(unix)]
 struct ZeroReader {
     left: u64,
 }
 
+#[cfg(unix)]
 impl tokio::io::AsyncRead for ZeroReader {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -2407,6 +2422,7 @@ impl tokio::io::AsyncRead for ZeroReader {
     }
 }
 
+#[cfg(unix)]
 fn zero_digest(len: u64) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
