@@ -10,6 +10,11 @@
 //! #119 envelope). Allowed RSS delta between a 32 MiB and a 256 MiB transfer
 //! is 32 MiB. The 256 MiB object is larger than that delta, so a pass means
 //! resident memory did not track object size.
+//!
+//! This is an in-process diagnostic. It does not impose a memory limit and it
+//! does not measure the host, workerd, and guest process tree. A missing
+//! VmHWM reading fails the test. The external-path command is
+//! `cargo test -p bookclerk-workerd --test conformance external_native_behind_workerd_budget -- --ignored --nocapture --test-threads=1`.
 
 use std::fs::File;
 use std::path::Path;
@@ -24,20 +29,27 @@ const ALLOWED_DELTA: u64 = 32 * 1024 * 1024;
 const SMALL: u64 = 32 * 1024 * 1024;
 const LARGE: u64 = 256 * 1024 * 1024;
 
-fn vm_hwm_bytes() -> u64 {
-    let text = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+fn vm_hwm_bytes() -> Result<u64, String> {
+    let text = std::fs::read_to_string("/proc/self/status").map_err(|err| {
+        format!(
+            "unsupported: cannot read /proc/self/status ({err}); this is not a zero measurement"
+        )
+    })?;
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("VmHWM:") {
             let kb: u64 = rest
                 .split_whitespace()
                 .next()
-                .unwrap_or("0")
+                .ok_or_else(|| "unsupported: VmHWM is missing".to_string())?
                 .parse()
-                .unwrap_or(0);
-            return kb.saturating_mul(1024);
+                .map_err(|err| format!("unsupported: VmHWM is not a number ({err})"))?;
+            if kb == 0 {
+                return Err("unsupported: VmHWM is zero; refusing to treat a missing measurement as success".into());
+            }
+            return Ok(kb.saturating_mul(1024));
         }
     }
-    0
+    Err("unsupported: VmHWM is missing; refusing to treat a missing measurement as success".into())
 }
 
 fn cgroup_peak_bytes() -> Option<u64> {
@@ -76,7 +88,7 @@ async fn transfer_sparse(len: u64) -> u64 {
     )
     .await
     .unwrap();
-    let before = vm_hwm_bytes();
+    let before = vm_hwm_bytes().expect("VmHWM measurement");
     let started = Instant::now();
     transfer_object(
         &src,
@@ -94,7 +106,7 @@ async fn transfer_sparse(len: u64) -> u64 {
     )
     .await
     .unwrap();
-    let hwm = vm_hwm_bytes();
+    let hwm = vm_hwm_bytes().expect("VmHWM measurement");
     let written = std::fs::metadata(dir.path().join("out").join("obj.bin")).unwrap();
     assert_eq!(
         written.len(),

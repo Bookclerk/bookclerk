@@ -2193,3 +2193,229 @@ fn select_two_request() -> AdapterExecuteRequest {
     AdapterExecuteRequest::new(request, GuestReceiptPersist::default())
         .with_proofs(vec![ResolvedStatement::bound_empty(sql)])
 }
+
+/// Streams objects larger than a cgroup memory budget through native-behind-workerd
+/// and lists more than 100,000 keys through that guest.
+///
+/// ```text
+/// cargo test -p bookclerk-workerd --test conformance external_native_behind_workerd_budget -- --ignored --nocapture --test-threads=1
+/// ```
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "cgroup memory budget for native-behind-workerd destination"]
+async fn external_native_behind_workerd_budget() {
+    use sha2::{Digest, Sha256};
+    use std::io::Write as _;
+
+    const BUDGET: u64 = 384 * 1024 * 1024;
+    const SMALL: u64 = 32 * 1024 * 1024;
+    const LARGE: u64 = BUDGET + 32 * 1024 * 1024;
+
+    let Some(workerd) = find_workerd() else {
+        panic!(
+            "unsupported: pinned workerd binary missing. Command: cargo test -p bookclerk-workerd --test conformance external_native_behind_workerd_budget -- --ignored --nocapture --test-threads=1"
+        );
+    };
+    let Some(guest) = find_local_guest() else {
+        panic!(
+            "unsupported: bookclerk-plugin-destination-local missing. Build it with cargo build -p bookclerk-plugin-destination-local -p bookclerk-workerd"
+        );
+    };
+    let cgroup = PathBuf::from(format!(
+        "/sys/fs/cgroup/bookclerk-ext-{}",
+        std::process::id()
+    ));
+    if let Err(err) = std::fs::create_dir(&cgroup) {
+        panic!(
+            "unsupported: cannot create child cgroup {}: {err}. Refusing to count a missing measurement as zero.",
+            cgroup.display()
+        );
+    }
+    std::fs::write(cgroup.join("memory.max"), format!("{BUDGET}\n")).expect("memory.max");
+    if cgroup.join("memory.swap.max").exists() {
+        let _ = std::fs::write(cgroup.join("memory.swap.max"), "0\n");
+    }
+
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let root = tmp.path().join("plugin");
+    create_dir_test(&root);
+    std::fs::copy(&guest, root.join("bookclerk-plugin-destination-local")).expect("copy guest");
+    std::fs::write(
+        root.join("plugin.toml"),
+        r#"api_version = 3
+id = "local"
+runtime = "native"
+command = "./bookclerk-plugin-destination-local"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "deny"
+"#,
+    )
+    .expect("plugin.toml");
+    let out = tmp.path().join("out");
+    create_dir_test(&out);
+    let started = std::time::Instant::now();
+    let local = tokio::task::LocalSet::new();
+    let report = local
+        .run_until(async {
+            let mut child = spawn_native_behind_workerd(
+                &workerd,
+                &root,
+                &guest,
+                tmp.path(),
+                &[("BOOKCLERK_OUTPUT_LOCAL_ROOT", out.as_path())],
+            );
+            if let Some(pid) = child.gateway.id() {
+                std::fs::write(cgroup.join("cgroup.procs"), pid.to_string())
+                    .expect("move workerd into cgroup");
+            }
+            if let Some(pid) = child._guest.id() {
+                std::fs::write(cgroup.join("cgroup.procs"), pid.to_string())
+                    .expect("move guest into cgroup");
+            }
+            let stdin = child.gateway.stdin.take().expect("stdin");
+            let stdout = child.gateway.stdout.take().expect("stdout");
+            let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            let desc = tokio::time::timeout(Duration::from_secs(90), client.describe())
+                .await
+                .expect("describe timed out")
+                .expect("describe");
+            assert_eq!(desc.id, "local");
+            let dest = open_storage(&client, "budget").await;
+            let small_put = dest
+                .put(
+                    "small.bin",
+                    Box::pin(ZeroReader { left: SMALL }),
+                    WriteOptions {
+                        content_length: Some(SMALL),
+                        ..WriteOptions::default()
+                    },
+                )
+                .await
+                .expect("small put");
+            let small_peak = std::fs::read_to_string(cgroup.join("memory.peak"))
+                .ok()
+                .and_then(|text| text.trim().parse::<u64>().ok());
+            let large_put = dest
+                .put(
+                    "large.bin",
+                    Box::pin(ZeroReader { left: LARGE }),
+                    WriteOptions {
+                        content_length: Some(LARGE),
+                        ..WriteOptions::default()
+                    },
+                )
+                .await
+                .expect("large put");
+            let large_peak = std::fs::read_to_string(cgroup.join("memory.peak"))
+                .expect("memory.peak")
+                .trim()
+                .parse::<u64>()
+                .expect("memory.peak number");
+            assert!(
+                large_peak <= BUDGET,
+                "cgroup peak {large_peak} exceeded budget {BUDGET}"
+            );
+            let large_path = out.join("large.bin");
+            let mut file = std::fs::File::open(&large_path).expect("large object");
+            let mut hasher = Sha256::new();
+            let mut buf = [0u8; 64 * 1024];
+            let mut hashed = 0u64;
+            loop {
+                let n = std::io::Read::read(&mut file, &mut buf).expect("read dest");
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                hashed += n as u64;
+            }
+            assert_eq!(hashed, LARGE);
+            let digest = hasher.finalize();
+            assert_eq!(small_put.sha256.as_deref(), Some(zero_digest(SMALL).as_slice()));
+            assert_eq!(large_put.sha256.as_deref(), Some(digest.as_slice()));
+
+            for index in 0..100_001 {
+                let path = out.join("bulk").join(format!("k{index:06}.txt"));
+                if index == 0 {
+                    std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+                }
+                std::fs::write(&path, b"x").unwrap();
+            }
+            let mut seen = 0u64;
+            let mut pages = 0u32;
+            let mut cursor = None;
+            loop {
+                let page = dest
+                    .list(ListOptions {
+                        prefix: "bulk/".into(),
+                        cursor: cursor.clone(),
+                        limit: 256,
+                    })
+                    .await
+                    .expect("list page");
+                pages += 1;
+                seen += page.objects.len() as u64;
+                match page.next_cursor {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+            assert_eq!(seen, 100_001);
+            assert!(pages > 1, "100k keys must span pages, got {pages}");
+            let index_dir = out.join(".bookclerk-list-index");
+            assert!(index_dir.is_dir(), "list index was not built under the root");
+            child.kill().await;
+            format!(
+                "budget={BUDGET} small={SMALL} small_peak={small_peak:?} large={LARGE} large_peak={large_peak} pages={pages} elapsed_ms={}",
+                started.elapsed().as_millis()
+            )
+        })
+        .await;
+    let artifact = PathBuf::from("/opt/cursor/artifacts/external-bounds.txt");
+    let _ = std::fs::create_dir_all("/opt/cursor/artifacts");
+    let mut file = std::fs::File::create(&artifact).expect("artifact");
+    writeln!(file, "{report}").unwrap();
+    eprintln!("{report}");
+    let _ = std::fs::remove_dir(&cgroup);
+}
+
+struct ZeroReader {
+    left: u64,
+}
+
+impl tokio::io::AsyncRead for ZeroReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.left == 0 || buf.remaining() == 0 {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        let n = std::cmp::min(self.left, buf.remaining() as u64) as usize;
+        let zeros = [0u8; 8192];
+        let mut filled = 0;
+        while filled < n {
+            let chunk = std::cmp::min(zeros.len(), n - filled);
+            buf.put_slice(&zeros[..chunk]);
+            filled += chunk;
+        }
+        self.left -= n as u64;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+fn zero_digest(len: u64) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let zeros = [0u8; 8192];
+    let mut left = len;
+    while left > 0 {
+        let n = std::cmp::min(left, zeros.len() as u64) as usize;
+        hasher.update(&zeros[..n]);
+        left -= n as u64;
+    }
+    hasher.finalize().into()
+}

@@ -115,8 +115,18 @@ pending → running → succeeded
   make publication exactly-once.
 - Storage scans checkpoint `storage_scan` JSON (instance id, generation,
   phase, cursor) with `checkpoint_running_job` while the row stays `running`.
-  Object rows live in `storage_scan_rows`, not in the 64 KiB checkpoint.
-  Local list indexes are node-local scratch and are not a portable checkpoint.
+  The generation is a UUID bound in `storage_scan_generations` to that storage
+  instance and the job. Object rows live in `storage_scan_rows`, not in the
+  64 KiB checkpoint. Page inserts happen before the cursor advances; replaying
+  a page is idempotent. `run_acquire` performs one fenced scan and matches
+  against that index. A successful acquire deletes the generation. Startup
+  reclaim removes abandoned generations and does not remove one owned by a
+  pending or running job. Local list indexes are node-local scratch and are
+  not a portable checkpoint.
+- MP3 conversion counts input and encoder output against the job temp quota.
+  Scratch is `cache/convert`. The reservation is dropped only after the
+  directory is gone. Startup sweep includes `convert` and keeps directories
+  registered to an active job.
 - Reclaim also requires `lease_expires_at` to still be null or `<= now`, so a
   heartbeat that extends the same generation cannot be stolen.
 - `POST /api/jobs/{id}/cancel` cancels `pending` immediately and flags
