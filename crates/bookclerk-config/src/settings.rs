@@ -58,6 +58,12 @@ pub struct Config {
     /// How external plugin guests are run (`[plugins]`).
     #[serde(default)]
     pub plugins: crate::PluginsConfig,
+    /// Revision of the DB-authoritative `[events]` document after overlay.
+    ///
+    /// Absent until control-plane bootstrap or reconcile loads `core.events`.
+    /// Not serialized to `config.toml`.
+    #[serde(skip)]
+    pub events_revision: Option<i64>,
 }
 
 /// Auth encryption settings (`[auth]` section).

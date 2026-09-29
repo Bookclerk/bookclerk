@@ -32,7 +32,10 @@ missing pairs does a bounded empty `SELECT` and zero dispatch writes. D1
 dispatch receipts are per pair (`dispatch-{event_id}-{plugin_id}` /
 `reconcile-{event_id}-{plugin_id}`). Each VPS claims only PluginKeys loaded on
 that process **and** only events its own node catalog matches (type, schema
-version, filter). `[events.concurrency]` is both the local worker count **and** the
+version, filter). `[events]` retention and concurrency are stored in the database after the
+first import (`core.events`; see [configuration](configuration.md) and
+[ADR: Control plane](adr/control-plane.md)). `[events.concurrency]` is both the
+local worker count **and** the
 cluster-wide max `running` deliveries per `(plugin_id, resource_class)`
 (serialized with a portable `bookclerk_slots` row).
 `EventResult::suspended` may set `wakeOnEventType` / `wakeOnFilterJson`; the

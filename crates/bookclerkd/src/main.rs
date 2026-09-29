@@ -5,6 +5,7 @@
 
 mod api;
 mod auth;
+mod config_authority;
 mod csrf;
 mod event_worker;
 mod http_error;
@@ -30,7 +31,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_config::{init_tracing_with, Config, ListenAddrs, LogFormat, TracingOptions};
-use bookclerk_library::configure_master_key_with;
 use clap::Parser;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 
@@ -112,11 +112,24 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
-    configure_master_key_with(&paths.files_dir, config.auth_password().as_deref())?;
 
     let database_registry = bookclerk_plugin_host::load_external_database(&config).await?;
     let library_store =
         bookclerk_plugin_host::open_library_store(&config, &database_registry).await?;
+    let control_plane = bookclerk_library::control_plane::bootstrap_control_plane(
+        &library_store,
+        &paths.files_dir,
+        config.auth_password().as_deref(),
+        &config.events,
+    )
+    .await?;
+    bookclerk_library::control_plane::overlay_events(&mut config, &control_plane.events);
+    tracing::info!(
+        host_id = %control_plane.host.host_id,
+        cluster_id = %control_plane.cluster_id,
+        events_revision = control_plane.events.revision,
+        "enrolled control plane; core.events is database-authoritative"
+    );
     let session_services =
         bookclerk_plugin_host::SessionServices::with_event_outbox(library_store.clone());
     let integrations = bookclerk_plugin_host::load_integrations(&config, &session_services).await?;
@@ -165,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
     }
     start_job_runtime(state.clone()).await;
     start_event_runtime(state.clone());
+    config_authority::spawn_config_reconciler(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

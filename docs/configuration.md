@@ -114,6 +114,33 @@ dead_letter_retention_days = 30
 concurrency = 1
 ```
 
+`[events]` is the first database-backed configuration domain (`core.events`).
+See [ADR: Control plane](adr/control-plane.md).
+
+On first enrollment the effective TOML and `BOOKCLERK_EVENTS_*` values are
+imported once. After that row exists the database is the authority: startup,
+reload, `bookclerk config set events.*`, and later environment variables do
+not overwrite it. `bookclerk config show` prints `events.authority = database`
+and `events.revision`. A compare-and-swap write that loses returns a revision
+conflict and leaves the stored document unchanged.
+
+```bash
+bookclerk config get events.retention_days
+bookclerk config set events.retention_days 14
+```
+
+The daemon operator API is `GET` / `PUT /api/config/domains/core.events`
+(`expected_revision` plus the three fields). `PATCH /api/settings` still
+accepts `events.*` and writes them through the same compare-and-swap path
+instead of `config.toml`. `GET /api/settings` includes `events.revision` in
+`effective`.
+
+Running processes re-read the document about every 5 seconds and on startup.
+Retention and the in-flight cap apply on the next dispatcher tick. The number
+of local delivery tasks is chosen at process start. Other `[events]` neighbors
+in this file (`[library]`, `[jobs]`, sources, output, media, plugins,
+diagnostics) are still TOML and environment configuration.
+
 Acked/rejected deliveries use `retention_days`. Parent events with no remaining
 live deliveries are kept until that same cutoff so a late node can still
 reconcile. Dead letters use the longer `dead_letter_retention_days`. Cleanup
@@ -122,6 +149,26 @@ runs at daemon start and hourly, not on every dispatcher tick.
 max `running` deliveries per `(plugin_id, resource_class)` (claim still filters by
 loaded plugin ids; a portable `bookclerk_slots` row serializes that
 count). See [jobs.md](jobs.md) and [plugins.md](plugins.md).
+
+Allowed writes: retention fields `1..=3650`, concurrency `1..=32`.
+
+### Bootstrap files
+
+These stay outside the database because the process needs them before
+`core.events` can be read:
+
+| File / setting | Role |
+| --- | --- |
+| `[database]` and `BOOKCLERK_DATABASE_*` / D1 / Postgres env | Which library database to open |
+| `master.key` plus `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | Cluster data-encryption key |
+| `host-identity.json` | Stable host id and the cluster id this files directory joined |
+
+A second host joining an existing database must have the same `master.key`.
+Bookclerk does not mint a new key when the database already has a secret-root
+fingerprint. Copy `master.key` and the database settings. Omit
+`host-identity.json` when the process should be a new host; copying that file
+reuses the host id. A file bound to a different cluster id fails without
+rewriting either side.
 
 ## Identity broker (`[auth.oidc]`)
 

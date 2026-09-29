@@ -18,9 +18,8 @@ use bookclerk_acquire::sidecar_key;
 use bookclerk_config::{Config, ListenAddrs};
 use bookclerk_integrations::{portal_spa_router, IntegrationRegistry, PortalState};
 use bookclerk_library::{
-    configure_master_key_with, hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord,
-    JobTrigger, LibraryStore, NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus,
-    TitleRequestRecord,
+    hash_token, AcquireStatus, BookRecord, ClaimTicketRecord, JobRecord, JobTrigger, LibraryStore,
+    NewTitleRequest, NewTitleRequestSource, QueueWisher, RequestStatus, TitleRequestRecord,
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, cores_to_percent, effective_cpu_cores, format_cpu_cores,
@@ -814,6 +813,11 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
 
     let operator_only = Router::new()
         .route("/api/config/reload", post(reload_config))
+        .route(
+            "/api/config/domains/core.events",
+            get(crate::config_authority::get_events_domain)
+                .put(crate::config_authority::put_events_domain),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",
@@ -1295,9 +1299,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         )
     };
 
-    let new_cfg = Config::load(Some(files_dir.clone()), Some(config_path.clone()))?;
+    let mut new_cfg = Config::load(Some(files_dir.clone()), Some(config_path.clone()))?;
     validate_daemon_listen(&new_cfg)?;
-    configure_master_key_with(&files_dir, new_cfg.auth_password().as_deref())?;
     new_cfg.warn_unsupported_options();
 
     // Build the full candidate before mutating live state.
@@ -1326,6 +1329,14 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         Some(lib) => lib.clone(),
         None => state.library_snapshot().await,
     };
+    let control_plane = bookclerk_library::control_plane::bootstrap_control_plane(
+        &library_for_auth,
+        &files_dir,
+        new_cfg.auth_password().as_deref(),
+        &new_cfg.events,
+    )
+    .await?;
+    bookclerk_library::control_plane::overlay_events(&mut new_cfg, &control_plane.events);
 
     let candidate_auth = build_operator_auth(&new_cfg, &library_for_auth).await?;
     // Defense in depth: never publish a non-loopback listen with auth disabled
@@ -1616,18 +1627,35 @@ fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
             .parse::<u64>()
             .map(|_| value.to_string())
             .map_err(|_| "library.scan_interval_minutes must be a non-negative integer".into()),
-        "jobs.max_pending"
-        | "jobs.max_attempts"
-        | "jobs.concurrency.network"
-        | "events.concurrency" => value
+        "jobs.max_pending" | "jobs.max_attempts" | "jobs.concurrency.network" => value
             .parse::<u32>()
             .map(|n| n.max(1).to_string())
             .map_err(|_| format!("{key} must be a positive integer")),
-        "jobs.lease_seconds"
-        | "jobs.retention_days"
-        | "jobs.temp_quota_bytes"
-        | "events.retention_days"
-        | "events.dead_letter_retention_days" => value
+        "events.concurrency" => {
+            let n = value
+                .parse::<u32>()
+                .map_err(|_| format!("{key} must be an integer"))?;
+            if !(1..=bookclerk_library::control_plane::MAX_EVENTS_CONCURRENCY).contains(&n) {
+                return Err(format!(
+                    "{key} must be 1..={}",
+                    bookclerk_library::control_plane::MAX_EVENTS_CONCURRENCY
+                ));
+            }
+            Ok(n.to_string())
+        }
+        "events.retention_days" | "events.dead_letter_retention_days" => {
+            let n = value
+                .parse::<u64>()
+                .map_err(|_| format!("{key} must be an integer"))?;
+            if !(1..=bookclerk_library::control_plane::MAX_EVENTS_RETENTION_DAYS).contains(&n) {
+                return Err(format!(
+                    "{key} must be 1..={}",
+                    bookclerk_library::control_plane::MAX_EVENTS_RETENTION_DAYS
+                ));
+            }
+            Ok(n.to_string())
+        }
+        "jobs.lease_seconds" | "jobs.retention_days" | "jobs.temp_quota_bytes" => value
             .parse::<u64>()
             .map(|n| n.to_string())
             .map_err(|_| format!("{key} must be a non-negative integer")),
@@ -3105,6 +3133,9 @@ async fn get_settings(
             "true".into(),
         );
     }
+    if let Some(revision) = cfg.events_revision {
+        effective.insert("events.revision".into(), revision.to_string());
+    }
     Ok(Json(SettingsResponse {
         settings,
         effective,
@@ -3236,15 +3267,29 @@ async fn patch_settings(
     }
 
     let mut normalized_pairs = Vec::<(String, String)>::new();
+    let mut events_updates = Vec::<(String, String)>::new();
     for (key, value) in &updates {
         if key.starts_with("database.") && key.ends_with(".enabled") {
             // Exclusive enablement is applied via `apply_database_enable_updates`.
+            continue;
+        }
+        if key.starts_with("events.") {
+            events_updates.push((key.clone(), value.clone()));
             continue;
         }
         normalized_pairs.push((key.clone(), value.clone()));
     }
 
     let _reload_guard = state.reload_lock.lock().await;
+    if !events_updates.is_empty() {
+        crate::config_authority::commit_events_settings(&state, &events_updates).await?;
+    }
+    if normalized_pairs.is_empty() && enabling.is_empty() {
+        drop(_reload_guard);
+        return get_settings(State(state))
+            .await
+            .map_err(IntoResponse::into_response);
+    }
 
     let mut cfg = Config::load(Some(files_dir), Some(config_path.clone())).map_err(|err| {
         tracing::error!(error = %err, "failed to load config for settings update");

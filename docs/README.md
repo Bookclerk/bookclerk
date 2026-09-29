@@ -34,6 +34,7 @@ Start here if you are new:
 | [ADR: Plugin-provided OIDC clients](adr/plugin-oidc-clients.md) | Players declare IdP clients via `oidcClients` / `[[oidc.clients]]`; enable toggles; redirects from plugin settings |
 | [ADR: SQL database contract](adr/sql-database-contract.md) | SQL-only backends; host-resolved canonical SQL + proofs; adapter-owned lowering |
 | [ADR: Schema versioning](adr/schema-versioning.md) | Frozen schema integers, checksums, backups, fail-closed, last-reversible CLI |
+| [ADR: Control plane](adr/control-plane.md) | Bootstrap boundary, stable host id, database-backed `[events]` (spike for #192; not production HA) |
 | [Plugin registry](plugin-registry.md) | crates.io taxonomy, native vs workerd archives, catalog roadmap |
 | [Packaging](packaging.md) | `cargo package-*` aliases, platform bundles, release CI |
 | [Source candidates](source-candidates.md) | Research notes for stores not yet implemented |
