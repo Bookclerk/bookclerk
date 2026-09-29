@@ -232,3 +232,150 @@ fn enrolled_database_rejects_missing_and_wrong_keys_and_accepts_the_cluster_key(
     assert_eq!(fs::read(master_key_path(files)).unwrap(), key);
     assert_eq!(secret_rows(files), secrets);
 }
+
+const EVENTS_SECRET_SENTINEL: &str = "bc-show-sentinel-7f3c";
+
+fn credential_url() -> String {
+    format!("postgres://operator:{EVENTS_SECRET_SENTINEL}@127.0.0.1:1/library")
+}
+
+fn secret_env(url: &str) -> [(&str, &str); 2] {
+    [
+        ("AWS_SECRET_ACCESS_KEY", EVENTS_SECRET_SENTINEL),
+        ("BOOKCLERK_DATABASE_POSTGRES_URL", url),
+    ]
+}
+
+fn combined_output(output: &std::process::Output) -> (String, String, String) {
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let combined = format!("{stdout}\n{stderr}");
+    (stdout, stderr, combined)
+}
+
+fn assert_events_secrets_absent(output: &std::process::Output, url: &str, label: &str) {
+    let (stdout, stderr, combined) = combined_output(output);
+    assert!(
+        !combined.contains(EVENTS_SECRET_SENTINEL),
+        "{label} printed the secret sentinel\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !combined.contains(url),
+        "{label} printed the credential URL\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !combined.contains(&format!("operator:{EVENTS_SECRET_SENTINEL}@")),
+        "{label} printed URL userinfo\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn config_show_redacts_events_errors_and_prints_valid_values() {
+    let url = credential_url();
+
+    let backend_dir = tempfile::tempdir().unwrap();
+    fs::write(
+        backend_dir.path().join("config.toml"),
+        format!("[database]\nplugin = \"{EVENTS_SECRET_SENTINEL}\"\n"),
+    )
+    .unwrap();
+    let backend = run_bookclerk(backend_dir.path(), &["config", "show"], &secret_env(&url));
+    assert!(
+        backend.status.success(),
+        "config show stays successful when events cannot load: {}",
+        stderr(&backend)
+    );
+    let (backend_out, _, _) = combined_output(&backend);
+    assert!(
+        backend_out.contains("database unavailable"),
+        "backend failure should stay understandable:\n{backend_out}"
+    );
+    assert!(
+        backend_out.contains("not installed"),
+        "backend error should still name the missing plugin:\n{backend_out}"
+    );
+    assert!(
+        backend_out.contains("[REDACTED]"),
+        "backend error should scrub the registered plugin id:\n{backend_out}"
+    );
+    assert_events_secrets_absent(&backend, &url, "backend error");
+
+    let files_dir = tempfile::tempdir().unwrap();
+    let files = files_dir.path();
+    write_config(files);
+    stage_sqlite_plugin(files);
+    let approved = run_bookclerk(files, &["plugins", "approve", "sqlite", "--yes"], &[]);
+    assert!(
+        approved.status.success(),
+        "approve sqlite: {}",
+        stderr(&approved)
+    );
+    let enrolled = run_bookclerk(files, &["config", "get", "events.retention_days"], &[]);
+    assert!(
+        enrolled.status.success(),
+        "enrollment: {}",
+        stderr(&enrolled)
+    );
+
+    let shown = run_bookclerk(files, &["config", "show"], &secret_env(&url));
+    assert!(shown.status.success(), "valid show: {}", stderr(&shown));
+    let (shown_out, _, _) = combined_output(&shown);
+    assert!(
+        shown_out.contains("events.authority = database"),
+        "{shown_out}"
+    );
+    assert!(shown_out.contains("events.revision = "), "{shown_out}");
+    assert!(
+        shown_out.contains("events.retention_days = 7"),
+        "{shown_out}"
+    );
+    assert!(
+        shown_out.contains("events.dead_letter_retention_days = 30"),
+        "{shown_out}"
+    );
+    assert!(shown_out.contains("events.concurrency = 1"), "{shown_out}");
+    assert!(
+        !shown_out.contains("database unavailable"),
+        "valid events must not look like a load failure:\n{shown_out}"
+    );
+    assert_events_secrets_absent(&shown, &url, "valid show");
+
+    let conn = rusqlite::Connection::open(files.join("library.db")).expect("library.db");
+    let malformed =
+        format!(r#"{{"retention_days":"{url}","dead_letter_retention_days":30,"concurrency":1}}"#);
+    let updated = conn
+        .execute(
+            "UPDATE configuration_documents SET document_json = ?1 WHERE namespace = 'core.events'",
+            [&malformed],
+        )
+        .expect("corrupt events document");
+    assert_eq!(updated, 1, "events document should exist after enrollment");
+    let parsed = run_bookclerk(files, &["config", "show"], &secret_env(&url));
+    assert!(
+        parsed.status.success(),
+        "parser failure is reported on stdout: {}",
+        stderr(&parsed)
+    );
+    let (parsed_out, _, _) = combined_output(&parsed);
+    assert!(
+        parsed_out.contains("events.authority = transitional"),
+        "{parsed_out}"
+    );
+    assert!(
+        parsed_out.contains("database unavailable"),
+        "parser failure should stay understandable:\n{parsed_out}"
+    );
+    assert!(
+        parsed_out.contains("invalid configuration"),
+        "parser failure should still say the document is invalid:\n{parsed_out}"
+    );
+    assert!(
+        parsed_out.contains("[REDACTED]"),
+        "parser error should scrub the credential URL:\n{parsed_out}"
+    );
+    assert!(
+        parsed_out.contains("events.retention_days = 7"),
+        "transitional retention should still display:\n{parsed_out}"
+    );
+    assert_events_secrets_absent(&parsed, &url, "parser error");
+}

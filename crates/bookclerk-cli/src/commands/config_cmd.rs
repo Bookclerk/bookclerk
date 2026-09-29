@@ -899,12 +899,59 @@ async fn print_events_authority(config: &Config) {
         }
         Err(err) => {
             println!("events.authority = transitional");
+            let detail = safe_events_load_error(&err);
             println!(
-                "events.retention_days = {} (config.toml / environment; database unavailable: {err})",
+                "events.retention_days = {} (config.toml / environment; {detail})",
                 config.events.retention_days
             );
         }
     }
+}
+
+/// Stable events-load failure for stdout.
+///
+/// The raw anyhow chain can carry parser text (serde echoes a bad stored
+/// value) and backend text (paths and connection URLs). Registered secrets
+/// and `user:password@` URL userinfo are removed. The `database unavailable`
+/// prefix stays so the failure is still recognizable.
+fn safe_events_load_error(err: &anyhow::Error) -> String {
+    let mut chain = err.to_string();
+    for cause in err.chain().skip(1) {
+        chain.push_str(": ");
+        chain.push_str(&cause.to_string());
+    }
+    let scrubbed = redact_credential_urls(&bookclerk_config::redact_str(&chain));
+    format!("database unavailable: {scrubbed}")
+}
+
+/// Replaces `scheme://user:password@host` userinfo.
+///
+/// Runs after [`bookclerk_config::redact_str`], so a URL that was not registered
+/// as an exact secret still cannot print its password.
+fn redact_credential_urls(input: &str) -> String {
+    let mut out = String::new();
+    let mut rest = input;
+    while let Some(marker) = rest.find("://") {
+        let after = marker + 3;
+        out.push_str(&rest[..after]);
+        let tail = &rest[after..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ','))
+            .unwrap_or(tail.len());
+        let authority = &tail[..end];
+        if let Some(at) = authority.find('@') {
+            let userinfo = &authority[..at];
+            if userinfo.contains(':') {
+                out.push_str(bookclerk_config::REDACTED);
+                out.push('@');
+                rest = &tail[at + 1..];
+                continue;
+            }
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Loads `core.events` without importing a missing document.
