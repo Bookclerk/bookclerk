@@ -30,8 +30,14 @@ const HEADER_LEN: u64 = 32;
 const MAX_INDEX_KEY_LEN: usize = 64 * 1024;
 
 #[cfg(test)]
-static REBUILD_GATE: std::sync::Mutex<Option<std::sync::Arc<std::sync::Barrier>>> =
-    std::sync::Mutex::new(None);
+thread_local! {
+    static REBUILD_GATE: std::cell::Cell<Option<std::sync::Arc<std::sync::Barrier>>> =
+        const { std::cell::Cell::new(None) };
+    static BEFORE_LOCK_ENTER: std::cell::Cell<Option<std::sync::Arc<std::sync::Barrier>>> =
+        const { std::cell::Cell::new(None) };
+    static BEFORE_LOCK_RELEASE: std::cell::Cell<Option<std::sync::Arc<std::sync::Barrier>>> =
+        const { std::cell::Cell::new(None) };
+}
 
 /// Build counters visible across `spawn_blocking` workers.
 #[cfg(test)]
@@ -127,9 +133,12 @@ fn rebuild_index(
     let index_root = prepare_index_root(root)?;
     sweep_abandoned_builds(&index_root)?;
     let build_id = uuid::Uuid::new_v4();
-    let build_dir = index_root.join("builds").join(build_id.to_string());
-    fs::create_dir_all(&build_dir)?;
-    let lock_path = build_dir.join("active.lock");
+    // Private until the lock is held. The sweeper only visits `builds/`, so a
+    // directory that is not locked yet is never published there.
+    let preparing = index_root.join(".preparing").join(build_id.to_string());
+    fs::create_dir_all(&preparing)?;
+    pause_before_lock();
+    let lock_path = preparing.join("active.lock");
     let build_lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -137,6 +146,11 @@ fn rebuild_index(
         .write(true)
         .open(&lock_path)?;
     fs4::FileExt::lock(&build_lock)?;
+    let build_dir = index_root.join("builds").join(build_id.to_string());
+    if let Some(parent) = build_dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(&preparing, &build_dir)?;
     let generation = claim_generation(&generation_path(final_path))?;
     wait_for_test_gate();
     let published = (|| {
@@ -154,11 +168,24 @@ fn rebuild_index(
     published
 }
 
+fn pause_before_lock() {
+    #[cfg(test)]
+    {
+        let enter = BEFORE_LOCK_ENTER.with(|cell| cell.take());
+        let release = BEFORE_LOCK_RELEASE.with(|cell| cell.take());
+        if let Some(enter) = enter {
+            enter.wait();
+        }
+        if let Some(release) = release {
+            release.wait();
+        }
+    }
+}
+
 fn wait_for_test_gate() {
     #[cfg(test)]
     {
-        let gate = REBUILD_GATE.lock().ok().and_then(|guard| guard.clone());
-        if let Some(gate) = gate {
+        if let Some(gate) = REBUILD_GATE.with(|cell| cell.take()) {
             gate.wait();
         }
     }
@@ -808,18 +835,18 @@ mod tests {
             ],
         );
         let barrier = Arc::new(Barrier::new(4));
-        *REBUILD_GATE.lock().unwrap() = Some(Arc::clone(&barrier));
         let root_path = root.path().to_path_buf();
         let mut joins = Vec::new();
         for prefix in ["same/", "same/", "left/", "right/"] {
             let root_path = root_path.clone();
             let prefix = prefix.to_string();
+            let barrier = Arc::clone(&barrier);
             joins.push(thread::spawn(move || {
+                REBUILD_GATE.with(|cell| cell.set(Some(barrier)));
                 list_page_indexed(&root_path, "", &prefix, None, 100).unwrap()
             }));
         }
         let pages: Vec<_> = joins.into_iter().map(|join| join.join().unwrap()).collect();
-        *REBUILD_GATE.lock().unwrap() = None;
         assert_eq!(
             keys_of(&pages[0]),
             vec!["same/a.txt", "same/b.txt", "same/c.txt"]
@@ -832,6 +859,36 @@ mod tests {
         assert_eq!(
             leftover, 0,
             "finished builds remove their scratch directories"
+        );
+    }
+
+    #[test]
+    fn sweeper_during_pre_lock_pause_does_not_remove_the_live_build() {
+        let root = tempfile::tempdir().unwrap();
+        write_keys(root.path(), &["a.txt", "b.txt"]);
+        let enter = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let root_path = root.path().to_path_buf();
+        let enter_build = Arc::clone(&enter);
+        let release_build = Arc::clone(&release);
+        let built = thread::spawn(move || {
+            BEFORE_LOCK_ENTER.with(|cell| cell.set(Some(enter_build)));
+            BEFORE_LOCK_RELEASE.with(|cell| cell.set(Some(release_build)));
+            list_page_indexed(&root_path, "", "", None, 10)
+        });
+        enter.wait();
+        let index = root.path().join(".bookclerk-list-index");
+        sweep_abandoned_builds(&index).unwrap();
+        let preparing = index.join(".preparing");
+        assert!(
+            preparing.read_dir().map(|rd| rd.count()).unwrap_or(0) > 0,
+            "the unpublished build must still exist while it waits for its lock"
+        );
+        release.wait();
+        let page = built.join().unwrap().unwrap();
+        assert_eq!(
+            keys_of(&page),
+            vec!["a.txt".to_string(), "b.txt".to_string()]
         );
     }
 
