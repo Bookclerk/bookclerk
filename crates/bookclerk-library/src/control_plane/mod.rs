@@ -24,7 +24,7 @@ pub use identity::{
     current_process_incarnation, host_identity_path, load_or_create_host_identity, HostIdentity,
     HostRecord, HOST_IDENTITY_FILE,
 };
-pub use secret::{align_secret_root, load_cluster_row, ClusterSecret};
+pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
 
 use documents::{import_if_absent, load_document, replace_document};
 use identity::heartbeat_process;
@@ -208,7 +208,7 @@ pub async fn bootstrap_control_plane(
     events_seed: &bookclerk_config::EventsConfig,
 ) -> Result<ControlPlaneSession> {
     let _identity = identity::load_or_create_host_identity(files_dir)?;
-    let secret = align_secret_root(store, files_dir, password).await?;
+    let secret = align_cluster_root(store, files_dir, password).await?;
     let identity = identity::bind_cluster_id(files_dir, &secret.cluster_id)?;
     let host = heartbeat_process(store, &identity.host_id, &secret.cluster_id).await?;
     let events = import_events_if_absent(

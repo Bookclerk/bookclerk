@@ -53,7 +53,7 @@ pub struct ClusterSecret {
 ///
 /// Returns an error when bootstrap material is missing or does not match the
 /// database. Existing rows are not updated on failure.
-pub async fn align_secret_root(
+pub async fn align_cluster_root(
     store: &LibraryStore,
     files_dir: &Path,
     password: Option<&str>,

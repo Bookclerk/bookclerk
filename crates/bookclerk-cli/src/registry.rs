@@ -39,7 +39,7 @@ pub async fn integrations_with_plugins(
 pub async fn open_library(config: &Config) -> anyhow::Result<LibraryStore> {
     let registry = bookclerk_plugin_host::load_external_database(config).await?;
     let store = bookclerk_plugin_host::open_library_store(config, &registry).await?;
-    bookclerk_library::control_plane::align_secret_root(
+    bookclerk_library::control_plane::align_cluster_root(
         &store,
         &config.paths().files_dir,
         config.auth_password().as_deref(),

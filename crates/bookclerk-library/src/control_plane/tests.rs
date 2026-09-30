@@ -8,7 +8,7 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, EntityTrait};
 use tempfile::tempdir;
 use uuid::Uuid;
 
-use super::secret::align_secret_root;
+use super::secret::align_cluster_root;
 use super::*;
 use crate::entities::configuration_documents;
 use crate::master_key::{master_key_fingerprint, master_key_path, master_key_test_lock_async};
@@ -803,7 +803,7 @@ async fn missing_and_wrong_secret_roots_do_not_replace_the_cluster_key() {
         .unwrap()
         .secret_fingerprint;
     std::fs::remove_file(master_key_path(files.path())).unwrap();
-    let missing = align_secret_root(&store, files.path(), None)
+    let missing = align_cluster_root(&store, files.path(), None)
         .await
         .expect_err("missing key");
     assert!(
@@ -823,7 +823,7 @@ async fn missing_and_wrong_secret_roots_do_not_replace_the_cluster_key() {
     let other = tempdir().unwrap();
     crate::configure_master_key(other.path()).unwrap();
     std::fs::copy(master_key_path(other.path()), master_key_path(files.path())).unwrap();
-    let wrong = align_secret_root(&store, files.path(), None)
+    let wrong = align_cluster_root(&store, files.path(), None)
         .await
         .expect_err("wrong key");
     assert!(
@@ -861,7 +861,9 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
         .unwrap()
         .unwrap()
         .secret_fingerprint;
-    let again = align_secret_root(&store, files.path(), None).await.unwrap();
+    let again = align_cluster_root(&store, files.path(), None)
+        .await
+        .unwrap();
     assert_eq!(again.cluster_id, session.cluster_id);
     assert_eq!(again.secret_fingerprint, fingerprint);
     assert_eq!(
@@ -876,12 +878,12 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
     let left = {
         let store = Arc::clone(&store);
         let path = dir_a.path().to_path_buf();
-        tokio::spawn(async move { align_secret_root(&store, &path, None).await })
+        tokio::spawn(async move { align_cluster_root(&store, &path, None).await })
     };
     let right = {
         let store = Arc::clone(&store);
         let path = dir_b.path().to_path_buf();
-        tokio::spawn(async move { align_secret_root(&store, &path, None).await })
+        tokio::spawn(async move { align_cluster_root(&store, &path, None).await })
     };
     let left = left
         .await
@@ -914,7 +916,7 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
         !master_key_path(loser_dir).exists(),
         "losing initializer must not keep a second master.key"
     );
-    let winner = align_secret_root(&store, winner_dir, None).await.unwrap();
+    let winner = align_cluster_root(&store, winner_dir, None).await.unwrap();
     assert_eq!(winner.secret_fingerprint, row.secret_fingerprint);
     assert_eq!(
         master_key_fingerprint(&require_master_key(Some(winner_dir)).unwrap()),
