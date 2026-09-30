@@ -131,6 +131,11 @@ pub fn encode_to_mp3_native(
             193..=256 => mp3lame_encoder::Bitrate::Kbps256,
             _ => mp3lame_encoder::Bitrate::Kbps320,
         };
+        // LAME defaults to VBR. Leave that on and `bitrate_kbps` does not
+        // bound the file; silence stays far below the requested constant rate.
+        builder
+            .set_vbr_mode(mp3lame_encoder::VbrMode::Off)
+            .map_err(|err| MediaError::Native(format!("lame cbr mode: {err:?}")))?;
         builder
             .set_brate(br)
             .map_err(|err| MediaError::Native(format!("lame bitrate: {err:?}")))?;
@@ -661,14 +666,7 @@ mod tests {
         };
         let capped = encode_to_mp3_native(&source, &encoded, &lame, None, Some(source_len));
         let expanded = dir.path().join("expanded.mp3");
-        encode_to_mp3_native(
-            &source,
-            &expanded,
-            &lame,
-            None,
-            Some(source_len.saturating_mul(8).max(source_len + 1)),
-        )
-        .expect("encode within an expansion allowance");
+        encode_to_mp3_native(&source, &expanded, &lame, None, None).expect("encode without a cap");
         let out_len = std::fs::metadata(&expanded).expect("mp3").len();
         assert!(
             out_len > source_len,
@@ -678,6 +676,41 @@ mod tests {
             capped.is_err(),
             "capping the MP3 at the {source_len} byte source must fail when output is {out_len}"
         );
-        assert!(out_len <= source_len.saturating_mul(8).max(source_len + 1));
+    }
+
+    /// 32 kbps AAC-LC converted at 320 kbps CBR expands by about ten times.
+    /// Eight times the source is not an encoded-size bound.
+    #[test]
+    fn low_bitrate_aac_at_320kbps_exceeds_eight_times_the_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.m4b");
+        let encoded = dir.path().join("encoded.mp3");
+        // Stereo so LAME can use MPEG-1 320 kbps. Mono is capped near 160 kbps,
+        // which does not clear 8× a 32 kbps AAC file.
+        let sample_rate = 48_000u32;
+        let seconds = 4usize;
+        let channels = 2u16;
+        let pcm = vec![0i16; sample_rate as usize * seconds * usize::from(channels)];
+        crate::package_m4b::package_m4b_from_pcm_cbr(
+            &pcm,
+            sample_rate,
+            channels,
+            32_000,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .expect("32 kbps AAC source");
+        let source_len = std::fs::metadata(&source).expect("source").len();
+        let lame = bookclerk_config::LameConfig {
+            constant_bitrate: true,
+            bitrate_kbps: 320,
+            ..bookclerk_config::LameConfig::default()
+        };
+        encode_to_mp3_native(&source, &encoded, &lame, None, None).expect("320 kbps encode");
+        let out_len = std::fs::metadata(&encoded).expect("mp3").len();
+        assert!(
+            out_len > source_len.saturating_mul(8),
+            "320 kbps MP3 ({out_len}) did not exceed 8× the 32 kbps AAC source ({source_len})"
+        );
     }
 }

@@ -115,19 +115,66 @@ pub fn package_m4b_from_pcm(
     output: &Path,
     chapter_boundaries_ms: &[(String, u64)],
 ) -> Result<(MediaOutcome, Vec<(String, u64)>)> {
+    let bitrate = if channels == 1 { 64_000 } else { 96_000 };
+    package_m4b_from_pcm_at(
+        pcm,
+        sample_rate,
+        channels,
+        bitrate,
+        output,
+        chapter_boundaries_ms,
+    )
+}
+
+/// Encode interleaved PCM at `bitrate_bps` and mux an M4B.
+///
+/// Used to build a low-bitrate AAC source for expansion tests. The public
+/// helper keeps the speech defaults (64 kbps mono / 96 kbps stereo).
+///
+/// # Errors
+///
+/// Returns an error when the encoder or muxer fails.
+#[cfg(test)]
+pub(crate) fn package_m4b_from_pcm_cbr(
+    pcm: &[i16],
+    sample_rate: u32,
+    channels: u16,
+    bitrate_bps: u32,
+    output: &Path,
+    chapter_boundaries_ms: &[(String, u64)],
+) -> Result<(MediaOutcome, Vec<(String, u64)>)> {
+    package_m4b_from_pcm_at(
+        pcm,
+        sample_rate,
+        channels,
+        bitrate_bps,
+        output,
+        chapter_boundaries_ms,
+    )
+}
+
+/// Shared PCM-to-M4B body for the speech default and an explicit CBR.
+fn package_m4b_from_pcm_at(
+    pcm: &[i16],
+    sample_rate: u32,
+    channels: u16,
+    bitrate_bps: u32,
+    output: &Path,
+    chapter_boundaries_ms: &[(String, u64)],
+) -> Result<(MediaOutcome, Vec<(String, u64)>)> {
     if pcm.is_empty() {
         return Err(MediaError::Native("PCM is empty".into()));
     }
-    if sample_rate == 0 || channels == 0 {
+    if sample_rate == 0 || channels == 0 || bitrate_bps == 0 {
         return Err(MediaError::Native(
-            "sample_rate and channels must be non-zero".into(),
+            "sample_rate, channels, and bitrate must be non-zero".into(),
         ));
     }
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut session = StreamingAacSession::new(sample_rate, channels, output)?;
+    let mut session = StreamingAacSession::new(sample_rate, channels, bitrate_bps, output)?;
     // Feed in ~1s chunks so even large test buffers encode without holding AUs.
     let chunk_frames = sample_rate.max(1) as usize;
     let stride = chunk_frames * usize::from(channels);
@@ -364,7 +411,8 @@ fn package_m4b_transcode_parts(
             }
 
             if session.is_none() {
-                session = Some(StreamingAacSession::new(rate, ch, &req.output)?);
+                let bitrate = if ch == 1 { 64_000 } else { 96_000 };
+                session = Some(StreamingAacSession::new(rate, ch, bitrate, &req.output)?);
             }
             let sess = session.as_mut().expect("session just initialized");
             let frames = (pcm_chunk.len() as u64) / u64::from(ch.max(1));
@@ -432,16 +480,14 @@ struct StreamingAacSession {
 impl StreamingAacSession {
     /// `output` is the M4B, and the encoder writes each access unit into it as
     /// it comes out.
-    fn new(sample_rate: u32, pcm_channels: u16, output: &Path) -> Result<Self> {
+    fn new(sample_rate: u32, pcm_channels: u16, bitrate_bps: u32, output: &Path) -> Result<Self> {
         let channel_mode = match pcm_channels {
             1 => ChannelMode::Mono,
             _ => ChannelMode::Stereo,
         };
-        // ~64 kbps mono / ~96 kbps stereo — fine for speech audiobooks.
-        let bitrate = if pcm_channels == 1 { 64_000 } else { 96_000 };
 
         let encoder = Encoder::new(EncoderParams {
-            bit_rate: BitRate::Cbr(bitrate),
+            bit_rate: BitRate::Cbr(bitrate_bps),
             sample_rate,
             transport: Transport::Raw,
             channels: channel_mode,
@@ -772,7 +818,7 @@ mod tests {
         let channels = 1u16;
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("stream.m4b");
-        let mut session = StreamingAacSession::new(sample_rate, channels, &out).unwrap();
+        let mut session = StreamingAacSession::new(sample_rate, channels, 64_000, &out).unwrap();
         // ~2 seconds of silence, pushed in small packets.
         let packet = vec![0i16; 256];
         for _ in 0..(sample_rate as usize * 2 / 256) {
@@ -797,7 +843,7 @@ mod tests {
         let sample_rate = 22_050u32;
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("patched.m4b");
-        let mut session = StreamingAacSession::new(sample_rate, 2, &out).unwrap();
+        let mut session = StreamingAacSession::new(sample_rate, 2, 96_000, &out).unwrap();
         session
             .push_pcm(&vec![0i16; (sample_rate as usize) * 2])
             .unwrap();

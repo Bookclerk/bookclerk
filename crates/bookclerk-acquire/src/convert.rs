@@ -322,10 +322,12 @@ impl ScratchDir {
     }
 }
 
-/// Output may exceed the input. Eight times the input covers a higher MP3
-/// bitrate than a compact source, and is still capped by the quota that
-/// remains after the input bytes. No configured quota passes `u64::MAX`,
-/// which [`allowance_cap`] turns into an absent worker cap.
+/// Output may exceed the input by more than any fixed multiple.
+///
+/// A configured quota reserves every byte not already used by the input.
+/// That is the worker write cap. A 32 kbps AAC source encoded at 320 kbps
+/// can pass eight times the input and still fit. No configured quota passes
+/// `u64::MAX`, which [`allowance_cap`] turns into an absent worker cap.
 ///
 /// # Errors
 ///
@@ -340,7 +342,7 @@ fn encoder_output_allowance(copied: u64, quota: u64, unlimited: bool) -> Result<
             "convert quota has no room for encoder output ({copied} bytes already used)"
         )));
     }
-    Ok(copied.saturating_mul(8).min(remaining))
+    Ok(remaining)
 }
 
 /// `u64::MAX` is the no-quota sentinel, not a byte ceiling.
@@ -800,34 +802,36 @@ mod tests {
         .await
         .unwrap();
         let quota = 80u64;
-        let peaks = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
-        let aggregate = Arc::new(AtomicU64::new(0));
-        let mut tasks = Vec::new();
-        for idx in 0..2 {
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    title: Some("convert-holder".into()),
+                    ..JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 1,
+                max_pending: 4,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = created else {
+            panic!("job");
+        };
+        let holding = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let allowance_seen = Arc::new(AtomicU64::new(0));
+        let holder = tokio::spawn({
             let store = store.clone();
             let book = book.clone();
             let root = root.clone();
-            let peaks = Arc::clone(&peaks);
-            let aggregate = Arc::clone(&aggregate);
-            let cache = dir.path().join(format!("cache-{idx}"));
-            let created = store
-                .enqueue_job(EnqueueJobSpec {
-                    kind: JobKind::Acquire,
-                    payload: JobPayload {
-                        title: Some(format!("convert-{idx}")),
-                        ..JobPayload::default()
-                    },
-                    priority: 0,
-                    max_attempts: 1,
-                    max_pending: 4,
-                    run_after: None,
-                })
-                .await
-                .unwrap();
-            let EnqueueOutcome::Created { id } = created else {
-                panic!("job");
-            };
-            tasks.push(tokio::spawn(async move {
+            let holding = Arc::clone(&holding);
+            let release = Arc::clone(&release);
+            let allowance_seen = Arc::clone(&allowance_seen);
+            let id = id.clone();
+            let cache = dir.path().join("cache-holder");
+            async move {
                 let mut req = request(&cache, quota);
                 req.job_id = Some(id);
                 let work = cache.join("convert").join("job");
@@ -840,46 +844,80 @@ mod tests {
                     &book,
                     &req,
                     &work,
-                    &format!("out-{idx}.mp3"),
-                    |_input, output, allowance| async move {
-                        assert_eq!(allowance, 32);
-                        assert!(allowance > 4);
-                        let mut file = std::fs::File::create(&output).unwrap();
-                        let mut written = 0u64;
-                        let chunk = vec![1u8; 64];
-                        let mut peak = 0u64;
-                        while bookclerk_media::write_output_within_budget(
-                            &mut file,
-                            &chunk,
-                            &mut written,
-                            Some(allowance),
-                        )
-                        .is_ok()
-                        {
-                            let len = file.metadata().unwrap().len();
-                            peak = peak.max(len);
-                            peaks[idx].store(len, Ordering::SeqCst);
-                            let sum =
-                                peaks[0].load(Ordering::SeqCst) + peaks[1].load(Ordering::SeqCst);
-                            aggregate.fetch_max(sum, Ordering::SeqCst);
-                            assert!(
-                                sum <= 64,
-                                "concurrent encoder output {sum} exceeded the reserved 64 bytes"
-                            );
+                    "out-holder.mp3",
+                    move |_input, output, allowance| async move {
+                        assert!(
+                            allowance > 32,
+                            "allowance {allowance} is still inside 8× the 4-byte input"
+                        );
+                        allowance_seen.store(allowance, Ordering::SeqCst);
+                        holding.store(true, Ordering::SeqCst);
+                        while !release.load(Ordering::SeqCst) {
+                            tokio::task::yield_now().await;
                         }
-                        assert!(peak <= allowance);
+                        std::fs::write(&output, vec![9u8; 40]).unwrap();
                         Ok(())
                     },
                 )
                 .await
-                .unwrap();
-            }));
-        }
-        for task in tasks {
-            task.await.unwrap();
-        }
-        let peak = aggregate.load(Ordering::SeqCst);
-        assert!(peak <= 64, "peak concurrent encoder output was {peak}");
+            }
+        });
+        let started = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !holding.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(started.is_ok(), "holder did not reach encode");
+        let reserved = store.list_job_temp_paths(&id).await.unwrap();
+        assert_eq!(reserved.len(), 1);
+        assert_eq!(reserved[0].reserved_bytes, quota);
+        let created = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    title: Some("convert-second".into()),
+                    ..JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 1,
+                max_pending: 4,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id: second } = created else {
+            panic!("job");
+        };
+        let cache = dir.path().join("cache-second");
+        let mut req = request(&cache, quota);
+        req.job_id = Some(second);
+        let err = convert_with_encoder(
+            &store,
+            &SizedSource {
+                inner: root.clone(),
+                advertised: 4,
+            },
+            &book,
+            &req,
+            &cache.join("convert").join("job"),
+            "out-second.mp3",
+            |_input, _output, _allowance| async { Ok(()) },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("quota"), "{err}");
+        assert!(!root.exists("out-second.mp3").await.unwrap());
+        release.store(true, Ordering::SeqCst);
+        holder.await.unwrap().unwrap();
+        let published = tokio::fs::metadata(dir.path().join("store").join("out-holder.mp3"))
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(published, 40);
+        assert!(published > 32);
+        assert!(4 + published < quota);
+        assert!(allowance_seen.load(Ordering::SeqCst) > 32);
     }
 
     #[tokio::test]
@@ -926,9 +964,12 @@ mod tests {
             &work,
             "book.mp3",
             |_input, output, allowance| async move {
-                assert_eq!(allowance, 32);
-                assert!(allowance > 4);
-                std::fs::write(&output, vec![9u8; 20]).unwrap();
+                assert_eq!(allowance, 76);
+                assert!(
+                    allowance > 32,
+                    "allowance {allowance} is still inside 8× the 4-byte input"
+                );
+                std::fs::write(&output, vec![9u8; 40]).unwrap();
                 Ok(())
             },
         )
@@ -938,8 +979,9 @@ mod tests {
             .await
             .unwrap()
             .len();
-        assert_eq!(published, 20);
-        assert!(published > 4);
+        assert_eq!(published, 40);
+        assert!(published > 32);
+        assert!(4 + published < 80);
     }
 
     #[tokio::test]

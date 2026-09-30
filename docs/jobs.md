@@ -126,15 +126,18 @@ pending → running → succeeded
   reclaim removes abandoned generations and does not remove one owned by a
   pending or running job. Local list indexes are node-local scratch and are
   not a portable checkpoint.
-- MP3 conversion counts input bytes, then reserves input plus an output
-  allowance of up to eight times the input, capped by the quota remaining
-  after the input. The allowance may exceed the source. No
-  `temp_quota_bytes` does not impose that ceiling. The worker stops writing
-  when the next chunk would pass the allowance, and dropping the encode
-  future kills the worker. Scratch is `cache/convert`. The reservation is
-  dropped only after the directory is gone. A cleanup failure keeps the
-  reservation. Startup sweep includes `convert` and keeps directories
-  registered to an active job.
+- MP3 conversion counts input bytes, then reserves the whole temp quota for
+  that scratch path: the output allowance is every quota byte not used by
+  the input. Encoded size is not capped at a multiple of the source, so a
+  low-bitrate AAC file converted at 320 kbps can exceed eight times the
+  input while input plus output stay inside the quota. The worker write cap
+  is that reserved allowance. No `temp_quota_bytes` does not impose a
+  ceiling. A second job cannot reserve more scratch until the first
+  releases the quota. The worker stops writing when the next chunk would
+  pass the allowance, and dropping the encode future kills the worker.
+  Scratch is `cache/convert`. The reservation is dropped only after the
+  directory is gone. A cleanup failure keeps the reservation. Startup sweep
+  includes `convert` and keeps directories registered to an active job.
 - Reclaim also requires `lease_expires_at` to still be null or `<= now`, so a
   heartbeat that extends the same generation cannot be stolen.
 - `POST /api/jobs/{id}/cancel` cancels `pending` immediately and flags
