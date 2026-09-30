@@ -31,10 +31,26 @@ pub async fn integrations_with_plugins(
     .await?)
 }
 
-/// Open the library database (in-process or external database plugin).
+/// Open the library and align the cluster secret root before returning it.
+///
+/// Alignment runs before the caller can cache a data-encryption key or seal a
+/// secret. An enrolled database with a missing or different `master.key` fails
+/// here, and this function does not leave a replacement key behind.
 pub async fn open_library(config: &Config) -> anyhow::Result<LibraryStore> {
     let registry = bookclerk_plugin_host::load_external_database(config).await?;
-    Ok(bookclerk_plugin_host::open_library_store(config, &registry).await?)
+    let store = bookclerk_plugin_host::open_library_store(config, &registry).await?;
+    // Do not `?` the alignment result. Its success value is cluster metadata,
+    // not this store. A missing or wrong key still fails the open.
+    if let Err(err) = bookclerk_library::control_plane::align_cluster_root(
+        &store,
+        &config.paths().files_dir,
+        config.auth_password().as_deref(),
+    )
+    .await
+    {
+        return Err(err.into());
+    }
+    Ok(store)
 }
 
 /// Resolve `--source` against registered plugin ids / aliases.

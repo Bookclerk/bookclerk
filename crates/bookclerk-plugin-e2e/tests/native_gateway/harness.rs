@@ -284,15 +284,36 @@ pub fn process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-            .output()
-            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")))
+        // `tasklist` CSV matched `"688"` inside `"6880"`, so a busy runner
+        // reported an unrelated pid as still running after the session exited.
+        windows_process_alive(pid)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = pid;
         false
+    }
+}
+
+/// Live when `OpenProcess` can read `STILL_ACTIVE` (259).
+///
+/// A missing process, or one that has already exited, is not alive. This does
+/// not parse `tasklist` text, so a nearby pid cannot impersonate `pid`.
+#[cfg(windows)]
+#[allow(unsafe_code)] // OpenProcess / GetExitCodeProcess, same check as the jail tests.
+fn windows_process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code).is_ok();
+        let _ = CloseHandle(handle);
+        ok && code == 259
     }
 }
 

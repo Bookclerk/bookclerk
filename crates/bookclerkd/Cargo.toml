@@ -60,6 +60,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+async-trait.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 http-body-util = "0.1"

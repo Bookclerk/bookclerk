@@ -729,4 +729,70 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_plugin_databases_plugin ON plugin_databases(plugin_id)",
     ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS cluster_identity (
+        id INTEGER PRIMARY KEY NOT NULL,
+        cluster_id TEXT NOT NULL,
+        secret_fingerprint TEXT NOT NULL,
+        schema_state TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS hosts (
+        host_id TEXT PRIMARY KEY NOT NULL,
+        cluster_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        incarnation TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        software_version TEXT NOT NULL,
+        schema_state TEXT NOT NULL,
+        compatible INTEGER NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_hosts_heartbeat ON hosts(heartbeat_at)"),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS configuration_documents (
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        revision INTEGER NOT NULL,
+        document_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        write_operation_id TEXT NOT NULL,
+        PRIMARY KEY (scope_type, scope_id, namespace)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS configuration_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        revision INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_configuration_audit_doc
+        ON configuration_audit(scope_type, scope_id, namespace, revision)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS configuration_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        committed_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_configuration_changes_doc
+        ON configuration_changes(scope_type, scope_id, namespace, id)",
+    ),
 ];

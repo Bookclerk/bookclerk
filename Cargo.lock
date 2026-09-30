@@ -1365,6 +1365,7 @@ dependencies = [
  "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-host",
+ "bookclerk-plugin-manifest",
  "bookclerk-search",
  "bookclerk-source",
  "bookclerk-storage",
@@ -1377,6 +1378,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-postgres",
  "toml",
@@ -1797,6 +1799,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "windows",
 ]
 
 [[package]]
@@ -2179,6 +2182,7 @@ name = "bookclerkd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "bookclerk-acquire",

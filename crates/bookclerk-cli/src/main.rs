@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bookclerk_config::{init_tracing_with, Config, LogFormat, TracingOptions};
-use bookclerk_library::configure_master_key_with;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::cli_plugin::RESERVED_PLUGIN_SUBCOMMANDS;
@@ -144,8 +143,25 @@ enum Commands {
     Version,
 }
 
+/// Starts the CLI on a thread with an 8 MiB stack.
+///
+/// Windows reserves 1 MiB for the process main thread. The command future is
+/// larger than that, so `bookclerk version` overflows before it prints. Linux
+/// main threads are 8 MiB, which fits the same future.
+fn main() -> ExitCode {
+    const CLI_STACK_BYTES: usize = 8 * 1024 * 1024;
+    std::thread::Builder::new()
+        .name("bookclerk-cli".into())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(cli_main)
+        .expect("spawn bookclerk cli thread")
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
+/// Parses arguments and dispatches one CLI invocation.
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn cli_main() -> ExitCode {
     // Phase 1: resolve files dir / config for plugin discovery (help + dynamic cmds).
     let early = Cli::command()
         .ignore_errors(true)
@@ -200,7 +216,6 @@ async fn main() -> ExitCode {
     if let Some((plugin_id, rest)) = plugin_cli_args(&std::env::args().collect::<Vec<_>>()) {
         if let Some(paths) = &config.paths {
             let _ = paths.ensure_dirs();
-            let _ = configure_master_key_with(&paths.files_dir, config.auth_password().as_deref());
         }
         return match commands::plugins::run_plugin_cli(&config, plugin_id, rest, format).await {
             Ok(()) => ExitCode::SUCCESS,
@@ -321,11 +336,14 @@ fn print_cli_setup_warnings(config: &Config) {
     }
 }
 
-/// Dispatches the parsed verb after ensuring files-dir layout and the master key.
+/// Dispatches the parsed verb after ensuring the files-dir layout.
+///
+/// The master key is not minted here. Commands that open the library align the
+/// cluster secret root inside that open, before any secret is sealed.
+/// Standalone key commands (`config master-key`) do not open the database.
 async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     if let Some(paths) = &config.paths {
         paths.ensure_dirs()?;
-        configure_master_key_with(&paths.files_dir, config.auth_password().as_deref())?;
     }
     let format = cli.format;
 

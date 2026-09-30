@@ -123,6 +123,12 @@ Every selected check lists what a clean runner needs, with a reason:
   pinned `workerd` only — no platform install, staging, database services or
   app build. The fixture guest is a bin target of `bookclerk-plugin-e2e`, so
   `cargo test --test native_gateway` builds it.
+- `windows_cluster`: `cargo build -p bookclerk-plugin-database-sqlite
+  -p bookclerk-jail -p bookclerk-workerd` and pinned `workerd`, then the
+  existing identity filters and `cargo test -p bookclerk-cli --test
+  cluster_secret_startup`. The CLI target still sets
+  `plugins.isolation = "required"` and keeps its assertions.
+  `BOOKCLERK_REQUIRE_TEST_GUESTS=1` is set for that target.
 
 Prerequisites never select suites: building the sqlite guest for host tests
 does not select sqlite's own tests or E2E.
@@ -175,6 +181,7 @@ are **not** detected — declare them, or rely on the conservative fallbacks.
 | `native-behind-workerd gateway` (3 OS) | A `[native_gateway].packages` member (plugin-host, workerd, plugin-sdk, sandbox, jail, the e2e crate) is in the Cargo-compiled closure, a `[native_gateway].paths` smoke input changed, or the full suite | `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint` on every OS (see below); Windows adds clippy workerd, sdk `http`, host `--lib`, workerd lib tests (inherited `handle:` `SOCKET_PROXY`), and the lifecycle churn test alone before that suite; macOS adds workerd lib tests |
 | `tray` (3 OS) | `bookclerk-tray` affected | Clippy + tests |
 | `postgres 16/17/18` | An owning package's unit tests are affected (library, db-guest, postgres guest, plugin-host RPC LIKE) | Only the owners' steps, on every supported major |
+| `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | On `windows-latest` only: identity create, restart/binding, and different-cluster rejection, then the full `cluster_secret_startup` target with the sqlite guest, jail, `bookclerk-workerd`, and pinned `workerd` |
 | `CI Gate` | Always | Stable required check (see contract above) |
 
 OSV scanning remains a separate workflow/gate. A green OSV job that applies

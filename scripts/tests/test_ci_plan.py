@@ -181,7 +181,25 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(
             check_argv(p, "release"), [["cargo", "build", "--release", "-p", "bookclerk-cli"]]
         )
-        self.assertEqual(p.prereqs("rust_test"), [])
+        # cluster_secret_startup launches the jailed sqlite guest through workerd.
+        self.assertEqual(
+            p.prereqs("rust_test"),
+            [
+                {
+                    "kind": "build",
+                    "why": ["bookclerk-cli tests launch them"],
+                    "packages": [
+                        "bookclerk-plugin-database-sqlite",
+                        "bookclerk-jail",
+                        "bookclerk-workerd",
+                    ],
+                },
+                {
+                    "kind": "ensure_workerd",
+                    "why": ["bookclerk-cli tests spawn through pinned workerd"],
+                },
+            ],
+        )
 
     def test_host_only(self) -> None:
         p = plan("crates/bookclerk-plugin-host/src/rpc.rs")
@@ -208,9 +226,17 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(p.params("e2e")["scope"], "full")
         self.assertEqual(
             sorted(p.lint_packages()),
-            # host: its tests spawn guests through the launcher (test_guests).
-            ["bookclerk-dev", "bookclerk-plugin-host", "bookclerk-plugin-tools", "bookclerk-workerd"],
+            # host and cli: their tests spawn guests through the launcher.
+            [
+                "bookclerk-cli",
+                "bookclerk-dev",
+                "bookclerk-plugin-host",
+                "bookclerk-plugin-tools",
+                "bookclerk-workerd",
+            ],
         )
+        self.assertFalse(p.packages["bookclerk-cli"].compiled)
+        self.assertTrue(p.packages["bookclerk-cli"].tests)
         self.assertFalse(p.packages["bookclerk-plugin-host"].compiled)
         build = next(x for x in p.prereqs("rust_test") if x["kind"] == "build")
         self.assertLessEqual(
@@ -316,7 +342,18 @@ class ScenarioTests(unittest.TestCase):
             - {sqlite}
         )
         self.assertIn("bookclerk-cli", production_only)
-        self.assertEqual(production_only & set(p.packages), set())
+        # CLI tests launch the sqlite guest, so that package is selected for
+        # its own tests. It is not pulled in through library's dev edge.
+        launchers = {
+            pkg
+            for pkg, spec in RELATIONS.test_guests.items()
+            if sqlite in spec.get("build", [])
+        }
+        self.assertIn("bookclerk-cli", launchers)
+        self.assertEqual((production_only - launchers) & set(p.packages), set())
+        cli = p.packages["bookclerk-cli"]
+        self.assertFalse(cli.compiled)
+        self.assertTrue(cli.tests)
 
     def test_database_changes_select_postgres_steps(self) -> None:
         guest = plan("crates/bookclerk-db-guest/src/session.rs")
@@ -716,6 +753,154 @@ class NativeGatewayTests(unittest.TestCase):
                     bad = copy.deepcopy(ok)
                     bad["native-gateway"]["result"] = result
                     self.assertTrue(any(x.startswith("native-gateway:") for x in gate(art, bad)))
+
+
+class WindowsClusterTests(unittest.TestCase):
+    """windows-latest run of cluster_secret_startup and the identity library tests."""
+
+    def test_paths_select_the_job_and_keep_guest_prerequisites(self) -> None:
+        for path in RELATIONS.windows_cluster_paths:
+            self.assertTrue((REPO / path).is_file(), path)
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertTrue(p.selected("windows_cluster"), p.checks.keys())
+                self.assertTrue(p.jobs["windows-cluster"])
+                self.assertEqual(
+                    p.prereqs("windows_cluster"),
+                    [
+                        {
+                            "kind": "build",
+                            "why": [
+                                "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
+                            ],
+                            "packages": [
+                                "bookclerk-plugin-database-sqlite",
+                                "bookclerk-jail",
+                                "bookclerk-workerd",
+                            ],
+                        },
+                        {
+                            "kind": "ensure_workerd",
+                            "why": ["cluster_secret_startup spawns through pinned workerd"],
+                        },
+                    ],
+                )
+
+    def test_cli_main_selects_windows_cluster_without_full_suite(self) -> None:
+        path = "crates/bookclerk-cli/src/main.rs"
+        self.assertIn(path, RELATIONS.windows_cluster_paths)
+        p = plan(path)
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertTrue(p.selected("windows_cluster"), p.checks.keys())
+        self.assertTrue(p.jobs["windows-cluster"])
+        self.assertEqual(
+            p.prereqs("windows_cluster"),
+            [
+                {
+                    "kind": "build",
+                    "why": [
+                        "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
+                    ],
+                    "packages": [
+                        "bookclerk-plugin-database-sqlite",
+                        "bookclerk-jail",
+                        "bookclerk-workerd",
+                    ],
+                },
+                {
+                    "kind": "ensure_workerd",
+                    "why": ["cluster_secret_startup spawns through pinned workerd"],
+                },
+            ],
+        )
+
+    def test_unrelated_docs_do_not_select_it(self) -> None:
+        p = plan("docs/plugins.md")
+        self.assertFalse(p.selected("windows_cluster"))
+        self.assertFalse(p.jobs["windows-cluster"])
+
+    def test_commands_preserve_the_cli_target_and_identity_filters(self) -> None:
+        p = plan("crates/bookclerk-cli/tests/cluster_secret_startup.rs")
+        art = artifact(p)
+        for os_name, exe in (("Linux", "workerd"), ("Windows", "workerd.exe")):
+            with self.subTest(os=os_name):
+                cmds = planned_commands(art, "windows_cluster", _ctx(os_name))
+                prereqs = [c.argv for key, c in cmds if key]
+                self.assertEqual(
+                    prereqs,
+                    [
+                        [
+                            "cargo",
+                            "build",
+                            "-p",
+                            "bookclerk-plugin-database-sqlite",
+                            "-p",
+                            "bookclerk-jail",
+                            "-p",
+                            "bookclerk-workerd",
+                        ],
+                        ["cargo", "ensure-workerd"],
+                    ],
+                )
+                checks = [c for key, c in cmds if not key]
+                self.assertEqual(
+                    [c.argv for c in checks],
+                    [
+                        [
+                            "cargo",
+                            "test",
+                            "-p",
+                            "bookclerk-library",
+                            "--lib",
+                            "host_identity_is_stable_and_distinct",
+                            "--",
+                            "--nocapture",
+                        ],
+                        [
+                            "cargo",
+                            "test",
+                            "-p",
+                            "bookclerk-library",
+                            "--lib",
+                            "restart_keeps_host_id_and_distinct_hosts_stay_distinct",
+                            "--",
+                            "--nocapture",
+                        ],
+                        [
+                            "cargo",
+                            "test",
+                            "-p",
+                            "bookclerk-library",
+                            "--lib",
+                            "copied_identity_rejects_a_different_cluster",
+                            "--",
+                            "--nocapture",
+                        ],
+                        [
+                            "cargo",
+                            "test",
+                            "-p",
+                            "bookclerk-cli",
+                            "--test",
+                            "cluster_secret_startup",
+                            "--",
+                            "--nocapture",
+                        ],
+                    ],
+                )
+                self.assertEqual(checks[-1].env["BOOKCLERK_REQUIRE_TEST_GUESTS"], "1")
+                self.assertEqual(
+                    checks[-1].env["BOOKCLERK_WORKERD_BIN"],
+                    str(Path("/ws/target/debug") / exe),
+                )
+                for earlier in checks[:-1]:
+                    self.assertNotIn("BOOKCLERK_WORKERD_BIN", earlier.env)
+
+    def test_full_suite_includes_the_job(self) -> None:
+        p = plan("Cargo.lock")
+        self.assertTrue(p.full_suite)
+        self.assertTrue(p.selected("windows_cluster"))
+        self.assertTrue(p.jobs["windows-cluster"])
 
 
 class ExecutionTests(unittest.TestCase):

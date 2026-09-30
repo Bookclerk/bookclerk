@@ -7,7 +7,9 @@ export BOOKCLERK_FILES_DIR=/var/lib/bookclerk
 bookclerkd
 ```
 
-Reads `config.toml` from the files dir (or `BOOKCLERK_CONFIG`). Schedules:
+Reads bootstrap settings from `config.toml` (or `BOOKCLERK_CONFIG`), opens the
+library database, then enrolls a stable host id (`host-identity.json`) and
+loads `[events]` from the database. Other sections are still TOML. Schedules:
 
 - library scan every `library.scan_interval_minutes`
 - auto-acquire when `library.auto_acquire = true` (keep **false** until ready)
@@ -22,7 +24,8 @@ HTTP control plane (default `127.0.0.1:8787`):
 | `POST /api/auth/elevate` | owner + password / passkey / OIDC step-up | Short-lived elevated operator session |
 | `GET` / `POST` / `PATCH` `/api/users…` | provisioner | List/create/patch users; remint claim tickets |
 | `GET` / `POST` `/api/plugins/{id}/consent` | operator | Plugin grant status / approve (widen or narrow; host-capped) |
-| `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs |
+| `GET` / `PATCH` `/api/settings` | operator | Daemon, library, plugins, confinement knobs. `events.*` is compare-and-swap against the database |
+| `GET` / `PUT /api/config/domains/core.events` | operator | Authoritative `[events]` document and revision |
 | `GET` / `PUT /api/auth/mfa-policy` | owner or operator | Host `require_second_factor` (password login must use TOTP or a passkey) |
 | `GET /api/status` (also `/status`) | yes | Status snapshot |
 | `POST /api/library/scan` (also `/scan`) | yes | Queue scan (`Content-Type: application/json`); `409` if already pending/running, `429` if the queue is full |
@@ -146,6 +149,7 @@ User; use localhost or Owner elevate for Operator.
 | `sources.*` / `integrations.*` / `output.*` | Rebuild registries; integration watchers stopped then restarted |
 | `database.plugin` | Re-open library + destinations |
 | `[media]` | Swap media worker pool |
+| `[events]` | Database compare-and-swap. Reload overlays the committed revision; it does not copy TOML back over the database. Running processes also reconcile about every 5 seconds |
 
 `GET /api/settings` returns both `settings` (configured) and `effective`
 (runtime auth flag + loaded plugin ids). `GET /api/status` includes

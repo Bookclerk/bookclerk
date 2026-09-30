@@ -9,6 +9,12 @@ capability negotiation ([ADR: SQL database contract](adr/sql-database-contract.m
 Default: local SQLite file (`$BOOKCLERK_FILES_DIR/library.db`). Optional:
 Cloudflare D1 (remote SQLite via the Cloudflare HTTP API) or PostgreSQL.
 
+Which backend to open is **bootstrap** configuration (`[database]` and the
+database environment variables). After the connection is up, cluster identity,
+host registration, and the `[events]` configuration domain live in this
+database. See [ADR: Control plane](adr/control-plane.md). SQLite is the
+single-host database, not a shared-disk cluster.
+
 ## ORM choice (Prisma-like maintainability)
 
 Bookclerk previously used hand-written `rusqlite` SQL in

@@ -5,6 +5,10 @@ use bookclerk_config::{
     apply_setting_overrides, classic_key_aliases, resolve_replacement_characters, Config,
     NamingProfile,
 };
+use bookclerk_library::control_plane::{
+    bootstrap_control_plane, load_events, replace_events, ConfigActor, EventsReplace,
+    EventsSettingsV1,
+};
 use bookclerk_library::{
     inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
     MASTER_KEY_AUTH_PASSWORD_ENV,
@@ -172,6 +176,9 @@ pub async fn run(
                 .get(key.as_str())
                 .copied()
                 .unwrap_or(key.as_str());
+            if dotted.starts_with("events.") {
+                return get_events_setting(config, dotted, format).await;
+            }
             let value = lookup(config, dotted)
                 .ok_or_else(|| anyhow::anyhow!("unknown config key: {key}"))?;
             let payload = serde_json::json!({ "key": dotted, "value": value });
@@ -184,6 +191,9 @@ pub async fn run(
                 .copied()
                 .unwrap_or(key.as_str())
                 .to_string();
+            if dotted.starts_with("events.") {
+                return set_events_setting(config, &dotted, &value, format).await;
+            }
             apply_setting_overrides(&mut cfg, &[(&dotted, value.as_str())]);
             let path = cfg.paths().config_file.clone();
             cfg.write_toml_file(&path)?;
@@ -358,6 +368,7 @@ pub async fn run(
                 "diagnostics.ring_buffer_capacity = {}",
                 config.diagnostics.ring_buffer_capacity
             );
+            print_events_authority(config).await;
             Ok(())
         }
         ConfigCommand::Paths => {
@@ -744,6 +755,211 @@ async fn resolve_book_for_preview(
                 .join(", ")
         ),
     }
+}
+
+/// Formats one dotted config key as a string for `config get`.
+/// Unique id for one CLI configuration write.
+fn cli_operation_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("cli-{}-{nanos}", std::process::id())
+}
+
+/// Opens the library and enrolls this files directory.
+async fn open_control_plane(
+    config: &Config,
+) -> anyhow::Result<(
+    LibraryStore,
+    bookclerk_library::control_plane::ControlPlaneSession,
+)> {
+    let store = crate::registry::open_library(config).await?;
+    let session = bootstrap_control_plane(
+        &store,
+        &config.paths().files_dir,
+        config.auth_password().as_deref(),
+        &config.events,
+    )
+    .await?;
+    Ok((store, session))
+}
+
+/// Prints one `events.*` value from the database document.
+async fn get_events_setting(
+    config: &Config,
+    dotted: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let (_store, session) = open_control_plane(config).await?;
+    let value = events_field(&session.events.body, dotted)?;
+    let payload = serde_json::json!({
+        "key": dotted,
+        "value": value,
+        "authority": "database",
+        "revision": session.events.revision,
+        "namespace": session.events.namespace,
+    });
+    emit(format, &payload, || {
+        println!("{value}");
+        println!("authority=database revision={}", session.events.revision);
+    })
+}
+
+/// Compare-and-swaps one `events.*` field in the database.
+async fn set_events_setting(
+    config: &Config,
+    dotted: &str,
+    value: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let (store, session) = open_control_plane(config).await?;
+    let mut body = session.events.body.clone();
+    match dotted {
+        "events.retention_days" => {
+            body.retention_days = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("events.retention_days must be an integer"))?;
+        }
+        "events.dead_letter_retention_days" => {
+            body.dead_letter_retention_days = value.parse().map_err(|_| {
+                anyhow::anyhow!("events.dead_letter_retention_days must be an integer")
+            })?;
+        }
+        "events.concurrency" => {
+            body.concurrency = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("events.concurrency must be an integer"))?;
+        }
+        other => anyhow::bail!("unknown config key: {other}"),
+    }
+    body.validate()?;
+    if body == session.events.body {
+        let payload = serde_json::json!({
+            "key": dotted,
+            "value": value,
+            "authority": "database",
+            "revision": session.events.revision,
+        });
+        return emit(format, &payload, || {
+            println!("events unchanged");
+            println!("authority=database revision={}", session.events.revision);
+        });
+    }
+    let outcome = replace_events(
+        &store,
+        &ConfigActor::Operator { id: "cli".into() },
+        session.events.revision,
+        &body,
+        &cli_operation_id(),
+    )
+    .await?;
+    let revision = match outcome {
+        EventsReplace::Applied(doc) => doc.revision,
+        EventsReplace::Replayed { revision } => revision,
+        EventsReplace::Conflict { current_revision } => anyhow::bail!(
+            "revision conflict: events were not changed; current revision is {current_revision}"
+        ),
+    };
+    let shown = events_field(&body, dotted)?;
+    let payload = serde_json::json!({
+        "key": dotted,
+        "value": shown,
+        "authority": "database",
+        "revision": revision,
+    });
+    emit(format, &payload, || {
+        println!("set {dotted}={shown}");
+        println!("authority=database revision={revision}");
+    })
+}
+
+/// Formats one events field for display.
+fn events_field(body: &EventsSettingsV1, dotted: &str) -> anyhow::Result<String> {
+    match dotted {
+        "events.retention_days" => Ok(body.retention_days.to_string()),
+        "events.dead_letter_retention_days" => Ok(body.dead_letter_retention_days.to_string()),
+        "events.concurrency" => Ok(body.concurrency.to_string()),
+        other => anyhow::bail!("unknown config key: {other}"),
+    }
+}
+
+/// Prints whether `[events]` is database-authoritative.
+async fn print_events_authority(config: &Config) {
+    match load_events_for_show(config).await {
+        Ok(doc) => {
+            println!("events.authority = database");
+            println!("events.revision = {}", doc.revision);
+            println!("events.retention_days = {}", doc.body.retention_days);
+            println!(
+                "events.dead_letter_retention_days = {}",
+                doc.body.dead_letter_retention_days
+            );
+            println!("events.concurrency = {}", doc.body.concurrency);
+        }
+        Err(err) => {
+            println!("events.authority = transitional");
+            let detail = safe_events_load_error(&err);
+            println!(
+                "events.retention_days = {} (config.toml / environment; {detail})",
+                config.events.retention_days
+            );
+        }
+    }
+}
+
+/// Stable events-load failure for stdout.
+///
+/// The raw anyhow chain can carry parser text (serde echoes a bad stored
+/// value) and backend text (paths and connection URLs). Registered secrets
+/// and `user:password@` URL userinfo are removed. The `database unavailable`
+/// prefix stays so the failure is still recognizable.
+fn safe_events_load_error(err: &anyhow::Error) -> String {
+    let mut chain = err.to_string();
+    for cause in err.chain().skip(1) {
+        chain.push_str(": ");
+        chain.push_str(&cause.to_string());
+    }
+    let scrubbed = redact_credential_urls(&bookclerk_config::redact_str(&chain));
+    format!("database unavailable: {scrubbed}")
+}
+
+/// Replaces `scheme://user:password@host` userinfo.
+///
+/// Runs after [`bookclerk_config::redact_str`], so a URL that was not registered
+/// as an exact secret still cannot print its password.
+fn redact_credential_urls(input: &str) -> String {
+    let mut out = String::new();
+    let mut rest = input;
+    while let Some(marker) = rest.find("://") {
+        let after = marker + 3;
+        out.push_str(&rest[..after]);
+        let tail = &rest[after..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ','))
+            .unwrap_or(tail.len());
+        let authority = &tail[..end];
+        if let Some(at) = authority.find('@') {
+            let userinfo = &authority[..at];
+            if userinfo.contains(':') {
+                out.push_str(bookclerk_config::REDACTED);
+                out.push('@');
+                rest = &tail[at + 1..];
+                continue;
+            }
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Loads `core.events` without importing a missing document.
+async fn load_events_for_show(
+    config: &Config,
+) -> anyhow::Result<bookclerk_library::control_plane::ConfigurationDocument<EventsSettingsV1>> {
+    let store = crate::registry::open_library(config).await?;
+    Ok(load_events(&store).await?)
 }
 
 /// Formats one dotted config key as a string for `config get`.

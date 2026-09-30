@@ -42,6 +42,7 @@ jobs:
       job_native_gateway: ${{ steps.resolve.outputs.job_native_gateway }}
       job_tray: ${{ steps.resolve.outputs.job_tray }}
       job_postgres: ${{ steps.resolve.outputs.job_postgres }}
+      job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
       check_ui: ${{ steps.resolve.outputs.check_ui }}
       check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
       check_python_sdk: ${{ steps.resolve.outputs.check_python_sdk }}
@@ -485,9 +486,66 @@ jobs:
       - name: Postgres contract tests
         run: python3 scripts/ci-exec.py run postgres
 
+  windows-cluster:
+    name: windows cluster startup + identity
+    needs: plan
+    timeout-minutes: 45
+    if: needs.plan.outputs.job_windows_cluster == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python scripts/ci-exec.py validate
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install capnproto (Windows)
+        shell: pwsh
+        run: |
+          $url = "https://capnproto.org/capnproto-c++-win32-1.1.0.zip"
+          $zip = "$env:RUNNER_TEMP\capnproto.zip"
+          $expectedHash = "623b7525501d410e6479c8029eba265aa57ac8153c6fa09ab21a62f906b3e3f9"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          $actualHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            Write-Error "capnproto checksum mismatch. Expected $expectedHash, got $actualHash"
+            exit 1
+          }
+          Expand-Archive -Path $zip -DestinationPath "C:\capnproto" -Force
+          $toolsDir = "C:\capnproto\capnproto-tools-win32-1.1.0"
+          if (-not (Test-Path "$toolsDir\capnp.exe")) {
+            Write-Error "capnp.exe not found at $toolsDir"
+            Get-ChildItem -Path "C:\capnproto" -Recurse | Select-Object FullName
+            exit 1
+          }
+          echo $toolsDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Cluster startup and identity tests
+        run: python scripts/ci-exec.py run windows_cluster
+
   ci-gate:
     name: CI Gate
-    needs: [plan, check, release, confinement, native-gateway, tray, postgres]
+    needs: [plan, check, release, confinement, native-gateway, tray, postgres, windows-cluster]
     if: always()
     runs-on: ubuntu-latest
     steps:

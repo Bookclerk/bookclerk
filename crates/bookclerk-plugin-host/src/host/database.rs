@@ -326,6 +326,20 @@ impl ExternalDatabase {
     }
 }
 
+#[cfg(test)]
+mod sea_ident_tests {
+    use super::unquote_sea_identifiers;
+
+    #[test]
+    fn sea_orm_quotes_become_sql_v1_names() {
+        let sql = "SELECT \"portal_identities\".\"id\" FROM \"portal_identities\" WHERE \"label\" = 'a''b\"c'";
+        assert_eq!(
+            unquote_sea_identifiers(sql),
+            "SELECT portal_identities.id FROM portal_identities WHERE label = 'a''b\"c'"
+        );
+    }
+}
+
 /// Long-lived external database plugin for the active `[database].plugin`.
 #[derive(Default, Clone)]
 pub struct DatabaseRegistry {
@@ -1596,7 +1610,7 @@ impl RpcDatabaseProxy {
             None => Vec::new(),
         };
         Ok(TypedDbStatement {
-            sql: statement.sql.clone(),
+            sql: unquote_sea_identifiers(&statement.sql),
             parameters,
             kind,
             max_rows: 0,
@@ -1689,6 +1703,48 @@ impl RpcDatabaseProxy {
             None => self.session.db_rollback().await,
         }
     }
+}
+
+/// Drops SeaORM double-quoted identifiers so typed execute sees SQL v1 names.
+///
+/// String literals, including doubled single quotes, are preserved.
+fn unquote_sea_identifiers(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut rest = sql;
+    while let Some(ch) = rest.chars().next() {
+        if ch == '\'' {
+            out.push('\'');
+            rest = &rest[ch.len_utf8()..];
+            while let Some(inner) = rest.chars().next() {
+                if rest.starts_with("''") {
+                    out.push_str("''");
+                    rest = &rest[2..];
+                    continue;
+                }
+                out.push(inner);
+                rest = &rest[inner.len_utf8()..];
+                if inner == '\'' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '"' {
+            rest = &rest[ch.len_utf8()..];
+            while let Some(inner) = rest.chars().next() {
+                if inner == '"' {
+                    rest = &rest[inner.len_utf8()..];
+                    break;
+                }
+                out.push(inner);
+                rest = &rest[inner.len_utf8()..];
+            }
+            continue;
+        }
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
 }
 
 #[async_trait]

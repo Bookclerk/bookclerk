@@ -168,6 +168,21 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("windows_gateway", text)
         self.assertNotIn("windows-gateway", text)
 
+    def test_windows_cluster_runs_on_windows_only(self) -> None:
+        job = self.jobs["windows-cluster"]
+        self.assertEqual(job["runs-on"], "windows-latest")
+        self.assertNotIn("strategy", job)
+        self.assertEqual(job["timeout-minutes"], 45)
+        steps = job["steps"]
+        capnp = [s for s in steps if "capnproto" in s.get("run", "") and "ci-exec.py" not in s.get("run", "")]
+        self.assertEqual(len(capnp), 1)
+        self.assertEqual(capnp[0].get("shell"), "pwsh")
+        run = [s for s in steps if "ci-exec.py run windows_cluster" in s.get("run", "")]
+        self.assertEqual(len(run), 1)
+        self.assertNotIn("if", run[0])
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertEqual(text.count("ci-exec.py run windows_cluster"), 1)
+
     def test_native_gateway_smoke_inputs_exist(self) -> None:
         from ci_plan.plan import load_relations
 

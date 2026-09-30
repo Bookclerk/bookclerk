@@ -1,9 +1,7 @@
 //! `bookclerk daemon` — thin HTTP client for bookclerkd.
 
 use bookclerk_config::Config;
-use bookclerk_library::{
-    configure_master_key_with, resolve_operator_token, rotate_operator_token, ResolveOperatorToken,
-};
+use bookclerk_library::{resolve_operator_token, rotate_operator_token, ResolveOperatorToken};
 use clap::Subcommand;
 use serde_json::Value;
 
@@ -148,7 +146,6 @@ async fn run_token(
     if !config.daemon.auth.enabled {
         anyhow::bail!("daemon.auth.enabled is false; operator token is not required");
     }
-    configure_master_key_with(&config.paths().files_dir, config.auth_password().as_deref())?;
     let store = crate::registry::open_library(config).await?;
 
     match command {
@@ -320,7 +317,6 @@ pub(crate) async fn operator_bearer(config: &Config) -> anyhow::Result<Option<St
     if !config.daemon.auth.enabled {
         return Ok(None);
     }
-    configure_master_key_with(&config.paths().files_dir, config.auth_password().as_deref())?;
     let store = crate::registry::open_library(config).await?;
     match resolve_operator_token(config, store.db(), false).await? {
         Some((token, _)) => Ok(Some(token)),

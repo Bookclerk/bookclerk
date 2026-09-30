@@ -4556,6 +4556,7 @@ pub(crate) mod tests {
         use axum::http::{header, Request, StatusCode};
         use bookclerk_library::{hash_token, UserRole};
         use chrono::{Duration as ChronoDuration, Utc};
+        use http_body_util::BodyExt;
         use tower::ServiceExt;
         use uuid::Uuid;
 
@@ -4618,7 +4619,13 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(retry.status(), StatusCode::OK);
+        let retry_status = retry.status();
+        if retry_status != StatusCode::OK {
+            let body =
+                String::from_utf8_lossy(&retry.into_body().collect().await.unwrap().to_bytes())
+                    .into_owned();
+            panic!("retry status {retry_status}, body {body}");
+        }
         let cookie = cookie_from_set_cookie(
             retry
                 .headers()

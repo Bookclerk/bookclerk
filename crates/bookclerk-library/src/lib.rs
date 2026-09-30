@@ -14,6 +14,7 @@ mod atomic_txn;
 mod backend_migrate;
 mod backup;
 mod binding_schema;
+pub mod control_plane;
 mod db_atomic;
 pub mod email;
 pub mod entities;
@@ -75,8 +76,9 @@ pub use host_schema::{
 #[cfg(any(test, feature = "test-support"))]
 pub use in_process_atomic::InProcessSqliteAtomic;
 pub use master_key::{
-    configure_master_key, configure_master_key_with, inspect_master_key, master_key_path,
-    require_master_key, wrap_master_key, MasterKey, MasterKeyFormat,
+    configure_master_key, configure_master_key_with, discard_minted_master_key, inspect_master_key,
+    master_key_fingerprint, master_key_path, require_master_key, resolve_master_key_detailed,
+    uncache_master_key, wrap_master_key, MasterKey, MasterKeyFormat, MasterKeyResolution,
     AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 pub use migrations::{
