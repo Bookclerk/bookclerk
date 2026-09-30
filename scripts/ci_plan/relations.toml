@@ -148,6 +148,21 @@ confinement = [
 ]
 tray = ["bookclerk-tray"]
 
+# Windows-only job. `rust_test` runs on ubuntu-latest, so these paths select
+# `windows_cluster`: the enrolled CLI startup target (with the sqlite guest,
+# jail, bookclerk-workerd, and pinned workerd) and the existing identity
+# create / restart-binding / different-cluster tests. Confinement and
+# native-gateway do not run those targets.
+[windows_cluster]
+paths = [
+    "crates/bookclerk-cli/tests/cluster_secret_startup.rs",
+    "crates/bookclerk-cli/src/registry.rs",
+    "crates/bookclerk-library/src/control_plane/identity.rs",
+    "crates/bookclerk-library/src/control_plane/secret.rs",
+    "crates/bookclerk-library/src/control_plane/tests.rs",
+    "crates/bookclerk-config/src/atomic_replace.rs",
+]
+
 # Native-behind-workerd gateway smoke (3 OS): `bookclerk-plugin-e2e --test
 # native_gateway` launches a guest through the production PluginSession path.
 [native_gateway]

@@ -574,6 +574,39 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
             )
         )
         return cmds
+    if check == "windows_cluster":
+        # Guests are prerequisites. The CLI target keeps isolation = "required"
+        # and its own assertions; identity filters are the existing library tests.
+        guest_env = {**runtime_env, "BOOKCLERK_REQUIRE_TEST_GUESTS": "1"}
+        identity = (
+            ("host identity create", "host_identity_is_stable_and_distinct"),
+            ("host identity restart and binding", "restart_keeps_host_id_and_distinct_hosts_stay_distinct"),
+            ("copied identity rejects a different cluster", "copied_identity_rejects_a_different_cluster"),
+        )
+        cmds = [
+            Command(
+                label,
+                ["cargo", "test", "-p", "bookclerk-library", "--lib", filt, "--", "--nocapture"],
+            )
+            for label, filt in identity
+        ]
+        cmds.append(
+            Command(
+                "cluster_secret_startup",
+                [
+                    "cargo",
+                    "test",
+                    "-p",
+                    "bookclerk-cli",
+                    "--test",
+                    "cluster_secret_startup",
+                    "--",
+                    "--nocapture",
+                ],
+                env=guest_env,
+            )
+        )
+        return cmds
     if check == "tray":
         return [
             Command("clippy bookclerk-tray", ["cargo", "clippy", "-p", "bookclerk-tray", "--all-targets", "--", "-D", "warnings"]),
