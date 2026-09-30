@@ -1,19 +1,22 @@
 //! Local filesystem storage backend.
 
-use std::collections::BinaryHeap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use filetime::{set_file_times, FileTime};
+use sha2::Digest;
 use tokio::fs;
 
-use crate::error::{Result, StorageError};
-use crate::normalize_prefix;
-use crate::traits::{
-    bookclerk_meta_sidecar_key, ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend,
+use crate::bounded::{
+    clamp_page_limit, ensure_scalar_len, normalize_range, parse_sha256_hex, read_scalar_body,
+    reject_scalar_hint, ReadSpan, TempGuard, MAX_SCALAR_OBJECT_BYTES,
 };
+use crate::error::{Result, StorageError};
+use crate::list_index::list_page_indexed;
+use crate::normalize_prefix;
+use crate::traits::{bookclerk_meta_sidecar_key, ObjectMeta, ObjectProbe, StorageBackend};
 
 /// Stores objects under a root directory; keys map to relative paths.
 ///
@@ -25,6 +28,8 @@ pub struct LocalFsBackend {
     root: PathBuf,
     /// Normalized key prefix (same model as S3); stripped from list results.
     prefix: String,
+    /// Test override for [`StorageBackend::scan_placement`].
+    placement_override: Option<String>,
 }
 
 impl LocalFsBackend {
@@ -99,7 +104,20 @@ impl LocalFsBackend {
                 return Err(StorageError::InvalidKey(prefix));
             }
         }
-        Ok(Self { root, prefix })
+        Ok(Self {
+            root,
+            prefix,
+            placement_override: None,
+        })
+    }
+
+    /// Overrides the host placement reported for scan adoption.
+    ///
+    /// Production backends leave this unset and use [`crate::host_placement_id`].
+    #[must_use]
+    pub fn with_scan_placement(mut self, placement: impl Into<String>) -> Self {
+        self.placement_override = Some(placement.into());
+        self
     }
 
     /// Prepends the storage prefix to `key` (no-op when the prefix is empty).
@@ -225,11 +243,37 @@ impl StorageBackend for LocalFsBackend {
         "local"
     }
 
+    fn instance_id(&self) -> String {
+        format!("local:{}:{}", self.root.display(), self.prefix)
+    }
+
+    fn scan_placement(&self) -> Option<String> {
+        Some(
+            self.placement_override
+                .clone()
+                .unwrap_or_else(crate::host_placement_id),
+        )
+    }
+
+    fn supports_server_copy(&self) -> bool {
+        true
+    }
+
     fn clone_box(&self) -> Box<dyn StorageBackend> {
         Box::new(self.clone())
     }
 
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
+        ensure_scalar_len(data.len(), MAX_SCALAR_OBJECT_BYTES)?;
+        if let Some(expected) = meta.sha256_hex.as_deref() {
+            let want = parse_sha256_hex(expected)?;
+            let got = sha2::Sha256::digest(data.as_ref());
+            if want.as_slice() != got.as_slice() {
+                return Err(StorageError::Integrity(
+                    "scalar put sha256 does not match the buffer".into(),
+                ));
+            }
+        }
         let path = self.resolve(key)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -257,46 +301,27 @@ impl StorageBackend for LocalFsBackend {
 
     async fn get(&self, key: &str) -> Result<Bytes> {
         let path = self.resolve(key)?;
-        let data = fs::read(&path).await.map_err(|err| {
+        let info = fs::metadata(&path).await.map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 StorageError::NotFound(key.into())
             } else {
                 StorageError::Io(err)
             }
         })?;
-        Ok(Bytes::from(data))
+        reject_scalar_hint(info.len(), MAX_SCALAR_OBJECT_BYTES)?;
+        let file = fs::File::open(&path).await.map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                StorageError::NotFound(key.into())
+            } else {
+                StorageError::Io(err)
+            }
+        })?;
+        read_scalar_body(Box::pin(file), MAX_SCALAR_OBJECT_BYTES).await
     }
 
     async fn exists(&self, key: &str) -> Result<bool> {
         let path = self.resolve(key)?;
         Ok(fs::try_exists(&path).await?)
-    }
-
-    async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>> {
-        validate_key(prefix).or_else(|_| {
-            if prefix.is_empty() {
-                Ok(())
-            } else {
-                Err(StorageError::InvalidKey(prefix.into()))
-            }
-        })?;
-        let mut out = Vec::new();
-        let full_prefix = self.full_key(prefix);
-        list_recursive(&self.root, &self.root, &full_prefix, &mut out).await?;
-        // Strip the storage prefix so returned keys match library storage_key
-        // values (same as S3Backend).
-        if !self.prefix.is_empty() {
-            out = out
-                .into_iter()
-                .filter_map(|obj| {
-                    obj.key.strip_prefix(&self.prefix).map(|rest| ObjectInfo {
-                        key: rest.to_string(),
-                        size: obj.size,
-                    })
-                })
-                .collect();
-        }
-        Ok(out)
     }
 
     async fn probe(&self, key: &str) -> Result<ObjectProbe> {
@@ -312,6 +337,7 @@ impl StorageBackend for LocalFsBackend {
             key: key.to_string(),
             size: file_meta.len(),
             content_type: None,
+            etag: None,
             meta: ObjectMeta {
                 content_length: Some(file_meta.len()),
                 ..Default::default()
@@ -325,7 +351,10 @@ impl StorageBackend for LocalFsBackend {
                 probe.meta.title = parsed.title.or(probe.meta.title);
                 probe.meta.creation_time = parsed.creation_time.or(probe.meta.creation_time);
                 probe.meta.last_write_time = parsed.last_write_time.or(probe.meta.last_write_time);
-                probe.content_type = parsed.content_type.or(probe.content_type);
+                probe.meta.sha256_hex = parsed.sha256_hex.or(probe.meta.sha256_hex);
+                probe.meta.commit_token = parsed.commit_token.or(probe.meta.commit_token);
+                probe.content_type = parsed.content_type.clone().or(probe.content_type);
+                probe.meta.content_type = parsed.content_type.or(probe.meta.content_type);
                 if parsed.content_length.is_some() {
                     probe.meta.content_length = parsed.content_length;
                 }
@@ -340,6 +369,22 @@ impl StorageBackend for LocalFsBackend {
         }
         let src = self.resolve(from)?;
         let dest = self.resolve(to)?;
+        let len = fs::metadata(&src)
+            .await
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    StorageError::NotFound(from.into())
+                } else {
+                    StorageError::Io(err)
+                }
+            })?
+            .len();
+        if len > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
+            return Err(StorageError::PayloadTooLarge(format!(
+                "object length {len} exceeds {}",
+                crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+            )));
+        }
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -414,43 +459,25 @@ impl StorageBackend for LocalFsBackend {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<crate::ListPage> {
-        let limit = if limit == 0 { 256 } else { limit as usize };
-        let want = limit.saturating_add(1);
-        let mut heap: BinaryHeap<(String, u64)> = BinaryHeap::new();
-        let mut found_cursor = cursor.is_none();
-        let full_prefix = self.full_key(prefix);
-        bounded_list_page_walk(
-            &self.root,
-            &self.root,
-            &full_prefix,
-            &self.prefix,
-            cursor,
-            want,
-            &mut heap,
-            &mut found_cursor,
-        )
-        .await?;
-        if cursor.is_some() && !found_cursor {
-            return Err(StorageError::InvalidCursor(
-                "stale or unknown list cursor".into(),
-            ));
+        if !prefix.is_empty() {
+            validate_key(prefix)?;
         }
-        let collected: Vec<(String, u64)> = heap.into_sorted_vec();
-        let next_cursor = if collected.len() > limit {
-            collected
-                .get(limit.saturating_sub(1))
-                .map(|(key, _)| key.clone())
-        } else {
-            None
-        };
-        Ok(crate::ListPage {
-            objects: collected
-                .into_iter()
-                .take(limit)
-                .map(|(key, size)| ObjectInfo { key, size })
-                .collect(),
-            next_cursor,
+        let limit = clamp_page_limit(limit);
+        let root = self.root.clone();
+        let storage_prefix = self.prefix.clone();
+        let list_prefix = prefix.to_string();
+        let cursor = cursor.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            list_page_indexed(
+                &root,
+                &storage_prefix,
+                &list_prefix,
+                cursor.as_deref(),
+                limit,
+            )
         })
+        .await
+        .map_err(|err| StorageError::Other(anyhow::anyhow!("list index task: {err}")))?
     }
 
     async fn get_stream(
@@ -471,10 +498,14 @@ impl StorageBackend for LocalFsBackend {
                 StorageError::Io(err)
             }
         })?;
-        if let Some(range) = range {
-            file.seek(std::io::SeekFrom::Start(range.offset)).await?;
-            if let Some(len) = range.length {
-                return Ok((probe, Box::pin(file.take(len))));
+        let span = normalize_range(range, Some(probe.size))?;
+        if let Some(span) = span {
+            let offset = match span {
+                ReadSpan::ToEnd { offset } | ReadSpan::Exact { offset, .. } => offset,
+            };
+            file.seek(std::io::SeekFrom::Start(offset)).await?;
+            if let ReadSpan::Exact { length, .. } = span {
+                return Ok((probe, Box::pin(file.take(length))));
             }
         }
         Ok((probe, Box::pin(file)))
@@ -484,9 +515,21 @@ impl StorageBackend for LocalFsBackend {
         &self,
         key: &str,
         mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
-        meta: ObjectMeta,
+        mut meta: ObjectMeta,
     ) -> Result<crate::PutStreamResult> {
+        use sha2::{Digest, Sha256};
         use tokio::io::AsyncWriteExt;
+        if let Some(expected) = meta.sha256_hex.as_deref() {
+            let _ = parse_sha256_hex(expected)?;
+        }
+        if let Some(len) = meta.content_length {
+            if len > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
+                return Err(StorageError::PayloadTooLarge(format!(
+                    "object length {len} exceeds {}",
+                    crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+                )));
+            }
+        }
         let path = self.resolve(key)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -495,23 +538,56 @@ impl StorageBackend for LocalFsBackend {
         if !tmp.starts_with(&self.root) && !path.starts_with(&self.root) {
             return Err(StorageError::InvalidKey(key.into()));
         }
+        let mut guard = TempGuard::arm(tmp.clone());
         let put = async {
             let mut file = tokio::fs::File::create(&tmp).await?;
-            let bytes_written = tokio::io::copy(&mut body, &mut file).await?;
+            let mut hasher = Sha256::new();
+            let mut bytes_written = 0u64;
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = tokio::io::AsyncReadExt::read(&mut body, &mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                let next = bytes_written.saturating_add(n as u64);
+                if let Some(expected) = meta.content_length {
+                    if next > expected {
+                        return Err(StorageError::Integrity(format!(
+                            "put_stream wrote past declared length {expected}"
+                        )));
+                    }
+                }
+                if next > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
+                    return Err(StorageError::PayloadTooLarge(format!(
+                        "object exceeded {}",
+                        crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+                    )));
+                }
+                hasher.update(&buf[..n]);
+                file.write_all(&buf[..n]).await?;
+                bytes_written = next;
+            }
             if let Some(expected) = meta.content_length {
                 if bytes_written != expected {
-                    return Err(StorageError::Io(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        format!(
-                            "put_stream length mismatch: wrote {bytes_written}, expected {expected}"
-                        ),
+                    return Err(StorageError::Integrity(format!(
+                        "put_stream length mismatch: wrote {bytes_written}, expected {expected}"
                     )));
                 }
             }
+            let digest = hex::encode(hasher.finalize());
+            if let Some(expected) = meta.sha256_hex.as_deref() {
+                if !expected.eq_ignore_ascii_case(&digest) {
+                    return Err(StorageError::Integrity(
+                        "put_stream sha256 does not match the body".into(),
+                    ));
+                }
+            }
+            meta.sha256_hex = Some(digest);
             file.flush().await?;
             file.sync_all().await?;
             drop(file);
             tokio::fs::rename(&tmp, &path).await?;
+            guard.disarm();
             Ok(bytes_written)
         };
         match put.await {
@@ -520,78 +596,12 @@ impl StorageBackend for LocalFsBackend {
                 Ok(crate::PutStreamResult {
                     bytes_written,
                     etag: None,
+                    sha256_hex: meta.sha256_hex,
                 })
             }
-            Err(err) => {
-                let _ = fs::remove_file(&tmp).await;
-                Err(err)
-            }
+            Err(err) => Err(err),
         }
     }
-}
-
-/// Deterministic directory listing (sorted by path).
-async fn sorted_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
-    let mut read_dir = match fs::read_dir(dir).await {
-        Ok(rd) => rd,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(StorageError::Io(err)),
-    };
-    let mut entries = Vec::new();
-    while let Some(entry) = read_dir.next_entry().await? {
-        entries.push(entry);
-    }
-    entries.sort_by_key(|e| e.path());
-    Ok(entries)
-}
-
-/// Walks `dir` and appends files whose relative key starts with `prefix`.
-async fn list_recursive(
-    root: &Path,
-    dir: &Path,
-    prefix: &str,
-    out: &mut Vec<ObjectInfo>,
-) -> Result<()> {
-    let entries = sorted_dir_entries(dir).await?;
-    for entry in entries {
-        let path = entry.path();
-        // Lexical under-root before metadata/canonicalize sinks.
-        if !path.starts_with(root) {
-            continue;
-        }
-        let file_type = entry.file_type().await?;
-        if file_type.is_dir() {
-            Box::pin(list_recursive(root, &path, prefix, out)).await?;
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with('.') && n.contains(".bookclerk-tmp-"))
-        {
-            continue;
-        }
-        let path = match tokio::fs::canonicalize(&path).await {
-            Ok(p) if p.starts_with(root) => p,
-            _ => continue,
-        };
-        let rel = path
-            .strip_prefix(root)
-            .map_err(|_| StorageError::InvalidKey(path.display().to_string()))?;
-        let key = rel.to_string_lossy().replace('\\', "/");
-        if !prefix.is_empty() && !key.starts_with(prefix) {
-            continue;
-        }
-        let meta = fs::metadata(&path).await?;
-        out.push(ObjectInfo {
-            key,
-            size: meta.len(),
-        });
-    }
-    Ok(())
 }
 
 /// Unique sibling temp path used for atomic [`LocalFsBackend::put_stream`].
@@ -607,120 +617,7 @@ fn sibling_temp_path(final_path: &Path) -> PathBuf {
     final_path.with_file_name(format!(".{name}.bookclerk-tmp-{nonce}"))
 }
 
-/// Opaque, bounded directory walk. Memory is O(depth + page), not O(namespace).
-///
-/// Entries are scanned unsorted. Only the smallest `want` keys strictly after
-/// `cursor` are retained (max-heap of page size). Concurrent mutation is weakly
-/// consistent. A cursor that is not observed during this walk fails closed as
-/// [`StorageError::InvalidCursor`].
-#[allow(clippy::too_many_arguments)]
-async fn bounded_list_page_walk(
-    root: &Path,
-    dir: &Path,
-    full_prefix: &str,
-    storage_prefix: &str,
-    cursor: Option<&str>,
-    want: usize,
-    heap: &mut BinaryHeap<(String, u64)>,
-    found_cursor: &mut bool,
-) -> Result<()> {
-    let mut read_dir = match fs::read_dir(dir).await {
-        Ok(rd) => rd,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(StorageError::Io(err)),
-    };
-    while let Some(entry) = read_dir.next_entry().await? {
-        let path = entry.path();
-        // Lexical under-root before metadata/canonicalize sinks.
-        if !path.starts_with(root) {
-            continue;
-        }
-        let file_type = entry.file_type().await?;
-        if file_type.is_dir() {
-            Box::pin(bounded_list_page_walk(
-                root,
-                &path,
-                full_prefix,
-                storage_prefix,
-                cursor,
-                want,
-                heap,
-                found_cursor,
-            ))
-            .await?;
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with('.') && n.contains(".bookclerk-tmp-"))
-        {
-            continue;
-        }
-        let path = match tokio::fs::canonicalize(&path).await {
-            Ok(p) if p.starts_with(root) => p,
-            _ => continue,
-        };
-        let rel = path
-            .strip_prefix(root)
-            .map_err(|_| StorageError::InvalidKey(path.display().to_string()))?;
-        let key_full = rel.to_string_lossy().replace('\\', "/");
-        if !full_prefix.is_empty() && !key_full.starts_with(full_prefix) {
-            continue;
-        }
-        let key = if storage_prefix.is_empty() {
-            key_full
-        } else {
-            match key_full.strip_prefix(storage_prefix) {
-                Some(rest) => rest.to_string(),
-                None => continue,
-            }
-        };
-        if cursor == Some(key.as_str()) {
-            *found_cursor = true;
-            continue;
-        }
-        if cursor.is_some_and(|c| key.as_str() <= c) {
-            continue;
-        }
-        if heap.len() < want {
-            let meta = fs::metadata(&path).await?;
-            heap.push((key, meta.len()));
-            track_list_page_retained(heap.len());
-            continue;
-        }
-        if heap
-            .peek()
-            .is_some_and(|(top, _)| key.as_str() < top.as_str())
-        {
-            let meta = fs::metadata(&path).await?;
-            heap.pop();
-            heap.push((key, meta.len()));
-            track_list_page_retained(heap.len());
-        }
-    }
-    Ok(())
-}
-
-// Test-only high-water mark of keys retained by `bounded_list_page_walk`.
-// Thread-local so parallel `cargo test` workers do not share a counter.
-#[cfg(test)]
-thread_local! {
-    static LIST_PAGE_MAX_RETAINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Records how many keys the page heap held after an insert (tests assert this).
-fn track_list_page_retained(n: usize) {
-    #[cfg(test)]
-    LIST_PAGE_MAX_RETAINED.with(|held| held.set(held.get().max(n)));
-    #[cfg(not(test))]
-    let _ = n;
-}
-
-/// Writes a `.bookclerk-meta.json` sidecar when ASIN or title is present.
+/// Writes a `.bookclerk-meta.json` sidecar when identity or integrity fields exist.
 async fn write_local_meta_sidecar(
     backend: &LocalFsBackend,
     key: &str,
@@ -730,7 +627,13 @@ async fn write_local_meta_sidecar(
     if key.ends_with(".bookclerk-meta.json") {
         return Ok(());
     }
-    if meta.asin.is_none() && meta.title.is_none() {
+    if meta.asin.is_none()
+        && meta.title.is_none()
+        && meta.sha256_hex.is_none()
+        && meta.commit_token.is_none()
+        && meta.creation_time.is_none()
+        && meta.last_write_time.is_none()
+    {
         return Ok(());
     }
     let sidecar = bookclerk_meta_sidecar_key(key);
@@ -968,6 +871,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scalar_get_rejects_limit_plus_one_without_returning_a_prefix() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let big = vec![7u8; crate::bounded::MAX_SCALAR_OBJECT_BYTES as usize + 1];
+        backend
+            .put_stream(
+                "big.bin",
+                Box::pin(std::io::Cursor::new(big)),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let err = backend.get("big.bin").await.unwrap_err();
+        assert!(matches!(err, StorageError::PayloadTooLarge(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn dropped_put_stream_deletes_the_temp_file() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let backend_task = backend.clone();
+        let task = tokio::spawn(async move {
+            let body = std::pin::pin!(tokio::io::empty());
+            // Block after the temp file is created by using a reader that waits.
+            struct WaitRead;
+            impl tokio::io::AsyncRead for WaitRead {
+                fn poll_read(
+                    self: std::pin::Pin<&mut Self>,
+                    _cx: &mut std::task::Context<'_>,
+                    _buf: &mut tokio::io::ReadBuf<'_>,
+                ) -> std::task::Poll<std::io::Result<()>> {
+                    std::task::Poll::Pending
+                }
+            }
+            let _ = backend_task
+                .put_stream(
+                    "slow.bin",
+                    Box::pin(WaitRead),
+                    ObjectMeta {
+                        content_length: Some(1024),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            let _ = body;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        task.abort();
+        let _ = task.await;
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("bookclerk-tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "large storage resource"]
+    async fn list_page_one_hundred_thousand_objects() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("store");
+        std::fs::create_dir_all(&root).unwrap();
+        let started = std::time::Instant::now();
+        for i in 0..100_000u32 {
+            std::fs::write(root.join(format!("f{i:06}.bin")), b"x").unwrap();
+        }
+        let nested = root.join("nest").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("z.bin"), b"z").unwrap();
+        eprintln!(
+            "created 100001 files in {} ms",
+            started.elapsed().as_millis()
+        );
+        let backend = LocalFsBackend::new(root).unwrap();
+        let _ = crate::list_index::take_index_stats();
+        let mut cursor = None;
+        let mut total = 0usize;
+        let mut pages = 0u32;
+        let scan = std::time::Instant::now();
+        loop {
+            let page = backend.list_page("", cursor.as_deref(), 256).await.unwrap();
+            assert!(page.objects.len() <= 256);
+            total += page.objects.len();
+            pages += 1;
+            match page.next_cursor {
+                Some(next) => {
+                    assert_ne!(cursor.as_deref(), Some(next.as_str()));
+                    cursor = Some(next);
+                }
+                None => break,
+            }
+        }
+        let (builds, chunk) = crate::list_index::take_index_stats();
+        eprintln!(
+            "paged {total} objects in {pages} pages builds={builds} chunk={chunk} elapsed_ms={}",
+            scan.elapsed().as_millis()
+        );
+        assert!(total >= 100_000);
+        assert_eq!(builds, 1, "continued pages must reuse one index build");
+        assert!(chunk <= crate::list_index::INDEX_CHUNK);
+        assert!(scan.elapsed().as_secs() < 120);
+
+        let fan =
+            crate::fanout::FanoutBackend::new(vec![Box::new(backend.clone()), Box::new(backend)])
+                .unwrap();
+        let mut cursor = None;
+        let mut fan_total = 0usize;
+        let fan_started = std::time::Instant::now();
+        loop {
+            let page = fan.list_page("", cursor.as_deref(), 256).await.unwrap();
+            fan_total += page.objects.len();
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        eprintln!(
+            "fan-out paged {fan_total} unique keys in {} ms",
+            fan_started.elapsed().as_millis()
+        );
+        assert_eq!(fan_total, total);
+    }
+
+    #[tokio::test]
+    async fn list_page_nested_prefix_includes_audio() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put(
+                "Misc/Cool Book/book.m4b",
+                Bytes::from_static(b"a"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let page = backend
+            .list_page("Misc/Cool Book/", None, 10)
+            .await
+            .unwrap();
+        assert!(
+            page.objects
+                .iter()
+                .any(|o| o.key == "Misc/Cool Book/book.m4b"),
+            "prefix page = {:?}",
+            page.objects
+        );
+    }
+
+    #[tokio::test]
     async fn list_page_stale_cursor_is_invalid() {
         let dir = tempdir().unwrap();
         let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
@@ -1024,13 +1081,23 @@ mod tests {
                 .await
                 .unwrap();
         }
-        LIST_PAGE_MAX_RETAINED.with(|held| held.set(0));
+        let _ = crate::list_index::take_index_stats();
         let page = backend.list_page("", None, 7).await.unwrap();
         assert_eq!(page.objects.len(), 7);
-        let retained = LIST_PAGE_MAX_RETAINED.with(|held| held.get());
+        let (_builds, retained) = crate::list_index::take_index_stats();
         assert!(
-            retained <= 8,
-            "list_page heap retained {retained} entries (limit+1 is 8) over a 400-object flat dir"
+            retained <= crate::list_index::INDEX_CHUNK,
+            "list index chunk retained {retained} entries (cap {})",
+            crate::list_index::INDEX_CHUNK
+        );
+        let _ = backend
+            .list_page("", page.next_cursor.as_deref(), 7)
+            .await
+            .unwrap();
+        let (builds_after, _) = crate::list_index::take_index_stats();
+        assert_eq!(
+            builds_after, 0,
+            "a continued page must not rebuild the directory index"
         );
         assert_eq!(page.objects[0].key, "f0000.bin");
         assert_eq!(page.next_cursor.as_deref(), Some("f0006.bin"));
@@ -1073,5 +1140,123 @@ mod tests {
         assert!(matches!(err, StorageError::Io(_)));
         let got = backend.get("keep.bin").await.unwrap();
         assert_eq!(&got[..], b"original");
+    }
+
+    #[tokio::test]
+    async fn probe_round_trips_digest_and_commit_token_for_the_exact_object() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let audio = b"audio-body";
+        let cover = b"jpeg-body";
+        backend
+            .put_stream(
+                "Title/book.m4b",
+                Box::pin(std::io::Cursor::new(audio.to_vec())),
+                ObjectMeta {
+                    content_length: Some(audio.len() as u64),
+                    content_type: Some("audio/mp4".into()),
+                    commit_token: Some("audio-token".into()),
+                    asin: Some("B00AUDIO".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        backend
+            .put_stream(
+                "Title/book.jpg",
+                Box::pin(std::io::Cursor::new(cover.to_vec())),
+                ObjectMeta {
+                    content_length: Some(cover.len() as u64),
+                    content_type: Some("image/jpeg".into()),
+                    commit_token: Some("cover-token".into()),
+                    title: Some("Cover".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let audio_meta = bookclerk_meta_sidecar_key("Title/book.m4b");
+        let cover_meta = bookclerk_meta_sidecar_key("Title/book.jpg");
+        assert_ne!(audio_meta, cover_meta);
+        assert!(backend.exists(&audio_meta).await.unwrap());
+        assert!(backend.exists(&cover_meta).await.unwrap());
+
+        let rebuilt = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        let audio_probe = rebuilt.probe("Title/book.m4b").await.unwrap();
+        let cover_probe = rebuilt.probe("Title/book.jpg").await.unwrap();
+        assert_eq!(
+            audio_probe.meta.commit_token.as_deref(),
+            Some("audio-token")
+        );
+        assert_eq!(
+            cover_probe.meta.commit_token.as_deref(),
+            Some("cover-token")
+        );
+        assert!(audio_probe.meta.sha256_hex.is_some());
+        assert_ne!(audio_probe.meta.sha256_hex, cover_probe.meta.sha256_hex);
+        assert_eq!(audio_probe.meta.asin.as_deref(), Some("B00AUDIO"));
+        assert_eq!(cover_probe.meta.title.as_deref(), Some("Cover"));
+
+        rebuilt
+            .copy("Title/book.m4b", "Other/book.m4b")
+            .await
+            .unwrap();
+        let copied = rebuilt.probe("Other/book.m4b").await.unwrap();
+        assert_eq!(copied.meta.commit_token.as_deref(), Some("audio-token"));
+        assert_eq!(copied.meta.sha256_hex, audio_probe.meta.sha256_hex);
+
+        rebuilt
+            .rename("Other/book.m4b", "Moved/book.m4b")
+            .await
+            .unwrap();
+        assert!(!rebuilt
+            .exists(&bookclerk_meta_sidecar_key("Other/book.m4b"))
+            .await
+            .unwrap());
+        let moved = rebuilt.probe("Moved/book.m4b").await.unwrap();
+        assert_eq!(moved.meta.sha256_hex, audio_probe.meta.sha256_hex);
+        rebuilt.delete("Moved/book.m4b").await.unwrap();
+        assert!(!rebuilt
+            .exists(&bookclerk_meta_sidecar_key("Moved/book.m4b"))
+            .await
+            .unwrap());
+
+        let missing = rebuilt.probe("Title/book.jpg").await.unwrap();
+        assert_eq!(missing.size, cover.len() as u64);
+        std::fs::write(
+            dir.path().join("Title/book.jpg.bookclerk-meta.json"),
+            b"{not-json",
+        )
+        .unwrap();
+        let corrupt = rebuilt.probe("Title/book.jpg").await.unwrap();
+        assert_eq!(corrupt.size, cover.len() as u64);
+        assert!(corrupt.meta.sha256_hex.is_none());
+    }
+
+    #[tokio::test]
+    async fn copy_rejects_an_oversized_sparse_source_without_replacing_the_destination() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put(
+                "dest.m4b",
+                Bytes::from_static(b"keeper"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let src = dir.path().join("huge.m4b");
+        let file = std::fs::File::create(&src).unwrap();
+        file.set_len(crate::bounded::MAX_SUPPORTED_OBJECT_BYTES + 1)
+            .unwrap();
+        let err = backend.copy("huge.m4b", "dest.m4b").await.unwrap_err();
+        assert!(
+            matches!(err, crate::StorageError::PayloadTooLarge(_)),
+            "{err}"
+        );
+        assert_eq!(backend.get("dest.m4b").await.unwrap().as_ref(), b"keeper");
+        assert!(src.metadata().unwrap().len() > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES);
     }
 }

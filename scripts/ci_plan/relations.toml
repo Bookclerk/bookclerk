@@ -87,6 +87,8 @@ ensure_workerd = true
 build = [
     "bookclerk-plugin-database-sqlite",
     "bookclerk-plugin-database-postgres",
+    "bookclerk-plugin-destination-local",
+    "bookclerk-plugin-destination-s3",
     "bookclerk-jail",
     "bookclerk-workerd",
 ]

@@ -1,7 +1,7 @@
 //! JobRunner helpers: stream-copy vertical slice (no media in scalars).
 
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
+use tokio::io::AsyncReadExt as _;
 
 use crate::roles::{Cancellation, Destination, JobController, JobRunner, Source};
 use crate::rpc_types::{JobInvocation, JobOutcome, WriteOptions};
@@ -150,18 +150,42 @@ impl JobRunner for StreamCopyHandler {
     }
 }
 
-/// Reads an entire transferred body into a vec (tests / small objects only).
+/// Reads a small transferred body, stopping at [`crate::MAX_SCALAR_BYTES`].
+///
+/// This is not a media reader. A longer body is [`PluginError::payload_too_large`]
+/// and the extra bytes are not retained.
 ///
 /// # Errors
 ///
-/// Returns an I/O error mapped as [`PluginError::internal`].
+/// Returns [`PluginError::payload_too_large`] or an I/O error mapped as
+/// [`PluginError::internal`].
 pub async fn read_all(
     mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
 ) -> Result<Vec<u8>> {
+    let limit = crate::MAX_SCALAR_BYTES as usize;
     let mut buf = Vec::new();
-    body.read_to_end(&mut buf)
-        .await
-        .map_err(|err| PluginError::internal(format!("read stream: {err}")))?;
+    let mut tmp = [0u8; 8 * 1024];
+    loop {
+        let n = body
+            .read(&mut tmp)
+            .await
+            .map_err(|err| PluginError::internal(format!("read stream: {err}")))?;
+        if n == 0 {
+            break;
+        }
+        let room = limit.saturating_add(1).saturating_sub(buf.len());
+        if n > room {
+            return Err(PluginError::payload_too_large(format!(
+                "read_all exceeded {limit} bytes"
+            )));
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > limit {
+            return Err(PluginError::payload_too_large(format!(
+                "read_all exceeded {limit} bytes"
+            )));
+        }
+    }
     Ok(buf)
 }
 

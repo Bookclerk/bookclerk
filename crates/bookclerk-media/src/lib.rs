@@ -32,6 +32,7 @@ mod job;
 mod metadata;
 mod moov;
 mod mp3;
+pub use mp3::write_output_within_budget;
 mod mux_aac;
 mod native;
 mod package_m4b;
@@ -79,6 +80,7 @@ pub async fn encode_to_mp3(
     output: &Path,
     lame: &bookclerk_config::LameConfig,
     max_sample_rate: Option<u32>,
+    max_output_bytes: Option<u64>,
 ) -> Result<MediaOutcome> {
     if !input.exists() {
         return Err(MediaError::InputMissing(input.to_path_buf()));
@@ -92,6 +94,7 @@ pub async fn encode_to_mp3(
         output: output.clone(),
         lame: Box::new(lame.clone()),
         max_sample_rate,
+        max_output_bytes,
     })
     .await?;
     if !output.exists() {

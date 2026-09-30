@@ -27,6 +27,7 @@ pub fn encode_to_mp3_native(
     output: &Path,
     lame: &bookclerk_config::LameConfig,
     max_sample_rate: Option<u32>,
+    max_output_bytes: Option<u64>,
 ) -> Result<MediaOutcome> {
     if !input.exists() {
         return Err(MediaError::InputMissing(input.to_path_buf()));
@@ -130,6 +131,11 @@ pub fn encode_to_mp3_native(
             193..=256 => mp3lame_encoder::Bitrate::Kbps256,
             _ => mp3lame_encoder::Bitrate::Kbps320,
         };
+        // LAME defaults to VBR. Leave that on and `bitrate_kbps` does not
+        // bound the file; silence stays far below the requested constant rate.
+        builder
+            .set_vbr_mode(mp3lame_encoder::VbrMode::Off)
+            .map_err(|err| MediaError::Native(format!("lame cbr mode: {err:?}")))?;
         builder
             .set_brate(br)
             .map_err(|err| MediaError::Native(format!("lame bitrate: {err:?}")))?;
@@ -159,6 +165,7 @@ pub fn encode_to_mp3_native(
         .map_err(|err| MediaError::Native(format!("lame build: {err:?}")))?;
 
     let mut out_file = File::create(output)?;
+    let mut output_written = 0u64;
     let mut mp3_chunk = Vec::new();
     let mut decoded_pcm: Vec<i16> = Vec::new();
     let mut encode_pcm: Vec<i16> = Vec::new();
@@ -210,6 +217,8 @@ pub fn encode_to_mp3_native(
             out_channels,
             &mut mp3_chunk,
             &mut out_file,
+            &mut output_written,
+            max_output_bytes,
         )?;
     }
 
@@ -218,7 +227,12 @@ pub fn encode_to_mp3_native(
     }
     if !encode_pcm.is_empty() {
         encode_pcm_chunk(&mut encoder, &encode_pcm, out_channels, &mut mp3_chunk)?;
-        out_file.write_all(&mp3_chunk)?;
+        write_output_within_budget(
+            &mut out_file,
+            &mp3_chunk,
+            &mut output_written,
+            max_output_bytes,
+        )?;
         mp3_chunk.clear();
         encode_pcm.clear();
     }
@@ -230,7 +244,12 @@ pub fn encode_to_mp3_native(
         .flush_to_vec::<FlushNoGap>(&mut mp3_chunk)
         .map_err(|err| MediaError::Native(format!("lame flush: {err:?}")))?;
     if !mp3_chunk.is_empty() {
-        out_file.write_all(&mp3_chunk)?;
+        write_output_within_budget(
+            &mut out_file,
+            &mp3_chunk,
+            &mut output_written,
+            max_output_bytes,
+        )?;
     }
     out_file.sync_all()?;
 
@@ -262,6 +281,8 @@ fn drain_encode_chunks(
     channels: u32,
     mp3_chunk: &mut Vec<u8>,
     out_file: &mut File,
+    written: &mut u64,
+    max_output_bytes: Option<u64>,
 ) -> Result<()> {
     const CHUNK: usize = 1152 * 8;
     let frame = channels as usize;
@@ -269,9 +290,40 @@ fn drain_encode_chunks(
         let take = CHUNK * frame;
         let chunk: Vec<i16> = pcm.drain(..take).collect();
         encode_pcm_chunk(encoder, &chunk, channels, mp3_chunk)?;
-        out_file.write_all(mp3_chunk)?;
+        write_output_within_budget(out_file, mp3_chunk, written, max_output_bytes)?;
         mp3_chunk.clear();
     }
+    Ok(())
+}
+
+/// Appends `data` only when the result stays within `max`.
+///
+/// The failing call writes nothing, so the file length never passes the budget.
+/// `max == None` does not impose a byte ceiling.
+///
+/// # Errors
+///
+/// Returns [`MediaError::Native`] when `written + data.len()` would exceed
+/// `max`. Returns [`MediaError::Io`] when the accepted bytes cannot be written.
+pub fn write_output_within_budget(
+    file: &mut impl Write,
+    data: &[u8],
+    written: &mut u64,
+    max: Option<u64>,
+) -> Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let next = written.saturating_add(data.len() as u64);
+    if let Some(max) = max {
+        if next > max {
+            return Err(MediaError::Native(format!(
+                "MP3 output of {next} bytes would exceed the {max} byte budget"
+            )));
+        }
+    }
+    file.write_all(data)?;
+    *written = next;
     Ok(())
 }
 
@@ -502,6 +554,7 @@ mod tests {
             &encoded,
             &bookclerk_config::LameConfig::default(),
             None,
+            None,
         )
         .expect("encode to mp3");
 
@@ -542,9 +595,122 @@ mod tests {
             &encoded,
             &bookclerk_config::LameConfig::default(),
             Some(22_050),
+            None,
         )
         .expect("encode to mp3 at a lower rate");
 
         assert!(std::fs::metadata(&encoded).expect("encoded file").len() > 500);
+    }
+
+    #[test]
+    fn encode_stops_before_the_output_file_passes_the_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.m4b");
+        let encoded = dir.path().join("encoded.mp3");
+        let sample_rate = 44_100usize;
+        let pcm: Vec<i16> = (0..sample_rate * 2)
+            .map(|n| {
+                #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+                let value = ((n as f32 / 40.0).sin() * 2_000.0) as i16;
+                value
+            })
+            .collect();
+        crate::package_m4b_from_pcm(
+            &pcm,
+            u32::try_from(sample_rate).expect("sample rate fits u32"),
+            1,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .expect("build source audiobook");
+        let budget = 256u64;
+        let err = encode_to_mp3_native(
+            &source,
+            &encoded,
+            &bookclerk_config::LameConfig::default(),
+            None,
+            Some(budget),
+        )
+        .expect_err("an expanding encode must stop at the output budget");
+        assert!(err.to_string().contains("budget"), "{err}");
+        let len = std::fs::metadata(&encoded).expect("partial output").len();
+        assert!(
+            len <= budget,
+            "output grew to {len} while the encoder was still inside the {budget} byte budget"
+        );
+    }
+
+    /// A short source at a high constant bitrate can produce a larger MP3.
+    /// The worker cap must allow that expansion; capping at the input length
+    /// rejects a valid encode.
+    #[test]
+    fn high_bitrate_mp3_may_exceed_a_short_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.m4b");
+        let encoded = dir.path().join("encoded.mp3");
+        let sample_rate = 48_000usize;
+        let pcm = vec![0i16; 32];
+        crate::package_m4b_from_pcm(
+            &pcm,
+            u32::try_from(sample_rate).expect("rate"),
+            1,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .expect("tiny source");
+        let source_len = std::fs::metadata(&source).expect("source").len();
+        let lame = bookclerk_config::LameConfig {
+            constant_bitrate: true,
+            bitrate_kbps: 320,
+            ..bookclerk_config::LameConfig::default()
+        };
+        let capped = encode_to_mp3_native(&source, &encoded, &lame, None, Some(source_len));
+        let expanded = dir.path().join("expanded.mp3");
+        encode_to_mp3_native(&source, &expanded, &lame, None, None).expect("encode without a cap");
+        let out_len = std::fs::metadata(&expanded).expect("mp3").len();
+        assert!(
+            out_len > source_len,
+            "expected the 320 kbps MP3 ({out_len}) to exceed the short source ({source_len})"
+        );
+        assert!(
+            capped.is_err(),
+            "capping the MP3 at the {source_len} byte source must fail when output is {out_len}"
+        );
+    }
+
+    /// 32 kbps AAC-LC converted at 320 kbps CBR expands by about ten times.
+    /// Eight times the source is not an encoded-size bound.
+    #[test]
+    fn low_bitrate_aac_at_320kbps_exceeds_eight_times_the_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.m4b");
+        let encoded = dir.path().join("encoded.mp3");
+        // Stereo so LAME can use MPEG-1 320 kbps. Mono is capped near 160 kbps,
+        // which does not clear 8× a 32 kbps AAC file.
+        let sample_rate = 48_000u32;
+        let seconds = 4usize;
+        let channels = 2u16;
+        let pcm = vec![0i16; sample_rate as usize * seconds * usize::from(channels)];
+        crate::package_m4b::package_m4b_from_pcm_cbr(
+            &pcm,
+            sample_rate,
+            channels,
+            32_000,
+            &source,
+            &[("One".to_string(), 0)],
+        )
+        .expect("32 kbps AAC source");
+        let source_len = std::fs::metadata(&source).expect("source").len();
+        let lame = bookclerk_config::LameConfig {
+            constant_bitrate: true,
+            bitrate_kbps: 320,
+            ..bookclerk_config::LameConfig::default()
+        };
+        encode_to_mp3_native(&source, &encoded, &lame, None, None).expect("320 kbps encode");
+        let out_len = std::fs::metadata(&encoded).expect("mp3").len();
+        assert!(
+            out_len > source_len.saturating_mul(8),
+            "320 kbps MP3 ({out_len}) did not exceed 8× the 32 kbps AAC source ({source_len})"
+        );
     }
 }

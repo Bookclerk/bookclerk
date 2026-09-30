@@ -143,6 +143,7 @@ async fn pool_runs_a_real_encode_in_a_confined_worker() {
             output: output.clone(),
             lame: Box::default(),
             max_sample_rate: None,
+            max_output_bytes: None,
         })
         .await
         .expect("encode through the pool");
@@ -189,6 +190,7 @@ async fn pool_runs_jobs_concurrently_up_to_its_capacity() {
                     output,
                     lame: Box::default(),
                     max_sample_rate: None,
+                    max_output_bytes: None,
                 })
                 .await;
             in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -267,6 +269,7 @@ async fn pool_packages_m4b_in_a_confined_worker() {
             output: mp3.clone(),
             lame: Box::default(),
             max_sample_rate: None,
+            max_output_bytes: None,
         })
         .await
         .expect("encode fixture part");
@@ -354,6 +357,7 @@ async fn a_retired_pool_still_finishes_the_work_it_was_holding() {
             output: output.clone(),
             lame: Box::default(),
             max_sample_rate: None,
+            max_output_bytes: None,
         })
         .await
         .expect("a retired pool must finish the job it was holding");
@@ -406,6 +410,7 @@ async fn pool_surfaces_a_job_failure_without_killing_the_caller() {
         output: output.clone(),
         lame: Box::default(),
         max_sample_rate: None,
+        max_output_bytes: None,
     })
     .await
     .expect("pool still works after a failed job");

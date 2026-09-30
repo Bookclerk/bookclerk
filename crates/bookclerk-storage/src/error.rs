@@ -22,9 +22,13 @@ pub enum StorageError {
     #[error("S3 error: {0}")]
     S3(String),
 
-    /// Scalar get/put exceeded the ABI v1 fail-closed size cap.
+    /// Scalar get/put exceeded the ABI small-object cap.
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),
+
+    /// Declared length or SHA-256 did not match the bytes consumed.
+    #[error("integrity check failed: {0}")]
+    Integrity(String),
 
     /// List cursor is missing, stale, or not from this backend.
     #[error("invalid cursor: {0}")]

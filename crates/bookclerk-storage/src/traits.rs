@@ -23,6 +23,14 @@ pub struct ObjectMeta {
     pub creation_time: Option<String>,
     /// Last-write timestamp as RFC 3339 (S3 metadata `last-write-time`).
     pub last_write_time: Option<String>,
+    /// Lowercase hex SHA-256 (64 chars) of the object body when known.
+    ///
+    /// This is a content digest. It is never derived from an S3 ETag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256_hex: Option<String>,
+    /// Retry-stable publication token stored with the object, when staged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_token: Option<String>,
 }
 
 /// Listing entry returned by [`StorageBackend::list`].
@@ -46,6 +54,9 @@ pub struct ObjectProbe {
     pub content_type: Option<String>,
     /// User-metadata / sidecar fields (ASIN, title, timestamps, …).
     pub meta: ObjectMeta,
+    /// Backend entity tag. Opaque; not a content checksum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 /// Audio extensions considered acquired media for storage matching.
@@ -65,14 +76,13 @@ pub fn is_audio_key(key: &str) -> bool {
     AUDIO_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e))
 }
 
-/// Sidecar key for local probe metadata (`stem.bookclerk-meta.json`).
+/// Sidecar key for probe metadata of this exact object (`{key}.bookclerk-meta.json`).
+///
+/// The record is not shared with another object that only shares a title stem.
+/// `book.m4b` and `book.jpg` keep separate integrity and commit metadata.
 #[must_use]
-pub fn bookclerk_meta_sidecar_key(audio_or_object_key: &str) -> String {
-    let base = audio_or_object_key
-        .rsplit_once('.')
-        .map(|(stem, _)| stem)
-        .unwrap_or(audio_or_object_key);
-    format!("{base}.bookclerk-meta.json")
+pub fn bookclerk_meta_sidecar_key(object_key: &str) -> String {
+    format!("{object_key}.bookclerk-meta.json")
 }
 
 /// Inclusive byte range for a streamed read.
@@ -94,12 +104,15 @@ pub struct ListPage {
 }
 
 /// Result of [`StorageBackend::put_stream`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PutStreamResult {
     /// Bytes accepted from the body stream.
     pub bytes_written: u64,
-    /// Backend etag when available.
+    /// Backend etag when available. Opaque; not a content checksum.
     pub etag: Option<String>,
+    /// Hex SHA-256 of the bytes accepted, when the backend computed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256_hex: Option<String>,
 }
 
 /// Pluggable storage for acquired audio and sidecar files.
@@ -108,22 +121,50 @@ pub trait StorageBackend: Send + Sync {
     /// Backend name for logs (`local`, `s3`).
     fn name(&self) -> &'static str;
 
+    /// Stable identity of this authorized namespace (root, bucket, prefix, session).
+    ///
+    /// [`Self::supports_server_copy`] plus equal ids is the only signal that
+    /// [`Self::copy`] stays inside one backend. Comparing [`Self::name`] is not
+    /// enough.
+    fn instance_id(&self) -> String {
+        format!("anonymous:{}", self.name())
+    }
+
+    /// Host placement when this backend's bytes are not portable across nodes.
+    ///
+    /// `None` means a scan may resume on any host with the same
+    /// [`Self::instance_id`] (object storage). `Some` is a stable host id.
+    /// Wrappers and fan-out must forward a child's placement; they must not
+    /// guess locality from an `instance_id` prefix. When placement cannot be
+    /// proved, return a host id so the scan restarts on another node instead
+    /// of adopting the wrong inventory.
+    fn scan_placement(&self) -> Option<String> {
+        None
+    }
+
     /// Clone into a new boxed backend (same client / root).
     fn clone_box(&self) -> Box<dyn StorageBackend>;
 
     /// Write bytes under `key`.
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()>;
 
-    /// Stream a local file into storage (preferred for large audiobooks).
+    /// Stream a local file into storage.
     ///
-    /// Default implementation reads the whole file then calls [`Self::put`].
-    async fn put_file(&self, key: &str, path: &Path, meta: ObjectMeta) -> Result<()> {
-        let data = tokio::fs::read(path).await?;
-        let mut meta = meta;
+    /// The default opens the file and calls [`Self::put_stream`]. It does not
+    /// read the body into a `Bytes` buffer. Backends may override with a
+    /// native copy that still avoids a userspace buffer of the whole object.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from the file or the backend write.
+    async fn put_file(&self, key: &str, path: &Path, mut meta: ObjectMeta) -> Result<()> {
+        let file = tokio::fs::File::open(path).await?;
         if meta.content_length.is_none() {
-            meta.content_length = Some(data.len() as u64);
+            if let Ok(info) = file.metadata().await {
+                meta.content_length = Some(info.len());
+            }
         }
-        self.put(key, Bytes::from(data), meta).await
+        self.put_stream(key, Box::pin(file), meta).await.map(|_| ())
     }
 
     /// Download the full object body into memory.
@@ -141,15 +182,74 @@ pub trait StorageBackend: Send + Sync {
     /// Propagates backend probe failures (not merely absence).
     async fn exists(&self, key: &str) -> Result<bool>;
 
-    /// List objects under `prefix`.
-    async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>>;
-
-    /// List acquired audio objects under `prefix`.
+    /// Compatibility collector for a namespace that fits in one page.
     ///
-    /// See [`AUDIO_EXTENSIONS`] (includes plain Chirp/GA passthrough formats).
+    /// Returns [`StorageError::PayloadTooLarge`] when another page exists so a
+    /// product caller cannot rebuild a full inventory by accident. Scans use
+    /// [`Self::list_page`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::PayloadTooLarge`] when the prefix holds more
+    /// than one page, plus listing errors from [`Self::list_page`].
+    async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>> {
+        let page = self
+            .list_page(prefix, None, crate::bounded::MAX_LIST_PAGE)
+            .await?;
+        if page.next_cursor.is_some() {
+            return Err(StorageError::PayloadTooLarge(
+                "refusing to buffer a multi-page object inventory; use list_page".into(),
+            ));
+        }
+        Ok(page.objects)
+    }
+
+    /// Audio objects under `prefix`, capped at one page of matches.
+    ///
+    /// See [`AUDIO_EXTENSIONS`]. Pages are discarded as they are scanned. More
+    /// than [`crate::bounded::MAX_LIST_PAGE`] audio objects is an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::PayloadTooLarge`] when the audio match set
+    /// exceeds one page, plus listing errors.
     async fn list_audio(&self, prefix: &str) -> Result<Vec<ObjectInfo>> {
-        let all = self.list(prefix).await?;
-        Ok(all.into_iter().filter(|o| is_audio_key(&o.key)).collect())
+        let cap = crate::bounded::MAX_LIST_PAGE as usize;
+        let mut out = Vec::new();
+        let mut cursor = None;
+        let mut hops = 0u32;
+        loop {
+            hops = hops.saturating_add(1);
+            if hops > 1_000_000 {
+                return Err(StorageError::InvalidCursor(
+                    "list_audio made no progress".into(),
+                ));
+            }
+            let page = self
+                .list_page(prefix, cursor.as_deref(), crate::bounded::MAX_LIST_PAGE)
+                .await?;
+            for obj in page.objects {
+                if !is_audio_key(&obj.key) {
+                    continue;
+                }
+                if out.len() >= cap {
+                    return Err(StorageError::PayloadTooLarge(
+                        "refusing to buffer more than one page of audio keys; use list_page".into(),
+                    ));
+                }
+                out.push(obj);
+            }
+            match page.next_cursor {
+                Some(next) if cursor.as_deref() == Some(next.as_str()) => {
+                    return Err(StorageError::InvalidCursor(
+                        "list_audio cursor did not advance".into(),
+                    ));
+                }
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(out)
     }
 
     /// Probe object metadata without downloading the body.
@@ -189,19 +289,29 @@ pub trait StorageBackend: Send + Sync {
         }
     }
 
-    /// One page of keys under `prefix` (cursor is the last key or backend token).
+    /// One page of keys under `prefix`.
+    ///
+    /// `cursor` is opaque and scoped to this backend's ordering. A missing,
+    /// stale, or non-advancing cursor returns [`StorageError::InvalidCursor`]
+    /// and does not restart at the first page. `limit` is clamped to
+    /// [`crate::bounded::MAX_LIST_PAGE`]. Ordering and mutation behavior are
+    /// backend-specific; see `docs/storage-bounds.md`.
     ///
     /// # Errors
     ///
-    /// Returns listing failures from the backend.
+    /// Returns [`StorageError::InvalidCursor`] or a backend listing error.
     async fn list_page(&self, prefix: &str, cursor: Option<&str>, limit: u32) -> Result<ListPage>;
 
     /// Streamed read. Never reassembles the object into host `Bytes`.
     ///
+    /// [`ObjectProbe::size`] is the whole object size, not the returned slice.
+    /// `range.length == Some(0)` is rejected. `None` means through EOF, matching
+    /// the wire encoding where length `0` is "to end".
+    ///
     /// # Errors
     ///
-    /// Returns [`StorageError::NotFound`] when missing, and I/O or S3 failures
-    /// otherwise.
+    /// Returns [`StorageError::NotFound`] when missing, [`StorageError::InvalidKey`]
+    /// for a bad range, and I/O or S3 failures otherwise.
     async fn get_stream(
         &self,
         key: &str,
@@ -220,9 +330,12 @@ pub trait StorageBackend: Send + Sync {
         meta: ObjectMeta,
     ) -> Result<PutStreamResult>;
 
-    /// True when [`Self::copy`] is a server-side operation (no download).
+    /// True when [`Self::copy`] stays inside this namespace without downloading.
+    ///
+    /// The default is false. A backend opts in only for copies that are valid
+    /// for its own bucket, root, and prefix.
     fn supports_server_copy(&self) -> bool {
-        true
+        false
     }
 
     /// Set filesystem timestamps (local) or best-effort logical timestamp tags (S3).

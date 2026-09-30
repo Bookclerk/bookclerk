@@ -279,6 +279,65 @@ impl LibraryStore {
         Ok(res.rows_affected == 1)
     }
 
+    /// Replaces `payload.checkpoint` while `fence` still owns the running job.
+    ///
+    /// Unlike [`Self::suspend_job`], the row stays `running` and `resume_pending`
+    /// is left unchanged. A stale fence updates zero rows. Reclaim keeps the
+    /// payload, so the next claim observes the checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] on database failure, or [`LibraryError::Other`]
+    /// when the checkpoint exceeds [`bookclerk_plugin_abi::MAX_CHECKPOINT_BYTES`].
+    pub async fn checkpoint_running_job(
+        &self,
+        fence: &JobFence,
+        checkpoint: &bookclerk_plugin_abi::JobCheckpoint,
+    ) -> Result<bool> {
+        let Some(model) = jobs::Entity::find_by_id(&fence.job_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(false);
+        };
+        if model.state != JobState::Running.as_str()
+            || model.lease_owner.as_deref() != Some(fence.owner.as_str())
+            || model.lease_generation != fence.generation
+        {
+            return Ok(false);
+        }
+        if checkpoint.json.len() > bookclerk_plugin_abi::MAX_CHECKPOINT_BYTES as usize {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "checkpoint of {} bytes exceeds {}",
+                checkpoint.json.len(),
+                bookclerk_plugin_abi::MAX_CHECKPOINT_BYTES
+            )));
+        }
+        let mut payload: JobPayload = serde_json::from_str(&model.payload)
+            .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+        payload.checkpoint = Some(checkpoint.clone());
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+        let res = jobs::Entity::update_many()
+            .col_expr(
+                jobs::Column::Payload,
+                sea_orm::sea_query::Expr::value(payload_json),
+            )
+            .col_expr(
+                jobs::Column::UpdatedAt,
+                sea_orm::sea_query::Expr::value(now_str()),
+            )
+            .filter(jobs::Column::Id.eq(&fence.job_id))
+            .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+            .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+            .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(res.rows_affected == 1)
+    }
+
     /// Fail a running job when `fence` still owns the generation.
     ///
     /// # Errors

@@ -206,9 +206,14 @@ pub async fn acquire_book_indexed(
                     missing = missing.len(),
                     "syncing existing media to missing destinations (no store fetch)"
                 );
-                let written =
-                    sync_missing_destinations(destinations, source_kind, &source_key, &missing)
-                        .await?;
+                let written = sync_missing_destinations(
+                    destinations,
+                    source_kind,
+                    &source_key,
+                    &missing,
+                    &req.files_dir.join("stage-journal"),
+                )
+                .await?;
                 if let Some(idx) = index.as_mut() {
                     for key in &written {
                         idx.insert_key(key.clone());
@@ -615,7 +620,9 @@ async fn plan_existing_destinations(
             }
         };
         return Ok(
-            match find_existing_for_request(lookup, library, &dest_req).await {
+            match find_existing_for_request(lookup, dest.backend.as_ref(), library, &dest_req)
+                .await?
+            {
                 Some(primary_key) => ExistingPlan::Skip { primary_key },
                 None => ExistingPlan::Fetch { only_kinds: None },
             },
@@ -629,7 +636,10 @@ async fn plan_existing_destinations(
     for dest in &destinations.items {
         let dest_req = request_for_destination(req, dest);
         let dest_index = StorageIndex::from_storage(dest.backend.as_ref()).await?;
-        if let Some(key) = find_existing_for_request(&dest_index, library, &dest_req).await {
+        if let Some(key) =
+            find_existing_for_request(&dest_index, dest.backend.as_ref(), library, &dest_req)
+                .await?
+        {
             if dest.kind == destinations.primary {
                 primary_key = Some(key.clone());
             }
@@ -693,6 +703,7 @@ async fn sync_missing_destinations(
     source_kind: OutputBackendKind,
     source_key: &str,
     missing: &[(OutputBackendKind, String)],
+    stage_journal: &Path,
 ) -> Result<Vec<String>> {
     let source = destinations.destination(source_kind).ok_or_else(|| {
         AcquireError::Other(anyhow::anyhow!(
@@ -700,11 +711,10 @@ async fn sync_missing_destinations(
             source_kind
         ))
     })?;
-    let bytes = source.backend.get(source_key).await?;
-    let probe = source.backend.probe(source_key).await.unwrap_or_default();
+    let probe = source.backend.probe(source_key).await?;
     let mut meta = probe.meta;
     if meta.content_length.is_none() {
-        meta.content_length = Some(bytes.len() as u64);
+        meta.content_length = Some(probe.size);
     }
     if meta.content_type.is_none() {
         meta.content_type = probe.content_type.or_else(|| {
@@ -722,33 +732,21 @@ async fn sync_missing_destinations(
                 kind
             ))
         })?;
-        let mut last_err = None;
-        for attempt in 1..=DEST_WRITE_ATTEMPTS {
-            match dest
-                .backend
-                .put(target_key, bytes.clone(), meta.clone())
-                .await
-            {
-                Ok(()) => {
-                    written.push(target_key.clone());
-                    last_err = None;
-                    break;
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        destination = ?kind,
-                        key = %target_key,
-                        attempt,
-                        %err,
-                        "destination sync write failed; retrying"
-                    );
-                    last_err = Some(err);
-                }
-            }
-        }
-        if let Some(err) = last_err {
-            return Err(AcquireError::Storage(err));
-        }
+        bookclerk_storage::transfer_object(
+            source.backend.as_ref(),
+            source_key,
+            dest.backend.as_ref(),
+            target_key,
+            meta.clone(),
+            &bookclerk_storage::TransferOptions {
+                max_attempts: DEST_WRITE_ATTEMPTS,
+                stage_journal_dir: Some(stage_journal.to_path_buf()),
+                ..bookclerk_storage::TransferOptions::default()
+            },
+        )
+        .await
+        .map_err(AcquireError::Storage)?;
+        written.push(target_key.clone());
     }
     Ok(written)
 }
@@ -1173,6 +1171,7 @@ async fn store_plain_fetch(
                 &mp3_out,
                 &req.options.lame,
                 req.options.max_sample_rate,
+                None,
             )
             .await?;
             acquired_path = mp3_out;
@@ -1253,6 +1252,7 @@ async fn store_plain_fetch(
                     &mp3_path,
                     &req.options.lame,
                     req.options.max_sample_rate,
+                    None,
                 )
                 .await?;
                 chapter_path = mp3_path;
@@ -1760,6 +1760,7 @@ async fn object_meta_for(
         title: Some(title.to_string()),
         creation_time: created.map(system_time_rfc3339),
         last_write_time: modified.map(system_time_rfc3339),
+        ..Default::default()
     }
 }
 
@@ -1793,6 +1794,7 @@ async fn sidecar_meta(asin: &str, title: &str, content_type: &str, path: &Path) 
         title: Some(title.to_string()),
         creation_time: None,
         last_write_time: None,
+        ..Default::default()
     }
 }
 
@@ -2871,7 +2873,6 @@ mod tests {
             cursor: Option<&str>,
             limit: u32,
         ) -> bookclerk_storage::Result<bookclerk_storage::ListPage> {
-            self.puts.fetch_add(1, Ordering::SeqCst);
             self.inner.list_page(prefix, cursor, limit).await
         }
 
@@ -2883,7 +2884,6 @@ mod tests {
             bookclerk_storage::ObjectProbe,
             std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
         )> {
-            self.puts.fetch_add(1, Ordering::SeqCst);
             self.inner.get_stream(key, range).await
         }
 

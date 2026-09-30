@@ -34,6 +34,9 @@ pub enum MediaJob {
         lame: Box<LameConfig>,
         /// Optional ceiling for output sample rate in Hz (`None` = leave source).
         max_sample_rate: Option<u32>,
+        /// Hard cap on bytes written to `output`. `None` does not cap the file.
+        #[serde(default)]
+        max_output_bytes: Option<u64>,
     },
     /// Copy or trim a progressive M4B/M4A into a new file.
     RemuxTrimmed {
@@ -217,8 +220,15 @@ impl MediaJob {
                 output,
                 lame,
                 max_sample_rate,
+                max_output_bytes,
             } => {
-                crate::mp3::encode_to_mp3_native(&input, &output, &lame, max_sample_rate)?;
+                crate::mp3::encode_to_mp3_native(
+                    &input,
+                    &output,
+                    &lame,
+                    max_sample_rate,
+                    max_output_bytes,
+                )?;
                 Ok(MediaJobOutput::File { output })
             }
             Self::RemuxTrimmed {
@@ -298,6 +308,7 @@ mod tests {
             output: PathBuf::from(output),
             lame: Box::default(),
             max_sample_rate: None,
+            max_output_bytes: None,
         }
     }
 
