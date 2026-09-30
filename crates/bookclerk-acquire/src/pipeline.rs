@@ -620,7 +620,8 @@ async fn plan_existing_destinations(
             }
         };
         return Ok(
-            match find_existing_for_request(lookup, dest.backend.as_ref(), library, &dest_req).await
+            match find_existing_for_request(lookup, dest.backend.as_ref(), library, &dest_req)
+                .await?
             {
                 Some(primary_key) => ExistingPlan::Skip { primary_key },
                 None => ExistingPlan::Fetch { only_kinds: None },
@@ -636,7 +637,8 @@ async fn plan_existing_destinations(
         let dest_req = request_for_destination(req, dest);
         let dest_index = StorageIndex::from_storage(dest.backend.as_ref()).await?;
         if let Some(key) =
-            find_existing_for_request(&dest_index, dest.backend.as_ref(), library, &dest_req).await
+            find_existing_for_request(&dest_index, dest.backend.as_ref(), library, &dest_req)
+                .await?
         {
             if dest.kind == destinations.primary {
                 primary_key = Some(key.clone());

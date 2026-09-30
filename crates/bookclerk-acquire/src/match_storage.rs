@@ -165,7 +165,7 @@ pub async fn match_storage_using_index(
                 }
             }
 
-            let Some(mut key) = find_audio_for_book(book, index, storage, library).await else {
+            let Some(mut key) = find_audio_for_book(book, index, storage, library).await? else {
                 if options.only_mark_found {
                     summary.unchanged += 1;
                     continue;
@@ -295,22 +295,46 @@ async fn find_audio_for_book(
     index: &crate::reconcile::StorageIndex,
     storage: &dyn StorageBackend,
     library: &LibraryStore,
-) -> Option<String> {
+) -> Result<Option<String>> {
     if let Some(key) = &book.storage_key {
-        if is_audio_key(key) && storage.exists(key).await.unwrap_or(false) {
-            return Some(key.clone());
+        if is_audio_key(key) && storage.exists(key).await.map_err(AcquireError::Storage)? {
+            return Ok(Some(key.clone()));
         }
     }
     for id in book_identity_tokens(book) {
         if let Some(scan_id) = index.scan_id() {
-            if let Ok(Some(key)) = library.storage_scan_best_identity(scan_id, &id).await {
-                if is_audio_key(&key) && storage.exists(&key).await.unwrap_or(false) {
-                    return Some(key);
+            let mut after: Option<(i64, String)> = None;
+            loop {
+                let page = library
+                    .storage_scan_identity_page(
+                        scan_id,
+                        &id,
+                        after.as_ref().map(|(rank, key)| (*rank, key.as_str())),
+                        8,
+                    )
+                    .await
+                    .map_err(|err| {
+                        AcquireError::Other(anyhow::anyhow!("storage scan identity: {err}"))
+                    })?;
+                if page.is_empty() {
+                    break;
+                }
+                let page_len = page.len();
+                for (key, rank) in page {
+                    if is_audio_key(&key)
+                        && storage.exists(&key).await.map_err(AcquireError::Storage)?
+                    {
+                        return Ok(Some(key));
+                    }
+                    after = Some((rank, key));
+                }
+                if page_len < 8 {
+                    break;
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// Renames audio and known companions; fails if the destination audio key already exists.

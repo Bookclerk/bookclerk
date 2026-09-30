@@ -16,6 +16,7 @@ mod fanout;
 /// On-disk local list index (external sort, O(page) reads).
 mod list_index;
 mod local;
+mod placement;
 mod s3;
 mod s3_credentials;
 #[cfg(any(unix, windows))]
@@ -32,6 +33,7 @@ pub use bounded::{
 pub use error::{Result, StorageError};
 pub use fanout::FanoutBackend;
 pub use local::LocalFsBackend;
+pub use placement::host_placement_id;
 pub use s3::S3Backend;
 pub use s3_credentials::{
     delete_s3_credentials, load_s3_credentials, save_s3_credentials, S3Credentials,

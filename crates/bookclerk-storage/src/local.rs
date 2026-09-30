@@ -28,6 +28,8 @@ pub struct LocalFsBackend {
     root: PathBuf,
     /// Normalized key prefix (same model as S3); stripped from list results.
     prefix: String,
+    /// Test override for [`StorageBackend::scan_placement`].
+    placement_override: Option<String>,
 }
 
 impl LocalFsBackend {
@@ -102,7 +104,20 @@ impl LocalFsBackend {
                 return Err(StorageError::InvalidKey(prefix));
             }
         }
-        Ok(Self { root, prefix })
+        Ok(Self {
+            root,
+            prefix,
+            placement_override: None,
+        })
+    }
+
+    /// Overrides the host placement reported for scan adoption.
+    ///
+    /// Production backends leave this unset and use [`crate::host_placement_id`].
+    #[must_use]
+    pub fn with_scan_placement(mut self, placement: impl Into<String>) -> Self {
+        self.placement_override = Some(placement.into());
+        self
     }
 
     /// Prepends the storage prefix to `key` (no-op when the prefix is empty).
@@ -232,6 +247,14 @@ impl StorageBackend for LocalFsBackend {
         format!("local:{}:{}", self.root.display(), self.prefix)
     }
 
+    fn scan_placement(&self) -> Option<String> {
+        Some(
+            self.placement_override
+                .clone()
+                .unwrap_or_else(crate::host_placement_id),
+        )
+    }
+
     fn supports_server_copy(&self) -> bool {
         true
     }
@@ -346,6 +369,22 @@ impl StorageBackend for LocalFsBackend {
         }
         let src = self.resolve(from)?;
         let dest = self.resolve(to)?;
+        let len = fs::metadata(&src)
+            .await
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    StorageError::NotFound(from.into())
+                } else {
+                    StorageError::Io(err)
+                }
+            })?
+            .len();
+        if len > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
+            return Err(StorageError::PayloadTooLarge(format!(
+                "object length {len} exceeds {}",
+                crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+            )));
+        }
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -1194,5 +1233,30 @@ mod tests {
         let corrupt = rebuilt.probe("Title/book.jpg").await.unwrap();
         assert_eq!(corrupt.size, cover.len() as u64);
         assert!(corrupt.meta.sha256_hex.is_none());
+    }
+
+    #[tokio::test]
+    async fn copy_rejects_an_oversized_sparse_source_without_replacing_the_destination() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().to_path_buf()).unwrap();
+        backend
+            .put(
+                "dest.m4b",
+                Bytes::from_static(b"keeper"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let src = dir.path().join("huge.m4b");
+        let file = std::fs::File::create(&src).unwrap();
+        file.set_len(crate::bounded::MAX_SUPPORTED_OBJECT_BYTES + 1)
+            .unwrap();
+        let err = backend.copy("huge.m4b", "dest.m4b").await.unwrap_err();
+        assert!(
+            matches!(err, crate::StorageError::PayloadTooLarge(_)),
+            "{err}"
+        );
+        assert_eq!(backend.get("dest.m4b").await.unwrap().as_ref(), b"keeper");
+        assert!(src.metadata().unwrap().len() > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES);
     }
 }

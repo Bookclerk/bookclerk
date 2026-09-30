@@ -1,9 +1,12 @@
 //! Durable, paged storage-scan index on [`LibraryStore`].
 
 use chrono::Utc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, QuerySelect,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, Condition, EntityTrait, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
 };
 
 use super::{map_book, LibraryStore};
@@ -86,26 +89,86 @@ impl LibraryStore {
         .await
     }
 
-    /// Best stored key for `identity` (lowest media rank), if the scan recorded one.
+    /// One page of identity candidates, ordered by `(media_rank, object_key)`.
+    ///
+    /// `after` is the last key already considered. The page is bounded by
+    /// `limit` (clamped to 1..=64). Callers try each key and request the next
+    /// page; this does not load every match.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
-    pub async fn storage_scan_best_identity(
+    pub async fn storage_scan_identity_page(
         &self,
         scan_id: &str,
         identity: &str,
-    ) -> Result<Option<String>> {
-        let row = storage_scan_rows::Entity::find()
+        after: Option<(i64, &str)>,
+        limit: u64,
+    ) -> Result<Vec<(String, i64)>> {
+        let limit = limit.clamp(1, 64);
+        let mut query = storage_scan_rows::Entity::find()
             .filter(storage_scan_rows::Column::ScanId.eq(scan_id))
             .filter(storage_scan_rows::Column::Kind.eq(KIND_IDENTITY))
-            .filter(storage_scan_rows::Column::Identity.eq(identity.to_ascii_uppercase()))
+            .filter(storage_scan_rows::Column::Identity.eq(identity.to_ascii_uppercase()));
+        if let Some((rank, key)) = after {
+            query = query.filter(
+                Condition::any()
+                    .add(storage_scan_rows::Column::MediaRank.gt(rank))
+                    .add(
+                        Condition::all()
+                            .add(storage_scan_rows::Column::MediaRank.eq(rank))
+                            .add(storage_scan_rows::Column::ObjectKey.gt(key)),
+                    ),
+            );
+        }
+        let rows = query
             .order_by_asc(storage_scan_rows::Column::MediaRank)
-            .limit(1)
-            .one(&self.db)
+            .order_by_asc(storage_scan_rows::Column::ObjectKey)
+            .limit(limit)
+            .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
-        Ok(row.map(|row| row.object_key))
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.object_key, row.media_rank))
+            .collect())
+    }
+
+    /// One page of object keys at or above `prefix`, in `object_key` order.
+    ///
+    /// The upper bound is the byte-wise successor of `prefix`, not a SQL `LIKE`
+    /// pattern, so wildcard characters in a storage key stay literal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn storage_scan_object_page(
+        &self,
+        scan_id: &str,
+        prefix: &str,
+        after_key: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<String>> {
+        let limit = limit.clamp(1, 64);
+        let mut query = storage_scan_rows::Entity::find()
+            .filter(storage_scan_rows::Column::ScanId.eq(scan_id))
+            .filter(storage_scan_rows::Column::Kind.eq(KIND_OBJECT));
+        if !prefix.is_empty() {
+            query = query.filter(storage_scan_rows::Column::ObjectKey.gte(prefix));
+            if let Some(upper) = prefix_upper_bound(prefix) {
+                query = query.filter(storage_scan_rows::Column::ObjectKey.lt(upper));
+            }
+        }
+        if let Some(after_key) = after_key {
+            query = query.filter(storage_scan_rows::Column::ObjectKey.gt(after_key));
+        }
+        let rows = query
+            .order_by_asc(storage_scan_rows::Column::ObjectKey)
+            .limit(limit)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(rows.into_iter().map(|row| row.object_key).collect())
     }
 
     /// Marks an object claimed so unmatched-audio counts stay in the database.
@@ -147,20 +210,30 @@ impl LibraryStore {
 
     /// Deletes inventory rows and the generation ownership row for `scan_id`.
     ///
+    /// Both deletes commit together. A failure leaves the generation and its
+    /// rows in place so an apply checkpoint cannot adopt an empty inventory.
+    ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the delete fails.
     pub async fn storage_scan_delete(&self, scan_id: &str) -> Result<()> {
+        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         storage_scan_rows::Entity::delete_many()
             .filter(storage_scan_rows::Column::ScanId.eq(scan_id))
-            .exec(&self.db)
+            .exec(&txn)
             .await
             .map_err(LibraryError::Orm)?;
+        if scan_delete_should_fail_before_generation() {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "injected storage scan delete failure before generation removal"
+            )));
+        }
         storage_scan_generations::Entity::delete_many()
             .filter(storage_scan_generations::Column::ScanId.eq(scan_id))
-            .exec(&self.db)
+            .exec(&txn)
             .await
             .map_err(LibraryError::Orm)?;
+        txn.commit().await.map_err(LibraryError::Orm)?;
         Ok(())
     }
 
@@ -306,6 +379,83 @@ impl LibraryStore {
         Ok(removed)
     }
 
+    /// Deletes this job's inventories when the job is terminal or already gone.
+    ///
+    /// Pending and running jobs, including a retry after one failed attempt,
+    /// are left untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or delete fails.
+    pub async fn storage_scan_reclaim_if_terminal(&self, job_id: &str) -> Result<u64> {
+        if let Some(job) = self.get_job(job_id).await? {
+            if !job.state.is_terminal() {
+                return Ok(0);
+            }
+        }
+        let rows = storage_scan_generations::Entity::find()
+            .filter(storage_scan_generations::Column::JobId.eq(job_id))
+            .limit(32)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let mut removed = 0u64;
+        for row in rows {
+            self.storage_scan_delete(&row.scan_id).await?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
+    /// Deletes up to `limit` generations whose job is terminal or missing.
+    ///
+    /// Pending, running, and jobless generations are kept. `after_scan_id`
+    /// walks past a page of still-active rows so one sweep cannot stall on
+    /// them. Pass the returned cursor back; `None` means the walk wrapped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or delete fails. A delete
+    /// error leaves that generation for a later retry.
+    pub async fn storage_scan_reclaim_terminal_page(
+        &self,
+        after_scan_id: Option<&str>,
+        limit: u64,
+    ) -> Result<(u64, Option<String>)> {
+        let limit = limit.clamp(1, 64);
+        let mut query = storage_scan_generations::Entity::find()
+            .order_by_asc(storage_scan_generations::Column::ScanId);
+        if let Some(after) = after_scan_id {
+            query = query.filter(storage_scan_generations::Column::ScanId.gt(after));
+        }
+        let rows = query
+            .limit(limit)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let next = if rows.len() < usize::try_from(limit).unwrap_or(usize::MAX) {
+            None
+        } else {
+            rows.last().map(|row| row.scan_id.clone())
+        };
+        let mut removed = 0u64;
+        for row in rows {
+            if row.job_id.is_empty() {
+                continue;
+            }
+            let terminal = match self.get_job(&row.job_id).await? {
+                Some(job) => job.state.is_terminal(),
+                None => true,
+            };
+            if !terminal {
+                continue;
+            }
+            self.storage_scan_delete(&row.scan_id).await?;
+            removed += 1;
+        }
+        Ok((removed, next))
+    }
+
     /// Pages books by surrogate id so a scan does not load the catalog at once.
     ///
     /// # Errors
@@ -373,3 +523,32 @@ impl LibraryStore {
         Ok(())
     }
 }
+
+/// Exclusive upper bound for keys that start with `prefix` under byte order.
+fn prefix_upper_bound(prefix: &str) -> Option<String> {
+    let mut bytes = prefix.as_bytes().to_vec();
+    while let Some(last) = bytes.pop() {
+        if last < 0xFF {
+            bytes.push(last + 1);
+            return String::from_utf8(bytes).ok();
+        }
+    }
+    None
+}
+
+/// Test switch: fail `storage_scan_delete` after the row delete, before commit.
+fn scan_delete_should_fail_before_generation() -> bool {
+    #[cfg(test)]
+    {
+        FAIL_STORAGE_SCAN_DELETE_BEFORE_GENERATION.load(Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// When set, [`LibraryStore::storage_scan_delete`] rolls back instead of
+/// removing the generation row.
+#[cfg(test)]
+pub(crate) static FAIL_STORAGE_SCAN_DELETE_BEFORE_GENERATION: AtomicBool = AtomicBool::new(false);

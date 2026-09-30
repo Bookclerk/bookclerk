@@ -141,6 +141,7 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
         let owner = format!("network-{index}-{}", Uuid::new_v4());
         let mut idle = tokio::time::interval(Duration::from_secs(5));
         idle.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut scan_reclaim_after: Option<String> = None;
         loop {
             let permit = state.job_runtime.read().await;
             let library = state.library_snapshot().await;
@@ -149,6 +150,13 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
             }
             let cfg = state.config.read().await.clone();
             let _ = library.prune_terminal_jobs(cfg.jobs.retention_days).await;
+            match library
+                .storage_scan_reclaim_terminal_page(scan_reclaim_after.as_deref(), 32)
+                .await
+            {
+                Ok((_removed, next)) => scan_reclaim_after = next,
+                Err(err) => warn!(error = %err, "storage scan terminal reclaim failed"),
+            }
             match claim_with_replay(&library, &owner, cfg.jobs.lease_seconds).await {
                 Ok(Some(job)) => {
                     run_claimed_job(state.clone(), &owner, job, cfg.jobs.lease_seconds).await;
@@ -370,7 +378,14 @@ async fn run_claimed_job(state: Arc<AppState>, _owner: &str, job: JobRecord, lea
         Ok(detail) => {
             info!(job_id = %fence.job_id, kind = job.kind.as_str(), %detail, "job succeeded");
             match library.complete_job(&fence, Some(&detail)).await {
-                Ok(true) => {}
+                Ok(true) => {
+                    if let Err(err) = library
+                        .storage_scan_reclaim_if_terminal(&fence.job_id)
+                        .await
+                    {
+                        warn!(job_id = %fence.job_id, error = %err, "storage scan reclaim after success failed");
+                    }
+                }
                 Ok(false) => {
                     warn!(
                         job_id = %fence.job_id,
@@ -390,7 +405,15 @@ async fn run_claimed_job(state: Arc<AppState>, _owner: &str, job: JobRecord, lea
             match classify_handler_failure(ctx.is_cancelled(), operator_cancel) {
                 HandlerFailKind::OperatorCancel => {
                     match library.fail_job(&fence, "cancelled", "cancelled").await {
-                        Ok(true) => info!(job_id = %fence.job_id, "job cancelled"),
+                        Ok(true) => {
+                            info!(job_id = %fence.job_id, "job cancelled");
+                            if let Err(err) = library
+                                .storage_scan_reclaim_if_terminal(&fence.job_id)
+                                .await
+                            {
+                                warn!(job_id = %fence.job_id, error = %err, "storage scan reclaim after cancel failed");
+                            }
+                        }
                         Ok(false) => {
                             warn!(
                                 job_id = %fence.job_id,
@@ -411,7 +434,14 @@ async fn run_claimed_job(state: Arc<AppState>, _owner: &str, job: JobRecord, lea
                 HandlerFailKind::Handler => {
                     note_job_failure(&fence.job_id, &err);
                     match library.fail_job(&fence, "handler", &err.to_string()).await {
-                        Ok(true) => {}
+                        Ok(true) => {
+                            if let Err(err) = library
+                                .storage_scan_reclaim_if_terminal(&fence.job_id)
+                                .await
+                            {
+                                warn!(job_id = %fence.job_id, error = %err, "storage scan reclaim after failure failed");
+                            }
+                        }
                         Ok(false) => {
                             warn!(
                                 job_id = %fence.job_id,

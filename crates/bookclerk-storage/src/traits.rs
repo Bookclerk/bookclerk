@@ -130,6 +130,18 @@ pub trait StorageBackend: Send + Sync {
         format!("anonymous:{}", self.name())
     }
 
+    /// Host placement when this backend's bytes are not portable across nodes.
+    ///
+    /// `None` means a scan may resume on any host with the same
+    /// [`Self::instance_id`] (object storage). `Some` is a stable host id.
+    /// Wrappers and fan-out must forward a child's placement; they must not
+    /// guess locality from an `instance_id` prefix. When placement cannot be
+    /// proved, return a host id so the scan restarts on another node instead
+    /// of adopting the wrong inventory.
+    fn scan_placement(&self) -> Option<String> {
+        None
+    }
+
     /// Clone into a new boxed backend (same client / root).
     fn clone_box(&self) -> Box<dyn StorageBackend>;
 

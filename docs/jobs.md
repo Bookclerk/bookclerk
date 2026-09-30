@@ -116,15 +116,22 @@ pending → running → succeeded
 - Storage scans checkpoint `storage_scan` JSON (instance id, generation,
   phase, cursor) with `checkpoint_running_job` while the row stays `running`.
   The generation is a UUID bound in `storage_scan_generations` to that storage
-  instance and the job. Object rows live in `storage_scan_rows`, not in the
-  64 KiB checkpoint. Page inserts happen before the cursor advances; replaying
+  instance and the job. Local-backed scans, including fan-out and plugin
+  wrappers, also store the host placement (`event_node_id` under the files
+  directory). A resume on another node, or a backend whose placement cannot
+  be proved, starts a new scan instead of adopting the old rows. Object rows
+  live in `storage_scan_rows`, not in the 64 KiB checkpoint. Page inserts happen before the cursor advances; replaying
   a page is idempotent.   `run_acquire` performs one fenced scan and matches
   against that index. An `apply` checkpoint is adopted only when its
   generation row still exists and is marked complete; a missing or incomplete
-  inventory is scanned again. A successful acquire, including one with no
-  targets, deletes the generation before the handler returns. Startup
+  inventory is scanned again.   A successful acquire, including one with no
+  targets, deletes the generation before the handler returns. Inventory rows
+  and the generation row are deleted in one database transaction. Startup
   reclaim removes abandoned generations and does not remove one owned by a
-  pending or running job. Local list indexes are node-local scratch and are
+  pending or running job. While the daemon is up, a bounded sweep and each
+  confirmed terminal transition delete inventories for terminal jobs. A
+  failed attempt that will be retried, a lost fence, and suspended work leave
+  the generation in place. Local list indexes are node-local scratch and are
   not a portable checkpoint.
 - MP3 conversion counts input bytes, then reserves the whole temp quota for
   that scratch path: the output allowance is every quota byte not used by

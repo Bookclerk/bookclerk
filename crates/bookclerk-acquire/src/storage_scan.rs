@@ -40,6 +40,10 @@ pub struct ScanCheckpoint {
     pub cursor: Option<String>,
     /// True when the list index or scratch is node-local.
     pub node_local: bool,
+    /// Host placement for node-local bytes. Absent means the scan was recorded
+    /// as portable. A mismatch restarts instead of adopting another node's rows.
+    #[serde(default)]
+    pub placement: Option<String>,
 }
 
 /// Builds or resumes a durable identity/object index.
@@ -56,11 +60,15 @@ pub async fn scan_storage(
     probe_metadata: bool,
 ) -> Result<StorageIndex> {
     let instance_id = storage.instance_id();
-    let node_local = instance_id.starts_with("local:");
+    let placement = storage.scan_placement();
+    let node_local = placement.is_some();
     let mut state = match prior {
         Some(raw) => decode_prior(raw, &instance_id)?,
-        None => fresh_checkpoint(&instance_id, node_local),
+        None => fresh_checkpoint(&instance_id, node_local, placement.clone()),
     };
+    if prior.is_some() && !placement_matches(&state.placement, &placement) {
+        state = fresh_checkpoint(&instance_id, node_local, placement.clone());
+    }
     if prior.is_some() {
         match library
             .storage_scan_adoption(&state.generation)
@@ -68,16 +76,20 @@ pub async fn scan_storage(
             .map_err(|err| AcquireError::Other(anyhow::anyhow!("storage scan generation: {err}")))?
         {
             Some((bound_instance, true))
-                if state.phase == "apply" && bound_instance == instance_id =>
+                if state.phase == "apply"
+                    && bound_instance == instance_id
+                    && placement_matches(&state.placement, &placement) =>
             {
                 return Ok(StorageIndex::with_scan(state.generation));
             }
-            Some((bound_instance, _)) if state.phase == "list" && bound_instance == instance_id => {
-            }
+            Some((bound_instance, _))
+                if state.phase == "list"
+                    && bound_instance == instance_id
+                    && placement_matches(&state.placement, &placement) => {}
             _ => {
                 // Missing, incomplete, or not a list resume. An apply checkpoint
                 // is not proof the inventory still exists.
-                state = fresh_checkpoint(&instance_id, node_local);
+                state = fresh_checkpoint(&instance_id, node_local, placement.clone());
             }
         }
     }
@@ -88,7 +100,7 @@ pub async fn scan_storage(
             Ok(()) => break,
             Err(AcquireError::Storage(StorageError::InvalidCursor(_))) if !restarted => {
                 library.storage_scan_delete(&state.generation).await?;
-                state = fresh_checkpoint(&instance_id, node_local);
+                state = fresh_checkpoint(&instance_id, node_local, placement.clone());
                 bind_generation(library, &state, fence).await?;
                 restarted = true;
                 persist(library, fence, &state).await?;
@@ -125,7 +137,15 @@ async fn bind_generation(
         .map_err(|err| AcquireError::Other(anyhow::anyhow!("storage scan generation: {err}")))
 }
 
-fn fresh_checkpoint(instance_id: &str, node_local: bool) -> ScanCheckpoint {
+fn placement_matches(prior: &Option<String>, current: &Option<String>) -> bool {
+    prior == current
+}
+
+fn fresh_checkpoint(
+    instance_id: &str,
+    node_local: bool,
+    placement: Option<String>,
+) -> ScanCheckpoint {
     ScanCheckpoint {
         v: SCAN_VERSION,
         op: "storage_scan".into(),
@@ -135,6 +155,7 @@ fn fresh_checkpoint(instance_id: &str, node_local: bool) -> ScanCheckpoint {
         phase: "list".into(),
         cursor: None,
         node_local,
+        placement,
     }
 }
 
@@ -461,6 +482,7 @@ mod tests {
             phase: "list".into(),
             cursor: Some("missing-object".into()),
             node_local: true,
+            placement: backend.scan_placement(),
         };
         library
             .storage_scan_register("scan-stale", &backend.instance_id(), None)
@@ -500,6 +522,7 @@ mod tests {
             phase: "apply".into(),
             cursor: None,
             node_local: true,
+            placement: backend.scan_placement(),
         };
         JobCheckpoint {
             schema_version: SCAN_VERSION,
@@ -570,5 +593,77 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn another_node_does_not_adopt_list_or_apply_checkpoints() {
+        let library = store().await;
+        let dir = tempfile::tempdir().unwrap();
+        let node_a = LocalFsBackend::new(dir.path().to_path_buf())
+            .unwrap()
+            .with_scan_placement("node-a");
+        node_a
+            .put(
+                "only-a.m4b",
+                Bytes::from_static(b"a"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let fence = running_fence(&library, "node-a").await;
+        let first = scan_storage(&library, &node_a, Some(&fence), None, false)
+            .await
+            .unwrap();
+        let first_id = first.scan_id().unwrap().to_string();
+        let apply = apply_checkpoint(&node_a, &first_id);
+        let list_state = ScanCheckpoint {
+            v: SCAN_VERSION,
+            op: "storage_scan".into(),
+            instance_id: node_a.instance_id(),
+            namespace: String::new(),
+            generation: first_id.clone(),
+            phase: "list".into(),
+            cursor: Some("only-a.m4b".into()),
+            node_local: true,
+            placement: node_a.scan_placement(),
+        };
+        let list_prior = JobCheckpoint {
+            schema_version: SCAN_VERSION,
+            json: serde_json::to_string(&list_state).unwrap(),
+        };
+        node_a.delete("only-a.m4b").await.unwrap();
+        let node_b = LocalFsBackend::new(dir.path().to_path_buf())
+            .unwrap()
+            .with_scan_placement("node-b");
+        node_b
+            .put(
+                "only-b.m4b",
+                Bytes::from_static(b"b"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(node_a.instance_id(), node_b.instance_id());
+        let other = running_fence(&library, "node-b-list").await;
+        let resumed = scan_storage(&library, &node_b, Some(&other), Some(&list_prior), false)
+            .await
+            .unwrap();
+        assert_ne!(resumed.scan_id().unwrap(), first_id);
+        let keys = library
+            .storage_scan_object_page(resumed.scan_id().unwrap(), "", None, 8)
+            .await
+            .unwrap();
+        assert_eq!(keys, vec!["only-b.m4b".to_string()]);
+
+        let other_apply = running_fence(&library, "node-b-apply").await;
+        let adopted = scan_storage(&library, &node_b, Some(&other_apply), Some(&apply), false)
+            .await
+            .unwrap();
+        assert_ne!(adopted.scan_id().unwrap(), first_id);
+        let keys = library
+            .storage_scan_object_page(adopted.scan_id().unwrap(), "", None, 8)
+            .await
+            .unwrap();
+        assert_eq!(keys, vec!["only-b.m4b".to_string()]);
     }
 }

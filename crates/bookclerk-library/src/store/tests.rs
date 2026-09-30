@@ -6416,3 +6416,153 @@ async fn execute_guest_atomic_allow_tables_selects_books() {
         other => panic!("expected text product_id, got {other:?}"),
     }
 }
+
+async fn assert_scan_delete_is_atomic(store: &LibraryStore) {
+    store
+        .storage_scan_register("scan-atomic", "local:test", None)
+        .await
+        .unwrap();
+    store
+        .storage_scan_put_object("scan-atomic", "a.m4b", 1, 0, true)
+        .await
+        .unwrap();
+    store
+        .storage_scan_mark_complete("scan-atomic")
+        .await
+        .unwrap();
+    super::storage_scan::FAIL_STORAGE_SCAN_DELETE_BEFORE_GENERATION
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let err = store.storage_scan_delete("scan-atomic").await.unwrap_err();
+    super::storage_scan::FAIL_STORAGE_SCAN_DELETE_BEFORE_GENERATION
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(err.to_string().contains("injected"), "{err}");
+    let (instance, completed) = store
+        .storage_scan_adoption("scan-atomic")
+        .await
+        .unwrap()
+        .expect("generation survived the rollback");
+    assert_eq!(instance, "local:test");
+    assert!(completed);
+    assert_eq!(
+        store
+            .storage_scan_object_page("scan-atomic", "", None, 8)
+            .await
+            .unwrap(),
+        vec!["a.m4b".to_string()]
+    );
+    store.storage_scan_delete("scan-atomic").await.unwrap();
+    assert!(store
+        .storage_scan_adoption("scan-atomic")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn storage_scan_delete_rolls_back_before_the_generation_is_removed() {
+    let store = test_store().await;
+    assert_scan_delete_is_atomic(&store).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_storage_scan_delete_rolls_back_before_the_generation_is_removed() {
+    let store = postgres_test_store().await;
+    assert_scan_delete_is_atomic(&store).await;
+}
+
+#[tokio::test]
+async fn terminal_jobs_drop_scan_inventory_and_pending_retries_keep_it() {
+    let store = test_store().await;
+    let pending = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Acquire,
+            payload: JobPayload {
+                title: Some("retry".into()),
+                ..JobPayload::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 4,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id: pending_id } = pending else {
+        panic!("pending job");
+    };
+    store
+        .storage_scan_register("scan-retry", "inst", Some(&pending_id))
+        .await
+        .unwrap();
+    store
+        .storage_scan_put_object("scan-retry", "keep.m4b", 1, 0, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .storage_scan_reclaim_if_terminal(&pending_id)
+            .await
+            .unwrap(),
+        0
+    );
+    let claimed = claim_job(&store, "worker-retry").await;
+    let fence = claimed.fence().expect("fence");
+    assert!(store.fail_job(&fence, "handler", "once").await.unwrap());
+    assert_eq!(
+        store
+            .storage_scan_reclaim_if_terminal(&pending_id)
+            .await
+            .unwrap(),
+        0,
+        "a retry must keep the inventory"
+    );
+    assert!(store
+        .storage_scan_adoption("scan-retry")
+        .await
+        .unwrap()
+        .is_some());
+
+    let terminal = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Acquire,
+            payload: JobPayload {
+                title: Some("terminal".into()),
+                ..JobPayload::default()
+            },
+            priority: 0,
+            max_attempts: 1,
+            max_pending: 4,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = terminal else {
+        panic!("terminal job");
+    };
+    store
+        .storage_scan_register("scan-dead", "inst", Some(&id))
+        .await
+        .unwrap();
+    store
+        .storage_scan_put_object("scan-dead", "gone.m4b", 1, 0, true)
+        .await
+        .unwrap();
+    let claimed = claim_job(&store, "worker-dead").await;
+    let fence = claimed.fence().expect("fence");
+    assert!(store.fail_job(&fence, "handler", "final").await.unwrap());
+    assert_eq!(
+        store.storage_scan_reclaim_if_terminal(&id).await.unwrap(),
+        1
+    );
+    assert!(store
+        .storage_scan_adoption("scan-dead")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .storage_scan_adoption("scan-retry")
+        .await
+        .unwrap()
+        .is_some());
+}
