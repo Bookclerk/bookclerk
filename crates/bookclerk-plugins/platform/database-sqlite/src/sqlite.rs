@@ -62,6 +62,15 @@ impl SqliteState {
     /// Returns a rusqlite error when the engine rejects `BEGIN` or `SAVEPOINT`.
     fn begin(&mut self) -> rusqlite::Result<()> {
         if self.txn_depth == 0 {
+            // Depth can be 0 while SQLite still has a transaction open when a
+            // previous attempt ended without COMMIT/ROLLBACK (a dropped BEGIN
+            // whose cleanup flag was already clear). The next BEGIN would fail
+            // immediately with "cannot start a transaction within a transaction",
+            // which redeem maps to HTTP 400. That work was not committed; roll
+            // it back and start clean.
+            if !self.conn.is_autocommit() {
+                self.conn.execute_batch("ROLLBACK")?;
+            }
             self.conn.execute_batch("BEGIN IMMEDIATE")?;
         } else {
             self.conn
@@ -1035,6 +1044,40 @@ mod tests {
         let summary = summarize_sql(&sql);
         assert!(summary.ends_with("..."));
         assert_eq!(summary.len(), 183);
+    }
+
+    #[test]
+    fn begin_rolls_back_an_orphan_transaction_before_starting_another() {
+        let conn = rusqlite::Connection::open_in_memory().expect("memory");
+        conn.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY); BEGIN IMMEDIATE; INSERT INTO t (id) VALUES (1);",
+        )
+        .expect("orphan begin");
+        let mut state = super::SqliteState { conn, txn_depth: 0 };
+        assert!(
+            !state.conn.is_autocommit(),
+            "the raw BEGIN must still be open"
+        );
+        state.begin().expect("begin after orphan");
+        let n: i64 = state
+            .conn
+            .query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(n, 0, "the uncommitted orphan insert must not survive");
+        state
+            .conn
+            .execute("INSERT INTO t (id) VALUES (2)", [])
+            .expect("insert");
+        state.commit().expect("commit");
+        assert!(state.conn.is_autocommit());
+        let n: i64 = state
+            .conn
+            .query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
+            .expect("count after commit");
+        assert_eq!(n, 1);
+        state.begin().expect("second begin");
+        state.rollback().expect("rollback");
+        assert!(state.conn.is_autocommit());
     }
 
     #[test]
