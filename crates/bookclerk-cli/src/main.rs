@@ -143,8 +143,25 @@ enum Commands {
     Version,
 }
 
+/// Starts the CLI on a thread with an 8 MiB stack.
+///
+/// Windows reserves 1 MiB for the process main thread. The command future is
+/// larger than that, so `bookclerk version` overflows before it prints. Linux
+/// main threads are 8 MiB, which fits the same future.
+fn main() -> ExitCode {
+    const CLI_STACK_BYTES: usize = 8 * 1024 * 1024;
+    std::thread::Builder::new()
+        .name("bookclerk-cli".into())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(cli_main)
+        .expect("spawn bookclerk cli thread")
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
+/// Parses arguments and dispatches one CLI invocation.
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn cli_main() -> ExitCode {
     // Phase 1: resolve files dir / config for plugin discovery (help + dynamic cmds).
     let early = Cli::command()
         .ignore_errors(true)
