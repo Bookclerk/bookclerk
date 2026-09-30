@@ -3526,6 +3526,13 @@ impl StorageBackend for PluginStorage {
         )
     }
 
+    fn scan_placement(&self) -> Option<String> {
+        // A plugin session key is configuration identity, not a node. Local
+        // bytes behind the guest cannot be proved portable, so scans restart
+        // on another host.
+        Some(bookclerk_storage::host_placement_id())
+    }
+
     fn clone_box(&self) -> Box<dyn StorageBackend> {
         Box::new(self.clone())
     }
@@ -3553,14 +3560,9 @@ impl StorageBackend for PluginStorage {
         let probe = self.probe(key).await?;
         bookclerk_storage::reject_scalar_hint(probe.size, limit)?;
         let (opened, body) = self.get_stream(key, None).await?;
+        reject_opened_above_cap(opened.size, limit)?;
         let data = bookclerk_storage::read_scalar_body(body, limit).await?;
-        if opened.size <= limit && data.len() as u64 != opened.size && opened.size > 0 {
-            return Err(StorageError::Integrity(format!(
-                "scalar get read {} bytes after HEAD reported {}",
-                data.len(),
-                opened.size
-            )));
-        }
+        reject_scalar_length_mismatch(opened.size, data.len() as u64)?;
         Ok(data)
     }
 
@@ -3649,7 +3651,7 @@ impl StorageBackend for PluginStorage {
             })
             .await
             .map_err(Self::map_err)?;
-        Ok((meta_to_probe(read.meta), read.body))
+        Ok((meta_to_probe(read.meta)?, read.body))
     }
 
     async fn put_stream(
@@ -3681,11 +3683,7 @@ impl StorageBackend for PluginStorage {
         Ok(PutStreamResult {
             bytes_written: put.bytes_written,
             etag: put.etag,
-            sha256_hex: put
-                .sha256
-                .as_deref()
-                .and_then(|raw| bookclerk_storage::sha256_field_from_raw(Some(raw)).ok())
-                .flatten(),
+            sha256_hex: bookclerk_storage::sha256_field_from_raw(put.sha256.as_deref())?,
         })
     }
 
@@ -3698,7 +3696,7 @@ impl StorageBackend for PluginStorage {
             })
             .await
             .map_err(Self::map_err)?;
-        Ok(meta.map(meta_to_probe))
+        meta.map(meta_to_probe).transpose()
     }
 
     fn supports_server_copy(&self) -> bool {
@@ -3706,13 +3704,27 @@ impl StorageBackend for PluginStorage {
     }
 }
 
-fn meta_to_probe(meta: ObjectMetadata) -> ObjectProbe {
-    let sha256_hex = meta
-        .sha256
-        .as_deref()
-        .and_then(|raw| bookclerk_storage::sha256_field_from_raw(Some(raw)).ok())
-        .flatten();
-    ObjectProbe {
+fn reject_opened_above_cap(opened: u64, limit: u64) -> bookclerk_storage::Result<()> {
+    if opened > limit {
+        return Err(StorageError::PayloadTooLarge(format!(
+            "scalar get opened size {opened} exceeds {limit}"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_scalar_length_mismatch(opened: u64, actual: u64) -> bookclerk_storage::Result<()> {
+    if actual != opened {
+        return Err(StorageError::Integrity(format!(
+            "scalar get read {actual} bytes after the opened size {opened}"
+        )));
+    }
+    Ok(())
+}
+
+fn meta_to_probe(meta: ObjectMetadata) -> bookclerk_storage::Result<ObjectProbe> {
+    let sha256_hex = bookclerk_storage::sha256_field_from_raw(meta.sha256.as_deref())?;
+    Ok(ObjectProbe {
         key: meta.key.clone(),
         size: meta.size,
         content_type: meta.content_type.clone(),
@@ -3723,7 +3735,7 @@ fn meta_to_probe(meta: ObjectMetadata) -> ObjectProbe {
             sha256_hex,
             ..Default::default()
         },
-    }
+    })
 }
 
 #[cfg(test)]
@@ -4349,5 +4361,63 @@ mode = "deny"
                 .contains_key(&("library/title.m4b".into(), "tok".into())),
             "staged object remains unpublished"
         );
+    }
+
+    #[test]
+    fn scalar_get_rejects_size_mismatches_before_trusting_the_body() {
+        assert!(reject_opened_above_cap(0, 4).is_ok());
+        assert!(reject_scalar_length_mismatch(0, 0).is_ok());
+        assert!(matches!(
+            reject_scalar_length_mismatch(0, 3),
+            Err(StorageError::Integrity(_))
+        ));
+        assert!(matches!(
+            reject_scalar_length_mismatch(4, 2),
+            Err(StorageError::Integrity(_))
+        ));
+        assert!(matches!(
+            reject_scalar_length_mismatch(4, 9),
+            Err(StorageError::Integrity(_))
+        ));
+        assert!(matches!(
+            reject_opened_above_cap(8, 4),
+            Err(StorageError::PayloadTooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_digest_is_not_downgraded_to_unknown() {
+        let mut meta = ObjectMetadata {
+            key: "book.m4b".into(),
+            size: 4,
+            ..ObjectMetadata::default()
+        };
+        assert!(meta_to_probe(meta.clone())
+            .unwrap()
+            .meta
+            .sha256_hex
+            .is_none());
+        meta.sha256 = Some(Vec::new());
+        assert!(meta_to_probe(meta.clone())
+            .unwrap()
+            .meta
+            .sha256_hex
+            .is_none());
+        meta.sha256 = Some(vec![1, 2, 3]);
+        assert!(meta_to_probe(meta.clone()).is_err());
+        meta.sha256 = Some(vec![9u8; 32]);
+        let probe = meta_to_probe(meta).unwrap();
+        assert_eq!(probe.meta.sha256_hex.as_deref().map(str::len), Some(64));
+        assert!(bookclerk_storage::sha256_field_from_raw(Some(&[1, 2, 3])).is_err());
+        assert!(bookclerk_storage::sha256_field_from_raw(None)
+            .unwrap()
+            .is_none());
+        assert!(bookclerk_storage::sha256_field_from_raw(Some(&[]))
+            .unwrap()
+            .is_none());
+        let raw = [7u8; 32];
+        assert!(bookclerk_storage::sha256_field_from_raw(Some(&raw))
+            .unwrap()
+            .is_some());
     }
 }

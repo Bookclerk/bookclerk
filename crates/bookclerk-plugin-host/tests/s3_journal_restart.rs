@@ -4,7 +4,7 @@
 //! uses [`PluginSession`] (workerd front door and `bookclerk-jail`) and
 //! `SIGKILL`, so the guest's `Drop` abort does not run.
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 #![allow(clippy::missing_docs_in_private_items)]
 
 use std::collections::HashMap;
