@@ -675,7 +675,7 @@ class NativeGatewayTests(unittest.TestCase):
                         "bookclerk-storage",
                         "--lib",
                         "--",
-                        "writable_stage_journal_completes_a_transfer",
+                        "transfer::tests::writable_stage_journal_completes_a_transfer",
                         "--exact",
                         "--nocapture",
                         "--test-threads=1",
