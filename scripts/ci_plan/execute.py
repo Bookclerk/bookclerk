@@ -540,6 +540,23 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
                 ),
                 Command("clippy bookclerk-plugin-host --lib", ["cargo", "clippy", "-p", "bookclerk-plugin-host", "--lib", "--", "-D", "warnings"]),
                 Command("named-pipe SOCKET_PROXY", ["cargo", "test", "-p", "bookclerk-workerd", "--lib"]),
+                # Gateway clippy does not run bookclerk-storage. This is the
+                # Windows FlushFileBuffers path for a writable stage journal.
+                Command(
+                    "Windows stage journal transfer",
+                    [
+                        "cargo",
+                        "test",
+                        "-p",
+                        "bookclerk-storage",
+                        "--lib",
+                        "--",
+                        "writable_stage_journal_completes_a_transfer",
+                        "--exact",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ],
+                ),
                 # Alone, before the suite. The suite still runs this test in
                 # its original order (shared serialization lock with Job extras).
                 Command(

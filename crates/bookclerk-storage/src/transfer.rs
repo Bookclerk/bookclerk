@@ -321,9 +321,20 @@ impl StageRecord {
             "instance_id": dest.instance_id(),
             "stage_key": key,
             "owner_id": owner_id,
-        });
-        std::fs::write(&partial, body.to_string())?;
-        std::fs::File::open(&partial)?.sync_all()?;
+        })
+        .to_string();
+        // FlushFileBuffers requires write access. A read-only reopen fails on
+        // Windows even when the journal directory is writable.
+        {
+            use std::io::Write;
+            let mut partial_file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&partial)?;
+            partial_file.write_all(body.as_bytes())?;
+            partial_file.sync_all()?;
+        }
         pause_stage_record_publish(dir);
         if let Err(err) = std::fs::rename(&partial, &path) {
             let _ = std::fs::remove_file(&partial);
@@ -1441,6 +1452,56 @@ mod tests {
             self.puts.fetch_add(1, Ordering::SeqCst);
             self.inner.put_stream(key, body, meta).await
         }
+    }
+
+    /// A configured, writable journal must allow the transfer to finish.
+    ///
+    /// Windows runs this from the native-gateway job. `FlushFileBuffers`
+    /// rejects a read-only handle, so a Linux-only unit run does not cover
+    /// that platform.
+    #[tokio::test]
+    async fn writable_stage_journal_completes_a_transfer() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        std::fs::create_dir_all(&journal).unwrap();
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"audio-bytes"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let dst = LocalFsBackend::new(dir.path().join("dst")).unwrap();
+        let outcome = transfer_object(
+            &src,
+            "book.m4b",
+            &dst,
+            "book.m4b",
+            ObjectMeta::default(),
+            &TransferOptions {
+                max_attempts: 1,
+                stage_journal_dir: Some(journal.clone()),
+                ..TransferOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        match outcome {
+            TransferOutcome::Streamed(result) => assert_eq!(result.bytes_written, 11),
+            other => panic!("expected a streamed transfer, got {other:?}"),
+        }
+        assert_eq!(dst.get("book.m4b").await.unwrap().as_ref(), b"audio-bytes");
+        let stages = journal.join("stages");
+        assert!(
+            stages.is_dir(),
+            "writable journal did not create the stages directory"
+        );
+        let leftover = std::fs::read_dir(&stages).unwrap().count();
+        assert_eq!(
+            leftover, 0,
+            "successful transfer left a stage journal record"
+        );
     }
 
     #[tokio::test]
