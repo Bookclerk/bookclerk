@@ -211,6 +211,9 @@ async fn transfer_once(
             return Err(err);
         }
     };
+    if let Some(dir) = journal_dir {
+        pause_on_journal_marker(dir, "stage-live.pause", "stage-live.entered");
+    }
     let verified = verify_staged(source, source_key, &before, &meta, &written).await;
     if let Err(err) = verified {
         stage.cleanup_now().await;
@@ -312,6 +315,10 @@ impl StageRecord {
         let owner_id = uuid::Uuid::new_v4().to_string();
         std::fs::create_dir_all(dir.join("owners"))?;
         std::fs::create_dir_all(dir.join("stages"))?;
+        // The journal lock covers open-through-flock only. A sweeper that
+        // unlinks an unlocked owner file in that gap leaves the creator holding
+        // a deleted inode, so a later reaper cannot see the live attempt.
+        let journal_lock = JournalLock::acquire(dir)?;
         let lock_path = dir.join("owners").join(format!("{owner_id}.lock"));
         let lock = std::fs::OpenOptions::new()
             .create(true)
@@ -319,16 +326,18 @@ impl StageRecord {
             .read(true)
             .write(true)
             .open(&lock_path)?;
+        pause_on_journal_marker(dir, "owner-open.pause", "owner-open.entered");
         if let Err(err) = fs4::FileExt::lock(&lock) {
             let _ = std::fs::remove_file(&lock_path);
             return Err(err);
         }
-        if stage_record_create_should_fail() {
+        if dir.join("fail-after-lock").is_file() {
             release_owner_file(lock, &lock_path);
             return Err(std::io::Error::other(
                 "injected stage journal failure after the owner lock",
             ));
         }
+        drop(journal_lock);
         let name = hex::encode(sha2::Sha256::digest(format!(
             "{}:{key}",
             dest.instance_id()
@@ -392,26 +401,74 @@ fn release_owner_file(lock: std::fs::File, path: &std::path::Path) {
     drop(lock);
 }
 
-fn stage_record_create_should_fail() -> bool {
-    #[cfg(test)]
-    {
-        FAIL_STAGE_RECORD_AFTER_LOCK.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    #[cfg(not(test))]
-    {
-        false
+/// Cross-process lock for owner registration and owner reclamation.
+///
+/// Held across the owner-file open and its `flock`, and across a sweep's
+/// decision to unlink. Not held across `StorageBackend::delete` or `put_stream`.
+struct JournalLock {
+    file: std::fs::File,
+}
+
+impl JournalLock {
+    fn acquire(dir: &std::path::Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(dir.join("journal.lock"))?;
+        fs4::FileExt::lock(&file)?;
+        Ok(Self { file })
     }
 }
 
-#[cfg(test)]
-static FAIL_STAGE_RECORD_AFTER_LOCK: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+impl Drop for JournalLock {
+    fn drop(&mut self) {
+        let _ = fs4::FileExt::unlock(&self.file);
+    }
+}
+
+struct AbandonedStage {
+    record_path: std::path::PathBuf,
+    stage_key: String,
+    owner_id: String,
+}
 
 async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path) {
-    let stages = dir.join("stages");
-    let Ok(entries) = std::fs::read_dir(&stages) else {
+    let abandoned = {
+        let Ok(_journal) = JournalLock::acquire(dir) else {
+            return;
+        };
+        collect_abandoned_stages(dest, dir)
+    };
+    for item in abandoned {
+        if dest.delete(&item.stage_key).await.is_ok() {
+            let Ok(_journal) = JournalLock::acquire(dir) else {
+                continue;
+            };
+            if stage_owner_live(dir, &item.owner_id) {
+                continue;
+            }
+            let _ = std::fs::remove_file(&item.record_path);
+            release_dead_owner(dir, &item.owner_id);
+        }
+    }
+    let Ok(_journal) = JournalLock::acquire(dir) else {
         return;
     };
+    sweep_stage_journal_debris_locked(dir);
+}
+
+fn collect_abandoned_stages(
+    dest: &dyn StorageBackend,
+    dir: &std::path::Path,
+) -> Vec<AbandonedStage> {
+    let stages = dir.join("stages");
+    let Ok(entries) = std::fs::read_dir(&stages) else {
+        return Vec::new();
+    };
+    let mut abandoned = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if stage_record_in_progress(&path) {
@@ -436,12 +493,13 @@ async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path)
         if stage_owner_live(dir, owner) {
             continue;
         }
-        if dest.delete(stage_key).await.is_ok() {
-            let _ = std::fs::remove_file(path);
-            release_dead_owner(dir, owner);
-        }
+        abandoned.push(AbandonedStage {
+            record_path: path,
+            stage_key: stage_key.to_string(),
+            owner_id: owner.to_string(),
+        });
     }
-    sweep_stage_journal_debris(dir);
+    abandoned
 }
 
 fn release_dead_owner(dir: &std::path::Path, owner_id: &str) {
@@ -465,7 +523,7 @@ fn partial_owner(name: &str) -> Option<&str> {
 }
 
 /// Removes abandoned partials and owner locks that no remaining record names.
-fn sweep_stage_journal_debris(dir: &std::path::Path) {
+fn sweep_stage_journal_debris_locked(dir: &std::path::Path) {
     let stages = dir.join("stages");
     let mut referenced = std::collections::HashSet::new();
     if let Ok(entries) = std::fs::read_dir(&stages) {
@@ -526,20 +584,25 @@ fn stage_record_in_progress(path: &std::path::Path) -> bool {
 
 /// Test barrier: `dir/publish.pause` exists until the test deletes it.
 fn pause_stage_record_publish(dir: &std::path::Path) {
+    pause_on_journal_marker(dir, "publish.pause", "publish.entered");
+}
+
+/// Per-journal test barrier. Production builds ignore the marker.
+fn pause_on_journal_marker(dir: &std::path::Path, marker: &str, entered: &str) {
     #[cfg(test)]
     {
-        let gate = dir.join("publish.pause");
-        if !gate.exists() {
+        let gate = dir.join(marker);
+        if !gate.is_file() {
             return;
         }
-        let _ = std::fs::write(dir.join("publish.entered"), b"1");
+        let _ = std::fs::write(dir.join(entered), b"1");
         while gate.exists() {
             std::thread::yield_now();
         }
     }
     #[cfg(not(test))]
     {
-        let _ = dir;
+        let _ = (dir, marker, entered);
     }
 }
 
@@ -1695,7 +1758,7 @@ mod tests {
         .await
         .unwrap();
         let dst = LocalFsBackend::new(dir.path().join("dst")).unwrap();
-        FAIL_STAGE_RECORD_AFTER_LOCK.store(true, Ordering::SeqCst);
+        std::fs::write(journal.join("fail-after-lock"), b"1").unwrap();
         let err = transfer_object(
             &src,
             "book.m4b",
@@ -1710,7 +1773,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        FAIL_STAGE_RECORD_AFTER_LOCK.store(false, Ordering::SeqCst);
         assert!(matches!(err, StorageError::Io(_)), "{err}");
         assert!(!dst.exists("book.m4b").await.unwrap());
         assert_eq!(
@@ -1935,5 +1997,142 @@ mod tests {
             })
             .unwrap_or(false);
         assert!(!quarantined, "reaper quarantined a published record");
+    }
+
+    #[tokio::test]
+    async fn sweep_during_owner_open_keeps_the_live_stage_until_cleanup() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("owner-open.pause"), b"1").unwrap();
+        std::fs::write(journal.join("stage-live.pause"), b"1").unwrap();
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"audio-bytes"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let dst = LocalFsBackend::new(dir.path().join("dst")).unwrap();
+        let task = std::thread::spawn({
+            let src = src.clone();
+            let dst = dst.clone();
+            let journal = journal.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                runtime.block_on(async move {
+                    transfer_object(
+                        &src,
+                        "book.m4b",
+                        &dst,
+                        "out.m4b",
+                        ObjectMeta::default(),
+                        &TransferOptions {
+                            max_attempts: 1,
+                            stage_journal_dir: Some(journal),
+                            ..TransferOptions::default()
+                        },
+                    )
+                    .await
+                })
+            }
+        });
+        wait_for_journal_file(&journal.join("owner-open.entered"), &task);
+        let sweep = std::thread::spawn({
+            let dst = dst.clone();
+            let journal = journal.clone();
+            move || {
+                let _ = std::fs::write(journal.join("sweep.started"), b"1");
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                runtime.block_on(async move {
+                    reap_abandoned_stages(&dst, &journal).await;
+                });
+            }
+        });
+        wait_for_journal_file(&journal.join("sweep.started"), &task);
+        std::fs::remove_file(journal.join("owner-open.pause")).unwrap();
+        sweep.join().expect("sweep thread");
+        wait_for_journal_file(&journal.join("stage-live.entered"), &task);
+        assert_eq!(
+            owner_lock_count(&journal),
+            1,
+            "registration sweep removed the live owner"
+        );
+        assert!(
+            stage_audio_present(&dir.path().join("dst")),
+            "stage object missing after the registration sweep"
+        );
+        reap_abandoned_stages(&dst, &journal).await;
+        assert_eq!(owner_lock_count(&journal), 1);
+        assert!(
+            stage_audio_present(&dir.path().join("dst")),
+            "later reaper deleted the live stage"
+        );
+        std::fs::remove_file(journal.join("stage-live.pause")).unwrap();
+        task.join().expect("transfer thread").expect("transfer");
+        assert!(dst.exists("out.m4b").await.unwrap());
+        assert_eq!(owner_lock_count(&journal), 0);
+        assert_eq!(stage_record_count(&journal), 0);
+    }
+
+    fn wait_for_journal_file(
+        path: &std::path::Path,
+        task: &std::thread::JoinHandle<Result<TransferOutcome>>,
+    ) {
+        let started = std::time::Instant::now();
+        while !path.is_file() {
+            if task.is_finished() {
+                panic!("transfer finished before {}", path.display());
+            }
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                panic!("timed out waiting for {}", path.display());
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    fn owner_lock_count(journal: &std::path::Path) -> usize {
+        std::fs::read_dir(journal.join("owners"))
+            .map(|rd| {
+                rd.filter_map(|entry| entry.ok())
+                    .filter(|entry| entry.file_name().to_string_lossy().ends_with(".lock"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    fn stage_record_count(journal: &std::path::Path) -> usize {
+        std::fs::read_dir(journal.join("stages"))
+            .map(|rd| rd.filter_map(|entry| entry.ok()).count())
+            .unwrap_or(0)
+    }
+
+    fn stage_audio_present(root: &std::path::Path) -> bool {
+        fn walk(dir: &std::path::Path) -> bool {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return false;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if walk(&path) {
+                        return true;
+                    }
+                    continue;
+                }
+                if path.file_name().and_then(|name| name.to_str()) == Some("out.m4b") {
+                    return true;
+                }
+            }
+            false
+        }
+        walk(root)
     }
 }
