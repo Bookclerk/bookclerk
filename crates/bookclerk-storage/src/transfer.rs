@@ -331,7 +331,7 @@ impl StageRecord {
             let _ = std::fs::remove_file(&lock_path);
             return Err(err);
         }
-        if dir.join("fail-after-lock").is_file() {
+        if journal_fail_after_lock(dir) {
             release_owner_file(lock, &lock_path);
             return Err(std::io::Error::other(
                 "injected stage journal failure after the owner lock",
@@ -429,30 +429,75 @@ impl Drop for JournalLock {
     }
 }
 
+/// How many journal records or owner ids one recovery step retains.
+const JOURNAL_REAP_BATCH: usize = 8;
+
+/// Per-journal test switch. Production builds never inspect the marker file.
+fn journal_fail_after_lock(dir: &std::path::Path) -> bool {
+    #[cfg(test)]
+    {
+        dir.join("fail-after-lock").is_file()
+    }
+    #[cfg(not(test))]
+    {
+        let _ = dir;
+        false
+    }
+}
+
+fn note_reap_batch(dir: &std::path::Path, retained: usize) {
+    #[cfg(test)]
+    {
+        let path = dir.join("reap-batch-high-water");
+        let prev = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| text.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        if retained > prev {
+            let _ = std::fs::write(path, retained.to_string());
+        }
+    }
+    #[cfg(not(test))]
+    {
+        let _ = (dir, retained);
+    }
+}
+
 struct AbandonedStage {
+    /// Stage-record filename, used as the batch cursor.
+    name: String,
     record_path: std::path::PathBuf,
     stage_key: String,
     owner_id: String,
 }
 
 async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path) {
-    let abandoned = {
-        let Ok(_journal) = JournalLock::acquire(dir) else {
-            return;
-        };
-        collect_abandoned_stages(dest, dir)
-    };
-    for item in abandoned {
-        if dest.delete(&item.stage_key).await.is_ok() {
+    let mut after: Option<String> = None;
+    loop {
+        let batch = {
             let Ok(_journal) = JournalLock::acquire(dir) else {
-                continue;
+                return;
             };
-            if stage_owner_live(dir, &item.owner_id) {
-                continue;
-            }
-            let _ = std::fs::remove_file(&item.record_path);
-            release_dead_owner(dir, &item.owner_id);
+            let batch = next_abandoned_batch(dest, dir, after.as_deref(), JOURNAL_REAP_BATCH);
+            note_reap_batch(dir, batch.len());
+            batch
+        };
+        if batch.is_empty() {
+            break;
         }
+        for item in &batch {
+            if dest.delete(&item.stage_key).await.is_ok() {
+                let Ok(_journal) = JournalLock::acquire(dir) else {
+                    continue;
+                };
+                if stage_owner_live(dir, &item.owner_id) {
+                    continue;
+                }
+                let _ = std::fs::remove_file(&item.record_path);
+                release_dead_owner(dir, &item.owner_id);
+            }
+        }
+        after = batch.last().map(|item| item.name.clone());
     }
     let Ok(_journal) = JournalLock::acquire(dir) else {
         return;
@@ -460,18 +505,30 @@ async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path)
     sweep_stage_journal_debris_locked(dir);
 }
 
-fn collect_abandoned_stages(
+fn next_abandoned_batch(
     dest: &dyn StorageBackend,
     dir: &std::path::Path,
+    after: Option<&str>,
+    limit: usize,
 ) -> Vec<AbandonedStage> {
     let stages = dir.join("stages");
     let Ok(entries) = std::fs::read_dir(&stages) else {
         return Vec::new();
     };
-    let mut abandoned = Vec::new();
+    let mut batch = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if stage_record_in_progress(&path) {
+        let Some(name) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if after.is_some_and(|cursor| name.as_str() <= cursor) {
+            continue;
+        }
+        if stage_record_in_progress(&path) || !name.ends_with(".json") {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -493,13 +550,42 @@ fn collect_abandoned_stages(
         if stage_owner_live(dir, owner) {
             continue;
         }
-        abandoned.push(AbandonedStage {
-            record_path: path,
-            stage_key: stage_key.to_string(),
-            owner_id: owner.to_string(),
-        });
+        insert_abandoned(
+            &mut batch,
+            AbandonedStage {
+                name,
+                record_path: path,
+                stage_key: stage_key.to_string(),
+                owner_id: owner.to_string(),
+            },
+            limit,
+        );
     }
-    abandoned
+    batch
+}
+
+fn insert_abandoned(batch: &mut Vec<AbandonedStage>, item: AbandonedStage, limit: usize) {
+    if limit == 0 {
+        return;
+    }
+    if batch.len() < limit {
+        batch.push(item);
+    } else if batch
+        .iter()
+        .any(|kept| kept.name.as_str() > item.name.as_str())
+    {
+        let max_at = batch
+            .iter()
+            .enumerate()
+            .max_by(|left, right| left.1.name.cmp(&right.1.name))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        batch.swap_remove(max_at);
+        batch.push(item);
+    } else {
+        return;
+    }
+    batch.sort_by(|left, right| left.name.cmp(&right.name));
 }
 
 fn release_dead_owner(dir: &std::path::Path, owner_id: &str) {
@@ -523,54 +609,120 @@ fn partial_owner(name: &str) -> Option<&str> {
 }
 
 /// Removes abandoned partials and owner locks that no remaining record names.
+///
+/// Owner ids are considered in filename order, [`JOURNAL_REAP_BATCH`] at a time.
+/// Each step remembers only that batch, not every referenced owner.
 fn sweep_stage_journal_debris_locked(dir: &std::path::Path) {
     let stages = dir.join("stages");
-    let mut referenced = std::collections::HashSet::new();
     if let Ok(entries) = std::fs::read_dir(&stages) {
         for entry in entries.flatten() {
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if let Some(owner) = partial_owner(name) {
-                if stage_owner_live(dir, owner) {
-                    referenced.insert(owner.to_string());
-                } else {
-                    let _ = std::fs::remove_file(&path);
-                }
+            let Some(owner) = partial_owner(name) else {
                 continue;
+            };
+            if !stage_owner_live(dir, owner) {
+                let _ = std::fs::remove_file(&path);
             }
-            if !name.ends_with(".json") {
-                continue;
+        }
+    }
+    let mut after: Option<String> = None;
+    loop {
+        let owners = next_owner_ids(dir, after.as_deref(), JOURNAL_REAP_BATCH);
+        note_reap_batch(dir, owners.len());
+        if owners.is_empty() {
+            break;
+        }
+        let referenced = owners_referenced_by_records(dir, &owners);
+        for owner in &owners {
+            if !referenced.iter().any(|kept| kept == owner) {
+                release_dead_owner(dir, owner);
             }
+        }
+        after = owners.last().cloned();
+    }
+}
+
+fn next_owner_ids(dir: &std::path::Path, after: Option<&str>, limit: usize) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir.join("owners")) else {
+        return Vec::new();
+    };
+    let mut batch = Vec::new();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(owner) = name.strip_suffix(".lock") else {
+            continue;
+        };
+        if after.is_some_and(|cursor| owner <= cursor) {
+            continue;
+        }
+        insert_owner_id(&mut batch, owner.to_string(), limit);
+    }
+    batch
+}
+
+fn insert_owner_id(batch: &mut Vec<String>, owner: String, limit: usize) {
+    if limit == 0 {
+        return;
+    }
+    if batch.len() < limit {
+        batch.push(owner);
+    } else if batch.iter().any(|kept| kept.as_str() > owner.as_str()) {
+        let max_at = batch
+            .iter()
+            .enumerate()
+            .max_by(|left, right| left.1.cmp(right.1))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        batch.swap_remove(max_at);
+        batch.push(owner);
+    } else {
+        return;
+    }
+    batch.sort();
+}
+
+fn owners_referenced_by_records(dir: &std::path::Path, owners: &[String]) -> Vec<String> {
+    let stages = dir.join("stages");
+    let Ok(entries) = std::fs::read_dir(&stages) else {
+        return Vec::new();
+    };
+    let mut referenced = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let owner = if let Some(owner) = partial_owner(name) {
+            Some(owner.to_string())
+        } else if name.ends_with(".json") {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
                 continue;
             };
-            if let Some(owner) = value.get("owner_id").and_then(|value| value.as_str()) {
-                referenced.insert(owner.to_string());
-            }
-        }
-    }
-    let owners = dir.join("owners");
-    let Ok(entries) = std::fs::read_dir(&owners) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            value
+                .get("owner_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        } else {
+            None
+        };
+        let Some(owner) = owner else {
             continue;
         };
-        let Some(owner) = name.strip_suffix(".lock") else {
-            continue;
-        };
-        if referenced.contains(owner) {
-            continue;
+        if owners.iter().any(|candidate| candidate == &owner)
+            && !referenced.iter().any(|kept| kept == &owner)
+        {
+            referenced.push(owner);
         }
-        release_dead_owner(dir, owner);
     }
+    referenced
 }
 
 /// Incomplete publication files are not records yet. The reaper must not
@@ -1867,6 +2019,253 @@ mod tests {
                 self.probe(key).await?,
                 Box::pin(std::io::Cursor::new(Vec::<u8>::new())),
             ))
+        }
+        async fn put_stream(
+            &self,
+            _: &str,
+            _: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            _: ObjectMeta,
+        ) -> Result<PutStreamResult> {
+            Ok(PutStreamResult::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn reap_walks_past_failed_deletes_without_retaining_the_inventory() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        std::fs::create_dir_all(journal.join("stages")).unwrap();
+        std::fs::create_dir_all(journal.join("owners")).unwrap();
+        let backend = LockProbeDelete {
+            journal: journal.clone(),
+            fail_prefix: std::sync::Mutex::new(true),
+            lock_held_during_delete: std::sync::atomic::AtomicBool::new(false),
+            deletes: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let mut live_locks = Vec::new();
+        for index in 0..6 {
+            write_stage_record(
+                &journal,
+                &format!("a-fail-{index:02}.json"),
+                &format!("fail-{index}"),
+                &format!("owner-fail-{index}"),
+                &backend.instance_id(),
+            );
+        }
+        for index in 0..4 {
+            let owner = format!("owner-live-{index}");
+            write_stage_record(
+                &journal,
+                &format!("m-live-{index:02}.json"),
+                &format!("live-{index}"),
+                &owner,
+                &backend.instance_id(),
+            );
+            live_locks.push(hold_owner_lock(&journal, &owner));
+        }
+        for index in 0..6 {
+            write_stage_record(
+                &journal,
+                &format!("z-ok-{index:02}.json"),
+                &format!("ok-{index}"),
+                &format!("owner-ok-{index}"),
+                &backend.instance_id(),
+            );
+        }
+        write_partial(&journal, "dead-partial", "partial-dead");
+        write_partial(&journal, "live-partial", "partial-live");
+        live_locks.push(hold_owner_lock(&journal, "partial-live"));
+
+        reap_abandoned_stages(&backend, &journal).await;
+        assert!(
+            !backend
+                .lock_held_during_delete
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "remote delete ran while journal.lock was held"
+        );
+        assert!(backend.deletes.load(Ordering::SeqCst) > 0);
+        let high_water = std::fs::read_to_string(journal.join("reap-batch-high-water"))
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+        assert!(
+            high_water <= JOURNAL_REAP_BATCH,
+            "reaper retained {high_water} records"
+        );
+        assert!(stage_record_exists(&journal, "a-fail-00.json"));
+        assert!(stage_record_exists(&journal, "a-fail-05.json"));
+        assert!(!stage_record_exists(&journal, "z-ok-00.json"));
+        assert!(!stage_record_exists(&journal, "z-ok-05.json"));
+        assert!(stage_record_exists(&journal, "m-live-00.json"));
+        assert!(journal.join("owners").join("owner-live-0.lock").is_file());
+        assert!(!partial_exists(&journal, "dead-partial"));
+        assert!(partial_exists(&journal, "live-partial"));
+        assert!(journal.join("owners").join("partial-live.lock").is_file());
+        assert!(!journal.join("owners").join("partial-dead.lock").is_file());
+
+        *backend.fail_prefix.lock().unwrap() = false;
+        reap_abandoned_stages(&backend, &journal).await;
+        assert!(!stage_record_exists(&journal, "a-fail-00.json"));
+        assert!(stage_record_exists(&journal, "m-live-03.json"));
+        assert!(partial_exists(&journal, "live-partial"));
+        assert_eq!(owner_lock_count(&journal), live_locks.len());
+        drop(live_locks);
+    }
+
+    fn write_stage_record(
+        journal: &std::path::Path,
+        file_name: &str,
+        stage_key: &str,
+        owner_id: &str,
+        instance_id: &str,
+    ) {
+        std::fs::write(
+            journal.join("stages").join(file_name),
+            serde_json::json!({
+                "instance_id": instance_id,
+                "stage_key": stage_key,
+                "owner_id": owner_id,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(journal.join("owners").join(format!("{owner_id}.lock")))
+            .unwrap();
+    }
+
+    fn write_partial(journal: &std::path::Path, hash: &str, owner_id: &str) {
+        std::fs::write(
+            journal
+                .join("stages")
+                .join(format!("{hash}.{owner_id}.json.partial")),
+            b"{}",
+        )
+        .unwrap();
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(journal.join("owners").join(format!("{owner_id}.lock")))
+            .unwrap();
+    }
+
+    fn hold_owner_lock(journal: &std::path::Path, owner_id: &str) -> std::fs::File {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(journal.join("owners").join(format!("{owner_id}.lock")))
+            .unwrap();
+        fs4::FileExt::lock(&file).unwrap();
+        file
+    }
+
+    fn stage_record_exists(journal: &std::path::Path, file_name: &str) -> bool {
+        journal.join("stages").join(file_name).is_file()
+    }
+
+    fn partial_exists(journal: &std::path::Path, hash: &str) -> bool {
+        std::fs::read_dir(journal.join("stages"))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("{hash}."))
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".json.partial")
+            })
+    }
+
+    struct LockProbeDelete {
+        journal: std::path::PathBuf,
+        fail_prefix: std::sync::Mutex<bool>,
+        lock_held_during_delete: std::sync::atomic::AtomicBool,
+        deletes: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageBackend for LockProbeDelete {
+        fn name(&self) -> &'static str {
+            "lock-probe"
+        }
+        fn instance_id(&self) -> String {
+            "lock-probe".into()
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                journal: self.journal.clone(),
+                fail_prefix: std::sync::Mutex::new(*self.fail_prefix.lock().unwrap()),
+                lock_held_during_delete: std::sync::atomic::AtomicBool::new(
+                    self.lock_held_during_delete
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                ),
+                deletes: std::sync::atomic::AtomicUsize::new(
+                    self.deletes.load(std::sync::atomic::Ordering::SeqCst),
+                ),
+            })
+        }
+        async fn put(&self, _: &str, _: Bytes, _: ObjectMeta) -> Result<()> {
+            Ok(())
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            Err(StorageError::NotFound(key.into()))
+        }
+        async fn exists(&self, _: &str) -> Result<bool> {
+            Ok(false)
+        }
+        async fn list(&self, _: &str) -> Result<Vec<crate::ObjectInfo>> {
+            Ok(Vec::new())
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            Err(StorageError::NotFound(key.into()))
+        }
+        async fn copy(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn delete(&self, key: &str) -> Result<()> {
+            self.deletes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(self.journal.join("journal.lock"))
+            {
+                if fs4::FileExt::try_lock(&file).is_err() {
+                    self.lock_held_during_delete
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    let _ = fs4::FileExt::unlock(&file);
+                }
+            }
+            if *self.fail_prefix.lock().unwrap() && key.starts_with("fail-") {
+                return Err(StorageError::Io(std::io::Error::other(
+                    "injected delete failure",
+                )));
+            }
+            Ok(())
+        }
+        async fn list_page(&self, _: &str, _: Option<&str>, _: u32) -> Result<crate::ListPage> {
+            Ok(crate::ListPage::default())
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            _: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            Err(StorageError::NotFound(key.into()))
         }
         async fn put_stream(
             &self,
