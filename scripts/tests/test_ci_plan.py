@@ -786,6 +786,34 @@ class WindowsClusterTests(unittest.TestCase):
                     ],
                 )
 
+    def test_cli_main_selects_windows_cluster_without_full_suite(self) -> None:
+        path = "crates/bookclerk-cli/src/main.rs"
+        self.assertIn(path, RELATIONS.windows_cluster_paths)
+        p = plan(path)
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertTrue(p.selected("windows_cluster"), p.checks.keys())
+        self.assertTrue(p.jobs["windows-cluster"])
+        self.assertEqual(
+            p.prereqs("windows_cluster"),
+            [
+                {
+                    "kind": "build",
+                    "why": [
+                        "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd"
+                    ],
+                    "packages": [
+                        "bookclerk-plugin-database-sqlite",
+                        "bookclerk-jail",
+                        "bookclerk-workerd",
+                    ],
+                },
+                {
+                    "kind": "ensure_workerd",
+                    "why": ["cluster_secret_startup spawns through pinned workerd"],
+                },
+            ],
+        )
+
     def test_unrelated_docs_do_not_select_it(self) -> None:
         p = plan("docs/plugins.md")
         self.assertFalse(p.selected("windows_cluster"))

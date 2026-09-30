@@ -155,6 +155,7 @@ tray = ["bookclerk-tray"]
 # native-gateway do not run those targets.
 [windows_cluster]
 paths = [
+    "crates/bookclerk-cli/src/main.rs",
     "crates/bookclerk-cli/tests/cluster_secret_startup.rs",
     "crates/bookclerk-cli/src/registry.rs",
     "crates/bookclerk-library/src/control_plane/identity.rs",
