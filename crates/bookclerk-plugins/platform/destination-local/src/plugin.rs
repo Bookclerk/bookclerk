@@ -28,6 +28,7 @@ fn map_storage(err: StorageError) -> PluginError {
         StorageError::NotFound(key) => PluginError::not_found(key),
         StorageError::PayloadTooLarge(msg) => PluginError::payload_too_large(msg),
         StorageError::InvalidCursor(msg) => PluginError::invalid_cursor(msg),
+        StorageError::Integrity(msg) => PluginError::internal(format!("integrity: {msg}")),
         other => PluginError::internal(other.to_string()),
     }
 }
@@ -74,21 +75,38 @@ impl LocalDestination {
 }
 
 fn meta_from_probe(probe: bookclerk_storage::ObjectProbe) -> ObjectMetadata {
+    let sha256 = probe.meta.sha256_hex.as_deref().and_then(|hex| {
+        bookclerk_storage::parse_sha256_hex(hex)
+            .ok()
+            .map(|bytes| bytes.to_vec())
+    });
     ObjectMetadata {
         key: probe.key,
         size: probe.size,
         content_type: probe.content_type.or(probe.meta.content_type),
-        etag: None,
-        sha256: None,
+        etag: probe.etag,
+        sha256,
     }
 }
 
-fn write_meta(options: &WriteOptions) -> ObjectMeta {
-    ObjectMeta {
+fn write_meta(options: &WriteOptions) -> Result<ObjectMeta> {
+    let sha256_hex =
+        bookclerk_storage::sha256_field_from_raw(options.sha256.as_deref()).map_err(map_storage)?;
+    Ok(ObjectMeta {
         content_type: options.content_type.clone(),
         content_length: options.content_length,
+        sha256_hex,
+        commit_token: options.commit_token.clone(),
         ..Default::default()
-    }
+    })
+}
+
+fn put_sha(hex: Option<&str>) -> Option<Vec<u8>> {
+    hex.and_then(|hex| {
+        bookclerk_storage::parse_sha256_hex(hex)
+            .ok()
+            .map(|bytes| bytes.to_vec())
+    })
 }
 
 /// Destination-side staging key. Bytes never spool on the host or broker.
@@ -168,14 +186,14 @@ impl Destination for LocalDestination {
         };
         let written = self
             .backend
-            .put_stream(&dest_key, body, write_meta(&options))
+            .put_stream(&dest_key, body, write_meta(&options)?)
             .await
             .map_err(map_storage)?;
         Ok(PutResult {
-            key: dest_key,
+            key: key.into(),
             bytes_written: written.bytes_written,
             etag: options.commit_token.clone().or(written.etag),
-            sha256: None,
+            sha256: put_sha(written.sha256_hex.as_deref()),
         })
     }
 
@@ -201,16 +219,21 @@ impl Destination for LocalDestination {
                     key: key.into(),
                     bytes_written: probe.size,
                     etag: Some(commit_token.into()),
-                    sha256: None,
+                    sha256: put_sha(probe.meta.sha256_hex.as_deref()),
                 })
             }
             Err(StorageError::NotFound(_)) => {
                 let probe = self.backend.probe(key).await.map_err(map_storage)?;
+                if probe.meta.commit_token.as_deref() != Some(commit_token) {
+                    return Err(PluginError::not_found(format!(
+                        "staged object missing and `{key}` is not commit {commit_token}"
+                    )));
+                }
                 Ok(PutResult {
                     key: key.into(),
                     bytes_written: probe.size,
                     etag: Some(commit_token.into()),
-                    sha256: None,
+                    sha256: put_sha(probe.meta.sha256_hex.as_deref()),
                 })
             }
             Err(err) => Err(map_storage(err)),
@@ -254,5 +277,82 @@ impl PluginWorker for LocalRoot {
             job_runner: Some(Box::new(StreamCopyHandler)),
             ..Entrypoints::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn open_at(root: &std::path::Path) -> LocalDestination {
+        std::env::set_var("BOOKCLERK_OUTPUT_LOCAL_ROOT", root);
+        LocalDestination::from_config(&ExtensibleConfig::default()).expect("destination")
+    }
+
+    async fn stage(dest: &LocalDestination, key: &str, body: &[u8], token: &str) -> PutResult {
+        dest.put(
+            key,
+            Box::pin(std::io::Cursor::new(body.to_vec())),
+            WriteOptions {
+                content_length: Some(body.len() as u64),
+                commit_token: Some(token.into()),
+                stage_only: true,
+                ..WriteOptions::default()
+            },
+        )
+        .await
+        .expect("stage")
+    }
+
+    #[tokio::test]
+    async fn commit_replay_after_rebuild_returns_digest_and_rejects_wrong_token() {
+        let _guard = ENV_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let key = "Author/book.m4b";
+        let body = b"audiobook-bytes";
+        let first = open_at(dir.path());
+        stage(&first, key, body, "tok-1").await;
+        let committed = first.commit(key, "tok-1").await.expect("commit");
+        assert!(committed.sha256.is_some());
+        assert_eq!(committed.bytes_written, body.len() as u64);
+        drop(first);
+
+        let second = open_at(dir.path());
+        let replay = second.commit(key, "tok-1").await.expect("replay commit");
+        assert_eq!(replay.sha256, committed.sha256);
+        assert_eq!(replay.bytes_written, body.len() as u64);
+        let wrong = second.commit(key, "tok-other").await.unwrap_err();
+        let text = wrong.to_string();
+        assert!(
+            text.contains("not commit") || text.contains("not_found") || text.contains("NotFound"),
+            "{text}"
+        );
+        std::env::remove_var("BOOKCLERK_OUTPUT_LOCAL_ROOT");
+    }
+
+    #[tokio::test]
+    async fn same_stem_companions_keep_distinct_commit_tokens() {
+        let _guard = ENV_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = open_at(dir.path());
+        stage(&dest, "Title/book.m4b", b"audio", "audio-tok").await;
+        stage(&dest, "Title/book.jpg", b"cover", "cover-tok").await;
+        stage(&dest, "Title/book.pdf", b"pdf", "pdf-tok").await;
+        let audio = dest.commit("Title/book.m4b", "audio-tok").await.unwrap();
+        let cover = dest.commit("Title/book.jpg", "cover-tok").await.unwrap();
+        let pdf = dest.commit("Title/book.pdf", "pdf-tok").await.unwrap();
+        assert_ne!(audio.sha256, cover.sha256);
+        assert_ne!(audio.sha256, pdf.sha256);
+        drop(dest);
+
+        let again = open_at(dir.path());
+        assert!(again.commit("Title/book.m4b", "audio-tok").await.is_ok());
+        assert!(again.commit("Title/book.jpg", "cover-tok").await.is_ok());
+        assert!(again.commit("Title/book.pdf", "pdf-tok").await.is_ok());
+        assert!(again.commit("Title/book.m4b", "cover-tok").await.is_err());
+        assert!(again.commit("Title/book.jpg", "audio-tok").await.is_err());
+        std::env::remove_var("BOOKCLERK_OUTPUT_LOCAL_ROOT");
     }
 }

@@ -2,7 +2,7 @@
 
 use bookclerk_acquire::{
     acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library, AcquireRequest,
-    ConvertRequest, MatchStorageOptions, StorageIndex,
+    ConvertRequest, MatchStorageOptions,
 };
 use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
@@ -387,7 +387,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let mut index = if dry_run {
                 None
             } else {
-                Some(StorageIndex::from_storage(storage.as_ref()).await?)
+                Some(
+                    bookclerk_acquire::scan_storage(&store, storage.as_ref(), None, None, true)
+                        .await?,
+                )
             };
 
             let mut ok = 0u32;
@@ -492,6 +495,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 anyhow::bail!(
                     "acquire finished with {failed} failure(s) (acquired={ok} matched={matched})"
                 );
+            }
+            if let Some(index) = index.as_ref() {
+                if let Some(scan_id) = index.scan_id() {
+                    let _ = store.storage_scan_delete(scan_id).await;
+                }
             }
             Ok(())
         }
@@ -738,6 +746,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 force,
                 lame: config.output.lame.clone(),
                 max_sample_rate: config.output.max_sample_rate,
+                job_id: None,
+                temp_quota_bytes: Some(config.jobs.temp_quota_bytes),
+                cancel: None,
             };
             let total = targets.len();
             let mut batch = BatchProgress::new(total, "convert");

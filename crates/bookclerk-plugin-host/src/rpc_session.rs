@@ -22,8 +22,7 @@ use bookclerk_plugin_sdk::{
     HostBindings, Invocation, JobInvocation, JobInvocationLease, ListOptions, ObjectMetadata, Oidc,
     OidcClientTemplate, OpenedEntrypoints, PluginCli, PluginClient, PluginDescribe, PutResult,
     ReadResult, ScalarLimits, Source, StreamCopySpec, WriteOptions, FEATURE_SCALAR_LIMITS,
-    FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    FEATURE_STORAGE_COPY, FEATURE_STREAMS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use bookclerk_storage::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
@@ -31,7 +30,7 @@ use bookclerk_storage::{
 };
 use bytes::Bytes;
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::discover::DiscoveredPlugin;
@@ -3505,6 +3504,9 @@ impl PluginStorage {
             PluginError::Abi { code, message } if code == "invalid_cursor" => {
                 StorageError::InvalidCursor(message)
             }
+            PluginError::Abi { message, .. } if message.starts_with("integrity:") => {
+                StorageError::Integrity(message)
+            }
             other => StorageError::Other(anyhow!(other)),
         }
     }
@@ -3516,17 +3518,28 @@ impl StorageBackend for PluginStorage {
         "plugin"
     }
 
+    fn instance_id(&self) -> String {
+        format!(
+            "plugin:{}:{}",
+            self.session.instance_key(),
+            self.session.session_key()
+        )
+    }
+
+    fn scan_placement(&self) -> Option<String> {
+        // A plugin session key is configuration identity, not a node. Local
+        // bytes behind the guest cannot be proved portable, so scans restart
+        // on another host.
+        Some(bookclerk_storage::host_placement_id())
+    }
+
     fn clone_box(&self) -> Box<dyn StorageBackend> {
         Box::new(self.clone())
     }
 
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> bookclerk_storage::Result<()> {
-        if data.len() > MAX_SCALAR_BYTES as usize {
-            return Err(StorageError::PayloadTooLarge(format!(
-                "scalar put of {} bytes exceeds {MAX_SCALAR_BYTES} (use put_stream)",
-                data.len()
-            )));
-        }
+        let limit = u64::from(self.session.limits().max_scalar_bytes);
+        bookclerk_storage::ensure_scalar_len(data.len(), limit)?;
         self.put_stream(key, Box::pin(std::io::Cursor::new(data)), meta)
             .await
             .map(|_| ())
@@ -3543,35 +3556,18 @@ impl StorageBackend for PluginStorage {
     }
 
     async fn get(&self, key: &str) -> bookclerk_storage::Result<Bytes> {
+        let limit = u64::from(self.session.limits().max_scalar_bytes);
         let probe = self.probe(key).await?;
-        if probe.size > u64::from(MAX_SCALAR_BYTES) {
-            return Err(StorageError::PayloadTooLarge(format!(
-                "scalar get of {} bytes exceeds {MAX_SCALAR_BYTES} (use get_stream)",
-                probe.size
-            )));
-        }
-        let (_probe, mut body) = self.get_stream(key, None).await?;
-        let mut buf = Vec::new();
-        body.read_to_end(&mut buf).await?;
-        Ok(Bytes::from(buf))
+        bookclerk_storage::reject_scalar_hint(probe.size, limit)?;
+        let (opened, body) = self.get_stream(key, None).await?;
+        reject_opened_above_cap(opened.size, limit)?;
+        let data = bookclerk_storage::read_scalar_body(body, limit).await?;
+        reject_scalar_length_mismatch(opened.size, data.len() as u64)?;
+        Ok(data)
     }
 
     async fn exists(&self, key: &str) -> bookclerk_storage::Result<bool> {
         Ok(self.head(key).await?.is_some())
-    }
-
-    async fn list(&self, prefix: &str) -> bookclerk_storage::Result<Vec<ObjectInfo>> {
-        let mut out = Vec::new();
-        let mut cursor = None;
-        loop {
-            let page = self.list_page(prefix, cursor.as_deref(), 0).await?;
-            out.extend(page.objects);
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        Ok(out)
     }
 
     async fn probe(&self, key: &str) -> bookclerk_storage::Result<ObjectProbe> {
@@ -3639,6 +3635,9 @@ impl StorageBackend for PluginStorage {
         key: &str,
         range: Option<ByteRange>,
     ) -> bookclerk_storage::Result<(ObjectProbe, Pin<Box<dyn AsyncRead + Send>>)> {
+        if let Some(range) = range {
+            let _ = bookclerk_storage::normalize_range(Some(range), None)?;
+        }
         let abi_range = range.map(|r| AbiByteRange {
             offset: r.offset,
             length: r.length,
@@ -3652,7 +3651,7 @@ impl StorageBackend for PluginStorage {
             })
             .await
             .map_err(Self::map_err)?;
-        Ok((meta_to_probe(read.meta), read.body))
+        Ok((meta_to_probe(read.meta)?, read.body))
     }
 
     async fn put_stream(
@@ -3661,6 +3660,10 @@ impl StorageBackend for PluginStorage {
         body: Pin<Box<dyn AsyncRead + Send>>,
         meta: ObjectMeta,
     ) -> bookclerk_storage::Result<PutStreamResult> {
+        let sha256 = match meta.sha256_hex.as_deref() {
+            Some(hex) => Some(bookclerk_storage::parse_sha256_hex(hex)?.to_vec()),
+            None => None,
+        };
         let put = self
             .session
             .call(|reply| Work::PutStream {
@@ -3669,8 +3672,8 @@ impl StorageBackend for PluginStorage {
                 options: WriteOptions {
                     content_type: meta.content_type,
                     content_length: meta.content_length,
-                    sha256: None,
-                    commit_token: None,
+                    sha256,
+                    commit_token: meta.commit_token,
                     stage_only: false,
                 },
                 reply,
@@ -3680,6 +3683,7 @@ impl StorageBackend for PluginStorage {
         Ok(PutStreamResult {
             bytes_written: put.bytes_written,
             etag: put.etag,
+            sha256_hex: bookclerk_storage::sha256_field_from_raw(put.sha256.as_deref())?,
         })
     }
 
@@ -3692,7 +3696,7 @@ impl StorageBackend for PluginStorage {
             })
             .await
             .map_err(Self::map_err)?;
-        Ok(meta.map(meta_to_probe))
+        meta.map(meta_to_probe).transpose()
     }
 
     fn supports_server_copy(&self) -> bool {
@@ -3700,17 +3704,38 @@ impl StorageBackend for PluginStorage {
     }
 }
 
-fn meta_to_probe(meta: ObjectMetadata) -> ObjectProbe {
-    ObjectProbe {
+fn reject_opened_above_cap(opened: u64, limit: u64) -> bookclerk_storage::Result<()> {
+    if opened > limit {
+        return Err(StorageError::PayloadTooLarge(format!(
+            "scalar get opened size {opened} exceeds {limit}"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_scalar_length_mismatch(opened: u64, actual: u64) -> bookclerk_storage::Result<()> {
+    if actual != opened {
+        return Err(StorageError::Integrity(format!(
+            "scalar get read {actual} bytes after the opened size {opened}"
+        )));
+    }
+    Ok(())
+}
+
+fn meta_to_probe(meta: ObjectMetadata) -> bookclerk_storage::Result<ObjectProbe> {
+    let sha256_hex = bookclerk_storage::sha256_field_from_raw(meta.sha256.as_deref())?;
+    Ok(ObjectProbe {
         key: meta.key.clone(),
         size: meta.size,
         content_type: meta.content_type.clone(),
+        etag: meta.etag.clone(),
         meta: ObjectMeta {
             content_type: meta.content_type,
             content_length: Some(meta.size),
+            sha256_hex,
             ..Default::default()
         },
-    }
+    })
 }
 
 #[cfg(test)]
@@ -3721,6 +3746,7 @@ mod tests {
         PRODUCT_API_VERSION,
     };
     use sea_orm::EntityTrait;
+    use tokio::io::AsyncReadExt;
 
     #[test]
     fn instance_key_separates_accounts() {
@@ -4335,5 +4361,63 @@ mode = "deny"
                 .contains_key(&("library/title.m4b".into(), "tok".into())),
             "staged object remains unpublished"
         );
+    }
+
+    #[test]
+    fn scalar_get_rejects_size_mismatches_before_trusting_the_body() {
+        assert!(reject_opened_above_cap(0, 4).is_ok());
+        assert!(reject_scalar_length_mismatch(0, 0).is_ok());
+        assert!(matches!(
+            reject_scalar_length_mismatch(0, 3),
+            Err(StorageError::Integrity(_))
+        ));
+        assert!(matches!(
+            reject_scalar_length_mismatch(4, 2),
+            Err(StorageError::Integrity(_))
+        ));
+        assert!(matches!(
+            reject_scalar_length_mismatch(4, 9),
+            Err(StorageError::Integrity(_))
+        ));
+        assert!(matches!(
+            reject_opened_above_cap(8, 4),
+            Err(StorageError::PayloadTooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_digest_is_not_downgraded_to_unknown() {
+        let mut meta = ObjectMetadata {
+            key: "book.m4b".into(),
+            size: 4,
+            ..ObjectMetadata::default()
+        };
+        assert!(meta_to_probe(meta.clone())
+            .unwrap()
+            .meta
+            .sha256_hex
+            .is_none());
+        meta.sha256 = Some(Vec::new());
+        assert!(meta_to_probe(meta.clone())
+            .unwrap()
+            .meta
+            .sha256_hex
+            .is_none());
+        meta.sha256 = Some(vec![1, 2, 3]);
+        assert!(meta_to_probe(meta.clone()).is_err());
+        meta.sha256 = Some(vec![9u8; 32]);
+        let probe = meta_to_probe(meta).unwrap();
+        assert_eq!(probe.meta.sha256_hex.as_deref().map(str::len), Some(64));
+        assert!(bookclerk_storage::sha256_field_from_raw(Some(&[1, 2, 3])).is_err());
+        assert!(bookclerk_storage::sha256_field_from_raw(None)
+            .unwrap()
+            .is_none());
+        assert!(bookclerk_storage::sha256_field_from_raw(Some(&[]))
+            .unwrap()
+            .is_none());
+        let raw = [7u8; 32];
+        assert!(bookclerk_storage::sha256_field_from_raw(Some(&raw))
+            .unwrap()
+            .is_some());
     }
 }

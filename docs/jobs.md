@@ -109,7 +109,42 @@ pending → running → succeeded
 - Destination **publish** is not atomic with that fence. `plugin_copy`
   stream-copy is at-least-once: a lost lease can still make object bytes
   visible after the last heartbeat. Duplicates are absorbed by retry-stable
-  `commit_token`s (idempotent local/S3 `commit` when the dest already exists).
+  `commit_token`s. A missing stage counts as success only when the published
+  object's `commit-token` metadata is that token (see
+  [storage-bounds.md](storage-bounds.md)). A pre-commit heartbeat does not
+  make publication exactly-once.
+- Storage scans checkpoint `storage_scan` JSON (instance id, generation,
+  phase, cursor) with `checkpoint_running_job` while the row stays `running`.
+  The generation is a UUID bound in `storage_scan_generations` to that storage
+  instance and the job. Local-backed scans, including fan-out and plugin
+  wrappers, also store the host placement (`event_node_id` under the files
+  directory). A resume on another node, or a backend whose placement cannot
+  be proved, starts a new scan instead of adopting the old rows. Object rows
+  live in `storage_scan_rows`, not in the 64 KiB checkpoint. Page inserts happen before the cursor advances; replaying
+  a page is idempotent.   `run_acquire` performs one fenced scan and matches
+  against that index. An `apply` checkpoint is adopted only when its
+  generation row still exists and is marked complete; a missing or incomplete
+  inventory is scanned again.   A successful acquire, including one with no
+  targets, deletes the generation before the handler returns. Inventory rows
+  and the generation row are deleted in one database transaction. Startup
+  reclaim removes abandoned generations and does not remove one owned by a
+  pending or running job. While the daemon is up, a bounded sweep and each
+  confirmed terminal transition delete inventories for terminal jobs. A
+  failed attempt that will be retried, a lost fence, and suspended work leave
+  the generation in place. Local list indexes are node-local scratch and are
+  not a portable checkpoint.
+- MP3 conversion counts input bytes, then reserves the whole temp quota for
+  that scratch path: the output allowance is every quota byte not used by
+  the input. Encoded size is not capped at a multiple of the source, so a
+  low-bitrate AAC file converted at 320 kbps can exceed eight times the
+  input while input plus output stay inside the quota. The worker write cap
+  is that reserved allowance. No `temp_quota_bytes` does not impose a
+  ceiling. A second job cannot reserve more scratch until the first
+  releases the quota. The worker stops writing when the next chunk would
+  pass the allowance, and dropping the encode future kills the worker.
+  Scratch is `cache/convert`. The reservation is dropped only after the
+  directory is gone. A cleanup failure keeps the reservation. Startup sweep
+  includes `convert` and keeps directories registered to an active job.
 - Reclaim also requires `lease_expires_at` to still be null or `<= now`, so a
   heartbeat that extends the same generation cannot be stolen.
 - `POST /api/jobs/{id}/cancel` cancels `pending` immediately and flags

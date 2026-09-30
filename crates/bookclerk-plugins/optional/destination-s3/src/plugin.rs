@@ -28,6 +28,7 @@ fn map_storage(err: StorageError) -> PluginError {
         StorageError::NotFound(key) => PluginError::not_found(key),
         StorageError::PayloadTooLarge(msg) => PluginError::payload_too_large(msg),
         StorageError::InvalidCursor(msg) => PluginError::invalid_cursor(msg),
+        StorageError::Integrity(msg) => PluginError::internal(format!("integrity: {msg}")),
         other => PluginError::internal(other.to_string()),
     }
 }
@@ -68,7 +69,14 @@ async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
         plugin: String::new(),
     };
     let creds = ctx.credentials.as_ref().map(credentials_from_dto);
-    S3Backend::from_parts(&cfg, &ctx.prefix, creds.as_ref())
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            PluginError::internal("s3 destination has no HOME for multipart recovery")
+        })?;
+    let journal = home.join("multipart-journal");
+    S3Backend::from_parts_with_journal(&cfg, &ctx.prefix, creds.as_ref(), &journal)
         .await
         .map_err(|err| PluginError::internal(err.to_string()))
 }
@@ -84,21 +92,38 @@ fn credentials_from_dto(dto: &S3CredentialsDto) -> S3Credentials {
 }
 
 fn meta_from_probe(probe: bookclerk_storage::ObjectProbe) -> ObjectMetadata {
+    let sha256 = probe.meta.sha256_hex.as_deref().and_then(|hex| {
+        bookclerk_storage::parse_sha256_hex(hex)
+            .ok()
+            .map(|bytes| bytes.to_vec())
+    });
     ObjectMetadata {
         key: probe.key,
         size: probe.size,
         content_type: probe.content_type.or(probe.meta.content_type),
-        etag: None,
-        sha256: None,
+        etag: probe.etag,
+        sha256,
     }
 }
 
-fn write_meta(options: &WriteOptions) -> ObjectMeta {
-    ObjectMeta {
+fn write_meta(options: &WriteOptions) -> Result<ObjectMeta> {
+    let sha256_hex =
+        bookclerk_storage::sha256_field_from_raw(options.sha256.as_deref()).map_err(map_storage)?;
+    Ok(ObjectMeta {
         content_type: options.content_type.clone(),
         content_length: options.content_length,
+        sha256_hex,
+        commit_token: options.commit_token.clone(),
         ..Default::default()
-    }
+    })
+}
+
+fn put_sha(hex: Option<&str>) -> Option<Vec<u8>> {
+    hex.and_then(|hex| {
+        bookclerk_storage::parse_sha256_hex(hex)
+            .ok()
+            .map(|bytes| bytes.to_vec())
+    })
 }
 
 /// Destination-side staging key. Bytes never spool on the host or broker.
@@ -178,14 +203,14 @@ impl Destination for S3Destination {
         };
         let written = self
             .backend
-            .put_stream(&dest_key, body, write_meta(&options))
+            .put_stream(&dest_key, body, write_meta(&options)?)
             .await
             .map_err(map_storage)?;
         Ok(PutResult {
             key: key.into(),
             bytes_written: written.bytes_written,
             etag: options.commit_token.clone().or(written.etag),
-            sha256: None,
+            sha256: put_sha(written.sha256_hex.as_deref()),
         })
     }
 
@@ -211,16 +236,21 @@ impl Destination for S3Destination {
                     key: key.into(),
                     bytes_written: probe.size,
                     etag: Some(commit_token.into()),
-                    sha256: None,
+                    sha256: put_sha(probe.meta.sha256_hex.as_deref()),
                 })
             }
             Err(StorageError::NotFound(_)) => {
                 let probe = self.backend.probe(key).await.map_err(map_storage)?;
+                if probe.meta.commit_token.as_deref() != Some(commit_token) {
+                    return Err(PluginError::not_found(format!(
+                        "staged object missing and `{key}` is not commit {commit_token}"
+                    )));
+                }
                 Ok(PutResult {
                     key: key.into(),
                     bytes_written: probe.size,
                     etag: Some(commit_token.into()),
-                    sha256: None,
+                    sha256: put_sha(probe.meta.sha256_hex.as_deref()),
                 })
             }
             Err(err) => Err(map_storage(err)),

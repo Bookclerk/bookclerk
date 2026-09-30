@@ -15,12 +15,13 @@ Start here if you are new:
 7. [Discovery](discovery.md) — recommendations, embeddings, wishlist / global queue
 8. [Configuration](configuration.md) — `config.toml` and environment variables
 9. [Durable job queue](jobs.md) — bounded admission, leases, crash recovery
-10. [Media worker pool](media.md) — confined codecs, concurrency, isolation modes
-11. [Operations](operations.md) — `bookclerkd`, Docker, systemd
-12. [Dev Container](devcontainer.md) — consistent Rust/OpenSSL/Node build env (Cursor / VS Code)
-13. [GUI](gui.md) — web UI, operator auth, tray companion
-14. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints
-15. [Continuous integration](ci.md) — dependency-aware planner, selective docs, `CI Gate`
+10. [Bounded storage](storage-bounds.md) — scalar caps, streams, paged scans, checkpoints
+11. [Media worker pool](media.md) — confined codecs, concurrency, isolation modes
+12. [Operations](operations.md) — `bookclerkd`, Docker, systemd
+13. [Dev Container](devcontainer.md) — consistent Rust/OpenSSL/Node build env (Cursor / VS Code)
+14. [GUI](gui.md) — web UI, operator auth, tray companion
+15. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints
+16. [Continuous integration](ci.md) — dependency-aware planner, selective docs, `CI Gate`
 
 ## Extending Bookclerk
 

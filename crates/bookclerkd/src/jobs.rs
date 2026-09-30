@@ -3,10 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bookclerk_acquire::{
-    acquire_book_indexed, match_storage_to_library, AcquireRequest, MatchStorageOptions,
-    StorageIndex,
-};
+use bookclerk_acquire::{acquire_book_indexed, AcquireRequest, MatchStorageOptions};
 use bookclerk_config::BadBookAction;
 use bookclerk_library::{
     is_downloadable, AcquireStatus, BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind,
@@ -475,7 +472,15 @@ pub async fn run_acquire(
     let options = DownloadOptions::from(&cfg);
     let registry = default_registry_with_plugins(&cfg, &library).await?;
 
-    let _ = match_storage_to_library(
+    let mut index = bookclerk_acquire::scan_storage(
+        &library,
+        storage.as_ref(),
+        ctx.map(|c| &c.fence),
+        ctx.and_then(|c| c.checkpoint.as_ref()),
+        true,
+    )
+    .await?;
+    let _ = bookclerk_acquire::match_storage_using_index(
         &library,
         storage.as_ref(),
         MatchStorageOptions {
@@ -485,6 +490,7 @@ pub async fn run_acquire(
             download: options.clone(),
             ..Default::default()
         },
+        &index,
     )
     .await?;
 
@@ -511,10 +517,12 @@ pub async fn run_acquire(
             elapsed_ms = started.elapsed().as_millis() as u64,
             "run_acquire finished: nothing to acquire"
         );
+        if let Some(scan_id) = index.scan_id() {
+            let _ = library.storage_scan_delete(scan_id).await;
+        }
         return Ok("nothing to acquire".into());
     }
 
-    let mut index = StorageIndex::from_storage(storage.as_ref()).await?;
     let mut ok = 0u32;
     let mut matched = 0u32;
     let mut failed = 0u32;
@@ -616,6 +624,9 @@ pub async fn run_acquire(
     );
     if failed > 0 && bad_book == BadBookAction::Retry {
         anyhow::bail!("{detail}");
+    }
+    if let Some(scan_id) = index.scan_id() {
+        let _ = library.storage_scan_delete(scan_id).await;
     }
     Ok(detail)
 }
