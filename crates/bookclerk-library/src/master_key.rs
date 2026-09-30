@@ -223,12 +223,33 @@ pub fn resolve_master_key(files_dir: &Path) -> Result<MasterKey> {
     resolve_master_key_with(files_dir, read_auth_password_env().as_deref())
 }
 
+/// DEK loaded from `master.key`, plus whether this call created the file.
+#[derive(Clone)]
+pub struct MasterKeyResolution {
+    /// Unwrapped data-encryption key.
+    pub key: MasterKey,
+    /// True when this call created `master.key` (lost create races are false).
+    pub minted: bool,
+}
+
 /// Resolve the DEK with an explicit password override.
 ///
 /// # Errors
 ///
 /// Returns an error when the operation fails.
 pub fn resolve_master_key_with(files_dir: &Path, password: Option<&str>) -> Result<MasterKey> {
+    Ok(resolve_master_key_detailed(files_dir, password)?.key)
+}
+
+/// Resolve the DEK and report whether `master.key` was created by this call.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read, unwrapped, or created.
+pub fn resolve_master_key_detailed(
+    files_dir: &Path,
+    password: Option<&str>,
+) -> Result<MasterKeyResolution> {
     let path = master_key_path(files_dir);
     let password = password
         .map(str::trim)
@@ -242,10 +263,66 @@ pub fn resolve_master_key_with(files_dir: &Path, password: Option<&str>) -> Resu
                 path.display()
             ))
         })?;
-        return parse_master_key_file(&raw, password, &path);
+        return Ok(MasterKeyResolution {
+            key: parse_master_key_file(&raw, password, &path)?,
+            minted: false,
+        });
     }
 
     mint_master_key(&path, password)
+}
+
+/// SHA-256 hex fingerprint of the unwrapped DEK.
+///
+/// This identifies the cluster secret root. It is not a password hash: the
+/// passphrase, when set, is stretched with Argon2id before it unwraps this
+/// key. Wrapping changes the file bytes and leaves this fingerprint stable.
+#[must_use]
+pub fn master_key_fingerprint(key: &MasterKey) -> String {
+    use sha2::{Digest, Sha256};
+    // Equality fingerprint of the 32-byte DEK, not a password KDF.
+    // codeql[rust/weak-sensitive-data-hashing]
+    hex::encode(Sha256::digest(key.as_bytes()))
+}
+
+/// Drops `key` from the process cache when it is the cached DEK.
+pub fn uncache_master_key(key: &MasterKey) {
+    if let Ok(mut guard) = cache_slot().lock() {
+        if guard
+            .as_ref()
+            .is_some_and(|cached| cached.as_bytes() == key.as_bytes())
+        {
+            *guard = None;
+        }
+    }
+    crate::secrets::clear_unseal_cache();
+}
+
+/// Delete a `master.key` this process just created and drop it from the cache.
+///
+/// # Errors
+///
+/// Returns an error when the file exists and cannot be removed.
+pub fn discard_minted_master_key(files_dir: &Path, key: &MasterKey) -> Result<()> {
+    let path = master_key_path(files_dir);
+    if path.is_file() {
+        std::fs::remove_file(&path).map_err(|e| {
+            LibraryError::Other(anyhow::anyhow!(
+                "failed to remove minted master key {}: {e}",
+                path.display()
+            ))
+        })?;
+    }
+    if let Ok(mut guard) = cache_slot().lock() {
+        if guard
+            .as_ref()
+            .is_some_and(|cached| cached.as_bytes() == key.as_bytes())
+        {
+            *guard = None;
+        }
+    }
+    crate::secrets::clear_unseal_cache();
+    Ok(())
 }
 
 /// Wrap an existing `BCK1` `master.key` with `password` (`BCK2`).
@@ -267,7 +344,7 @@ pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
     let path = master_key_path(files_dir);
     if !path.is_file() {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "master key file {} does not exist — start the CLI/daemon once to mint it",
+            "master key file {} does not exist — open the library on a new cluster to mint it",
             path.display()
         )));
     }
@@ -286,7 +363,7 @@ fn read_auth_password_env() -> Option<String> {
 }
 
 /// Creates `master.key` (mode 0600): raw `BCK1` or password-wrapped `BCK2`. Only a later unwrap with the same password can recover a wrapped DEK.
-fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKey> {
+fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKeyResolution> {
     let dek = MasterKey::random()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -316,7 +393,10 @@ fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKey> {
                      (or reload bookclerkd) to wrap the DEK at rest."
                 );
             }
-            Ok(dek)
+            Ok(MasterKeyResolution {
+                key: dek,
+                minted: true,
+            })
         }
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             // Lost a mint race — load the winner's file (and wrap if needed).
@@ -326,7 +406,10 @@ fn mint_master_key(path: &Path, password: Option<&str>) -> Result<MasterKey> {
                     path.display()
                 ))
             })?;
-            parse_master_key_file(&raw, password, path)
+            Ok(MasterKeyResolution {
+                key: parse_master_key_file(&raw, password, path)?,
+                minted: false,
+            })
         }
         Err(e) => Err(LibraryError::Other(anyhow::anyhow!(
             "failed to mint master key {}: {e}",
@@ -655,6 +738,14 @@ impl Drop for MasterKeyWriteGuard {
 pub(crate) fn master_key_test_lock() -> MasterKeyWriteGuard {
     MasterKeyWriteGuard {
         _guard: master_key_test_rwlock().blocking_write(),
+    }
+}
+
+/// Async write lock for tests that reconfigure the DEK across `.await`.
+#[cfg(test)]
+pub(crate) async fn master_key_test_lock_async() -> MasterKeyWriteGuard {
+    MasterKeyWriteGuard {
+        _guard: master_key_test_rwlock().write().await,
     }
 }
 

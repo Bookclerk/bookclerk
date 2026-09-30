@@ -44,6 +44,10 @@ package = "bookclerk-library"
 paths = ["scripts/check-db-plugin-isolation.py"]
 
 [[test_input]]
+package = "bookclerk-cli"
+paths = ["crates/bookclerk-plugins/platform/database-sqlite/plugin.toml"]
+
+[[test_input]]
 package = "bookclerk-plugin-host"
 # plugin_inventory walks every plugin.toml. (rpc_proxy_like's sqlite/postgres
 # guest directories are covered by [test_guests.bookclerk-plugin-host].)
@@ -63,6 +67,14 @@ checks = ["plugin_sdk_abi", "python_sdk"]
 # Workspace executables launched by a package's tests. Built before the tests
 # run; a change to one re-runs the launching package's tests (no further
 # propagation). Prerequisites never select their owners' own checks.
+[test_guests.bookclerk-cli]
+build = [
+    "bookclerk-plugin-database-sqlite",
+    "bookclerk-jail",
+    "bookclerk-workerd",
+]
+ensure_workerd = true
+
 [test_guests.bookclerk-workerd]
 build = [
     "bookclerk-plugin-echo-native-rust",
@@ -135,6 +147,22 @@ confinement = [
     "bookclerk-media-worker",
 ]
 tray = ["bookclerk-tray"]
+
+# Windows-only job. `rust_test` runs on ubuntu-latest, so these paths select
+# `windows_cluster`: the enrolled CLI startup target (with the sqlite guest,
+# jail, bookclerk-workerd, and pinned workerd) and the existing identity
+# create / restart-binding / different-cluster tests. Confinement and
+# native-gateway do not run those targets.
+[windows_cluster]
+paths = [
+    "crates/bookclerk-cli/src/main.rs",
+    "crates/bookclerk-cli/tests/cluster_secret_startup.rs",
+    "crates/bookclerk-cli/src/registry.rs",
+    "crates/bookclerk-library/src/control_plane/identity.rs",
+    "crates/bookclerk-library/src/control_plane/secret.rs",
+    "crates/bookclerk-library/src/control_plane/tests.rs",
+    "crates/bookclerk-config/src/atomic_replace.rs",
+]
 
 # Native-behind-workerd gateway smoke (3 OS): `bookclerk-plugin-e2e --test
 # native_gateway` launches a guest through the production PluginSession path.

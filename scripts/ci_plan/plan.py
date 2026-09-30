@@ -136,6 +136,10 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     "native-gateway": ("native_gateway",),
     "tray": ("tray",),
     "postgres": ("postgres",),
+    # Ubuntu `rust_test` does not run on windows-latest. This job is the
+    # Windows execution of the enrolled CLI startup target and the identity
+    # file tests. It is not a substitute for confinement or native-gateway.
+    "windows-cluster": ("windows_cluster",),
 }
 CHECK_JOB = {check: job for job, checks in JOB_CHECKS.items() for check in checks}
 ALL_CHECKS = tuple(CHECK_JOB)
@@ -209,6 +213,7 @@ class Relations:
     platform_jobs: dict[str, frozenset[str]]
     native_gateway_packages: frozenset[str]
     native_gateway_paths: tuple[str, ...]
+    windows_cluster_paths: tuple[str, ...]
     release_shipped: tuple[str, ...]
     release_full_packages: frozenset[str]
     release_full_paths: tuple[str, ...]
@@ -226,6 +231,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
     release = raw.get("release", {})
     jobs = raw.get("platform_jobs", {})
     gateway = raw.get("native_gateway", {})
+    windows_cluster = raw.get("windows_cluster", {})
     return Relations(
         embeds=list(raw.get("embed", [])),
         test_inputs=list(raw.get("test_input", [])),
@@ -240,6 +246,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
         platform_jobs={k: frozenset(v) for k, v in jobs.items()},
         native_gateway_packages=frozenset(gateway.get("packages", [])),
         native_gateway_paths=tuple(gateway.get("paths", [])),
+        windows_cluster_paths=tuple(windows_cluster.get("paths", [])),
         release_shipped=tuple(release.get("shipped", [])),
         release_full_packages=frozenset(release.get("full_packages", [])),
         release_full_paths=tuple(release.get("full_paths", [])),
@@ -579,6 +586,7 @@ class _Surfaces:
         self.e2e_ids: dict[str, str] = {}
         self.release_full: list[str] = []
         self.native_gateway: list[str] = []
+        self.windows_cluster: list[str] = []
         self.fixture_checks: dict[str, list[str]] = {}
 
 
@@ -684,6 +692,8 @@ def build_plan(
             surf.release_full.append(path)
         if any(glob_match(path, p) for p in rel.native_gateway_paths):
             surf.native_gateway.append(path)
+        if any(glob_match(path, p) for p in rel.windows_cluster_paths):
+            surf.windows_cluster.append(path)
 
         if not classified:
             plan.mark_full(f"unclassified path {path}")
@@ -877,6 +887,13 @@ def _select_checks(
     if gateway_why:
         _select(plan, "native_gateway", gateway_why)
 
+    if surf.windows_cluster:
+        _select(
+            plan,
+            "windows_cluster",
+            [f"windows cluster input {p}" for p in surf.windows_cluster],
+        )
+
     steps = [step for step, owner in rel.postgres_steps.items() if owner in unit]
     if steps:
         owners = sorted({rel.postgres_steps[s] for s in steps})
@@ -1017,6 +1034,25 @@ def _expand_prereqs(
             packages=["bookclerk-jail", "bookclerk-workerd"],
         )
         _prereq(plan, "native_gateway", "ensure_workerd", "the front door runs pinned workerd")
+
+    if plan.selected("windows_cluster"):
+        _prereq(
+            plan,
+            "windows_cluster",
+            "build",
+            "cluster_secret_startup stages the sqlite guest and spawns it through jail + bookclerk-workerd",
+            packages=[
+                "bookclerk-plugin-database-sqlite",
+                "bookclerk-jail",
+                "bookclerk-workerd",
+            ],
+        )
+        _prereq(
+            plan,
+            "windows_cluster",
+            "ensure_workerd",
+            "cluster_secret_startup spawns through pinned workerd",
+        )
 
 
 def _derive_jobs(plan: Plan) -> None:

@@ -6950,6 +6950,36 @@ fn plugin_err_from_db(err: sea_orm::DbErr) -> bookclerk_plugin_abi::PluginError 
     }
 }
 
+impl LibraryStore {
+    /// Runs a host-authored canonical SQL batch as one transaction.
+    ///
+    /// When a guest [`crate::TypedAtomicExec`] is attached, the stamped envelope
+    /// is sent there. Otherwise the batch runs on this connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when typecheck, transport, or the engine rejects the batch.
+    pub(crate) async fn execute_host_batch(
+        &self,
+        req: bookclerk_plugin_abi::ExecuteRequest,
+    ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
+        let type_env = crate::migrations::host_sql_type_env();
+        let envelope = bookclerk_db_exec::stamp_adapter_execute(req.clone(), &type_env)
+            .map_err(LibraryError::from_db_err)?;
+        if let Some(exec) = &self.typed_exec {
+            return exec.execute_typed(envelope).await.map_err(|err| {
+                let message = err.to_string();
+                if message.contains("unavailable") || message.contains("ambiguous") {
+                    LibraryError::Unavailable(message)
+                } else {
+                    LibraryError::Other(anyhow::anyhow!(message))
+                }
+            });
+        }
+        crate::sql_plan::execute_typed_on(&self.db, &req, 8).await
+    }
+}
+
 pub(crate) mod event_outbox;
 pub(crate) mod plugin_databases;
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
