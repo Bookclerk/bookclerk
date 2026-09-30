@@ -280,7 +280,8 @@ where
     }
     .await;
 
-    let removed = if scratch_delete_forced_failure() {
+    let forced_failure = scratch_delete_forced_failure(req.job_id.as_deref());
+    let removed = if forced_failure {
         false
     } else {
         match tokio::fs::remove_dir_all(work_dir).await {
@@ -298,7 +299,7 @@ where
                     .await;
             }
         }
-    } else if scratch_delete_forced_failure() {
+    } else if forced_failure {
         // Leave the files and the reservation. Drop must not delete them either.
         scratch.disarm();
     }
@@ -364,19 +365,30 @@ async fn wait_for_cancel(cancel: Option<Arc<AtomicBool>>) {
     }
 }
 
-fn scratch_delete_forced_failure() -> bool {
+/// Test hook keyed by job id so parallel convert tests do not share one flag.
+fn scratch_delete_forced_failure(job_id: Option<&str>) -> bool {
     #[cfg(test)]
     {
-        FAIL_SCRATCH_DELETE.load(Ordering::SeqCst)
+        let Some(job_id) = job_id else {
+            return false;
+        };
+        FAIL_SCRATCH_DELETE_JOBS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .contains(job_id)
     }
     #[cfg(not(test))]
     {
+        let _ = job_id;
         false
     }
 }
 
+/// Job ids whose conversion scratch delete is forced to fail.
 #[cfg(test)]
-static FAIL_SCRATCH_DELETE: AtomicBool = AtomicBool::new(false);
+static FAIL_SCRATCH_DELETE_JOBS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
 impl Drop for ScratchDir {
     fn drop(&mut self) {
@@ -1001,7 +1013,10 @@ mod tests {
         )
         .await
         .unwrap();
-        FAIL_SCRATCH_DELETE.store(true, Ordering::SeqCst);
+        FAIL_SCRATCH_DELETE_JOBS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(id.clone());
         let mut req = request(dir.path(), 100);
         req.job_id = Some(id.clone());
         let work = dir.path().join("convert").join("keep");
@@ -1021,7 +1036,10 @@ mod tests {
             },
         )
         .await;
-        FAIL_SCRATCH_DELETE.store(false, Ordering::SeqCst);
+        FAIL_SCRATCH_DELETE_JOBS
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(&id);
         assert!(result.is_ok(), "{result:?}");
         assert!(!store.list_job_temp_paths(&id).await.unwrap().is_empty());
         assert!(work.exists());
