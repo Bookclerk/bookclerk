@@ -80,6 +80,14 @@ pub async fn transfer_object(
     options: &TransferOptions,
 ) -> Result<TransferOutcome> {
     if source.instance_id() == dest.instance_id() && dest.supports_server_copy() {
+        let before = source.probe(source_key).await?;
+        if before.size > crate::bounded::MAX_SUPPORTED_OBJECT_BYTES {
+            return Err(StorageError::PayloadTooLarge(format!(
+                "object length {} exceeds {}",
+                before.size,
+                crate::bounded::MAX_SUPPORTED_OBJECT_BYTES
+            )));
+        }
         dest.copy(source_key, dest_key).await?;
         return Ok(TransferOutcome::ServerCopy);
     }
@@ -227,7 +235,8 @@ struct StageLease {
 
 struct StageRecord {
     path: std::path::PathBuf,
-    _lock: std::fs::File,
+    owner_path: std::path::PathBuf,
+    lock: Option<std::fs::File>,
 }
 
 impl StageLease {
@@ -264,7 +273,7 @@ impl StageLease {
             false
         };
         if deleted {
-            if let Some(record) = &self.journal {
+            if let Some(record) = self.journal.as_mut() {
                 record.clear();
             }
             self.armed = false;
@@ -285,7 +294,7 @@ impl Drop for StageLease {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 if dest.delete(&key).await.is_ok() {
-                    if let Some(record) = record {
+                    if let Some(mut record) = record {
                         record.clear();
                     }
                 }
@@ -310,13 +319,24 @@ impl StageRecord {
             .read(true)
             .write(true)
             .open(&lock_path)?;
-        fs4::FileExt::lock(&lock)?;
+        if let Err(err) = fs4::FileExt::lock(&lock) {
+            let _ = std::fs::remove_file(&lock_path);
+            return Err(err);
+        }
+        if stage_record_create_should_fail() {
+            release_owner_file(lock, &lock_path);
+            return Err(std::io::Error::other(
+                "injected stage journal failure after the owner lock",
+            ));
+        }
         let name = hex::encode(sha2::Sha256::digest(format!(
             "{}:{key}",
             dest.instance_id()
         )));
         let path = dir.join("stages").join(format!("{name}.json"));
-        let partial = dir.join("stages").join(format!("{name}.json.partial"));
+        let partial = dir
+            .join("stages")
+            .join(format!("{name}.{owner_id}.json.partial"));
         let body = serde_json::json!({
             "instance_id": dest.instance_id(),
             "stage_key": key,
@@ -325,31 +345,67 @@ impl StageRecord {
         .to_string();
         // FlushFileBuffers requires write access. A read-only reopen fails on
         // Windows even when the journal directory is writable.
-        {
+        let wrote = {
             use std::io::Write;
-            let mut partial_file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&partial)?;
-            partial_file.write_all(body.as_bytes())?;
-            partial_file.sync_all()?;
+            (|| {
+                let mut partial_file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(&partial)?;
+                partial_file.write_all(body.as_bytes())?;
+                partial_file.sync_all()?;
+                Ok(())
+            })()
+        };
+        if let Err(err) = wrote {
+            let _ = std::fs::remove_file(&partial);
+            release_owner_file(lock, &lock_path);
+            return Err(err);
         }
         pause_stage_record_publish(dir);
         if let Err(err) = std::fs::rename(&partial, &path) {
             let _ = std::fs::remove_file(&partial);
+            release_owner_file(lock, &lock_path);
             return Err(err);
         }
         if let Ok(dir_file) = std::fs::File::open(dir.join("stages")) {
             let _ = dir_file.sync_all();
         }
-        Ok(Self { path, _lock: lock })
+        Ok(Self {
+            path,
+            owner_path: lock_path,
+            lock: Some(lock),
+        })
     }
 
-    fn clear(&self) {
+    fn clear(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        if let Some(lock) = self.lock.take() {
+            release_owner_file(lock, &self.owner_path);
+        }
     }
 }
+
+fn release_owner_file(lock: std::fs::File, path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    drop(lock);
+}
+
+fn stage_record_create_should_fail() -> bool {
+    #[cfg(test)]
+    {
+        FAIL_STAGE_RECORD_AFTER_LOCK.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
+static FAIL_STAGE_RECORD_AFTER_LOCK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path) {
     let stages = dir.join("stages");
@@ -382,7 +438,80 @@ async fn reap_abandoned_stages(dest: &dyn StorageBackend, dir: &std::path::Path)
         }
         if dest.delete(stage_key).await.is_ok() {
             let _ = std::fs::remove_file(path);
+            release_dead_owner(dir, owner);
         }
+    }
+    sweep_stage_journal_debris(dir);
+}
+
+fn release_dead_owner(dir: &std::path::Path, owner_id: &str) {
+    let path = dir.join("owners").join(format!("{owner_id}.lock"));
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+    else {
+        return;
+    };
+    if fs4::FileExt::try_lock(&file).is_ok() {
+        let _ = std::fs::remove_file(&path);
+        let _ = fs4::FileExt::unlock(&file);
+    }
+}
+
+fn partial_owner(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(".json.partial")?;
+    stem.rsplit_once('.').map(|(_, owner)| owner)
+}
+
+/// Removes abandoned partials and owner locks that no remaining record names.
+fn sweep_stage_journal_debris(dir: &std::path::Path) {
+    let stages = dir.join("stages");
+    let mut referenced = std::collections::HashSet::new();
+    if let Ok(entries) = std::fs::read_dir(&stages) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if let Some(owner) = partial_owner(name) {
+                if stage_owner_live(dir, owner) {
+                    referenced.insert(owner.to_string());
+                } else {
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
+            }
+            if !name.ends_with(".json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if let Some(owner) = value.get("owner_id").and_then(|value| value.as_str()) {
+                referenced.insert(owner.to_string());
+            }
+        }
+    }
+    let owners = dir.join("owners");
+    let Ok(entries) = std::fs::read_dir(&owners) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(owner) = name.strip_suffix(".lock") else {
+            continue;
+        };
+        if referenced.contains(owner) {
+            continue;
+        }
+        release_dead_owner(dir, owner);
     }
 }
 
@@ -1502,6 +1631,189 @@ mod tests {
             leftover, 0,
             "successful transfer left a stage journal record"
         );
+        assert_eq!(
+            std::fs::read_dir(journal.join("owners"))
+                .map(|rd| rd.count())
+                .unwrap_or(0),
+            0,
+            "successful transfer left an owner lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_journaled_transfers_do_not_accumulate_owner_locks() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"audio-bytes"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let dst = LocalFsBackend::new(dir.path().join("dst")).unwrap();
+        for _ in 0..3 {
+            transfer_object(
+                &src,
+                "book.m4b",
+                &dst,
+                "book.m4b",
+                ObjectMeta::default(),
+                &TransferOptions {
+                    max_attempts: 1,
+                    stage_journal_dir: Some(journal.clone()),
+                    ..TransferOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let owners = journal.join("owners");
+        let stages = journal.join("stages");
+        assert_eq!(
+            std::fs::read_dir(&owners).map(|rd| rd.count()).unwrap_or(0),
+            0
+        );
+        assert_eq!(
+            std::fs::read_dir(&stages).map(|rd| rd.count()).unwrap_or(0),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_journal_creation_failure_removes_the_owner_lock() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        std::fs::create_dir_all(&journal).unwrap();
+        let src = LocalFsBackend::new(dir.path().join("src")).unwrap();
+        src.put(
+            "book.m4b",
+            Bytes::from_static(b"audio-bytes"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        let dst = LocalFsBackend::new(dir.path().join("dst")).unwrap();
+        FAIL_STAGE_RECORD_AFTER_LOCK.store(true, Ordering::SeqCst);
+        let err = transfer_object(
+            &src,
+            "book.m4b",
+            &dst,
+            "book.m4b",
+            ObjectMeta::default(),
+            &TransferOptions {
+                max_attempts: 1,
+                stage_journal_dir: Some(journal.clone()),
+                ..TransferOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        FAIL_STAGE_RECORD_AFTER_LOCK.store(false, Ordering::SeqCst);
+        assert!(matches!(err, StorageError::Io(_)), "{err}");
+        assert!(!dst.exists("book.m4b").await.unwrap());
+        assert_eq!(
+            std::fs::read_dir(journal.join("owners"))
+                .map(|rd| rd.count())
+                .unwrap_or(0),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn same_instance_copy_rejects_an_oversized_probe_without_copying() {
+        let copies = Arc::new(AtomicUsize::new(0));
+        let backend = HugeCopy {
+            copies: Arc::clone(&copies),
+        };
+        let err = transfer_object(
+            &backend,
+            "src.m4b",
+            &backend,
+            "dst.m4b",
+            ObjectMeta::default(),
+            &TransferOptions {
+                max_attempts: 1,
+                ..TransferOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, StorageError::PayloadTooLarge(_)), "{err}");
+        assert_eq!(copies.load(Ordering::SeqCst), 0);
+    }
+
+    struct HugeCopy {
+        copies: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageBackend for HugeCopy {
+        fn name(&self) -> &'static str {
+            "huge"
+        }
+        fn instance_id(&self) -> String {
+            "huge-instance".into()
+        }
+        fn supports_server_copy(&self) -> bool {
+            true
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                copies: Arc::clone(&self.copies),
+            })
+        }
+        async fn put(&self, _: &str, _: Bytes, _: ObjectMeta) -> Result<()> {
+            Ok(())
+        }
+        async fn get(&self, _: &str) -> Result<Bytes> {
+            Ok(Bytes::from_static(b"keeper"))
+        }
+        async fn exists(&self, _: &str) -> Result<bool> {
+            Ok(true)
+        }
+        async fn list(&self, _: &str) -> Result<Vec<crate::ObjectInfo>> {
+            Ok(Vec::new())
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            Ok(crate::ObjectProbe {
+                key: key.into(),
+                size: crate::bounded::MAX_SUPPORTED_OBJECT_BYTES + 1,
+                ..crate::ObjectProbe::default()
+            })
+        }
+        async fn copy(&self, _: &str, _: &str) -> Result<()> {
+            self.copies.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn delete(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn list_page(&self, _: &str, _: Option<&str>, _: u32) -> Result<crate::ListPage> {
+            Ok(crate::ListPage::default())
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            _: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            Ok((
+                self.probe(key).await?,
+                Box::pin(std::io::Cursor::new(Vec::<u8>::new())),
+            ))
+        }
+        async fn put_stream(
+            &self,
+            _: &str,
+            _: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            _: ObjectMeta,
+        ) -> Result<PutStreamResult> {
+            Ok(PutStreamResult::default())
+        }
     }
 
     #[tokio::test]

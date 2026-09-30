@@ -31,6 +31,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWriteExt, ReadBuf};
 
+use sha2::Digest;
+
 use crate::bounded::{
     ensure_scalar_len, read_scalar_body, reject_scalar_hint, MAX_SCALAR_OBJECT_BYTES,
 };
@@ -77,9 +79,26 @@ impl StorageBackend for FanoutBackend {
     }
 
     fn instance_id(&self) -> String {
-        let mut parts: Vec<String> = self.backends.iter().map(|b| b.instance_id()).collect();
-        parts.sort();
-        format!("fanout:{}", parts.join("|"))
+        format!("fanout:{}", fanout_identity(&self.backends))
+    }
+
+    fn scan_placement(&self) -> Option<String> {
+        let parts: Vec<Option<String>> = self
+            .backends
+            .iter()
+            .map(|backend| backend.scan_placement())
+            .collect();
+        if parts.iter().all(Option::is_none) {
+            return None;
+        }
+        // A local child makes the whole fan-out node-bound. Empty slots are
+        // portable children and stay in the vector so order is part of identity.
+        Some(encode_ordered_ids(
+            &parts
+                .into_iter()
+                .map(|part| part.unwrap_or_default())
+                .collect::<Vec<_>>(),
+        ))
     }
 
     fn clone_box(&self) -> Box<dyn StorageBackend> {
@@ -181,7 +200,8 @@ impl StorageBackend for FanoutBackend {
         limit: u32,
     ) -> Result<crate::ListPage> {
         let limit = crate::bounded::clamp_page_limit(limit);
-        let (mut child_index, mut child_cursor) = decode_fanout_cursor(cursor)?;
+        let (mut child_index, mut child_cursor) =
+            decode_fanout_cursor(cursor, &fanout_identity(&self.backends))?;
         if child_index >= self.backends.len() {
             return Err(StorageError::InvalidCursor(
                 "fan-out cursor names a missing child".into(),
@@ -249,7 +269,11 @@ impl StorageBackend for FanoutBackend {
             }
         }
         let next_cursor = if child_index < self.backends.len() {
-            Some(encode_fanout_cursor(child_index, child_cursor.as_deref()))
+            Some(encode_fanout_cursor(
+                &fanout_identity(&self.backends),
+                child_index,
+                child_cursor.as_deref(),
+            ))
         } else {
             None
         };
@@ -289,24 +313,25 @@ impl StorageBackend for FanoutBackend {
             return self.backends[0].put_stream(key, body, meta).await;
         }
         let cancel = Arc::new(AtomicBool::new(false));
-        let mut joins = Vec::new();
+        let mut joins = tokio::task::JoinSet::new();
         let mut writers = Vec::new();
-        for backend in &self.backends {
+        let mut aborts = Vec::new();
+        for (index, backend) in self.backends.iter().enumerate() {
             let (reader, writer) = tokio::io::duplex(64 * 1024);
             let boxed = backend.clone_box();
             let key = key.to_string();
             let meta = meta.clone();
             let cancel = Arc::clone(&cancel);
-            joins.push(tokio::spawn(async move {
+            aborts.push(joins.spawn(async move {
                 let body = CancellableRead {
                     inner: reader,
                     cancel,
                 };
-                boxed.put_stream(&key, Box::pin(body), meta).await
+                let result = boxed.put_stream(&key, Box::pin(body), meta).await;
+                (index, result)
             }));
             writers.push(writer);
         }
-        let aborts: Vec<_> = joins.iter().map(|join| join.abort_handle()).collect();
         let mut guard = FanoutGuard {
             cancel: Arc::clone(&cancel),
             aborts,
@@ -333,35 +358,42 @@ impl StorageBackend for FanoutBackend {
             Ok(total) => total,
             Err(err) => {
                 guard.cancel_now();
-                reap(&mut joins).await;
+                while joins.join_next().await.is_some() {}
                 return Err(err);
             }
         };
-        // Children may still be flushing or completing after the source EOF.
-        // The guard stays armed through every join so a drop or a child error
-        // aborts the rest instead of detaching them.
-        let mut last = crate::PutStreamResult {
-            bytes_written: total,
-            etag: None,
-            sha256_hex: None,
-        };
+        // Children may still be flushing after source EOF. Completions are
+        // observed as they arrive so a later child's error aborts an earlier
+        // child that is still finalizing. The guard stays armed until every
+        // task has been joined.
+        let mut chosen: Option<(usize, crate::PutStreamResult)> = None;
         let mut failure = None;
-        for join in joins.drain(..) {
-            if failure.is_some() {
-                guard.cancel_now();
-            }
-            match join.await {
-                Ok(Ok(result)) => {
-                    if failure.is_none() {
-                        last = result;
+        while let Some(joined) = joins.join_next().await {
+            match joined {
+                Ok((index, Ok(result))) => {
+                    if result.bytes_written != total {
+                        if failure.is_none() {
+                            failure = Some(StorageError::Integrity(format!(
+                                "fan-out child {index} reported {} bytes, source wrote {total}",
+                                result.bytes_written
+                            )));
+                            guard.cancel_now();
+                        }
+                    } else if failure.is_none() {
+                        match &chosen {
+                            Some((prev, _)) if *prev <= index => {}
+                            _ => chosen = Some((index, result)),
+                        }
                     }
                 }
-                Ok(Err(err)) => {
+                Ok((index, Err(err))) => {
                     if failure.is_none() {
                         failure = Some(err);
                         guard.cancel_now();
+                        let _ = index;
                     }
                 }
+                Err(err) if err.is_cancelled() => {}
                 Err(err) => {
                     if failure.is_none() {
                         failure = Some(StorageError::Other(anyhow::anyhow!(
@@ -375,6 +407,11 @@ impl StorageBackend for FanoutBackend {
         if let Some(err) = failure {
             return Err(err);
         }
+        let Some((_, mut last)) = chosen else {
+            return Err(StorageError::Other(anyhow::anyhow!(
+                "fan-out put_stream finished without a child result"
+            )));
+        };
         guard.disarm();
         last.bytes_written = total;
         Ok(last)
@@ -385,17 +422,56 @@ impl StorageBackend for FanoutBackend {
     }
 }
 
-fn encode_fanout_cursor(child: usize, cursor: Option<&str>) -> String {
-    format!("bcf1\u{1}{child}\u{1}{}", cursor.unwrap_or(""))
+/// Length-prefixed child ids in configuration order.
+///
+/// Sorting would hide first-child precedence. A raw join is ambiguous when an
+/// id contains the separator.
+fn encode_ordered_ids(ids: &[String]) -> String {
+    let mut out = String::from("bcid1");
+    for id in ids {
+        out.push('\u{1e}');
+        out.push_str(&id.len().to_string());
+        out.push(':');
+        out.push_str(id);
+    }
+    out
 }
 
-fn decode_fanout_cursor(cursor: Option<&str>) -> Result<(usize, Option<String>)> {
+fn fanout_identity(backends: &[Box<dyn StorageBackend>]) -> String {
+    let ids: Vec<String> = backends
+        .iter()
+        .map(|backend| backend.instance_id())
+        .collect();
+    encode_ordered_ids(&ids)
+}
+
+fn identity_token(identity: &str) -> String {
+    hex::encode(sha2::Sha256::digest(identity.as_bytes()))
+}
+
+fn encode_fanout_cursor(identity: &str, child: usize, cursor: Option<&str>) -> String {
+    format!(
+        "bcf2\u{1}{}\u{1}{child}\u{1}{}",
+        identity_token(identity),
+        cursor.unwrap_or("")
+    )
+}
+
+fn decode_fanout_cursor(cursor: Option<&str>, identity: &str) -> Result<(usize, Option<String>)> {
     let Some(cursor) = cursor else {
         return Ok((0, None));
     };
-    let rest = cursor.strip_prefix("bcf1\u{1}").ok_or_else(|| {
+    let rest = cursor.strip_prefix("bcf2\u{1}").ok_or_else(|| {
         StorageError::InvalidCursor("fan-out cursor is not from this backend".into())
     })?;
+    let (token, rest) = rest.split_once('\u{1}').ok_or_else(|| {
+        StorageError::InvalidCursor("fan-out cursor is missing its child order".into())
+    })?;
+    if token != identity_token(identity) {
+        return Err(StorageError::InvalidCursor(
+            "fan-out cursor was issued for a different child order".into(),
+        ));
+    }
     let (index, child_cursor) = rest
         .split_once('\u{1}')
         .ok_or_else(|| StorageError::InvalidCursor("fan-out cursor is truncated".into()))?;
@@ -417,12 +493,6 @@ async fn earlier_has_key(earlier: &[Box<dyn StorageBackend>], key: &str) -> Resu
         }
     }
     Ok(false)
-}
-
-async fn reap(joins: &mut Vec<tokio::task::JoinHandle<Result<crate::PutStreamResult>>>) {
-    for join in joins.drain(..) {
-        let _ = join.await;
-    }
 }
 
 struct FanoutGuard {
@@ -731,5 +801,318 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, StorageError::Io(_)), "{err}");
         assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn later_child_finalization_error_aborts_the_blocked_first_child() {
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ready = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fan = FanoutBackend::new(vec![
+            Box::new(gate(false, &entered, &ready, &release, &published)),
+            Box::new(gate(true, &entered, &ready, &release, &published)),
+        ])
+        .unwrap();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            fan.put_stream(
+                "book.m4b",
+                Box::pin(std::io::Cursor::new(b"data".to_vec())),
+                ObjectMeta::default(),
+            ),
+        )
+        .await
+        .expect("parent waited for the stalled first child")
+        .unwrap_err();
+        assert!(matches!(err, StorageError::Io(_)), "{err}");
+        assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn child_byte_count_mismatch_is_integrity_and_stops_the_sibling() {
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ready = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fan = FanoutBackend::new(vec![
+            Box::new(LieCount {
+                short: false,
+                entered: Arc::clone(&entered),
+                ready: Arc::clone(&ready),
+                release: Arc::clone(&release),
+                published: Arc::clone(&published),
+            }),
+            Box::new(LieCount {
+                short: true,
+                entered: Arc::clone(&entered),
+                ready: Arc::clone(&ready),
+                release: Arc::clone(&release),
+                published: Arc::clone(&published),
+            }),
+        ])
+        .unwrap();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            fan.put_stream(
+                "book.m4b",
+                Box::pin(std::io::Cursor::new(b"data".to_vec())),
+                ObjectMeta::default(),
+            ),
+        )
+        .await
+        .expect("parent waited for the stalled child")
+        .unwrap_err();
+        assert!(matches!(err, StorageError::Integrity(_)), "{err}");
+        assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    struct LieCount {
+        short: bool,
+        entered: Arc<std::sync::atomic::AtomicUsize>,
+        ready: Arc<tokio::sync::Barrier>,
+        release: Arc<tokio::sync::Notify>,
+        published: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageBackend for LieCount {
+        fn name(&self) -> &'static str {
+            "lie"
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                short: self.short,
+                entered: Arc::clone(&self.entered),
+                ready: Arc::clone(&self.ready),
+                release: Arc::clone(&self.release),
+                published: Arc::clone(&self.published),
+            })
+        }
+        async fn put(&self, _: &str, _: Bytes, _: ObjectMeta) -> Result<()> {
+            Ok(())
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            Err(StorageError::NotFound(key.into()))
+        }
+        async fn exists(&self, _: &str) -> Result<bool> {
+            Ok(false)
+        }
+        async fn list(&self, _: &str) -> Result<Vec<crate::ObjectInfo>> {
+            Ok(Vec::new())
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            Err(StorageError::NotFound(key.into()))
+        }
+        async fn copy(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn delete(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn list_page(&self, _: &str, _: Option<&str>, _: u32) -> Result<crate::ListPage> {
+            Ok(crate::ListPage::default())
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            _: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            Err(StorageError::NotFound(key.into()))
+        }
+        async fn put_stream(
+            &self,
+            _: &str,
+            mut body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            _: ObjectMeta,
+        ) -> Result<crate::PutStreamResult> {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 32];
+            let mut total = 0u64;
+            loop {
+                let n = body.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                total += n as u64;
+            }
+            self.entered
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.ready.wait().await;
+            if self.short {
+                return Ok(crate::PutStreamResult {
+                    bytes_written: total.saturating_sub(1),
+                    ..crate::PutStreamResult::default()
+                });
+            }
+            self.release.notified().await;
+            self.published
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::PutStreamResult {
+                bytes_written: total,
+                ..crate::PutStreamResult::default()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn child_order_is_part_of_identity_and_duplicate_keys_keep_the_first_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let left = LocalFsBackend::new(dir.path().join("left"))
+            .unwrap()
+            .with_scan_placement("node-left");
+        let right = LocalFsBackend::new(dir.path().join("right"))
+            .unwrap()
+            .with_scan_placement("node-right");
+        let weird = LocalFsBackend::new(dir.path().join("a|b")).unwrap();
+        left.put(
+            "book.m4b",
+            Bytes::from_static(b"from-left"),
+            ObjectMeta::default(),
+        )
+        .await
+        .unwrap();
+        right
+            .put(
+                "book.m4b",
+                Bytes::from_static(b"from-right"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        right
+            .put(
+                "only-right.m4b",
+                Bytes::from_static(b"right"),
+                ObjectMeta::default(),
+            )
+            .await
+            .unwrap();
+        let forward =
+            FanoutBackend::new(vec![Box::new(left.clone()), Box::new(right.clone())]).unwrap();
+        let reverse =
+            FanoutBackend::new(vec![Box::new(right.clone()), Box::new(left.clone())]).unwrap();
+        assert_ne!(forward.instance_id(), reverse.instance_id());
+        assert_ne!(forward.scan_placement(), reverse.scan_placement());
+        assert!(forward.scan_placement().is_some());
+        let single = FanoutBackend::new(vec![Box::new(weird)]).unwrap();
+        let split = FanoutBackend::new(vec![
+            Box::new(LocalFsBackend::new(dir.path().join("a")).unwrap()),
+            Box::new(LocalFsBackend::new(dir.path().join("b")).unwrap()),
+        ])
+        .unwrap();
+        assert_ne!(single.instance_id(), split.instance_id());
+        assert_eq!(
+            forward.get("book.m4b").await.unwrap().as_ref(),
+            b"from-left"
+        );
+        let page = forward.list_page("", None, 1).await.unwrap();
+        let cursor = page.next_cursor.expect("child cursor");
+        let err = reverse.list_page("", Some(&cursor), 1).await.unwrap_err();
+        assert!(matches!(err, StorageError::InvalidCursor(_)), "{err}");
+        let listed = forward.list_page("", None, 10).await.unwrap();
+        let keys: Vec<_> = listed.objects.iter().map(|obj| obj.key.as_str()).collect();
+        assert_eq!(keys.iter().filter(|key| **key == "book.m4b").count(), 1);
+        assert!(keys.contains(&"only-right.m4b"));
+    }
+
+    #[tokio::test]
+    async fn later_child_duplicate_checks_one_head_per_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let left = LocalFsBackend::new(dir.path().join("left")).unwrap();
+        let right = LocalFsBackend::new(dir.path().join("right")).unwrap();
+        for name in ["a.m4b", "b.m4b", "c.m4b"] {
+            left.put(name, Bytes::from_static(b"l"), ObjectMeta::default())
+                .await
+                .unwrap();
+            right
+                .put(name, Bytes::from_static(b"r"), ObjectMeta::default())
+                .await
+                .unwrap();
+        }
+        let heads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fan = FanoutBackend::new(vec![
+            Box::new(CountExists {
+                inner: left,
+                heads: Arc::clone(&heads),
+            }),
+            Box::new(right),
+        ])
+        .unwrap();
+        let page = fan.list_page("", None, 10).await.unwrap();
+        assert_eq!(page.objects.len(), 3);
+        assert_eq!(heads.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    struct CountExists {
+        inner: LocalFsBackend,
+        heads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageBackend for CountExists {
+        fn name(&self) -> &'static str {
+            "count-exists"
+        }
+        fn instance_id(&self) -> String {
+            self.inner.instance_id()
+        }
+        fn clone_box(&self) -> Box<dyn StorageBackend> {
+            Box::new(Self {
+                inner: self.inner.clone(),
+                heads: Arc::clone(&self.heads),
+            })
+        }
+        async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> Result<()> {
+            self.inner.put(key, data, meta).await
+        }
+        async fn get(&self, key: &str) -> Result<Bytes> {
+            self.inner.get(key).await
+        }
+        async fn exists(&self, key: &str) -> Result<bool> {
+            self.heads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.exists(key).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<crate::ObjectInfo>> {
+            self.inner.list(prefix).await
+        }
+        async fn probe(&self, key: &str) -> Result<crate::ObjectProbe> {
+            self.inner.probe(key).await
+        }
+        async fn copy(&self, from: &str, to: &str) -> Result<()> {
+            self.inner.copy(from, to).await
+        }
+        async fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key).await
+        }
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: u32,
+        ) -> Result<crate::ListPage> {
+            self.inner.list_page(prefix, cursor, limit).await
+        }
+        async fn get_stream(
+            &self,
+            key: &str,
+            range: Option<crate::ByteRange>,
+        ) -> Result<(
+            crate::ObjectProbe,
+            std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        )> {
+            self.inner.get_stream(key, range).await
+        }
+        async fn put_stream(
+            &self,
+            key: &str,
+            body: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+            meta: ObjectMeta,
+        ) -> Result<crate::PutStreamResult> {
+            self.inner.put_stream(key, body, meta).await
+        }
     }
 }
