@@ -24,15 +24,16 @@ use std::path::Path;
 /// Singleton primary key for [`cluster_identity`].
 const CLUSTER_ROW_ID: i64 = 1;
 
-/// Loaded cluster secret root.
+/// Cluster id and fingerprint of the secret root aligned for this process.
+///
+/// The unwrapped DEK stays in the process cache (`configure_master_key_with`).
+/// Callers that need the key use [`crate::require_master_key`].
 #[derive(Clone, Debug)]
 pub struct ClusterSecret {
     /// Cluster id stored beside the fingerprint.
     pub cluster_id: String,
     /// SHA-256 hex of the DEK.
     pub secret_fingerprint: String,
-    /// Unwrapped DEK cached for this process.
-    pub key: MasterKey,
 }
 
 /// Ensures this process's DEK is the cluster secret root.
@@ -44,6 +45,9 @@ pub struct ClusterSecret {
 /// * No fingerprint and no sealed secrets: the local key (minted when absent)
 ///   is recorded. Concurrent initializers: one fingerprint wins; a loser that
 ///   minted a different key deletes that new file and fails.
+///
+/// On success the accepted DEK is installed in the process cache. The returned
+/// value is only the cluster id and fingerprint.
 ///
 /// # Errors
 ///
@@ -88,7 +92,6 @@ fn verify_existing(
     Ok(ClusterSecret {
         cluster_id: row.cluster_id.clone(),
         secret_fingerprint: row.secret_fingerprint.clone(),
-        key: resolved.key.clone(),
     })
 }
 
@@ -151,7 +154,6 @@ async fn initialize_root(
     Ok(ClusterSecret {
         cluster_id: row.cluster_id,
         secret_fingerprint: row.secret_fingerprint,
-        key: resolved.key.clone(),
     })
 }
 

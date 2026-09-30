@@ -12,6 +12,7 @@ use super::secret::align_secret_root;
 use super::*;
 use crate::entities::configuration_documents;
 use crate::master_key::{master_key_fingerprint, master_key_path, master_key_test_lock_async};
+use crate::require_master_key;
 use crate::store::LibraryStore;
 
 async fn memory_store() -> LibraryStore {
@@ -862,7 +863,11 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
         .secret_fingerprint;
     let again = align_secret_root(&store, files.path(), None).await.unwrap();
     assert_eq!(again.cluster_id, session.cluster_id);
-    assert_eq!(master_key_fingerprint(&again.key), fingerprint);
+    assert_eq!(again.secret_fingerprint, fingerprint);
+    assert_eq!(
+        master_key_fingerprint(&require_master_key(Some(files.path())).unwrap()),
+        fingerprint
+    );
 
     let fresh = memory_store().await;
     let dir_a = tempdir().unwrap();
@@ -910,7 +915,11 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
         "losing initializer must not keep a second master.key"
     );
     let winner = align_secret_root(&store, winner_dir, None).await.unwrap();
-    assert_eq!(master_key_fingerprint(&winner.key), row.secret_fingerprint);
+    assert_eq!(winner.secret_fingerprint, row.secret_fingerprint);
+    assert_eq!(
+        master_key_fingerprint(&require_master_key(Some(winner_dir)).unwrap()),
+        row.secret_fingerprint
+    );
 }
 
 #[tokio::test]
