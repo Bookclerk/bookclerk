@@ -921,7 +921,11 @@ mod tests {
     }
 
     async fn wait_until_no_stage_files(root: &std::path::Path) {
-        for _ in 0..200 {
+        // Drop cleanup deletes through `tokio::fs`, which uses the blocking
+        // pool. A yield-only spin can finish before that delete is scheduled
+        // when the suite runs in parallel.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
             let mut files = 0usize;
             if let Ok(entries) = std::fs::read_dir(root.join(".bookclerk-stage")) {
                 for entry in entries.flatten() {
@@ -937,9 +941,11 @@ mod tests {
             if files == 0 {
                 return;
             }
-            tokio::task::yield_now().await;
+            if tokio::time::Instant::now() >= deadline {
+                panic!("stage objects remained after drop");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("stage objects remained after drop");
     }
 
     #[tokio::test]
@@ -1270,26 +1276,56 @@ mod tests {
             inner: LocalFsBackend::new(dir.path().join("dst")).unwrap(),
             fail: Arc::clone(&fail),
         };
+        // The journal is published before `put_stream`. A short attempt timeout
+        // can therefore drop the lease under load before the stage object
+        // exists, which is a different failure than a refused delete. Wait
+        // until staging has finished and the post-stage probe is pending, then
+        // cancel. Drop still runs the same cleanup as an attempt timeout.
+        let probes = Arc::new(AtomicUsize::new(0));
         let blocked = BlockFinalProbe {
             inner: src.clone(),
-            probes: Arc::new(AtomicUsize::new(0)),
+            probes: Arc::clone(&probes),
         };
-        let err = transfer_object(
-            &blocked,
-            "book.m4b",
-            &dst,
-            "book.m4b",
-            ObjectMeta::default(),
-            &TransferOptions {
-                max_attempts: 1,
-                attempt_timeout: Some(Duration::from_millis(50)),
-                stage_journal_dir: Some(journal.clone()),
-                ..TransferOptions::default()
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(err, StorageError::Io(_)), "{err}");
+        let task = tokio::spawn({
+            let dst = dst.clone();
+            let journal = journal.clone();
+            async move {
+                transfer_object(
+                    &blocked,
+                    "book.m4b",
+                    &dst,
+                    "book.m4b",
+                    ObjectMeta::default(),
+                    &TransferOptions {
+                        max_attempts: 1,
+                        attempt_timeout: None,
+                        stage_journal_dir: Some(journal),
+                        ..TransferOptions::default()
+                    },
+                )
+                .await
+            }
+        });
+        let staged = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if probes.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+                if task.is_finished() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(staged.is_ok(), "post-stage probe did not start");
+        if probes.load(Ordering::SeqCst) < 2 {
+            let finished = task.await;
+            panic!("transfer finished before the post-stage probe blocked: {finished:?}");
+        }
+        task.abort();
+        let join = task.await;
+        assert!(join.expect_err("cancelled transfer").is_cancelled());
         let stages = journal.join("stages");
         let mut owner_free = false;
         for _ in 0..1_000 {
