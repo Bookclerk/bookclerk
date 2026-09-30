@@ -11,11 +11,18 @@ fn bookclerk_bin() -> &'static str {
     env!("CARGO_BIN_EXE_bookclerk")
 }
 
+fn sqlite_guest_name() -> String {
+    format!(
+        "bookclerk-plugin-database-sqlite{}",
+        std::env::consts::EXE_SUFFIX
+    )
+}
+
 fn sqlite_plugin_bin() -> PathBuf {
     Path::new(bookclerk_bin())
         .parent()
         .expect("target dir")
-        .join("bookclerk-plugin-database-sqlite")
+        .join(sqlite_guest_name())
 }
 
 fn stage_sqlite_plugin(files: &Path) {
@@ -30,15 +37,29 @@ fn stage_sqlite_plugin(files: &Path) {
         "build the sqlite guest before this test: {}",
         bin.display()
     );
-    let dest = plugin.join("bookclerk-plugin-database-sqlite");
+    let guest = sqlite_guest_name();
+    let dest = plugin.join(&guest);
     if fs::hard_link(&bin, &dest).is_err() {
         fs::copy(&bin, &dest).unwrap();
     }
     let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../bookclerk-plugins/platform/database-sqlite/plugin.toml");
-    fs::copy(&manifest_path, plugin.join("plugin.toml")).unwrap();
-    let text = fs::read_to_string(plugin.join("plugin.toml")).unwrap();
+    let staged = plugin.join("plugin.toml");
+    let template = fs::read_to_string(&manifest_path).unwrap();
+    let command = format!("./{guest}");
+    let text = template.replacen(
+        "command = \"./bookclerk-plugin-database-sqlite\"",
+        &format!("command = \"{command}\""),
+        1,
+    );
+    assert!(
+        text.contains(&format!("command = \"{command}\"")),
+        "staged manifest must name the guest executable"
+    );
+    fs::write(&staged, text).unwrap();
+    let text = fs::read_to_string(&staged).unwrap();
     let manifest = bookclerk_plugin_manifest::PluginManifest::parse(&text).expect("manifest");
+    assert_eq!(manifest.id, "sqlite");
     bookclerk_plugin_catalog::stamp_platform_receipt(
         &plugin,
         files,
