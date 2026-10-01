@@ -20,10 +20,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub use deployments::{
-    bounded_observation_detail, ensure_plugin_deployment, list_present_deployments_for_host,
-    load_deployment, load_observation, present_plugin_keys_for_host, replace_plugin_deployment,
-    upsert_observation, DeploymentObservation, DeploymentReplace, DeploymentStatus,
-    PluginDeployment, DESIRED_PRESENT, MAX_OBSERVATION_DETAIL_BYTES,
+    bounded_observation_detail, ensure_plugin_deployment, instance_has_deployment,
+    list_present_deployments_for_host, load_deployment, load_observation,
+    present_plugin_keys_for_host, replace_plugin_deployment, upsert_observation,
+    DeploymentObservation, DeploymentReplace, DeploymentStatus, PluginDeployment, DESIRED_PRESENT,
+    MAX_OBSERVATION_DETAIL_BYTES,
 };
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,

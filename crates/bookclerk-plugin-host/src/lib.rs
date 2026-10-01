@@ -74,6 +74,7 @@ pub use authority::{
     register_session_with_shutdown, spawn_grant_watcher, unregister_session, watch_grants_loop,
     SessionShutdown, GRANT_WATCH_INTERVAL,
 };
+pub use bookclerk_plugin_catalog::host_bookclerk_target;
 pub use bookclerk_plugin_manifest::TcpGrant;
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
 pub use builtins::{
@@ -103,8 +104,9 @@ pub use consent::{
 };
 pub use crates_io::search_crates_io;
 pub use deployment::{
-    enroll_graphicaudio_instance, reconcile_local_deployments, DeploymentRuntime, DeploymentSpawn,
-    LiveDeploymentRuntime, LocalPackage, SpawnHealth,
+    enroll_graphicaudio_instance, load_authorized_local_packages, reconcile_local_deployments,
+    DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime, LocalPackage, SpawnHealth,
+    AUTHORIZED_PACKAGE_DIR,
 };
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{

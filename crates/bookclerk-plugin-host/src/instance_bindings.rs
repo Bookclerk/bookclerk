@@ -6,9 +6,9 @@
 use std::path::Path;
 
 use bookclerk_library::control_plane::{
-    find_plugin_instance_by_key, load_instance_config, resolve_instance_bindings,
-    InstanceBindingGrant, ResolvedInstanceBindings, GRAPHICAUDIO_IMPORT_KEYS,
-    GRAPHICAUDIO_MANIFEST_ID,
+    find_plugin_instance_by_key, instance_has_deployment, load_instance_config,
+    resolve_instance_bindings, InstanceBindingGrant, ResolvedInstanceBindings,
+    GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_sdk::{BindingValues, ExtensibleConfig};
@@ -34,13 +34,41 @@ pub struct PreparedOpen {
     pub config_revision: Option<i64>,
 }
 
+/// Builds open bindings from a deployment's already resolved payloads.
+///
+/// Does not look up an instance by plugin key.
+#[must_use]
+pub fn prepared_open_from_resolved(
+    config: ExtensibleConfig,
+    secrets: ExtensibleConfig,
+    config_revision: i64,
+) -> PreparedOpen {
+    let granted_config = config
+        .json_value()
+        .unwrap_or_else(|_| Value::Object(Default::default()));
+    PreparedOpen {
+        bindings: BindingValues {
+            config,
+            secrets,
+            ..BindingValues::default()
+        },
+        spawn_config_table: granted_config.clone(),
+        granted_config,
+        from_instance: true,
+        config_revision: Some(config_revision),
+    }
+}
+
 /// Resolves open bindings for `plugin`.
 ///
 /// `store == None` always uses `transitional` (database connect bootstrap has
-/// no library handle yet). A missing instance row, or an instance with no
-/// document, also uses `transitional`. An instance document that fails
-/// validation, grant checks, or secret resolution is an error: this function
-/// does not fall back to `settings_table_for`.
+/// no library handle yet). A missing instance row, an instance with no
+/// document, or an instance that already has a deployment also uses
+/// `transitional`. Key lookup is only for plugins with no deployment. A
+/// deployment spawn passes [`prepared_open_from_resolved`] instead. An
+/// instance document that fails validation, grant checks, or secret
+/// resolution is an error: this function does not fall back to
+/// `settings_table_for`.
 ///
 /// # Errors
 ///
@@ -85,12 +113,17 @@ pub async fn prepare_open_bindings(
     })
 }
 
-/// Loads the instance document for `plugin_key` when one exists.
+/// Loads the instance document for `plugin_key` when one exists and no
+/// deployment owns that instance.
+///
+/// Two instances may share a key. This lookup returns the oldest row, so it
+/// is not used once a deployment exists. The reconciler carries that
+/// deployment's instance id instead.
 ///
 /// # Errors
 ///
 /// Returns an error when the document exists but cannot be resolved. A missing
-/// row is `Ok(None)`.
+/// row, or an instance that has a deployment, is `Ok(None)`.
 async fn instance_document(
     store: &LibraryStore,
     plugin_key: &str,
@@ -102,6 +135,12 @@ async fn instance_document(
     else {
         return Ok(None);
     };
+    if instance_has_deployment(store, &instance.id)
+        .await
+        .map_err(library_err)?
+    {
+        return Ok(None);
+    }
     match load_instance_config(store, &instance.id).await {
         Ok(_) => {}
         Err(LibraryError::NotFound(_)) => return Ok(None),

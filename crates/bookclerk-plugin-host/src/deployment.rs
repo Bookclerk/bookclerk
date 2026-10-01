@@ -40,9 +40,14 @@ pub struct LocalPackage {
     pub manifest: bookclerk_plugin_catalog::BookclerkPackageManifest,
 }
 
+/// Directory under the files dir that holds operator-placed package archives.
+pub const AUTHORIZED_PACKAGE_DIR: &str = "plugin-packages";
+
 /// Spawn request after config resolution.
 #[derive(Debug, Clone)]
 pub struct DeploymentSpawn {
+    /// Instance this deployment runs. Not derived from the plugin key.
+    pub plugin_instance_id: String,
     /// Canonical plugin key.
     pub plugin_key: String,
     /// Installed tree, when discovery or install produced one.
@@ -77,11 +82,26 @@ pub enum SpawnHealth {
 pub trait DeploymentRuntime: Send + Sync {
     /// Health of a tree that is not committed yet.
     ///
-    /// Failure rolls the install back. The lock is still held.
-    async fn health_before_commit(&self, plugin_root: &Path) -> std::result::Result<(), String>;
+    /// Failure rolls the install back. The lock is still held. `request`
+    /// carries the deployment's instance id and resolved bindings.
+    async fn health_before_commit(
+        &self,
+        plugin_root: &Path,
+        request: &DeploymentSpawn,
+    ) -> std::result::Result<(), String>;
 
     /// Spawn the guest and run health.
     async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth;
+
+    /// True when the guest spawned for `plugin_instance_id` is still running.
+    ///
+    /// The default is true so a runtime that does not track processes keeps
+    /// the healthy-observation skip. [`LiveDeploymentRuntime`] checks the
+    /// session.
+    async fn guest_still_running(&self, plugin_instance_id: &str) -> bool {
+        let _ = plugin_instance_id;
+        true
+    }
 }
 
 /// Ensures the GraphicAudio instance, its imported document, and a local deployment.
@@ -242,6 +262,14 @@ async fn reconcile_one(
         }
     };
 
+    let mut request = DeploymentSpawn {
+        plugin_instance_id: instance.id.to_string(),
+        plugin_key: instance.plugin_key.clone(),
+        plugin_root: None,
+        config: bindings.config.clone(),
+        secrets: bindings.secrets.clone(),
+        config_revision: bindings.config_revision,
+    };
     let plugin_key = match PluginKey::parse(&instance.plugin_key) {
         Ok(key) => key,
         Err(err) => {
@@ -284,7 +312,10 @@ async fn reconcile_one(
                 return Ok(());
             }
         };
-        if let Err(err) = runtime.health_before_commit(&outcome.plugin_root).await {
+        if let Err(err) = runtime
+            .health_before_commit(&outcome.plugin_root, &request)
+            .await
+        {
             let mut detail = err;
             if let Err(rollback) = Installer::rollback(&outcome) {
                 detail = format!("{detail}; rollback: {rollback}");
@@ -308,19 +339,16 @@ async fn reconcile_one(
         if existing.status == DeploymentStatus::Healthy
             && existing.incarnation == incarnation
             && existing.applied_config_revision == Some(bindings.config_revision)
+            && runtime
+                .guest_still_running(deployment.plugin_instance_id.as_str())
+                .await
         {
             return Ok(());
         }
     }
 
     note(DeploymentStatus::Installed, String::new(), None).await;
-    let request = DeploymentSpawn {
-        plugin_key: instance.plugin_key.clone(),
-        plugin_root: discovered.or_else(|| installed_root(&files_dir, &plugin_key)),
-        config: bindings.config,
-        secrets: bindings.secrets,
-        config_revision: bindings.config_revision,
-    };
+    request.plugin_root = discovered.or_else(|| installed_root(&files_dir, &plugin_key));
     note(
         DeploymentStatus::Running,
         String::new(),
@@ -403,6 +431,17 @@ fn library_err(err: LibraryError) -> crate::PluginError {
     crate::PluginError::message(err.to_string())
 }
 
+/// Guest this process spawned for one instance, kept alive across registry
+/// replacement when two instances share a plugin key.
+struct TrackedGuest {
+    /// Session whose process liveness is the skip check.
+    session: Arc<crate::PluginSession>,
+    /// `CONFIG` passed to `open`.
+    config: ExtensibleConfig,
+    /// `SECRETS` passed to `open`.
+    secrets: ExtensibleConfig,
+}
+
 /// Production runtime: spawn through the existing host adapters and register
 /// the session on the live registry.
 pub struct LiveDeploymentRuntime {
@@ -416,16 +455,197 @@ pub struct LiveDeploymentRuntime {
     pub integrations: Arc<tokio::sync::RwLock<bookclerk_integrations::IntegrationRegistry>>,
     /// Destination sessions the reconciler owns.
     pub destinations: Arc<tokio::sync::RwLock<crate::DestinationRegistry>>,
+    /// Sessions keyed by plugin instance id.
+    guests: std::sync::Mutex<HashMap<String, TrackedGuest>>,
+}
+
+impl LiveDeploymentRuntime {
+    /// Runtime bound to the daemon's live registries.
+    #[must_use]
+    pub fn new(
+        config: Arc<tokio::sync::RwLock<Config>>,
+        store: Arc<tokio::sync::RwLock<LibraryStore>>,
+        sources: Arc<tokio::sync::RwLock<bookclerk_source::SourceRegistry>>,
+        integrations: Arc<tokio::sync::RwLock<bookclerk_integrations::IntegrationRegistry>>,
+        destinations: Arc<tokio::sync::RwLock<crate::DestinationRegistry>>,
+    ) -> Self {
+        Self {
+            config,
+            store,
+            sources,
+            integrations,
+            destinations,
+            guests: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// `CONFIG` JSON the live `open` call delivered for `plugin_instance_id`.
+    #[must_use]
+    pub fn opened_config_json(&self, plugin_instance_id: &str) -> Option<serde_json::Value> {
+        self.guests
+            .lock()
+            .expect("deployment guests")
+            .get(plugin_instance_id)
+            .and_then(|guest| guest.config.json_value().ok())
+    }
+
+    /// `SECRETS` JSON the live `open` call delivered for `plugin_instance_id`.
+    #[must_use]
+    pub fn opened_secrets_json(&self, plugin_instance_id: &str) -> Option<serde_json::Value> {
+        self.guests
+            .lock()
+            .expect("deployment guests")
+            .get(plugin_instance_id)
+            .and_then(|guest| guest.secrets.json_value().ok())
+    }
+
+    /// Native guest pid for `plugin_instance_id`, when this process spawned it.
+    #[must_use]
+    pub fn tracked_guest_pid(&self, plugin_instance_id: &str) -> Option<u32> {
+        self.guests
+            .lock()
+            .expect("deployment guests")
+            .get(plugin_instance_id)
+            .and_then(|guest| guest.session.guest_pid())
+    }
+
+    /// Replaces the tracked session for one instance.
+    fn remember(&self, plugin_instance_id: &str, guest: TrackedGuest) {
+        self.guests
+            .lock()
+            .expect("deployment guests")
+            .insert(plugin_instance_id.to_string(), guest);
+    }
+}
+
+/// Loads operator-placed archives under `$FILES_DIR/plugin-packages/<name>/`.
+///
+/// Each directory holds `package.json` (a [`BookclerkPackageManifest`](bookclerk_plugin_catalog::BookclerkPackageManifest))
+/// and `archive.tar.gz`. Artifact URLs must be `file:` paths inside that
+/// directory. The reconciler does not download plugins. A missing directory
+/// is an empty map.
+///
+/// # Errors
+///
+/// Returns an error when a package directory is incomplete, escapes the
+/// authorized root, names a remote artifact, or does not parse.
+pub fn load_authorized_local_packages(files_dir: &Path) -> Result<HashMap<String, LocalPackage>> {
+    let root = files_dir.join(AUTHORIZED_PACKAGE_DIR);
+    if !root.exists() {
+        return Ok(HashMap::new());
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|err| crate::PluginError::message(format!("plugin-packages: {err}")))?;
+    if !root.is_dir() {
+        return Err(crate::PluginError::message(
+            "plugin-packages is not a directory",
+        ));
+    }
+    let mut packages = HashMap::new();
+    for entry in std::fs::read_dir(&root)
+        .map_err(|err| crate::PluginError::message(format!("plugin-packages: {err}")))?
+    {
+        let entry =
+            entry.map_err(|err| crate::PluginError::message(format!("plugin-packages: {err}")))?;
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let dir = dir
+            .canonicalize()
+            .map_err(|err| crate::PluginError::message(format!("plugin-packages: {err}")))?;
+        if !dir.starts_with(&root) {
+            return Err(crate::PluginError::message(
+                "plugin package directory escapes plugin-packages",
+            ));
+        }
+        let manifest_path = dir.join("package.json");
+        let archive = dir.join("archive.tar.gz");
+        if !manifest_path.is_file() || !archive.is_file() {
+            return Err(crate::PluginError::message(format!(
+                "plugin package {} needs package.json and archive.tar.gz",
+                dir.display()
+            )));
+        }
+        let archive = archive
+            .canonicalize()
+            .map_err(|err| crate::PluginError::message(format!("plugin package archive: {err}")))?;
+        if !archive.starts_with(&dir) {
+            return Err(crate::PluginError::message(
+                "plugin package archive escapes its directory",
+            ));
+        }
+        let text = std::fs::read_to_string(&manifest_path).map_err(|err| {
+            crate::PluginError::message(format!("plugin package manifest: {err}"))
+        })?;
+        let manifest: bookclerk_plugin_catalog::BookclerkPackageManifest =
+            serde_json::from_str(&text).map_err(|err| {
+                crate::PluginError::message(format!("plugin package manifest: {err}"))
+            })?;
+        manifest
+            .validate_for_install()
+            .map_err(|err| crate::PluginError::message(err.to_string()))?;
+        for artifact in &manifest.artifacts {
+            if !local_artifact_url(&artifact.url, &dir) {
+                return Err(crate::PluginError::message(format!(
+                    "plugin package `{}` artifact URL is not a file inside {}",
+                    manifest.id,
+                    dir.display()
+                )));
+            }
+        }
+        let plugins_root = files_dir.join("plugins");
+        let coordinate = Installer::local_archive_coordinate(&archive, &manifest);
+        let key = Installer::plugin_key_for(&coordinate, &manifest.id, &plugins_root)
+            .map_err(|err| crate::PluginError::message(err.to_string()))?;
+        let canonical = key.canonical().to_string();
+        if packages.contains_key(&canonical) {
+            return Err(crate::PluginError::message(format!(
+                "two authorized packages resolve to `{canonical}`"
+            )));
+        }
+        packages.insert(canonical, LocalPackage { archive, manifest });
+    }
+    Ok(packages)
+}
+
+/// True when `url` is a `file:` path that stays inside `package_dir`.
+fn local_artifact_url(url: &str, package_dir: &Path) -> bool {
+    let Some(rest) = url.trim().strip_prefix("file:") else {
+        return false;
+    };
+    let path = if let Some(stripped) = rest.strip_prefix("//") {
+        if let Some(after_host) = stripped.strip_prefix("localhost") {
+            after_host
+        } else if stripped.starts_with('/') {
+            stripped
+        } else {
+            return false;
+        }
+    } else {
+        rest
+    };
+    let path = Path::new(path);
+    path.canonicalize()
+        .is_ok_and(|canon| canon.starts_with(package_dir))
 }
 
 #[async_trait]
 impl DeploymentRuntime for LiveDeploymentRuntime {
-    async fn health_before_commit(&self, plugin_root: &Path) -> std::result::Result<(), String> {
-        if plugin_root.join("plugin.toml").is_file() {
-            Ok(())
-        } else {
-            Err("installed tree has no plugin.toml".into())
-        }
+    async fn health_before_commit(
+        &self,
+        plugin_root: &Path,
+        request: &DeploymentSpawn,
+    ) -> std::result::Result<(), String> {
+        let config = self.config.read().await.clone();
+        let plugin = open_installed_plugin(plugin_root, &config.paths().files_dir)?;
+        let prepared = crate::instance_bindings::prepared_open_from_resolved(
+            request.config.clone(),
+            request.secrets.clone(),
+            request.config_revision,
+        );
+        probe_guest_health(&plugin, &config, prepared).await
     }
 
     async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth {
@@ -448,11 +668,16 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
                 detail: "installed plugin was not discovered".into(),
             };
         };
+        let prepared = crate::instance_bindings::prepared_open_from_resolved(
+            request.config.clone(),
+            request.secrets.clone(),
+            request.config_revision,
+        );
         if plugin
             .manifest
             .has_entrypoint(crate::Entrypoint::Storefront)
         {
-            return spawn_storefront(self, plugin, &config, services).await;
+            return spawn_storefront(self, plugin, &config, services, request, prepared).await;
         }
         if plugin
             .manifest
@@ -462,10 +687,10 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
                 .families()
                 .contains(&crate::PluginFamily::Integration)
         {
-            return spawn_integration(self, plugin, &config, services).await;
+            return spawn_integration(self, plugin, &config, services, request, prepared).await;
         }
         if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage) {
-            return spawn_storage(self, plugin, &config, &store).await;
+            return spawn_storage(self, plugin, &config, &store, request, prepared).await;
         }
         if plugin
             .manifest
@@ -479,25 +704,134 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
             detail: "plugin has no entrypoint this host reconciles".into(),
         }
     }
+
+    async fn guest_still_running(&self, plugin_instance_id: &str) -> bool {
+        self.guests
+            .lock()
+            .expect("deployment guests")
+            .get(plugin_instance_id)
+            .is_some_and(|guest| guest.session.guest_running())
+    }
 }
 
-/// Spawns a storefront session and records health.
+/// Builds a discovered plugin from an install tree that is not committed yet.
+fn open_installed_plugin(
+    plugin_root: &Path,
+    files_dir: &Path,
+) -> std::result::Result<crate::DiscoveredPlugin, String> {
+    let text = std::fs::read_to_string(plugin_root.join("plugin.toml"))
+        .map_err(|err| format!("read plugin.toml: {err}"))?;
+    let manifest =
+        bookclerk_plugin_manifest::parse(&text).map_err(|err| format!("plugin.toml: {err}"))?;
+    let command = manifest
+        .command
+        .clone()
+        .ok_or_else(|| "plugin.toml missing command".to_string())?;
+    let command = if command.is_absolute() {
+        command
+    } else {
+        plugin_root.join(command)
+    };
+    if !command.is_file() {
+        return Err(format!("staged guest is missing {}", command.display()));
+    }
+    crate::DiscoveredPlugin::try_new(
+        manifest,
+        plugin_root.to_path_buf(),
+        command,
+        Some(files_dir),
+    )
+    .map_err(|err| err.to_string())
+}
+
+/// Starts the staged guest, calls health, and drops the temporary session.
+///
+/// The install lock is still held. This function does not acquire it.
+async fn probe_guest_health(
+    plugin: &crate::DiscoveredPlugin,
+    config: &Config,
+    prepared: crate::PreparedOpen,
+) -> std::result::Result<(), String> {
+    let services = crate::SessionServices::default();
+    if plugin
+        .manifest
+        .has_entrypoint(crate::Entrypoint::Storefront)
+    {
+        let source = crate::ExternalSource::spawn_prepared(plugin, config, services, prepared)
+            .await
+            .map_err(|err| err.to_string())?;
+        source.check_health().await.map_err(|err| err.to_string())?;
+        drop(source);
+        return Ok(());
+    }
+    if plugin
+        .manifest
+        .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        || plugin
+            .manifest
+            .families()
+            .contains(&crate::PluginFamily::Integration)
+    {
+        let integration =
+            crate::ExternalIntegration::spawn_prepared(plugin, config, services, prepared, true)
+                .await
+                .map_err(|err| err.to_string())?;
+        integration
+            .check_health()
+            .await
+            .map_err(|err| err.to_string())?;
+        drop(integration);
+        return Ok(());
+    }
+    if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage) {
+        let session = Arc::new(
+            crate::PluginSession::spawn_with(
+                plugin,
+                config,
+                prepared.spawn_config_table,
+                crate::OPERATOR_ACCOUNT,
+                &[],
+                services,
+            )
+            .await
+            .map_err(|err| err.to_string())?,
+        );
+        session
+            .open(prepared.bindings)
+            .await
+            .map_err(|err| err.to_string())?;
+        drop(session);
+        return Ok(());
+    }
+    Err("plugin has no entrypoint this host can health-check".into())
+}
+
+/// Spawns a storefront session with the deployment's resolved bindings.
 async fn spawn_storefront(
     runtime: &LiveDeploymentRuntime,
     plugin: &crate::DiscoveredPlugin,
     config: &Config,
     services: crate::SessionServices,
+    request: &DeploymentSpawn,
+    prepared: crate::PreparedOpen,
 ) -> SpawnHealth {
-    let source = match crate::ExternalSource::spawn_with(plugin, config, services).await {
-        Ok(source) => source,
-        Err(err) => {
-            return SpawnHealth::SpawnFailed {
-                detail: err.to_string(),
+    let source =
+        match crate::ExternalSource::spawn_prepared(plugin, config, services, prepared).await {
+            Ok(source) => source,
+            Err(err) => {
+                return SpawnHealth::SpawnFailed {
+                    detail: err.to_string(),
+                }
             }
-        }
+        };
+    let tracked = TrackedGuest {
+        session: Arc::clone(source.session()),
+        config: source.opened_config().clone(),
+        secrets: source.opened_secrets().clone(),
     };
     match source.check_health().await {
         Ok(()) => {
+            runtime.remember(&request.plugin_instance_id, tracked);
             runtime.sources.write().await.register(Arc::new(source));
             SpawnHealth::Healthy
         }
@@ -507,14 +841,28 @@ async fn spawn_storefront(
     }
 }
 
-/// Spawns an integration session and records health.
+/// Spawns an integration session with the deployment's resolved bindings.
 async fn spawn_integration(
     runtime: &LiveDeploymentRuntime,
     plugin: &crate::DiscoveredPlugin,
     config: &Config,
     services: crate::SessionServices,
+    request: &DeploymentSpawn,
+    prepared: crate::PreparedOpen,
 ) -> SpawnHealth {
-    let integration = match crate::ExternalIntegration::spawn_with(plugin, config, services).await {
+    let allow_credential_login = crate::settings_table(config, plugin)
+        .get("allow_credential_login")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let integration = match crate::ExternalIntegration::spawn_prepared(
+        plugin,
+        config,
+        services,
+        prepared,
+        allow_credential_login,
+    )
+    .await
+    {
         Ok(integration) => integration,
         Err(err) => {
             return SpawnHealth::SpawnFailed {
@@ -522,8 +870,14 @@ async fn spawn_integration(
             }
         }
     };
+    let tracked = TrackedGuest {
+        session: Arc::clone(integration.session()),
+        config: integration.opened_config().clone(),
+        secrets: integration.opened_secrets().clone(),
+    };
     match integration.check_health().await {
         Ok(()) => {
+            runtime.remember(&request.plugin_instance_id, tracked);
             runtime
                 .integrations
                 .write()
@@ -537,16 +891,32 @@ async fn spawn_integration(
     }
 }
 
-/// Spawns a storage session and records health.
+/// Spawns a storage session with the deployment's resolved bindings.
 async fn spawn_storage(
     runtime: &LiveDeploymentRuntime,
     plugin: &crate::DiscoveredPlugin,
     config: &Config,
     store: &LibraryStore,
+    request: &DeploymentSpawn,
+    prepared: crate::PreparedOpen,
 ) -> SpawnHealth {
+    let tracked_config = prepared.bindings.config.clone();
+    let tracked_secrets = prepared.bindings.secrets.clone();
     let mut registry = runtime.destinations.write().await;
-    match crate::host::spawn_deployed_storage(plugin, config, Some(store), &mut registry).await {
-        Ok(()) => SpawnHealth::Healthy,
+    match crate::host::spawn_deployed_storage(plugin, config, Some(store), &mut registry, prepared)
+        .await
+    {
+        Ok(session) => {
+            runtime.remember(
+                &request.plugin_instance_id,
+                TrackedGuest {
+                    session,
+                    config: tracked_config,
+                    secrets: tracked_secrets,
+                },
+            );
+            SpawnHealth::Healthy
+        }
         Err(err) => SpawnHealth::SpawnFailed {
             detail: err.to_string(),
         },

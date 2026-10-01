@@ -57,7 +57,7 @@ pub(crate) async fn try_load_local(
         );
         return Ok(());
     }
-    let (storage, session) = spawn_local_guest(plugin, config, store).await?;
+    let (storage, session) = spawn_local_guest(plugin, config, store, None).await?;
     tracing::info!(
         id = %plugin.manifest.id,
         path = %plugin.command.display(),
@@ -68,21 +68,40 @@ pub(crate) async fn try_load_local(
     Ok(())
 }
 
+/// Spawns the local destination with bindings the deployment already resolved.
+///
+/// # Errors
+///
+/// Returns an error when the guest cannot start or `open` fails.
+pub(crate) async fn spawn_local_prepared(
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+    prepared: crate::instance_bindings::PreparedOpen,
+) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
+    spawn_local_guest(plugin, config, None, Some(prepared)).await
+}
+
 /// Spawns the local destination as an external Cap'n Proto guest.
 async fn spawn_local_guest(
     plugin: &DiscoveredPlugin,
     config: &Config,
     store: Option<&bookclerk_library::LibraryStore>,
+    prepared_override: Option<crate::instance_bindings::PreparedOpen>,
 ) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
-    let table = crate::settings_table(config, plugin);
-    let transitional = toml_to_json(&toml::Value::Table(table));
-    let prepared = crate::instance_bindings::prepare_open_bindings(
-        store,
-        &config.paths().files_dir,
-        plugin,
-        transitional,
-    )
-    .await?;
+    let prepared = match prepared_override {
+        Some(prepared) => prepared,
+        None => {
+            let table = crate::settings_table(config, plugin);
+            let transitional = toml_to_json(&toml::Value::Table(table));
+            crate::instance_bindings::prepare_open_bindings(
+                store,
+                &config.paths().files_dir,
+                plugin,
+                transitional,
+            )
+            .await?
+        }
+    };
     let config_json = prepared.spawn_config_table;
     let root = resolved_local_output_root(config);
     let prefix = normalize_storage_prefix(config.output.local.prefix.trim());

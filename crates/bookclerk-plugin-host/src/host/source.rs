@@ -45,6 +45,10 @@ pub struct ExternalSource {
     /// Cap'n Proto session (never given `library.db`); opened once with the
     /// granted plugin config table as the `CONFIG` binding.
     session: Arc<PluginSession>,
+    /// `CONFIG` payload passed to `PluginWorker.open`.
+    opened_config: ExtensibleConfig,
+    /// `SECRETS` payload passed to `PluginWorker.open`.
+    opened_secrets: ExtensibleConfig,
     /// Operator-facing storefront name from `describe()` or the manifest.
     display_name: String,
     /// UI brand colors and icon from `describe()`, or a slate fallback.
@@ -99,6 +103,30 @@ impl ExternalSource {
             transitional,
         )
         .await?;
+        Self::spawn_prepared(plugin, config, services, prepared).await
+    }
+
+    /// Spawn with bindings the deployment reconciler already resolved.
+    ///
+    /// Does not look up an instance by plugin key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest cannot start or `open` fails.
+    pub(crate) async fn spawn_prepared(
+        plugin: &DiscoveredPlugin,
+        config: &Config,
+        services: SessionServices,
+        prepared: crate::instance_bindings::PreparedOpen,
+    ) -> Result<Self> {
+        if plugin.manifest.api_version != PRODUCT_API_VERSION {
+            return Err(crate::PluginError::message(format!(
+                "plugin `{}` api_version {} is not supported",
+                plugin.manifest.id, plugin.manifest.api_version
+            )));
+        }
+        let opened_config = prepared.bindings.config.clone();
+        let opened_secrets = prepared.bindings.secrets.clone();
         let session = Arc::new(
             PluginSession::spawn_with(
                 plugin,
@@ -144,6 +172,8 @@ impl ExternalSource {
         session.open(prepared.bindings).await?;
         Ok(Self {
             session,
+            opened_config,
+            opened_secrets,
             display_name,
             brand,
             auth_mode,
@@ -153,6 +183,24 @@ impl ExternalSource {
             plugin_data_dir,
             source_config,
         })
+    }
+
+    /// Session opened for this storefront.
+    #[must_use]
+    pub(crate) fn session(&self) -> &Arc<PluginSession> {
+        &self.session
+    }
+
+    /// `CONFIG` JSON passed to `open`.
+    #[must_use]
+    pub(crate) fn opened_config(&self) -> &ExtensibleConfig {
+        &self.opened_config
+    }
+
+    /// `SECRETS` JSON passed to `open`.
+    #[must_use]
+    pub(crate) fn opened_secrets(&self) -> &ExtensibleConfig {
+        &self.opened_secrets
     }
 
     /// Storefront health RPC.

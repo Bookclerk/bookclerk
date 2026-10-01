@@ -213,8 +213,9 @@ pub async fn load_external_destinations_with_store(
 
 /// Spawns one deployed storage plugin into `registry`.
 ///
-/// S3 and local guests use the existing spawn path. Any other storage guest is
-/// opened with its instance bindings when a document exists.
+/// `prepared` is the deployment's resolved bindings. This function does not
+/// look up an instance by plugin key. The returned session is the one `open`
+/// used.
 ///
 /// # Errors
 ///
@@ -224,25 +225,22 @@ pub(crate) async fn spawn_deployed_storage(
     config: &Config,
     store: Option<&bookclerk_library::LibraryStore>,
     registry: &mut DestinationRegistry,
-) -> PluginResult<()> {
+    prepared: crate::instance_bindings::PreparedOpen,
+) -> PluginResult<Arc<PluginSession>> {
     if plugin.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
-        let (storage_backend, session) = spawn_s3_guest(plugin, config, None, store).await?;
+        let (storage_backend, session) =
+            spawn_s3_guest_prepared(plugin, config, None, prepared).await?;
         registry.s3 = Some(Arc::new(storage_backend));
-        registry.set_plugin_session(session);
-        return Ok(());
+        registry.set_plugin_session(Arc::clone(&session));
+        return Ok(session);
     }
     if plugin.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
-        return super::destination_local::try_load_local(plugin, config, store, registry).await;
+        let (storage, session) =
+            super::destination_local::spawn_local_prepared(plugin, config, prepared).await?;
+        registry.set_local(Arc::new(storage));
+        registry.set_plugin_session(Arc::clone(&session));
+        return Ok(session);
     }
-    let table = crate::settings_table(config, plugin);
-    let transitional = toml_to_json(&toml::Value::Table(table));
-    let prepared = crate::instance_bindings::prepare_open_bindings(
-        store,
-        &config.paths().files_dir,
-        plugin,
-        transitional,
-    )
-    .await?;
     let session = Arc::new(
         PluginSession::spawn_with(
             plugin,
@@ -255,8 +253,8 @@ pub(crate) async fn spawn_deployed_storage(
         .await?,
     );
     session.open(prepared.bindings).await?;
-    registry.set_plugin_session(session);
-    Ok(())
+    registry.set_plugin_session(Arc::clone(&session));
+    Ok(session)
 }
 
 /// Spawns the S3 destination as an external Cap'n Proto guest.
@@ -275,6 +273,16 @@ async fn spawn_s3_guest(
         transitional,
     )
     .await?;
+    spawn_s3_guest_prepared(plugin, config, db, prepared).await
+}
+
+/// Spawns the S3 guest with bindings the caller already resolved.
+async fn spawn_s3_guest_prepared(
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+    db: Option<&DatabaseConnection>,
+    prepared: crate::instance_bindings::PreparedOpen,
+) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
     let config_json = prepared.spawn_config_table;
     let s3_config = config.output.s3.clone();
     let prefix = normalize_storage_prefix(s3_config.prefix.trim());

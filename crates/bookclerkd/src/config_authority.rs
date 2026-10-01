@@ -377,18 +377,20 @@ async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()> {
     let store = state.library.read().await.clone();
     let host =
         bookclerk_library::control_plane::load_or_create_host_identity(&config.paths().files_dir)?;
-    let runtime = bookclerk_plugin_host::LiveDeploymentRuntime {
-        config: Arc::clone(&state.config),
-        store: Arc::clone(&state.library),
-        sources: Arc::clone(&state.sources),
-        integrations: Arc::clone(&state.integrations),
-        destinations: Arc::clone(&state.destinations),
-    };
+    let runtime = bookclerk_plugin_host::LiveDeploymentRuntime::new(
+        Arc::clone(&state.config),
+        Arc::clone(&state.library),
+        Arc::clone(&state.sources),
+        Arc::clone(&state.integrations),
+        Arc::clone(&state.destinations),
+    );
+    let packages = bookclerk_plugin_host::load_authorized_local_packages(&config.paths().files_dir)
+        .map_err(|err| anyhow::anyhow!(err))?;
     bookclerk_plugin_host::reconcile_local_deployments(
         &store,
         &config,
         &host.host_id,
-        &std::collections::HashMap::new(),
+        &packages,
         &runtime,
     )
     .await?;
@@ -743,5 +745,158 @@ mod tests {
             candidate.events_authority.as_deref(),
             Some("swapped-cluster")
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_reconcile_installs_a_local_archive_to_healthy() {
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        use bookclerk_config::{EventsConfig, Isolation};
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
+            import_instance_config_if_absent, load_deployment, load_observation, ConfigActor,
+            DeploymentStatus, InstancePackagePolicy, PluginInstanceConfigV1, SettingValue,
+            DESIRED_PRESENT,
+        };
+
+        let files = tempfile::tempdir().expect("files");
+        let files_path = files.path();
+        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        let package_dir = files_path
+            .join(bookclerk_plugin_host::AUTHORIZED_PACKAGE_DIR)
+            .join("graphicaudio");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        let staging = files_path.join("ga-stage");
+        std::fs::create_dir_all(&staging).unwrap();
+        let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
+        std::fs::copy(&toml, staging.join("plugin.toml")).unwrap();
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.join("target"));
+        let profile = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
+        let binary = target
+            .join(profile)
+            .join("bookclerk-plugin-source-graphicaudio");
+        assert!(binary.is_file(), "missing {}", binary.display());
+        let staged_bin = staging.join("bookclerk-plugin-source-graphicaudio");
+        if std::fs::hard_link(&binary, &staged_bin).is_err() {
+            std::fs::copy(&binary, &staged_bin).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&staged_bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&staged_bin, perms).unwrap();
+        }
+        let archive = package_dir.join("archive.tar.gz");
+        let tar = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&staging)
+            .args(["plugin.toml", "bookclerk-plugin-source-graphicaudio"])
+            .status()
+            .expect("tar");
+        assert!(tar.success());
+        let archive = archive.canonicalize().unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "api_version": 1,
+            "kind": "source",
+            "id": "graphicaudio",
+            "artifacts": [{
+                "target": bookclerk_plugin_host::host_bookclerk_target(),
+                "url": format!("file://{}", archive.display()),
+                "archive_sha256": "ab".repeat(32),
+                "executable": "bookclerk-plugin-source-graphicaudio"
+            }]
+        });
+        std::fs::write(
+            package_dir.join("package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let packages =
+            bookclerk_plugin_host::load_authorized_local_packages(files_path).expect("packages");
+        let plugin_key = packages.keys().next().expect("package key").clone();
+
+        let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
+            .await
+            .expect("sqlite");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("schema");
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(&store, files_path, None, &EventsConfig::default())
+            .await
+            .expect("bootstrap");
+        let actor = ConfigActor::Bootstrap;
+        let instance = create_plugin_instance(&store, &actor, &plugin_key)
+            .await
+            .expect("instance");
+        let mut settings = BTreeMap::new();
+        settings.insert("access".into(), SettingValue::String("device".into()));
+        import_instance_config_if_absent(
+            &store,
+            &actor,
+            &instance.id,
+            InstancePackagePolicy::GraphicAudio,
+            &PluginInstanceConfigV1 {
+                settings,
+                secret_refs: Vec::new(),
+            },
+            "import-daemon-ga",
+        )
+        .await
+        .expect("import");
+        let toml_text = std::fs::read_to_string(&toml).unwrap();
+        let manifest = bookclerk_plugin_host::PluginManifest::parse(&toml_text).unwrap();
+        let mut grant = bookclerk_plugin_host::consent_request_alias(&manifest);
+        grant.plugin_key = plugin_key;
+        let mut grants = bookclerk_plugin_host::PluginGrantStore::default();
+        grants.upsert(grant);
+        grants.save(files_path).unwrap();
+        let deployment =
+            ensure_plugin_deployment(&store, &actor, &instance.id, &session.host.host_id)
+                .await
+                .expect("deployment");
+
+        let mut config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        config.plugins.isolation = Isolation::Off;
+        let state = control_plane_test_state(store.clone(), config);
+        super::reconcile_deployments(&state)
+            .await
+            .expect("daemon reconcile");
+
+        let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+            .await
+            .unwrap()
+            .expect("observation");
+        assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+        let desired = load_deployment(&store, &deployment.deployment_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(desired.desired, DESIRED_PRESENT);
+        let mut committed = false;
+        for entry in std::fs::read_dir(files_path.join("plugins")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.join("receipt.json").is_file() && path.join("plugin.toml").is_file() {
+                committed = true;
+            }
+        }
+        assert!(committed, "install did not commit a receipt");
     }
 }

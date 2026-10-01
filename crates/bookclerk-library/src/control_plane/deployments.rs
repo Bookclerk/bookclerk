@@ -366,6 +366,26 @@ pub async fn list_present_deployments_for_host(
     rows.into_iter().map(deployment_from_model).collect()
 }
 
+/// True when any deployment row names `instance_id`.
+///
+/// Key-based spawn must not pick this instance. The deployment reconciler
+/// passes the instance id and the already resolved bindings.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn instance_has_deployment(
+    store: &LibraryStore,
+    instance_id: &PluginInstanceId,
+) -> Result<bool> {
+    let found = plugin_deployments::Entity::find()
+        .filter(plugin_deployments::Column::PluginInstanceId.eq(instance_id.as_str()))
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(found.is_some())
+}
+
 /// Canonical plugin keys with a present deployment on `host_id`.
 ///
 /// # Errors

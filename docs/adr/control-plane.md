@@ -267,6 +267,13 @@ reconciler (`installed`, `running`, `healthy`, `error`). A desired write does
 not update observations. This slice reconciles the local host only. It does
 not place work, roll versions, or uninstall.
 
+The reconciler passes the deployment's instance id and resolved bindings into
+`open`. It does not look the instance up by plugin key. A healthy observation
+is skipped only while that session's process is still running. Install health
+starts the staged guest under the host mutation lock and rolls the tree back
+when health fails. Packages come from `plugin-packages/` on the local files
+directory, not from a download.
+
 GraphicAudio is the first migrated caller. When discovery or the install
 ledger contains manifest id `graphicaudio`, startup ensures one instance, one
 local deployment, and, if the document is absent, imports `access`,

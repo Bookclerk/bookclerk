@@ -1082,11 +1082,20 @@ same manifest alias) does not inherit grants.
 ## Enabling and settings in `config.toml`
 
 A plugin instance document, when one exists, is the `CONFIG` and `SECRETS`
-binding for that plugin key. The host reconciles a `present` deployment onto
-the local host and does not also spawn that key from the startup loader.
-Plugins with no instance keep the tables below. GraphicAudio's imported keys
-(`access`, `base_url`, `store_url`, `bitrate`, `container`) are not written
-back to `[sources.graphicaudio]` after the first import.
+binding for that instance. Two instances may share a plugin key. A deployment
+spawn uses that instance's already resolved bindings. Key lookup remains only
+for a plugin that has no deployment, which keeps the tables below.
+GraphicAudio's imported keys (`access`, `base_url`, `store_url`, `bitrate`,
+`container`) are not written back to `[sources.graphicaudio]` after the first
+import.
+
+The local reconciler installs from `$BOOKCLERK_FILES_DIR/plugin-packages/<name>/`
+when the ledger and discovery both miss the key. That directory is the
+operator's authorized local source: `package.json` plus `archive.tar.gz`,
+with artifact URLs limited to files inside the package directory. The
+reconciler does not download plugins. It starts the staged guest and calls
+health before commit, and it respawns a guest that has exited even when the
+last observation was healthy.
 
 Plugin `id` must match a config table. **External integrations default to
 disabled**; sources follow the usual `[sources.<id>]` rules (missing → enabled).

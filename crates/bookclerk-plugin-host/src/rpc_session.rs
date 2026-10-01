@@ -860,6 +860,20 @@ impl PluginSession {
         self.gateway_pid
     }
 
+    /// True when the guest process, and the gateway when one was spawned, are
+    /// still running.
+    #[must_use]
+    pub fn guest_running(&self) -> bool {
+        let guest_ok = self
+            .guest_pid
+            .is_some_and(crate::spawn_stdio::process_still_running);
+        let gateway_ok = self
+            .gateway_pid
+            .map(crate::spawn_stdio::process_still_running)
+            .unwrap_or(true);
+        guest_ok && gateway_ok
+    }
+
     /// Host-owned gateway session directory, when this session has a sibling.
     #[must_use]
     pub fn session_dir(&self) -> Option<&std::path::Path> {

@@ -8,14 +8,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use std::sync::Arc;
+
 use crate::consent::{consent_request, PluginGrant, PluginGrantStore};
 use crate::discover::{settings_table_for, DiscoveredPlugin};
 use crate::instance_bindings::prepare_open_bindings;
 use crate::{
-    reconcile_local_deployments, DeploymentRuntime, DeploymentSpawn, LocalPackage, SpawnHealth,
+    discover_plugins, load_authorized_local_packages, reconcile_local_deployments,
+    DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime, LocalPackage, SpawnHealth,
+    AUTHORIZED_PACKAGE_DIR,
 };
 use async_trait::async_trait;
-use bookclerk_config::{Config, EventsConfig};
+use bookclerk_config::{Config, EventsConfig, Isolation};
 use bookclerk_library::control_plane::{
     create_plugin_instance, ensure_plugin_deployment, import_instance_config_if_absent,
     load_deployment, load_instance_config, load_observation, replace_instance_config,
@@ -55,7 +59,11 @@ impl Probe {
 
 #[async_trait]
 impl DeploymentRuntime for Probe {
-    async fn health_before_commit(&self, plugin_root: &Path) -> Result<(), String> {
+    async fn health_before_commit(
+        &self,
+        plugin_root: &Path,
+        _request: &DeploymentSpawn,
+    ) -> Result<(), String> {
         assert!(
             plugin_root.join("plugin.toml").is_file(),
             "install tree missing plugin.toml"
@@ -656,4 +664,403 @@ fn resolver_source_does_not_consult_family_settings() {
         .unwrap();
     assert!(!resolve.contains("settings_table_for"));
     assert!(!resolve.contains("primary_family"));
+}
+
+fn graphicaudio_binary() -> PathBuf {
+    let name = "bookclerk-plugin-source-graphicaudio";
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.join("target"));
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let candidate = target.join(profile).join(name);
+    assert!(
+        candidate.is_file(),
+        "bookclerk-plugin-source-graphicaudio is missing at {}",
+        candidate.display()
+    );
+    candidate
+}
+
+fn place_guest_binary(binary: &Path, dest: &Path) {
+    let _ = std::fs::remove_file(dest);
+    if std::fs::hard_link(binary, dest).is_err() {
+        std::fs::copy(binary, dest).expect("copy guest binary");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(dest).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(dest, perms).unwrap();
+    }
+}
+
+fn stage_graphicaudio_tree(files: &Path) -> PathBuf {
+    let install = files.join("plugins").join("graphicaudio");
+    std::fs::create_dir_all(&install).unwrap();
+    let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
+    std::fs::copy(toml, install.join("plugin.toml")).unwrap();
+    place_guest_binary(
+        &graphicaudio_binary(),
+        &install.join("bookclerk-plugin-source-graphicaudio"),
+    );
+    install
+}
+
+fn live_runtime(store: &LibraryStore, config: &Config) -> LiveDeploymentRuntime {
+    LiveDeploymentRuntime::new(
+        Arc::new(tokio::sync::RwLock::new(config.clone())),
+        Arc::new(tokio::sync::RwLock::new(store.clone())),
+        Arc::new(tokio::sync::RwLock::new(
+            bookclerk_source::SourceRegistry::new(),
+        )),
+        Arc::new(tokio::sync::RwLock::new(
+            bookclerk_integrations::IntegrationRegistry::new(),
+        )),
+        Arc::new(tokio::sync::RwLock::new(
+            crate::DestinationRegistry::default(),
+        )),
+    )
+}
+
+fn ga_settings(base_url: &str) -> PluginInstanceConfigV1 {
+    let mut settings = BTreeMap::new();
+    settings.insert("access".into(), SettingValue::String("device".into()));
+    settings.insert("base_url".into(), SettingValue::String(base_url.into()));
+    PluginInstanceConfigV1 {
+        settings,
+        secret_refs: Vec::new(),
+    }
+}
+
+fn ga_body(base_url: &str, secret_name: &str) -> PluginInstanceConfigV1 {
+    let mut settings = BTreeMap::new();
+    settings.insert("access".into(), SettingValue::String("device".into()));
+    settings.insert("base_url".into(), SettingValue::String(base_url.into()));
+    PluginInstanceConfigV1 {
+        settings,
+        secret_refs: vec![InstanceSecretRefV1 {
+            key: "token".into(),
+            name: secret_name.into(),
+        }],
+    }
+}
+
+async fn save_manifest_grant(files: &Path, plugin: &DiscoveredPlugin) {
+    let mut grants = PluginGrantStore::default();
+    grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
+    grants.save(files).unwrap();
+}
+
+#[tokio::test]
+async fn key_lookup_skips_an_instance_that_has_a_deployment() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        files,
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .unwrap();
+    let manifest = bookclerk_plugin_manifest::parse(
+        "api_version = 3\nid = \"fixture\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+         entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"deny\"\n\n[vars]\n",
+    )
+    .unwrap();
+    let root = files.join("plugin-src");
+    std::fs::create_dir_all(&root).unwrap();
+    let plugin = DiscoveredPlugin::for_test(manifest, root.clone(), root.join("echo"));
+    let mut grants = PluginGrantStore::default();
+    grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
+    grants.save(files).unwrap();
+    let actor = ConfigActor::Bootstrap;
+    let instance = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical())
+        .await
+        .unwrap();
+    import_instance_config_if_absent(
+        &store,
+        &actor,
+        &instance.id,
+        InstancePackagePolicy::Generic,
+        &mode_body("device"),
+        "import-lookup",
+    )
+    .await
+    .unwrap();
+    ensure_plugin_deployment(&store, &actor, &instance.id, &session.host.host_id)
+        .await
+        .unwrap();
+    let prepared = prepare_open_bindings(
+        Some(&store),
+        files,
+        &plugin,
+        serde_json::json!({"mode": "toml"}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !prepared.from_instance,
+        "a deployed instance is not selected by plugin key"
+    );
+}
+
+#[tokio::test]
+async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    stage_graphicaudio_tree(files);
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).unwrap();
+    config.plugins.isolation = Isolation::Off;
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        files,
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .unwrap();
+    let plugin = discover_plugins(&config)
+        .unwrap()
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == "graphicaudio")
+        .expect("staged graphicaudio");
+    save_manifest_grant(files, &plugin).await;
+    let actor = ConfigActor::Bootstrap;
+    let key = plugin.plugin_key().canonical();
+    let first = create_plugin_instance(&store, &actor, key).await.unwrap();
+    let second = create_plugin_instance(&store, &actor, key).await.unwrap();
+    assert_ne!(first.id, second.id);
+    seal_instance_secret(&store, &first.id, key, "alpha", "secret-alpha")
+        .await
+        .unwrap();
+    seal_instance_secret(&store, &second.id, key, "beta", "secret-beta")
+        .await
+        .unwrap();
+    import_instance_config_if_absent(
+        &store,
+        &actor,
+        &first.id,
+        InstancePackagePolicy::GraphicAudio,
+        &ga_body("http://alpha.example", "alpha"),
+        "import-alpha",
+    )
+    .await
+    .unwrap();
+    import_instance_config_if_absent(
+        &store,
+        &actor,
+        &second.id,
+        InstancePackagePolicy::GraphicAudio,
+        &ga_body("http://beta.example", "beta"),
+        "import-beta",
+    )
+    .await
+    .unwrap();
+    let deploy_a = ensure_plugin_deployment(&store, &actor, &first.id, &session.host.host_id)
+        .await
+        .unwrap();
+    let deploy_b = ensure_plugin_deployment(&store, &actor, &second.id, &session.host.host_id)
+        .await
+        .unwrap();
+    let runtime = live_runtime(&store, &config);
+    reconcile_local_deployments(
+        &store,
+        &config,
+        &session.host.host_id,
+        &HashMap::new(),
+        &runtime,
+    )
+    .await
+    .unwrap();
+    for deployment in [&deploy_a, &deploy_b] {
+        let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+    }
+    let config_a = runtime
+        .opened_config_json(first.id.as_str())
+        .expect("first open");
+    let config_b = runtime
+        .opened_config_json(second.id.as_str())
+        .expect("second open");
+    assert_eq!(config_a["base_url"], "http://alpha.example");
+    assert_eq!(config_b["base_url"], "http://beta.example");
+    let secrets_a = runtime
+        .opened_secrets_json(first.id.as_str())
+        .expect("first secrets");
+    let secrets_b = runtime
+        .opened_secrets_json(second.id.as_str())
+        .expect("second secrets");
+    assert_eq!(secrets_a["token"], "secret-alpha");
+    assert_eq!(secrets_b["token"], "secret-beta");
+}
+
+#[tokio::test]
+async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    stage_graphicaudio_tree(files);
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).unwrap();
+    config.plugins.isolation = Isolation::Off;
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        files,
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .unwrap();
+    let plugin = discover_plugins(&config)
+        .unwrap()
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == "graphicaudio")
+        .expect("staged graphicaudio");
+    save_manifest_grant(files, &plugin).await;
+    let actor = ConfigActor::Bootstrap;
+    let instance = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical())
+        .await
+        .unwrap();
+    import_instance_config_if_absent(
+        &store,
+        &actor,
+        &instance.id,
+        InstancePackagePolicy::GraphicAudio,
+        &ga_settings("http://live.example"),
+        "import-live",
+    )
+    .await
+    .unwrap();
+    let deployment = ensure_plugin_deployment(&store, &actor, &instance.id, &session.host.host_id)
+        .await
+        .unwrap();
+    let runtime = live_runtime(&store, &config);
+    reconcile_local_deployments(
+        &store,
+        &config,
+        &session.host.host_id,
+        &HashMap::new(),
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let first_pid = runtime
+        .tracked_guest_pid(instance.id.as_str())
+        .expect("guest pid");
+    let status = std::process::Command::new("kill")
+        .args(["-KILL", &first_pid.to_string()])
+        .status()
+        .expect("kill");
+    assert!(status.success());
+    let mut dead = false;
+    for _ in 0..50 {
+        if !DeploymentRuntime::guest_still_running(&runtime, instance.id.as_str()).await {
+            dead = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(dead, "killed guest still looks alive");
+    reconcile_local_deployments(
+        &store,
+        &config,
+        &session.host.host_id,
+        &HashMap::new(),
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let second_pid = runtime
+        .tracked_guest_pid(instance.id.as_str())
+        .expect("replacement pid");
+    assert_ne!(first_pid, second_pid);
+    assert!(DeploymentRuntime::guest_still_running(&runtime, instance.id.as_str()).await);
+    let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+}
+
+#[tokio::test]
+async fn broken_guest_health_rolls_the_install_back() {
+    let _guard = TEST_LOCK.lock().await;
+    let world = open_world(false).await;
+    let mut config = world.config.clone();
+    config.plugins.isolation = Isolation::Off;
+    let runtime = live_runtime(&world.store, &config);
+    reconcile_local_deployments(
+        &world.store,
+        &config,
+        &world.host_id,
+        &packages(&world),
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let ledger = InstallLedger::load(&world.files).unwrap();
+    let key = PluginKey::parse(&world.key).unwrap();
+    assert!(
+        ledger.get(&key).is_none(),
+        "broken guest health must roll the ledger back"
+    );
+    let obs = observation(&world).await;
+    assert_eq!(obs.status, DeploymentStatus::Error, "{}", obs.detail);
+    assert_eq!(
+        load_deployment(&world.store, &world.deployment_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .desired,
+        DESIRED_PRESENT
+    );
+}
+
+#[test]
+fn authorized_package_loader_rejects_a_remote_artifact_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    let package = files.join(AUTHORIZED_PACKAGE_DIR).join("remote");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("archive.tar.gz"), b"not-a-tar").unwrap();
+    let archive = package.join("archive.tar.gz").canonicalize().unwrap();
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "api_version": 1,
+        "kind": "source",
+        "id": "fxdep",
+        "artifacts": [{
+            "target": host_bookclerk_target(),
+            "url": "https://example.invalid/fxdep.tar.gz",
+            "archive_sha256": "ab".repeat(32),
+            "executable": "echo"
+        }]
+    });
+    let _ = archive;
+    std::fs::write(
+        package.join("package.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let err = load_authorized_local_packages(files).unwrap_err();
+    assert!(err.to_string().contains("not a file"), "{err}");
 }
