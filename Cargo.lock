@@ -1850,6 +1850,7 @@ dependencies = [
  "bookclerk-workerd",
  "bytes",
  "chrono",
+ "fs4 1.1.0",
  "hex",
  "libc",
  "sea-orm",
