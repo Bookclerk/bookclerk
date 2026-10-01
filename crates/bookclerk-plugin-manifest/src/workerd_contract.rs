@@ -1,6 +1,6 @@
 //! Author compatibility date, flag allowlist, and module-extension rules.
 //!
-//! These match the pinned local `workerd` binary. [`PluginManifest::validate`]
+//! These match the pinned local `workerd` binary. [`crate::PluginManifest::validate`]
 //! and the TypeScript / Python author checkers enforce the same rules.
 //! `[[kv_namespaces]]` and `[queues]` are not rejected here: they stay legal
 //! declarations and fail later at load or spawn with "not implemented yet".
