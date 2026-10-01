@@ -6963,6 +6963,22 @@ impl LibraryStore {
         &self,
         req: bookclerk_plugin_abi::ExecuteRequest,
     ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
+        self.execute_host_batch_limited(req, 8).await
+    }
+
+    /// [`Self::execute_host_batch`] with an in-process row cap.
+    ///
+    /// Attached guests keep their negotiated result cap. `max_result_rows`
+    /// bounds the in-process fallback (`0` is unlimited).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when typecheck, transport, or the engine rejects the batch.
+    pub(crate) async fn execute_host_batch_limited(
+        &self,
+        req: bookclerk_plugin_abi::ExecuteRequest,
+        max_result_rows: u32,
+    ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
         let type_env = crate::migrations::host_sql_type_env();
         let envelope = bookclerk_db_exec::stamp_adapter_execute(req.clone(), &type_env)
             .map_err(LibraryError::from_db_err)?;
@@ -6976,7 +6992,7 @@ impl LibraryStore {
                 }
             });
         }
-        crate::sql_plan::execute_typed_on(&self.db, &req, 8).await
+        crate::sql_plan::execute_typed_on(&self.db, &req, max_result_rows).await
     }
 }
 

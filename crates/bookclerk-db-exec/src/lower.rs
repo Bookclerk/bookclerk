@@ -84,7 +84,10 @@ pub fn lower_canonical_to_postgres(sql: &str) -> String {
 /// desugars ([`bookclerk_plugin_abi::desugar_canonical_sql`]), not adapter
 /// dialect generation.
 fn lower_canonical_to_postgres_helpers(sql: &str) -> String {
-    let sql = sqlite_fns_to_postgres(sql);
+    // SQLite `COLLATE NOCASE` is the library title order. Postgres has no
+    // NOCASE collation; the remaining expression sorts with the default order.
+    let sql = replace_in_code(sql, " COLLATE NOCASE", "");
+    let sql = sqlite_fns_to_postgres(&sql);
     rewrite_placeholders_postgres(&sql)
 }
 
@@ -2518,7 +2521,9 @@ mod proptests {
 
 #[cfg(test)]
 mod nocase_index_postgres {
-    use super::lower_canonical_ddl_to_postgres;
+    use sea_orm::DatabaseBackend;
+
+    use super::{lower_canonical_ddl_to_postgres, lower_canonical_sql};
 
     #[test]
     fn postgres_ddl_drops_sqlite_nocase_collation() {
@@ -2530,5 +2535,17 @@ mod nocase_index_postgres {
             "{lowered}"
         );
         assert!(lowered.contains("title"), "{lowered}");
+    }
+
+    #[test]
+    fn postgres_dml_drops_sqlite_nocase_order_and_sqlite_keeps_it() {
+        let sql = "SELECT title, uuid FROM books ORDER BY title COLLATE NOCASE, uuid";
+        let postgres = lower_canonical_sql(DatabaseBackend::Postgres, sql);
+        assert!(
+            !postgres.to_ascii_uppercase().contains("NOCASE"),
+            "{postgres}"
+        );
+        let sqlite = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
+        assert!(sqlite.to_ascii_uppercase().contains("NOCASE"), "{sqlite}");
     }
 }

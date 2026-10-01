@@ -4,7 +4,9 @@
 //! database. The handler hydrates only the page. `total` is `COUNT(*)` of the
 //! same `WHERE`, not the length of a fully loaded catalog.
 
-use sea_orm::{ConnectionTrait, DatabaseBackend, FromQueryResult, Statement, Value};
+use bookclerk_plugin_abi::{
+    DbPlanStatementKind, DbResultSelection, DbRow, DbValue, ExecuteRequest, TypedDbStatement,
+};
 
 use super::map_book;
 use crate::entities::books;
@@ -27,23 +29,17 @@ pub struct BookPage {
     pub total: usize,
 }
 
-/// Placeholder counter for one statement.
+/// Placeholder counter for canonical `?` binds.
 struct Binds {
-    /// Engine that decides `?` versus `$n`.
-    backend: DatabaseBackend,
-    /// Next zero-based placeholder index.
+    /// Next zero-based placeholder index. Canonical SQL always uses `?`.
     next: usize,
 }
 
 impl Binds {
-    /// Allocates the next placeholder.
+    /// Allocates the next `?` placeholder.
     fn next(&mut self) -> String {
-        let index = self.next;
         self.next += 1;
-        match self.backend {
-            DatabaseBackend::Postgres => format!("${}", index + 1),
-            _ => "?".to_string(),
-        }
+        "?".to_string()
     }
 }
 
@@ -55,7 +51,7 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
+    /// Returns [`LibraryError::Other`] when the read fails.
     pub async fn list_books_filtered_page(
         &self,
         account_id: Option<&str>,
@@ -75,7 +71,7 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
+    /// Returns [`LibraryError::Other`] when the read fails.
     pub async fn list_books_by_uuid_page(
         &self,
         uuids: &[String],
@@ -106,81 +102,76 @@ impl LibraryStore {
         limit: u64,
         offset: u64,
     ) -> Result<BookPage> {
-        let backend = self.db.get_database_backend();
         let limit = limit.clamp(1, BOOK_PAGE_MAX_LIMIT);
         let (page_sql, count_sql) = page_statements(
-            backend,
             !uuids.is_empty(),
             uuids.len(),
             account_id.is_some(),
             status.is_some(),
         );
-        let filter_values = filter_values(uuids, account_id, status);
-        let total = self.query_count(&count_sql, filter_values.clone()).await?;
-        let mut page_values = filter_values;
-        page_values.push(Value::BigInt(Some(
-            i64::try_from(limit).unwrap_or(i64::MAX),
-        )));
-        page_values.push(Value::BigInt(Some(
-            i64::try_from(offset).unwrap_or(i64::MAX),
-        )));
-        let books = self.query_models(&page_sql, page_values).await?;
+        let filters = filter_values(uuids, account_id, status);
+        let mut page_values = filters.clone();
+        page_values.push(DbValue::Int64(i64::try_from(limit).unwrap_or(i64::MAX)));
+        page_values.push(DbValue::Int64(i64::try_from(offset).unwrap_or(i64::MAX)));
+        let cap = u32::try_from(limit).unwrap_or(u32::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500));
+        let reply = self
+            .execute_host_batch_limited(
+                ExecuteRequest {
+                    operation_id: format!("books-page-{}", uuid::Uuid::new_v4()),
+                    request_hash: String::new(),
+                    deadline_unix_ms: 0,
+                    statements: vec![
+                        select_stmt(&count_sql, filters, 1),
+                        select_stmt(&page_sql, page_values, cap),
+                    ],
+                },
+                u32::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500),
+            )
+            .await?;
+        let total = count_from_reply(&reply)?;
+        let books = reply
+            .statements
+            .get(1)
+            .map(|stmt| stmt.rows.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .map(book_from_row)
+            .collect::<Result<Vec<_>>>()?;
         Ok(BookPage { books, total })
     }
+}
 
-    /// Hydrates `SELECT *` rows into [`BookRecord`]s.
-    async fn query_models(&self, sql: &str, values: Vec<Value>) -> Result<Vec<BookRecord>> {
-        let backend = self.db.get_database_backend();
-        let stmt = Statement::from_sql_and_values(backend, sql, values);
-        let models = books::Model::find_by_statement(stmt)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        models.into_iter().map(map_book).collect()
-    }
-
-    /// Reads a `COUNT(*)` scalar.
-    async fn query_count(&self, sql: &str, values: Vec<Value>) -> Result<usize> {
-        let backend = self.db.get_database_backend();
-        let stmt = Statement::from_sql_and_values(backend, sql, values);
-        let row = ConnectionTrait::query_one_raw(&self.db, stmt)
-            .await
-            .map_err(LibraryError::Orm)?;
-        let Some(row) = row else {
-            return Ok(0);
-        };
-        let count = if let Ok(value) = row.try_get_by_index::<i64>(0) {
-            value
-        } else if let Ok(value) = row.try_get_by_index::<i32>(0) {
-            i64::from(value)
-        } else {
-            0
-        };
-        Ok(usize::try_from(count.max(0)).unwrap_or(0))
+/// One canonical `SELECT`. `max_rows` is the proven upper bound.
+fn select_stmt(sql: &str, parameters: Vec<DbValue>, max_rows: u32) -> TypedDbStatement {
+    TypedDbStatement {
+        sql: sql.to_string(),
+        parameters,
+        kind: DbPlanStatementKind::Select,
+        max_rows,
+        result_selection: DbResultSelection::Rows,
     }
 }
 
 /// `SELECT` and `COUNT` for one filter shape. Placeholders follow
 /// uuids, account, status, then limit and offset on the page statement only.
 pub(crate) fn page_statements(
-    backend: DatabaseBackend,
     has_uuids: bool,
     uuid_count: usize,
     has_account: bool,
     has_status: bool,
 ) -> (String, String) {
     let uuid_count = if has_uuids { uuid_count } else { 0 };
-    let mut count_binds = Binds { backend, next: 0 };
+    let mut count_binds = Binds { next: 0 };
     let count_where = where_sql(&mut count_binds, uuid_count, has_account, has_status);
     let count_sql = format!("SELECT COUNT(*) FROM books{count_where}");
 
-    let mut page_binds = Binds { backend, next: 0 };
+    let mut page_binds = Binds { next: 0 };
     let page_where = where_sql(&mut page_binds, uuid_count, has_account, has_status);
     let limit = page_binds.next();
     let offset = page_binds.next();
-    let order = title_order(backend);
-    let page_sql =
-        format!("SELECT * FROM books{page_where} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
+    let page_sql = format!(
+        "SELECT * FROM books{page_where} ORDER BY title COLLATE NOCASE, uuid LIMIT {limit} OFFSET {offset}"
+    );
     (page_sql, count_sql)
 }
 
@@ -209,31 +200,172 @@ fn where_sql(binds: &mut Binds, uuid_count: usize, has_account: bool, has_status
     }
 }
 
-/// Title order that matches the NOCASE page indexes on SQLite.
-fn title_order(backend: DatabaseBackend) -> &'static str {
-    match backend {
-        DatabaseBackend::Postgres => "lower(title), uuid",
-        _ => "title COLLATE NOCASE, uuid",
-    }
-}
-
 /// Bind values for the filter prefix (uuids, then account, then status).
-fn filter_values(uuids: &[String], account_id: Option<&str>, status: Option<&str>) -> Vec<Value> {
+fn filter_values(uuids: &[String], account_id: Option<&str>, status: Option<&str>) -> Vec<DbValue> {
     let mut values = Vec::with_capacity(uuids.len() + 2);
     for uuid in uuids {
-        values.push(Value::String(Some(uuid.clone())));
+        values.push(DbValue::Text(uuid.clone()));
     }
     if let Some(account_id) = account_id {
-        values.push(Value::String(Some(account_id.to_string())));
+        values.push(DbValue::Text(account_id.to_string()));
     }
     if let Some(status) = status {
-        values.push(Value::String(Some(status.to_string())));
+        values.push(DbValue::Text(status.to_string()));
     }
     values
 }
 
+/// `COUNT(*)` from the first statement of a page batch.
+fn count_from_reply(reply: &bookclerk_plugin_abi::ExecuteReply) -> Result<usize> {
+    let row = reply
+        .statements
+        .first()
+        .and_then(|stmt| stmt.rows.first())
+        .ok_or_else(|| LibraryError::Other(anyhow::anyhow!("books page count returned no row")))?;
+    let count = match row.values.first() {
+        Some(DbValue::Int64(value)) => *value,
+        Some(other) => {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "books page count was {other:?}"
+            )))
+        }
+        None => 0,
+    };
+    Ok(usize::try_from(count.max(0)).unwrap_or(0))
+}
+
+/// Maps one `SELECT *` row in catalog column order onto a [`BookRecord`].
+fn book_from_row(row: &DbRow) -> Result<BookRecord> {
+    let mut cells = Cells { row, index: 0 };
+    map_book(books::Model {
+        id: cells.int()?,
+        uuid: cells.text()?,
+        source: cells.text()?,
+        account_id: cells.text()?,
+        product_id: cells.text()?,
+        asin: cells.text_opt()?,
+        isbn: cells.text_opt()?,
+        marketplace: cells.text()?,
+        title: cells.text()?,
+        authors: cells.text_opt()?,
+        narrators: cells.text_opt()?,
+        series: cells.text_opt()?,
+        series_index: cells.text_opt()?,
+        series_asin: cells.text_opt()?,
+        acquire_status: cells.text()?,
+        storage_key: cells.text_opt()?,
+        error_message: cells.text_opt()?,
+        purchased_at: cells.text_opt()?,
+        tags: cells.text_opt()?,
+        rating_overall: cells.float_opt()?,
+        rating_performance: cells.float_opt()?,
+        rating_story: cells.float_opt()?,
+        is_finished: cells.int()?,
+        pdf_status: cells.text()?,
+        pdf_storage_key: cells.text_opt()?,
+        publisher: cells.text_opt()?,
+        length_minutes: cells.int_opt()?,
+        is_abridged: cells.int()?,
+        content_kind: cells.text()?,
+        categories: cells.text_opt()?,
+        subtitle: cells.text_opt()?,
+        published_at: cells.text_opt()?,
+        description: cells.text_opt()?,
+        language: cells.text_opt()?,
+        cover_url: cells.text_opt()?,
+        subjects: cells.text_opt()?,
+        enrich_source: cells.text_opt()?,
+        enrich_confidence: cells.float_opt()?,
+        enrich_updated_at: cells.text_opt()?,
+        created_at: cells.text()?,
+        updated_at: cells.text()?,
+    })
+}
+
+/// Cursor over one positional result row.
+struct Cells<'a> {
+    /// Source row.
+    row: &'a DbRow,
+    /// Next cell index.
+    index: usize,
+}
+
+impl Cells<'_> {
+    /// Next cell, or an error when the row is short.
+    fn next(&mut self) -> Result<&DbValue> {
+        let cell = self.row.values.get(self.index).ok_or_else(|| {
+            LibraryError::Other(anyhow::anyhow!(
+                "books page row missing column {}",
+                self.index
+            ))
+        })?;
+        self.index += 1;
+        Ok(cell)
+    }
+
+    /// Required text cell.
+    fn text(&mut self) -> Result<String> {
+        let index = self.index;
+        match self.next()? {
+            DbValue::Text(value) => Ok(value.clone()),
+            other => Err(LibraryError::Other(anyhow::anyhow!(
+                "books page column {index} was {other:?}"
+            ))),
+        }
+    }
+
+    /// Optional text cell. Null stays empty.
+    fn text_opt(&mut self) -> Result<Option<String>> {
+        let index = self.index;
+        match self.next()? {
+            DbValue::Null(_) => Ok(None),
+            DbValue::Text(value) => Ok(Some(value.clone())),
+            other => Err(LibraryError::Other(anyhow::anyhow!(
+                "books page column {index} was {other:?}"
+            ))),
+        }
+    }
+
+    /// Required integer cell.
+    fn int(&mut self) -> Result<i64> {
+        let index = self.index;
+        match self.next()? {
+            DbValue::Int64(value) => Ok(*value),
+            other => Err(LibraryError::Other(anyhow::anyhow!(
+                "books page column {index} was {other:?}"
+            ))),
+        }
+    }
+
+    /// Optional integer cell.
+    fn int_opt(&mut self) -> Result<Option<i64>> {
+        let index = self.index;
+        match self.next()? {
+            DbValue::Null(_) => Ok(None),
+            DbValue::Int64(value) => Ok(Some(*value)),
+            other => Err(LibraryError::Other(anyhow::anyhow!(
+                "books page column {index} was {other:?}"
+            ))),
+        }
+    }
+
+    /// Optional real cell.
+    fn float_opt(&mut self) -> Result<Option<f64>> {
+        let index = self.index;
+        match self.next()? {
+            DbValue::Null(_) => Ok(None),
+            DbValue::Float64(value) => Ok(Some(*value)),
+            other => Err(LibraryError::Other(anyhow::anyhow!(
+                "books page column {index} was {other:?}"
+            ))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use sea_orm::{ConnectionTrait, Statement, Value};
+
     use super::*;
     use crate::models::AcquireStatus;
     use crate::store::NewBook;
@@ -360,9 +492,14 @@ mod tests {
             (Some("envelope-b"), None, "account"),
             (Some("envelope-b"), Some("acquired"), "account+status"),
         ] {
-            let (page_sql, _) =
-                page_statements(backend, false, 0, account.is_some(), status.is_some());
-            let mut values = filter_values(&[], account, status);
+            let (page_sql, _) = page_statements(false, 0, account.is_some(), status.is_some());
+            let mut values = Vec::new();
+            if let Some(account) = account {
+                values.push(Value::String(Some(account.to_string())));
+            }
+            if let Some(status) = status {
+                values.push(Value::String(Some(status.to_string())));
+            }
             values.push(Value::BigInt(Some(40)));
             values.push(Value::BigInt(Some(0)));
             let plan = explain(&store, &page_sql, values).await;
