@@ -1997,6 +1997,42 @@ fn missing_entrypoint(name: &str) -> PluginError {
     PluginError::message(format!("plugin exported no `{name}` entrypoint"))
 }
 
+/// Windows profiles and the host ACL journal for one vat.
+///
+/// Field order is the release order: both AppContainer profiles, then the
+/// journal. `DeleteAppContainerProfile` does not remove package-SID ACEs.
+#[cfg(windows)]
+struct WindowsPackageCleanup {
+    gateway: Option<bookclerk_sandbox::spawn::AppContainerSession>,
+    guest: Option<bookclerk_sandbox::spawn::AppContainerSession>,
+    journal: crate::spawn_stdio::AclJournal,
+}
+
+/// Isolation state released after the siblings have exited.
+///
+/// Drop revokes the package-SID journal before it removes the session
+/// directory. Callers treat that removal as the signal that host-owned
+/// grants are gone. The journal used to stay inside the partially moved
+/// spawn struct and ran only as a tail drop, after the directory was already
+/// gone and after profile deletion.
+struct VatHostCleanup {
+    #[cfg(windows)]
+    packages: Option<WindowsPackageCleanup>,
+    #[cfg(target_os = "linux")]
+    cgroup: Option<crate::jail::SessionCgroup>,
+    session_dir: Option<RemoveOnDrop>,
+}
+
+impl Drop for VatHostCleanup {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        drop(self.packages.take());
+        #[cfg(target_os = "linux")]
+        drop(self.cgroup.take());
+        drop(self.session_dir.take());
+    }
+}
+
 /// Removes a host-owned session directory when the vat thread exits.
 struct RemoveOnDrop(std::path::PathBuf);
 
@@ -2331,9 +2367,19 @@ fn vat_thread(
         local
             .run_until(async move {
                 let grant = spawned.grant;
-                let mut remove_session_dir = spawned.session_dir.map(RemoveOnDrop);
-                #[cfg(target_os = "linux")]
-                let mut session_cgroup = spawned.session_cgroup;
+                // Packages and the journal must drop before `session_dir`.
+                // `assert_hold_cleaned` reads DACLs once the directory is gone.
+                let host_cleanup = VatHostCleanup {
+                    #[cfg(windows)]
+                    packages: Some(WindowsPackageCleanup {
+                        gateway: spawned.appcontainer,
+                        guest: spawned.guest_appcontainer,
+                        journal: spawned.acl_journal,
+                    }),
+                    #[cfg(target_os = "linux")]
+                    cgroup: spawned.session_cgroup,
+                    session_dir: spawned.session_dir.map(RemoveOnDrop),
+                };
                 #[cfg(windows)]
                 let _session_job = spawned.session_job;
                 let session_cancel = Arc::clone(&spawned.cancel);
@@ -2357,9 +2403,7 @@ fn vat_thread(
                     #[cfg(windows)]
                     drop(_session_job);
                     reap_siblings(&mut child, &mut guest, &identities).await;
-                    #[cfg(target_os = "linux")]
-                    drop(session_cgroup.take());
-                    drop(remove_session_dir.take());
+                    drop(host_cleanup);
                     let _ = ready.send(Err(crate::authority::fenced_error()));
                     return;
                 }
@@ -2383,9 +2427,7 @@ fn vat_thread(
                                 #[cfg(windows)]
                                 drop(_session_job);
                                 reap_siblings(&mut child, &mut guest, &identities).await;
-                                #[cfg(target_os = "linux")]
-                                drop(session_cgroup.take());
-                                drop(remove_session_dir.take());
+                                drop(host_cleanup);
                                 return;
                             }
                             client
@@ -2394,9 +2436,7 @@ fn vat_thread(
                             #[cfg(windows)]
                             drop(_session_job);
                             reap_siblings(&mut child, &mut guest, &identities).await;
-                            #[cfg(target_os = "linux")]
-                            drop(session_cgroup.take());
-                            drop(remove_session_dir.take());
+                            drop(host_cleanup);
                             let _ = ready.send(Err(err));
                             return;
                         }
@@ -2411,9 +2451,7 @@ fn vat_thread(
                         #[cfg(windows)]
                         drop(_session_job);
                         reap_siblings(&mut child, &mut guest, &identities).await;
-                        #[cfg(target_os = "linux")]
-                        drop(session_cgroup.take());
-                        drop(remove_session_dir.take());
+                        drop(host_cleanup);
                         let _ = ready.send(Err(crate::spawn_stdio::with_spawn_detail(err, extra)));
                         return;
                     }
@@ -3251,9 +3289,7 @@ fn vat_thread(
                 reap_siblings(&mut child, &mut guest, &identities).await;
                 drop(child);
                 drop(guest);
-                #[cfg(target_os = "linux")]
-                drop(session_cgroup.take());
-                drop(remove_session_dir.take());
+                drop(host_cleanup);
             })
             .await;
     });
