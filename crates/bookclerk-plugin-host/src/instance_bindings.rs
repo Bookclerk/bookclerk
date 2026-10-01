@@ -65,9 +65,9 @@ pub fn prepared_open_from_resolved(
 /// no library handle yet). A missing instance row, an instance with no
 /// document, or an instance that already has a deployment also uses
 /// `transitional`. Key lookup is only for plugins with no deployment. A
-/// deployment spawn passes [`prepared_open_from_resolved`] instead. An
-/// instance document that fails validation, grant checks, or secret
-/// resolution is an error: this function does not fall back to
+/// deployment spawn does not call this function; it passes already resolved
+/// payloads. An instance document that fails validation, grant checks, or
+/// secret resolution is an error: this function does not fall back to
 /// `settings_table_for`.
 ///
 /// # Errors
