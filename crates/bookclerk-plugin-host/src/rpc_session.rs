@@ -2013,9 +2013,12 @@ struct WindowsPackageCleanup {
 ///
 /// Drop deletes AppContainer profiles, then revokes the package-SID journal.
 /// The session directory is removed only when that revoke returns `Ok`.
-/// A failed revoke writes `acl-journal-pending.json` and keeps the directory
-/// so the next session plan can retry. Directory removal is the success
-/// signal the one-read SID check waits on; it is not crossed on the error path.
+/// `acl-journal-pending.json` is written before ACEs are granted. A failed
+/// revoke keeps the directory and tries to refresh that file with the
+/// unrevoked suffix. If the refresh cannot be written, the earlier file
+/// remains and the next session plan retries it. Directory removal is the
+/// success signal the one-read SID check waits on; it is not crossed on the
+/// error path.
 struct VatHostCleanup {
     #[cfg(windows)]
     packages: Option<WindowsPackageCleanup>,

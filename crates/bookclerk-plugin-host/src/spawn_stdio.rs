@@ -273,6 +273,13 @@ pub(crate) async fn spawn_stdio_guest(
     let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
     #[cfg(windows)]
     let mut acl_journal = build_acl_journal(&jail, plan);
+    // The journal must be on disk before the jail grants ACEs. A later revoke
+    // can fail, and the rewrite of the unrevoked suffix can fail too. The
+    // pre-grant file is what the next session plan retries.
+    #[cfg(windows)]
+    if let Some(dir) = acl_journal.persist_dir.as_deref() {
+        persist_planned_acl_journal(dir, &acl_journal.entries)?;
+    }
 
     let spawned = if jail.guest_start.is_some() {
         spawn_siblings(
@@ -1049,9 +1056,10 @@ fn read_process_start(pid: u32) -> Option<ProcessStart> {
 
 /// Host journal of package SIDs and paths.
 ///
-/// Drop revokes remaining entries. A failed revoke does not clear them: they
-/// are written under [`persist_dir`](Self::persist_dir) when that directory is
-/// set, and the session directory stays until a later retry succeeds.
+/// Drop revokes remaining entries. A failed revoke rewrites
+/// [`persist_dir`](Self::persist_dir)'s `acl-journal-pending.json` when that
+/// directory is set. The file is also written before ACEs are granted, so a
+/// failed rewrite leaves that earlier record for the next session plan.
 #[cfg(windows)]
 pub(crate) struct AclJournal {
     entries: Vec<bookclerk_sandbox::spawn::AclJournalEntry>,
@@ -1089,12 +1097,19 @@ impl Drop for AclJournal {
             let Ok(mut existing) = read_pending_acl_journal(dir) else {
                 return;
             };
-            existing.append(&mut self.entries);
+            extend_unique_journal(&mut existing, std::mem::take(&mut self.entries));
             if let Err(write_err) = write_pending_acl_journal(dir, &existing) {
-                tracing::warn!(
-                    error = %write_err,
-                    "could not persist the ACL journal for retry"
-                );
+                if pending_acl_journal_path(dir).is_file() {
+                    tracing::warn!(
+                        error = %write_err,
+                        "could not refresh the ACL journal; the earlier record remains"
+                    );
+                } else {
+                    tracing::error!(
+                        error = %write_err,
+                        "could not persist the ACL journal; package SID grants have no retry record"
+                    );
+                }
             }
         }
     }
@@ -1113,6 +1128,25 @@ struct PendingAclEntry {
 
 fn pending_acl_journal_path(session_dir: &std::path::Path) -> PathBuf {
     session_dir.join(ACL_JOURNAL_PENDING_FILE)
+}
+
+/// Write the complete journal before any package-SID ACE is granted.
+///
+/// Failure is returned to the spawn caller. The jail is not started, so no
+/// grant is applied without a record the next session plan can retry.
+#[cfg(any(windows, test))]
+fn persist_planned_acl_journal(
+    session_dir: &std::path::Path,
+    entries: &[bookclerk_sandbox::spawn::AclJournalEntry],
+) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    write_pending_acl_journal(session_dir, entries).map_err(|err| {
+        PluginError::message(format!(
+            "could not persist the ACL journal before granting package access: {err}"
+        ))
+    })
 }
 
 fn read_pending_acl_journal(
@@ -1160,15 +1194,42 @@ fn write_pending_acl_journal(
         .collect();
     let body = serde_json::to_vec_pretty(&pending)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    // Replace the destination only by rename. A failed write or a failed
+    // rename leaves an earlier `acl-journal-pending.json` in place. That
+    // pre-grant file is the retry record when this refresh cannot land.
     let tmp = session_dir.join(format!("{ACL_JOURNAL_PENDING_FILE}.tmp"));
     std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, &path)
+}
+
+fn same_acl_grant(
+    left: &bookclerk_sandbox::spawn::AclJournalEntry,
+    right: &bookclerk_sandbox::spawn::AclJournalEntry,
+) -> bool {
+    left.path == right.path
+        && left.package_sid == right.package_sid
+        && left.is_dir == right.is_dir
+        && left.propagate == right.propagate
+}
+
+fn extend_unique_journal(
+    dest: &mut Vec<bookclerk_sandbox::spawn::AclJournalEntry>,
+    extra: impl IntoIterator<Item = bookclerk_sandbox::spawn::AclJournalEntry>,
+) {
+    for entry in extra {
+        if dest.iter().any(|have| same_acl_grant(have, &entry)) {
+            continue;
+        }
+        dest.push(entry);
+    }
 }
 
 /// Revoke `entries` plus any pending record already stored in `session_dir`.
 ///
-/// Success clears the pending file. Failure rewrites it with the unrevoked
-/// suffix and leaves `entries` empty only when that write succeeded. The
+/// Success clears the pending file. Failure tries to rewrite it with the
+/// unrevoked suffix and leaves `entries` empty only when that write succeeded.
+/// A failed rewrite does not remove an earlier file: the journal written
+/// before ACEs were granted stays, and the next session plan retries it. The
 /// caller must not remove `session_dir` unless this returns `Ok`.
 pub(crate) fn revoke_journal_for_session(
     entries: &mut Vec<bookclerk_sandbox::spawn::AclJournalEntry>,
@@ -1189,7 +1250,7 @@ pub(crate) fn revoke_journal_for_session(
             });
         }
     };
-    pending.append(entries);
+    extend_unique_journal(&mut pending, std::mem::take(entries));
     match bookclerk_sandbox::spawn::revoke_acl_journal_retain(&mut pending) {
         Ok(()) => {
             if let Err(err) = write_pending_acl_journal(session_dir, &[]) {
@@ -1205,6 +1266,20 @@ pub(crate) fn revoke_journal_for_session(
             if write_pending_acl_journal(session_dir, &pending).is_ok() {
                 entries.clear();
             } else {
+                let record = pending_acl_journal_path(session_dir);
+                if record.is_file() {
+                    tracing::warn!(
+                        error = %err,
+                        path = %record.display(),
+                        "ACL journal revoke failed and the suffix could not be written; the earlier record remains"
+                    );
+                } else {
+                    tracing::error!(
+                        error = %err,
+                        path = %session_dir.display(),
+                        "ACL journal revoke failed and no pending record is on disk"
+                    );
+                }
                 *entries = pending;
             }
             Err(err)
@@ -3070,7 +3145,10 @@ mod tests {
     }
 
     /// Serializes `BOOKCLERK_TEST_FAIL_ACL_REVOKE`. The hook is process-global.
-    fn with_forced_acl_revoke(value: &str, body: impl FnOnce()) {
+    ///
+    /// `after_clear` runs with the hook unset while the lock is still held, so
+    /// a retry cannot race another test that sets the hook.
+    fn with_forced_acl_revoke(value: &str, during: impl FnOnce(), after_clear: impl FnOnce()) {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = LOCK.lock().expect("acl revoke hook lock");
         std::env::set_var("BOOKCLERK_TEST_FAIL_ACL_REVOKE", value);
@@ -3080,8 +3158,10 @@ mod tests {
                 std::env::remove_var("BOOKCLERK_TEST_FAIL_ACL_REVOKE");
             }
         }
-        let _clear = Clear;
-        body();
+        let clear = Clear;
+        during();
+        drop(clear);
+        after_clear();
     }
 
     #[test]
@@ -3093,31 +3173,107 @@ mod tests {
             entry("/host/files", "S-1-15-2-111"),
             entry("/host/plugin", "S-1-15-2-222"),
         ];
-        with_forced_acl_revoke("1", || {
-            let err = revoke_journal_for_session(&mut entries, &session);
-            assert!(err.is_err(), "forced revoke must fail");
-            assert!(session.is_dir(), "session directory stays");
-            assert_eq!(
-                pending_sids(&session),
-                vec!["S-1-15-2-111".to_string(), "S-1-15-2-222".to_string()]
-            );
-            let mut again = Vec::new();
-            assert!(revoke_journal_for_session(&mut again, &session).is_err());
-            assert!(
-                session.is_dir(),
-                "retry while the hook is set keeps the directory"
-            );
-            retry_abandoned_session_journals(root.path());
-            assert!(
-                session.is_dir(),
-                "abandoned retry must not remove the directory when revoke fails"
-            );
-        });
-        assert!(session.join("acl-journal-pending.json").is_file());
-        retry_abandoned_session_journals(root.path());
+        with_forced_acl_revoke(
+            "1",
+            || {
+                let err = revoke_journal_for_session(&mut entries, &session);
+                assert!(err.is_err(), "forced revoke must fail");
+                assert!(session.is_dir(), "session directory stays");
+                assert_eq!(
+                    pending_sids(&session),
+                    vec!["S-1-15-2-111".to_string(), "S-1-15-2-222".to_string()]
+                );
+                let mut again = Vec::new();
+                assert!(revoke_journal_for_session(&mut again, &session).is_err());
+                assert!(
+                    session.is_dir(),
+                    "retry while the hook is set keeps the directory"
+                );
+                retry_abandoned_session_journals(root.path());
+                assert!(
+                    session.is_dir(),
+                    "abandoned retry must not remove the directory when revoke fails"
+                );
+            },
+            || {
+                assert!(session.join("acl-journal-pending.json").is_file());
+                retry_abandoned_session_journals(root.path());
+                assert!(
+                    !session.exists(),
+                    "retry after the hook clears removes the directory"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn planned_acl_journal_persist_fails_before_any_grant() {
+        let root = tempfile::tempdir().expect("temp");
+        let session = root.path().join("session-nopersist");
+        std::fs::create_dir(&session).expect("session dir");
+        std::fs::create_dir(session.join("acl-journal-pending.json.tmp")).expect("block write");
+        let err = persist_planned_acl_journal(&session, &[entry("/host/files", "S-1-15-2-111")])
+            .expect_err("blocked write");
+        let text = err.to_string();
         assert!(
-            !session.exists(),
-            "retry after the hook clears removes the directory"
+            text.contains("could not persist the ACL journal before granting package access"),
+            "{text}"
+        );
+        assert!(
+            !session.join("acl-journal-pending.json").exists(),
+            "a failed pre-grant write must not leave a partial journal"
+        );
+    }
+
+    #[test]
+    fn failed_revoke_keeps_the_pregrant_journal_when_the_rewrite_fails() {
+        let root = tempfile::tempdir().expect("temp");
+        let session = root.path().join("session-rewrite");
+        std::fs::create_dir(&session).expect("session dir");
+        let planned = vec![
+            entry("/host/files", "S-1-15-2-111"),
+            entry("/host/plugin", "S-1-15-2-222"),
+        ];
+        persist_planned_acl_journal(&session, &planned).expect("pre-grant journal");
+        let pregrant = std::fs::read(session.join("acl-journal-pending.json")).expect("read");
+        // The refresh writes this temp name, then renames it onto the journal.
+        // A directory there makes that write fail and leaves the pre-grant file.
+        std::fs::create_dir(session.join("acl-journal-pending.json.tmp")).expect("block rewrite");
+        let mut entries = vec![
+            entry("/host/files", "S-1-15-2-111"),
+            entry("/host/plugin", "S-1-15-2-222"),
+        ];
+        with_forced_acl_revoke(
+            "1",
+            || {
+                assert!(revoke_journal_for_session(&mut entries, &session).is_err());
+                assert!(
+                    !entries.is_empty(),
+                    "in-memory entries stay when the refresh cannot be written"
+                );
+                assert_eq!(
+                    std::fs::read(session.join("acl-journal-pending.json")).expect("read"),
+                    pregrant,
+                    "a failed rewrite must leave the pre-grant journal unchanged"
+                );
+                retry_abandoned_session_journals(root.path());
+                assert!(
+                    session.is_dir(),
+                    "the sweep keeps the directory while revoke is still failing"
+                );
+                assert_eq!(
+                    std::fs::read(session.join("acl-journal-pending.json")).expect("read"),
+                    pregrant
+                );
+            },
+            || {
+                std::fs::remove_dir(session.join("acl-journal-pending.json.tmp")).expect("unblock");
+                retry_abandoned_session_journals(root.path());
+                assert!(
+                    !session.exists(),
+                    "once revoke can succeed, the sweep removes the session directory"
+                );
+            },
         );
     }
 
@@ -3130,17 +3286,22 @@ mod tests {
             entry("/host/files", "S-1-15-2-111"),
             entry("/host/plugin", "S-1-15-2-222"),
         ];
-        with_forced_acl_revoke("index:1", || {
-            assert!(revoke_journal_for_session(&mut entries, &session).is_err());
-            assert!(entries.is_empty(), "persisted suffix is not left in memory");
-            assert_eq!(pending_sids(&session), vec!["S-1-15-2-222".to_string()]);
-            assert!(
-                session.is_dir(),
-                "a partial revoke leaves the session directory in place"
-            );
-        });
-        retry_abandoned_session_journals(root.path());
-        assert!(!session.exists());
+        with_forced_acl_revoke(
+            "index:1",
+            || {
+                assert!(revoke_journal_for_session(&mut entries, &session).is_err());
+                assert!(entries.is_empty(), "persisted suffix is not left in memory");
+                assert_eq!(pending_sids(&session), vec!["S-1-15-2-222".to_string()]);
+                assert!(
+                    session.is_dir(),
+                    "a partial revoke leaves the session directory in place"
+                );
+            },
+            || {
+                retry_abandoned_session_journals(root.path());
+                assert!(!session.exists());
+            },
+        );
     }
 
     #[test]
@@ -3165,11 +3326,15 @@ mod tests {
 
     #[test]
     fn empty_acl_journal_revoke_succeeds_while_the_hook_is_set() {
-        with_forced_acl_revoke("1", || {
-            let mut entries = Vec::new();
-            bookclerk_sandbox::spawn::revoke_acl_journal_retain(&mut entries)
-                .expect("empty journal is already revoked");
-            assert!(entries.is_empty());
-        });
+        with_forced_acl_revoke(
+            "1",
+            || {
+                let mut entries = Vec::new();
+                bookclerk_sandbox::spawn::revoke_acl_journal_retain(&mut entries)
+                    .expect("empty journal is already revoked");
+                assert!(entries.is_empty());
+            },
+            || {},
+        );
     }
 }
