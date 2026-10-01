@@ -186,12 +186,13 @@ async fn redeem(
     )
     .await?;
 
-    if REDEEM_LOSE_HTTP_RESPONSES
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+    // Current stable deprecates `fetch_update`. The rename is 1.95; the crate MSRV is 1.94.
+    #[allow(clippy::incompatible_msrv)]
+    let lost_response =
+        REDEEM_LOSE_HTTP_RESPONSES.try_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
             (v > 0).then_some(v - 1)
-        })
-        .is_ok()
-    {
+        });
+    if lost_response.is_ok() {
         return Err(PortalError::unavailable(
             "database temporarily unavailable — retry the same redeem",
         ));
