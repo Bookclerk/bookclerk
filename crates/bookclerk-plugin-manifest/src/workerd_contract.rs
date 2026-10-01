@@ -241,6 +241,7 @@ fn is_leap_year(year: i32) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
 
