@@ -551,7 +551,11 @@ export function validateModuleDeclarations(
  */
 export function moduleLoadKey(modulesDir: string, raw: string): string {
   let key = raw.replace(/\\/g, "/");
-  const dir = modulesDir.replace(/^\/+|\/+$/g, "");
+  let start = 0;
+  let end = modulesDir.length;
+  while (start < end && modulesDir[start] === "/") start += 1;
+  while (end > start && modulesDir[end - 1] === "/") end -= 1;
+  const dir = modulesDir.slice(start, end);
   if (dir && key.startsWith(`${dir}/`)) key = key.slice(dir.length + 1);
   while (key.startsWith("./")) key = key.slice(2);
   return key;
