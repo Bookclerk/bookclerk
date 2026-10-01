@@ -331,7 +331,9 @@ PY
 }
 
 reset_peak() {
-  if printf '0\n' >"${CGROUP}/memory.peak" 2>/dev/null; then
+  # Docker publishes memory.peak read-only. A failed write is not the gate;
+  # anonymous memory after idle is. Silence the shell's read-only diagnostic.
+  if { printf '0\n' >"${CGROUP}/memory.peak"; } 2>/dev/null; then
     echo 1
   else
     echo 0
@@ -405,10 +407,8 @@ done
 [[ "${health_ok}" == 1 ]] || fail "GET /health did not return 200 within 60s; see ${log}"
 end_ns="$(date +%s%N)"
 startup_ms="$(( (end_ns - start_ns) / 1000000 ))"
-# Reset after the daemon is up so memory.peak is this window, not rustc.
-if [[ "$(reset_peak)" != 1 ]]; then
-  echo "envelope: could not reset memory.peak; windows include earlier usage" >&2
-fi
+# Best-effort. The container peak is read-only and still includes the seed.
+reset_peak >/dev/null
 sleep 10
 idle_json="$(sample_proc "${DAEMON_PID}")"
 media_line="$(grep -m1 'media pool:' "${log}" || true)"
@@ -595,7 +595,14 @@ indexed="${indexed:-0}"
 rebuild_sample="$(sample_proc "${DAEMON_PID}")"
 scratch_after="$(scratch_snapshot)"
 if [[ "${REBUILD_RC}" != 0 ]]; then
-  echo "envelope: search rebuild failed; see ${rebuild_log}" >&2
+  echo "envelope: search rebuild failed" >&2
+  if [[ -f "${rebuild_log}" ]]; then
+    echo "----- ${rebuild_log} -----" >&2
+    cat "${rebuild_log}" >&2
+    echo "----- end ${rebuild_log} -----" >&2
+  else
+    echo "envelope: ${rebuild_log} was not written" >&2
+  fi
 fi
 if [[ "${MIX_REBUILD_RC}" != 0 ]]; then
   echo "envelope: rebuild-window load failed" >&2

@@ -77,7 +77,12 @@ class AssertionTests(unittest.TestCase):
             "memory_max": "1073741824",
             "media_pool_line": "media pool: 1 workers, confinement=required",
             "windows": {
-                "idle": {"memory_peak": 33_607_680, "startup_ms": 517},
+                "idle": {
+                    "memory_peak": 736_337_920,
+                    "anon": 30_994_432,
+                    "memory_current": 33_607_680,
+                    "startup_ms": 517,
+                },
                 "api": {
                     "per_route": {
                         "GET /health": {"errors": 0, "p50_ms": 50_000, "min_total": None},
@@ -98,12 +103,12 @@ class AssertionTests(unittest.TestCase):
                         },
                     },
                     "mix_60s": {"requests": 100, "errors": 0},
-                    "sample": {"memory_peak": 57_602_048},
+                    "sample": {"memory_peak": 736_337_920, "anon": 57_602_048},
                 },
                 "api_with_rebuild": {
                     "indexed": 10_000,
                     "mix_60s": {"requests": 80, "errors": 0},
-                    "sample": {"memory_peak": 65_904_640},
+                    "sample": {"memory_peak": 736_337_920, "anon": 65_904_640},
                 },
             },
         }
@@ -123,8 +128,18 @@ class AssertionTests(unittest.TestCase):
         self.assertTrue(any("populated index" in item for item in assertions.assert_envelope(empty)))
 
         peak = self._doc()
-        peak["windows"]["api"]["sample"]["memory_peak"] = 256 * 1024 * 1024
+        peak["windows"]["api"]["sample"]["anon"] = 256 * 1024 * 1024
         self.assertTrue(any("256 MiB" in item for item in assertions.assert_envelope(peak)))
+
+        current = self._doc()
+        del current["windows"]["idle"]["anon"]
+        current["windows"]["idle"]["memory_current"] = 33_607_680
+        self.assertEqual(assertions.assert_envelope(current), [])
+
+        missing = self._doc()
+        del missing["windows"]["idle"]["anon"]
+        del missing["windows"]["idle"]["memory_current"]
+        self.assertTrue(any("anon" in item for item in assertions.assert_envelope(missing)))
 
         pool = self._doc()
         pool["media_pool_line"] = "media pool: 4 workers, confinement=required"

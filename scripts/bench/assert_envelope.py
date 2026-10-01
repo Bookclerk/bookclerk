@@ -7,8 +7,20 @@ import json
 import sys
 from pathlib import Path
 
-# Measured API-window peak was about 55 MiB. This is a ceiling, not a target.
-PEAK_LIMIT_BYTES = 256 * 1024 * 1024
+# Daemon anonymous memory after the seed. The cgroup lifetime peak includes
+# the seed and cannot be reset inside the container, so it is not the gate.
+ANON_LIMIT_BYTES = 256 * 1024 * 1024
+
+
+def _daemon_memory(sample: dict) -> tuple[str, int | None]:
+    """Anonymous memory for the daemon window, else `memory.current`."""
+    anon = sample.get("anon")
+    if isinstance(anon, int):
+        return "anon", anon
+    current = sample.get("memory_current")
+    if isinstance(current, int):
+        return "memory.current", current
+    return "anon", None
 
 
 def _cpu_is_one_core(cpu_max: str) -> bool:
@@ -50,19 +62,13 @@ def assert_envelope(doc: dict) -> list[str]:
         if not mix.get("requests"):
             problems.append(f"{label} mix recorded no requests")
 
-    peaks = []
-    idle = windows.get("idle") or {}
-    if idle.get("memory_peak") is not None:
-        peaks.append(("idle", idle["memory_peak"]))
+    samples = [("idle", windows.get("idle") or {})]
     for label in ("api", "api_with_rebuild"):
-        sample = (windows.get(label) or {}).get("sample") or {}
-        if sample.get("memory_peak") is not None:
-            peaks.append((label, sample["memory_peak"]))
-    if not peaks:
-        problems.append("no cgroup memory.peak was recorded")
-    for label, peak in peaks:
-        if not isinstance(peak, int) or peak >= PEAK_LIMIT_BYTES:
-            problems.append(f"{label} memory.peak {peak} is not under 256 MiB")
+        samples.append((label, (windows.get(label) or {}).get("sample") or {}))
+    for label, sample in samples:
+        kind, value = _daemon_memory(sample)
+        if not isinstance(value, int) or value >= ANON_LIMIT_BYTES:
+            problems.append(f"{label} {kind} {value} is not under 256 MiB")
 
     indexed = (windows.get("api_with_rebuild") or {}).get("indexed")
     if indexed != 10_000:

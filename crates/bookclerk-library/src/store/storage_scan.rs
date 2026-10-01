@@ -458,6 +458,10 @@ impl LibraryStore {
 
     /// Pages books by surrogate id so a scan does not load the catalog at once.
     ///
+    /// `limit` is clamped to 1..=64. A Cap'n `StatementResult` of 256 full
+    /// `books` rows is about 310 KiB, over the sqlite guest `maxResultBytes`
+    /// (256 KiB). 64 rows are about 80 KiB.
+    ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
@@ -475,7 +479,7 @@ impl LibraryStore {
             query = query.filter(books::Column::Id.gt(after_id));
         }
         let rows = query
-            .limit(limit.clamp(1, 256))
+            .limit(limit.clamp(1, 64))
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
