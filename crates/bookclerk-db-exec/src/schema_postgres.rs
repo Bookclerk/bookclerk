@@ -33,10 +33,10 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 /// Mechanical type/identity lowering for one **binding** statement.
 ///
 /// Hosts emit canonical SQLite-shaped `CREATE`/`DROP`. Postgres adapters
-/// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here and drop
-/// `COLLATE NOCASE` (Postgres has no such collation). SQLite leaves the
-/// statement unchanged, including `NOCASE` page indexes. DML stays for
-/// [`crate::lower_canonical_sql`].
+/// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here and turn
+/// `ident COLLATE NOCASE` into `(lower(ident COLLATE "C"))` so page order
+/// matches SQLite. SQLite leaves the statement unchanged, including
+/// `NOCASE` page indexes. DML stays for [`crate::lower_canonical_sql`].
 ///
 /// # Panics
 ///
@@ -47,9 +47,9 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 pub fn lower_binding_sql_for_backend(backend: DatabaseBackend, sql: &str) -> Cow<'_, str> {
     match backend {
         DatabaseBackend::Postgres if bookclerk_plugin_abi::statement_is_ddl(sql) => {
-            let stripped = crate::lower::strip_sqlite_nocase(sql);
+            let folded = crate::lower::rewrite_sqlite_nocase(sql);
             Cow::Owned(crate::lower::rewrite_canonical_ddl_types_for_postgres(
-                &stripped,
+                &folded,
             ))
         }
         DatabaseBackend::Postgres | DatabaseBackend::Sqlite => Cow::Borrowed(sql),
@@ -449,9 +449,14 @@ mod tests {
             !postgres.to_ascii_uppercase().contains("NOCASE"),
             "{postgres}"
         );
-        assert!(postgres.contains("(title, uuid)"), "{postgres}");
+        assert!(
+            postgres.contains("(lower(title COLLATE \"C\")) NULLS FIRST"),
+            "{postgres}"
+        );
+        assert!(postgres.contains("uuid NULLS FIRST"), "{postgres}");
         let sqlite = lower_binding_sql_for_backend(DatabaseBackend::Sqlite, sql);
         assert!(sqlite.contains("COLLATE NOCASE"), "{sqlite}");
+        assert!(!sqlite.contains("lower(title)"), "{sqlite}");
     }
 
     #[test]

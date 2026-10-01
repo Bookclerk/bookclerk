@@ -84,9 +84,9 @@ pub fn lower_canonical_to_postgres(sql: &str) -> String {
 /// desugars ([`bookclerk_plugin_abi::desugar_canonical_sql`]), not adapter
 /// dialect generation.
 fn lower_canonical_to_postgres_helpers(sql: &str) -> String {
-    // SQLite `COLLATE NOCASE` is the library title order. Postgres has no
-    // NOCASE collation; the remaining expression sorts with the default order.
-    let sql = strip_sqlite_nocase(sql);
+    // SQLite `COLLATE NOCASE` folds ASCII case, then compares bytes. Postgres
+    // has no such collation; `lower(ident COLLATE "C")` is that same order.
+    let sql = rewrite_sqlite_nocase(sql);
     let sql = sqlite_fns_to_postgres(&sql);
     rewrite_placeholders_postgres(&sql)
 }
@@ -1143,18 +1143,195 @@ fn ddl_type_rewrite_at(sql: &str, i: usize) -> Option<(usize, &'static str)> {
 /// the adapter edge and then the DML helper pass.
 #[must_use]
 pub fn lower_canonical_ddl_to_postgres(sql: &str) -> String {
-    // SQLite `COLLATE NOCASE` is the library title index. Postgres has no
-    // built-in NOCASE collation; the binary index still serves equality.
-    let stripped = strip_sqlite_nocase(sql);
+    // SQLite `COLLATE NOCASE` is the library title index. Postgres gets an
+    // expression index on `lower(title COLLATE "C")` so the page order matches.
+    let stripped = rewrite_sqlite_nocase(sql);
     lower_canonical_to_postgres(&rewrite_canonical_ddl_types_for_postgres(&stripped))
 }
 
-/// Drops SQLite ` COLLATE NOCASE` from code spans.
+/// Rewrites `ident COLLATE NOCASE` to `(lower(ident COLLATE "C"))`.
 ///
-/// Postgres has no `NOCASE` collation. Callers that execute on SQLite must
-/// keep the token so a `COLLATE NOCASE` index can still be used.
-pub(crate) fn strip_sqlite_nocase(sql: &str) -> String {
-    replace_in_code(sql, " COLLATE NOCASE", "")
+/// SQLite `NOCASE` folds the 26 ASCII letters and then compares code points.
+/// `lower` of a `C`-collated argument is that fold, and the result compares
+/// in code-point order. A `CREATE INDEX` also marks every key `NULLS FIRST`
+/// so it matches the host `ORDER BY` desugar. SQLite callers must not use
+/// this: they keep `COLLATE NOCASE` and the existing page indexes.
+///
+/// String literals and comments are left unchanged, so the token never has
+/// to be sent to Postgres from a code span.
+pub(crate) fn rewrite_sqlite_nocase(sql: &str) -> String {
+    let rewritten = rewrite_nocase_idents(sql);
+    if is_create_index(&rewritten) {
+        add_index_nulls_first(&rewritten)
+    } else {
+        rewritten
+    }
+}
+
+/// True when `sql` is a `CREATE INDEX` statement.
+fn is_create_index(sql: &str) -> bool {
+    let i = skip_trivia_idx(sql, 0);
+    if !ident_eq_ci(sql, i, "CREATE") {
+        return false;
+    }
+    let i = skip_trivia_idx(sql, i + "CREATE".len());
+    if ident_eq_ci(sql, i, "UNIQUE") {
+        let i = skip_trivia_idx(sql, i + "UNIQUE".len());
+        return ident_eq_ci(sql, i, "INDEX");
+    }
+    ident_eq_ci(sql, i, "INDEX")
+}
+
+/// Replaces each `ident COLLATE NOCASE` in a code span.
+fn rewrite_nocase_idents(sql: &str) -> String {
+    let mut i = 0;
+    let mut out = String::with_capacity(sql.len() + 16);
+    while i < sql.len() {
+        if let Some(len) = literal_or_comment_len(&sql[i..]) {
+            out.push_str(&sql[i..i + len]);
+            i += len;
+            continue;
+        }
+        if let Some(ident_len) = ident_len_at(sql, i) {
+            let after_ident = i + ident_len;
+            let after_trivia = skip_trivia_idx(sql, after_ident);
+            if ident_eq_ci(sql, after_trivia, "COLLATE") {
+                let after_collate = skip_trivia_idx(sql, after_trivia + "COLLATE".len());
+                if ident_eq_ci(sql, after_collate, "NOCASE") {
+                    let ident = &sql[i..after_ident];
+                    out.push_str("(lower(");
+                    out.push_str(ident);
+                    out.push_str(" COLLATE \"C\"))");
+                    i = after_collate + "NOCASE".len();
+                    continue;
+                }
+            }
+        }
+        let ch = sql[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Byte length of an unquoted identifier starting at `i`.
+fn ident_len_at(sql: &str, i: usize) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    let b = *bytes.get(i)?;
+    if !(b.is_ascii_alphabetic() || b == b'_') || !word_boundary(sql, i.checked_sub(1)) {
+        return None;
+    }
+    let mut j = i + 1;
+    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+        j += 1;
+    }
+    Some(j - i)
+}
+
+/// Appends `NULLS FIRST` to each `CREATE INDEX` key that does not name one.
+///
+/// Host `ORDER BY` desugar uses `NULLS FIRST`. A Postgres btree matches that
+/// order only when the index key says the same thing.
+fn add_index_nulls_first(sql: &str) -> String {
+    let Some(open) = index_column_list_open(sql) else {
+        return sql.to_string();
+    };
+    let Some(close) = matching_paren(sql, open) else {
+        return sql.to_string();
+    };
+    let mut inner = String::new();
+    for (n, part) in split_top_level_commas(&sql[open + 1..close])
+        .into_iter()
+        .enumerate()
+    {
+        if n > 0 {
+            inner.push_str(", ");
+        }
+        let trimmed = part.trim();
+        inner.push_str(trimmed);
+        if !trimmed.to_ascii_uppercase().contains("NULLS") {
+            inner.push_str(" NULLS FIRST");
+        }
+    }
+    let mut out = String::with_capacity(sql.len() + inner.len());
+    out.push_str(&sql[..=open]);
+    out.push_str(&inner);
+    out.push_str(&sql[close..]);
+    out
+}
+
+/// Offset of the `(` that opens a `CREATE INDEX` column list.
+fn index_column_list_open(sql: &str) -> Option<usize> {
+    let mut i = 0;
+    while i < sql.len() {
+        if let Some(len) = literal_or_comment_len(&sql[i..]) {
+            i += len;
+            continue;
+        }
+        if ident_eq_ci(sql, i, "ON") {
+            let mut j = skip_trivia_idx(sql, i + "ON".len());
+            let ident = ident_len_at(sql, j)?;
+            j = skip_trivia_idx(sql, j + ident);
+            if sql.as_bytes().get(j) == Some(&b'(') {
+                return Some(j);
+            }
+        }
+        let ch = sql[i..].chars().next()?;
+        i += ch.len_utf8();
+    }
+    None
+}
+
+/// Offset of the `)` matching `(` at `open`.
+fn matching_paren(sql: &str, open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < sql.len() {
+        if let Some(len) = literal_or_comment_len(&sql[i..]) {
+            i += len;
+            continue;
+        }
+        let ch = sql[i..].chars().next()?;
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += ch.len_utf8();
+    }
+    None
+}
+
+/// Splits `inner` on commas that are not inside parentheses, literals, or comments.
+fn split_top_level_commas(inner: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < inner.len() {
+        if let Some(len) = literal_or_comment_len(&inner[i..]) {
+            i += len;
+            continue;
+        }
+        let ch = inner[i..].chars().next().unwrap_or('\0');
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += ch.len_utf8();
+    }
+    parts.push(&inner[start..]);
+    parts
 }
 
 /// True when `s` starts with JSON-valid flag `flag` (`0` or `1`) at a word boundary.
@@ -2547,13 +2724,31 @@ mod nocase_index_postgres {
 
     #[test]
     fn postgres_dml_drops_sqlite_nocase_order_and_sqlite_keeps_it() {
-        let sql = "SELECT title, uuid FROM books ORDER BY title COLLATE NOCASE, uuid";
+        let sql = "SELECT title, uuid FROM books ORDER BY title COLLATE NOCASE NULLS FIRST, uuid NULLS FIRST";
         let postgres = lower_canonical_sql(DatabaseBackend::Postgres, sql);
         assert!(
             !postgres.to_ascii_uppercase().contains("NOCASE"),
             "{postgres}"
         );
+        assert!(
+            postgres
+                .contains("ORDER BY (lower(title COLLATE \"C\")) NULLS FIRST, uuid NULLS FIRST"),
+            "{postgres}"
+        );
         let sqlite = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
         assert!(sqlite.to_ascii_uppercase().contains("NOCASE"), "{sqlite}");
+        assert!(!sqlite.contains("lower(title)"), "{sqlite}");
+        let literal = lower_canonical_sql(
+            DatabaseBackend::Postgres,
+            "SELECT 'title COLLATE NOCASE' FROM books ORDER BY title COLLATE NOCASE",
+        );
+        assert!(
+            literal.contains("'title COLLATE NOCASE'"),
+            "literals stay intact: {literal}"
+        );
+        assert!(
+            literal.contains("(lower(title COLLATE \"C\"))"),
+            "{literal}"
+        );
     }
 }

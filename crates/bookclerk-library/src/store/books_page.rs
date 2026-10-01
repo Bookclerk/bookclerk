@@ -169,6 +169,8 @@ pub(crate) fn page_statements(
     let page_where = where_sql(&mut page_binds, uuid_count, has_account, has_status);
     let limit = page_binds.next();
     let offset = page_binds.next();
+    // `COLLATE NOCASE` is the SQLite spelling of ASCII case-fold order.
+    // Postgres lowering rewrites it to `lower(title COLLATE "C")`.
     let page_sql = format!(
         "SELECT * FROM books{page_where} ORDER BY title COLLATE NOCASE, uuid LIMIT {limit} OFFSET {offset}"
     );
@@ -376,6 +378,144 @@ mod tests {
                 .await
                 .expect("sqlite"),
         )
+    }
+
+    /// ASCII case-fold order, then `uuid`. Binary order would put `Gamma`
+    /// before `beta` because `G` < `b`.
+    async fn assert_mixed_case_pages(store: &LibraryStore) {
+        store
+            .upsert_account("case", "us", None, false, "audible")
+            .await
+            .unwrap();
+        for (uuid, title) in [
+            ("u-gamma", "Gamma"),
+            ("u-beta", "beta"),
+            ("u-BETA", "BETA"),
+            ("u-alpha", "alpha"),
+            ("u-Alpha", "Alpha"),
+        ] {
+            let mut book = NewBook::minimal(uuid, "case", "us", title);
+            book.uuid = Some(uuid.to_string());
+            store.upsert_book(&book).await.unwrap();
+        }
+        let titles = |page: BookPage| -> Vec<String> {
+            page.books.into_iter().map(|book| book.title).collect()
+        };
+        let all = store
+            .list_books_filtered_page(Some("case"), None, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(all.total, 5, "unpaged match count");
+        assert_eq!(
+            titles(all),
+            ["Alpha", "alpha", "BETA", "beta", "Gamma"],
+            "case-fold order then uuid"
+        );
+        let boundary = store
+            .list_books_filtered_page(Some("case"), None, 2, 2)
+            .await
+            .unwrap();
+        assert_eq!(boundary.total, 5);
+        assert_eq!(
+            titles(boundary),
+            ["BETA", "beta"],
+            "offset 2 is the first row after the alpha group"
+        );
+        let last = store
+            .list_books_filtered_page(Some("case"), None, 1, 4)
+            .await
+            .unwrap();
+        assert_eq!(titles(last), ["Gamma"]);
+    }
+
+    #[tokio::test]
+    async fn mixed_case_titles_share_page_boundaries() {
+        let store = memory_store().await;
+        assert_mixed_case_pages(&store).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
+    async fn postgres_mixed_case_titles_share_page_boundaries() {
+        let Some(store) = postgres_page_store().await else {
+            return;
+        };
+        assert_mixed_case_pages(&store).await;
+        let plan = postgres_page_plan(&store).await;
+        assert!(
+            plan.contains("idx_books_page"),
+            "expression index was not used:\n{plan}"
+        );
+        assert!(
+            !plan.contains("Sort"),
+            "mixed-case page order sorted instead of using the expression index:\n{plan}"
+        );
+    }
+
+    async fn postgres_page_store() -> Option<LibraryStore> {
+        let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let Some(url) = url else {
+            assert!(
+                std::env::var("BOOKCLERK_REQUIRE_POSTGRES_TESTS")
+                    .ok()
+                    .as_deref()
+                    != Some("1"),
+                "BOOKCLERK_TEST_POSTGRES_URL is required when BOOKCLERK_REQUIRE_POSTGRES_TESTS=1"
+            );
+            return None;
+        };
+        let db_name = format!("page_{}", uuid::Uuid::new_v4().as_simple());
+        let admin = sea_orm::Database::connect(url.as_str())
+            .await
+            .unwrap_or_else(|err| panic!("connect BOOKCLERK_TEST_POSTGRES_URL: {err}"));
+        let backend = admin.get_database_backend();
+        admin
+            .execute_raw(Statement::from_string(
+                backend,
+                format!("CREATE DATABASE {db_name}"),
+            ))
+            .await
+            .unwrap_or_else(|err| panic!("CREATE DATABASE {db_name}: {err}"));
+        let (base, query) = match url.split_once('?') {
+            Some((base, q)) => (base, Some(q)),
+            None => (url.as_str(), None),
+        };
+        let trimmed = base.trim_end_matches('/');
+        let slash = trimmed
+            .rfind('/')
+            .unwrap_or_else(|| panic!("BOOKCLERK_TEST_POSTGRES_URL has no database path: {url}"));
+        let db_url = match query {
+            Some(q) => format!("{}/{db_name}?{q}", &trimmed[..slash]),
+            None => format!("{}/{db_name}", &trimmed[..slash]),
+        };
+        let db = sea_orm::Database::connect(&db_url)
+            .await
+            .unwrap_or_else(|err| panic!("connect throwaway {db_name}: {err}"));
+        crate::apply_host_schema(&db)
+            .await
+            .expect("apply host schema");
+        Some(LibraryStore::from_connection(db).with_in_process_sql())
+    }
+
+    async fn postgres_page_plan(store: &LibraryStore) -> String {
+        let sql = "EXPLAIN SELECT * FROM books WHERE account_id = 'case' \
+            ORDER BY (lower(title COLLATE \"C\")) NULLS FIRST, uuid NULLS FIRST \
+            LIMIT 2 OFFSET 2";
+        let rows = ConnectionTrait::query_all_raw(
+            &store.db,
+            Statement::from_string(sea_orm::DatabaseBackend::Postgres, sql.to_string()),
+        )
+        .await
+        .expect("explain");
+        let mut lines = Vec::new();
+        for row in rows {
+            if let Ok(text) = row.try_get_by_index::<String>(0) {
+                lines.push(text);
+            }
+        }
+        lines.join("\n")
     }
 
     fn envelope_book(i: u32) -> (NewBook, AcquireStatus) {
