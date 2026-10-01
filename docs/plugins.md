@@ -961,10 +961,20 @@ a binary installed elsewhere. For `runtime = "workerd"`, the host resolves
 `bookclerk-workerd` beside itself; that launcher requires the pinned Cloudflare
 `workerd` binary (`cargo ensure-workerd` / platform package) and loads
 `[workerd]` + `modules/` into a real isolate. `compatibility_date` must be a
-real calendar `YYYY-MM-DD`. A date newer than the Bookclerk pin (`2026-08-01`)
-is rejected; an equal or older date loads. The pin itself is
+real calendar `YYYY-MM-DD`. workerd turns that date into runtime behavior: each
+compatibility flag whose default-on date is on or before it is enabled, and the
+binary refuses to start when the date is newer than the
+`supported-compatibility-date` baked into that build. Wrangler does not pass
+that newer date through. It warns and starts at the newest date the installed
+runtime supports. Bookclerk does the same with this release's pin
+(`2026-08-01`): `check` and load warn, then the isolate runs at the pin. An
+equal or older date is passed through unchanged. The pin itself is
 bumped on a **7-day publish cooldown** by CI — see
-[packaging.md](packaging.md#cloudflare-workerd-pin). `[[kv_namespaces]]` is a
+[packaging.md](packaging.md#cloudflare-workerd-pin). Bookclerk's own surfaces
+(events, jobs, and later KV and queues) use that same applied date. A behavior
+change ships with an enable date in a Bookclerk release, and a plugin gets the
+behavior of the date this release actually applied — not a second calendar, and
+not the raw author date when it is past the pin. `[[kv_namespaces]]` is a
 durable KV binding: declaring it is legal, and load or spawn fails with
 "not implemented yet". `[[databases]]` does not replace it. `[queues]` is the
 same kind of declaration (producers and consumers): legal in `plugin.toml`,

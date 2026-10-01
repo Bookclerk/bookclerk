@@ -12,10 +12,10 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import {
+  applyAuthorCompatibilityDate,
   declaresPython,
   moduleLoadKey,
   unimplementedSurface,
-  validateAuthorCompatibilityDate,
   validateAuthorCompatibilityFlags,
   workerdModuleIsEmbedded,
   type Manifest,
@@ -370,7 +370,8 @@ export function materializeConfig(
   if (!workerd) {
     throw new Error('missing [workerd] table');
   }
-  validateAuthorCompatibilityDate(workerd.compatibility_date);
+  const appliedDate = applyAuthorCompatibilityDate(workerd.compatibility_date);
+  if (appliedDate.warning) console.warn(appliedDate.warning);
   const root = fs.realpathSync(path.resolve(pluginRoot));
   const sdkRoot = path.resolve(options.sdkRoot ?? packageRoot());
   const stateDir = options.stateDir
@@ -584,7 +585,7 @@ export function materializeConfig(
   }
   const bridgeTokenBinding = `(name = "BRIDGE_TOKEN", text = "${escapeCapnp(bridgeToken)}")`;
 
-  const compatDate = escapeCapnp(workerd.compatibility_date);
+  const compatDate = escapeCapnp(appliedDate.applied);
   const config = `using Workerd = import "/workerd/workerd.capnp";
 
 const bookclerkPlugin :Workerd.Config = (

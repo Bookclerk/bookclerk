@@ -1,9 +1,12 @@
 //! Author compatibility date, flag allowlist, and module-extension rules.
 //!
 //! These match the pinned local `workerd` binary. [`crate::PluginManifest::validate`]
-//! and the TypeScript / Python author checkers enforce the same rules.
-//! `[[kv_namespaces]]` and `[queues]` are not rejected here: they stay legal
-//! declarations and fail later at load or spawn with "not implemented yet".
+//! and the TypeScript / Python author checkers enforce the same calendar, flag,
+//! and module rules. A `compatibility_date` newer than the pin stays legal:
+//! check and load warn, then run at the pin, because workerd refuses a date
+//! past the one baked into the binary. `[[kv_namespaces]]` and `[queues]` are
+//! not rejected here: they stay legal declarations and fail later at load or
+//! spawn with "not implemented yet".
 
 use crate::error::{Error, Result};
 use crate::types::ModuleSpec;
@@ -11,8 +14,8 @@ use crate::types::ModuleSpec;
 /// Newest `compatibility_date` this pin's `workerd` binary can honor.
 ///
 /// Kept equal to `BUNDLED_WORKERD_COMPAT_DATE` / `workerd-pin.json`
-/// `bundled_compat_date`. Older calendar dates stay valid. Newer dates are
-/// rejected rather than warned.
+/// `bundled_compat_date`. Older calendar dates are passed through. A newer
+/// date warns and falls back to this value when the isolate is configured.
 pub const WORKERD_PIN_COMPAT_DATE: &str = "2026-08-01";
 
 /// [`WORKERD_PIN_COMPAT_DATE`] as a calendar tuple for ordering.
@@ -25,7 +28,48 @@ const PIN_COMPAT_YMD: (i32, u32, u32) = (2026, 8, 1);
 /// list.
 pub const PYTHON_COMPATIBILITY_FLAGS: &[&str] = &["python_workers", "disable_python_external_sdk"];
 
-/// Rejects a `compatibility_date` that is not `YYYY-MM-DD` or is newer than
+/// Date written into the workerd config, and a fallback warning when clamped.
+///
+/// Bookclerk host surfaces (events, jobs, and later bindings) must follow
+/// [`applied`](Self::applied). That is the date workerd actually runs, so a
+/// release gates its own behavior changes on the same calendar the isolate uses.
+pub struct AppliedCompatibilityDate {
+    /// Author date when it is on or before the pin, otherwise [`WORKERD_PIN_COMPAT_DATE`].
+    pub applied: String,
+    /// Wrangler-style warning when [`applied`](Self::applied) was clamped.
+    ///
+    /// `None` when the author date is equal to or older than the pin.
+    pub warning: Option<String>,
+}
+
+/// Rejects a `compatibility_date` that is not a real `YYYY-MM-DD`.
+///
+/// A date newer than [`WORKERD_PIN_COMPAT_DATE`] is still valid. Load falls
+/// back to the pin and warns; see [`apply_author_compatibility_date`].
+///
+/// # Arguments
+///
+/// * `date` - Author `workerd.compatibility_date` string, untrimmed.
+///
+/// # Errors
+///
+/// Returns [`Error::Message`] when the string is not a real calendar date.
+pub fn validate_author_compatibility_date(date: &str) -> Result<()> {
+    if parse_calendar_date(date).is_none() {
+        return Err(Error::message(
+            "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD",
+        ));
+    }
+    Ok(())
+}
+
+/// Resolves an author `compatibility_date` against this Bookclerk release.
+///
+/// workerd enables each compatibility flag whose default-on date is on or
+/// before the date it is given, and it refuses to start when that date is
+/// newer than `supported-compatibility-date.txt` in the binary. Wrangler
+/// works around that refusal by warning and starting at the newest date the
+/// installed runtime supports. This function does the same with
 /// [`WORKERD_PIN_COMPAT_DATE`].
 ///
 /// # Arguments
@@ -34,20 +78,32 @@ pub const PYTHON_COMPATIBILITY_FLAGS: &[&str] = &["python_workers", "disable_pyt
 ///
 /// # Errors
 ///
-/// Returns [`Error::Message`] when the string is not a real calendar date or
-/// is newer than the pin. Equal and older dates succeed.
-pub fn validate_author_compatibility_date(date: &str) -> Result<()> {
-    let Some(parsed) = parse_calendar_date(date) else {
-        return Err(Error::message(
-            "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD",
-        ));
-    };
+/// Returns [`Error::Message`] when the string is not a real calendar date.
+pub fn apply_author_compatibility_date(date: &str) -> Result<AppliedCompatibilityDate> {
+    validate_author_compatibility_date(date)?;
+    let parsed = parse_calendar_date(date).ok_or_else(|| {
+        Error::message("plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD")
+    })?;
     if parsed > PIN_COMPAT_YMD {
-        return Err(Error::message(format!(
-            "plugin.toml: workerd.compatibility_date `{date}` is newer than the pinned workerd compatibility date {WORKERD_PIN_COMPAT_DATE}"
-        )));
+        return Ok(AppliedCompatibilityDate {
+            applied: WORKERD_PIN_COMPAT_DATE.to_string(),
+            warning: Some(compatibility_date_fallback_warning(date)),
+        });
     }
-    Ok(())
+    Ok(AppliedCompatibilityDate {
+        applied: date.to_string(),
+        warning: None,
+    })
+}
+
+/// Wrangler-shaped warning for a date this pin cannot run exactly.
+fn compatibility_date_fallback_warning(requested: &str) -> String {
+    format!(
+        "The latest compatibility date supported by the installed Bookclerk workerd runtime is \"{WORKERD_PIN_COMPAT_DATE}\",\n\
+but you've requested \"{requested}\". Falling back to \"{WORKERD_PIN_COMPAT_DATE}\"...\n\
+Features enabled by your requested compatibility date may not be available.\n\
+Upgrade Bookclerk to a release that supports this date."
+    )
 }
 
 /// Rejects author flags outside [`PYTHON_COMPATIBILITY_FLAGS`], a partial
@@ -263,11 +319,22 @@ mod tests {
     }
 
     #[test]
-    fn older_and_equal_dates_pass_newer_fails() {
+    fn older_and_equal_dates_pass_through_newer_falls_back() {
         assert!(validate_author_compatibility_date("2024-09-23").is_ok());
         assert!(validate_author_compatibility_date(WORKERD_PIN_COMPAT_DATE).is_ok());
-        let err = validate_author_compatibility_date("2026-08-02").unwrap_err();
-        assert!(err.to_string().contains("newer than"), "{err}");
+        assert!(validate_author_compatibility_date("2026-08-02").is_ok());
+        let older = apply_author_compatibility_date("2024-09-23").expect("older date");
+        assert_eq!(older.applied, "2024-09-23");
+        assert!(older.warning.is_none());
+        let equal = apply_author_compatibility_date(WORKERD_PIN_COMPAT_DATE).expect("pin date");
+        assert_eq!(equal.applied, WORKERD_PIN_COMPAT_DATE);
+        assert!(equal.warning.is_none());
+        let newer = apply_author_compatibility_date("2026-08-02").expect("newer date");
+        assert_eq!(newer.applied, WORKERD_PIN_COMPAT_DATE);
+        let warning = newer.warning.expect("fallback warning");
+        assert!(warning.contains("Falling back"), "{warning}");
+        assert!(warning.contains("2026-08-02"), "{warning}");
+        assert!(warning.contains(WORKERD_PIN_COMPAT_DATE), "{warning}");
     }
 
     #[test]

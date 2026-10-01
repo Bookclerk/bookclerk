@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_abi::{Entrypoint, PluginDescribe};
 use bookclerk_plugin_manifest::{
-    manifest_needs_python, module_load_key, validate_author_compatibility_date,
+    apply_author_compatibility_date, manifest_needs_python, module_load_key,
     validate_author_compatibility_flags, with_python_runtime_hosts, workerd_module_is_embedded,
     workerd_network_allow, CidrGrant, EffectiveWorkerdLimits, EgressPolicy, NetworkMode,
     PluginManifest,
@@ -1251,7 +1251,10 @@ pub fn materialize(
         .workerd
         .as_ref()
         .context("missing [workerd] table")?;
-    validate_author_compatibility_date(&workerd.compatibility_date)?;
+    let applied_date = apply_author_compatibility_date(&workerd.compatibility_date)?;
+    if let Some(warning) = &applied_date.warning {
+        tracing::warn!("{warning}");
+    }
 
     let state_dir = resolve_state_dir(root, state_dir)?;
     let bookclerk_dir = ensure_dir_under(&state_dir, ".bookclerk")?;
@@ -1552,7 +1555,7 @@ const bridgeWorker :Workerd.Worker = (
 );
 "#,
         socket_line = socket_line,
-        compat_date = escape_capnp(&workerd.compatibility_date),
+        compat_date = escape_capnp(&applied_date.applied),
         bridge_flags = bridge_flags,
         plugin_flags = flags_line,
         modules = module_embeds.join(",\n    "),
@@ -1796,6 +1799,58 @@ mode = "deny"
         assert!(
             message.contains("must include"),
             "silent append would have succeeded: {message}"
+        );
+    }
+
+    #[test]
+    fn materialize_falls_back_when_compatibility_date_is_newer_than_pin() {
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits, WORKERD_PIN_COMPAT_DATE};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _modules = create_dir_under(dir.path(), "modules");
+        write_under(
+            dir.path(),
+            Path::new("modules").join("index.js"),
+            "export default {};",
+        );
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-09-30"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect("newer compatibility date still parses");
+        let generated = materialize(
+            dir.path(),
+            &manifest,
+            &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            None,
+            "test-bridge-token",
+            None,
+        )
+        .expect("newer date loads at the pin");
+        let capnp = read_under(&generated.state_dir, &generated.config_path);
+        let pinned = format!("compatibilityDate = \"{WORKERD_PIN_COMPAT_DATE}\"");
+        assert!(
+            capnp.contains(&pinned),
+            "workerd config should run at the pin:\n{capnp}"
+        );
+        assert!(
+            !capnp.contains("2026-09-30"),
+            "requested date must not be passed to workerd:\n{capnp}"
         );
     }
 

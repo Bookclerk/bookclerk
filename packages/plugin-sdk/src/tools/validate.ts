@@ -418,11 +418,22 @@ export const PYTHON_COMPATIBILITY_FLAGS = [
   "disable_python_external_sdk",
 ] as const;
 
+/** Date written into the workerd config, plus a fallback warning when clamped. */
+export interface AppliedCompatibilityDate {
+  /** Author date on or before the pin, otherwise {@link WORKERD_PIN_COMPAT_DATE}. */
+  applied: string;
+  /** Wrangler-style warning when `applied` was clamped. `null` otherwise. */
+  warning: string | null;
+}
+
 /**
- * Rejects a compatibility date that is not `YYYY-MM-DD` or is newer than the pin.
+ * Rejects a compatibility date that is not a real `YYYY-MM-DD`.
+ *
+ * A date newer than the pin is still valid. Load falls back and warns; see
+ * {@link applyAuthorCompatibilityDate}.
  *
  * @param date - `workerd.compatibility_date`.
- * @throws {Error} When the date is not a calendar day on or before the pin.
+ * @throws {Error} When the date is not a calendar day.
  */
 export function validateAuthorCompatibilityDate(date: string): void {
   if (!isCalendarDate(date)) {
@@ -430,11 +441,40 @@ export function validateAuthorCompatibilityDate(date: string): void {
       "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD",
     );
   }
+}
+
+/**
+ * Resolves an author compatibility date against this Bookclerk release.
+ *
+ * workerd enables flags whose default-on date is on or before the date it is
+ * given, and refuses a date newer than the one baked into the binary. Wrangler
+ * warns and starts at the newest date that binary supports. Bookclerk host
+ * surfaces must use `applied`, the same date the isolate runs.
+ *
+ * @param date - `workerd.compatibility_date`.
+ * @returns The date to pass to workerd, and a warning when it was clamped.
+ * @throws {Error} When the date is not a calendar day.
+ */
+export function applyAuthorCompatibilityDate(
+  date: string,
+): AppliedCompatibilityDate {
+  validateAuthorCompatibilityDate(date);
   if (date > WORKERD_PIN_COMPAT_DATE) {
-    throw new Error(
-      `plugin.toml: workerd.compatibility_date \`${date}\` is newer than the pinned workerd compatibility date ${WORKERD_PIN_COMPAT_DATE}`,
-    );
+    return {
+      applied: WORKERD_PIN_COMPAT_DATE,
+      warning: compatibilityDateFallbackWarning(date),
+    };
   }
+  return { applied: date, warning: null };
+}
+
+function compatibilityDateFallbackWarning(requested: string): string {
+  return (
+    `The latest compatibility date supported by the installed Bookclerk workerd runtime is "${WORKERD_PIN_COMPAT_DATE}",\n` +
+    `but you've requested "${requested}". Falling back to "${WORKERD_PIN_COMPAT_DATE}"...\n` +
+    "Features enabled by your requested compatibility date may not be available.\n" +
+    "Upgrade Bookclerk to a release that supports this date."
+  );
 }
 
 /**

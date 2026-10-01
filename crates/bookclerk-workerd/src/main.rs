@@ -3,8 +3,8 @@
 //! Speaks the same Workers RPC stdio ABI as native guests. Loads author modules
 //! via a pinned Cloudflare `workerd` binary, applies domain-allowlisted egress
 //! (redirect hops allowed). A `compatibility_date` newer than the bundled pin
-//! is rejected. `[[kv_namespaces]]` and `[queues]` fail load with
-//! "not implemented yet".
+//! warns and loads at the pin. `[[kv_namespaces]]` and `[queues]` fail load
+//! with "not implemented yet".
 //!
 //! Under Linux Landlock `OutboundListen`, only `bind(port=0)` is allowed — the
 //! launcher binds the bridge RPC socket itself and passes it to workerd via

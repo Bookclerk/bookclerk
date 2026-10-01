@@ -53,9 +53,10 @@ def test_check_rejects_logo_parent():
         check_plugin(FIXTURES / "invalid-logo-parent")
 
 
-def test_check_rejects_future_compatibility_date():
-    with pytest.raises(ValueError, match="newer than"):
-        check_plugin(FIXTURES / "invalid-compat-date-future")
+def test_check_warns_when_compatibility_date_is_newer_than_pin(capsys):
+    result = check_plugin(FIXTURES / "valid-compat-date-future")
+    assert result.startswith("ok ")
+    assert "Falling back" in capsys.readouterr().err
 
 
 def test_check_rejects_non_calendar_compatibility_date():
@@ -596,6 +597,40 @@ def test_materialize_nested_modules_and_double_dot_name(tmp_path: Path):
     text = generated.config_path.read_text(encoding="utf-8")
     assert "/dist/modules/nested/edition..2.js" in text
     shutil.rmtree(generated.state_dir, ignore_errors=True)
+
+
+def test_materialize_falls_back_when_compatibility_date_is_newer_than_pin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
+    from bookclerk_plugin_sdk.tools import WORKERD_PIN_COMPAT_DATE
+
+    plugin = tmp_path / "plugin"
+    modules = plugin / "modules"
+    modules.mkdir(parents=True)
+    (modules / "index.js").write_text("export default class X {}\n", encoding="utf-8")
+    generated = materialize_config(
+        plugin,
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "workerd",
+            "entrypoints": ["cli"],
+            "workerd": {
+                "compatibility_date": "2026-09-30",
+                "main_module": "index.js",
+                "modules_dir": "modules",
+                "entrypoint": "default",
+            },
+            "capabilities": {"network": {"mode": "deny"}},
+        },
+        listen_port=0,
+        bridge_token="token",
+    )
+    text = generated.config_path.read_text(encoding="utf-8")
+    assert f'compatibilityDate = "{WORKERD_PIN_COMPAT_DATE}"' in text
+    assert "2026-09-30" not in text
+    assert "Falling back" in capsys.readouterr().err
 
 
 def test_workerd_cache_and_currency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

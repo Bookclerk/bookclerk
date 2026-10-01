@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import secrets
+import sys
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -23,10 +24,10 @@ from ..path_guard import (
     copy_file_under,
 )
 from ..tools import (
+    apply_author_compatibility_date,
     declares_python,
     module_load_key,
     unimplemented_surface,
-    validate_author_compatibility_date,
     validate_author_compatibility_flags,
     workerd_module_is_embedded,
 )
@@ -393,7 +394,11 @@ def materialize_config(
     workerd = manifest.get("workerd")
     if not isinstance(workerd, dict):
         raise ValueError("missing [workerd] table")
-    validate_author_compatibility_date(str(workerd.get("compatibility_date") or ""))
+    applied_date = apply_author_compatibility_date(
+        str(workerd.get("compatibility_date") or "")
+    )
+    if applied_date.warning:
+        print(applied_date.warning, file=sys.stderr)
 
     plugin_root = Path(plugin_root).resolve()
     sdk_root = Path(sdk_root or package_root()).resolve()
@@ -574,7 +579,7 @@ def materialize_config(
         f'(name = "BRIDGE_TOKEN", text = "{escape_capnp(bridge_token)}")'
     )
 
-    compat_date = escape_capnp(str(workerd["compatibility_date"]))
+    compat_date = escape_capnp(applied_date.applied)
     modules_joined = ",\n    ".join(module_embeds)
     adapter_modules_joined = ",\n    ".join(adapter_modules)
     adapter_bindings = ",\n    ".join(

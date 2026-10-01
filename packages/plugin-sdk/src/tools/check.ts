@@ -10,6 +10,7 @@ import { assertPathInside, copyFileUnder, ensureDirUnder, refuseSymlinkExistingC
 import {
   declaresPython,
   moduleLoadKey,
+  applyAuthorCompatibilityDate,
   validateAuthorCompatibilityFlags,
   validateLogo,
   validateManifest,
@@ -148,6 +149,10 @@ export function checkPlugin(pluginDir: string): string {
   }
   const runtime = m.runtime ?? "native";
   if (runtime === "workerd") {
+    const workerd = m.workerd;
+    if (!workerd) throw new Error("workerd config missing");
+    const applied = applyAuthorCompatibilityDate(workerd.compatibility_date);
+    if (applied.warning) console.warn(applied.warning);
     const modulesDir = assertPathInside(root, m.workerd?.modules_dir ?? "modules");
     if (!fs.existsSync(modulesDir) || !fs.statSync(modulesDir).isDirectory()) {
       throw new Error(`workerd modules_dir missing: ${modulesDir}`);

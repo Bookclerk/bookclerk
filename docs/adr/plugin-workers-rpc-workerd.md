@@ -100,7 +100,11 @@ contract must be **identical** across runtimes.
    capability widening re-prompts. The same covering grant is enforced at every
    external spawn and at privileged delivery (`config` / `secrets` / `work_fs` /
    `oauth`). Native outbound shows an explicit warning.
-8. **`compatibility_date` newer than bundled workerd:** warn, still load.
+8. **`compatibility_date` newer than bundled workerd:** warn, still load, at the
+   pin date. workerd refuses a date past `supported-compatibility-date.txt` in
+   the binary (a compatibility date selects breaking runtime changes). The
+   author date stays in `plugin.toml`. Bookclerk host surfaces use the applied
+   pin date, so later behavior changes ship with an enable date in a release.
 9. **`[workerd].limits`:** local workerd does **not** Cap'n Proto-enforce
    `cpuMs` / `subRequests`. Bookclerk clamps `cpu_ms` / `subrequests` (defaults
    and hard caps), injects `subrequests` into egress policy JSON, and the

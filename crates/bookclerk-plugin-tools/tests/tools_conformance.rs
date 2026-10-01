@@ -120,8 +120,18 @@ fn check_rejects_logo_parent() {
 }
 
 #[test]
-fn check_rejects_future_compatibility_date() {
-    assert_check_fails("invalid-compat-date-future", "newer than");
+fn check_warns_when_compatibility_date_is_newer_than_pin() {
+    let out = check_fixture("valid-compat-date-future");
+    assert!(
+        out.status.success(),
+        "newer date should load: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("Falling back"),
+        "stderr missing fallback warning: {err}"
+    );
 }
 
 #[test]

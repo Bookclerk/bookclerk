@@ -20,7 +20,7 @@ import sys
 import time
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .path_guard import (
     resolve_under,
@@ -61,25 +61,69 @@ def _is_calendar_date(text: str) -> bool:
     return 1 <= day <= max_day
 
 
+class AppliedCompatibilityDate(NamedTuple):
+    """Date passed to workerd, and a fallback warning when the author date is newer.
+
+    Host surfaces (events, jobs, and later bindings) must follow ``applied``.
+    That is the date workerd actually runs.
+    """
+
+    applied: str
+    warning: str | None
+
+
 def validate_author_compatibility_date(date: str) -> None:
-    """Reject a compatibility date that is not ``YYYY-MM-DD`` or is newer than the pin.
+    """Reject a compatibility date that is not a real ``YYYY-MM-DD``.
+
+    A date newer than the pin is still valid. Load falls back and warns; see
+    :func:`apply_author_compatibility_date`.
 
     Args:
         date: ``workerd.compatibility_date``.
 
     Raises:
-        ValueError: When the date is not a calendar day on or before the pin.
+        ValueError: When the date is not a calendar day.
     """
     if not _is_calendar_date(date):
         raise ValueError(
             "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD"
         )
+
+
+def apply_author_compatibility_date(date: str) -> AppliedCompatibilityDate:
+    """Resolve an author compatibility date against this Bookclerk release.
+
+    workerd enables flags whose default-on date is on or before the date it is
+    given, and refuses a date newer than the one baked into the binary.
+    Wrangler warns and starts at the newest date that binary supports.
+
+    Args:
+        date: ``workerd.compatibility_date``.
+
+    Returns:
+        The date to pass to workerd, and a warning when it was clamped.
+
+    Raises:
+        ValueError: When the date is not a calendar day.
+    """
+    validate_author_compatibility_date(date)
     if date > WORKERD_PIN_COMPAT_DATE:
-        raise ValueError(
-            "plugin.toml: workerd.compatibility_date "
-            f"`{date}` is newer than the pinned workerd compatibility date "
-            f"{WORKERD_PIN_COMPAT_DATE}"
+        return AppliedCompatibilityDate(
+            WORKERD_PIN_COMPAT_DATE,
+            _compatibility_date_fallback_warning(date),
         )
+    return AppliedCompatibilityDate(date, None)
+
+
+def _compatibility_date_fallback_warning(requested: str) -> str:
+    return (
+        "The latest compatibility date supported by the installed Bookclerk "
+        f'workerd runtime is "{WORKERD_PIN_COMPAT_DATE}",\n'
+        f'but you\'ve requested "{requested}". Falling back to '
+        f'"{WORKERD_PIN_COMPAT_DATE}"...\n'
+        "Features enabled by your requested compatibility date may not be available.\n"
+        "Upgrade Bookclerk to a release that supports this date."
+    )
 
 
 def validate_author_compatibility_flags(flags: list[Any], python: bool) -> None:
@@ -672,6 +716,9 @@ def check_plugin(plugin_dir: Path) -> str:
     runtime = m.get("runtime") or "native"
     if runtime == "workerd":
         w = m["workerd"]
+        applied = apply_author_compatibility_date(str(w.get("compatibility_date") or ""))
+        if applied.warning:
+            print(applied.warning, file=sys.stderr)
         modules_dir = _workerd_modules_dir(root, m)
         if not modules_dir.is_dir():
             raise FileNotFoundError(f"workerd modules_dir missing: {modules_dir}")

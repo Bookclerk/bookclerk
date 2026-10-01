@@ -2099,10 +2099,13 @@ mode = "deny"
     }
 
     #[test]
-    fn compatibility_date_rejects_newer_than_pin_and_non_dates() {
+    fn compatibility_date_accepts_newer_than_pin_and_rejects_non_dates() {
         let future = PluginManifest::parse(&workerd_body("").replace("2026-08-01", "2026-08-02"))
-            .expect_err("newer date");
-        assert!(future.to_string().contains("newer than"), "{future}");
+            .expect("newer date stays legal");
+        assert_eq!(
+            future.workerd.expect("workerd").compatibility_date,
+            "2026-08-02"
+        );
         let shape = PluginManifest::parse(&workerd_body("").replace("2026-08-01", "2026-8-1"))
             .expect_err("unpadded");
         assert!(shape.to_string().contains("YYYY-MM-DD"), "{shape}");

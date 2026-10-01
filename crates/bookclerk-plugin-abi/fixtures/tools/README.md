@@ -13,7 +13,7 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `invalid-outbound-no-domains/` | `check` fails (outbound without domains) |
 | `invalid-logo-javascript/` | `check` fails (`javascript:` logo) |
 | `invalid-logo-parent/` | `check` fails (`..` in embedded logo path) |
-| `invalid-compat-date-future/` | `check` fails (date newer than the workerd pin) |
+| `valid-compat-date-future/` | `check` ok, and warns that load falls back to the workerd pin |
 | `invalid-compat-date-shape/` | `check` fails (not a calendar `YYYY-MM-DD`) |
 | `invalid-compat-flag/` | `check` fails (flag outside the Python allowlist) |
 | `invalid-compat-experimental/` | `check` fails (`experimental` is host-only) |

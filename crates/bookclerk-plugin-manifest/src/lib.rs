@@ -76,9 +76,9 @@ pub use logo::{
 };
 pub use types::*;
 pub use workerd_contract::{
-    module_load_key, validate_author_compatibility_date, validate_author_compatibility_flags,
-    validate_module_declarations, workerd_module_is_embedded, PYTHON_COMPATIBILITY_FLAGS,
-    WORKERD_PIN_COMPAT_DATE,
+    apply_author_compatibility_date, module_load_key, validate_author_compatibility_date,
+    validate_author_compatibility_flags, validate_module_declarations, workerd_module_is_embedded,
+    AppliedCompatibilityDate, PYTHON_COMPATIBILITY_FLAGS, WORKERD_PIN_COMPAT_DATE,
 };
 
 /// Embedded JSON Schema text for authoring tools (`check` in TS/Python SDKs).

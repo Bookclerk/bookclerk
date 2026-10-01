@@ -30,7 +30,7 @@ run(["check", path.join(fixtures, "invalid-native-with-domains")], false);
 run(["check", path.join(fixtures, "invalid-logo-javascript")], false);
 run(["check", path.join(fixtures, "invalid-logo-vbscript")], false);
 run(["check", path.join(fixtures, "invalid-logo-parent")], false);
-run(["check", path.join(fixtures, "invalid-compat-date-future")], false, "newer than");
+run(["check", path.join(fixtures, "valid-compat-date-future")], true, "Falling back");
 run(["check", path.join(fixtures, "invalid-compat-date-shape")], false, "YYYY-MM-DD");
 run(["check", path.join(fixtures, "invalid-compat-flag")], false, "not allowed");
 run(["check", path.join(fixtures, "invalid-compat-experimental")], false, "host-only");

@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_manifest::{
-    module_load_key, parse, validate_author_compatibility_flags, workerd_module_is_embedded,
-    Entrypoint, PluginManifest, PluginRuntimeKind,
+    apply_author_compatibility_date, module_load_key, parse, validate_author_compatibility_flags,
+    workerd_module_is_embedded, Entrypoint, PluginManifest, PluginRuntimeKind,
 };
 
 use bookclerk_plugin_sdk::{Result, SdkError};
@@ -71,6 +71,11 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
                 .workerd
                 .as_ref()
                 .ok_or_else(|| SdkError::message("workerd config missing"))?;
+            if let Ok(applied) = apply_author_compatibility_date(&w.compatibility_date) {
+                if let Some(warning) = applied.warning {
+                    eprintln!("{warning}");
+                }
+            }
             let modules_dir = plugin_dir.join(&w.modules_dir);
             if !modules_dir.is_dir() {
                 return Err(SdkError::message(format!(
