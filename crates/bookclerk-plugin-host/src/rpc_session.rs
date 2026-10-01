@@ -1980,9 +1980,10 @@ fn missing_entrypoint(name: &str) -> PluginError {
 /// journal. `DeleteAppContainerProfile` does not remove package-SID ACEs.
 #[cfg(windows)]
 struct WindowsPackageCleanup {
-    gateway: Option<bookclerk_sandbox::spawn::AppContainerSession>,
-    guest: Option<bookclerk_sandbox::spawn::AppContainerSession>,
-    journal: crate::spawn_stdio::AclJournal,
+    // Underscore names: nothing reads these. Drop still runs, profiles then journal.
+    _gateway: Option<bookclerk_sandbox::spawn::AppContainerSession>,
+    _guest: Option<bookclerk_sandbox::spawn::AppContainerSession>,
+    _journal: crate::spawn_stdio::AclJournal,
 }
 
 /// Isolation state released after the siblings have exited.
@@ -2349,9 +2350,9 @@ fn vat_thread(
                 let host_cleanup = VatHostCleanup {
                     #[cfg(windows)]
                     packages: Some(WindowsPackageCleanup {
-                        gateway: spawned.appcontainer,
-                        guest: spawned.guest_appcontainer,
-                        journal: spawned.acl_journal,
+                        _gateway: spawned.appcontainer,
+                        _guest: spawned.guest_appcontainer,
+                        _journal: spawned.acl_journal,
                     }),
                     #[cfg(target_os = "linux")]
                     cgroup: spawned.session_cgroup,
