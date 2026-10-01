@@ -147,9 +147,13 @@ applicable and does not fake enforcement.
 
 The host keeps a journal of each session's package SID and the paths that
 session's spec grants: inheritable leaf ACEs, no-inherit ancestor traverse, and
-the profile folder plus `Temp`. After the session Job is closed, on graceful
-exit, and on failed startup, the host revokes that journal under
-`Local\bookclerk-dacl-tx`. Revoke is idempotent, treats a missing path as
+the profile folder plus `Temp`. After the session Job is closed and the
+siblings have been reaped, on graceful exit and on failed startup, the host
+deletes the AppContainer profiles and then revokes that journal under
+`Local\bookclerk-dacl-tx`, and only then removes the session directory.
+`DeleteAppContainerProfile` does not strip package-SID ACEs, and the profile
+moniker (`bc.<stem>.<hex>`) is not the SID. Directory removal is the signal
+that those ACEs are gone. Revoke is idempotent, treats a missing path as
 success, and removes only that session's SID. The jail may revoke as well when
 its process exits normally. Job kill skips that `Drop`, so the host journal is
 the owner that still runs. Ancestor traverse stays a `SetKernelObjectSecurity`

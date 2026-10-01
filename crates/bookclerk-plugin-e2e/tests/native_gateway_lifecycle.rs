@@ -767,6 +767,8 @@ async fn assert_hold_cleaned(
         let sid = sid.trim();
         assert!(!sid.is_empty(), "{label}: empty package sid");
         let plugin = files.join("plugins").join(ng_harness::PLUGIN_ID);
+        // One read, no retry. The vat revokes this SID before it removes the
+        // session directory, which the wait above already observed.
         for path in [files, plugin.as_path()] {
             let mentioned = bookclerk_sandbox::spawn::dacl_mentions_sid(path, sid)
                 .unwrap_or_else(|err| panic!("{label}: DACL read {}: {err}", path.display()));
