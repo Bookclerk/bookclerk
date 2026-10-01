@@ -89,6 +89,30 @@ def test_check_rejects_module_type_mismatch():
         check_plugin(FIXTURES / "invalid-module-type")
 
 
+def test_check_rejects_module_path_when_name_matches_a_different_file():
+    with pytest.raises(ValueError, match="not in the workerd load set"):
+        check_plugin(FIXTURES / "invalid-module-path")
+    with pytest.raises(ValueError, match=r"missing\.js"):
+        check_plugin(FIXTURES / "invalid-module-path")
+
+
+def test_materialize_rejects_module_path_when_name_matches_a_different_file():
+    import tomllib
+
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
+
+    manifest = tomllib.loads(
+        (FIXTURES / "invalid-module-path" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    with pytest.raises(ValueError, match=r"missing\.js"):
+        materialize_config(
+            FIXTURES / "invalid-module-path",
+            manifest,
+            listen_port=0,
+            bridge_token="token",
+        )
+
+
 def test_check_rejects_typescript_main():
     with pytest.raises(ValueError, match="not implemented yet"):
         check_plugin(FIXTURES / "invalid-module-ts")

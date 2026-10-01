@@ -165,6 +165,12 @@ fn check_rejects_module_type_mismatch() {
 }
 
 #[test]
+fn check_rejects_module_path_when_name_matches_a_different_file() {
+    assert_check_fails("invalid-module-path", "missing.js");
+    assert_check_fails("invalid-module-path", "not in the workerd load set");
+}
+
+#[test]
 fn check_rejects_typescript_main_as_not_implemented() {
     assert_check_fails("invalid-module-ts", "not implemented yet");
 }

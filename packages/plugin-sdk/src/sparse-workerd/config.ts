@@ -528,12 +528,11 @@ export function materializeConfig(
   }
 
   for (const mod of manifest.modules ?? []) {
+    // An explicit path is the file to embed. `name` is only the source when
+    // `path` was omitted, so a typoed path cannot pass because `name` exists.
     const filePath = mod.path || mod.name;
-    const keys = [
-      moduleLoadKey(modulesDirName, filePath),
-      moduleLoadKey(modulesDirName, mod.name),
-    ];
-    if (!keys.some((key) => key && authorNames.has(key))) {
+    const key = moduleLoadKey(modulesDirName, filePath);
+    if (!key || !authorNames.has(key)) {
       if (workerdModuleIsEmbedded(filePath)) {
         throw new Error(
           `plugin.toml: [[modules]] \`${filePath}\` is not in the workerd load set`,

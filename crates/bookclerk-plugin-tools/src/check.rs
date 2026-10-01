@@ -122,7 +122,8 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
 
 /// Requires every `[[modules]]` row to be a file the modules walk embeds, and
 /// requires the Python flag pair when the walk finds a `.py` the manifest
-/// tables did not already describe.
+/// tables did not already describe. An explicit `path` must be in that set;
+/// `name` is the source only when `path` is omitted.
 ///
 /// # Errors
 ///
@@ -136,18 +137,15 @@ fn enforce_workerd_load_set(manifest: &PluginManifest, modules_dir: &Path) -> Re
         .map(|w| w.modules_dir.as_str())
         .unwrap_or("modules");
     for module in &manifest.modules {
+        // An explicit path is the file to embed. `name` is only the source when
+        // `path` was omitted, so a typoed path cannot pass because `name` exists.
         let path = if module.path.is_empty() {
             module.name.as_str()
         } else {
             module.path.as_str()
         };
-        let keys = [
-            module_load_key(modules_dir_name, path),
-            module_load_key(modules_dir_name, &module.name),
-        ];
-        let loaded = keys
-            .iter()
-            .any(|key| !key.is_empty() && load_set.iter().any(|have| have == key));
+        let key = module_load_key(modules_dir_name, path);
+        let loaded = !key.is_empty() && load_set.iter().any(|have| have == &key);
         if !loaded {
             if workerd_module_is_embedded(path) {
                 return Err(SdkError::message(format!(

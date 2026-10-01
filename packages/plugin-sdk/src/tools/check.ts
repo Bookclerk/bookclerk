@@ -188,7 +188,8 @@ export function checkPlugin(pluginDir: string): string {
 
 /**
  * Requires `[[modules]]` rows to be files the walk embeds, and the Python flag
- * pair when the tree contains a `.py` file.
+ * pair when the tree contains a `.py` file. An explicit `path` must be in that
+ * set; `name` is the source only when `path` is omitted.
  *
  * @param m - Parsed manifest.
  * @param modulesDir - Absolute modules directory.
@@ -198,12 +199,11 @@ function enforceWorkerdLoadSet(m: Manifest, modulesDir: string): void {
   const loadSet = collectAuthorModuleKeys(modulesDir);
   const modulesDirName = m.workerd?.modules_dir ?? "modules";
   for (const mod of m.modules ?? []) {
+    // An explicit path is the file to embed. `name` is only the source when
+    // `path` was omitted, so a typoed path cannot pass because `name` exists.
     const filePath = mod.path || mod.name;
-    const keys = [
-      moduleLoadKey(modulesDirName, filePath),
-      moduleLoadKey(modulesDirName, mod.name),
-    ];
-    const loaded = keys.some((key) => key && loadSet.has(key));
+    const key = moduleLoadKey(modulesDirName, filePath);
+    const loaded = Boolean(key && loadSet.has(key));
     if (!loaded) {
       if (workerdModuleIsEmbedded(filePath)) {
         throw new Error(

@@ -519,12 +519,11 @@ def materialize_config(
             seen_names.add(SDK_PY_WORKERD_MODULE)
 
     for mod in manifest.get("modules") or []:
+        # An explicit path is the file to embed. `name` is only the source when
+        # `path` was omitted, so a typoed path cannot pass because `name` exists.
         file_path = str(mod.get("path") or mod.get("name") or "")
-        keys = (
-            module_load_key(modules_dir_name, file_path),
-            module_load_key(modules_dir_name, str(mod.get("name") or "")),
-        )
-        if not any(key and key in author_names for key in keys):
+        key = module_load_key(modules_dir_name, file_path)
+        if not key or key not in author_names:
             if workerd_module_is_embedded(file_path):
                 raise ValueError(
                     f"plugin.toml: [[modules]] `{file_path}` is not in the workerd load set"

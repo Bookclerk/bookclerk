@@ -1356,18 +1356,15 @@ pub fn materialize(
 
     let modules_dir_key = modules_name.replace('\\', "/");
     for module in &manifest.modules {
+        // An explicit path is the file to embed. `name` is only the source when
+        // `path` was omitted, so a typoed path cannot pass because `name` exists.
         let path = if module.path.is_empty() {
             module.name.as_str()
         } else {
             module.path.as_str()
         };
-        let keys = [
-            module_load_key(&modules_dir_key, path),
-            module_load_key(&modules_dir_key, &module.name),
-        ];
-        let loaded = keys
-            .iter()
-            .any(|key| !key.is_empty() && author_names.contains(key));
+        let key = module_load_key(&modules_dir_key, path);
+        let loaded = !key.is_empty() && author_names.contains(&key);
         if !loaded {
             if workerd_module_is_embedded(path) {
                 bail!("plugin.toml: [[modules]] `{path}` is not in the workerd load set");
@@ -1851,6 +1848,59 @@ mode = "deny"
         assert!(
             !capnp.contains("2026-09-30"),
             "requested date must not be passed to workerd:\n{capnp}"
+        );
+    }
+
+    #[test]
+    fn materialize_rejects_explicit_module_path_when_name_matches_another_file() {
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _modules = create_dir_under(dir.path(), "modules");
+        write_under(
+            dir.path(),
+            Path::new("modules").join("index.js"),
+            "export default {};",
+        );
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[[modules]]
+name = "index.js"
+path = "missing.js"
+type = "js"
+
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect("conflicting path still parses");
+        let err = materialize(
+            dir.path(),
+            &manifest,
+            &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            None,
+            "test-bridge-token",
+            None,
+        )
+        .err()
+        .expect("explicit path must be in the load set");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("missing.js") && message.contains("not in the workerd load set"),
+            "{message}"
         );
     }
 

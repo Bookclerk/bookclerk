@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Conformance: check / fmt --check against abi fixtures. */
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,9 +38,28 @@ run(["check", path.join(fixtures, "invalid-compat-experimental")], false, "host-
 run(["check", path.join(fixtures, "invalid-python-flags-missing")], false, "must include");
 run(["check", path.join(fixtures, "invalid-flags-without-python")], false, "Python module");
 run(["check", path.join(fixtures, "invalid-module-type")], false, "does not match");
+run(["check", path.join(fixtures, "invalid-module-path")], false, "missing.js");
+run(["check", path.join(fixtures, "invalid-module-path")], false, "not in the workerd load set");
 run(["check", path.join(fixtures, "invalid-module-ts")], false, "not implemented yet");
 run(["check", path.join(fixtures, "not-implemented-kv")], true);
 run(["check", path.join(fixtures, "not-implemented-queues")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-workerd/plugin.fmt.toml")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-native/plugin.fmt.toml")], true);
+
+const { parse } = await import("smol-toml");
+const { materializeConfig } = await import("../dist/sparse-workerd/config.js");
+const conflictDir = path.join(fixtures, "invalid-module-path");
+const conflictManifest = parse(fs.readFileSync(path.join(conflictDir, "plugin.toml"), "utf8"));
+try {
+  materializeConfig(conflictDir, conflictManifest, { listenPort: 0, bridgeToken: "token" });
+  console.error("FAIL materialize accepted a path that only matches module.name");
+  process.exit(1);
+} catch (err) {
+  const message = String(err && err.message ? err.message : err);
+  if (!message.includes("missing.js") || !message.includes("not in the workerd load set")) {
+    console.error("FAIL materialize error", message);
+    process.exit(1);
+  }
+}
+console.log("ok materialize rejects explicit path when name matches another file");
 console.log("tools conformance passed");

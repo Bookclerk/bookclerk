@@ -555,6 +555,8 @@ def _enforce_workerd_load_set(m: dict[str, Any], modules_dir: Path) -> None:
     """Require ``[[modules]]`` rows to be files the walk embeds.
 
     Also requires the Python flag pair when the tree contains a ``.py`` file.
+    An explicit ``path`` must be in that set; ``name`` is the source only when
+    ``path`` is omitted.
 
     Args:
         m: Parsed manifest.
@@ -567,12 +569,11 @@ def _enforce_workerd_load_set(m: dict[str, Any], modules_dir: Path) -> None:
     w = m.get("workerd") or {}
     modules_dir_name = str(w.get("modules_dir") or "modules")
     for mod in m.get("modules") or []:
+        # An explicit path is the file to embed. `name` is only the source when
+        # `path` was omitted, so a typoed path cannot pass because `name` exists.
         file_path = str(mod.get("path") or mod.get("name") or "")
-        keys = (
-            module_load_key(modules_dir_name, file_path),
-            module_load_key(modules_dir_name, str(mod.get("name") or "")),
-        )
-        if not any(key and key in load_set for key in keys):
+        key = module_load_key(modules_dir_name, file_path)
+        if not key or key not in load_set:
             if workerd_module_is_embedded(file_path):
                 raise ValueError(
                     f"plugin.toml: [[modules]] `{file_path}` is not in the workerd load set"

@@ -20,6 +20,7 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `invalid-python-flags-missing/` | `check` fails (Python guest missing the flag pair) |
 | `invalid-flags-without-python/` | `check` fails (Python flags without a Python module) |
 | `invalid-module-type/` | `check` fails (`[[modules]]` type disagrees with the extension) |
+| `invalid-module-path/` | `check` fails (explicit `path` is absent even when `name` matches another file) |
 | `invalid-module-ts/` | `check` fails (`.ts` main is not implemented yet) |
 | `not-implemented-kv/` | `check` ok (`[[kv_namespaces]]` stays legal). Load and spawn fail with "not implemented yet". |
 | `not-implemented-queues/` | `check` ok (`[queues]` stays legal). Load and spawn fail with "not implemented yet". |
