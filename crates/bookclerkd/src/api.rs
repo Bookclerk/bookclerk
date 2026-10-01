@@ -3941,7 +3941,7 @@ async fn list_books(
     State(state): State<Arc<AppState>>,
     _headers: HeaderMap,
     Query(query): Query<BooksQuery>,
-) -> Result<Json<BooksResponse>, StatusCode> {
+) -> Result<Json<BooksResponse>, (StatusCode, Json<serde_json::Value>)> {
     let library = state.library_snapshot().await;
     let limit = query.limit.unwrap_or(40).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
@@ -3957,15 +3957,15 @@ async fn list_books(
     // connect is User-only.
     //
     // Both branches filter, sort, and page in SQL. Search still uses Tantivy
-    // to choose at most 500 uuids; those rows are loaded with one `uuid IN`
-    // query and only the requested page is hydrated.
+    // to choose at most 500 uuids; those rows are loaded in batches and only
+    // the requested page is returned.
 
     let page = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let index_dir = state.config.read().await.paths().search_index_dir.clone();
         // Offloaded: Tantivy query work would otherwise block this request task.
         let hits = SearchEngine::open_and_search(index_dir, q.to_string(), 500)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(books_query_error)?;
         let uuids = hits
             .into_iter()
             .map(|hit| hit.uuid)
@@ -3974,12 +3974,12 @@ async fn list_books(
         library
             .list_books_by_uuid_page(&uuids, account, status, limit as u64, offset as u64)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(books_query_error)?
     } else {
         library
             .list_books_filtered_page(account, status, limit as u64, offset as u64)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(books_query_error)?
     };
     Ok(Json(BooksResponse {
         books: page.books,
@@ -3987,6 +3987,16 @@ async fn list_books(
         limit,
         offset,
     }))
+}
+
+/// Logs one library-books failure and returns it as a short JSON body.
+fn books_query_error(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    let message = err.to_string();
+    tracing::error!(error = %message, "GET /api/library/books failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": message })),
+    )
 }
 
 /// Returns one title by UUID, or 404 when it is absent.

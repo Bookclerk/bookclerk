@@ -451,6 +451,8 @@ auth = {"Authorization": f"Bearer {token}"}
 phase = os.environ["ENVELOPE_PHASE"]
 out = os.environ["ENVELOPE_PHASE_OUT"]
 
+sample_error = {"shown": False}
+
 def fetch(path, authed):
     headers = auth if authed else {}
     req = urllib.request.Request(base + path, headers=headers, method="GET")
@@ -463,6 +465,18 @@ def fetch(path, authed):
     except urllib.error.HTTPError as err:
         code = err.code
         body = err.read()
+    except urllib.error.URLError as err:
+        code = 0
+        body = str(err.reason).encode()
+    if code != 200 and not sample_error["shown"]:
+        sample_error["shown"] = True
+        text = body.decode("utf-8", "replace")
+        if len(text) > 500:
+            text = text[:500] + "...(truncated)"
+        print(
+            f"envelope: sample non-200 status={code} path={path} body={text!r}",
+            file=sys.stderr,
+        )
     if path.startswith("/api/library/books"):
         try:
             total = json.loads(body).get("total")

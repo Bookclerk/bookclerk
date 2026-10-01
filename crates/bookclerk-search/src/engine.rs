@@ -166,10 +166,10 @@ impl SearchEngine {
 
     /// Rebuild the entire index from the library DB.
     ///
-    /// Rows are read in pages of [`CATALOG_PAGE_ROWS`]. A Cap'n `StatementResult`
-    /// of 256 full `books` rows is about 310 KiB, over the sqlite guest
-    /// `maxResultBytes` (256 KiB), so that page never commits and the index
-    /// stays empty. Pages of 64 rows are about 80 KiB.
+    /// Rows are read 64 at a time. A Cap'n `StatementResult` of 256 full
+    /// `books` rows is about 310 KiB, over the sqlite guest `maxResultBytes`
+    /// (256 KiB), so that page never commits and the index stays empty.
+    /// Pages of 64 rows are about 80 KiB.
     ///
     /// # Errors
     ///
@@ -281,10 +281,13 @@ impl SearchEngine {
             return Ok(Vec::new());
         }
 
+        // Each HTTP search opens its own reader and drops it. A commit watcher
+        // would spawn a thread per request and panic if that spawn fails,
+        // which the books handler turns into an empty 500.
         let reader = self
             .index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(|err| SearchError::Index(err.to_string()))?;
 

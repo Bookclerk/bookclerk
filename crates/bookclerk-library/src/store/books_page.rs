@@ -20,6 +20,13 @@ pub const BOOK_PAGE_DEFAULT_LIMIT: u64 = 40;
 /// Upper clamp for a library book page. Matches the HTTP handler.
 pub const BOOK_PAGE_MAX_LIMIT: u64 = 500;
 
+/// Uuids per search-hit `IN` batch.
+///
+/// A single batch of 500 uuids is one large atomic request. Catalog reads
+/// already succeed at 64 full `books` rows (about 80 KiB, under the sqlite
+/// guest `maxResultBytes`). Search hydration uses the same batch size.
+const UUID_PAGE_CHUNK: usize = 64;
+
 /// One page of books plus the unpaged match count.
 #[derive(Debug, Clone)]
 pub struct BookPage {
@@ -66,8 +73,10 @@ impl LibraryStore {
     /// Pages books whose uuid is in `uuids`, then applies account and status.
     ///
     /// `uuids` is capped at [`BOOK_PAGE_MAX_LIMIT`] (the search-hit cap).
-    /// Sort and `LIMIT`/`OFFSET` run in SQL, so a `limit` of 8 does not
-    /// hydrate the rest of the hit list. An empty uuid list is an empty page.
+    /// Lists longer than 64 uuids are read in batches of 64 and ordered in
+    /// the host with the same ASCII case-fold then `uuid` order as the SQL
+    /// page. Shorter lists sort and page in SQL. An empty uuid list is an
+    /// empty page.
     ///
     /// # Errors
     ///
@@ -89,8 +98,37 @@ impl LibraryStore {
         let capped = uuids
             .len()
             .min(usize::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500));
-        self.query_book_page(&uuids[..capped], account_id, status, limit, offset)
-            .await
+        let uuids = &uuids[..capped];
+        if uuids.len() <= UUID_PAGE_CHUNK {
+            return self
+                .query_book_page(uuids, account_id, status, limit, offset)
+                .await;
+        }
+        let mut books = Vec::new();
+        let mut total = 0usize;
+        for chunk in uuids.chunks(UUID_PAGE_CHUNK) {
+            let page = self
+                .query_book_page(
+                    chunk,
+                    account_id,
+                    status,
+                    u64::try_from(chunk.len()).unwrap_or(u64::MAX),
+                    0,
+                )
+                .await?;
+            total = total.saturating_add(page.total);
+            books.extend(page.books);
+        }
+        books.sort_by(nocase_title_then_uuid);
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(books.len());
+        let width = usize::try_from(limit.clamp(1, BOOK_PAGE_MAX_LIMIT)).unwrap_or(books.len());
+        let end = start.saturating_add(width).min(books.len());
+        Ok(BookPage {
+            books: books[start..end].to_vec(),
+            total,
+        })
     }
 
     /// Runs the page `SELECT` and the matching `COUNT(*)`.
@@ -115,18 +153,7 @@ impl LibraryStore {
         page_values.push(DbValue::Int64(i64::try_from(offset).unwrap_or(i64::MAX)));
         let cap = u32::try_from(limit).unwrap_or(u32::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500));
         let reply = self
-            .execute_host_batch_limited(
-                ExecuteRequest {
-                    operation_id: format!("books-page-{}", uuid::Uuid::new_v4()),
-                    request_hash: String::new(),
-                    deadline_unix_ms: 0,
-                    statements: vec![
-                        select_stmt(&count_sql, filters, 1),
-                        select_stmt(&page_sql, page_values, cap),
-                    ],
-                },
-                u32::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500),
-            )
+            .execute_page_batch(count_sql, filters, page_sql, page_values, cap)
             .await?;
         let total = count_from_reply(&reply)?;
         let books = reply
@@ -139,7 +166,64 @@ impl LibraryStore {
             .collect::<Result<Vec<_>>>()?;
         Ok(BookPage { books, total })
     }
+
+    /// Runs the count+page batch, waiting out a lock held by a concurrent writer.
+    async fn execute_page_batch(
+        &self,
+        count_sql: String,
+        filters: Vec<DbValue>,
+        page_sql: String,
+        page_values: Vec<DbValue>,
+        cap: u32,
+    ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
+        let mut pause = std::time::Duration::from_millis(20);
+        let mut attempt = 0u32;
+        loop {
+            let result = self
+                .execute_host_batch_limited(
+                    ExecuteRequest {
+                        operation_id: format!("books-page-{}", uuid::Uuid::new_v4()),
+                        request_hash: String::new(),
+                        deadline_unix_ms: 0,
+                        statements: vec![
+                            select_stmt(&count_sql, filters.clone(), 1),
+                            select_stmt(&page_sql, page_values.clone(), cap),
+                        ],
+                    },
+                    u32::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500),
+                )
+                .await;
+            match result {
+                Ok(reply) => return Ok(reply),
+                Err(err) if page_lock_contention(&err) && attempt + 1 < PAGE_LOCK_ATTEMPTS => {
+                    attempt += 1;
+                    tokio::time::sleep(pause).await;
+                    pause = (pause * 2).min(std::time::Duration::from_millis(250));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
 }
+
+/// ASCII case-fold, then `uuid` code points. Matches `title COLLATE NOCASE, uuid`.
+fn nocase_title_then_uuid(left: &BookRecord, right: &BookRecord) -> std::cmp::Ordering {
+    left.title
+        .to_ascii_lowercase()
+        .cmp(&right.title.to_ascii_lowercase())
+        .then_with(|| left.uuid.cmp(&right.uuid))
+}
+
+/// True when `err` is SQLite lock contention from an overlapping writer.
+fn page_lock_contention(err: &LibraryError) -> bool {
+    let upper = err.to_string().to_ascii_uppercase();
+    upper.contains("SQLITE_BUSY")
+        || upper.contains("SQLITE_LOCKED")
+        || matches!(err, LibraryError::Unavailable(_))
+}
+
+/// Rereads of one page while another connection holds the database file.
+const PAGE_LOCK_ATTEMPTS: u32 = 8;
 
 /// One canonical `SELECT`. `max_rows` is the proven upper bound.
 fn select_stmt(sql: &str, parameters: Vec<DbValue>, max_rows: u32) -> TypedDbStatement {
@@ -740,5 +824,112 @@ mod tests {
             }
         }
         lines.join("\n")
+    }
+
+    /// Search hydration sends every hit uuid. A 500-wide `IN` must still return
+    /// the SQL page instead of rejecting the batch.
+    #[tokio::test]
+    async fn uuid_page_accepts_five_hundred_search_hits() {
+        let store = memory_store().await;
+        store
+            .upsert_account("envelope-a", "us", None, false, "audible")
+            .await
+            .unwrap();
+        let mut uuids = Vec::with_capacity(500);
+        for i in 0..40u32 {
+            let saved = store
+                .upsert_book(&NewBook::minimal(
+                    format!("B{i:05}"),
+                    "envelope-a",
+                    "us",
+                    format!("Title {i:05}"),
+                ))
+                .await
+                .unwrap();
+            uuids.push(saved.uuid);
+        }
+        while uuids.len() < 500 {
+            uuids.push(format!("missing-{:05}", uuids.len()));
+        }
+        let page = store
+            .list_books_by_uuid_page(&uuids, None, None, 40, 0)
+            .await
+            .unwrap_or_else(|err| panic!("uuid page: {err}"));
+        assert_eq!(page.books.len(), 40);
+        assert!(page.total >= 40, "total {}", page.total);
+        let small = store
+            .list_books_by_uuid_page(&uuids, None, None, 8, 0)
+            .await
+            .unwrap_or_else(|err| panic!("uuid page limit 8: {err}"));
+        assert_eq!(small.books.len(), 8);
+        assert!(small.total > 0);
+    }
+
+    /// Guest `maxResultBytes` is enforced. Every search hit exists, and both
+    /// envelope page widths must still return a page.
+    #[tokio::test]
+    async fn uuid_page_under_sqlite_result_cap() {
+        struct CapsGuest {
+            db: sea_orm::DatabaseConnection,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::TypedAtomicExec for CapsGuest {
+            async fn execute_typed(
+                &self,
+                envelope: bookclerk_db_exec::AdapterExecuteRequest,
+            ) -> std::result::Result<
+                bookclerk_plugin_abi::ExecuteReply,
+                bookclerk_plugin_abi::PluginError,
+            > {
+                let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+                bookclerk_db_exec::execute_typed_envelope_on_connection(
+                    &self.db,
+                    &envelope,
+                    bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+                    bookclerk_db_exec::AtomicSession::default()
+                        .with_type_env(crate::migrations::host_sql_type_env()),
+                )
+                .await
+                .map_err(|err| bookclerk_plugin_abi::PluginError::internal(err.to_string()))
+            }
+        }
+
+        let store = memory_store().await;
+        let db = store.db.clone();
+        let store = store.with_typed_exec(std::sync::Arc::new(CapsGuest { db }));
+        store
+            .upsert_account("envelope-a", "us", None, false, "audible")
+            .await
+            .unwrap();
+        let mut uuids = Vec::with_capacity(500);
+        for i in 0..500u32 {
+            let saved = store
+                .upsert_book(&NewBook::minimal(
+                    format!("B{i:05}"),
+                    "envelope-a",
+                    "us",
+                    format!("Title {i:05}"),
+                ))
+                .await
+                .unwrap();
+            uuids.push(saved.uuid);
+        }
+        let page = store
+            .list_books_by_uuid_page(&uuids, None, None, 40, 0)
+            .await
+            .unwrap_or_else(|err| panic!("capped uuid page: {err}"));
+        assert_eq!(page.books.len(), 40, "total {}", page.total);
+        assert!(page.total >= 500, "total {}", page.total);
+        assert_eq!(page.books[0].title, "Title 00000");
+        assert_eq!(page.books[39].title, "Title 00039");
+        let small = store
+            .list_books_by_uuid_page(&uuids, None, None, 8, 0)
+            .await
+            .unwrap_or_else(|err| panic!("capped uuid page limit 8: {err}"));
+        assert_eq!(small.books.len(), 8);
+        assert!(small.total >= 500, "total {}", small.total);
+        assert_eq!(small.books[0].title, "Title 00000");
+        assert_eq!(small.books[7].title, "Title 00007");
     }
 }
