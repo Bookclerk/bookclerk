@@ -48,6 +48,12 @@ package = "bookclerk-cli"
 paths = ["crates/bookclerk-plugins/platform/database-sqlite/plugin.toml"]
 
 [[test_input]]
+package = "bookclerkd"
+# Daemon reconcile test reads the GraphicAudio manifest to build the grant
+# and packages that guest as a local archive.
+paths = ["crates/bookclerk-plugins/optional/source-graphicaudio/plugin.toml"]
+
+[[test_input]]
 package = "bookclerk-plugin-host"
 # plugin_inventory walks every plugin.toml. (rpc_proxy_like's sqlite/postgres
 # guest directories are covered by [test_guests.bookclerk-plugin-host].)
