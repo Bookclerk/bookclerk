@@ -155,15 +155,18 @@ revoke returns success.
 `DeleteAppContainerProfile` does not strip package-SID ACEs, and the profile
 moniker (`bc.<stem>.<hex>`) is not the SID. Directory removal is the signal
 that those ACEs are gone, and only on that success path. Before the jail
-grants those ACEs, the host locks `acl-journal-owner.lock` and writes the
-complete journal to `acl-journal-pending.json` in the session directory. If
-that write fails, the spawn fails and no grants are applied. The lock stays
-until the journal is dropped, so a concurrent session plan does not treat this
-live directory as abandoned. If revoke later fails or stops partway,
-the host tries to replace the file with the unrevoked suffix and leaves the
-directory in place. A failed replacement does not remove the earlier file.
-The next session plan retries any kept `session-*` directory that still has
-the file, and removes one only after revoke returns success. Revoke is
+grants those ACEs, the host locks `acl-journals/<session>.lock` and writes the
+complete journal to `acl-journals/<session>.json` in the plugin-state directory,
+beside the session directory. The gateway jail can write only the session
+directory, so it cannot rewrite those paths and SIDs or delete the record to
+skip recovery. If that write fails, the spawn fails and no grants are applied.
+The lock stays until the journal is dropped, so a concurrent session plan does
+not treat this live directory as abandoned. If revoke later fails or stops
+partway, the host tries to replace the file with the unrevoked suffix and
+leaves the directory in place. A failed replacement does not remove the earlier
+file. The next session plan retries `acl-journals/session-*.json` and removes
+the matching session directory only after revoke returns success. A file inside
+the session directory is not a journal. Revoke is
 idempotent, treats a missing path as
 success, and removes only that session's SID. The jail may revoke as well when
 its process exits normally. Job kill skips that `Drop`, so the host journal is
