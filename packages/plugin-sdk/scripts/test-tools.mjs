@@ -86,12 +86,19 @@ const queuesText = formatManifest({
   },
   capabilities: { network: { mode: "deny" } },
 });
-if (!queuesText.includes("[[queues.producers]]") || !queuesText.includes('names = ["a"]') || !queuesText.includes("empty = []")) {
-  console.error("FAIL queues formatter dropped scalar arrays", queuesText);
+const keptQueueParts =
+  Number(queuesText.includes("[[queues.producers]]")) +
+  Number(queuesText.includes('names = ["a"]')) +
+  Number(queuesText.includes("empty = []"));
+if (keptQueueParts !== 3) {
+  console.error("FAIL queues formatter dropped scalar arrays", keptQueueParts);
   process.exit(1);
 }
-if (queuesText.includes("[[queues.names]]") || queuesText.includes("[[queues.empty]]")) {
-  console.error("FAIL queues formatter treated a scalar array as tables", queuesText);
+const scalarTableCount =
+  Number(queuesText.includes("[[queues.names]]")) +
+  Number(queuesText.includes("[[queues.empty]]"));
+if (scalarTableCount !== 0) {
+  console.error("FAIL queues formatter treated a scalar array as tables", scalarTableCount);
   process.exit(1);
 }
 const nameOnly = formatManifest({
@@ -103,8 +110,9 @@ const nameOnly = formatManifest({
   modules: [{ name: "index.js" }],
   capabilities: { network: { mode: "deny" } },
 });
-if (nameOnly.includes("path =")) {
-  console.error("FAIL formatter emitted an omitted module path", nameOnly);
+const emittedPath = nameOnly.includes("path =");
+if (emittedPath) {
+  console.error("FAIL formatter emitted an omitted module path", emittedPath);
   process.exit(1);
 }
 console.log("ok format keeps scalar queues and omits empty module paths");
