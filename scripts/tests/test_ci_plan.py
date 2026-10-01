@@ -1263,8 +1263,11 @@ class EnvelopeTests(unittest.TestCase):
         argv = check_argv(p, "envelope")
         self.assertEqual(argv[0][:3], ["cargo", "install-platform", "--release"])
         self.assertIn("envelope_seed", argv[1])
-        self.assertEqual(argv[2][:2], ["bash", "scripts/bench/small-vps.sh"])
+        self.assertIn("--no-run", argv[1])
+        self.assertNotIn("--ignored", argv[1])
+        self.assertEqual(argv[2][:2], ["bash", "scripts/bench/envelope-container.sh"])
         env = [c.env for _, c in planned_commands(artifact(p), "envelope", CTX) if not _]
+        self.assertNotIn("CARGO_BUILD_JOBS", env[0])
         self.assertEqual(env[2]["ENVELOPE_LABEL"], "ci")
         self.assertTrue(env[2]["BOOKCLERK_FILES_DIR"].endswith("/envelope"))
 

@@ -183,18 +183,15 @@ class WorkflowContractTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(text.count("ci-exec.py run windows_cluster"), 1)
 
-    def test_envelope_container_is_the_cgroup(self) -> None:
+    def test_envelope_builds_on_the_runner(self) -> None:
         job = self.jobs["envelope"]
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["timeout-minutes"], 180)
-        image = job["container"]["image"]
-        self.assertEqual(image, "ubuntu:24.04")
-        self.assertNotIn("slim", image)
-        options = job["container"]["options"]
-        self.assertIn("--memory=1g", options)
-        self.assertIn("--memory-swap=1g", options)
-        self.assertIn("--cpus=1", options)
-        self.assertEqual(job["env"]["CARGO_BUILD_JOBS"], "1")
+        self.assertNotIn("container", job)
+        self.assertNotIn("CARGO_BUILD_JOBS", job.get("env") or {})
+        for step in job["steps"]:
+            script = step.get("run", "")
+            self.assertNotIn("pipefail", script, step.get("name"))
         runs = [s for s in job["steps"] if "ci-exec.py run envelope" in s.get("run", "")]
         self.assertEqual(len(runs), 1)
         self.assertNotIn("if", runs[0])

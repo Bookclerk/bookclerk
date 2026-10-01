@@ -2,21 +2,22 @@
 # 1 vCPU / 1 GiB envelope around bookclerkd and one background command.
 #
 # Two ways to get that cgroup:
-#   * The process is already inside one (CI: the job container is created with
-#     --memory=1g --memory-swap=1g --cpus=1). Read memory.max and cpu.max and
-#     use that cgroup. Do not create a nested leaf: cgroup v2 will not add
-#     children to a cgroup that already has processes.
+#   * The process is already inside one. CI builds on the ubuntu-latest VM,
+#     then `docker run --memory=1g --memory-swap=1g --cpus=1` (see
+#     envelope-container.sh) so this script's cgroup is the envelope. Read
+#     memory.max and cpu.max and use that cgroup. Do not create a nested leaf:
+#     cgroup v2 will not add children to a cgroup that already has processes.
 #   * The host can delegate controllers. Create a child leaf and write the
 #     ceilings there. Never write memory.max or cpu.max on the current or
 #     parent cgroup.
 #
-# Either way, fail if the cgroup we measured is `max` or looser than 1 GiB /
-# one core. Metrics are written even when a later step fails.
+# Either way, fail before recording numbers if the cgroup is `max` or looser
+# than 1 GiB / one core. After that check, metrics are written even when a
+# later step fails.
 #
 #   cargo install-platform --release
-#   export BOOKCLERK_FILES_DIR="$PWD/BookclerkFiles/envelope"
-#   cargo test --release -p bookclerk-library --test envelope_seed -- --ignored --nocapture
-#   scripts/bench/small-vps.sh
+#   cargo test --release -p bookclerk-library --test envelope_seed --no-run
+#   scripts/bench/envelope-container.sh
 #
 # Metrics land next to the files directory as envelope-metrics.json.
 

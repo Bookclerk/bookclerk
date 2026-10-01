@@ -135,5 +135,23 @@ class AssertionTests(unittest.TestCase):
         self.assertTrue(any("affinity" in item for item in assertions.assert_envelope(missing)))
 
 
+class ContainerScriptTests(unittest.TestCase):
+    def test_docker_run_is_the_envelope_and_does_not_compile(self) -> None:
+        host = (BENCH / "envelope-container.sh").read_text(encoding="utf-8")
+        inside = (BENCH / "envelope-inside.sh").read_text(encoding="utf-8")
+        self.assertIn("--memory=1g", host)
+        self.assertIn("--memory-swap=1g", host)
+        self.assertIn("--cpus=1", host)
+        self.assertIn("ubuntu:24.04", host)
+        self.assertNotIn("slim", host)
+        self.assertIn("bash ", host)
+        self.assertIn("envelope-inside.sh", host)
+        self.assertTrue(inside.startswith("#!/usr/bin/env bash\n"))
+        self.assertIn("set -euo pipefail", inside)
+        self.assertNotIn("cargo", inside)
+        self.assertNotIn("rustc", inside)
+        self.assertIn("small-vps.sh", inside)
+
+
 if __name__ == "__main__":
     unittest.main()

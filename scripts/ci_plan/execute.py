@@ -630,9 +630,10 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
             Command("test bookclerk-tray", ["cargo", "test", "-p", "bookclerk-tray"]),
         ]
     if check == "envelope":
+        # Compile on the runner. The container is only the seed, daemon, and load.
         files = str(ctx.files_dir / "envelope")
         release = ctx.workspace / "target" / "release"
-        env = {"BOOKCLERK_FILES_DIR": files, "CARGO_BUILD_JOBS": "1"}
+        env = {"BOOKCLERK_FILES_DIR": files}
         return [
             Command(
                 "release platform (hosts, helpers, sqlite guest)",
@@ -640,7 +641,7 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
                 env=env,
             ),
             Command(
-                "seed 10k books and 100001 objects",
+                "compile envelope seed",
                 [
                     "cargo",
                     "test",
@@ -649,15 +650,13 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
                     "bookclerk-library",
                     "--test",
                     "envelope_seed",
-                    "--",
-                    "--ignored",
-                    "--nocapture",
+                    "--no-run",
                 ],
                 env=env,
             ),
             Command(
                 "1 vCPU / 1 GiB envelope",
-                ["bash", "scripts/bench/small-vps.sh"],
+                ["bash", "scripts/bench/envelope-container.sh"],
                 env={
                     **env,
                     "BOOKCLERK_DAEMON_BIN": str(release / "bookclerkd"),

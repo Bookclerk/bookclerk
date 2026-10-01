@@ -551,31 +551,7 @@ jobs:
     if: needs.plan.outputs.job_envelope == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    container:
-      image: ubuntu:24.04
-      options: --memory=1g --memory-swap=1g --cpus=1
-    env:
-      # The container has one core. Keep rustc from spawning a second codegen job.
-      CARGO_BUILD_JOBS: "1"
     steps:
-      # checkout needs git, which ubuntu:24.04 does not ship. The workflow
-      # `run` is inline, so this step does not need the repository yet.
-      - name: Install build dependencies
-        run: |
-          set -euo pipefail
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential \
-            ca-certificates \
-            capnproto \
-            clang \
-            cmake \
-            curl \
-            git \
-            pkg-config \
-            libssl-dev \
-            python3
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -590,6 +566,11 @@ jobs:
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: stable
+
+      - name: Install capnproto
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

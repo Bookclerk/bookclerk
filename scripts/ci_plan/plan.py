@@ -140,7 +140,7 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     # Windows execution of the enrolled CLI startup target and the identity
     # file tests. It is not a substitute for confinement or native-gateway.
     "windows-cluster": ("windows_cluster",),
-    # ubuntu-latest job container: --memory=1g --memory-swap=1g --cpus=1.
+    # ubuntu-latest VM build, then docker run --memory=1g --memory-swap=1g --cpus=1.
     "envelope": ("envelope",),
 }
 CHECK_JOB = {check: job for job, checks in JOB_CHECKS.items() for check in checks}
