@@ -7,8 +7,11 @@
 //! See `docs/adr/control-plane.md`.
 
 mod batch;
+mod deployments;
 mod documents;
 mod identity;
+mod instance_config;
+mod instances;
 mod secret;
 
 use std::path::Path;
@@ -16,13 +19,32 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+pub use deployments::{
+    bounded_observation_detail, ensure_plugin_deployment, list_present_deployments_for_host,
+    load_deployment, load_observation, present_plugin_keys_for_host, replace_plugin_deployment,
+    upsert_observation, DeploymentObservation, DeploymentReplace, DeploymentStatus,
+    PluginDeployment, DESIRED_PRESENT, MAX_OBSERVATION_DETAIL_BYTES,
+};
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,
     CLUSTER_SCOPE_ID, CLUSTER_SCOPE_TYPE, HOST_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES,
+    PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use identity::{
     current_process_incarnation, host_identity_path, load_or_create_host_identity, HostIdentity,
     HostRecord, HOST_IDENTITY_FILE,
+};
+pub use instance_config::{
+    graphicaudio_config_from_pairs, import_instance_config_if_absent, load_instance_config,
+    replace_instance_config, resolve_instance_bindings, seal_instance_secret, InstanceBindingGrant,
+    InstanceConfigDocument, InstanceConfigReplace, InstancePackagePolicy, InstanceSecretRefV1,
+    PluginInstanceConfigV1, ResolvedInstanceBindings, SettingValue, GRAPHICAUDIO_IMPORT_KEYS,
+    GRAPHICAUDIO_MANIFEST_ID, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
+    MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
+};
+pub use instances::{
+    create_plugin_instance, ensure_plugin_instance, find_plugin_instance_by_key,
+    load_plugin_instance, PluginInstance, PluginInstanceId,
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
 
@@ -506,5 +528,7 @@ fn invalid_events(detail: &str) -> LibraryError {
     LibraryError::Other(anyhow::anyhow!("invalid configuration: {detail}"))
 }
 
+#[cfg(test)]
+mod instance_tests;
 #[cfg(test)]
 mod tests;
