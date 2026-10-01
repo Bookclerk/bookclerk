@@ -953,7 +953,9 @@ fn sub_atomic(counter: &AtomicUsize, n: usize) {
     if n == 0 {
         return;
     }
-    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+    // `try_update` stabilized in 1.95. Workspace MSRV is 1.94.
+    #[allow(clippy::incompatible_msrv)]
+    let _ = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         Some(cur.saturating_sub(n))
     });
 }
@@ -980,7 +982,9 @@ fn grant_send_credit(credit: &AtomicU32, in_flight: &AtomicU32, add: u32) {
             break take;
         }
     };
-    let _ = credit.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+    // `try_update` stabilized in 1.95. Workspace MSRV is 1.94.
+    #[allow(clippy::incompatible_msrv)]
+    let _ = credit.try_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         let next = cur.saturating_add(grant).min(INITIAL_WINDOW);
         (next != cur).then_some(next)
     });

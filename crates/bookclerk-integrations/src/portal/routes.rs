@@ -186,8 +186,10 @@ async fn redeem(
     )
     .await?;
 
+    // `try_update` stabilized in 1.95. Workspace MSRV is 1.94.
+    #[allow(clippy::incompatible_msrv)]
     if REDEEM_LOSE_HTTP_RESPONSES
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
             (v > 0).then_some(v - 1)
         })
         .is_ok()
