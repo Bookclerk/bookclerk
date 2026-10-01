@@ -11,8 +11,7 @@ use bookclerk_integrations::{
     IntegrationRegistry, ProvidedOidcClient,
 };
 use bookclerk_plugin_sdk::{
-    AuthenticateUserParams, BindingValues, DomainEvent, EventResult, ExtensibleConfig,
-    ScanLibraryParams, PRODUCT_API_VERSION,
+    AuthenticateUserParams, DomainEvent, EventResult, ScanLibraryParams, PRODUCT_API_VERSION,
 };
 use serde_json::Value;
 use tracing::warn;
@@ -80,18 +79,24 @@ impl ExternalIntegration {
             .get("allow_credential_login")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let prepared = crate::instance_bindings::prepare_open_bindings(
+            services.event_outbox.as_ref(),
+            &config.paths().files_dir,
+            plugin,
+            config_json,
+        )
+        .await?;
         let session = Arc::new(
             PluginSession::spawn_with(
                 plugin,
                 config,
-                config_json.clone(),
+                prepared.spawn_config_table.clone(),
                 HOST_SHARED_ACCOUNT,
                 &[],
                 services,
             )
             .await?,
         );
-        let source_config = crate::spawn_config_for_grant(session.grant(), config_json);
         let describe = session.describe_snapshot();
         let display_name = describe
             .display_name
@@ -116,11 +121,7 @@ impl ExternalIntegration {
                 filter: s.filter.clone().filter(|v| !v.is_null()),
             })
             .collect();
-        session
-            .open(BindingValues::config(ExtensibleConfig::json(
-                &source_config,
-            )))
-            .await?;
+        session.open(prepared.bindings).await?;
         Ok(Self {
             session,
             display_name,
@@ -131,6 +132,27 @@ impl ExternalIntegration {
             poll_cancel: Arc::new(AtomicBool::new(false)),
             poll_epoch: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Integration health RPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest has no remote library or health reports not ok.
+    pub async fn check_health(&self) -> Result<()> {
+        let ok = self
+            .session
+            .remote_library(|src| async move { src.health().await })
+            .await?;
+        if ok.ok {
+            Ok(())
+        } else {
+            Err(crate::PluginError::message(if ok.detail.is_empty() {
+                "health failed".to_string()
+            } else {
+                ok.detail
+            }))
+        }
     }
 
     /// Runs one typed `remoteLibrary` method through the plugin session.
@@ -163,6 +185,26 @@ pub async fn load_external_integrations(
     registry: &mut IntegrationRegistry,
     services: &SessionServices,
 ) -> Result<()> {
+    load_external_integrations_skipping(
+        config,
+        registry,
+        services,
+        &std::collections::BTreeSet::new(),
+    )
+    .await
+}
+
+/// [`load_external_integrations`] that leaves `skip` plugin keys to the deployment reconciler.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn load_external_integrations_skipping(
+    config: &Config,
+    registry: &mut IntegrationRegistry,
+    services: &SessionServices,
+    skip: &std::collections::BTreeSet<String>,
+) -> Result<()> {
     let plugins = crate::discover_plugins(config)?;
     let integrations: Vec<_> = plugins
         .into_iter()
@@ -185,6 +227,14 @@ pub async fn load_external_integrations(
         let Some(plugin) = crate::resolve_plugin_slot(&integrations, spec)? else {
             continue;
         };
+        if skip.contains(plugin.plugin_key().canonical()) {
+            tracing::info!(
+                plugin_key = %plugin.plugin_key().canonical(),
+                alias = %plugin.manifest.id,
+                "skipping external integration owned by a local deployment"
+            );
+            continue;
+        }
         if registry.get(plugin.plugin_key().canonical()).is_some() {
             tracing::debug!(
                 plugin_key = %plugin.plugin_key().canonical(),

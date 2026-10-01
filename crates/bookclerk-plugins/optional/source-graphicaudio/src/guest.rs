@@ -336,12 +336,13 @@ pub fn resolve_store_base_url(source_config: &Value) -> String {
 /// Resolve download access path from `[sources.graphicaudio]` JSON / env.
 #[must_use]
 pub fn resolve_access(source_config: &Value) -> GraphicAudioAccess {
-    source_config
-        .get("access")
-        .and_then(|v| v.as_str())
-        .and_then(GraphicAudioAccess::parse)
-        .or_else(GraphicAudioAccess::from_env)
-        .unwrap_or_default()
+    if let Some(value) = source_config.get("access") {
+        return value
+            .as_str()
+            .and_then(GraphicAudioAccess::parse)
+            .unwrap_or_default();
+    }
+    GraphicAudioAccess::from_env().unwrap_or_default()
 }
 
 /// Resolve device bitrate preference from `[sources.graphicaudio]` JSON.

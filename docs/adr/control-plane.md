@@ -248,11 +248,41 @@ before a receipt replay. `PATCH /api/settings` rejects a body that mixes
 `events.*` with file-backed keys before either authority is written. The
 response includes `revision` on success and `current_revision` on conflict.
 
+## Phase 2 addendum: one plugin instance
+
+A plugin instance is a durable id, not a function of the plugin key, alias,
+capability, or host. `plugin_instances.plugin_instance_id` is a hyphenated UUID.
+Two rows may name the same canonical plugin key. The instance row stores that
+key and nothing about which host runs it.
+
+The instance's settings and secret refs live in `configuration_documents` at
+scope `plugin_instance`, namespace `config`, schema version 1. Secret refs
+store names only. Ciphertext stays in `encrypted_secrets` (`kind =
+plugin_instance`). Compare-and-swap uses the same revision and receipt path as
+`core.events`.
+
+`plugin_deployments` is the desired row: one instance, one host, `desired =
+present`. `plugin_deployment_observations` is written only by that host's
+reconciler (`installed`, `running`, `healthy`, `error`). A desired write does
+not update observations. This slice reconciles the local host only. It does
+not place work, roll versions, or uninstall.
+
+GraphicAudio is the first migrated caller. When discovery or the install
+ledger contains manifest id `graphicaudio`, startup ensures one instance, one
+local deployment, and, if the document is absent, imports `access`,
+`base_url`, `store_url`, `bitrate`, and `container` from
+`[sources.graphicaudio]`. After that document exists it is the authority for
+those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
+TOML. Other plugins with no instance document keep `settings_table_for`.
+
+KV and Queues are unchanged. Named SQL bindings do not replace them.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `hosts`,
   `configuration_documents`, `configuration_audit`,
-  `configuration_changes`. Checksum of the unreleased pack changes. Existing
+  `configuration_changes`, `plugin_instances`, `plugin_deployments`,
+  and `plugin_deployment_observations`. Checksum of the unreleased pack changes. Existing
   development databases fail closed until recreated (`cargo reset --yes` or a
   new database). That matches the unreleased-schema rule.
 - `bookclerk config get/set` for `events.*` reads and writes the database.
@@ -269,8 +299,9 @@ response includes `revision` on success and `current_revision` on conflict.
 
 Not in this spike, and not claimed as production HA:
 
-- PluginInstance records, CONFIG/SECRETS from instance state, and
-  PluginDeployment reconciliation (Phase 2).
+- One local deployment is reconciled (Phase 2 vertical slice). Placement,
+  multi-host reconciliation, rollouts, and moving the rest of `config.toml`
+  onto instance documents are still open.
 - Moving the rest of `config.toml` (library, jobs, sources, output, media,
   plugins, diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap
   is part of that, not this slice.

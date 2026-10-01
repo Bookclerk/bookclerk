@@ -818,6 +818,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             get(crate::config_authority::get_events_domain)
                 .put(crate::config_authority::put_events_domain),
         )
+        .route(
+            "/api/config/plugin-instances/{id}/config",
+            put(crate::config_authority::put_plugin_instance_config),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",
@@ -1341,6 +1345,21 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         &control_plane.events,
         &control_plane.cluster_id,
     );
+    if let Err(err) = bookclerk_plugin_host::enroll_graphicaudio_instance(
+        &library_for_auth,
+        &new_cfg,
+        &control_plane.host.host_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %err,
+            "GraphicAudio instance import did not complete during reload"
+        );
+    }
+    let owned =
+        crate::registry::deployment_skip_keys(&library_for_auth, &control_plane.host.host_id)
+            .await?;
 
     let candidate_auth = build_operator_auth(&new_cfg, &library_for_auth).await?;
     // Defense in depth: never publish a non-loopback listen with auth disabled
@@ -1349,14 +1368,21 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
 
     let candidate_destinations = {
         let lib_db = library_for_auth.db();
-        bookclerk_plugin_host::load_external_destinations(&new_cfg, Some(lib_db)).await?
+        bookclerk_plugin_host::load_external_destinations_with_store(
+            &new_cfg,
+            Some(lib_db),
+            Some(&library_for_auth),
+            &owned,
+        )
+        .await?
     };
 
     let candidate_sources =
-        crate::registry::default_registry_with_plugins(&new_cfg, &library_for_auth).await?;
-    let candidate_integrations = bookclerk_plugin_host::load_integrations(
+        crate::registry::registry_skipping_deployments(&new_cfg, &library_for_auth, &owned).await?;
+    let candidate_integrations = bookclerk_plugin_host::load_integrations_skipping(
         &new_cfg,
         &bookclerk_plugin_host::SessionServices::with_event_outbox(library_for_auth.clone()),
+        &owned,
     )
     .await?;
 
@@ -3313,6 +3339,33 @@ async fn patch_settings(
             })),
         )
             .into_response());
+    }
+    if updates
+        .iter()
+        .any(|(key, _)| bookclerk_plugin_host::is_graphicaudio_imported_setting(key))
+    {
+        let library = state.library_snapshot().await;
+        let cfg = state.config.read().await.clone();
+        match bookclerk_plugin_host::graphicaudio_document_exists(&library, &cfg).await {
+            Ok(true) => {
+                tracing::warn!(
+                    "rejected settings update for GraphicAudio keys owned by the instance document"
+                );
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "plugin_instance_configuration",
+                        "message": "GraphicAudio access, base_url, store_url, bitrate, and container are stored on the plugin instance; use PUT /api/config/plugin-instances/{id}/config",
+                    })),
+                )
+                    .into_response());
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::error!(error = %err, "could not read GraphicAudio instance document");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+            }
+        }
     }
 
     let _reload_guard = state.reload_lock.lock().await;

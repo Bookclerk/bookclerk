@@ -56,6 +56,7 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
+wiremock.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 

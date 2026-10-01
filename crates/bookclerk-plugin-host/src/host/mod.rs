@@ -13,10 +13,15 @@ pub use database::{
     migrate_library_schema, open_library_store, open_library_store_for_plugin, DatabaseRegistry,
     ExternalDatabase,
 };
-pub use destination::{load_external_destinations, DestinationRegistry};
-pub use integration::{load_external_integrations, ExternalIntegration};
+pub(crate) use destination::spawn_deployed_storage;
+pub use destination::{
+    load_external_destinations, load_external_destinations_with_store, DestinationRegistry,
+};
+pub use integration::{
+    load_external_integrations, load_external_integrations_skipping, ExternalIntegration,
+};
 pub use plugin_backups::{export_registered_plugin_units, restore_plugin_backup_units};
-pub use source::{load_external_sources, ExternalSource};
+pub use source::{load_external_sources, load_external_sources_skipping, ExternalSource};
 
 #[cfg(test)]
 mod rpc_proxy_like;

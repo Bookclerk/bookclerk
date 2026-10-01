@@ -39,6 +39,7 @@ fn resolved_local_output_root(config: &Config) -> PathBuf {
 pub(crate) async fn try_load_local(
     plugin: &DiscoveredPlugin,
     config: &Config,
+    store: Option<&bookclerk_library::LibraryStore>,
     registry: &mut super::destination::DestinationRegistry,
 ) -> PluginResult<()> {
     if plugin.manifest.id != LOCAL_PLUGIN_ID {
@@ -56,7 +57,7 @@ pub(crate) async fn try_load_local(
         );
         return Ok(());
     }
-    let (storage, session) = spawn_local_guest(plugin, config).await?;
+    let (storage, session) = spawn_local_guest(plugin, config, store).await?;
     tracing::info!(
         id = %plugin.manifest.id,
         path = %plugin.command.display(),
@@ -71,9 +72,18 @@ pub(crate) async fn try_load_local(
 async fn spawn_local_guest(
     plugin: &DiscoveredPlugin,
     config: &Config,
+    store: Option<&bookclerk_library::LibraryStore>,
 ) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
     let table = crate::settings_table(config, plugin);
-    let config_json = toml_to_json(&toml::Value::Table(table));
+    let transitional = toml_to_json(&toml::Value::Table(table));
+    let prepared = crate::instance_bindings::prepare_open_bindings(
+        store,
+        &config.paths().files_dir,
+        plugin,
+        transitional,
+    )
+    .await?;
+    let config_json = prepared.spawn_config_table;
     let root = resolved_local_output_root(config);
     let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
     let extra_env: Vec<(&str, std::ffi::OsString)> = if crate::is_first_party_local_output(plugin) {
@@ -99,12 +109,15 @@ async fn spawn_local_guest(
         root: String::new(),
         prefix,
     };
-    session
-        .open(BindingValues::config(
+    let open_bindings = if prepared.from_instance {
+        prepared.bindings
+    } else {
+        BindingValues::config(
             bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
                 .map_err(|err| crate::PluginError::message(err.to_string()))?,
-        ))
-        .await?;
+        )
+    };
+    session.open(open_bindings).await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))
 }
 

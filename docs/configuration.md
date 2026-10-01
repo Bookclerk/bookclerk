@@ -147,6 +147,16 @@ of local delivery tasks is chosen at process start. Other `[events]` neighbors
 in this file (`[library]`, `[jobs]`, sources, output, media, plugins,
 diagnostics) are still TOML and environment configuration.
 
+GraphicAudio `access`, `base_url`, `store_url`, `bitrate`, and `container`
+move to the plugin instance document the first time that manifest is
+installed. After the document exists, `PATCH /api/settings` rejects those
+keys. Change them with `PUT /api/config/plugin-instances/{id}/config`
+(`expected_revision`, scalar `settings`, and secret ref names). The device
+token stays on the account credential, not in the document.
+`sources.graphicaudio.enabled` stays in `config.toml`. Plugins with no
+instance document still read their `[sources.*]` / `[integrations.*]` /
+`[output.*]` tables.
+
 Acked/rejected deliveries use `retention_days`. Parent events with no remaining
 live deliveries are kept until that same cutoff so a late node can still
 reconcile. Dead letters use the longer `dead_letter_retention_days`. Cleanup

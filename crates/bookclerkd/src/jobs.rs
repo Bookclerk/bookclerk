@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 
 use crate::api::AppState;
 use crate::job_handler::JobExecCtx;
-use crate::registry::default_registry_with_plugins;
+use crate::registry::registry_for_job;
 
 /// Result of admitting work into the durable queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -411,7 +411,7 @@ pub async fn run_scan(
     if job_cancelled(ctx, &library).await {
         anyhow::bail!("cancelled");
     }
-    let registry = default_registry_with_plugins(&cfg, &library).await?;
+    let registry = registry_for_job(state).await?;
     let summary = registry
         .scan_all(
             &library,
@@ -470,7 +470,7 @@ pub async fn run_acquire(
     .await?;
     let storage = destinations.listing_backend()?;
     let options = DownloadOptions::from(&cfg);
-    let registry = default_registry_with_plugins(&cfg, &library).await?;
+    let registry = registry_for_job(state).await?;
 
     let mut index = bookclerk_acquire::scan_storage(
         &library,

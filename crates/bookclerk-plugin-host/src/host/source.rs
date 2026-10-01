@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
-use bookclerk_plugin_sdk::{BindingValues, ExtensibleConfig, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::{ExtensibleConfig, PRODUCT_API_VERSION};
 use bookclerk_source::abi::{
     self as source_abi, account_credentials, credentials_from_bytes, credentials_to_bytes,
     expand_candidates_params, scan_book_to_new, scan_summary_from_abi, DEFAULT_EXTERNAL_SORT_KEY,
@@ -91,19 +91,26 @@ impl ExternalSource {
             )));
         }
         let table = crate::settings_table(config, plugin);
-        let config_json = toml_to_json(&toml::Value::Table(table));
+        let transitional = toml_to_json(&toml::Value::Table(table));
+        let prepared = crate::instance_bindings::prepare_open_bindings(
+            services.event_outbox.as_ref(),
+            &config.paths().files_dir,
+            plugin,
+            transitional,
+        )
+        .await?;
         let session = Arc::new(
             PluginSession::spawn_with(
                 plugin,
                 config,
-                config_json.clone(),
+                prepared.spawn_config_table.clone(),
                 HOST_SHARED_ACCOUNT,
                 &[],
                 services,
             )
             .await?,
         );
-        let source_config = crate::spawn_config_for_grant(session.grant(), config_json);
+        let source_config = prepared.granted_config;
         let describe = session.describe_snapshot();
         let display_name = describe
             .display_name
@@ -134,11 +141,7 @@ impl ExternalSource {
             describe.sort_key
         };
         let plugin_data_dir = plugin_data_dir(config, plugin)?;
-        session
-            .open(BindingValues::config(ExtensibleConfig::json(
-                &source_config,
-            )))
-            .await?;
+        session.open(prepared.bindings).await?;
         Ok(Self {
             session,
             display_name,
@@ -150,6 +153,33 @@ impl ExternalSource {
             plugin_data_dir,
             source_config,
         })
+    }
+
+    /// Storefront health RPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest has no storefront or health reports not ok.
+    pub async fn check_health(&self) -> Result<()> {
+        let ok = self
+            .session
+            .storefront(|src| async move { src.health().await })
+            .await?;
+        if ok.ok {
+            Ok(())
+        } else {
+            Err(crate::PluginError::message(if ok.detail.is_empty() {
+                "health failed".to_string()
+            } else {
+                ok.detail
+            }))
+        }
+    }
+
+    /// Native guest pid, when the session recorded one.
+    #[must_use]
+    pub fn guest_pid(&self) -> Option<u32> {
+        self.session.guest_pid()
     }
 
     /// Runs one typed content-source method through the plugin session.
@@ -260,6 +290,26 @@ pub async fn load_external_sources(
     registry: &mut SourceRegistry,
     services: &SessionServices,
 ) -> Result<()> {
+    load_external_sources_skipping(
+        config,
+        registry,
+        services,
+        &std::collections::BTreeSet::new(),
+    )
+    .await
+}
+
+/// [`load_external_sources`] that leaves `skip` plugin keys to the deployment reconciler.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn load_external_sources_skipping(
+    config: &Config,
+    registry: &mut SourceRegistry,
+    services: &SessionServices,
+    skip: &std::collections::BTreeSet<String>,
+) -> Result<()> {
     let plugins = crate::discover_plugins(config)?;
     let storefronts: Vec<_> = plugins
         .into_iter()
@@ -281,6 +331,14 @@ pub async fn load_external_sources(
         let Some(plugin) = crate::resolve_plugin_slot(&storefronts, spec)? else {
             continue;
         };
+        if skip.contains(plugin.plugin_key().canonical()) {
+            tracing::info!(
+                plugin_key = %plugin.plugin_key().canonical(),
+                alias = %plugin.manifest.id,
+                "skipping external source owned by a local deployment"
+            );
+            continue;
+        }
         if registry.get(plugin.plugin_key().canonical()).is_some() {
             tracing::debug!(
                 plugin_key = %plugin.plugin_key().canonical(),

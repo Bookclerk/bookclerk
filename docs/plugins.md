@@ -1081,6 +1081,13 @@ same manifest alias) does not inherit grants.
 
 ## Enabling and settings in `config.toml`
 
+A plugin instance document, when one exists, is the `CONFIG` and `SECRETS`
+binding for that plugin key. The host reconciles a `present` deployment onto
+the local host and does not also spawn that key from the startup loader.
+Plugins with no instance keep the tables below. GraphicAudio's imported keys
+(`access`, `base_url`, `store_url`, `bitrate`, `container`) are not written
+back to `[sources.graphicaudio]` after the first import.
+
 Plugin `id` must match a config table. **External integrations default to
 disabled**; sources follow the usual `[sources.<id>]` rules (missing → enabled).
 `plugins enable` still refuses until a grant exists.

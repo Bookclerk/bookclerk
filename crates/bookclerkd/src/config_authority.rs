@@ -357,6 +357,116 @@ fn events_json(
     })
 }
 
+/// Re-reads local plugin deployments until the process stops.
+pub fn spawn_deployment_reconciler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(CONFIG_RECONCILE_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            if let Err(err) = reconcile_deployments(&state).await {
+                tracing::warn!(error = %err, "plugin deployment reconcile failed");
+            }
+        }
+    });
+}
+
+async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()> {
+    let config = state.config.read().await.clone();
+    let store = state.library.read().await.clone();
+    let host =
+        bookclerk_library::control_plane::load_or_create_host_identity(&config.paths().files_dir)?;
+    let runtime = bookclerk_plugin_host::LiveDeploymentRuntime {
+        config: Arc::clone(&state.config),
+        store: Arc::clone(&state.library),
+        sources: Arc::clone(&state.sources),
+        integrations: Arc::clone(&state.integrations),
+        destinations: Arc::clone(&state.destinations),
+    };
+    bookclerk_plugin_host::reconcile_local_deployments(
+        &store,
+        &config,
+        &host.host_id,
+        &std::collections::HashMap::new(),
+        &runtime,
+    )
+    .await?;
+    Ok(())
+}
+
+/// `PUT /api/config/plugin-instances/{id}/config` body.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PutPluginInstanceConfig {
+    /// Revision the caller last observed.
+    expected_revision: i64,
+    /// Scalar settings. Secret values are not accepted here.
+    #[serde(default)]
+    settings: std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
+    /// Secret ref names. Ciphertext stays in `encrypted_secrets`.
+    #[serde(default)]
+    secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
+}
+
+/// `PUT /api/config/plugin-instances/{id}/config`.
+///
+/// Operator principal only. The route is mounted on the operator router.
+pub async fn put_plugin_instance_config(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<PutPluginInstanceConfig>,
+) -> Result<Json<serde_json::Value>, Response> {
+    use bookclerk_library::control_plane::{
+        load_plugin_instance, replace_instance_config, InstanceConfigReplace,
+        InstancePackagePolicy, PluginInstanceConfigV1, PluginInstanceId,
+    };
+    let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
+    let library = state.library_snapshot().await;
+    let instance = load_plugin_instance(&library, &instance_id)
+        .await
+        .map_err(events_error)?
+        .ok_or_else(|| {
+            events_error(bookclerk_library::LibraryError::NotFound(format!(
+                "plugin instance {instance_id}"
+            )))
+        })?;
+    let cfg = state.config.read().await.clone();
+    let policy = match bookclerk_plugin_host::graphicaudio_plugin_key(&cfg)
+        .map_err(|err| events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(err))))?
+    {
+        Some(key) if key == instance.plugin_key => InstancePackagePolicy::GraphicAudio,
+        _ => InstancePackagePolicy::Generic,
+    };
+    let document = PluginInstanceConfigV1 {
+        settings: body.settings,
+        secret_refs: body.secret_refs,
+    };
+    let outcome = replace_instance_config(
+        &library,
+        &operator_actor(),
+        &instance_id,
+        policy,
+        body.expected_revision,
+        &document,
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .await
+    .map_err(events_error)?;
+    match outcome {
+        InstanceConfigReplace::Applied(doc) => Ok(Json(json!({
+            "plugin_instance_id": instance_id.to_string(),
+            "revision": doc.revision,
+            "settings": doc.body.settings,
+            "secret_refs": doc.body.secret_refs,
+        }))),
+        InstanceConfigReplace::Replayed { revision } => Ok(Json(json!({
+            "plugin_instance_id": instance_id.to_string(),
+            "replayed": true,
+            "revision": revision,
+        }))),
+        InstanceConfigReplace::Conflict { current_revision } => Err(conflict(current_revision)),
+    }
+}
+
 /// 409 body carrying the revision that won.
 fn conflict(current_revision: i64) -> Response {
     (
