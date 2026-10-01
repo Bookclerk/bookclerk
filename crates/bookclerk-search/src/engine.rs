@@ -122,6 +122,10 @@ impl SearchEngine {
 
     /// Rebuild the entire index from the library DB.
     ///
+    /// Rows are read in pages of at most 256. A single `list_books(None)` of
+    /// the 10k-book envelope fixture encodes to 262464 bytes, which the sqlite
+    /// guest rejects (`maxResultBytes` is 262144).
+    ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
@@ -134,14 +138,28 @@ impl SearchEngine {
             .delete_all_documents()
             .map_err(|err| SearchError::Index(err.to_string()))?;
 
-        let books = library.list_books(None).await?;
-        for book in &books {
-            self.add_book(&mut writer, book)?;
+        let mut after_id = None;
+        let mut count = 0usize;
+        loop {
+            let page = library.list_books_page(None, after_id, 256).await?;
+            let Some(last) = page.last() else {
+                break;
+            };
+            let last_id = last.id;
+            let full_page = page.len() == 256;
+            for book in &page {
+                self.add_book(&mut writer, book)?;
+            }
+            count += page.len();
+            if !full_page {
+                break;
+            }
+            after_id = Some(last_id);
         }
         writer
             .commit()
             .map_err(|err| SearchError::Index(err.to_string()))?;
-        Ok(books.len())
+        Ok(count)
     }
 
     /// Indexes one library row; missing optional strings become empty, bools become `true`/`false`.
@@ -370,5 +388,32 @@ mod tests {
         assert_eq!(engine.search("9781234567890", 10).unwrap().len(), 1);
         assert_eq!(engine.search("asin:b00test01", 10).unwrap().len(), 1);
         assert_eq!(engine.search("isbn:9781234567890", 10).unwrap().len(), 1);
+    }
+
+    /// One page is 256 rows. The next title has to be indexed too.
+    #[tokio::test]
+    async fn rebuild_reads_past_one_catalog_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        library
+            .upsert_account("acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        for i in 0..257u32 {
+            let book = NewBook::minimal(
+                format!("P{i:05}"),
+                "acct",
+                "us",
+                format!("PagedTitle{i:05}"),
+            );
+            library.upsert_book(&book).await.unwrap();
+        }
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        let indexed = engine.rebuild(&library).await.unwrap();
+        assert_eq!(indexed, 257);
+        assert_eq!(engine.search("PagedTitle00000", 10).unwrap().len(), 1);
+        assert_eq!(engine.search("PagedTitle00256", 10).unwrap().len(), 1);
     }
 }

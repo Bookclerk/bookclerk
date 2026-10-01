@@ -629,6 +629,43 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
             Command("clippy bookclerk-tray", ["cargo", "clippy", "-p", "bookclerk-tray", "--all-targets", "--", "-D", "warnings"]),
             Command("test bookclerk-tray", ["cargo", "test", "-p", "bookclerk-tray"]),
         ]
+    if check == "envelope":
+        files = str(ctx.files_dir / "envelope")
+        release = ctx.workspace / "target" / "release"
+        env = {"BOOKCLERK_FILES_DIR": files, "CARGO_BUILD_JOBS": "1"}
+        return [
+            Command(
+                "release platform (hosts, helpers, sqlite guest)",
+                ["cargo", "install-platform", "--release"],
+                env=env,
+            ),
+            Command(
+                "seed 10k books and 100001 objects",
+                [
+                    "cargo",
+                    "test",
+                    "--release",
+                    "-p",
+                    "bookclerk-library",
+                    "--test",
+                    "envelope_seed",
+                    "--",
+                    "--ignored",
+                    "--nocapture",
+                ],
+                env=env,
+            ),
+            Command(
+                "1 vCPU / 1 GiB envelope",
+                ["bash", "scripts/bench/small-vps.sh"],
+                env={
+                    **env,
+                    "BOOKCLERK_DAEMON_BIN": str(release / "bookclerkd"),
+                    "BOOKCLERK_CLI_BIN": str(release / "bookclerk"),
+                    "ENVELOPE_LABEL": "ci",
+                },
+            ),
+        ]
     if check == "postgres":
         cmds = []
         for step in params.get("steps", []):

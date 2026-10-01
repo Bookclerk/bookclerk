@@ -183,6 +183,22 @@ class WorkflowContractTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(text.count("ci-exec.py run windows_cluster"), 1)
 
+    def test_envelope_container_is_the_cgroup(self) -> None:
+        job = self.jobs["envelope"]
+        self.assertEqual(job["runs-on"], "ubuntu-latest")
+        self.assertEqual(job["timeout-minutes"], 180)
+        image = job["container"]["image"]
+        self.assertEqual(image, "ubuntu:24.04")
+        self.assertNotIn("slim", image)
+        options = job["container"]["options"]
+        self.assertIn("--memory=1g", options)
+        self.assertIn("--memory-swap=1g", options)
+        self.assertIn("--cpus=1", options)
+        self.assertEqual(job["env"]["CARGO_BUILD_JOBS"], "1")
+        runs = [s for s in job["steps"] if "ci-exec.py run envelope" in s.get("run", "")]
+        self.assertEqual(len(runs), 1)
+        self.assertNotIn("if", runs[0])
+
     def test_native_gateway_smoke_inputs_exist(self) -> None:
         from ci_plan.plan import load_relations
 

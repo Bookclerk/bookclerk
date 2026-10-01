@@ -182,6 +182,7 @@ are **not** detected — declare them, or rely on the conservative fallbacks.
 | `tray` (3 OS) | `bookclerk-tray` affected | Clippy + tests |
 | `postgres 16/17/18` | An owning package's unit tests are affected (library, db-guest, postgres guest, plugin-host RPC LIKE) | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | On `windows-latest` only: identity create, restart/binding, and different-cluster rejection, then the full `cluster_secret_startup` target with the sqlite guest, jail, `bookclerk-workerd`, and pinned `workerd` |
+| `small-VPS envelope` | A `[envelope].paths` input changed (harness, seed, search rebuild), or the full suite | On `ubuntu-latest`, inside `ubuntu:24.04` created with `--memory=1g --memory-swap=1g --cpus=1`: release platform build, 10k-book seed, then `scripts/bench/small-vps.sh`. The script drops build and object file cache, resets `memory.peak`, and writes `envelope-metrics.json` even when a later step fails. Books routes must return 200, `q=Title` must hit the rebuilt index, cgroup `memory.peak` stays under 256 MiB, and one `cpu.max` core means 1 media worker. Latency is recorded and not gated. `available_parallelism` (daemon `logical_cpus`) is recorded separately from the affinity mask |
 | `CI Gate` | Always | Stable required check (see contract above) |
 
 OSV scanning remains a separate workflow/gate. A green OSV job that applies

@@ -43,6 +43,7 @@ jobs:
       job_tray: ${{ steps.resolve.outputs.job_tray }}
       job_postgres: ${{ steps.resolve.outputs.job_postgres }}
       job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
+      job_envelope: ${{ steps.resolve.outputs.job_envelope }}
       check_ui: ${{ steps.resolve.outputs.check_ui }}
       check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
       check_python_sdk: ${{ steps.resolve.outputs.check_python_sdk }}
@@ -104,6 +105,7 @@ jobs:
           "$PY" scripts/tests/test_ci_relations.py
           "$PY" scripts/tests/test_ci_contract.py
           "$PY" scripts/tests/test_plugin_publisher.py
+          "$PY" scripts/tests/test_envelope.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
@@ -543,9 +545,73 @@ jobs:
       - name: Cluster startup and identity tests
         run: python scripts/ci-exec.py run windows_cluster
 
+  envelope:
+    name: small-VPS envelope
+    needs: plan
+    if: needs.plan.outputs.job_envelope == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: ubuntu:24.04
+      options: --memory=1g --memory-swap=1g --cpus=1
+    env:
+      # The container has one core. Keep rustc from spawning a second codegen job.
+      CARGO_BUILD_JOBS: "1"
+    steps:
+      # checkout needs git, which ubuntu:24.04 does not ship. The workflow
+      # `run` is inline, so this step does not need the repository yet.
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            capnproto \
+            clang \
+            cmake \
+            curl \
+            git \
+            pkg-config \
+            libssl-dev \
+            python3
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python3 scripts/ci-exec.py validate
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          env-vars: RUSTFLAGS
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Measure the 1 GiB envelope
+        run: python3 scripts/ci-exec.py run envelope
+
+      - name: Upload envelope metrics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envelope-metrics
+          path: ${{ runner.temp }}/BookclerkFiles/envelope-metrics.json
+          if-no-files-found: warn
+
   ci-gate:
     name: CI Gate
-    needs: [plan, check, release, confinement, native-gateway, tray, postgres, windows-cluster]
+    needs: [plan, check, release, confinement, native-gateway, tray, postgres, windows-cluster, envelope]
     if: always()
     runs-on: ubuntu-latest
     steps:
