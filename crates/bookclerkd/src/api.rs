@@ -1384,7 +1384,7 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // in the *runtime* object (validate_daemon_listen already checked config).
     validate_daemon_listen_against_auth(&new_cfg, candidate_auth.enabled)?;
 
-    let candidate_destinations = {
+    let mut candidate_destinations = {
         let lib_db = library_for_auth.db();
         bookclerk_plugin_host::load_external_destinations_with_store(
             &new_cfg,
@@ -1395,9 +1395,9 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         .await?
     };
 
-    let candidate_sources =
+    let mut candidate_sources =
         crate::registry::registry_skipping_deployments(&new_cfg, &library_for_auth, &owned).await?;
-    let candidate_integrations = bookclerk_plugin_host::load_integrations_skipping(
+    let mut candidate_integrations = bookclerk_plugin_host::load_integrations_skipping(
         &new_cfg,
         &bookclerk_plugin_host::SessionServices::with_event_outbox(library_for_auth.clone()),
         &owned,
@@ -1423,16 +1423,26 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // leave workers on the candidate `[media]` while AppState stays on the old one.
     bookclerk_media::init_pool_from_config(&new_cfg.media);
 
-    // Publish: stop old integrations, swap all slots, then notify listen.
+    // Publish: keep deployed sessions on the new registries. Stop only the
+    // integrations that were not reattached, then swap the remaining slots.
     {
-        let old_integrations = {
-            let mut guard = state.integrations.write().await;
-            std::mem::replace(&mut *guard, candidate_integrations)
-        };
-        old_integrations.stop_all().await;
-
-        *state.sources.write().await = candidate_sources;
-        *state.destinations.write().await = candidate_destinations;
+        let mut sources = state.sources.write().await;
+        let mut integrations = state.integrations.write().await;
+        let mut destinations = state.destinations.write().await;
+        crate::registry::reattach_deployed_sources(&mut candidate_sources, &sources, &owned);
+        crate::registry::reattach_deployed_integrations(
+            &mut candidate_integrations,
+            &integrations,
+            &owned,
+        );
+        destinations.reattach_owned(&mut candidate_destinations, &owned);
+        let old_integrations = std::mem::replace(&mut *integrations, candidate_integrations);
+        *sources = candidate_sources;
+        *destinations = candidate_destinations;
+        drop(sources);
+        drop(integrations);
+        drop(destinations);
+        old_integrations.stop_except(&owned).await;
         if let (Some(registry), Some(library)) = (candidate_db_registry, candidate_library) {
             *state.database_registry.write().await = registry;
             *state.library.write().await = library;

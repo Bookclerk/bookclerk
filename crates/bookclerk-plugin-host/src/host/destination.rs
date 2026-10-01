@@ -84,6 +84,29 @@ impl DestinationRegistry {
         self.plugin_sessions
             .insert(session.instance_key().to_string(), session);
     }
+
+    /// Copies deployed sessions from this registry onto `candidate`.
+    ///
+    /// Reload builds `candidate` without plugin keys in `owned`. The
+    /// process-stable guest map still treats those sessions as healthy, so the
+    /// swap keeps the same S3 backend, local backend, and plugin sessions.
+    pub fn reattach_owned(&self, candidate: &mut Self, owned: &std::collections::BTreeSet<String>) {
+        for session in self.plugin_sessions.values() {
+            if !owned.contains(session.id()) {
+                continue;
+            }
+            if session.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
+                if let Some(backend) = &self.s3 {
+                    candidate.s3 = Some(Arc::clone(backend));
+                }
+            } else if session.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
+                if let Some(backend) = &self.local {
+                    candidate.local = Some(Arc::clone(backend));
+                }
+            }
+            candidate.set_plugin_session(Arc::clone(session));
+        }
+    }
 }
 
 /// Discover and spawn external output plugins.

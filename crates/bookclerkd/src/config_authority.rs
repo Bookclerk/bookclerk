@@ -743,13 +743,33 @@ mod tests {
     }
 
     fn stage_graphicaudio_package(files_path: &std::path::Path, toml: &std::path::Path) -> String {
+        stage_plugin_package(
+            files_path,
+            "graphicaudio",
+            toml,
+            "bookclerk-plugin-source-graphicaudio",
+            "source",
+            "graphicaudio",
+            "outbound",
+        )
+    }
+
+    fn stage_plugin_package(
+        files_path: &std::path::Path,
+        package_name: &str,
+        toml: &std::path::Path,
+        binary_name: &str,
+        kind: &str,
+        id: &str,
+        network: &str,
+    ) -> String {
         use std::path::PathBuf;
 
         let package_dir = files_path
             .join(bookclerk_plugin_host::AUTHORIZED_PACKAGE_DIR)
-            .join("graphicaudio");
+            .join(package_name);
         std::fs::create_dir_all(&package_dir).unwrap();
-        let staging = files_path.join("ga-stage");
+        let staging = files_path.join(format!("{package_name}-stage"));
         std::fs::create_dir_all(&staging).unwrap();
         std::fs::copy(toml, staging.join("plugin.toml")).unwrap();
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -761,11 +781,9 @@ mod tests {
         } else {
             "release"
         };
-        let binary = target
-            .join(profile)
-            .join("bookclerk-plugin-source-graphicaudio");
+        let binary = target.join(profile).join(binary_name);
         assert!(binary.is_file(), "missing {}", binary.display());
-        let staged_bin = staging.join("bookclerk-plugin-source-graphicaudio");
+        let staged_bin = staging.join(binary_name);
         if std::fs::hard_link(&binary, &staged_bin).is_err() {
             std::fs::copy(&binary, &staged_bin).unwrap();
         }
@@ -782,7 +800,7 @@ mod tests {
             .arg(&archive)
             .arg("-C")
             .arg(&staging)
-            .args(["plugin.toml", "bookclerk-plugin-source-graphicaudio"])
+            .args(["plugin.toml", binary_name])
             .status()
             .expect("tar");
         assert!(tar.success());
@@ -790,13 +808,14 @@ mod tests {
         let manifest = serde_json::json!({
             "schema_version": 1,
             "api_version": 1,
-            "kind": "source",
-            "id": "graphicaudio",
+            "kind": kind,
+            "id": id,
+            "sandbox": { "network": network },
             "artifacts": [{
                 "target": bookclerk_plugin_host::host_bookclerk_target(),
                 "url": format!("file://{}", archive.display()),
                 "archive_sha256": "ab".repeat(32),
-                "executable": "bookclerk-plugin-source-graphicaudio"
+                "executable": binary_name
             }]
         });
         std::fs::write(
@@ -806,7 +825,13 @@ mod tests {
         .unwrap();
         let packages =
             bookclerk_plugin_host::load_authorized_local_packages(files_path).expect("packages");
-        packages.keys().next().expect("package key").clone()
+        let needle = format!("{package_name}/archive.tar.gz");
+        let encoded = format!("{package_name}%2Farchive.tar.gz");
+        packages
+            .keys()
+            .find(|key| key.contains(&needle) || key.contains(&encoded))
+            .cloned()
+            .unwrap_or_else(|| panic!("package key for {package_name} missing from {packages:?}"))
     }
 
     #[tokio::test]
@@ -1084,6 +1109,322 @@ mod tests {
                     .args(["-KILL", &pid.to_string()])
                     .status();
             }
+        }
+    }
+
+    struct CountingIntegration {
+        id: &'static str,
+        key: String,
+        stops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl bookclerk_integrations::Integration for CountingIntegration {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn plugin_key(&self) -> &str {
+            &self.key
+        }
+
+        async fn start(
+            &self,
+            _ctx: bookclerk_integrations::IntegrationContext,
+        ) -> bookclerk_integrations::Result<()> {
+            Ok(())
+        }
+
+        async fn stop(&self) -> bookclerk_integrations::Result<()> {
+            self.stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn health(
+            &self,
+        ) -> bookclerk_integrations::Result<bookclerk_integrations::IntegrationHealth> {
+            Ok(bookclerk_integrations::IntegrationHealth {
+                id: self.id.to_string(),
+                enabled: true,
+                ok: true,
+                detail: None,
+            })
+        }
+
+        async fn deliver_domain_event(
+            &self,
+            _event: bookclerk_integrations::DomainEvent,
+        ) -> bookclerk_integrations::Result<bookclerk_integrations::EventResult> {
+            Ok(bookclerk_integrations::EventResult::Ack)
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_reload_keeps_deployed_sessions() {
+        use std::path::PathBuf;
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        use bookclerk_config::Isolation;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
+            import_instance_config_if_absent, load_observation, ConfigActor, DeploymentStatus,
+            InstancePackagePolicy, PluginInstanceConfigV1,
+        };
+
+        let files = tempfile::tempdir().expect("files");
+        let files_path = files.path();
+        std::fs::write(
+            files_path.join("config.toml"),
+            "[plugins]\nisolation = \"off\"\n\n[daemon.auth]\nenabled = false\n",
+        )
+        .unwrap();
+        let source_toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
+        let local_toml_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../bookclerk-plugins/platform/destination-local/plugin.toml");
+        // Job triggers make this guest account-bearing. The deployment loop
+        // spawns the operator account, so the fixture keeps the storage
+        // entrypoint and drops `[triggers]`.
+        let local_toml = files_path.join("local-plugin.toml");
+        let local_manifest = std::fs::read_to_string(&local_toml_src).unwrap();
+        let local_manifest = local_manifest
+            .split("[triggers]")
+            .next()
+            .unwrap_or(&local_manifest);
+        std::fs::write(&local_toml, local_manifest).unwrap();
+        let source_key = stage_graphicaudio_package(files_path, &source_toml);
+        let local_key = stage_plugin_package(
+            files_path,
+            "local",
+            &local_toml,
+            "bookclerk-plugin-destination-local",
+            "output",
+            "local",
+            "deny",
+        );
+
+        let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
+            .await
+            .expect("sqlite");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("schema");
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(
+            &store,
+            files_path,
+            None,
+            &bookclerk_config::EventsConfig::default(),
+        )
+        .await
+        .expect("bootstrap");
+        let actor = ConfigActor::Bootstrap;
+        let source_instance = create_plugin_instance(&store, &actor, &source_key)
+            .await
+            .expect("source instance");
+        let mut source_settings = std::collections::BTreeMap::new();
+        source_settings.insert(
+            "access".into(),
+            bookclerk_library::control_plane::SettingValue::String("device".into()),
+        );
+        import_instance_config_if_absent(
+            &store,
+            &actor,
+            &source_instance.id,
+            InstancePackagePolicy::GraphicAudio,
+            &PluginInstanceConfigV1 {
+                settings: source_settings,
+                secret_refs: Vec::new(),
+            },
+            "import-reload-ga",
+        )
+        .await
+        .expect("import source");
+        let local_instance = create_plugin_instance(&store, &actor, &local_key)
+            .await
+            .expect("local instance");
+        let local_root = files_path.join("Audiobooks");
+        std::fs::create_dir_all(&local_root).unwrap();
+        let mut local_settings = std::collections::BTreeMap::new();
+        local_settings.insert(
+            "prefix".into(),
+            bookclerk_library::control_plane::SettingValue::String("library".into()),
+        );
+        local_settings.insert(
+            "root".into(),
+            bookclerk_library::control_plane::SettingValue::String(
+                local_root.display().to_string(),
+            ),
+        );
+        import_instance_config_if_absent(
+            &store,
+            &actor,
+            &local_instance.id,
+            InstancePackagePolicy::Generic,
+            &PluginInstanceConfigV1 {
+                settings: local_settings,
+                secret_refs: Vec::new(),
+            },
+            "import-reload-local",
+        )
+        .await
+        .expect("import local");
+        let mut grants = bookclerk_plugin_host::PluginGrantStore::default();
+        for (toml, key) in [(&source_toml, &source_key), (&local_toml, &local_key)] {
+            let manifest = bookclerk_plugin_host::PluginManifest::parse(
+                &std::fs::read_to_string(toml).unwrap(),
+            )
+            .unwrap();
+            let mut grant = bookclerk_plugin_host::consent_request_alias(&manifest);
+            grant.plugin_key = key.clone();
+            grants.upsert(grant);
+        }
+        grants.save(files_path).unwrap();
+        let source_deployment =
+            ensure_plugin_deployment(&store, &actor, &source_instance.id, &session.host.host_id)
+                .await
+                .expect("source deployment");
+        let local_deployment =
+            ensure_plugin_deployment(&store, &actor, &local_instance.id, &session.host.host_id)
+                .await
+                .expect("local deployment");
+
+        let config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        assert_eq!(config.plugins.isolation, Isolation::Off);
+        let state = control_plane_test_state(store.clone(), config);
+        super::reconcile_deployments(&state)
+            .await
+            .expect("daemon reconcile");
+        for deployment_id in [
+            &source_deployment.deployment_id,
+            &local_deployment.deployment_id,
+        ] {
+            let obs = load_observation(&store, deployment_id, &session.host.host_id)
+                .await
+                .unwrap()
+                .expect("observation");
+            assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+        }
+
+        let runtime = state.deployment_runtime();
+        let source_id = source_instance.id.as_str();
+        let source_pid = runtime.tracked_guest_pid(source_id).expect("source pid");
+        let local_pid = runtime
+            .tracked_guest_pid(local_instance.id.as_str())
+            .expect("storage pid");
+        assert_ne!(source_pid, local_pid);
+        let before_job = crate::registry::registry_for_job(&state)
+            .await
+            .expect("job registry");
+        let before_source = before_job.get(source_id).expect("job lookup before reload");
+        assert_eq!(before_source.guest_pid(), Some(source_pid));
+        let before_api = state
+            .sources
+            .read()
+            .await
+            .get(source_id)
+            .expect("api lookup before reload");
+        assert_eq!(before_api.guest_pid(), Some(source_pid));
+        let before_storage = state
+            .destinations
+            .read()
+            .await
+            .plugin_session(&local_key, bookclerk_plugin_host::OPERATOR_ACCOUNT)
+            .expect("storage session before reload");
+        assert_eq!(before_storage.guest_pid(), Some(local_pid));
+        assert!(state.destinations.read().await.local().is_some());
+
+        let owned_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let unowned_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        state
+            .integrations
+            .write()
+            .await
+            .register(Arc::new(CountingIntegration {
+                id: "owned-deployment",
+                key: source_key.clone(),
+                stops: Arc::clone(&owned_stops),
+            }));
+        state
+            .integrations
+            .write()
+            .await
+            .register(Arc::new(CountingIntegration {
+                id: "transitional",
+                key: "transitional-integration".into(),
+                stops: Arc::clone(&unowned_stops),
+            }));
+
+        crate::api::reload_daemon_config(&state)
+            .await
+            .expect("reload");
+
+        let after_job = crate::registry::registry_for_job(&state)
+            .await
+            .expect("job registry after reload");
+        let after_source = after_job.get(source_id).expect("job lookup after reload");
+        assert_eq!(after_source.plugin_instance_id(), Some(source_id));
+        assert_eq!(after_source.guest_pid(), Some(source_pid));
+        let after_api = state
+            .sources
+            .read()
+            .await
+            .get(source_id)
+            .expect("api lookup after reload");
+        assert_eq!(after_api.guest_pid(), Some(source_pid));
+        let after_storage = state
+            .destinations
+            .read()
+            .await
+            .plugin_session(&local_key, bookclerk_plugin_host::OPERATOR_ACCOUNT)
+            .expect("storage session after reload");
+        assert_eq!(after_storage.guest_pid(), Some(local_pid));
+        assert!(state.destinations.read().await.local().is_some());
+        assert!(
+            bookclerk_plugin_host::DeploymentRuntime::guest_still_running(
+                runtime.as_ref(),
+                source_id
+            )
+            .await
+        );
+        assert_eq!(owned_stops.load(Ordering::SeqCst), 0);
+        assert_eq!(unowned_stops.load(Ordering::SeqCst), 1);
+        assert!(state.integrations.read().await.get(&source_key).is_some());
+        assert!(state
+            .integrations
+            .read()
+            .await
+            .get("transitional-integration")
+            .is_none());
+
+        super::reconcile_deployments(&state)
+            .await
+            .expect("reconcile after reload");
+        assert_eq!(runtime.tracked_guest_pid(source_id), Some(source_pid));
+        assert_eq!(
+            runtime.tracked_guest_pid(local_instance.id.as_str()),
+            Some(local_pid)
+        );
+        assert_eq!(
+            state
+                .sources
+                .read()
+                .await
+                .get(source_id)
+                .expect("api lookup after second tick")
+                .guest_pid(),
+            Some(source_pid)
+        );
+
+        for pid in [source_pid, local_pid] {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
         }
     }
 }

@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use bookclerk_config::Config;
+use bookclerk_integrations::IntegrationRegistry;
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_host::SessionServices;
 use bookclerk_source::SourceRegistry;
@@ -53,10 +55,46 @@ pub async fn registry_for_job(state: &crate::api::AppState) -> anyhow::Result<So
     let owned = deployment_skip_keys(&library, &host.host_id).await?;
     let mut registry = registry_skipping_deployments(&cfg, &library, &owned).await?;
     let live = state.sources.read().await;
+    reattach_deployed_sources(&mut registry, &live, &owned);
+    Ok(registry)
+}
+
+/// Copies deployed sources from `live` onto `candidate`.
+///
+/// Reload and job lookup both build a registry that omits those plugin keys.
+/// The process-stable guest map still treats the sessions as healthy, so the
+/// same source objects have to stay reachable.
+pub(crate) fn reattach_deployed_sources(
+    candidate: &mut SourceRegistry,
+    live: &SourceRegistry,
+    owned: &BTreeSet<String>,
+) {
     for source in live.all() {
         if owned.iter().any(|key| key == source.plugin_key()) {
-            registry.register(source);
+            candidate.register(source);
         }
     }
-    Ok(registry)
+}
+
+/// Copies deployed integrations from `live` onto `candidate`.
+///
+/// A plugin key already present as the same session is left in place. Two
+/// instances of one key are both copied.
+pub(crate) fn reattach_deployed_integrations(
+    candidate: &mut IntegrationRegistry,
+    live: &IntegrationRegistry,
+    owned: &BTreeSet<String>,
+) {
+    for integration in live.all() {
+        if !owned.contains(integration.plugin_key()) {
+            continue;
+        }
+        let already = candidate
+            .all()
+            .iter()
+            .any(|existing| Arc::ptr_eq(existing, integration));
+        if !already {
+            candidate.register(Arc::clone(integration));
+        }
+    }
 }

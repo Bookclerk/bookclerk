@@ -1,5 +1,6 @@
 //! Registry of outbound integrations.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tracing::{error, info, warn};
@@ -124,7 +125,19 @@ impl IntegrationRegistry {
 
     /// Stop all integrations (background watchers). Errors are logged, not fatal.
     pub async fn stop_all(&self) {
+        self.stop_except(&BTreeSet::new()).await;
+    }
+
+    /// Stops integrations whose plugin key is not in `keep`.
+    ///
+    /// Config reload reattaches deployed guests onto the replacement registry.
+    /// Those sessions stay running; `stop` is only for integrations the new
+    /// registry does not keep. Errors are logged, not fatal.
+    pub async fn stop_except(&self, keep: &BTreeSet<String>) {
         for integration in &self.integrations {
+            if keep.contains(integration.plugin_key()) {
+                continue;
+            }
             if let Err(err) = integration.stop().await {
                 error!(id = integration.id(), %err, "integration stop failed");
             }
