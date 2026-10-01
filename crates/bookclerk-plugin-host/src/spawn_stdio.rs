@@ -275,10 +275,14 @@ pub(crate) async fn spawn_stdio_guest(
     let mut acl_journal = build_acl_journal(&jail, plan);
     // The journal must be on disk before the jail grants ACEs. A later revoke
     // can fail, and the rewrite of the unrevoked suffix can fail too. The
-    // pre-grant file is what the next session plan retries.
+    // pre-grant file is what the next session plan retries. The owner lock is
+    // taken first so that sweep does not treat this live session as abandoned.
     #[cfg(windows)]
-    if let Some(dir) = acl_journal.persist_dir.as_deref() {
-        persist_planned_acl_journal(dir, &acl_journal.entries)?;
+    if let Some(dir) = acl_journal.persist_dir.clone() {
+        if !acl_journal.entries.is_empty() {
+            acl_journal.owner = Some(JournalOwnerLock::acquire(&dir)?);
+            persist_planned_acl_journal(&dir, &acl_journal.entries)?;
+        }
     }
 
     let spawned = if jail.guest_start.is_some() {
@@ -1029,6 +1033,9 @@ pub(crate) struct AclJournal {
     entries: Vec<bookclerk_sandbox::spawn::AclJournalEntry>,
     /// Session directory that holds `acl-journal-pending.json` after a failed revoke.
     persist_dir: Option<PathBuf>,
+    /// Held from before ACE grants until this journal is dropped, so a
+    /// concurrent session plan does not reap this live directory.
+    owner: Option<JournalOwnerLock>,
 }
 
 #[cfg(windows)]
@@ -1081,6 +1088,65 @@ impl Drop for AclJournal {
 
 /// File name, inside the kept session directory, of a journal revoke that failed.
 const ACL_JOURNAL_PENDING_FILE: &str = "acl-journal-pending.json";
+
+/// Exclusive lock held for the life of a session that has a pre-grant journal.
+///
+/// The next session plan retries every `session-*` directory that still has
+/// [`ACL_JOURNAL_PENDING_FILE`]. A live session has that file too, so the sweep
+/// skips a directory while this lock is held. Process exit releases it.
+const ACL_JOURNAL_OWNER_LOCK: &str = "acl-journal-owner.lock";
+
+struct JournalOwnerLock {
+    // Held open so the exclusive lock survives until this session drops.
+    _file: std::fs::File,
+}
+
+impl JournalOwnerLock {
+    #[cfg(any(windows, test))]
+    fn acquire(session_dir: &std::path::Path) -> Result<Self> {
+        let path = session_dir.join(ACL_JOURNAL_OWNER_LOCK);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|err| {
+                PluginError::message(format!(
+                    "could not lock the ACL journal before granting package access: {err}"
+                ))
+            })?;
+        fs4::FileExt::lock(&file).map_err(|err| {
+            PluginError::message(format!(
+                "could not lock the ACL journal before granting package access: {err}"
+            ))
+        })?;
+        Ok(Self { _file: file })
+    }
+
+    /// True when a live session still holds [`Self::acquire`]'s lock.
+    fn is_held_by_live_owner(session_dir: &std::path::Path) -> bool {
+        let path = session_dir.join(ACL_JOURNAL_OWNER_LOCK);
+        if !path.is_file() {
+            return false;
+        }
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+        else {
+            // Fail closed: do not reap a directory whose owner lock cannot be probed.
+            return true;
+        };
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => {
+                let _ = fs4::FileExt::unlock(&file);
+                false
+            }
+            Err(_) => true,
+        }
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PendingAclEntry {
@@ -1267,6 +1333,9 @@ pub(crate) fn retry_abandoned_session_journals(state_root: &std::path::Path) {
         {
             continue;
         }
+        if JournalOwnerLock::is_held_by_live_owner(&path) {
+            continue;
+        }
         let mut entries = Vec::new();
         if revoke_journal_for_session(&mut entries, &path).is_ok() {
             let _ = std::fs::remove_dir_all(&path);
@@ -1300,6 +1369,7 @@ fn build_acl_journal(jail: &GuestJail, plan: &crate::spawn_plan::SpawnPlan) -> A
     AclJournal {
         entries,
         persist_dir: jail.session_dir.clone(),
+        owner: None,
     }
 }
 
@@ -3109,12 +3179,15 @@ mod tests {
     }
 
     /// Serializes `BOOKCLERK_TEST_FAIL_ACL_REVOKE`. The hook is process-global.
-    ///
+    fn acl_revoke_hook_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().expect("acl revoke hook lock")
+    }
+
     /// `after_clear` runs with the hook unset while the lock is still held, so
     /// a retry cannot race another test that sets the hook.
     fn with_forced_acl_revoke(value: &str, during: impl FnOnce(), after_clear: impl FnOnce()) {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().expect("acl revoke hook lock");
+        let _guard = acl_revoke_hook_lock();
         std::env::set_var("BOOKCLERK_TEST_FAIL_ACL_REVOKE", value);
         struct Clear;
         impl Drop for Clear {
@@ -3186,6 +3259,35 @@ mod tests {
         assert!(
             !session.join("acl-journal-pending.json").exists(),
             "a failed pre-grant write must not leave a partial journal"
+        );
+    }
+
+    #[test]
+    fn live_session_journal_is_not_reaped() {
+        let _hook = acl_revoke_hook_lock();
+        let root = tempfile::tempdir().expect("temp");
+        let session = root.path().join("session-live");
+        std::fs::create_dir(&session).expect("session dir");
+        let owner = JournalOwnerLock::acquire(&session).expect("owner lock");
+        persist_planned_acl_journal(
+            &session,
+            &[
+                entry("/host/files", "S-1-15-2-111"),
+                entry("/host/plugin", "S-1-15-2-222"),
+            ],
+        )
+        .expect("pre-grant journal");
+        retry_abandoned_session_journals(root.path());
+        assert!(
+            session.is_dir(),
+            "a live owner must not be reaped just because the pre-grant journal exists"
+        );
+        assert!(session.join("acl-journal-pending.json").is_file());
+        drop(owner);
+        retry_abandoned_session_journals(root.path());
+        assert!(
+            !session.exists(),
+            "once the owner lock is gone, the sweep revokes and removes the directory"
         );
     }
 
