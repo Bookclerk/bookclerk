@@ -856,7 +856,7 @@ mod tests {
             .await
             .unwrap_or_else(|err| panic!("uuid page: {err}"));
         assert_eq!(page.books.len(), 40);
-        assert!(page.total >= 40, "total {}", page.total);
+        assert!(page.total >= 40);
         let small = store
             .list_books_by_uuid_page(&uuids, None, None, 8, 0)
             .await
@@ -919,8 +919,8 @@ mod tests {
             .list_books_by_uuid_page(&uuids, None, None, 40, 0)
             .await
             .unwrap_or_else(|err| panic!("capped uuid page: {err}"));
-        assert_eq!(page.books.len(), 40, "total {}", page.total);
-        assert!(page.total >= 500, "total {}", page.total);
+        assert_eq!(page.books.len(), 40);
+        assert!(page.total >= 500);
         assert_eq!(page.books[0].title, "Title 00000");
         assert_eq!(page.books[39].title, "Title 00039");
         let small = store
@@ -928,7 +928,7 @@ mod tests {
             .await
             .unwrap_or_else(|err| panic!("capped uuid page limit 8: {err}"));
         assert_eq!(small.books.len(), 8);
-        assert!(small.total >= 500, "total {}", small.total);
+        assert!(small.total >= 500);
         assert_eq!(small.books[0].title, "Title 00000");
         assert_eq!(small.books[7].title, "Title 00007");
     }
