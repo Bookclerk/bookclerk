@@ -178,6 +178,7 @@ pub async fn reconcile_local_deployments(
     Ok(())
 }
 
+/// Installs or spawns one deployment and records the observation.
 async fn reconcile_one(
     store: &LibraryStore,
     config: &Config,
@@ -350,6 +351,7 @@ async fn reconcile_one(
     Ok(())
 }
 
+/// Install directory when discovery already sees `canonical`.
 fn discovered_root(config: &Config, canonical: &str) -> Option<PathBuf> {
     let plugins = crate::discover_plugins(config).ok()?;
     plugins
@@ -357,11 +359,13 @@ fn discovered_root(config: &Config, canonical: &str) -> Option<PathBuf> {
         .find_map(|plugin| (plugin.plugin_key().canonical() == canonical).then_some(plugin.root))
 }
 
+/// `plugins/<fs-id>` after a committed install.
 fn installed_root(files_dir: &Path, plugin_key: &PluginKey) -> Option<PathBuf> {
     let root = files_dir.join("plugins").join(plugin_key.fs_id());
     root.is_dir().then_some(root)
 }
 
+/// Upserts this host's observation. A failed write is retried next tick.
 async fn record_observation(
     store: &LibraryStore,
     deployment_id: &str,
@@ -394,6 +398,7 @@ async fn record_observation(
     }
 }
 
+/// Maps a library error onto the host error type.
 fn library_err(err: LibraryError) -> crate::PluginError {
     crate::PluginError::message(err.to_string())
 }
@@ -476,6 +481,7 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
     }
 }
 
+/// Spawns a storefront session and records health.
 async fn spawn_storefront(
     runtime: &LiveDeploymentRuntime,
     plugin: &crate::DiscoveredPlugin,
@@ -501,6 +507,7 @@ async fn spawn_storefront(
     }
 }
 
+/// Spawns an integration session and records health.
 async fn spawn_integration(
     runtime: &LiveDeploymentRuntime,
     plugin: &crate::DiscoveredPlugin,
@@ -530,6 +537,7 @@ async fn spawn_integration(
     }
 }
 
+/// Spawns a storage session and records health.
 async fn spawn_storage(
     runtime: &LiveDeploymentRuntime,
     plugin: &crate::DiscoveredPlugin,

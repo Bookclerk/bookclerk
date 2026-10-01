@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_config::{Config, EventsConfig, Isolation, Paths};
+use bookclerk_config::{Config, EventsConfig, Isolation};
 use bookclerk_library::control_plane::{
     create_plugin_instance, import_instance_config_if_absent, ConfigActor, InstancePackagePolicy,
     PluginInstanceConfigV1, SettingValue,
@@ -145,7 +145,6 @@ async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
     let mut config =
         Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).expect("config");
     config.plugins.isolation = Isolation::Off;
-    let _ = Paths::from_files_dir(files.to_path_buf());
     let store = file_store(&files.join("library.db")).await;
     bookclerk_library::configure_master_key(files).expect("dek");
     bookclerk_library::control_plane::bootstrap_control_plane(
@@ -171,10 +170,17 @@ async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
     .await
     .expect("import device config");
     let mut grants = PluginGrantStore::load(files).unwrap();
-    grants.upsert(consent_request(
-        &staged.plugin.manifest,
-        staged.plugin.plugin_key(),
-    ));
+    let mut grant = consent_request(&staged.plugin.manifest, staged.plugin.plugin_key());
+    // The guest's HTTP client connects through the host socket proxy. Loopback
+    // needs an explicit TCP grant and a CIDR; the product manifest only names
+    // GraphicAudio's public hosts.
+    let port = server.address().port();
+    grant.tcp.insert(crate::TcpGrant {
+        host: "127.0.0.1".into(),
+        ports: vec![port],
+    });
+    grant.address_cidrs.insert("127.0.0.1/32".into());
+    grants.upsert(grant);
     grants.save(files).unwrap();
 
     let email = "reader@example.com";
@@ -183,6 +189,22 @@ async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
         .upsert_account(email, "us", Some("Reader"), true)
         .await
         .unwrap();
+    let prepared = crate::prepare_open_bindings(
+        Some(&store),
+        files,
+        &staged.plugin,
+        serde_json::json!({"access": "web", "base_url": "http://127.0.0.1:9"}),
+    )
+    .await
+    .expect("prepare");
+    assert!(prepared.from_instance, "{}", prepared.granted_config);
+    assert_eq!(
+        prepared.granted_config["base_url"].as_str(),
+        Some(server.uri().as_str()),
+        "{}",
+        prepared.granted_config
+    );
+
     bookclerk_library::configure_master_key(files).unwrap();
     scope
         .save_credentials_json(

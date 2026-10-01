@@ -371,6 +371,7 @@ pub fn spawn_deployment_reconciler(state: Arc<AppState>) {
     });
 }
 
+/// Reconciles present deployments for this process's host.
 async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()> {
     let config = state.config.read().await.clone();
     let store = state.library.read().await.clone();

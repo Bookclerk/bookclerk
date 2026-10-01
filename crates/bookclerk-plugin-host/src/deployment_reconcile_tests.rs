@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use crate::consent::{consent_request, PluginGrant, PluginGrantStore};
+use crate::discover::{settings_table_for, DiscoveredPlugin};
+use crate::instance_bindings::prepare_open_bindings;
+use crate::{
+    reconcile_local_deployments, DeploymentRuntime, DeploymentSpawn, LocalPackage, SpawnHealth,
+};
 use async_trait::async_trait;
 use bookclerk_config::{Config, EventsConfig};
 use bookclerk_library::control_plane::{
@@ -21,14 +27,6 @@ use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
     host_bookclerk_target, InstallLedger, InstallOptions, InstallReceipt, Installer, PluginKey,
     TrustPolicy, PLUGIN_MUTATION_LOCK_FILE, RECEIPT_FILE,
-};
-use bookclerk_plugin_sdk::ExtensibleConfig;
-
-use crate::consent::{consent_request, PluginGrant, PluginGrantStore};
-use crate::discover::{settings_table_for, DiscoveredPlugin};
-use crate::instance_bindings::prepare_open_bindings;
-use crate::{
-    reconcile_local_deployments, DeploymentRuntime, DeploymentSpawn, LocalPackage, SpawnHealth,
 };
 
 static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -118,7 +116,7 @@ fn write_archive(dir: &Path, id: &str) -> PathBuf {
         staging.join("plugin.toml"),
         format!(
             "api_version = 3\nid = \"{id}\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
-             entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"deny\"\n"
+             entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"outbound\"\n"
         ),
     )
     .unwrap();
@@ -457,10 +455,11 @@ async fn newer_config_revision_respawns_with_the_new_value() {
     )
     .await
     .unwrap();
-    let spawns = probe.spawns.lock().unwrap();
-    assert_eq!(spawns.len(), 2);
-    assert_eq!(config_mode(&spawns[1]), "zip");
-    drop(spawns);
+    {
+        let spawns = probe.spawns.lock().unwrap();
+        assert_eq!(spawns.len(), 2);
+        assert_eq!(config_mode(&spawns[1]), "zip");
+    }
     reconcile_local_deployments(
         &world.store,
         &world.config,
@@ -526,10 +525,11 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
     )
     .await
     .unwrap();
-    let spawns = probe.spawns.lock().unwrap();
-    assert_eq!(spawns.len(), 1);
-    assert_eq!(secret_value(&spawns[0]), secret);
-    drop(spawns);
+    {
+        let spawns = probe.spawns.lock().unwrap();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(secret_value(&spawns[0]), secret);
+    }
 
     let dangling = open_world(true).await;
     let mut body = mode_body("device");
@@ -645,7 +645,6 @@ async fn plugin_without_an_instance_keeps_transitional_settings() {
     assert_eq!(prepared.granted_config["mode"], "device");
     let bindings = prepared.bindings.config.json_value().unwrap();
     assert_eq!(bindings["mode"], "device");
-    let _ = ExtensibleConfig::default();
 }
 
 #[test]

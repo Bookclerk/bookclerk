@@ -117,6 +117,7 @@ async fn instance_document(
         .map_err(library_err)
 }
 
+/// Maps a library error onto the host error type.
 fn library_err(err: LibraryError) -> crate::PluginError {
     crate::PluginError::message(err.to_string())
 }
@@ -139,9 +140,7 @@ pub fn graphicaudio_imported_setting_keys() -> &'static [&'static str] {
 /// True when `key` is a GraphicAudio setting owned by the instance document.
 #[must_use]
 pub fn is_graphicaudio_imported_setting(key: &str) -> bool {
-    graphicaudio_imported_setting_keys()
-        .iter()
-        .any(|candidate| *candidate == key)
+    graphicaudio_imported_setting_keys().contains(&key)
 }
 
 /// Canonical plugin key for the installed GraphicAudio manifest, if any.
