@@ -377,13 +377,7 @@ async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()> {
     let store = state.library.read().await.clone();
     let host =
         bookclerk_library::control_plane::load_or_create_host_identity(&config.paths().files_dir)?;
-    let runtime = bookclerk_plugin_host::LiveDeploymentRuntime::new(
-        Arc::clone(&state.config),
-        Arc::clone(&state.library),
-        Arc::clone(&state.sources),
-        Arc::clone(&state.integrations),
-        Arc::clone(&state.destinations),
-    );
+    let runtime = state.deployment_runtime();
     let packages = bookclerk_plugin_host::load_authorized_local_packages(&config.paths().files_dir)
         .map_err(|err| anyhow::anyhow!(err))?;
     bookclerk_plugin_host::reconcile_local_deployments(
@@ -391,7 +385,7 @@ async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()> {
         &config,
         &host.host_id,
         &packages,
-        &runtime,
+        runtime.as_ref(),
     )
     .await?;
     Ok(())
@@ -545,6 +539,7 @@ pub(crate) fn control_plane_test_state(
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         event_node_id: OnceLock::new(),
+        deployment_runtime: OnceLock::new(),
     }
 }
 
@@ -747,31 +742,16 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn daemon_reconcile_installs_a_local_archive_to_healthy() {
-        use std::collections::BTreeMap;
+    fn stage_graphicaudio_package(files_path: &std::path::Path, toml: &std::path::Path) -> String {
         use std::path::PathBuf;
 
-        use bookclerk_config::{EventsConfig, Isolation};
-        use bookclerk_library::control_plane::{
-            bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
-            import_instance_config_if_absent, load_deployment, load_observation, ConfigActor,
-            DeploymentStatus, InstancePackagePolicy, PluginInstanceConfigV1, SettingValue,
-            DESIRED_PRESENT,
-        };
-
-        let files = tempfile::tempdir().expect("files");
-        let files_path = files.path();
-        std::fs::write(files_path.join("config.toml"), "").unwrap();
         let package_dir = files_path
             .join(bookclerk_plugin_host::AUTHORIZED_PACKAGE_DIR)
             .join("graphicaudio");
         std::fs::create_dir_all(&package_dir).unwrap();
         let staging = files_path.join("ga-stage");
         std::fs::create_dir_all(&staging).unwrap();
-        let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
-        std::fs::copy(&toml, staging.join("plugin.toml")).unwrap();
+        std::fs::copy(toml, staging.join("plugin.toml")).unwrap();
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
@@ -826,7 +806,29 @@ mod tests {
         .unwrap();
         let packages =
             bookclerk_plugin_host::load_authorized_local_packages(files_path).expect("packages");
-        let plugin_key = packages.keys().next().expect("package key").clone();
+        packages.keys().next().expect("package key").clone()
+    }
+
+    #[tokio::test]
+    async fn daemon_reconcile_installs_a_local_archive_to_healthy() {
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        use bookclerk_config::{EventsConfig, Isolation};
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
+            import_instance_config_if_absent, load_deployment, load_observation, ConfigActor,
+            DeploymentStatus, InstancePackagePolicy, PluginInstanceConfigV1, SettingValue,
+            DESIRED_PRESENT,
+        };
+
+        let files = tempfile::tempdir().expect("files");
+        let files_path = files.path();
+        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
+        let plugin_key = stage_graphicaudio_package(files_path, &toml);
+        let plugin_key_for_lookup = plugin_key.clone();
 
         let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
             .await
@@ -898,5 +900,190 @@ mod tests {
             }
         }
         assert!(committed, "install did not commit a receipt");
+
+        let runtime = state.deployment_runtime();
+        let instance_id = instance.id.as_str();
+        let first_pid = runtime.tracked_guest_pid(instance_id).expect("guest pid");
+        super::reconcile_deployments(&state)
+            .await
+            .expect("second tick");
+        assert_eq!(runtime.tracked_guest_pid(instance_id), Some(first_pid));
+        assert!(
+            bookclerk_plugin_host::DeploymentRuntime::guest_still_running(
+                runtime.as_ref(),
+                instance_id
+            )
+            .await
+        );
+        let job_registry = crate::registry::registry_for_job(&state)
+            .await
+            .expect("job registry");
+        let found = job_registry.get(instance_id).expect("instance address");
+        assert_eq!(found.plugin_instance_id(), Some(instance_id));
+        assert_eq!(found.guest_pid(), Some(first_pid));
+        assert!(job_registry.get(&plugin_key_for_lookup).is_some());
+
+        let status = std::process::Command::new("kill")
+            .args(["-KILL", &first_pid.to_string()])
+            .status()
+            .expect("kill");
+        assert!(status.success());
+        let mut dead = false;
+        for _ in 0..50 {
+            if !bookclerk_plugin_host::DeploymentRuntime::guest_still_running(
+                runtime.as_ref(),
+                instance_id,
+            )
+            .await
+            {
+                dead = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(dead, "killed guest still looks alive");
+        super::reconcile_deployments(&state)
+            .await
+            .expect("replacement tick");
+        let second_pid = runtime
+            .tracked_guest_pid(instance_id)
+            .expect("replacement pid");
+        assert_ne!(first_pid, second_pid);
+        assert!(
+            bookclerk_plugin_host::DeploymentRuntime::guest_still_running(
+                runtime.as_ref(),
+                instance_id
+            )
+            .await
+        );
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &second_pid.to_string()])
+            .status();
+    }
+
+    #[tokio::test]
+    async fn daemon_job_lookup_reaches_both_instances_of_one_key() {
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        use bookclerk_config::{EventsConfig, Isolation};
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
+            import_instance_config_if_absent, load_observation, ConfigActor, DeploymentStatus,
+            InstancePackagePolicy, PluginInstanceConfigV1, SettingValue,
+        };
+
+        let files = tempfile::tempdir().expect("files");
+        let files_path = files.path();
+        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
+        let plugin_key = stage_graphicaudio_package(files_path, &toml);
+
+        let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
+            .await
+            .expect("sqlite");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("schema");
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(&store, files_path, None, &EventsConfig::default())
+            .await
+            .expect("bootstrap");
+        let actor = ConfigActor::Bootstrap;
+        let first = create_plugin_instance(&store, &actor, &plugin_key)
+            .await
+            .expect("first instance");
+        let second = create_plugin_instance(&store, &actor, &plugin_key)
+            .await
+            .expect("second instance");
+        assert_ne!(first.id, second.id);
+        let mut deployment_ids = Vec::new();
+        for (instance, base_url, operation) in [
+            (&first, "http://alpha.example", "import-alpha"),
+            (&second, "http://beta.example", "import-beta"),
+        ] {
+            let mut settings = BTreeMap::new();
+            settings.insert("access".into(), SettingValue::String("device".into()));
+            settings.insert("base_url".into(), SettingValue::String(base_url.into()));
+            import_instance_config_if_absent(
+                &store,
+                &actor,
+                &instance.id,
+                InstancePackagePolicy::GraphicAudio,
+                &PluginInstanceConfigV1 {
+                    settings,
+                    secret_refs: Vec::new(),
+                },
+                operation,
+            )
+            .await
+            .expect("import");
+            let deployment =
+                ensure_plugin_deployment(&store, &actor, &instance.id, &session.host.host_id)
+                    .await
+                    .expect("deployment");
+            deployment_ids.push(deployment.deployment_id);
+        }
+        let toml_text = std::fs::read_to_string(&toml).unwrap();
+        let manifest = bookclerk_plugin_host::PluginManifest::parse(&toml_text).unwrap();
+        let mut grant = bookclerk_plugin_host::consent_request_alias(&manifest);
+        grant.plugin_key = plugin_key.clone();
+        let mut grants = bookclerk_plugin_host::PluginGrantStore::default();
+        grants.upsert(grant);
+        grants.save(files_path).unwrap();
+
+        let mut config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        config.plugins.isolation = Isolation::Off;
+        let state = control_plane_test_state(store.clone(), config);
+        super::reconcile_deployments(&state)
+            .await
+            .expect("daemon reconcile");
+        for deployment_id in &deployment_ids {
+            let obs = load_observation(&store, deployment_id, &session.host.host_id)
+                .await
+                .unwrap()
+                .expect("observation");
+            assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+        }
+
+        let runtime = state.deployment_runtime();
+        let registry = crate::registry::registry_for_job(&state)
+            .await
+            .expect("job registry");
+        for (instance, base_url) in [
+            (&first, "http://alpha.example"),
+            (&second, "http://beta.example"),
+        ] {
+            let id = instance.id.as_str();
+            let source = registry.get(id).expect("job lookup");
+            assert_eq!(source.plugin_instance_id(), Some(id));
+            assert_eq!(source.guest_pid(), runtime.tracked_guest_pid(id));
+            let opened = runtime.opened_config_json(id).expect("opened config");
+            assert_eq!(opened["base_url"], base_url);
+            assert_eq!(opened["access"], "device");
+        }
+        assert!(
+            registry.get(&plugin_key).is_none(),
+            "plugin key must not pick one of two instances"
+        );
+        assert!(registry.get("graphicaudio").is_none());
+        let ambiguous = match registry.require(&plugin_key) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("plugin key must be ambiguous"),
+        };
+        assert!(ambiguous.contains("plugin instance id"), "{ambiguous}");
+
+        for instance in [&first, &second] {
+            if let Some(pid) = runtime.tracked_guest_pid(instance.id.as_str()) {
+                let _ = std::process::Command::new("kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .status();
+            }
+        }
     }
 }

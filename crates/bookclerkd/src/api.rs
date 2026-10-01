@@ -98,6 +98,8 @@ pub struct AppState {
     pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
     /// Process-stable catalog heartbeat key (resolved once at event runtime start).
     pub event_node_id: OnceLock<String>,
+    /// Guest sessions for deployed instances. One map for the process lifetime.
+    pub deployment_runtime: OnceLock<Arc<bookclerk_plugin_host::LiveDeploymentRuntime>>,
 }
 
 /// In-process tray Open Bookclerk ticket: hash of a one-time code plus expiry.
@@ -117,6 +119,22 @@ impl AppState {
     /// Clone the live operator auth `Arc` and drop the lock before further `.await`s.
     pub async fn auth_snapshot(&self) -> Arc<OperatorAuthState> {
         self.auth.read().await.clone()
+    }
+
+    /// Reconciler session map for this process. The first call creates it.
+    #[must_use]
+    pub fn deployment_runtime(&self) -> Arc<bookclerk_plugin_host::LiveDeploymentRuntime> {
+        self.deployment_runtime
+            .get_or_init(|| {
+                Arc::new(bookclerk_plugin_host::LiveDeploymentRuntime::new(
+                    Arc::clone(&self.config),
+                    Arc::clone(&self.library),
+                    Arc::clone(&self.sources),
+                    Arc::clone(&self.integrations),
+                    Arc::clone(&self.destinations),
+                ))
+            })
+            .clone()
     }
 }
 
@@ -6192,6 +6210,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             event_node_id: std::sync::OnceLock::new(),
+            deployment_runtime: std::sync::OnceLock::new(),
         });
 
         let app = Router::new()
@@ -6291,6 +6310,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             event_node_id: std::sync::OnceLock::new(),
+            deployment_runtime: std::sync::OnceLock::new(),
         });
 
         let app = Router::new()

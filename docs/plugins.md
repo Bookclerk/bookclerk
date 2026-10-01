@@ -1095,7 +1095,10 @@ operator's authorized local source: `package.json` plus `archive.tar.gz`,
 with artifact URLs limited to files inside the package directory. The
 reconciler does not download plugins. It starts the staged guest and calls
 health before commit, and it respawns a guest that has exited even when the
-last observation was healthy.
+last observation was healthy. The daemon keeps one guest map for the process.
+A deployed storefront is registered under its plugin instance id. Job lookup
+resolves that id. A plugin key or alias resolves only when exactly one
+registered source matches, so two instances of one key stay distinct.
 
 Plugin `id` must match a config table. **External integrations default to
 disabled**; sources follow the usual `[sources.<id>]` rules (missing → enabled).

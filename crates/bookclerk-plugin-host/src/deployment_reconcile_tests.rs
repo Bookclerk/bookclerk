@@ -32,7 +32,6 @@ use bookclerk_plugin_catalog::{
     host_bookclerk_target, InstallLedger, InstallOptions, InstallReceipt, Installer, PluginKey,
     TrustPolicy, PLUGIN_MUTATION_LOCK_FILE, RECEIPT_FILE,
 };
-
 static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Probe {
@@ -909,6 +908,27 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
         .expect("second secrets");
     assert_eq!(secrets_a["token"], "secret-alpha");
     assert_eq!(secrets_b["token"], "secret-beta");
+    let sources = runtime.sources.read().await;
+    let registered_a = sources
+        .get(first.id.as_str())
+        .expect("registry reaches the first instance");
+    let registered_b = sources
+        .get(second.id.as_str())
+        .expect("registry reaches the second instance");
+    assert_eq!(registered_a.plugin_instance_id(), Some(first.id.as_str()));
+    assert_eq!(registered_b.plugin_instance_id(), Some(second.id.as_str()));
+    assert_eq!(
+        registered_a.guest_pid(),
+        runtime.tracked_guest_pid(first.id.as_str())
+    );
+    assert_eq!(
+        registered_b.guest_pid(),
+        runtime.tracked_guest_pid(second.id.as_str())
+    );
+    assert!(
+        sources.get(key).is_none(),
+        "plugin key is not a unique source address"
+    );
 }
 
 #[tokio::test]

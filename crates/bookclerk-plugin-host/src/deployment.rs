@@ -827,7 +827,7 @@ async fn spawn_storefront(
     request: &DeploymentSpawn,
     prepared: crate::PreparedOpen,
 ) -> SpawnHealth {
-    let source =
+    let mut source =
         match crate::ExternalSource::spawn_prepared(plugin, config, services, prepared).await {
             Ok(source) => source,
             Err(err) => {
@@ -836,6 +836,7 @@ async fn spawn_storefront(
                 }
             }
         };
+    source.bind_plugin_instance(&request.plugin_instance_id);
     let tracked = TrackedGuest {
         session: Arc::clone(source.session()),
         config: source.opened_config().clone(),

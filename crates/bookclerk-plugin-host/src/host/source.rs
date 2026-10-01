@@ -65,6 +65,8 @@ pub struct ExternalSource {
     plugin_data_dir: PathBuf,
     /// `[sources.<id>]` table from main config (also delivered in the spawn config).
     source_config: Value,
+    /// Deployment instance id. Unset for transitional, non-deployed spawns.
+    plugin_instance_id: Option<String>,
 }
 
 impl ExternalSource {
@@ -182,7 +184,13 @@ impl ExternalSource {
             sort_key,
             plugin_data_dir,
             source_config,
+            plugin_instance_id: None,
         })
+    }
+
+    /// Records the deployment instance id used as this source's registry address.
+    pub(crate) fn bind_plugin_instance(&mut self, plugin_instance_id: &str) {
+        self.plugin_instance_id = Some(plugin_instance_id.to_string());
     }
 
     /// Session opened for this storefront.
@@ -421,6 +429,14 @@ impl ContentSource for ExternalSource {
 
     fn plugin_key(&self) -> &str {
         self.session.id()
+    }
+
+    fn plugin_instance_id(&self) -> Option<&str> {
+        self.plugin_instance_id.as_deref()
+    }
+
+    fn guest_pid(&self) -> Option<u32> {
+        self.session.guest_pid()
     }
 
     fn display_name(&self) -> &str {

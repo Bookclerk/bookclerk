@@ -192,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         event_node_id: std::sync::OnceLock::new(),
+        deployment_runtime: std::sync::OnceLock::new(),
     });
 
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());

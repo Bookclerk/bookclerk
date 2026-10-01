@@ -269,10 +269,17 @@ not place work, roll versions, or uninstall.
 
 The reconciler passes the deployment's instance id and resolved bindings into
 `open`. It does not look the instance up by plugin key. A healthy observation
-is skipped only while that session's process is still running. Install health
-starts the staged guest under the host mutation lock and rolls the tree back
-when health fails. Packages come from `plugin-packages/` on the local files
-directory, not from a download.
+is skipped only while that session's process is still running. The daemon
+keeps that session map for the process lifetime, so the next tick sees the
+same guest. Install health starts the staged guest under the host mutation
+lock and rolls the tree back when health fails. Packages come from
+`plugin-packages/` on the local files directory, not from a download.
+
+A deployed storefront is registered under its plugin instance id. Job and
+API lookup (`registry_for_job`, then `SourceRegistry::get`) resolves that id
+to that guest. A plugin key or alias resolves only when exactly one
+registered source matches. Two instances of one key stay distinct; the key
+alone does not pick one of them.
 
 GraphicAudio is the first migrated caller. When discovery or the install
 ledger contains manifest id `graphicaudio`, startup ensures one instance, one

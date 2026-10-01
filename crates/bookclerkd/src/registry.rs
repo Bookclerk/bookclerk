@@ -39,6 +39,9 @@ pub async fn registry_skipping_deployments(
 
 /// Fresh source registry for a job, reusing sessions the reconciler already owns.
 ///
+/// Each deployed instance is copied under its plugin instance id. A plugin key
+/// is not treated as a unique address when two instances of that key are live.
+///
 /// # Errors
 ///
 /// Returns an error when discovery, the deployment table, or guest spawn fails.
@@ -51,9 +54,7 @@ pub async fn registry_for_job(state: &crate::api::AppState) -> anyhow::Result<So
     let mut registry = registry_skipping_deployments(&cfg, &library, &owned).await?;
     let live = state.sources.read().await;
     for source in live.all() {
-        if owned.iter().any(|key| key == source.plugin_key())
-            && registry.get(source.plugin_key()).is_none()
-        {
+        if owned.iter().any(|key| key == source.plugin_key()) {
             registry.register(source);
         }
     }
