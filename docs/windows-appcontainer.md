@@ -155,9 +155,11 @@ revoke returns success.
 `DeleteAppContainerProfile` does not strip package-SID ACEs, and the profile
 moniker (`bc.<stem>.<hex>`) is not the SID. Directory removal is the signal
 that those ACEs are gone, and only on that success path. Before the jail
-grants those ACEs, the host writes the complete journal to
-`acl-journal-pending.json` in the session directory. If that write fails, the
-spawn fails and no grants are applied. If revoke later fails or stops partway,
+grants those ACEs, the host locks `acl-journal-owner.lock` and writes the
+complete journal to `acl-journal-pending.json` in the session directory. If
+that write fails, the spawn fails and no grants are applied. The lock stays
+until the journal is dropped, so a concurrent session plan does not treat this
+live directory as abandoned. If revoke later fails or stops partway,
 the host tries to replace the file with the unrevoked suffix and leaves the
 directory in place. A failed replacement does not remove the earlier file.
 The next session plan retries any kept `session-*` directory that still has
