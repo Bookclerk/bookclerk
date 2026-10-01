@@ -49,9 +49,12 @@ paths = ["crates/bookclerk-plugins/platform/database-sqlite/plugin.toml"]
 
 [[test_input]]
 package = "bookclerkd"
-# Daemon reconcile test reads the GraphicAudio manifest to build the grant
-# and packages that guest as a local archive.
-paths = ["crates/bookclerk-plugins/optional/source-graphicaudio/plugin.toml"]
+# Daemon reconcile and reload tests read these manifests to build grants
+# and package those guests as local archives.
+paths = [
+    "crates/bookclerk-plugins/optional/source-graphicaudio/plugin.toml",
+    "crates/bookclerk-plugins/platform/destination-local/plugin.toml",
+]
 
 [[test_input]]
 package = "bookclerk-plugin-host"
