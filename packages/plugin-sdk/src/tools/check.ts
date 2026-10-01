@@ -187,9 +187,10 @@ export function checkPlugin(pluginDir: string): string {
 }
 
 /**
- * Requires `[[modules]]` rows to be files the walk embeds, and the Python flag
- * pair when the tree contains a `.py` file. An explicit `path` must be in that
- * set; `name` is the source only when `path` is omitted.
+ * Requires `[[modules]]` rows to be files the walk embeds. Python flags follow
+ * the manifest declaration. A `.py` file the walk finds but the manifest does
+ * not declare fails even when both flags are set. An explicit `path` must be
+ * in the load set; `name` is the source only when `path` is omitted.
  *
  * @param m - Parsed manifest.
  * @param modulesDir - Absolute modules directory.
@@ -214,8 +215,16 @@ function enforceWorkerdLoadSet(m: Manifest, modulesDir: string): void {
     }
   }
   const diskPython = [...loadSet].some((name) => name.toLowerCase().endsWith(".py"));
-  if (m.workerd && (diskPython || declaresPython(m))) {
-    validateAuthorCompatibilityFlags(m.workerd.compatibility_flags ?? [], true);
+  if (m.workerd) {
+    validateAuthorCompatibilityFlags(
+      m.workerd.compatibility_flags ?? [],
+      declaresPython(m),
+    );
+    if (diskPython && !declaresPython(m)) {
+      throw new Error(
+        "plugin.toml: undeclared Python file in the workerd modules tree",
+      );
+    }
   }
 }
 

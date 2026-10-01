@@ -543,10 +543,12 @@ export function materializeConfig(
   }
 
   const manifestPython = declaresPython(manifest);
-  validateAuthorCompatibilityFlags(
-    workerd.compatibility_flags ?? [],
-    needsPython || manifestPython,
-  );
+  // Flags follow the manifest declaration only. A `.py` the walk found but
+  // the manifest did not declare fails even when both flags are already set.
+  validateAuthorCompatibilityFlags(workerd.compatibility_flags ?? [], manifestPython);
+  if (needsPython && !manifestPython) {
+    throw new Error("plugin.toml: undeclared Python file in the workerd modules tree");
+  }
   const flags = [...(workerd.compatibility_flags ?? [])];
   const flagsLine =
     flags.length === 0

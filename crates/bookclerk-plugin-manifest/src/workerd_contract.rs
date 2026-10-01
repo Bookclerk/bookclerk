@@ -113,8 +113,10 @@ Upgrade Bookclerk to a release that supports this date."
 /// # Arguments
 ///
 /// * `flags` - `workerd.compatibility_flags` in author order.
-/// * `python` - True when the guest has a Python module (manifest or the
-///   modules-directory walk). The flag names themselves are not evidence.
+/// * `python` - True when the manifest declares a Python module. A `.py`
+///   file found only by the modules walk is not enough; callers reject that
+///   separately and must not pass it as `python`. The flag names themselves
+///   are not evidence.
 ///
 /// # Errors
 ///
@@ -195,8 +197,9 @@ pub fn validate_module_declarations(main_module: &str, modules: &[ModuleSpec]) -
 
 /// Relative key a modules-directory walk uses for a `[[modules]]` path or name.
 ///
-/// Strips a leading `modules_dir/` prefix and `./` so `modules/index.js` and
-/// `index.js` both match a walk of `modules_dir = "modules"`.
+/// Strips a leading `./` before the `modules_dir/` prefix (and again after it)
+/// so `./modules/index.js`, `modules/index.js`, and `index.js` all match a walk
+/// of `modules_dir = "modules"`.
 ///
 /// # Arguments
 ///
@@ -209,6 +212,9 @@ pub fn validate_module_declarations(main_module: &str, modules: &[ModuleSpec]) -
 #[must_use]
 pub fn module_load_key(modules_dir: &str, raw: &str) -> String {
     let mut key = raw.replace('\\', "/");
+    while let Some(rest) = key.strip_prefix("./") {
+        key = rest.to_string();
+    }
     let dir = modules_dir.trim_matches('/');
     if !dir.is_empty() {
         let prefix = format!("{dir}/");
@@ -375,6 +381,11 @@ mod tests {
         assert_eq!(
             module_load_key("dist/modules", "./nested/a.js"),
             "nested/a.js"
+        );
+        assert_eq!(module_load_key("modules", "./modules/index.js"), "index.js");
+        assert_eq!(
+            module_load_key("modules", "modules/./pkg/echo.wasm"),
+            "pkg/echo.wasm"
         );
     }
 }

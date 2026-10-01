@@ -171,6 +171,27 @@ fn check_rejects_module_path_when_name_matches_a_different_file() {
 }
 
 #[test]
+fn check_accepts_module_name_when_path_is_omitted() {
+    let out = check_fixture("valid-module-name-only");
+    assert!(
+        out.status.success(),
+        "omitted path should use name: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn check_rejects_kv_oauth_binding() {
+    assert_check_fails("invalid-kv-oauth", "OAUTH");
+    assert_check_fails("invalid-kv-oauth", "collides");
+}
+
+#[test]
+fn check_rejects_undeclared_python_file() {
+    assert_check_fails("invalid-undeclared-python", "undeclared Python file");
+}
+
+#[test]
 fn check_rejects_typescript_main_as_not_implemented() {
     assert_check_fails("invalid-module-ts", "not implemented yet");
 }

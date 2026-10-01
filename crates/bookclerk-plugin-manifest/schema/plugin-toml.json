@@ -301,10 +301,13 @@
     "ModuleSpec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "path"],
+      "required": ["name"],
       "properties": {
         "name": { "type": "string" },
-        "path": { "type": "string" },
+        "path": {
+          "type": "string",
+          "description": "Source file relative to the plugin root. When path is omitted or empty, name is the modules-directory source."
+        },
         "type": { "type": "string", "default": "js" }
       }
     },

@@ -40,8 +40,11 @@ function emitValue(value: unknown): string | null {
   if (typeof value === "string") return esc(value);
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number" || typeof value === "bigint") return String(value);
-  if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
-    return emitStringArray(value as string[]);
+  if (Array.isArray(value)) {
+    if (value.some((item) => item !== null && typeof item === "object")) return null;
+    const rendered = value.map((item) => emitValue(item));
+    if (rendered.some((item) => item === null)) return null;
+    return emitArray(rendered as string[]);
   }
   return null;
 }
@@ -76,12 +79,21 @@ function emitConsumer(lines: string[], consumer: EventConsumerToml): void {
   }
 }
 
+/** True for a non-empty array whose elements are all TOML tables. */
+function isArrayOfRecords(value: unknown): value is Record<string, unknown>[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((row) => row != null && typeof row === "object" && !Array.isArray(row))
+  );
+}
+
 function emitQueues(lines: string[], queues: Record<string, unknown> | undefined): void {
   if (!queues) return;
   const scalars: Record<string, unknown> = {};
-  const lists: Record<string, unknown[]> = {};
+  const lists: Record<string, Record<string, unknown>[]> = {};
   for (const [key, value] of Object.entries(queues)) {
-    if (Array.isArray(value)) lists[key] = value;
+    if (isArrayOfRecords(value)) lists[key] = value;
     else scalars[key] = value;
   }
   if (Object.keys(scalars).length > 0 || Object.keys(lists).length === 0) {
@@ -171,7 +183,7 @@ export function formatManifest(m: Manifest): string {
       lines.push("");
       lines.push("[[modules]]");
       lines.push(`name = ${esc(mod.name)}`);
-      lines.push(`path = ${esc(mod.path)}`);
+      if (mod.path) lines.push(`path = ${esc(mod.path)}`);
       lines.push(`type = ${esc(mod.type ?? "js")}`);
     }
   }

@@ -412,8 +412,8 @@ fn vars_is_none(v: &Option<std::collections::BTreeMap<String, toml::Value>>) -> 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerdRuntimeManifest {
-    /// Cloudflare compatibility date (`YYYY-MM-DD`), on or before the pin
-    /// ([`crate::WORKERD_PIN_COMPAT_DATE`]). Newer dates are rejected.
+    /// Cloudflare compatibility date (`YYYY-MM-DD`). A date newer than the pin
+    /// ([`crate::WORKERD_PIN_COMPAT_DATE`]) warns and loads at that pin.
     pub compatibility_date: String,
     /// Author compatibility flags. Only the Python pair is allowed, and only
     /// when the guest has a Python module. See
@@ -532,6 +532,10 @@ pub struct ModuleSpec {
     /// Module name as known to the isolate (often matches the filename).
     pub name: String,
     /// Path relative to the plugin package root (or modules dir).
+    ///
+    /// When omitted or empty, [`Self::name`] is the source file in the modules
+    /// directory. An explicit path is the only load-set key.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
     /// Module type string (TOML key `type`; default `"js"`). Use `"python"`
     /// for Pyodide modules.
@@ -701,8 +705,8 @@ impl PluginManifest {
     ///
     /// Python means any of: `main_module` ending in `.py`, or a `[[modules]]`
     /// row with `type = "python"` or a `.py` path/name. Compatibility flags
-    /// are not evidence. A `.py` file that exists only on disk is reported by
-    /// the modules walk at check and materialize time.
+    /// are not evidence. A `.py` file that exists only on disk is not a
+    /// declaration: check and materialize reject it.
     ///
     /// # Returns
     ///
@@ -1203,6 +1207,7 @@ impl PluginManifest {
                             | DEFAULT_SECRETS_BINDING
                             | DEFAULT_EVENTS_BINDING
                             | DEFAULT_WORK_FS_BINDING
+                            | DEFAULT_OAUTH_BINDING
                     )
                 {
                     return Err(Error::message(format!(
@@ -2182,6 +2187,10 @@ mode = "deny"
             PluginManifest::parse(&workerd_body("\n[[kv_namespaces]]\nbinding = \"EVENTS\"\n"))
                 .expect_err("KV must not use EVENTS");
         assert!(collide.to_string().contains("collides"), "{collide}");
+        let oauth =
+            PluginManifest::parse(&workerd_body("\n[[kv_namespaces]]\nbinding = \"OAUTH\"\n"))
+                .expect_err("KV must not use OAUTH");
+        assert!(oauth.to_string().contains("collides"), "{oauth}");
     }
 
     #[test]

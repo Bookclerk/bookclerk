@@ -1373,10 +1373,13 @@ pub fn materialize(
         }
     }
 
-    // Do not append Python flags. A manifest that omitted them must fail here
-    // even when a `.py` file is only visible to the directory walk.
-    let python = needs_python || manifest.declares_python();
-    validate_author_compatibility_flags(&workerd.compatibility_flags, python)?;
+    // Flags follow the manifest declaration only. A `.py` file the walk found
+    // but the manifest did not declare is not a Python guest, even when both
+    // Python flags are already set. Do not append flags.
+    validate_author_compatibility_flags(&workerd.compatibility_flags, manifest.declares_python())?;
+    if needs_python && !manifest.declares_python() {
+        bail!("plugin.toml: undeclared Python file in the workerd modules tree");
+    }
     let flags = workerd.compatibility_flags.clone();
     let flags_line = if flags.is_empty() {
         String::new()
@@ -1794,8 +1797,35 @@ mode = "deny"
         .expect("must not append python flags");
         let message = format!("{err:#}");
         assert!(
-            message.contains("must include"),
-            "silent append would have succeeded: {message}"
+            message.contains("undeclared Python file"),
+            "disk-only .py must fail materialize: {message}"
+        );
+
+        let mut flagged = manifest;
+        flagged
+            .workerd
+            .as_mut()
+            .expect("workerd")
+            .compatibility_flags = vec![
+            "python_workers".to_string(),
+            "disable_python_external_sdk".to_string(),
+        ];
+        let flagged_err = materialize(
+            dir.path(),
+            &flagged,
+            &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            None,
+            "test-bridge-token",
+            None,
+        )
+        .err()
+        .expect("both flags must not legalize a disk-only .py");
+        let flagged_message = format!("{flagged_err:#}");
+        assert!(
+            flagged_message.contains("Python module"),
+            "flags require a declared module: {flagged_message}"
         );
     }
 

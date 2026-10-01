@@ -1,0 +1,17 @@
+api_version = 3
+id = "invalid_kv_oauth"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[[kv_namespaces]]
+binding = "OAUTH"
+
+[capabilities.network]
+mode = "deny"

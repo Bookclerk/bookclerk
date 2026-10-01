@@ -131,7 +131,8 @@ def validate_author_compatibility_flags(flags: list[Any], python: bool) -> None:
 
     Args:
         flags: Author ``compatibility_flags``.
-        python: True when the guest has a Python module.
+        python: True when the manifest declares a Python module. A disk-only
+            ``.py`` file is not enough.
 
     Raises:
         ValueError: When a flag is outside the allowlist or the pair is wrong.
@@ -253,6 +254,9 @@ def validate_module_declarations(main_module: str, modules: list[Any]) -> None:
 def module_load_key(modules_dir: str, raw: str) -> str:
     """Relative key a modules-directory walk uses for a ``[[modules]]`` path.
 
+    Leading ``./`` is removed before the modules-dir prefix, then again after
+    it, so ``./modules/index.js`` matches a walk key of ``index.js``.
+
     Args:
         modules_dir: ``[workerd].modules_dir``.
         raw: Author path or name.
@@ -261,6 +265,8 @@ def module_load_key(modules_dir: str, raw: str) -> str:
         Slash-separated key with a leading modules-dir prefix removed.
     """
     key = raw.replace("\\", "/")
+    while key.startswith("./"):
+        key = key[2:]
     directory = modules_dir.strip("/")
     prefix = f"{directory}/"
     if directory and key.startswith(prefix):
@@ -528,7 +534,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
         if name in bindings:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
-    reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS"}
+    reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV}
     for kv in m.get("kv_namespaces") or []:
         name = str(kv.get("binding") or "KV")
         if not _DATABASE_BINDING_RE.match(name) or len(name) > 32:
@@ -554,8 +560,9 @@ def _is_python_workerd(m: dict[str, Any]) -> bool:
 def _enforce_workerd_load_set(m: dict[str, Any], modules_dir: Path) -> None:
     """Require ``[[modules]]`` rows to be files the walk embeds.
 
-    Also requires the Python flag pair when the tree contains a ``.py`` file.
-    An explicit ``path`` must be in that set; ``name`` is the source only when
+    Python flags follow the manifest declaration. A ``.py`` file the walk finds
+    but the manifest does not declare fails even when both flags are set. An
+    explicit ``path`` must be in the load set; ``name`` is the source only when
     ``path`` is omitted.
 
     Args:
@@ -563,7 +570,8 @@ def _enforce_workerd_load_set(m: dict[str, Any], modules_dir: Path) -> None:
         modules_dir: Absolute modules directory.
 
     Raises:
-        ValueError: When a row is missing, a symlink is present, or flags disagree.
+        ValueError: When a row is missing, a symlink is present, flags disagree,
+            or a Python file is not declared.
     """
     load_set = _collect_author_module_keys(modules_dir)
     w = m.get("workerd") or {}
@@ -580,8 +588,11 @@ def _enforce_workerd_load_set(m: dict[str, Any], modules_dir: Path) -> None:
                 )
             raise ValueError(f"plugin.toml: [[modules]] `{file_path}` is not implemented yet")
     disk_python = any(name.lower().endswith(".py") for name in load_set)
-    if disk_python or declares_python(m):
-        validate_author_compatibility_flags(list(w.get("compatibility_flags") or []), True)
+    validate_author_compatibility_flags(
+        list(w.get("compatibility_flags") or []), declares_python(m)
+    )
+    if disk_python and not declares_python(m):
+        raise ValueError("plugin.toml: undeclared Python file in the workerd modules tree")
 
 
 def _collect_author_module_keys(modules_dir: Path) -> set[str]:
@@ -868,8 +879,16 @@ def _value(value: Any) -> str | None:
         return _esc(value)
     if isinstance(value, (int, float)):
         return str(value)
-    if isinstance(value, list) and all(isinstance(v, str) for v in value):
-        return _string_array(list(value))
+    if isinstance(value, list):
+        rendered: list[str] = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                return None
+            one = _value(item)
+            if one is None:
+                return None
+            rendered.append(one)
+        return _array(rendered)
     return None
 
 
@@ -880,12 +899,27 @@ def _table_rows(lines: list[str], table: dict[str, Any]) -> None:
             lines.append(f"{key} = {rendered}")
 
 
+def _is_array_of_records(value: Any) -> bool:
+    """True for a non-empty list whose elements are all dicts."""
+    return (
+        isinstance(value, list)
+        and len(value) > 0
+        and all(isinstance(row, dict) for row in value)
+    )
+
+
 def _emit_queues(lines: list[str], queues: Any) -> None:
-    """Write a declared ``[queues]`` table back out. Absent means omitted."""
+    """Write a declared ``[queues]`` table back out. Absent means omitted.
+
+    Only a non-empty list of dicts uses ``[[queues.key]]``. Scalar lists and
+    empty lists stay inline arrays.
+    """
     if not isinstance(queues, dict):
         return
-    scalars = {key: value for key, value in queues.items() if not isinstance(value, list)}
-    lists = {key: value for key, value in queues.items() if isinstance(value, list)}
+    scalars = {
+        key: value for key, value in queues.items() if not _is_array_of_records(value)
+    }
+    lists = {key: value for key, value in queues.items() if _is_array_of_records(value)}
     if scalars or not lists:
         lines.append("")
         lines.append("[queues]")
@@ -963,7 +997,9 @@ def format_manifest(m: dict[str, Any]) -> str:
         lines.append("")
         lines.append("[[modules]]")
         lines.append(f"name = {_esc(str(mod['name']))}")
-        lines.append(f"path = {_esc(str(mod['path']))}")
+        path = str(mod.get("path") or "")
+        if path:
+            lines.append(f"path = {_esc(path)}")
         lines.append(f"type = {_esc(str(mod.get('type') or 'js'))}")
 
     jobs = list((m.get("triggers") or {}).get("jobs") or [])

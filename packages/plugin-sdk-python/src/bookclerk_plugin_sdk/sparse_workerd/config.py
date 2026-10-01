@@ -530,11 +530,13 @@ def materialize_config(
                 )
             raise ValueError(f"plugin.toml: [[modules]] `{file_path}` is not implemented yet")
 
-    # Do not append Python flags. A `.py` file found only by the walk must fail.
+    # Do not append Python flags. A `.py` file found only by the walk must fail
+    # even when both Python flags are already set.
     flags = [str(f) for f in (workerd.get("compatibility_flags") or [])]
-    validate_author_compatibility_flags(
-        flags, needs_python or declares_python(manifest)
-    )
+    manifest_python = declares_python(manifest)
+    validate_author_compatibility_flags(flags, manifest_python)
+    if needs_python and not manifest_python:
+        raise ValueError("plugin.toml: undeclared Python file in the workerd modules tree")
     flags_line = ""
     if flags:
         listed = ", ".join(f'"{escape_capnp(f)}"' for f in flags)

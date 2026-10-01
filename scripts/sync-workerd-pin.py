@@ -7,6 +7,8 @@ Source of truth:
 
 Derived:
   - crates/bookclerk-workerd/src/pin.rs (const API + include_str check)
+  - author-contract compatibility date in Rust, TypeScript, and Python,
+    plus the pinned-date sentence in both plugin.toml JSON schemas
   - packages/plugin-sdk/workerd-pin.json
   - packages/plugin-sdk-python/workerd-pin.json
   - packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd-pin.json
@@ -51,6 +53,17 @@ EXTRA_COPIES = (
         ROOT / "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/bookclerk_plugin.js",
     ),
 )
+
+# Author-contract copies of bundled_compat_date. A bump rewrites these together
+# with pin.rs so check/load stay on the same calendar as the binary.
+CONTRACT_RUST = ROOT / "crates/bookclerk-plugin-manifest/src/workerd_contract.rs"
+CONTRACT_TS = ROOT / "packages/plugin-sdk/src/tools/validate.ts"
+CONTRACT_PY = ROOT / "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/tools.py"
+CONTRACT_SCHEMAS = (
+    ROOT / "crates/bookclerk-plugin-manifest/schema/plugin-toml.json",
+    ROOT / "crates/bookclerk-plugin-abi/schema/plugin-toml.json",
+)
+_CALENDAR_DATE = r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
 
 # Stable platform key order for generated Rust match arms.
 PLATFORM_ORDER = (
@@ -339,8 +352,117 @@ def check_bridge_copies() -> list[str]:
     return errors
 
 
+def contract_paths() -> tuple[Path, ...]:
+    return (CONTRACT_RUST, CONTRACT_TS, CONTRACT_PY, *CONTRACT_SCHEMAS)
+
+
+def _compat_ymd(compat: str) -> tuple[int, int, int]:
+    if not re.fullmatch(_CALENDAR_DATE, compat):
+        raise SystemExit(f"bundled_compat_date {compat!r} is not YYYY-MM-DD")
+    year, month, day = (int(part) for part in compat.split("-"))
+    return year, month, day
+
+
+def render_contract_text(path: Path, text: str, compat: str) -> str:
+    """Rewrite one contract file's pin date.
+
+    Raises:
+        SystemExit: When the assignment or schema sentence is missing.
+    """
+    year, month, day = _compat_ymd(compat)
+    rel = path.relative_to(ROOT)
+    if path == CONTRACT_RUST:
+        text, n_date = re.subn(
+            rf'pub const WORKERD_PIN_COMPAT_DATE: &str = "{_CALENDAR_DATE}";',
+            f'pub const WORKERD_PIN_COMPAT_DATE: &str = "{compat}";',
+            text,
+            count=1,
+        )
+        text, n_ymd = re.subn(
+            r"const PIN_COMPAT_YMD: \(i32, u32, u32\) = \(\d+, \d+, \d+\);",
+            f"const PIN_COMPAT_YMD: (i32, u32, u32) = ({year}, {month}, {day});",
+            text,
+            count=1,
+        )
+        if n_date != 1 or n_ymd != 1:
+            raise SystemExit(
+                f"{rel}: missing WORKERD_PIN_COMPAT_DATE or PIN_COMPAT_YMD assignment"
+            )
+        return text
+    if path == CONTRACT_TS:
+        text, n = re.subn(
+            rf'export const WORKERD_PIN_COMPAT_DATE = "{_CALENDAR_DATE}";',
+            f'export const WORKERD_PIN_COMPAT_DATE = "{compat}";',
+            text,
+            count=1,
+        )
+        if n != 1:
+            raise SystemExit(f"{rel}: missing WORKERD_PIN_COMPAT_DATE assignment")
+        return text
+    if path == CONTRACT_PY:
+        text, n = re.subn(
+            rf'^WORKERD_PIN_COMPAT_DATE = "{_CALENDAR_DATE}"$',
+            f'WORKERD_PIN_COMPAT_DATE = "{compat}"',
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if n != 1:
+            raise SystemExit(f"{rel}: missing WORKERD_PIN_COMPAT_DATE assignment")
+        return text
+    if path in CONTRACT_SCHEMAS:
+        text, n = re.subn(
+            rf"pinned workerd compatibility date {_CALENDAR_DATE}",
+            f"pinned workerd compatibility date {compat}",
+            text,
+            count=1,
+        )
+        if n != 1:
+            raise SystemExit(
+                f"{rel}: missing pinned workerd compatibility date description"
+            )
+        return text
+    raise SystemExit(f"unexpected contract path {rel}")
+
+
+def write_contract_dates(compat: str) -> list[Path]:
+    """Write the author-contract date constants and schema sentences."""
+    written: list[Path] = []
+    for path in contract_paths():
+        if not path.is_file():
+            raise SystemExit(f"missing contract file {path.relative_to(ROOT)}")
+        current = path.read_text(encoding="utf-8")
+        updated = render_contract_text(path, current, compat)
+        if updated != current:
+            path.write_text(updated, encoding="utf-8")
+            written.append(path)
+    return written
+
+
+def check_contract_dates(compat: str) -> list[str]:
+    """Return drift messages for the author-contract date copies."""
+    errors: list[str] = []
+    for path in contract_paths():
+        rel = path.relative_to(ROOT)
+        if not path.is_file():
+            errors.append(f"missing contract date file {rel}")
+            continue
+        try:
+            current = path.read_text(encoding="utf-8")
+            updated = render_contract_text(path, current, compat)
+        except SystemExit as err:
+            errors.append(str(err))
+            continue
+        if updated != current:
+            errors.append(
+                f"{rel} compatibility date disagrees with workerd-pin.json "
+                "(run: python3 scripts/sync-workerd-pin.py --write)"
+            )
+    return errors
+
+
 def write_derived(data: dict) -> list[Path]:
-    """Write pin.rs + stub JSON copies + bridge JS. Returns paths written."""
+    """Write pin.rs, author-contract dates, stub JSON, and bridge JS."""
     written: list[Path] = []
     pin_text = render_pin_rs(data)
     PIN_RS.parent.mkdir(parents=True, exist_ok=True)
@@ -360,6 +482,7 @@ def write_derived(data: dict) -> list[Path]:
             written.append(stub)
 
     written.extend(write_bridge_copies())
+    written.extend(write_contract_dates(data["bundled_compat_date"]))
     return written
 
 
@@ -393,6 +516,7 @@ def check_derived(data: dict) -> list[str]:
             )
 
     errors.extend(check_bridge_copies())
+    errors.extend(check_contract_dates(data["bundled_compat_date"]))
     return errors
 
 
@@ -415,12 +539,12 @@ def main() -> int:
     parser.add_argument(
         "--write",
         action="store_true",
-        help="regenerate pin.rs, SDK stub JSON, and bridge JS copies",
+        help="regenerate pin.rs, author-contract dates, SDK stub JSON, and bridge JS copies",
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="fail if pin.rs, stub copies, or bridge JS disagree with SoT",
+        help="fail if pin.rs, author-contract dates, stub copies, or bridge JS disagree with SoT",
     )
     args = parser.parse_args()
     if not args.write and not args.check:

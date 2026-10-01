@@ -51,8 +51,11 @@ export type Manifest = {
     /** Optional CPU / subrequest limits enforced by the host egress policy. */
     limits?: { cpu_ms?: number; subrequests?: number };
   };
-  /** Extra module descriptors for legacy / advanced layouts outside `modules_dir`. */
-  modules?: Array<{ name: string; path: string; type?: string }>;
+  /**
+   * Extra module descriptors. `path` is the source file. When `path` is
+   * omitted or empty, `name` is the source in the modules directory.
+   */
+  modules?: Array<{ name: string; path?: string; type?: string }>;
   /** `[triggers]` — command types the default entrypoint's `job(controller)` runs. */
   triggers?: { jobs?: string[] };
   /** `[events]` — consumer triggers and producer publish grants. */
@@ -392,7 +395,7 @@ function validateSurface(m: Manifest): void {
     }
     bindings.add(name);
   }
-  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS"]);
+  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH"]);
   for (const kv of m.kv_namespaces ?? []) {
     const name = kv.binding || "KV";
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
@@ -481,7 +484,8 @@ function compatibilityDateFallbackWarning(requested: string): string {
  * Enforces the Python flag pair. Does not insert missing flags.
  *
  * @param flags - Author `compatibility_flags`.
- * @param python - True when the guest has a Python module.
+ * @param python - True when the manifest declares a Python module. A
+ * disk-only `.py` file is not enough.
  * @throws {Error} When a flag is outside the allowlist or the pair is wrong.
  */
 export function validateAuthorCompatibilityFlags(
@@ -560,7 +564,7 @@ export function unimplementedSurface(m: Manifest): string | null {
  */
 export function validateModuleDeclarations(
   mainModule: string,
-  modules: ReadonlyArray<{ name: string; path: string; type?: string }>,
+  modules: ReadonlyArray<{ name: string; path?: string; type?: string }>,
 ): void {
   if (embedClass(mainModule) == null) {
     throw new Error(
@@ -585,12 +589,16 @@ export function validateModuleDeclarations(
 /**
  * Relative key a modules-directory walk uses for a `[[modules]]` path.
  *
+ * Leading `./` is removed before the modules-dir prefix, then again after it,
+ * so `./modules/index.js` matches a walk key of `index.js`.
+ *
  * @param modulesDir - `[workerd].modules_dir`.
  * @param raw - Author path or name.
  * @returns Slash-separated key with a leading modules-dir prefix removed.
  */
 export function moduleLoadKey(modulesDir: string, raw: string): string {
   let key = raw.replace(/\\/g, "/");
+  while (key.startsWith("./")) key = key.slice(2);
   let start = 0;
   let end = modulesDir.length;
   while (start < end && modulesDir[start] === "/") start += 1;

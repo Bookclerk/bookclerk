@@ -96,6 +96,23 @@ def test_check_rejects_module_path_when_name_matches_a_different_file():
         check_plugin(FIXTURES / "invalid-module-path")
 
 
+def test_check_accepts_module_name_when_path_is_omitted():
+    msg = check_plugin(FIXTURES / "valid-module-name-only")
+    assert "echo_workerd_name_only" in msg
+
+
+def test_check_rejects_kv_oauth_binding():
+    with pytest.raises(ValueError, match="OAUTH"):
+        check_plugin(FIXTURES / "invalid-kv-oauth")
+    with pytest.raises(ValueError, match="collides"):
+        check_plugin(FIXTURES / "invalid-kv-oauth")
+
+
+def test_check_rejects_undeclared_python_file():
+    with pytest.raises(ValueError, match="undeclared Python file"):
+        check_plugin(FIXTURES / "invalid-undeclared-python")
+
+
 def test_materialize_rejects_module_path_when_name_matches_a_different_file():
     import tomllib
 
@@ -108,6 +125,39 @@ def test_materialize_rejects_module_path_when_name_matches_a_different_file():
         materialize_config(
             FIXTURES / "invalid-module-path",
             manifest,
+            listen_port=0,
+            bridge_token="token",
+        )
+
+
+def test_materialize_rejects_disk_only_python_even_with_both_flags():
+    import tomllib
+
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
+    from bookclerk_plugin_sdk.tools import module_load_key
+
+    assert module_load_key("modules", "./modules/index.js") == "index.js"
+    manifest = tomllib.loads(
+        (FIXTURES / "invalid-undeclared-python" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    with pytest.raises(ValueError, match="undeclared Python file"):
+        materialize_config(
+            FIXTURES / "invalid-undeclared-python",
+            manifest,
+            listen_port=0,
+            bridge_token="token",
+        )
+    flagged = tomllib.loads(
+        (FIXTURES / "invalid-undeclared-python" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    flagged["workerd"]["compatibility_flags"] = [
+        "python_workers",
+        "disable_python_external_sdk",
+    ]
+    with pytest.raises(ValueError, match="Python module"):
+        materialize_config(
+            FIXTURES / "invalid-undeclared-python",
+            flagged,
             listen_port=0,
             bridge_token="token",
         )
@@ -146,6 +196,46 @@ def test_format_keeps_queues_declaration():
     rendered = format_manifest(tomllib.loads(text))
     assert "[[queues.producers]]" in rendered
     assert "not implemented" not in rendered.lower()
+
+
+def test_format_queues_keeps_scalar_and_empty_arrays():
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "native",
+            "command": "./echo",
+            "entrypoints": ["cli"],
+            "queues": {
+                "producers": [{"binding": "MY_QUEUE", "queue": "jobs"}],
+                "names": ["a"],
+                "empty": [],
+            },
+        }
+    )
+    assert "[[queues.producers]]" in rendered
+    assert 'names = ["a"]' in rendered
+    assert "empty = []" in rendered
+    assert "[[queues.names]]" not in rendered
+    assert "[[queues.empty]]" not in rendered
+
+
+def test_format_omits_module_path_when_absent():
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "workerd",
+            "entrypoints": ["cli"],
+            "workerd": {
+                "compatibility_date": "2026-08-01",
+                "main_module": "index.js",
+            },
+            "modules": [{"name": "index.js"}],
+        }
+    )
+    assert 'name = "index.js"' in rendered
+    assert "path =" not in rendered
 
 
 def test_check_rejects_native_with_domains():

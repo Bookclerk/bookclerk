@@ -120,15 +120,16 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
     ))
 }
 
-/// Requires every `[[modules]]` row to be a file the modules walk embeds, and
-/// requires the Python flag pair when the walk finds a `.py` the manifest
-/// tables did not already describe. An explicit `path` must be in that set;
-/// `name` is the source only when `path` is omitted.
+/// Requires every `[[modules]]` row to be a file the modules walk embeds.
+/// Python flags follow the manifest declaration. A `.py` file the walk finds
+/// but the manifest does not declare fails even when both flags are set. An
+/// explicit `path` must be in the load set; `name` is the source only when
+/// `path` is omitted.
 ///
 /// # Errors
 ///
-/// Returns [`SdkError`] when a row is missing, a symlink is present, or Python
-/// flags do not match the walked tree.
+/// Returns [`SdkError`] when a row is missing, a symlink is present, Python
+/// flags disagree with the manifest, or a `.py` file is not declared.
 fn enforce_workerd_load_set(manifest: &PluginManifest, modules_dir: &Path) -> Result<()> {
     let load_set = collect_author_module_keys(modules_dir)?;
     let modules_dir_name = manifest
@@ -161,9 +162,12 @@ fn enforce_workerd_load_set(manifest: &PluginManifest, modules_dir: &Path) -> Re
         .iter()
         .any(|name| name.to_ascii_lowercase().ends_with(".py"));
     if let Some(w) = manifest.workerd.as_ref() {
-        if disk_python || manifest.declares_python() {
-            validate_author_compatibility_flags(&w.compatibility_flags, true)
-                .map_err(|err| SdkError::message(err.to_string()))?;
+        validate_author_compatibility_flags(&w.compatibility_flags, manifest.declares_python())
+            .map_err(|err| SdkError::message(err.to_string()))?;
+        if disk_python && !manifest.declares_python() {
+            return Err(SdkError::message(
+                "plugin.toml: undeclared Python file in the workerd modules tree",
+            ));
         }
     }
     Ok(())

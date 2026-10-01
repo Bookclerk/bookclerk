@@ -40,6 +40,10 @@ run(["check", path.join(fixtures, "invalid-flags-without-python")], false, "Pyth
 run(["check", path.join(fixtures, "invalid-module-type")], false, "does not match");
 run(["check", path.join(fixtures, "invalid-module-path")], false, "missing.js");
 run(["check", path.join(fixtures, "invalid-module-path")], false, "not in the workerd load set");
+run(["check", path.join(fixtures, "valid-module-name-only")], true);
+run(["check", path.join(fixtures, "invalid-kv-oauth")], false, "OAUTH");
+run(["check", path.join(fixtures, "invalid-kv-oauth")], false, "collides");
+run(["check", path.join(fixtures, "invalid-undeclared-python")], false, "undeclared Python file");
 run(["check", path.join(fixtures, "invalid-module-ts")], false, "not implemented yet");
 run(["check", path.join(fixtures, "not-implemented-kv")], true);
 run(["check", path.join(fixtures, "not-implemented-queues")], true);
@@ -62,4 +66,73 @@ try {
   }
 }
 console.log("ok materialize rejects explicit path when name matches another file");
+
+const { formatManifest } = await import("../dist/tools/format.js");
+const { moduleLoadKey } = await import("../dist/tools/validate.js");
+if (moduleLoadKey("modules", "./modules/index.js") !== "index.js") {
+  console.error("FAIL moduleLoadKey did not strip ./ before the modules prefix");
+  process.exit(1);
+}
+const queuesText = formatManifest({
+  api_version: 3,
+  id: "echo",
+  runtime: "native",
+  command: "./echo",
+  entrypoints: ["cli"],
+  queues: {
+    producers: [{ binding: "MY_QUEUE", queue: "jobs" }],
+    names: ["a"],
+    empty: [],
+  },
+  capabilities: { network: { mode: "deny" } },
+});
+if (!queuesText.includes("[[queues.producers]]") || !queuesText.includes('names = ["a"]') || !queuesText.includes("empty = []")) {
+  console.error("FAIL queues formatter dropped scalar arrays", queuesText);
+  process.exit(1);
+}
+if (queuesText.includes("[[queues.names]]") || queuesText.includes("[[queues.empty]]")) {
+  console.error("FAIL queues formatter treated a scalar array as tables", queuesText);
+  process.exit(1);
+}
+const nameOnly = formatManifest({
+  api_version: 3,
+  id: "echo",
+  runtime: "workerd",
+  entrypoints: ["cli"],
+  workerd: { compatibility_date: "2026-08-01", main_module: "index.js" },
+  modules: [{ name: "index.js" }],
+  capabilities: { network: { mode: "deny" } },
+});
+if (nameOnly.includes("path =")) {
+  console.error("FAIL formatter emitted an omitted module path", nameOnly);
+  process.exit(1);
+}
+console.log("ok format keeps scalar queues and omits empty module paths");
+
+const undeclaredDir = path.join(fixtures, "invalid-undeclared-python");
+const undeclared = parse(fs.readFileSync(path.join(undeclaredDir, "plugin.toml"), "utf8"));
+try {
+  materializeConfig(undeclaredDir, undeclared, { listenPort: 0, bridgeToken: "token" });
+  console.error("FAIL materialize accepted a disk-only .py");
+  process.exit(1);
+} catch (err) {
+  const message = String(err && err.message ? err.message : err);
+  if (!message.includes("undeclared Python file")) {
+    console.error("FAIL undeclared python error", message);
+    process.exit(1);
+  }
+}
+undeclared.workerd.compatibility_flags = ["python_workers", "disable_python_external_sdk"];
+try {
+  materializeConfig(undeclaredDir, undeclared, { listenPort: 0, bridgeToken: "token" });
+  console.error("FAIL materialize accepted a disk-only .py when both flags are set");
+  process.exit(1);
+} catch (err) {
+  const message = String(err && err.message ? err.message : err);
+  if (!message.includes("Python module")) {
+    console.error("FAIL flagged disk-only python error", message);
+    process.exit(1);
+  }
+}
+console.log("ok materialize rejects disk-only python even with both flags");
 console.log("tools conformance passed");
