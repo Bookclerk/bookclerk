@@ -524,25 +524,58 @@ pub fn plan_acl_journal(
 ///
 /// Returns [`SandboxError::Backend`] when a present path cannot be updated.
 pub fn revoke_acl_journal(entries: &[AclJournalEntry]) -> Result<(), SandboxError> {
-    #[cfg(windows)]
-    {
-        for entry in entries {
-            if !entry.path.exists() {
-                continue;
-            }
-            revoke_package_access(
-                &entry.path,
-                &entry.package_sid,
-                entry.is_dir,
-                entry.propagate,
-            )?;
+    let mut owned = entries.to_vec();
+    revoke_acl_journal_retain(&mut owned)
+}
+
+/// Revoke `entries` in order.
+///
+/// On success `entries` is empty. On failure it keeps the entry that failed
+/// and every entry not yet attempted, so the caller can retry. A missing path
+/// counts as already revoked and is not retained. `BOOKCLERK_TEST_FAIL_ACL_REVOKE`
+/// forces a failure before any Win32 call: `1` fails on the first entry,
+/// `index:N` fails on entry `N`.
+///
+/// # Errors
+///
+/// Returns [`SandboxError::Backend`] when a present path cannot be updated or
+/// the test hook forces a failure.
+pub fn revoke_acl_journal_retain(entries: &mut Vec<AclJournalEntry>) -> Result<(), SandboxError> {
+    let mut index = 0;
+    while index < entries.len() {
+        if forced_acl_revoke_index() == Some(index) {
+            entries.drain(..index);
+            return Err(SandboxError::Backend {
+                label: "appcontainer".into(),
+                backend: "appcontainer",
+                detail: "BOOKCLERK_TEST_FAIL_ACL_REVOKE".into(),
+            });
         }
+        #[cfg(windows)]
+        if entries[index].path.exists() {
+            if let Err(err) = revoke_package_access(
+                &entries[index].path,
+                &entries[index].package_sid,
+                entries[index].is_dir,
+                entries[index].propagate,
+            ) {
+                entries.drain(..index);
+                return Err(err);
+            }
+        }
+        index += 1;
     }
-    #[cfg(not(windows))]
-    {
-        let _ = entries;
-    }
+    entries.clear();
     Ok(())
+}
+
+/// `Some(index)` when `BOOKCLERK_TEST_FAIL_ACL_REVOKE` should fail that entry.
+fn forced_acl_revoke_index() -> Option<usize> {
+    let raw = std::env::var("BOOKCLERK_TEST_FAIL_ACL_REVOKE").ok()?;
+    if let Some(rest) = raw.strip_prefix("index:") {
+        return rest.parse().ok();
+    }
+    Some(0)
 }
 
 /// Grant the Package SID access to `path` for one RPC / spawn allowlist entry.
