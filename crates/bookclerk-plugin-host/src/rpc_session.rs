@@ -1990,12 +1990,12 @@ struct WindowsPackageCleanup {
 ///
 /// Drop deletes AppContainer profiles, then revokes the package-SID journal.
 /// The session directory is removed only when that revoke returns `Ok`.
-/// `acl-journal-pending.json` is written before ACEs are granted. A failed
-/// revoke keeps the directory and tries to refresh that file with the
-/// unrevoked suffix. If the refresh cannot be written, the earlier file
-/// remains and the next session plan retries it. Directory removal is the
-/// success signal the one-read SID check waits on; it is not crossed on the
-/// error path.
+/// `acl-journals/<session>.json` is written before ACEs are granted, outside
+/// the session directory the gateway can write. A failed revoke keeps the
+/// directory and tries to refresh that file with the unrevoked suffix. If the
+/// refresh cannot be written, the earlier file remains and the next session
+/// plan retries it. Directory removal is the success signal the one-read SID
+/// check waits on; it is not crossed on the error path.
 struct VatHostCleanup {
     #[cfg(windows)]
     packages: Option<WindowsPackageCleanup>,
@@ -2266,7 +2266,8 @@ impl Drop for StartupOwner {
 /// Kill both siblings, abort the proxy, and remove host-owned session state.
 ///
 /// On Windows the session directory is removed only after the ACL journal
-/// revokes. A failed revoke leaves `acl-journal-pending.json` in that directory.
+/// revokes. A failed revoke leaves `acl-journals/<session>.json` beside that
+/// directory, where the gateway cannot delete it.
 fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
     spawned.identities.kill_matching();
     let _ = spawned.child.start_kill();
