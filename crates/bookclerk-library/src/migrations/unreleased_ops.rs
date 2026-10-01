@@ -69,9 +69,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_account ON books(account_id)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)"),
     // Title order for library pages is ASCII case-fold, then code points, then
-    // `uuid`. SQLite serves that with `COLLATE NOCASE`. Postgres lowering
-    // rewrites the same token to `lower(title COLLATE "C")` and marks the
-    // index `NULLS FIRST`. Binary `idx_books_title` cannot serve the plan.
+    // `uuid` in code-point order. SQLite serves the fold with `COLLATE NOCASE`
+    // and the tie with BINARY. Postgres lowering rewrites the fold to
+    // `lower(title COLLATE "C")`, the tie to `(uuid COLLATE "C")`, and marks
+    // the index `NULLS FIRST`. Binary `idx_books_title` cannot serve the plan.
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_books_page_title ON books(title COLLATE NOCASE, uuid)",
     ),

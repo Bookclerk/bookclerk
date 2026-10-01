@@ -170,7 +170,8 @@ pub(crate) fn page_statements(
     let limit = page_binds.next();
     let offset = page_binds.next();
     // `COLLATE NOCASE` is the SQLite spelling of ASCII case-fold order.
-    // Postgres lowering rewrites it to `lower(title COLLATE "C")`.
+    // Postgres lowering rewrites the fold to `lower(title COLLATE "C")`
+    // and the `uuid` tie-break to `(uuid COLLATE "C")`.
     let page_sql = format!(
         "SELECT * FROM books{page_where} ORDER BY title COLLATE NOCASE, uuid LIMIT {limit} OFFSET {offset}"
     );
@@ -501,7 +502,7 @@ mod tests {
 
     async fn postgres_page_plan(store: &LibraryStore) -> String {
         let sql = "EXPLAIN SELECT * FROM books WHERE account_id = 'case' \
-            ORDER BY (lower(title COLLATE \"C\")) NULLS FIRST, uuid NULLS FIRST \
+            ORDER BY (lower(title COLLATE \"C\")) NULLS FIRST, (uuid COLLATE \"C\") NULLS FIRST \
             LIMIT 2 OFFSET 2";
         let rows = ConnectionTrait::query_all_raw(
             &store.db,

@@ -84,8 +84,9 @@ pub fn lower_canonical_to_postgres(sql: &str) -> String {
 /// desugars ([`bookclerk_plugin_abi::desugar_canonical_sql`]), not adapter
 /// dialect generation.
 fn lower_canonical_to_postgres_helpers(sql: &str) -> String {
-    // SQLite `COLLATE NOCASE` folds ASCII case, then compares bytes. Postgres
-    // has no such collation; `lower(ident COLLATE "C")` is that same order.
+    // SQLite `COLLATE NOCASE` folds ASCII case, then compares code points.
+    // Postgres has no such collation; `lower(ident COLLATE "C")` is that fold,
+    // and the next bare key is `COLLATE "C"` so the tie is code points too.
     let sql = rewrite_sqlite_nocase(sql);
     let sql = sqlite_fns_to_postgres(&sql);
     rewrite_placeholders_postgres(&sql)
@@ -1144,7 +1145,8 @@ fn ddl_type_rewrite_at(sql: &str, i: usize) -> Option<(usize, &'static str)> {
 #[must_use]
 pub fn lower_canonical_ddl_to_postgres(sql: &str) -> String {
     // SQLite `COLLATE NOCASE` is the library title index. Postgres gets an
-    // expression index on `lower(title COLLATE "C")` so the page order matches.
+    // expression index on `lower(title COLLATE "C")` and a `COLLATE "C"`
+    // tie-break so the page order matches.
     let stripped = rewrite_sqlite_nocase(sql);
     lower_canonical_to_postgres(&rewrite_canonical_ddl_types_for_postgres(&stripped))
 }
@@ -1153,19 +1155,234 @@ pub fn lower_canonical_ddl_to_postgres(sql: &str) -> String {
 ///
 /// SQLite `NOCASE` folds the 26 ASCII letters and then compares code points.
 /// `lower` of a `C`-collated argument is that fold, and the result compares
-/// in code-point order. A `CREATE INDEX` also marks every key `NULLS FIRST`
-/// so it matches the host `ORDER BY` desugar. SQLite callers must not use
-/// this: they keep `COLLATE NOCASE` and the existing page indexes.
+/// in code-point order. Bare identifier keys after that fold (the `uuid`
+/// tie-break) become `(ident COLLATE "C")`, so Postgres does not break the
+/// tie with its default collation. Keys before the fold stay bare so an
+/// equality prefix still matches the index. A `CREATE INDEX` also marks
+/// every key `NULLS FIRST` so it matches the host `ORDER BY` desugar.
+/// SQLite callers must not use this: they keep `COLLATE NOCASE` and the
+/// existing page indexes.
 ///
-/// String literals and comments are left unchanged, so the token never has
-/// to be sent to Postgres from a code span.
+/// String literals and comments are left unchanged, so the SQLite token
+/// never has to be sent to Postgres from a code span. A second pass is a
+/// no-op.
 pub(crate) fn rewrite_sqlite_nocase(sql: &str) -> String {
     let rewritten = rewrite_nocase_idents(sql);
-    if is_create_index(&rewritten) {
-        add_index_nulls_first(&rewritten)
+    let collated = collate_post_fold_keys(&rewritten);
+    if is_create_index(&collated) {
+        add_index_nulls_first(&collated)
     } else {
-        rewritten
+        collated
     }
+}
+
+/// Collates bare sort keys that follow a case-fold key with `COLLATE "C"`.
+///
+/// Applies to `ORDER BY` lists and to a `CREATE INDEX` column list. A fold
+/// key is the `(lower(… COLLATE "C"))` form produced by
+/// [`rewrite_nocase_idents`].
+fn collate_post_fold_keys(sql: &str) -> String {
+    let sql = if is_create_index(sql) {
+        collate_index_keys(sql)
+    } else {
+        sql.to_string()
+    };
+    collate_order_by_lists(&sql)
+}
+
+/// Rewrites the column list of a `CREATE INDEX` that contains a fold key.
+fn collate_index_keys(sql: &str) -> String {
+    let Some(open) = index_column_list_open(sql) else {
+        return sql.to_string();
+    };
+    let Some(close) = matching_paren(sql, open) else {
+        return sql.to_string();
+    };
+    let inner = collate_key_list(&sql[open + 1..close]);
+    let mut out = String::with_capacity(sql.len() + inner.len());
+    out.push_str(&sql[..=open]);
+    out.push_str(&inner);
+    out.push_str(&sql[close..]);
+    out
+}
+
+/// Rewrites every `ORDER BY` key list in `sql`.
+fn collate_order_by_lists(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len() + 16);
+    let mut i = 0;
+    while i < sql.len() {
+        if let Some(len) = literal_or_comment_len(&sql[i..]) {
+            out.push_str(&sql[i..i + len]);
+            i += len;
+            continue;
+        }
+        if ident_eq_ci(sql, i, "ORDER") {
+            let after_order = skip_trivia_idx(sql, i + "ORDER".len());
+            if ident_eq_ci(sql, after_order, "BY") {
+                let list_start = skip_trivia_idx(sql, after_order + "BY".len());
+                let list_end = order_by_list_end(sql, list_start);
+                let list = &sql[list_start..list_end];
+                let body_len = list.trim_end().len();
+                out.push_str(&sql[i..list_start]);
+                out.push_str(&collate_key_list(&list[..body_len]));
+                out.push_str(&list[body_len..]);
+                i = list_end;
+                continue;
+            }
+        }
+        let ch = sql[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// End of an `ORDER BY` key list: `LIMIT`, a sibling set-op, or a `)` at depth 0.
+fn order_by_list_end(sql: &str, start: usize) -> usize {
+    let mut depth = 0i32;
+    let mut i = start;
+    while i < sql.len() {
+        if let Some(len) = literal_or_comment_len(&sql[i..]) {
+            i += len;
+            continue;
+        }
+        let ch = sql[i..].chars().next().unwrap_or('\0');
+        match ch {
+            '(' => depth += 1,
+            ')' if depth == 0 => return i,
+            ')' => depth -= 1,
+            _ if depth == 0 && is_order_by_terminator(sql, i) => return i,
+            _ => {}
+        }
+        i += ch.len_utf8();
+    }
+    sql.len()
+}
+
+/// True when `i` starts a clause that ends an `ORDER BY` list.
+fn is_order_by_terminator(sql: &str, i: usize) -> bool {
+    if sql.as_bytes().get(i) == Some(&b';') {
+        return true;
+    }
+    const WORDS: &[&str] = &[
+        "LIMIT",
+        "OFFSET",
+        "FETCH",
+        "FOR",
+        "UNION",
+        "INTERSECT",
+        "EXCEPT",
+        "WINDOW",
+    ];
+    WORDS.iter().any(|word| ident_eq_ci(sql, i, word))
+}
+
+/// Wraps bare identifiers that follow a case-fold key.
+fn collate_key_list(inner: &str) -> String {
+    let parts = split_top_level_commas(inner);
+    let mut seen_fold = false;
+    let mut out = String::with_capacity(inner.len() + 16);
+    for (n, part) in parts.iter().enumerate() {
+        if n > 0 {
+            out.push_str(", ");
+        }
+        let trimmed = part.trim();
+        if is_fold_key(trimmed) {
+            seen_fold = true;
+            out.push_str(trimmed);
+            continue;
+        }
+        if seen_fold {
+            if let Some(wrapped) = collate_bare_sort_ident(trimmed) {
+                out.push_str(&wrapped);
+                continue;
+            }
+        }
+        out.push_str(trimmed);
+    }
+    out
+}
+
+/// True when `key` is the `(lower(… COLLATE …))` fold produced for `NOCASE`.
+fn is_fold_key(key: &str) -> bool {
+    let expr = sort_expr(key);
+    let folded = expr.to_ascii_lowercase();
+    folded.starts_with("(lower(") && contains_collate_keyword(expr)
+}
+
+/// `(ident COLLATE "C")` plus any `ASC`/`DESC`/`NULLS` suffix, or `None` when
+/// `key` is not a single bare identifier.
+fn collate_bare_sort_ident(key: &str) -> Option<String> {
+    let key = key.trim();
+    if key.starts_with('(') || contains_collate_keyword(key) {
+        return None;
+    }
+    let (expr, suffix) = split_sort_suffix(key);
+    let ident_len = ident_len_at(expr, 0)?;
+    if ident_len != expr.len() {
+        return None;
+    }
+    Some(format!("({expr} COLLATE \"C\"){suffix}"))
+}
+
+/// Expression and its trailing sort suffix (` ASC`, ` NULLS FIRST`, or empty).
+fn split_sort_suffix(key: &str) -> (&str, &str) {
+    let mut expr_end = key.len();
+    if let Some(start) = sort_suffix_start(key, &["NULLS LAST", "NULLS FIRST"]) {
+        expr_end = start;
+    }
+    let head = key[..expr_end].trim_end();
+    if let Some(start) = sort_suffix_start(head, &["DESC", "ASC"]) {
+        expr_end = start;
+    }
+    let expr = key[..expr_end].trim_end();
+    (expr, &key[expr.len()..])
+}
+
+/// The sort expression of `key`, without `ASC`/`DESC` or `NULLS FIRST`/`LAST`.
+fn sort_expr(key: &str) -> &str {
+    split_sort_suffix(key).0.trim()
+}
+
+/// Byte offset where a trailing sort keyword starts, when a real expression remains.
+fn sort_suffix_start(s: &str, words: &[&str]) -> Option<usize> {
+    let trimmed_end = s.trim_end();
+    for word in words {
+        if trimmed_end.len() < word.len() {
+            continue;
+        }
+        let start = trimmed_end.len() - word.len();
+        if !trimmed_end.is_char_boundary(start) {
+            continue;
+        }
+        if !trimmed_end[start..].eq_ignore_ascii_case(word) {
+            continue;
+        }
+        if start > 0 {
+            let prev = trimmed_end[..start].chars().next_back()?;
+            if prev.is_ascii_alphanumeric() || prev == '_' {
+                continue;
+            }
+        }
+        if trimmed_end[..start].trim().is_empty() {
+            continue;
+        }
+        return Some(start);
+    }
+    None
+}
+
+/// True when `s` contains the keyword `COLLATE` outside a longer identifier.
+fn contains_collate_keyword(s: &str) -> bool {
+    let mut i = 0;
+    while i < s.len() {
+        if ident_eq_ci(s, i, "COLLATE") {
+            return true;
+        }
+        let ch = s[i..].chars().next().unwrap_or('\0');
+        i += ch.len_utf8();
+    }
+    false
 }
 
 /// True when `sql` is a `CREATE INDEX` statement.
@@ -2720,6 +2937,25 @@ mod nocase_index_postgres {
             "{lowered}"
         );
         assert!(lowered.contains("title"), "{lowered}");
+        assert!(
+            lowered.contains("(uuid COLLATE \"C\") NULLS FIRST"),
+            "{lowered}"
+        );
+        let status = "CREATE INDEX IF NOT EXISTS idx_books_page_account_status \
+            ON books(account_id, acquire_status, title COLLATE NOCASE, uuid)";
+        let once = lower_canonical_ddl_to_postgres(status);
+        let twice = lower_canonical_ddl_to_postgres(&once);
+        assert_eq!(once, twice, "index tie-break rewrite is idempotent");
+        assert!(!once.to_ascii_uppercase().contains("NOCASE"), "{once}");
+        assert!(
+            once.contains("(lower(title COLLATE \"C\")) NULLS FIRST"),
+            "{once}"
+        );
+        assert!(once.contains("(uuid COLLATE \"C\") NULLS FIRST"), "{once}");
+        assert!(once.contains("account_id NULLS FIRST"), "{once}");
+        assert!(once.contains("acquire_status NULLS FIRST"), "{once}");
+        assert!(!once.contains("(account_id COLLATE"), "{once}");
+        assert!(!once.contains("(acquire_status COLLATE"), "{once}");
     }
 
     #[test]
@@ -2731,13 +2967,20 @@ mod nocase_index_postgres {
             "{postgres}"
         );
         assert!(
-            postgres
-                .contains("ORDER BY (lower(title COLLATE \"C\")) NULLS FIRST, uuid NULLS FIRST"),
+            postgres.contains(
+                "ORDER BY (lower(title COLLATE \"C\")) NULLS FIRST, (uuid COLLATE \"C\") NULLS FIRST"
+            ),
             "{postgres}"
         );
+        let again = lower_canonical_sql(DatabaseBackend::Postgres, &postgres);
+        assert_eq!(again, postgres, "tie-break rewrite is idempotent");
         let sqlite = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
         assert!(sqlite.to_ascii_uppercase().contains("NOCASE"), "{sqlite}");
         assert!(!sqlite.contains("lower(title)"), "{sqlite}");
+        assert!(
+            !sqlite.contains("COLLATE \"C\""),
+            "sqlite keeps its own tie-break: {sqlite}"
+        );
         let literal = lower_canonical_sql(
             DatabaseBackend::Postgres,
             "SELECT 'title COLLATE NOCASE' FROM books ORDER BY title COLLATE NOCASE",

@@ -34,9 +34,10 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 ///
 /// Hosts emit canonical SQLite-shaped `CREATE`/`DROP`. Postgres adapters
 /// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here and turn
-/// `ident COLLATE NOCASE` into `(lower(ident COLLATE "C"))` so page order
-/// matches SQLite. SQLite leaves the statement unchanged, including
-/// `NOCASE` page indexes. DML stays for [`crate::lower_canonical_sql`].
+/// `ident COLLATE NOCASE` into `(lower(ident COLLATE "C"))`, with the
+/// following tie-break as `(ident COLLATE "C")`, so page order matches
+/// SQLite. SQLite leaves the statement unchanged, including `NOCASE` page
+/// indexes. DML stays for [`crate::lower_canonical_sql`].
 ///
 /// # Panics
 ///
@@ -453,7 +454,10 @@ mod tests {
             postgres.contains("(lower(title COLLATE \"C\")) NULLS FIRST"),
             "{postgres}"
         );
-        assert!(postgres.contains("uuid NULLS FIRST"), "{postgres}");
+        assert!(
+            postgres.contains("(uuid COLLATE \"C\") NULLS FIRST"),
+            "{postgres}"
+        );
         let sqlite = lower_binding_sql_for_backend(DatabaseBackend::Sqlite, sql);
         assert!(sqlite.contains("COLLATE NOCASE"), "{sqlite}");
         assert!(!sqlite.contains("lower(title)"), "{sqlite}");
