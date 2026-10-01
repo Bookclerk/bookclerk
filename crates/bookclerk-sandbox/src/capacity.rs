@@ -112,7 +112,9 @@ pub fn filesystem_free_bytes(path: &Path) -> Option<u64> {
 
 /// `statvfs` on Linux and macOS.
 ///
-/// `fsblkcnt_t` is `u64` on Linux and a narrower type on macOS.
+/// `f_frsize` is `c_ulong`. `f_bavail` is `fsblkcnt_t`: `u64` on Linux and
+/// `u32` on macOS. [`u64::from`] accepts both. The Linux identity conversion
+/// is an allowed no-op.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(unsafe_code, clippy::useless_conversion)]
 fn filesystem_free_bytes_unix(path: &Path) -> Option<u64> {
@@ -124,8 +126,8 @@ fn filesystem_free_bytes_unix(path: &Path) -> Option<u64> {
         return None;
     }
     let stat = unsafe { stat.assume_init() };
-    let block = u64::try_from(stat.f_frsize).ok()?;
-    let avail = u64::try_from(stat.f_bavail).ok()?;
+    let block = u64::from(stat.f_frsize);
+    let avail = u64::from(stat.f_bavail);
     Some(avail.saturating_mul(block))
 }
 

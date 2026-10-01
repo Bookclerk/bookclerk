@@ -699,6 +699,7 @@ mod tests {
             " BLOB",
             " REAL",
             "INSERT OR IGNORE",
+            "NOCASE",
         ] {
             assert!(
                 !lowered.contains(token),

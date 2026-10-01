@@ -33,8 +33,10 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 /// Mechanical type/identity lowering for one **binding** statement.
 ///
 /// Hosts emit canonical SQLite-shaped `CREATE`/`DROP`. Postgres adapters
-/// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here; SQLite/D1 leave the
-/// statement unchanged. DML stays for [`crate::lower_canonical_sql`].
+/// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here and drop
+/// `COLLATE NOCASE` (Postgres has no such collation). SQLite leaves the
+/// statement unchanged, including `NOCASE` page indexes. DML stays for
+/// [`crate::lower_canonical_sql`].
 ///
 /// # Panics
 ///
@@ -45,7 +47,10 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 pub fn lower_binding_sql_for_backend(backend: DatabaseBackend, sql: &str) -> Cow<'_, str> {
     match backend {
         DatabaseBackend::Postgres if bookclerk_plugin_abi::statement_is_ddl(sql) => {
-            Cow::Owned(crate::lower::rewrite_canonical_ddl_types_for_postgres(sql))
+            let stripped = crate::lower::strip_sqlite_nocase(sql);
+            Cow::Owned(crate::lower::rewrite_canonical_ddl_types_for_postgres(
+                &stripped,
+            ))
         }
         DatabaseBackend::Postgres | DatabaseBackend::Sqlite => Cow::Borrowed(sql),
         other => crate::exec::reject_unknown_seaorm_backend(other),
@@ -434,6 +439,20 @@ pub fn collapse_host_schema_results(
 mod tests {
     use super::*;
     use bookclerk_plugin_abi::{DbPlanStatementKind, DbResultSelection, TypedDbStatement};
+
+    #[test]
+    fn binding_ddl_drops_sqlite_nocase_on_postgres_and_sqlite_keeps_it() {
+        let sql =
+            "CREATE INDEX IF NOT EXISTS idx_books_page_title ON books(title COLLATE NOCASE, uuid)";
+        let postgres = lower_binding_sql_for_backend(DatabaseBackend::Postgres, sql);
+        assert!(
+            !postgres.to_ascii_uppercase().contains("NOCASE"),
+            "{postgres}"
+        );
+        assert!(postgres.contains("(title, uuid)"), "{postgres}");
+        let sqlite = lower_binding_sql_for_backend(DatabaseBackend::Sqlite, sql);
+        assert!(sqlite.contains("COLLATE NOCASE"), "{sqlite}");
+    }
 
     #[test]
     fn collapse_restores_wire_request_shape() {

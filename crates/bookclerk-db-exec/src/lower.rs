@@ -86,7 +86,7 @@ pub fn lower_canonical_to_postgres(sql: &str) -> String {
 fn lower_canonical_to_postgres_helpers(sql: &str) -> String {
     // SQLite `COLLATE NOCASE` is the library title order. Postgres has no
     // NOCASE collation; the remaining expression sorts with the default order.
-    let sql = replace_in_code(sql, " COLLATE NOCASE", "");
+    let sql = strip_sqlite_nocase(sql);
     let sql = sqlite_fns_to_postgres(&sql);
     rewrite_placeholders_postgres(&sql)
 }
@@ -1145,8 +1145,16 @@ fn ddl_type_rewrite_at(sql: &str, i: usize) -> Option<(usize, &'static str)> {
 pub fn lower_canonical_ddl_to_postgres(sql: &str) -> String {
     // SQLite `COLLATE NOCASE` is the library title index. Postgres has no
     // built-in NOCASE collation; the binary index still serves equality.
-    let stripped = replace_in_code(sql, " COLLATE NOCASE", "");
+    let stripped = strip_sqlite_nocase(sql);
     lower_canonical_to_postgres(&rewrite_canonical_ddl_types_for_postgres(&stripped))
+}
+
+/// Drops SQLite ` COLLATE NOCASE` from code spans.
+///
+/// Postgres has no `NOCASE` collation. Callers that execute on SQLite must
+/// keep the token so a `COLLATE NOCASE` index can still be used.
+pub(crate) fn strip_sqlite_nocase(sql: &str) -> String {
+    replace_in_code(sql, " COLLATE NOCASE", "")
 }
 
 /// True when `s` starts with JSON-valid flag `flag` (`0` or `1`) at a word boundary.
