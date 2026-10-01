@@ -2011,11 +2011,11 @@ struct WindowsPackageCleanup {
 
 /// Isolation state released after the siblings have exited.
 ///
-/// Drop revokes the package-SID journal before it removes the session
-/// directory. Callers treat that removal as the signal that host-owned
-/// grants are gone. The journal used to stay inside the partially moved
-/// spawn struct and ran only as a tail drop, after the directory was already
-/// gone and after profile deletion.
+/// Drop deletes AppContainer profiles, then revokes the package-SID journal.
+/// The session directory is removed only when that revoke returns `Ok`.
+/// A failed revoke writes `acl-journal-pending.json` and keeps the directory
+/// so the next session plan can retry. Directory removal is the success
+/// signal the one-read SID check waits on; it is not crossed on the error path.
 struct VatHostCleanup {
     #[cfg(windows)]
     packages: Option<WindowsPackageCleanup>,
@@ -2027,25 +2027,78 @@ struct VatHostCleanup {
 impl Drop for VatHostCleanup {
     fn drop(&mut self) {
         #[cfg(windows)]
-        drop(self.packages.take());
+        let revoke_ok = release_windows_packages(self.packages.take(), self.session_dir.as_ref());
+        #[cfg(not(windows))]
+        let revoke_ok = true;
         #[cfg(target_os = "linux")]
         drop(self.cgroup.take());
-        drop(self.session_dir.take());
+        match self.session_dir.take() {
+            Some(dir) if revoke_ok => drop(dir),
+            Some(dir) => dir.disarm(),
+            None => {}
+        }
     }
 }
 
+/// Deletes profiles, then revokes the journal. `false` means the session
+/// directory must stay: revoke failed and the unrevoked entries were kept.
+#[cfg(windows)]
+fn release_windows_packages(
+    packages: Option<WindowsPackageCleanup>,
+    session_dir: Option<&RemoveOnDrop>,
+) -> bool {
+    let Some(mut packages) = packages else {
+        return true;
+    };
+    drop(packages._gateway.take());
+    drop(packages._guest.take());
+    let Some(dir) = session_dir else {
+        // No session directory to withhold. Journal `Drop` revokes what remains.
+        return true;
+    };
+    let mut entries = packages._journal.take_entries();
+    let revoked = crate::spawn_stdio::revoke_journal_for_session(&mut entries, dir.path());
+    if !entries.is_empty() {
+        packages._journal.restore_entries(entries);
+    }
+    revoked.is_ok()
+}
+
 /// Removes a host-owned session directory when the vat thread exits.
-struct RemoveOnDrop(std::path::PathBuf);
+struct RemoveOnDrop {
+    path: std::path::PathBuf,
+    /// Set false when journal revoke failed and the directory is the retry record.
+    remove: bool,
+}
+
+impl RemoveOnDrop {
+    fn arm(path: std::path::PathBuf) -> Self {
+        Self { path, remove: true }
+    }
+
+    #[cfg(windows)]
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Keep the directory. Drop then does not delete it.
+    fn disarm(mut self) {
+        self.remove = false;
+    }
+}
 
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
+        if !self.remove {
+            return;
+        }
         // `workerd` keeps this directory as its cwd until it exits. The Linux
         // session cgroup is destroyed first so members, including a descendant
         // that left the process group, are dead before this removal. The first
         // `remove_dir_all` can still lose that race (`EBUSY`); retry until it
         // is gone.
         for attempt in 0..40 {
-            match std::fs::remove_dir_all(&self.0) {
+            match std::fs::remove_dir_all(&self.path) {
                 Ok(()) => return,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
                 Err(_) if attempt == 39 => return,
@@ -2231,6 +2284,9 @@ impl Drop for StartupOwner {
 }
 
 /// Kill both siblings, abort the proxy, and remove host-owned session state.
+///
+/// On Windows the session directory is removed only after the ACL journal
+/// revokes. A failed revoke leaves `acl-journal-pending.json` in that directory.
 fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
     spawned.identities.kill_matching();
     let _ = spawned.child.start_kill();
@@ -2243,7 +2299,28 @@ fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
     #[cfg(target_os = "linux")]
     drop(spawned.session_cgroup.take());
     let dir = spawned.session_dir.take();
+    #[cfg(windows)]
+    let keep_dir = {
+        drop(spawned.appcontainer.take());
+        drop(spawned.guest_appcontainer.take());
+        let mut entries = spawned.acl_journal.take_entries();
+        let failed = match dir.as_deref() {
+            Some(path) => {
+                crate::spawn_stdio::revoke_journal_for_session(&mut entries, path).is_err()
+            }
+            None => bookclerk_sandbox::spawn::revoke_acl_journal_retain(&mut entries).is_err(),
+        };
+        if !entries.is_empty() {
+            spawned.acl_journal.restore_entries(entries);
+        }
+        failed && dir.is_some()
+    };
+    #[cfg(not(windows))]
+    let keep_dir = false;
     drop(spawned);
+    if keep_dir {
+        return;
+    }
     if let Some(dir) = dir {
         for _ in 0..100 {
             if !dir.exists() || std::fs::remove_dir_all(&dir).is_ok() {
@@ -2379,7 +2456,7 @@ fn vat_thread(
                     }),
                     #[cfg(target_os = "linux")]
                     cgroup: spawned.session_cgroup,
-                    session_dir: spawned.session_dir.map(RemoveOnDrop),
+                    session_dir: spawned.session_dir.map(RemoveOnDrop::arm),
                 };
                 #[cfg(windows)]
                 let _session_job = spawned.session_job;

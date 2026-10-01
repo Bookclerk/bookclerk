@@ -383,7 +383,11 @@ impl GuestJail {
         let isolation = config.plugins.isolation;
         let siblings = spawn.runtime == crate::GuestRuntimeKind::NativeBehindWorkerd;
         let session_dir = if siblings {
-            Some(create_session_dir(&plugin_state_root(config, plugin)?)?)
+            let state_root = plugin_state_root(config, plugin)?;
+            // A previous session may have kept its directory because ACL revoke
+            // failed. Retry that journal before creating a new session directory.
+            crate::spawn_stdio::retry_abandoned_session_journals(&state_root);
+            Some(create_session_dir(&state_root)?)
         } else {
             None
         };
