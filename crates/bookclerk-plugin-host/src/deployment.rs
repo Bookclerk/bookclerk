@@ -480,6 +480,10 @@ impl LiveDeploymentRuntime {
     }
 
     /// `CONFIG` JSON the live `open` call delivered for `plugin_instance_id`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the deployment guest lock is poisoned.
     #[must_use]
     pub fn opened_config_json(&self, plugin_instance_id: &str) -> Option<serde_json::Value> {
         self.guests
@@ -490,6 +494,10 @@ impl LiveDeploymentRuntime {
     }
 
     /// `SECRETS` JSON the live `open` call delivered for `plugin_instance_id`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the deployment guest lock is poisoned.
     #[must_use]
     pub fn opened_secrets_json(&self, plugin_instance_id: &str) -> Option<serde_json::Value> {
         self.guests
@@ -500,6 +508,10 @@ impl LiveDeploymentRuntime {
     }
 
     /// Native guest pid for `plugin_instance_id`, when this process spawned it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the deployment guest lock is poisoned.
     #[must_use]
     pub fn tracked_guest_pid(&self, plugin_instance_id: &str) -> Option<u32> {
         self.guests
