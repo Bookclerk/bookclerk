@@ -6,7 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_plugin_manifest::{parse, Entrypoint, PluginRuntimeKind};
+use bookclerk_plugin_manifest::{
+    module_load_key, parse, validate_author_compatibility_flags, workerd_module_is_embedded,
+    Entrypoint, PluginManifest, PluginRuntimeKind,
+};
 
 use bookclerk_plugin_sdk::{Result, SdkError};
 
@@ -94,6 +97,7 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
                 let src = std::fs::read_to_string(&main).unwrap_or_default();
                 check_main_module_source(&w.main_module, &src, &manifest.entrypoints, language)?;
             }
+            enforce_workerd_load_set(&manifest, &modules_dir)?;
         }
     }
 
@@ -109,6 +113,102 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
             .join(","),
         manifest.runtime
     ))
+}
+
+/// Requires every `[[modules]]` row to be a file the modules walk embeds, and
+/// requires the Python flag pair when the walk finds a `.py` the manifest
+/// tables did not already describe.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when a row is missing, a symlink is present, or Python
+/// flags do not match the walked tree.
+fn enforce_workerd_load_set(manifest: &PluginManifest, modules_dir: &Path) -> Result<()> {
+    let load_set = collect_author_module_keys(modules_dir)?;
+    let modules_dir_name = manifest
+        .workerd
+        .as_ref()
+        .map(|w| w.modules_dir.as_str())
+        .unwrap_or("modules");
+    for module in &manifest.modules {
+        let path = if module.path.is_empty() {
+            module.name.as_str()
+        } else {
+            module.path.as_str()
+        };
+        let keys = [
+            module_load_key(modules_dir_name, path),
+            module_load_key(modules_dir_name, &module.name),
+        ];
+        let loaded = keys
+            .iter()
+            .any(|key| !key.is_empty() && load_set.iter().any(|have| have == key));
+        if !loaded {
+            if workerd_module_is_embedded(path) {
+                return Err(SdkError::message(format!(
+                    "plugin.toml: [[modules]] `{path}` is not in the workerd load set"
+                )));
+            }
+            return Err(SdkError::message(format!(
+                "plugin.toml: [[modules]] `{path}` is not implemented yet"
+            )));
+        }
+    }
+    let disk_python = load_set
+        .iter()
+        .any(|name| name.to_ascii_lowercase().ends_with(".py"));
+    if let Some(w) = manifest.workerd.as_ref() {
+        if disk_python || manifest.declares_python() {
+            validate_author_compatibility_flags(&w.compatibility_flags, true)
+                .map_err(|err| SdkError::message(err.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Relative keys of embeddable files under `modules_dir`. Symlinks are refused.
+fn collect_author_module_keys(modules_dir: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    collect_author_module_keys_inner(modules_dir, modules_dir, &mut out)?;
+    Ok(out)
+}
+
+/// Recursive walk used by [`collect_author_module_keys`].
+fn collect_author_module_keys_inner(dir: &Path, root: &Path, out: &mut Vec<String>) -> Result<()> {
+    let entries = std::fs::read_dir(dir).map_err(|err| {
+        SdkError::message(format!(
+            "read workerd modules tree {}: {err}",
+            dir.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|err| SdkError::message(format!("read modules entry: {err}")))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| SdkError::message(format!("stat {}: {err}", entry.path().display())))?;
+        if file_type.is_symlink() {
+            return Err(SdkError::message(format!(
+                "refusing symlink in workerd modules tree: {}",
+                entry.path().display()
+            )));
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_author_module_keys_inner(&path, root, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if !workerd_module_is_embedded(&file_name) {
+            continue;
+        }
+        let rel = path.strip_prefix(root).unwrap_or(path.as_path());
+        out.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+    Ok(())
 }
 
 /// Source language of a workerd `main_module`, chosen by file extension.

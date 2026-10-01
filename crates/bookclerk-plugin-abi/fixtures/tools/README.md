@@ -13,6 +13,16 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `invalid-outbound-no-domains/` | `check` fails (outbound without domains) |
 | `invalid-logo-javascript/` | `check` fails (`javascript:` logo) |
 | `invalid-logo-parent/` | `check` fails (`..` in embedded logo path) |
+| `invalid-compat-date-future/` | `check` fails (date newer than the workerd pin) |
+| `invalid-compat-date-shape/` | `check` fails (not a calendar `YYYY-MM-DD`) |
+| `invalid-compat-flag/` | `check` fails (flag outside the Python allowlist) |
+| `invalid-compat-experimental/` | `check` fails (`experimental` is host-only) |
+| `invalid-python-flags-missing/` | `check` fails (Python guest missing the flag pair) |
+| `invalid-flags-without-python/` | `check` fails (Python flags without a Python module) |
+| `invalid-module-type/` | `check` fails (`[[modules]]` type disagrees with the extension) |
+| `invalid-module-ts/` | `check` fails (`.ts` main is not implemented yet) |
+| `not-implemented-kv/` | `check` ok (`[[kv_namespaces]]` stays legal). Load and spawn fail with "not implemented yet". |
+| `not-implemented-queues/` | `check` ok (`[queues]` stays legal). Load and spawn fail with "not implemented yet". |
 
 Language-specific helpers (`sync-embed`, Python workerd flags) are covered in
 each SDK's own tests against the Echo examples.

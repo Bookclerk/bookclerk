@@ -76,6 +76,30 @@ function emitConsumer(lines: string[], consumer: EventConsumerToml): void {
   }
 }
 
+function emitQueues(lines: string[], queues: Record<string, unknown> | undefined): void {
+  if (!queues) return;
+  const scalars: Record<string, unknown> = {};
+  const lists: Record<string, unknown[]> = {};
+  for (const [key, value] of Object.entries(queues)) {
+    if (Array.isArray(value)) lists[key] = value;
+    else scalars[key] = value;
+  }
+  if (Object.keys(scalars).length > 0 || Object.keys(lists).length === 0) {
+    lines.push("");
+    lines.push("[queues]");
+    emitTableRows(lines, scalars);
+  }
+  for (const key of Object.keys(lists).sort()) {
+    for (const row of lists[key] ?? []) {
+      lines.push("");
+      lines.push(`[[queues.${key}]]`);
+      if (row && typeof row === "object") {
+        emitTableRows(lines, row as Record<string, unknown>);
+      }
+    }
+  }
+}
+
 function emitNamedBinding(
   lines: string[],
   header: string,
@@ -183,6 +207,7 @@ export function formatManifest(m: Manifest): string {
   for (const kv of m.kv_namespaces ?? []) {
     emitNamedBinding(lines, "[[kv_namespaces]]", kv);
   }
+  emitQueues(lines, m.queues);
   emitNamedBinding(lines, "[work_fs]", m.work_fs);
   emitNamedBinding(lines, "[oauth]", m.oauth);
 

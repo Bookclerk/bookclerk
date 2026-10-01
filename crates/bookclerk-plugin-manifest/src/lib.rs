@@ -25,6 +25,7 @@
 //! | [`id`] | Strict plugin id grammar |
 //! | [`logo`] | Remote URL vs embedded path logo validation |
 //! | [`types`] | `PluginManifest` and nested capability / workerd tables |
+//! | [`workerd_contract`] | Compatibility date, Python flag allowlist, module extensions |
 //!
 //! Product narrative: `docs/plugins.md` (network consent, egress matching,
 //! packaging). ABI contract: `bookclerk-plugin-abi`.
@@ -54,6 +55,7 @@ pub mod fmt;
 pub mod id;
 pub mod logo;
 pub mod types;
+pub mod workerd_contract;
 
 pub use address::{
     address_allowed, canonical_ip, is_public_internet, is_restricted_hostname,
@@ -73,6 +75,11 @@ pub use logo::{
     MAX_EMBEDDED_LOGO_BYTES,
 };
 pub use types::*;
+pub use workerd_contract::{
+    module_load_key, validate_author_compatibility_date, validate_author_compatibility_flags,
+    validate_module_declarations, workerd_module_is_embedded, PYTHON_COMPATIBILITY_FLAGS,
+    WORKERD_PIN_COMPAT_DATE,
+};
 
 /// Embedded JSON Schema text for authoring tools (`check` in TS/Python SDKs).
 ///

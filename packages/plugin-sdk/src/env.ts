@@ -106,7 +106,7 @@ export interface BookclerkEnv {
   EVENTS?: EventPublisherBinding;
   /** `[work_fs]` object storage. */
   WORK_FS?: StorageBinding;
-  /** `[[kv_namespaces]]` store (default binding name); surface reserved. */
+  /** `[[kv_namespaces]]` durable KV binding. Not implemented yet. */
   KV?: unknown;
   /** `[oauth]` loopback helper; surface reserved. */
   OAUTH?: unknown;

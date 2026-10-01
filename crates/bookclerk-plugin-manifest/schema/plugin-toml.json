@@ -59,7 +59,12 @@
     "secrets": { "$ref": "#/$defs/NamedBinding" },
     "kv_namespaces": {
       "type": "array",
+      "description": "Durable KV bindings (default name KV). Legal to declare. Load and spawn fail with \"not implemented yet\". Distinct from [[databases]].",
       "items": { "$ref": "#/$defs/NamedBinding" }
+    },
+    "queues": {
+      "type": "object",
+      "description": "Workers Queues producers and consumers. Legal to declare. Load and spawn fail with \"not implemented yet\". Events and databases do not replace this surface."
     },
     "work_fs": { "$ref": "#/$defs/NamedBinding" },
     "oauth": { "$ref": "#/$defs/NamedBinding" },
@@ -264,10 +269,20 @@
       "additionalProperties": false,
       "required": ["compatibility_date", "main_module"],
       "properties": {
-        "compatibility_date": { "type": "string", "minLength": 1 },
+        "compatibility_date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Calendar YYYY-MM-DD. Dates newer than the pinned workerd compatibility date 2026-08-01 are rejected."
+        },
         "compatibility_flags": {
           "type": "array",
-          "items": { "type": "string" }
+          "description": "Exact allowlist: python_workers and disable_python_external_sdk. Both are required together when the guest is Python and forbidden otherwise. The host does not append missing flags.",
+          "items": {
+            "type": "string",
+            "enum": ["python_workers", "disable_python_external_sdk"]
+          }
         },
         "main_module": { "type": "string", "minLength": 1 },
         "modules_dir": { "type": "string", "default": "modules" },

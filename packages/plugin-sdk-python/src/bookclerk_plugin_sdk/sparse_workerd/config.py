@@ -22,6 +22,14 @@ from ..path_guard import (
     write_file_under,
     copy_file_under,
 )
+from ..tools import (
+    declares_python,
+    module_load_key,
+    unimplemented_surface,
+    validate_author_compatibility_date,
+    validate_author_compatibility_flags,
+    workerd_module_is_embedded,
+)
 
 SDK_JS_MODULE_NAMES = ("@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk")
 """Module names used when embedding the TypeScript workerd SDK."""
@@ -171,7 +179,7 @@ def module_field_for(name: str) -> tuple[str, bool]:
         A ``(field_name, is_python)`` pair such as ``("pythonModule", True)``.
 
     Raises:
-        ValueError: If the extension is not a supported workerd module type.
+        ValueError: When the extension is not implemented yet.
     """
     lower = name.lower()
     if lower.endswith(".py"):
@@ -182,11 +190,7 @@ def module_field_for(name: str) -> tuple[str, bool]:
         return "esModule", False
     if lower.endswith(".json"):
         return "json", False
-    if lower.endswith(".txt") or lower.endswith(".md"):
-        return "text", False
-    raise ValueError(
-        f"unsupported workerd module type for `{name}` (use .js/.mjs/.py/.wasm/.json)"
-    )
+    raise ValueError(f"workerd module `{name}` is not implemented yet")
 
 
 def collect_modules(directory: Path, *, plugin_root: Path | None = None) -> list[Path]:
@@ -378,13 +382,18 @@ def materialize_config(
         and import path for ``--import-path``.
 
     Raises:
-        ValueError: If ``[workerd]`` is missing or ``bridge_token`` is empty.
+        ValueError: If ``[workerd]`` is missing, the compatibility date or flags
+            are rejected, KV or Queues are declared, or ``bridge_token`` is empty.
         FileNotFoundError: If bridge assets, modules, main module, or SDK embeds
             cannot be found.
     """
+    blocked = unimplemented_surface(manifest)
+    if blocked:
+        raise ValueError(blocked)
     workerd = manifest.get("workerd")
     if not isinstance(workerd, dict):
         raise ValueError("missing [workerd] table")
+    validate_author_compatibility_date(str(workerd.get("compatibility_date") or ""))
 
     plugin_root = Path(plugin_root).resolve()
     sdk_root = Path(sdk_root or package_root()).resolve()
@@ -445,6 +454,7 @@ def materialize_config(
         module_embeds.append(
             f'(name = "{escape_capnp(name)}", {field} = embed "{escape_capnp(embed)}")'
         )
+    author_names = set(seen_names)
 
     # The adapter isolate always needs the JS SDK embed; the author isolate gets
     # it when it has JS modules.
@@ -503,17 +513,32 @@ def materialize_config(
             )
             seen_names.add(SDK_PY_WORKERD_MODULE)
 
+    for mod in manifest.get("modules") or []:
+        file_path = str(mod.get("path") or mod.get("name") or "")
+        keys = (
+            module_load_key(modules_dir_name, file_path),
+            module_load_key(modules_dir_name, str(mod.get("name") or "")),
+        )
+        if not any(key and key in author_names for key in keys):
+            if workerd_module_is_embedded(file_path):
+                raise ValueError(
+                    f"plugin.toml: [[modules]] `{file_path}` is not in the workerd load set"
+                )
+            raise ValueError(f"plugin.toml: [[modules]] `{file_path}` is not implemented yet")
+
+    # Do not append Python flags. A `.py` file found only by the walk must fail.
     flags = [str(f) for f in (workerd.get("compatibility_flags") or [])]
-    if needs_python:
-        for required in ("python_workers", "disable_python_external_sdk"):
-            if required not in flags:
-                flags.append(required)
+    validate_author_compatibility_flags(
+        flags, needs_python or declares_python(manifest)
+    )
     flags_line = ""
     if flags:
         listed = ", ".join(f'"{escape_capnp(f)}"' for f in flags)
         flags_line = f"compatibilityFlags = [{listed}],"
 
-    domains = egress_domains_for(needs_python, network_mode, network_domains)
+    domains = egress_domains_for(
+        declares_python(manifest), network_mode, network_domains
+    )
     policy_json = json.dumps(
         {
             "mode": "outbound" if network_mode == "outbound" else "deny",

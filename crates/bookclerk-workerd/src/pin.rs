@@ -119,6 +119,11 @@ mod pin_json_sync {
             "BUNDLED_WORKERD_COMPAT_DATE drift vs workerd-pin.json"
         );
         assert_eq!(
+            BUNDLED_WORKERD_COMPAT_DATE,
+            bookclerk_plugin_manifest::WORKERD_PIN_COMPAT_DATE,
+            "manifest pin date drift vs BUNDLED_WORKERD_COMPAT_DATE"
+        );
+        assert_eq!(
             v["version_stamp"].as_str(),
             Some(WORKERD_VERSION_STAMP),
             "WORKERD_VERSION_STAMP drift vs workerd-pin.json"

@@ -140,11 +140,12 @@ guests with `cargo stage-plugins --optional`.
 
 ### Isolated plugin database bindings
 
-Plugins that declare `capabilities.bindings.databases = ["DB", ...]` get
+Plugins that declare `[[databases]]` bindings (`binding = "DB"`, and so on) get
 Workers-style **named database bindings**: one isolated database per binding,
 provisioned by the active adapter (SQLite file / PostgreSQL **database** /
 Cloudflare D1 database by name) and recorded in the host
-`plugin_databases` registry. Bindings are consented per name
+`plugin_databases` registry. These SQL bindings do not replace
+`[[kv_namespaces]]`. Bindings are consented per name
 (`database:<NAME>` grant entries), carry their own `bookclerk_receipts` for
 retry-token replay (host bookkeeping inside a binding is always
 `bookclerk_`-prefixed and that prefix is the only reserved name space; a

@@ -217,7 +217,9 @@ pub struct BindingCapabilities {
     pub config: bool,
     /// Guest may read sealed secrets / credentials via host bindings (`[secrets]`).
     pub secrets: bool,
-    /// Guest may use per-plugin key/value storage (`[[kv_namespaces]]`).
+    /// `[[kv_namespaces]]` is declared. Durable KV is not implemented yet;
+    /// load and spawn refuse the guest instead of injecting an empty `env.KV`.
+    /// This is a different capability from [`Self::databases`].
     pub plugin_kv: bool,
     /// Guest may use host-mediated work filesystem (`[work_fs]`).
     pub work_fs: bool,
@@ -410,9 +412,12 @@ fn vars_is_none(v: &Option<std::collections::BTreeMap<String, toml::Value>>) -> 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerdRuntimeManifest {
-    /// Cloudflare compatibility date (`YYYY-MM-DD`); required and non-empty.
+    /// Cloudflare compatibility date (`YYYY-MM-DD`), on or before the pin
+    /// ([`crate::WORKERD_PIN_COMPAT_DATE`]). Newer dates are rejected.
     pub compatibility_date: String,
-    /// Compatibility flags (e.g. `python_workers` for Pyodide guests).
+    /// Author compatibility flags. Only the Python pair is allowed, and only
+    /// when the guest has a Python module. See
+    /// [`crate::PYTHON_COMPATIBILITY_FLAGS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compatibility_flags: Vec<String>,
     /// Entrypoint module filename relative to the modules tree (e.g. `index.js`).
@@ -612,8 +617,20 @@ pub struct PluginManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<NamedBinding>,
     /// Per-plugin key/value storage bindings (`[[kv_namespaces]]`).
+    ///
+    /// Durable `env.<BINDING>` (default `KV`), distinct from [`Self::databases`].
+    /// The declaration stays legal. Load and spawn fail with "not implemented
+    /// yet" until the host store exists. Do not treat this as a hint to use SQL.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kv_namespaces: Vec<NamedBinding>,
+    /// Workers Queues (`[queues]` with `[[queues.producers]]` /
+    /// `[[queues.consumers]]`).
+    ///
+    /// Expected local parity. Any declaration is legal and fails load or spawn
+    /// with "not implemented yet". The key is not an unknown-field error and
+    /// is not a reason to use `[[events.consumers]]` or `[[databases]]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queues: Option<toml::Value>,
     /// Host-mediated work filesystem binding (`[work_fs]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_fs: Option<NamedBinding>,
@@ -680,6 +697,56 @@ fn default_true() -> bool {
 }
 
 impl PluginManifest {
+    /// True when the manifest itself declares a Python workerd guest.
+    ///
+    /// Python means any of: `main_module` ending in `.py`, or a `[[modules]]`
+    /// row with `type = "python"` or a `.py` path/name. Compatibility flags
+    /// are not evidence. A `.py` file that exists only on disk is reported by
+    /// the modules walk at check and materialize time.
+    ///
+    /// # Returns
+    ///
+    /// `true` when Python flags are required and Pyodide consent hosts apply
+    /// for outbound guests.
+    #[must_use]
+    pub fn declares_python(&self) -> bool {
+        if self.runtime != PluginRuntimeKind::Workerd {
+            return false;
+        }
+        if let Some(w) = self.workerd.as_ref() {
+            if w.main_module.to_ascii_lowercase().ends_with(".py") {
+                return true;
+            }
+        }
+        self.modules.iter().any(|module| {
+            module.module_type.eq_ignore_ascii_case("python")
+                || module.name.to_ascii_lowercase().ends_with(".py")
+                || module.path.to_ascii_lowercase().ends_with(".py")
+        })
+    }
+
+    /// Spawn/load error when the manifest declares a surface the host cannot
+    /// run yet.
+    ///
+    /// `[[kv_namespaces]]` and `[queues]` stay in the schema. The message
+    /// contains "not implemented yet" and does not suggest `[[databases]]`
+    /// or events as a substitute. `None` means load may continue.
+    ///
+    /// # Returns
+    ///
+    /// The first unimplemented surface, or `None` when the manifest does not
+    /// declare KV or Queues.
+    #[must_use]
+    pub fn unimplemented_surface(&self) -> Option<String> {
+        if !self.kv_namespaces.is_empty() {
+            return Some("[[kv_namespaces]] is not implemented yet".to_string());
+        }
+        if self.queues.is_some() {
+            return Some("[queues] is not implemented yet".to_string());
+        }
+        None
+    }
+
     /// Resolves the declared host bindings into one flat view.
     ///
     /// # Returns
@@ -1004,6 +1071,12 @@ impl PluginManifest {
                         "plugin.toml: workerd.main_module is required",
                     ));
                 }
+                crate::validate_author_compatibility_date(&w.compatibility_date)?;
+                crate::validate_module_declarations(&w.main_module, &self.modules)?;
+                crate::validate_author_compatibility_flags(
+                    &w.compatibility_flags,
+                    self.declares_python(),
+                )?;
             }
         }
         if self.runtime == PluginRuntimeKind::Native
@@ -1121,6 +1194,19 @@ impl PluginManifest {
                 if !is_valid_database_binding_name(name) {
                     return Err(Error::message(format!(
                         "plugin.toml: [{table}] binding `{name}` must be `[A-Z][A-Z0-9_]*`"
+                    )));
+                }
+                if *table == "kv_namespaces"
+                    && matches!(
+                        *name,
+                        CONFIG_BINDING
+                            | DEFAULT_SECRETS_BINDING
+                            | DEFAULT_EVENTS_BINDING
+                            | DEFAULT_WORK_FS_BINDING
+                    )
+                {
+                    return Err(Error::message(format!(
+                        "plugin.toml: [{table}] binding `{name}` collides with another binding"
                     )));
                 }
                 if *name == CONFIG_BINDING || seen.contains(name) {
@@ -1993,5 +2079,121 @@ mode = "deny"
         for f in PluginFamily::ALL {
             assert_eq!(PluginFamily::parse(f.as_str()), Some(f));
         }
+    }
+
+    fn workerd_body(extra: &str) -> String {
+        format!(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+{extra}
+[capabilities.network]
+mode = "deny"
+"#
+        )
+    }
+
+    #[test]
+    fn compatibility_date_rejects_newer_than_pin_and_non_dates() {
+        let future = PluginManifest::parse(&workerd_body("").replace("2026-08-01", "2026-08-02"))
+            .expect_err("newer date");
+        assert!(future.to_string().contains("newer than"), "{future}");
+        let shape = PluginManifest::parse(&workerd_body("").replace("2026-08-01", "2026-8-1"))
+            .expect_err("unpadded");
+        assert!(shape.to_string().contains("YYYY-MM-DD"), "{shape}");
+        assert!(
+            PluginManifest::parse(&workerd_body("").replace("2026-08-01", "2024-09-23")).is_ok()
+        );
+    }
+
+    #[test]
+    fn compatibility_flags_allowlist_and_python_pair() {
+        let unknown =
+            PluginManifest::parse(&workerd_body("compatibility_flags = [\"nodejs_compat\"]"))
+                .expect_err("unknown flag");
+        assert!(unknown.to_string().contains("not allowed"), "{unknown}");
+        let experimental =
+            PluginManifest::parse(&workerd_body("compatibility_flags = [\"experimental\"]"))
+                .expect_err("host flag");
+        assert!(
+            experimental.to_string().contains("host-only"),
+            "{experimental}"
+        );
+        let idle = PluginManifest::parse(&workerd_body(
+            "compatibility_flags = [\"python_workers\", \"disable_python_external_sdk\"]",
+        ))
+        .expect_err("flags without python");
+        assert!(idle.to_string().contains("Python module"), "{idle}");
+        let py =
+            workerd_body("compatibility_flags = [\"python_workers\"]\nmain_module = \"plugin.py\"")
+                .replace("main_module = \"index.js\"\n", "");
+        let missing = PluginManifest::parse(&py).expect_err("partial python flags");
+        assert!(missing.to_string().contains("must include"), "{missing}");
+        let ok = py.replace(
+            "compatibility_flags = [\"python_workers\"]",
+            "compatibility_flags = [\"python_workers\", \"disable_python_external_sdk\"]",
+        );
+        assert!(PluginManifest::parse(&ok).is_ok(), "{ok}");
+    }
+
+    #[test]
+    fn module_type_must_match_extension_and_unimplemented_extensions_stay_open() {
+        let mismatch = PluginManifest::parse(&format!(
+            "{}\n[[modules]]\nname = \"index.js\"\npath = \"index.js\"\ntype = \"python\"\n",
+            workerd_body("")
+        ))
+        .expect_err("type mismatch");
+        assert!(
+            mismatch.to_string().contains("does not match"),
+            "{mismatch}"
+        );
+        let ts = PluginManifest::parse(
+            &workerd_body("").replace("main_module = \"index.js\"", "main_module = \"index.ts\""),
+        )
+        .expect_err("typescript main");
+        assert!(ts.to_string().contains("not implemented yet"), "{ts}");
+        assert!(
+            !ts.to_string().to_ascii_lowercase().contains("database"),
+            "{ts}"
+        );
+    }
+
+    #[test]
+    fn kv_namespace_stays_parseable_and_spawn_says_not_implemented() {
+        let m = PluginManifest::parse(&workerd_body(
+            "\n[[kv_namespaces]]\nbinding = \"KV\"\n[[databases]]\nbinding = \"DB\"\n",
+        ))
+        .expect("kv declaration stays legal");
+        let message = m.unimplemented_surface().expect("kv refuses spawn");
+        assert!(message.contains("not implemented yet"), "{message}");
+        assert!(
+            !message.to_ascii_lowercase().contains("database"),
+            "{message}"
+        );
+        let collide =
+            PluginManifest::parse(&workerd_body("\n[[kv_namespaces]]\nbinding = \"EVENTS\"\n"))
+                .expect_err("KV must not use EVENTS");
+        assert!(collide.to_string().contains("collides"), "{collide}");
+    }
+
+    #[test]
+    fn queues_declaration_is_not_an_unknown_key() {
+        let m = PluginManifest::parse(&workerd_body(
+            "\n[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n",
+        ))
+        .expect("queues key is legal");
+        assert!(m.queues.is_some());
+        let message = m.unimplemented_surface().expect("queues refuse spawn");
+        assert!(message.contains("not implemented yet"), "{message}");
+        assert!(message.contains("queues"), "{message}");
+        assert!(
+            !message.to_ascii_lowercase().contains("retired"),
+            "{message}"
+        );
     }
 }

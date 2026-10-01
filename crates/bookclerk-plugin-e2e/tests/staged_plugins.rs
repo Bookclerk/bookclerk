@@ -102,6 +102,31 @@ async fn staged_first_party_plugins_describe() {
         } else {
             OPERATOR_ACCOUNT
         };
+        if let Some(reason) = plugin.manifest.unimplemented_surface() {
+            eprintln!(
+                "staged_plugins: {} declares an unimplemented surface ({reason})",
+                plugin.manifest.id
+            );
+            let spawned = tokio::time::timeout(
+                STAGED_SPAWN_TIMEOUT,
+                PluginSession::spawn_for_account(plugin, &config, serde_json::json!({}), account),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "spawn {} timed out after {STAGED_SPAWN_TIMEOUT:?}",
+                    plugin.manifest.id
+                )
+            });
+            let err = spawned.err().expect("kv/queues must fail spawn");
+            let message = err.to_string();
+            assert!(
+                message.contains("not implemented yet"),
+                "{} spawn error must say not implemented yet ({reason}): {message}",
+                plugin.manifest.id
+            );
+            continue;
+        }
         eprintln!(
             "staged_plugins: spawn {} ({})",
             plugin.manifest.id,

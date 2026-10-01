@@ -53,6 +53,76 @@ def test_check_rejects_logo_parent():
         check_plugin(FIXTURES / "invalid-logo-parent")
 
 
+def test_check_rejects_future_compatibility_date():
+    with pytest.raises(ValueError, match="newer than"):
+        check_plugin(FIXTURES / "invalid-compat-date-future")
+
+
+def test_check_rejects_non_calendar_compatibility_date():
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        check_plugin(FIXTURES / "invalid-compat-date-shape")
+
+
+def test_check_rejects_unknown_compatibility_flag():
+    with pytest.raises(ValueError, match="not allowed"):
+        check_plugin(FIXTURES / "invalid-compat-flag")
+
+
+def test_check_rejects_experimental_flag():
+    with pytest.raises(ValueError, match="host-only"):
+        check_plugin(FIXTURES / "invalid-compat-experimental")
+
+
+def test_check_rejects_python_without_flag_pair():
+    with pytest.raises(ValueError, match="must include"):
+        check_plugin(FIXTURES / "invalid-python-flags-missing")
+
+
+def test_check_rejects_python_flags_without_module():
+    with pytest.raises(ValueError, match="Python module"):
+        check_plugin(FIXTURES / "invalid-flags-without-python")
+
+
+def test_check_rejects_module_type_mismatch():
+    with pytest.raises(ValueError, match="does not match"):
+        check_plugin(FIXTURES / "invalid-module-type")
+
+
+def test_check_rejects_typescript_main():
+    with pytest.raises(ValueError, match="not implemented yet"):
+        check_plugin(FIXTURES / "invalid-module-ts")
+
+
+def test_check_accepts_kv_and_queues_declarations():
+    assert "not_implemented_kv" in check_plugin(FIXTURES / "not-implemented-kv")
+    assert "not_implemented_queues" in check_plugin(FIXTURES / "not-implemented-queues")
+
+
+def test_materialize_refuses_kv_and_queues_fixtures():
+    import tomllib
+
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
+
+    for name in ("not-implemented-kv", "not-implemented-queues"):
+        manifest = tomllib.loads((FIXTURES / name / "plugin.toml").read_text(encoding="utf-8"))
+        with pytest.raises(ValueError, match="not implemented yet"):
+            materialize_config(
+                FIXTURES / name,
+                manifest,
+                listen_port=0,
+                bridge_token="token",
+            )
+
+
+def test_format_keeps_queues_declaration():
+    text = (FIXTURES / "not-implemented-queues" / "plugin.toml").read_text(encoding="utf-8")
+    import tomllib
+
+    rendered = format_manifest(tomllib.loads(text))
+    assert "[[queues.producers]]" in rendered
+    assert "not implemented" not in rendered.lower()
+
+
 def test_check_rejects_native_with_domains():
     with pytest.raises(ValueError, match="only valid for runtime"):
         check_plugin(FIXTURES / "invalid-native-with-domains")
@@ -204,7 +274,9 @@ def test_refuse_symlink_blocks_bookclerk_dir_link(tmp_path: Path):
     modules = plugin / "modules"
     modules.mkdir(parents=True)
     (plugin / "plugin.toml").write_text(
-        (ECHO_PY / "plugin.toml").read_text(encoding="utf-8"),
+        (ECHO_PY / "plugin.toml")
+        .read_text(encoding="utf-8")
+        .replace('[[kv_namespaces]]\nbinding = "KV"\n', ""),
         encoding="utf-8",
     )
     (modules / "plugin.py").write_text(
@@ -242,7 +314,9 @@ def test_refuse_symlink_blocks_main_module_link(tmp_path: Path):
     modules = plugin / "modules"
     modules.mkdir(parents=True)
     (plugin / "plugin.toml").write_text(
-        (ECHO_PY / "plugin.toml").read_text(encoding="utf-8"),
+        (ECHO_PY / "plugin.toml")
+        .read_text(encoding="utf-8")
+        .replace('[[kv_namespaces]]\nbinding = "KV"\n', ""),
         encoding="utf-8",
     )
     outside = tmp_path / "outside_main.py"

@@ -6,8 +6,10 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use bookclerk_plugin_abi::{Entrypoint, PluginDescribe};
 use bookclerk_plugin_manifest::{
-    manifest_needs_python, with_python_runtime_hosts, workerd_network_allow, CidrGrant,
-    EffectiveWorkerdLimits, EgressPolicy, NetworkMode, PluginManifest,
+    manifest_needs_python, module_load_key, validate_author_compatibility_date,
+    validate_author_compatibility_flags, with_python_runtime_hosts, workerd_module_is_embedded,
+    workerd_network_allow, CidrGrant, EffectiveWorkerdLimits, EgressPolicy, NetworkMode,
+    PluginManifest,
 };
 
 use crate::egress::EgressProxy;
@@ -1038,6 +1040,9 @@ pub fn materialize_native_backend(
     bridge_token: &str,
     state_dir: Option<&Path>,
 ) -> Result<GeneratedConfig> {
+    if let Some(message) = manifest.unimplemented_surface() {
+        bail!("{message}");
+    }
     let state_dir = resolve_state_dir(root, state_dir)?;
     let bookclerk_dir = ensure_dir_under(&state_dir, ".bookclerk")?;
     write_file_under(&bookclerk_dir, "bridge.js", BRIDGE_JS)?;
@@ -1239,10 +1244,14 @@ pub fn materialize(
     bridge_token: &str,
     state_dir: Option<&Path>,
 ) -> Result<GeneratedConfig> {
+    if let Some(message) = manifest.unimplemented_surface() {
+        bail!("{message}");
+    }
     let workerd = manifest
         .workerd
         .as_ref()
         .context("missing [workerd] table")?;
+    validate_author_compatibility_date(&workerd.compatibility_date)?;
 
     let state_dir = resolve_state_dir(root, state_dir)?;
     let bookclerk_dir = ensure_dir_under(&state_dir, ".bookclerk")?;
@@ -1302,6 +1311,7 @@ pub fn materialize(
             escape_capnp(&embed)
         ));
     }
+    let author_names = seen_names.clone();
 
     // Inject dual-stack SDK under the package import names authors use.
     if needs_js {
@@ -1341,15 +1351,33 @@ pub fn materialize(
         }
     }
 
-    let mut flags = workerd.compatibility_flags.clone();
-    if needs_python {
-        // Built-in Pyodide `workers` module (no pywrangler external SDK bundle).
-        for required in ["python_workers", "disable_python_external_sdk"] {
-            if !flags.iter().any(|f| f == required) {
-                flags.push(required.into());
+    let modules_dir_key = modules_name.replace('\\', "/");
+    for module in &manifest.modules {
+        let path = if module.path.is_empty() {
+            module.name.as_str()
+        } else {
+            module.path.as_str()
+        };
+        let keys = [
+            module_load_key(&modules_dir_key, path),
+            module_load_key(&modules_dir_key, &module.name),
+        ];
+        let loaded = keys
+            .iter()
+            .any(|key| !key.is_empty() && author_names.contains(key));
+        if !loaded {
+            if workerd_module_is_embedded(path) {
+                bail!("plugin.toml: [[modules]] `{path}` is not in the workerd load set");
             }
+            bail!("plugin.toml: [[modules]] `{path}` is not implemented yet");
         }
     }
+
+    // Do not append Python flags. A manifest that omitted them must fail here
+    // even when a `.py` file is only visible to the directory walk.
+    let python = needs_python || manifest.declares_python();
+    validate_author_compatibility_flags(&workerd.compatibility_flags, python)?;
+    let flags = workerd.compatibility_flags.clone();
     let flags_line = if flags.is_empty() {
         String::new()
     } else {
@@ -1612,10 +1640,8 @@ fn module_field_for(name: &str) -> Result<(&'static str, bool)> {
         Ok(("esModule", false))
     } else if lower.ends_with(".json") {
         Ok(("json", false))
-    } else if lower.ends_with(".txt") || lower.ends_with(".md") {
-        Ok(("text", false))
     } else {
-        bail!("unsupported workerd module type for `{name}` (use .js/.mjs/.py/.wasm/.json)");
+        bail!("workerd module `{name}` is not implemented yet");
     }
 }
 
@@ -1721,23 +1747,109 @@ mode = "deny"
     }
 
     #[test]
-    fn python_flags_include_external_sdk_disable() {
-        // Local workerd needs the built-in Pyodide `workers` module; without
-        // this flag, `from workers import WorkerEntrypoint` fails at import.
-        let required = ["python_workers", "disable_python_external_sdk"];
-        let mut flags: Vec<String> = Vec::new();
-        for required in required {
-            if !flags.iter().any(|f| f == required) {
-                flags.push(required.into());
-            }
-        }
-        assert_eq!(
-            flags,
-            vec![
-                "python_workers".to_string(),
-                "disable_python_external_sdk".to_string()
-            ]
+    fn materialize_does_not_append_python_flags() {
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _modules = create_dir_under(dir.path(), "modules");
+        write_under(
+            dir.path(),
+            Path::new("modules").join("index.js"),
+            "export default {};",
         );
+        write_under(
+            dir.path(),
+            Path::new("modules").join("helper.py"),
+            "print('py')\n",
+        );
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .expect("js manifest with an on-disk .py still parses");
+        let err = materialize(
+            dir.path(),
+            &manifest,
+            &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            None,
+            "test-bridge-token",
+            None,
+        )
+        .err()
+        .expect("must not append python flags");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("must include"),
+            "silent append would have succeeded: {message}"
+        );
+    }
+
+    #[test]
+    fn materialize_refuses_unimplemented_kv_and_queues() {
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (extra, needle) in [
+            ("[[kv_namespaces]]\nbinding = \"KV\"\n", "kv_namespaces"),
+            (
+                "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n",
+                "queues",
+            ),
+        ] {
+            let body = format!(
+                r#"
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+{extra}
+[capabilities.network]
+mode = "deny"
+"#
+            );
+            let manifest = PluginManifest::parse(&body).expect(needle);
+            let err = materialize(
+                dir.path(),
+                &manifest,
+                &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+                WorkerdLimits::default().effective(),
+                ListenSpec::InheritedTcp { port: 9 },
+                None,
+                "test-bridge-token",
+                None,
+            )
+            .err()
+            .expect(needle);
+            let message = format!("{err:#}");
+            assert!(message.contains("not implemented yet"), "{message}");
+            assert!(message.contains(needle), "{message}");
+            assert!(
+                !message.to_ascii_lowercase().contains("database"),
+                "{message}"
+            );
+        }
     }
 
     #[test]
@@ -2095,35 +2207,27 @@ entrypoint = "default"
     fn deny_workerd_config_exposes_only_rpc_socket_for_compat_flags() {
         use bookclerk_plugin_manifest::NetworkMode;
 
-        // Flags authors may request; none of them may add listen sockets.
-        for flags in [
-            &[] as &[&str],
-            &["python_workers"],
-            &["python_workers", "disable_python_external_sdk"],
-            &["nodejs_compat"],
-            &["nodejs_compat", "streams_enable_constructors"],
-        ] {
-            let capnp = materialize_capnp(flags, NetworkMode::Deny);
-            assert_eq!(socket_names(&capnp), vec!["rpc".to_string()], "{flags:?}");
-            assert_eq!(plugin_worker_outbound(&capnp), "blocked", "{flags:?}");
-            assert!(
-                !capnp.contains("hostWorker") && !capnp.contains("host_stub"),
-                "no HOST reverse channel may be materialized: {flags:?}"
-            );
-            assert!(
-                capnp.contains("const bridgeWorker") && capnp.contains(r#"(name = "rpc""#),
-                "rpc socket must target the bridge: {flags:?}"
-            );
-            let sockets = capnp
-                .split("sockets = [")
-                .nth(1)
-                .and_then(|rest| rest.split(']').next())
-                .unwrap_or("");
-            assert!(
-                !sockets.contains("address"),
-                "inherited rpc socket must not bind a second address: {flags:?}\n{sockets}"
-            );
-        }
+        // Unknown flags are rejected at parse. An empty JS flag list must not add sockets.
+        let capnp = materialize_capnp(&[], NetworkMode::Deny);
+        assert_eq!(socket_names(&capnp), vec!["rpc".to_string()]);
+        assert_eq!(plugin_worker_outbound(&capnp), "blocked");
+        assert!(
+            !capnp.contains("hostWorker") && !capnp.contains("host_stub"),
+            "no HOST reverse channel may be materialized"
+        );
+        assert!(
+            capnp.contains("const bridgeWorker") && capnp.contains(r#"(name = "rpc""#),
+            "rpc socket must target the bridge"
+        );
+        let sockets = capnp
+            .split("sockets = [")
+            .nth(1)
+            .and_then(|rest| rest.split(']').next())
+            .unwrap_or("");
+        assert!(
+            !sockets.contains("address"),
+            "inherited rpc socket must not bind a second address: {sockets}"
+        );
     }
 
     #[test]

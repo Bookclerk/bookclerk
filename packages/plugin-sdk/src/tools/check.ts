@@ -7,7 +7,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { assertPathInside, copyFileUnder, ensureDirUnder, refuseSymlinkExistingComponents, refuseSymlinkPath } from "../sparse-workerd/ensure.js";
-import { validateLogo, validateManifest, type Manifest } from "./validate.js";
+import {
+  declaresPython,
+  moduleLoadKey,
+  validateAuthorCompatibilityFlags,
+  validateLogo,
+  validateManifest,
+  workerdModuleIsEmbedded,
+  type Manifest,
+} from "./validate.js";
 
 /**
  * Optional vendor filename for offline archives (host normally injects the package).
@@ -157,6 +165,7 @@ export function checkPlugin(pluginDir: string): string {
       const src = fs.readFileSync(main, "utf8");
       checkMainModuleSource(path.basename(main), src, entrypoints, "python");
     }
+    enforceWorkerdLoadSet(m, modulesDir);
   } else if (runtime === "native") {
     const cmd = m.command!;
     const resolved = path.isAbsolute(cmd)
@@ -170,6 +179,60 @@ export function checkPlugin(pluginDir: string): string {
     }
   }
   return `ok id=${m.id} entrypoints=${(m.entrypoints ?? []).join(",")} runtime=${runtime}`;
+}
+
+/**
+ * Requires `[[modules]]` rows to be files the walk embeds, and the Python flag
+ * pair when the tree contains a `.py` file.
+ *
+ * @param m - Parsed manifest.
+ * @param modulesDir - Absolute modules directory.
+ * @throws {Error} When a row is missing, a symlink is present, or flags disagree.
+ */
+function enforceWorkerdLoadSet(m: Manifest, modulesDir: string): void {
+  const loadSet = collectAuthorModuleKeys(modulesDir);
+  const modulesDirName = m.workerd?.modules_dir ?? "modules";
+  for (const mod of m.modules ?? []) {
+    const filePath = mod.path || mod.name;
+    const keys = [
+      moduleLoadKey(modulesDirName, filePath),
+      moduleLoadKey(modulesDirName, mod.name),
+    ];
+    const loaded = keys.some((key) => key && loadSet.has(key));
+    if (!loaded) {
+      if (workerdModuleIsEmbedded(filePath)) {
+        throw new Error(
+          `plugin.toml: [[modules]] \`${filePath}\` is not in the workerd load set`,
+        );
+      }
+      throw new Error(`plugin.toml: [[modules]] \`${filePath}\` is not implemented yet`);
+    }
+  }
+  const diskPython = [...loadSet].some((name) => name.toLowerCase().endsWith(".py"));
+  if (m.workerd && (diskPython || declaresPython(m))) {
+    validateAuthorCompatibilityFlags(m.workerd.compatibility_flags ?? [], true);
+  }
+}
+
+function collectAuthorModuleKeys(modulesDir: string): Set<string> {
+  const out = new Set<string>();
+  const walk = (dir: string) => {
+    for (const name of fs.readdirSync(dir)) {
+      const abs = path.join(dir, name);
+      const stat = fs.lstatSync(abs);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`refusing symlink in workerd modules tree: ${abs}`);
+      }
+      if (stat.isDirectory()) {
+        walk(abs);
+        continue;
+      }
+      if (!stat.isFile() || !workerdModuleIsEmbedded(name)) continue;
+      out.add(path.relative(modulesDir, abs).split(path.sep).join("/"));
+    }
+  };
+  walk(modulesDir);
+  return out;
 }
 
 /**
