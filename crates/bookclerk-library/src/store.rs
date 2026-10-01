@@ -6986,5 +6986,8 @@ pub(crate) mod storage_scan;
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub(crate) mod job_queue;
 
+mod books_page;
+pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
+
 #[cfg(test)]
 mod tests;

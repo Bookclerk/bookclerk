@@ -104,7 +104,7 @@ impl MediaPoolConfig {
     #[must_use]
     fn normalized(mut self) -> Self {
         if self.workers == 0 {
-            self.workers = default_worker_count();
+            self.workers = automatic_worker_count();
         }
         self
     }
@@ -497,6 +497,28 @@ fn default_worker_count() -> usize {
         .clamp(1, MAX_DEFAULT_WORKERS)
 }
 
+/// Automatic pool size when `media.workers` is 0.
+///
+/// An explicit `media.workers` above 0 is not passed here. A process cgroup
+/// with `memory.max` at or below 1 GiB, or `cpu.max` of at most one core,
+/// uses one worker. Otherwise this is [`default_worker_count`].
+fn automatic_worker_count() -> usize {
+    automatic_worker_count_in(bookclerk_sandbox::process_cgroup_dir().as_deref())
+}
+
+/// [`automatic_worker_count`] with an injected cgroup directory.
+///
+/// `None` and a directory without a tight ceiling keep the CPU-derived cap.
+fn automatic_worker_count_in(cgroup_dir: Option<&Path>) -> usize {
+    if let Some(dir) = cgroup_dir {
+        let sample = bookclerk_sandbox::read_cgroup_sample(dir);
+        if bookclerk_sandbox::cgroup_sample_is_low_resource(&sample) {
+            return 1;
+        }
+    }
+    default_worker_count()
+}
+
 /// Decide where jobs will run, or explain why they cannot run at all.
 ///
 /// Both failures are reported at construction so they show up in the startup
@@ -829,6 +851,34 @@ mod tests {
     }
 
     #[test]
+    fn low_resource_cgroup_uses_one_worker_and_an_explicit_cap_wins() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("memory.max"), "1073741824\n").unwrap();
+        std::fs::write(dir.path().join("cpu.max"), "100000 100000\n").unwrap();
+        assert_eq!(automatic_worker_count_in(Some(dir.path())), 1);
+
+        std::fs::write(dir.path().join("memory.max"), "max\n").unwrap();
+        std::fs::write(dir.path().join("cpu.max"), "50000 100000\n").unwrap();
+        assert_eq!(automatic_worker_count_in(Some(dir.path())), 1);
+
+        std::fs::write(dir.path().join("cpu.max"), "200000 100000\n").unwrap();
+        std::fs::write(dir.path().join("memory.max"), "2147483648\n").unwrap();
+        assert_eq!(
+            automatic_worker_count_in(Some(dir.path())),
+            default_worker_count()
+        );
+        assert_eq!(automatic_worker_count_in(None), default_worker_count());
+
+        let explicit = MediaPoolConfig {
+            workers: 4,
+            confinement: Confinement::Off,
+            worker_bin: None,
+        }
+        .normalized();
+        assert_eq!(explicit.workers, 4);
+    }
+
+    #[test]
     fn in_process_pool_reports_no_isolation() {
         let pool = MediaPool::in_process();
         assert!(!pool.is_isolated());
@@ -1068,7 +1118,7 @@ mod tests {
         }
         .normalized();
         let explicit = MediaPoolConfig {
-            workers: default_worker_count(),
+            workers: automatic_worker_count(),
             confinement: Confinement::Off,
             worker_bin: None,
         }
@@ -1076,7 +1126,7 @@ mod tests {
         assert_eq!(derived, explicit);
 
         let changed = MediaPoolConfig {
-            workers: default_worker_count() + 1,
+            workers: automatic_worker_count() + 1,
             confinement: Confinement::Off,
             worker_bin: None,
         }

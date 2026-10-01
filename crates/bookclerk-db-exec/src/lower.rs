@@ -1140,7 +1140,10 @@ fn ddl_type_rewrite_at(sql: &str, i: usize) -> Option<(usize, &'static str)> {
 /// the adapter edge and then the DML helper pass.
 #[must_use]
 pub fn lower_canonical_ddl_to_postgres(sql: &str) -> String {
-    lower_canonical_to_postgres(&rewrite_canonical_ddl_types_for_postgres(sql))
+    // SQLite `COLLATE NOCASE` is the library title index. Postgres has no
+    // built-in NOCASE collation; the binary index still serves equality.
+    let stripped = replace_in_code(sql, " COLLATE NOCASE", "");
+    lower_canonical_to_postgres(&rewrite_canonical_ddl_types_for_postgres(&stripped))
 }
 
 /// True when `s` starts with JSON-valid flag `flag` (`0` or `1`) at a word boundary.
@@ -2510,5 +2513,22 @@ mod proptests {
                 "{err}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod nocase_index_postgres {
+    use super::lower_canonical_ddl_to_postgres;
+
+    #[test]
+    fn postgres_ddl_drops_sqlite_nocase_collation() {
+        let sql =
+            "CREATE INDEX IF NOT EXISTS idx_books_page_title ON books(title COLLATE NOCASE, uuid)";
+        let lowered = lower_canonical_ddl_to_postgres(sql);
+        assert!(
+            !lowered.to_ascii_uppercase().contains("NOCASE"),
+            "{lowered}"
+        );
+        assert!(lowered.contains("title"), "{lowered}");
     }
 }

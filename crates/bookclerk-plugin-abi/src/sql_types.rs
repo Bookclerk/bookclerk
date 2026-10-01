@@ -937,7 +937,10 @@ pub fn parse_create_index_sql(sql: &str) -> Option<CreateIndexSchema> {
     })
 }
 
-/// Column list of `CREATE INDEX … (ident [ASC|DESC], …)`. Leftover tokens fail.
+/// Column list of `CREATE INDEX … (ident [COLLATE NOCASE] [ASC|DESC], …)`.
+///
+/// `COLLATE NOCASE` is the library title-order collation. Any other collation,
+/// and any leftover token, fails.
 fn parse_index_column_list(inner: &str) -> Option<Vec<String>> {
     let parts = split_top_level_commas(inner);
     if parts.is_empty() {
@@ -946,8 +949,16 @@ fn parse_index_column_list(inner: &str) -> Option<Vec<String>> {
     let mut cols = Vec::new();
     for part in parts {
         let (name, rest) = read_ident(part)?;
-        let rest = skip_ws(rest);
-        let rest = if starts_kw(rest, "ASC") {
+        let mut rest = skip_ws(rest);
+        if starts_kw(rest, "COLLATE") {
+            rest = skip_ws(skip_kw(rest, "COLLATE")?);
+            let (collation, after) = read_ident(rest)?;
+            if !collation.eq_ignore_ascii_case("NOCASE") {
+                return None;
+            }
+            rest = skip_ws(after);
+        }
+        rest = if starts_kw(rest, "ASC") {
             skip_ws(skip_kw(rest, "ASC")?)
         } else if starts_kw(rest, "DESC") {
             skip_ws(skip_kw(rest, "DESC")?)
@@ -4497,7 +4508,11 @@ mod tests {
         );
         assert!(parse_create_index_sql("CREATE INDEX idx ON t (a) USING btree").is_none());
         assert!(parse_create_index_sql("CREATE INDEX idx ON t (a) INCLUDE (id)").is_none());
-        assert!(parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE NOCASE)").is_none());
+        let nocase =
+            parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE NOCASE)").expect("nocase");
+        assert_eq!(nocase.columns, vec!["body".to_string()]);
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE RTRIM)").is_none());
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE)").is_none());
         assert!(parse_create_index_sql("CREATE INDEX idx ON t ()").is_none());
         let ok = parse_create_index_sql("CREATE INDEX idx ON t (a ASC, b DESC)").expect("index");
         assert_eq!(ok.table, "t");

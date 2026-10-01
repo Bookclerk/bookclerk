@@ -1552,6 +1552,7 @@ dependencies = [
  "bookclerk-db-exec",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
+ "bookclerk-sandbox",
  "chacha20poly1305 0.11.0",
  "chrono",
  "email_address",

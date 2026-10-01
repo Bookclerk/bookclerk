@@ -46,7 +46,8 @@ fn events(retention: u64) -> EventsSettingsV1 {
 }
 
 async fn bootstrap_pair(store: &LibraryStore, files: &Path) -> ControlPlaneSession {
-    bootstrap_control_plane(store, files, None, &EventsConfig::default())
+    let scratch = files.join("cache");
+    bootstrap_control_plane(store, files, &scratch, None, &EventsConfig::default())
         .await
         .expect("bootstrap")
 }
@@ -115,9 +116,16 @@ async fn copied_identity_rejects_a_different_cluster() {
         host_identity_path(dir_b.path()),
     )
     .unwrap();
-    let err = bootstrap_control_plane(&store_b, dir_b.path(), None, &EventsConfig::default())
-        .await
-        .expect_err("copied identity must not join a different cluster");
+    let scratch_b = dir_b.path().join("cache");
+    let err = bootstrap_control_plane(
+        &store_b,
+        dir_b.path(),
+        &scratch_b,
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .expect_err("copied identity must not join a different cluster");
     assert!(err.to_string().contains("cluster mismatch"), "{err}");
     let after = super::secret::load_cluster_row(&store_b)
         .await
@@ -488,7 +496,8 @@ async fn existing_events_ignore_an_invalid_seed() {
         dead_letter_retention_days: 0,
         concurrency: 33,
     };
-    let again = bootstrap_control_plane(&store, files.path(), None, &bad)
+    let scratch = files.path().join("cache");
+    let again = bootstrap_control_plane(&store, files.path(), &scratch, None, &bad)
         .await
         .expect("stored document is authoritative");
     assert_eq!(again.events.revision, session.events.revision);
@@ -505,9 +514,11 @@ async fn first_import_rejects_an_invalid_seed() {
     let _guard = master_key_test_lock_async().await;
     let store = memory_store().await;
     let files = tempdir().unwrap();
+    let scratch = files.path().join("cache");
     let err = bootstrap_control_plane(
         &store,
         files.path(),
+        &scratch,
         None,
         &EventsConfig {
             retention_days: 0,
@@ -1172,4 +1183,42 @@ async fn postgres_initial_import_is_atomic_across_connections() {
         load_events(&store_a).await.unwrap(),
         load_events(&store_b).await.unwrap()
     );
+}
+
+#[tokio::test]
+async fn heartbeat_persists_fake_cgroup_observations() {
+    let _guard = master_key_test_lock_async().await;
+    let store = memory_store().await;
+    let files = tempdir().unwrap();
+    let scratch = files.path().join("cache");
+    std::fs::create_dir_all(scratch.join("acquire")).unwrap();
+    std::fs::write(scratch.join("acquire").join("part.bin"), vec![7u8; 32]).unwrap();
+    let session = bootstrap_pair(&store, files.path()).await;
+
+    let cgroup = tempdir().unwrap();
+    std::fs::write(cgroup.path().join("cpu.max"), "100000 100000\n").unwrap();
+    std::fs::write(cgroup.path().join("memory.max"), "1073741824\n").unwrap();
+    std::fs::write(cgroup.path().join("memory.current"), "4096\n").unwrap();
+    std::fs::write(cgroup.path().join("memory.stat"), "anon 2048\nfile 10\n").unwrap();
+    let observation =
+        super::identity::sample_host_observation(Some(cgroup.path()), files.path(), &scratch);
+    let host = super::identity::register_and_heartbeat(
+        &store,
+        &session.host.host_id,
+        &session.cluster_id,
+        "incarnation-obs",
+        &observation,
+    )
+    .await
+    .unwrap();
+    assert_eq!(host.cpu_max_quota_us, Some(100_000));
+    assert_eq!(host.cpu_max_period_us, Some(100_000));
+    assert_eq!(host.memory_max_bytes, Some(1_073_741_824));
+    assert_eq!(host.memory_current_bytes, Some(4096));
+    assert_eq!(host.memory_anon_bytes, Some(2048));
+    assert_eq!(host.scratch_bytes, Some(32));
+    assert!(host.files_dir_free_bytes.is_some());
+    assert!(host.logical_cpus.is_some());
+    assert_eq!(host.created_at, session.host.created_at);
+    assert_eq!(host.incarnation, "incarnation-obs");
 }

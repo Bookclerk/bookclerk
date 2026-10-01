@@ -6,12 +6,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use bookclerk_sandbox::{
+    filesystem_free_bytes, logical_cpu_count, process_cgroup_dir, read_cgroup_sample,
+};
 use chrono::Utc;
 use sea_orm::EntityTrait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::batch::{self, exec, int, request, text};
+use super::batch::{self, exec, int, int_opt, request, text};
 use crate::entities::hosts;
 use crate::error::{LibraryError, Result};
 use crate::host_schema::current_schema_state;
@@ -73,6 +76,43 @@ pub struct HostRecord {
     pub schema_state: String,
     /// True when the reporting binary accepted the library schema.
     pub compatible: bool,
+    /// `available_parallelism`, empty when the probe failed.
+    pub logical_cpus: Option<i64>,
+    /// Process cgroup `cpu.max` quota in microseconds. Empty when unlimited or missing.
+    pub cpu_max_quota_us: Option<i64>,
+    /// Process cgroup `cpu.max` period in microseconds. Empty when unlimited or missing.
+    pub cpu_max_period_us: Option<i64>,
+    /// Process cgroup `memory.max` in bytes. Empty when unlimited or missing.
+    pub memory_max_bytes: Option<i64>,
+    /// Process cgroup `memory.current` in bytes.
+    pub memory_current_bytes: Option<i64>,
+    /// Process cgroup `memory.stat` field `anon`.
+    pub memory_anon_bytes: Option<i64>,
+    /// Free bytes on the filesystem that holds the files directory.
+    pub files_dir_free_bytes: Option<i64>,
+    /// Byte size of the acquire scratch tree under the download cache.
+    pub scratch_bytes: Option<i64>,
+}
+
+/// Capacity sample written on heartbeat. Not desired state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostObservation {
+    /// `available_parallelism`, empty when the probe failed.
+    pub logical_cpus: Option<i64>,
+    /// `cpu.max` quota. Empty when the value is `max` or the file is missing.
+    pub cpu_max_quota_us: Option<i64>,
+    /// `cpu.max` period. Empty when the value is `max` or the file is missing.
+    pub cpu_max_period_us: Option<i64>,
+    /// `memory.max`. Empty when the value is `max` or the file is missing.
+    pub memory_max_bytes: Option<i64>,
+    /// `memory.current`.
+    pub memory_current_bytes: Option<i64>,
+    /// `memory.stat` `anon`.
+    pub memory_anon_bytes: Option<i64>,
+    /// `statvfs` free bytes on `files_dir`.
+    pub files_dir_free_bytes: Option<i64>,
+    /// Bytes under `{scratch}/acquire` and `{scratch}/acquire-pdf`.
+    pub scratch_bytes: Option<i64>,
 }
 
 /// Path of the host identity file.
@@ -163,6 +203,7 @@ pub async fn register_and_heartbeat(
     host_id: &str,
     cluster_id: &str,
     incarnation: &str,
+    observation: &HostObservation,
 ) -> Result<HostRecord> {
     let now = Utc::now().to_rfc3339();
     let state = current_schema_state(store.db()).await?;
@@ -185,8 +226,11 @@ pub async fn register_and_heartbeat(
                 exec(
                     "INSERT OR IGNORE INTO hosts (
                         host_id, cluster_id, created_at, incarnation, heartbeat_at,
-                        software_version, schema_state, compatible
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        software_version, schema_state, compatible,
+                        logical_cpus, cpu_max_quota_us, cpu_max_period_us,
+                        memory_max_bytes, memory_current_bytes, memory_anon_bytes,
+                        files_dir_free_bytes, scratch_bytes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     vec![
                         text(host_id),
                         text(cluster_id),
@@ -196,12 +240,23 @@ pub async fn register_and_heartbeat(
                         text(version),
                         text(&schema_state),
                         int(1),
+                        int_opt(observation.logical_cpus),
+                        int_opt(observation.cpu_max_quota_us),
+                        int_opt(observation.cpu_max_period_us),
+                        int_opt(observation.memory_max_bytes),
+                        int_opt(observation.memory_current_bytes),
+                        int_opt(observation.memory_anon_bytes),
+                        int_opt(observation.files_dir_free_bytes),
+                        int_opt(observation.scratch_bytes),
                     ],
                 ),
                 exec(
                     "UPDATE hosts SET
                         incarnation = ?, heartbeat_at = ?, software_version = ?,
-                        schema_state = ?, compatible = ?
+                        schema_state = ?, compatible = ?,
+                        logical_cpus = ?, cpu_max_quota_us = ?, cpu_max_period_us = ?,
+                        memory_max_bytes = ?, memory_current_bytes = ?, memory_anon_bytes = ?,
+                        files_dir_free_bytes = ?, scratch_bytes = ?
                      WHERE host_id = ? AND cluster_id = ?",
                     vec![
                         text(incarnation),
@@ -209,6 +264,14 @@ pub async fn register_and_heartbeat(
                         text(version),
                         text(&schema_state),
                         int(1),
+                        int_opt(observation.logical_cpus),
+                        int_opt(observation.cpu_max_quota_us),
+                        int_opt(observation.cpu_max_period_us),
+                        int_opt(observation.memory_max_bytes),
+                        int_opt(observation.memory_current_bytes),
+                        int_opt(observation.memory_anon_bytes),
+                        int_opt(observation.files_dir_free_bytes),
+                        int_opt(observation.scratch_bytes),
                         text(host_id),
                         text(cluster_id),
                     ],
@@ -242,8 +305,77 @@ pub async fn heartbeat_process(
     store: &LibraryStore,
     host_id: &str,
     cluster_id: &str,
+    files_dir: &Path,
+    scratch_dir: &Path,
 ) -> Result<HostRecord> {
-    register_and_heartbeat(store, host_id, cluster_id, process_incarnation()).await
+    let observation =
+        sample_host_observation(process_cgroup_dir().as_deref(), files_dir, scratch_dir);
+    register_and_heartbeat(
+        store,
+        host_id,
+        cluster_id,
+        process_incarnation(),
+        &observation,
+    )
+    .await
+}
+
+/// Reads capacity for a heartbeat.
+///
+/// `cgroup_dir` overrides the process cgroup so tests can point at fake
+/// controller files. `None` records empty cgroup columns.
+pub(crate) fn sample_host_observation(
+    cgroup_dir: Option<&Path>,
+    files_dir: &Path,
+    scratch_dir: &Path,
+) -> HostObservation {
+    let cgroup = cgroup_dir.map(read_cgroup_sample).unwrap_or_default();
+    HostObservation {
+        logical_cpus: logical_cpu_count(),
+        cpu_max_quota_us: fit_i64(cgroup.cpu_max_quota_us),
+        cpu_max_period_us: fit_i64(cgroup.cpu_max_period_us),
+        memory_max_bytes: fit_i64(cgroup.memory_max_bytes),
+        memory_current_bytes: fit_i64(cgroup.memory_current_bytes),
+        memory_anon_bytes: fit_i64(cgroup.memory_anon_bytes),
+        files_dir_free_bytes: filesystem_free_bytes(files_dir)
+            .and_then(|bytes| fit_i64(Some(bytes))),
+        scratch_bytes: fit_i64(Some(scratch_tree_bytes(scratch_dir))),
+    }
+}
+
+/// Saturates a byte count into the signed column, or empty when absent.
+fn fit_i64(value: Option<u64>) -> Option<i64> {
+    value.and_then(|value| i64::try_from(value).ok())
+}
+
+/// Bytes in `{scratch}/acquire` and `{scratch}/acquire-pdf`.
+///
+/// Same trees `scratch_usage` walks. A missing directory counts as zero.
+fn scratch_tree_bytes(scratch_dir: &Path) -> u64 {
+    dir_bytes(&scratch_dir.join("acquire"))
+        .saturating_add(dir_bytes(&scratch_dir.join("acquire-pdf")))
+}
+
+/// Recursive file size. Missing paths and unreadable entries count as zero.
+fn dir_bytes(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
 }
 
 /// Loads one host row.
@@ -301,6 +433,14 @@ fn record_from_model(row: hosts::Model) -> HostRecord {
         software_version: row.software_version,
         schema_state: row.schema_state,
         compatible: row.compatible != 0,
+        logical_cpus: row.logical_cpus,
+        cpu_max_quota_us: row.cpu_max_quota_us,
+        cpu_max_period_us: row.cpu_max_period_us,
+        memory_max_bytes: row.memory_max_bytes,
+        memory_current_bytes: row.memory_current_bytes,
+        memory_anon_bytes: row.memory_anon_bytes,
+        files_dir_free_bytes: row.files_dir_free_bytes,
+        scratch_bytes: row.scratch_bytes,
     }
 }
 
