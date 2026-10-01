@@ -43,6 +43,8 @@ pub struct ExternalIntegration {
     poll_cancel: Arc<AtomicBool>,
     /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded poll loop exits.
     poll_epoch: Arc<AtomicU64>,
+    /// Deployment instance id. `None` until the reconciler binds one.
+    plugin_instance_id: Option<String>,
 }
 
 impl ExternalIntegration {
@@ -162,7 +164,13 @@ impl ExternalIntegration {
             event_subscriptions,
             poll_cancel: Arc::new(AtomicBool::new(false)),
             poll_epoch: Arc::new(AtomicU64::new(0)),
+            plugin_instance_id: None,
         })
+    }
+
+    /// Records the deployment instance id used to recognize this guest on reload.
+    pub(crate) fn bind_plugin_instance(&mut self, plugin_instance_id: &str) {
+        self.plugin_instance_id = Some(plugin_instance_id.to_string());
     }
 
     /// Session opened for this integration.
@@ -322,6 +330,10 @@ impl Integration for ExternalIntegration {
 
     fn plugin_key(&self) -> &str {
         self.session.id()
+    }
+
+    fn plugin_instance_id(&self) -> Option<&str> {
+        self.plugin_instance_id.as_deref()
     }
 
     fn display_name(&self) -> &str {

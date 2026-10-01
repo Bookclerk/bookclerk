@@ -31,6 +31,11 @@ pub struct DestinationRegistry {
     local: Option<Arc<dyn StorageBackend>>,
     /// Plugin sessions keyed by `(plugin_id, account_id)`.
     plugin_sessions: std::collections::HashMap<String, Arc<PluginSession>>,
+    /// Present deployment instance id for each session the reconciler spawned.
+    ///
+    /// Keyed by [`PluginSession::instance_key`]. A transitional session has no
+    /// entry, so reload does not copy it onto the replacement registry.
+    deployed_instances: std::collections::HashMap<String, String>,
 }
 
 impl DestinationRegistry {
@@ -85,14 +90,32 @@ impl DestinationRegistry {
             .insert(session.instance_key().to_string(), session);
     }
 
+    /// Records that `instance_key` is the reconciler's session for `plugin_instance_id`.
+    pub(crate) fn note_deployed_instance(&mut self, instance_key: &str, plugin_instance_id: &str) {
+        if plugin_instance_id.is_empty() {
+            return;
+        }
+        self.deployed_instances
+            .insert(instance_key.to_string(), plugin_instance_id.to_string());
+    }
+
     /// Copies deployed sessions from this registry onto `candidate`.
     ///
-    /// Reload builds `candidate` without plugin keys in `owned`. The
-    /// process-stable guest map still treats those sessions as healthy, so the
-    /// swap keeps the same S3 backend, local backend, and plugin sessions.
-    pub fn reattach_owned(&self, candidate: &mut Self, owned: &std::collections::BTreeSet<String>) {
+    /// `deployed_instances` is the set of present plugin instance ids. Reload
+    /// builds `candidate` without those plugin keys. Only sessions the
+    /// reconciler bound to one of those ids are copied, including the S3 or
+    /// local backend they own. A transitional session for the same key is left
+    /// behind.
+    pub fn reattach_owned(
+        &self,
+        candidate: &mut Self,
+        deployed_instances: &std::collections::BTreeSet<String>,
+    ) {
         for session in self.plugin_sessions.values() {
-            if !owned.contains(session.id()) {
+            let Some(instance_id) = self.deployed_instances.get(session.instance_key()) else {
+                continue;
+            };
+            if !deployed_instances.contains(instance_id) {
                 continue;
             }
             if session.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
@@ -104,6 +127,7 @@ impl DestinationRegistry {
                     candidate.local = Some(Arc::clone(backend));
                 }
             }
+            candidate.note_deployed_instance(session.instance_key(), instance_id);
             candidate.set_plugin_session(Arc::clone(session));
         }
     }

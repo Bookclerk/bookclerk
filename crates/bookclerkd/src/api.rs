@@ -1378,6 +1378,9 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     let owned =
         crate::registry::deployment_skip_keys(&library_for_auth, &control_plane.host.host_id)
             .await?;
+    let deployed =
+        crate::registry::deployment_instance_ids(&library_for_auth, &control_plane.host.host_id)
+            .await?;
 
     let candidate_auth = build_operator_auth(&new_cfg, &library_for_auth).await?;
     // Defense in depth: never publish a non-loopback listen with auth disabled
@@ -1423,26 +1426,26 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // leave workers on the candidate `[media]` while AppState stays on the old one.
     bookclerk_media::init_pool_from_config(&new_cfg.media);
 
-    // Publish: keep deployed sessions on the new registries. Stop only the
-    // integrations that were not reattached, then swap the remaining slots.
+    // Publish: keep sessions bound to a present instance id. Stop every other
+    // integration, including a transitional guest that shares a deployed key.
     {
         let mut sources = state.sources.write().await;
         let mut integrations = state.integrations.write().await;
         let mut destinations = state.destinations.write().await;
-        crate::registry::reattach_deployed_sources(&mut candidate_sources, &sources, &owned);
+        crate::registry::reattach_deployed_sources(&mut candidate_sources, &sources, &deployed);
         crate::registry::reattach_deployed_integrations(
             &mut candidate_integrations,
             &integrations,
-            &owned,
+            &deployed,
         );
-        destinations.reattach_owned(&mut candidate_destinations, &owned);
+        destinations.reattach_owned(&mut candidate_destinations, &deployed);
         let old_integrations = std::mem::replace(&mut *integrations, candidate_integrations);
         *sources = candidate_sources;
         *destinations = candidate_destinations;
         drop(sources);
         drop(integrations);
         drop(destinations);
-        old_integrations.stop_except(&owned).await;
+        old_integrations.stop_except(&deployed).await;
         if let (Some(registry), Some(library)) = (candidate_db_registry, candidate_library) {
             *state.database_registry.write().await = registry;
             *state.library.write().await = library;

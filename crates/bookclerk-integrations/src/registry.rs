@@ -128,14 +128,18 @@ impl IntegrationRegistry {
         self.stop_except(&BTreeSet::new()).await;
     }
 
-    /// Stops integrations whose plugin key is not in `keep`.
+    /// Stops integrations that are not a present deployed instance.
     ///
-    /// Config reload reattaches deployed guests onto the replacement registry.
-    /// Those sessions stay running; `stop` is only for integrations the new
-    /// registry does not keep. Errors are logged, not fatal.
+    /// `keep` is plugin instance ids. Config reload reattaches those guests
+    /// onto the replacement registry and leaves them running. A transitional
+    /// integration is stopped even when its plugin key has a deployment.
+    /// Errors are logged, not fatal.
     pub async fn stop_except(&self, keep: &BTreeSet<String>) {
         for integration in &self.integrations {
-            if keep.contains(integration.plugin_key()) {
+            if integration
+                .plugin_instance_id()
+                .is_some_and(|id| !id.is_empty() && keep.contains(id))
+            {
                 continue;
             }
             if let Err(err) = integration.stop().await {

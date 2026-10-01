@@ -271,8 +271,10 @@ The reconciler passes the deployment's instance id and resolved bindings into
 `open`. It does not look the instance up by plugin key. A healthy observation
 is skipped only while that session's process is still running. The daemon
 keeps that session map for the process lifetime, so the next tick sees the
-same guest. Config reload copies those deployed source, integration, and
-storage sessions onto the replacement registries and does not stop them. Install health starts the staged guest under the host mutation
+same guest. Config reload copies source, integration, and storage sessions that are bound
+to a present plugin instance id onto the replacement registries and does not
+stop those sessions. A transitional guest for the same plugin key is dropped
+and, for integrations, stopped. Install health starts the staged guest under the host mutation
 lock and rolls the tree back when health fails. Packages come from
 `plugin-packages/` on the local files directory, not from a download.
 

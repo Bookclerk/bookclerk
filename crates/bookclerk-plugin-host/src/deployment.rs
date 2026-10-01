@@ -867,7 +867,7 @@ async fn spawn_integration(
         .get("allow_credential_login")
         .and_then(|value| value.as_bool())
         .unwrap_or(true);
-    let integration = match crate::ExternalIntegration::spawn_prepared(
+    let mut integration = match crate::ExternalIntegration::spawn_prepared(
         plugin,
         config,
         services,
@@ -883,6 +883,7 @@ async fn spawn_integration(
             }
         }
     };
+    integration.bind_plugin_instance(&request.plugin_instance_id);
     let tracked = TrackedGuest {
         session: Arc::clone(integration.session()),
         config: integration.opened_config().clone(),
@@ -920,6 +921,7 @@ async fn spawn_storage(
         .await
     {
         Ok(session) => {
+            registry.note_deployed_instance(session.instance_key(), &request.plugin_instance_id);
             runtime.remember(
                 &request.plugin_instance_id,
                 TrackedGuest {

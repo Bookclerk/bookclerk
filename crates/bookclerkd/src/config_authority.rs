@@ -1115,6 +1115,7 @@ mod tests {
     struct CountingIntegration {
         id: &'static str,
         key: String,
+        instance: Option<String>,
         stops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
@@ -1126,6 +1127,10 @@ mod tests {
 
         fn plugin_key(&self) -> &str {
             &self.key
+        }
+
+        fn plugin_instance_id(&self) -> Option<&str> {
+            self.instance.as_deref()
         }
 
         async fn start(
@@ -1157,6 +1162,97 @@ mod tests {
         ) -> bookclerk_integrations::Result<bookclerk_integrations::EventResult> {
             Ok(bookclerk_integrations::EventResult::Ack)
         }
+    }
+
+    /// Source registered under the plugin key, with no deployment instance id.
+    struct KeyOnlySource {
+        key: String,
+    }
+
+    #[async_trait::async_trait]
+    impl bookclerk_source::ContentSource for KeyOnlySource {
+        fn id(&self) -> &str {
+            "transitional-source"
+        }
+
+        fn plugin_key(&self) -> &str {
+            &self.key
+        }
+
+        fn portal_auth_mode(&self) -> bookclerk_source::PortalAuthMode {
+            bookclerk_source::PortalAuthMode::Password
+        }
+
+        fn portal_brand(&self) -> bookclerk_source::SourceBrand {
+            bookclerk_source::SourceBrand {
+                id: "transitional-source",
+                name: "Transitional",
+                bg: "#000000",
+                fg: "#ffffff",
+                accent: "#111111",
+                icon_url: "https://example.invalid/icon",
+            }
+        }
+
+        async fn login(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::LoginOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceAccount> {
+            Err(bookclerk_source::SourceError::api("transitional stub"))
+        }
+
+        async fn list_accounts(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+        ) -> bookclerk_source::Result<Vec<bookclerk_source::SourceAccount>> {
+            Err(bookclerk_source::SourceError::api("transitional stub"))
+        }
+
+        async fn scan(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::ScanOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::ScanSummary> {
+            Err(bookclerk_source::SourceError::api("transitional stub"))
+        }
+
+        async fn fetch_title(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _account_id: &str,
+            _title_id: &str,
+            _opts: &bookclerk_source::FetchOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceFetch> {
+            Err(bookclerk_source::SourceError::api("transitional stub"))
+        }
+    }
+
+    fn install_staged_archive(config: &Config, files_path: &std::path::Path, package_key: &str) {
+        let packages =
+            bookclerk_plugin_host::load_authorized_local_packages(files_path).expect("packages");
+        let package = packages
+            .get(package_key)
+            .unwrap_or_else(|| panic!("staged package {package_key}"));
+        let plugins_root = files_path.join("plugins");
+        std::fs::create_dir_all(&plugins_root).unwrap();
+        let lock = bookclerk_plugin_catalog::PluginMutationLock::acquire(files_path).expect("lock");
+        let opts = bookclerk_plugin_catalog::InstallOptions {
+            plugins_root,
+            offline: true,
+            trust: bookclerk_plugin_catalog::TrustPolicy::allow_unverified_publisher(),
+            skip_health: true,
+            ..bookclerk_plugin_catalog::InstallOptions::default()
+        };
+        let outcome = bookclerk_plugin_host::install_local_archive_with_configured_aliases(
+            config,
+            &lock,
+            &package.archive,
+            &package.manifest,
+            &opts,
+        )
+        .expect("install transitional guest");
+        bookclerk_plugin_catalog::Installer::commit(&outcome).expect("commit install");
     }
 
     #[tokio::test]
@@ -1339,16 +1435,28 @@ mod tests {
         assert_eq!(before_storage.guest_pid(), Some(local_pid));
         assert!(state.destinations.read().await.local().is_some());
 
-        let owned_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let same_key_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deployed_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let unowned_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         state
             .integrations
             .write()
             .await
             .register(Arc::new(CountingIntegration {
-                id: "owned-deployment",
+                id: "transitional-same-key",
                 key: source_key.clone(),
-                stops: Arc::clone(&owned_stops),
+                instance: None,
+                stops: Arc::clone(&same_key_stops),
+            }));
+        state
+            .integrations
+            .write()
+            .await
+            .register(Arc::new(CountingIntegration {
+                id: "deployed-integration",
+                key: source_key.clone(),
+                instance: Some(source_id.to_string()),
+                stops: Arc::clone(&deployed_stops),
             }));
         state
             .integrations
@@ -1357,8 +1465,24 @@ mod tests {
             .register(Arc::new(CountingIntegration {
                 id: "transitional",
                 key: "transitional-integration".into(),
+                instance: None,
                 stops: Arc::clone(&unowned_stops),
             }));
+        state
+            .sources
+            .write()
+            .await
+            .register(Arc::new(KeyOnlySource {
+                key: source_key.clone(),
+            }));
+        assert!(state
+            .sources
+            .read()
+            .await
+            .get(&source_key)
+            .expect("legacy key")
+            .plugin_instance_id()
+            .is_none());
 
         crate::api::reload_daemon_config(&state)
             .await
@@ -1392,15 +1516,61 @@ mod tests {
             )
             .await
         );
-        assert_eq!(owned_stops.load(Ordering::SeqCst), 0);
+        let by_key = state
+            .sources
+            .read()
+            .await
+            .get(&source_key)
+            .expect("plugin key reaches the deployed source");
+        assert_eq!(by_key.plugin_instance_id(), Some(source_id));
+        assert_eq!(by_key.guest_pid(), Some(source_pid));
+        assert_eq!(same_key_stops.load(Ordering::SeqCst), 1);
+        assert_eq!(deployed_stops.load(Ordering::SeqCst), 0);
         assert_eq!(unowned_stops.load(Ordering::SeqCst), 1);
-        assert!(state.integrations.read().await.get(&source_key).is_some());
+        let kept = state
+            .integrations
+            .read()
+            .await
+            .get(&source_key)
+            .expect("deployed integration");
+        assert_eq!(kept.plugin_instance_id(), Some(source_id));
+        assert!(state
+            .integrations
+            .read()
+            .await
+            .get("transitional-same-key")
+            .is_none());
         assert!(state
             .integrations
             .read()
             .await
             .get("transitional-integration")
             .is_none());
+
+        crate::api::reload_daemon_config(&state)
+            .await
+            .expect("second reload");
+        assert_eq!(
+            state
+                .sources
+                .read()
+                .await
+                .get(&source_key)
+                .expect("plugin key after second reload")
+                .guest_pid(),
+            Some(source_pid)
+        );
+        assert_eq!(
+            state
+                .destinations
+                .read()
+                .await
+                .plugin_session(&local_key, bookclerk_plugin_host::OPERATOR_ACCOUNT)
+                .expect("storage after second reload")
+                .guest_pid(),
+            Some(local_pid)
+        );
+        assert_eq!(deployed_stops.load(Ordering::SeqCst), 0);
 
         super::reconcile_deployments(&state)
             .await
@@ -1422,6 +1592,187 @@ mod tests {
         );
 
         for pid in [source_pid, local_pid] {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_reload_retires_transitional_guest_when_deployment_is_added() {
+        use std::path::PathBuf;
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        use bookclerk_config::Isolation;
+        use bookclerk_library::control_plane::{
+            create_plugin_instance, ensure_plugin_deployment, import_instance_config_if_absent,
+            load_observation, ConfigActor, DeploymentStatus, InstancePackagePolicy,
+            PluginInstanceConfigV1,
+        };
+
+        let files = tempfile::tempdir().expect("files");
+        let files_path = files.path();
+        std::fs::write(
+            files_path.join("config.toml"),
+            "[plugins]\nisolation = \"off\"\n\n[daemon.auth]\nenabled = false\n",
+        )
+        .unwrap();
+        let source_toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
+        let package_key = stage_graphicaudio_package(files_path, &source_toml);
+        let config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        assert_eq!(config.plugins.isolation, Isolation::Off);
+        install_staged_archive(&config, files_path, &package_key);
+        let plugin_key = bookclerk_plugin_host::graphicaudio_plugin_key(&config)
+            .expect("discover")
+            .expect("graphicaudio key");
+
+        let manifest = bookclerk_plugin_host::PluginManifest::parse(
+            &std::fs::read_to_string(&source_toml).unwrap(),
+        )
+        .unwrap();
+        let mut grant = bookclerk_plugin_host::consent_request_alias(&manifest);
+        grant.plugin_key = plugin_key.clone();
+        let mut grants = bookclerk_plugin_host::PluginGrantStore::default();
+        grants.upsert(grant);
+        grants.save(files_path).unwrap();
+
+        let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
+            .await
+            .expect("sqlite");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("schema");
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(
+            &store,
+            files_path,
+            None,
+            &bookclerk_config::EventsConfig::default(),
+        )
+        .await
+        .expect("bootstrap");
+        let state = control_plane_test_state(store.clone(), config);
+        let loaded = bookclerk_plugin_host::load_sources_skipping(
+            &state.config.read().await.clone(),
+            &bookclerk_plugin_host::SessionServices::from_outbox(Some(&store)),
+            &std::collections::BTreeSet::new(),
+        )
+        .await
+        .expect("transitional sources");
+        let transitional_pid = {
+            let source = loaded.get(&plugin_key).unwrap_or_else(|| {
+                panic!(
+                    "transitional guest missing; registered: {:?}",
+                    loaded
+                        .all()
+                        .iter()
+                        .map(|source| source.plugin_key().to_string())
+                        .collect::<Vec<_>>()
+                )
+            });
+            assert!(source.plugin_instance_id().is_none());
+            assert_eq!(source.plugin_key(), plugin_key);
+            source.guest_pid().expect("transitional pid")
+        };
+        *state.sources.write().await = loaded;
+
+        let transitional_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        state
+            .integrations
+            .write()
+            .await
+            .register(Arc::new(CountingIntegration {
+                id: "transitional-integration",
+                key: plugin_key.clone(),
+                instance: None,
+                stops: Arc::clone(&transitional_stops),
+            }));
+        state
+            .integrations
+            .read()
+            .await
+            .start_all(bookclerk_integrations::IntegrationContext::default())
+            .await
+            .expect("start transitional integration");
+
+        let actor = ConfigActor::Bootstrap;
+        let instance = create_plugin_instance(&store, &actor, &plugin_key)
+            .await
+            .expect("instance");
+        let mut settings = std::collections::BTreeMap::new();
+        settings.insert(
+            "access".into(),
+            bookclerk_library::control_plane::SettingValue::String("device".into()),
+        );
+        import_instance_config_if_absent(
+            &store,
+            &actor,
+            &instance.id,
+            InstancePackagePolicy::GraphicAudio,
+            &PluginInstanceConfigV1 {
+                settings,
+                secret_refs: Vec::new(),
+            },
+            "import-transition-ga",
+        )
+        .await
+        .expect("import");
+        let deployment =
+            ensure_plugin_deployment(&store, &actor, &instance.id, &session.host.host_id)
+                .await
+                .expect("deployment");
+        let instance_id = instance.id.as_str().to_string();
+
+        crate::api::reload_daemon_config(&state)
+            .await
+            .expect("reload");
+        assert!(
+            state.sources.read().await.get(&plugin_key).is_none(),
+            "transitional source must not survive reload"
+        );
+        assert!(state.sources.read().await.get(&instance_id).is_none());
+        assert_eq!(transitional_stops.load(Ordering::SeqCst), 1);
+        assert!(state.integrations.read().await.get(&plugin_key).is_none());
+
+        super::reconcile_deployments(&state)
+            .await
+            .expect("reconcile deployed guest");
+        let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+            .await
+            .unwrap()
+            .expect("observation");
+        assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+        let deployed_pid = state
+            .deployment_runtime()
+            .tracked_guest_pid(&instance_id)
+            .expect("deployed pid");
+        assert_ne!(deployed_pid, transitional_pid);
+        let by_instance = state
+            .sources
+            .read()
+            .await
+            .get(&instance_id)
+            .expect("instance lookup");
+        assert_eq!(by_instance.plugin_instance_id(), Some(instance_id.as_str()));
+        assert_eq!(by_instance.guest_pid(), Some(deployed_pid));
+        let by_key = state
+            .sources
+            .read()
+            .await
+            .get(&plugin_key)
+            .expect("plugin key lookup");
+        assert_eq!(by_key.plugin_instance_id(), Some(instance_id.as_str()));
+        assert_eq!(by_key.guest_pid(), Some(deployed_pid));
+        assert!(state.integrations.read().await.get(&plugin_key).is_none());
+        assert_eq!(transitional_stops.load(Ordering::SeqCst), 1);
+
+        for pid in [transitional_pid, deployed_pid] {
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", &pid.to_string()])
                 .status();

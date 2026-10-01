@@ -1096,10 +1096,11 @@ with artifact URLs limited to files inside the package directory. The
 reconciler does not download plugins. It starts the staged guest and calls
 health before commit, and it respawns a guest that has exited even when the
 last observation was healthy. The daemon keeps one guest map for the process.
-Config reload builds registries that omit deployed keys, then copies the live
-deployed sources, integrations, and storage sessions onto those registries.
-It does not stop those guests, so API and job lookup still reach the same
-process.
+Config reload builds registries that omit deployed keys, then copies live
+sources, integrations, and storage sessions that are bound to a present plugin
+instance id. A transitional guest for the same key is not copied. Reload stops
+that integration and drops the source or storage session. Copied guests are
+not stopped, so API and job lookup still reach the same process.
 A deployed storefront is registered under its plugin instance id. Job lookup
 resolves that id. A plugin key or alias resolves only when exactly one
 registered source matches, so two instances of one key stay distinct.
