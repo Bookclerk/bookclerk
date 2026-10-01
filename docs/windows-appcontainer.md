@@ -154,11 +154,15 @@ deletes the AppContainer profiles and then revokes that journal under
 revoke returns success.
 `DeleteAppContainerProfile` does not strip package-SID ACEs, and the profile
 moniker (`bc.<stem>.<hex>`) is not the SID. Directory removal is the signal
-that those ACEs are gone, and only on that success path. If revoke fails or
-stops partway, the host writes the unrevoked suffix to
-`acl-journal-pending.json` in the session directory and leaves the directory
-in place. The next session plan retries those directories and removes one only
-after revoke returns success. Revoke is idempotent, treats a missing path as
+that those ACEs are gone, and only on that success path. Before the jail
+grants those ACEs, the host writes the complete journal to
+`acl-journal-pending.json` in the session directory. If that write fails, the
+spawn fails and no grants are applied. If revoke later fails or stops partway,
+the host tries to replace the file with the unrevoked suffix and leaves the
+directory in place. A failed replacement does not remove the earlier file.
+The next session plan retries any kept `session-*` directory that still has
+the file, and removes one only after revoke returns success. Revoke is
+idempotent, treats a missing path as
 success, and removes only that session's SID. The jail may revoke as well when
 its process exits normally. Job kill skips that `Drop`, so the host journal is
 the owner that still runs. Ancestor traverse stays a `SetKernelObjectSecurity`
