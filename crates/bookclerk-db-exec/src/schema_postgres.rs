@@ -23,8 +23,19 @@ use sea_orm::DatabaseBackend;
 /// families.
 #[must_use]
 pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<'_, str> {
+    schema_sql_for_backend_with(backend, canonical, None)
+}
+
+/// [`schema_sql_for_backend`] using `env` when a post-fold index key needs a type.
+fn schema_sql_for_backend_with<'a>(
+    backend: DatabaseBackend,
+    canonical: &'a str,
+    env: Option<&bookclerk_plugin_abi::SqlTypeEnv>,
+) -> Cow<'a, str> {
     match backend {
-        DatabaseBackend::Postgres => Cow::Owned(crate::lower_canonical_ddl_to_postgres(canonical)),
+        DatabaseBackend::Postgres => Cow::Owned(
+            crate::lower::lower_canonical_ddl_to_postgres_with(canonical, env),
+        ),
         DatabaseBackend::Sqlite => Cow::Borrowed(canonical),
         other => crate::exec::reject_unknown_seaorm_backend(other),
     }
@@ -34,10 +45,10 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 ///
 /// Hosts emit canonical SQLite-shaped `CREATE`/`DROP`. Postgres adapters
 /// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here and turn
-/// `ident COLLATE NOCASE` into `(lower(ident COLLATE "C"))`, with the
-/// following tie-break as `(ident COLLATE "C")`, so page order matches
-/// SQLite. SQLite leaves the statement unchanged, including `NOCASE` page
-/// indexes. DML stays for [`crate::lower_canonical_sql`].
+/// `ident COLLATE NOCASE` into `(lower(ident COLLATE "C"))`, with a text
+/// tie-break as `(ident COLLATE "C")`, so page order matches SQLite.
+/// Numeric tie-break keys stay bare. SQLite leaves the statement unchanged,
+/// including `NOCASE` page indexes. DML stays for [`crate::lower_canonical_sql`].
 ///
 /// # Panics
 ///
@@ -46,9 +57,19 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 /// families.
 #[must_use]
 pub fn lower_binding_sql_for_backend(backend: DatabaseBackend, sql: &str) -> Cow<'_, str> {
+    lower_binding_sql_for_backend_with(backend, sql, None)
+}
+
+/// [`lower_binding_sql_for_backend`] using `env` for post-fold tie-break types.
+#[must_use]
+pub fn lower_binding_sql_for_backend_with<'a>(
+    backend: DatabaseBackend,
+    sql: &'a str,
+    env: Option<&bookclerk_plugin_abi::SqlTypeEnv>,
+) -> Cow<'a, str> {
     match backend {
         DatabaseBackend::Postgres if bookclerk_plugin_abi::statement_is_ddl(sql) => {
-            let folded = crate::lower::rewrite_sqlite_nocase(sql);
+            let folded = crate::lower::rewrite_sqlite_nocase_with(sql, env, &[]);
             Cow::Owned(crate::lower::rewrite_canonical_ddl_types_for_postgres(
                 &folded,
             ))
@@ -123,8 +144,12 @@ pub fn expand_host_schema_batch_grouped(
     }
     let mut stmts: Vec<String> = Vec::new();
     let mut groups: Vec<usize> = Vec::new();
+    let mut prior: Vec<&str> = Vec::new();
     for stmt in &batch[..batch.len() - 1] {
-        let lowered = schema_sql_for_backend(backend, stmt).into_owned();
+        let env =
+            bookclerk_plugin_abi::sql_type_env_from_canonical_statements(prior.iter().copied());
+        let lowered = schema_sql_for_backend_with(backend, stmt, Some(&env)).into_owned();
+        prior.push(stmt.as_str());
         let companions = if backend == DatabaseBackend::Postgres {
             postgres_identity_companions(stmt)
         } else {

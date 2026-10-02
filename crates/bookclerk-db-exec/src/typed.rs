@@ -2083,10 +2083,20 @@ where
         let canonical = stmt.sql.clone();
         reconcile_physical(txn, backend, &proof.schema_action, &env).await?;
         let sql = if bookclerk_plugin_abi::statement_is_ddl(&canonical) {
-            crate::schema_postgres::lower_binding_sql_for_backend(backend, &canonical).into_owned()
+            crate::schema_postgres::lower_binding_sql_for_backend_with(
+                backend,
+                &canonical,
+                Some(&env),
+            )
+            .into_owned()
         } else {
-            let lowered = lower_canonical_sql_typed(backend, canonical.trim(), Some(proof))
-                .map_err(|err| DbErr::Custom(err.to_string()))?;
+            let lowered = crate::lower::lower_canonical_sql_typed_with(
+                backend,
+                canonical.trim(),
+                Some(proof),
+                Some(&env),
+            )
+            .map_err(|err| DbErr::Custom(err.to_string()))?;
             if stmt.kind.wrap_select_limit() {
                 cap_query_sql(&lowered, row_cap)
             } else {
@@ -2305,7 +2315,12 @@ where
         let sql = if bookclerk_plugin_abi::statement_is_ddl(&canonical) {
             stmt.sql.clone()
         } else {
-            let lowered = match lower_canonical_sql_typed(backend, canonical.trim(), proof) {
+            let lowered = match crate::lower::lower_canonical_sql_typed_with(
+                backend,
+                canonical.trim(),
+                proof,
+                Some(&env),
+            ) {
                 Ok(sql) => sql,
                 Err(err) => {
                     let _ = txn.rollback().await;

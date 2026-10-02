@@ -7,9 +7,19 @@ import json
 import sys
 from pathlib import Path
 
-# Daemon anonymous memory after the seed. The cgroup lifetime peak includes
-# the seed and cannot be reset inside the container, so it is not the gate.
+# Daemon anonymous memory. The cgroup lifetime peak includes the seed and
+# cannot be reset inside the container, so it is not the gate. Active windows
+# are gated on the maximum anonymous sample taken during the window.
 ANON_LIMIT_BYTES = 256 * 1024 * 1024
+
+# Books routes the harness must exercise. A missing or empty route is a failure.
+EXPECTED_BOOKS_ROUTES = (
+    "GET /api/library/books?limit=40&offset=0",
+    "GET /api/library/books?limit=40&offset=8000&status=acquired",
+    "GET /api/library/books?account=envelope-b&limit=40",
+    "GET /api/library/books?q=Title&limit=40",
+    "GET /api/library/books?q=Title&limit=8",
+)
 
 
 def _daemon_memory(sample: dict) -> tuple[str, int | None]:
@@ -21,6 +31,17 @@ def _daemon_memory(sample: dict) -> tuple[str, int | None]:
     if isinstance(current, int):
         return "memory.current", current
     return "anon", None
+
+
+def _polled_memory(window: dict) -> tuple[str, int | None]:
+    """Maximum anonymous memory polled during an active window."""
+    anon = window.get("anon_max")
+    if isinstance(anon, int):
+        return "anon_max", anon
+    current = window.get("memory_current_max")
+    if isinstance(current, int):
+        return "memory.current_max", current
+    return "anon_max", None
 
 
 def _cpu_is_one_core(cpu_max: str) -> bool:
@@ -45,9 +66,17 @@ def assert_envelope(doc: dict) -> list[str]:
 
     windows = doc.get("windows") or {}
     api = (windows.get("api") or {}).get("per_route") or {}
-    for name, stats in api.items():
-        if "/api/library/books" not in name:
+    if not isinstance(api, dict):
+        problems.append("api per_route must be an object")
+        api = {}
+    for name in EXPECTED_BOOKS_ROUTES:
+        stats = api.get(name)
+        if not isinstance(stats, dict):
+            problems.append(f"{name} is missing")
             continue
+        samples = stats.get("samples")
+        if not isinstance(samples, int) or samples <= 0:
+            problems.append(f"{name} has no samples ({samples!r})")
         errors = stats.get("errors")
         if errors != 0:
             problems.append(f"{name} returned non-200 ({errors} errors)")
@@ -62,11 +91,11 @@ def assert_envelope(doc: dict) -> list[str]:
         if not mix.get("requests"):
             problems.append(f"{label} mix recorded no requests")
 
-    samples = [("idle", windows.get("idle") or {})]
+    idle_kind, idle_value = _daemon_memory(windows.get("idle") or {})
+    if not isinstance(idle_value, int) or idle_value >= ANON_LIMIT_BYTES:
+        problems.append(f"idle {idle_kind} {idle_value} is not under 256 MiB")
     for label in ("api", "api_with_rebuild"):
-        samples.append((label, (windows.get(label) or {}).get("sample") or {}))
-    for label, sample in samples:
-        kind, value = _daemon_memory(sample)
+        kind, value = _polled_memory(windows.get(label) or {})
         if not isinstance(value, int) or value >= ANON_LIMIT_BYTES:
             problems.append(f"{label} {kind} {value} is not under 256 MiB")
 

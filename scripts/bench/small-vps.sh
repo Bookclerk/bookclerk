@@ -58,13 +58,15 @@ write_metrics() {
     "${api_sample:-{\}}" "${peak_reset_api:-0}" "${db_after_api:-0}" "${wal_after_api:-0}" \
     "${scratch_before_rebuild:-{\}}" "${FILES}/envelope-mix-rebuild.json" "${rebuild_sample:-{\}}" \
     "${peak_reset_rebuild:-0}" "${rebuild_ms:-0}" "${indexed:-0}" "${scratch_after:-{\}}" \
-    "${REBUILD_RC}" "${MIX_REBUILD_RC}" <<'PY'
+    "${REBUILD_RC}" "${MIX_REBUILD_RC}" \
+    "${rebuild_window:-{\}}" "${api_window:-{\}}" <<'PY'
 import json, os, sys
 (path, label, affinity, cpu_count, cpu_max, memory_max, startup_ms, idle, media,
  host_row, cold_db, cold_wal, cold_objects, cold_object_count, scratch_before,
  routes, mix, api_sample, peak_reset_api, db_after_api, wal_after_api,
  scratch_before_rebuild, mix_rebuild, rebuild_sample, peak_reset_rebuild,
- rebuild_ms, indexed, scratch_after, rebuild_rc, mix_rc) = sys.argv[1:]
+ rebuild_ms, indexed, scratch_after, rebuild_rc, mix_rc, rebuild_window,
+ api_window) = sys.argv[1:]
 def load(p):
     if not p or not os.path.isfile(p) or os.path.getsize(p) == 0:
         return None
@@ -75,6 +77,11 @@ def parse(text, fallback):
         return json.loads(text)
     except json.JSONDecodeError:
         return fallback
+def window_limits(text):
+    parsed = parse(text, {})
+    return parsed if isinstance(parsed, dict) else {}
+rebuild_limits = window_limits(rebuild_window)
+api_limits = window_limits(api_window)
 indexed_n = int(indexed or 0)
 elapsed = int(rebuild_ms or 0)
 host = parse(host_row, {})
@@ -102,6 +109,8 @@ doc = {
             "per_route": load(routes),
             "mix_60s": load(mix),
             "sample": parse(api_sample, {}),
+            "anon_max": api_limits.get("anon_max"),
+            "memory_current_max": api_limits.get("memory_current_max"),
             "library_db_bytes": int(db_after_api or 0),
             "library_db_wal_bytes": int(wal_after_api or 0),
             "scratch_before": parse(scratch_before, {}),
@@ -111,6 +120,8 @@ doc = {
             "memory_peak_label": "window" if peak_reset_rebuild == "1" else "lifetime",
             "mix_60s": load(mix_rebuild),
             "sample": parse(rebuild_sample, {}),
+            "anon_max": rebuild_limits.get("anon_max"),
+            "memory_current_max": rebuild_limits.get("memory_current_max"),
             "indexed": indexed_n,
             "elapsed_ms": elapsed,
             "books_per_ms": (indexed_n / elapsed) if elapsed else None,
@@ -374,6 +385,55 @@ print(json.dumps({
 PY
 }
 
+start_anon_poll() {
+  local out="$1"
+  rm -f "${out}.stop"
+  : >"${out}"
+  (
+    while [[ ! -f "${out}.stop" ]]; do
+      sample_proc "${DAEMON_PID}" >>"${out}" || true
+      sleep 0.25
+    done
+  ) &
+  echo $!
+}
+
+stop_anon_poll() {
+  local pid="$1"
+  local out="$2"
+  : >"${out}.stop"
+  wait "${pid}" 2>/dev/null || true
+  sample_proc "${DAEMON_PID}" >>"${out}" || true
+}
+
+anon_window_max() {
+  python3 - "$1" <<'PY'
+import json, sys
+anons, currents = [], []
+path = sys.argv[1]
+try:
+    lines = open(path, encoding="utf-8")
+except OSError:
+    lines = []
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        sample = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(sample.get("anon"), int):
+        anons.append(sample["anon"])
+    if isinstance(sample.get("memory_current"), int):
+        currents.append(sample["memory_current"])
+print(json.dumps({
+    "anon_max": max(anons) if anons else None,
+    "memory_current_max": max(currents) if currents else None,
+}))
+PY
+}
+
 move_into_cgroup() {
   local pid="$1"
   if [[ "${CREATED_LEAF}" == 1 ]]; then
@@ -468,6 +528,12 @@ def fetch(path, authed):
     except urllib.error.URLError as err:
         code = 0
         body = str(err.reason).encode()
+    except TimeoutError as err:
+        code = 0
+        body = str(err).encode()
+    except OSError as err:
+        code = 0
+        body = str(err).encode()
     if code != 200 and not sample_error["shown"]:
         sample_error["shown"] = True
         text = body.decode("utf-8", "replace")
@@ -588,6 +654,8 @@ PY
 
 scratch_before_rebuild="$(scratch_snapshot)"
 peak_reset_rebuild="$(reset_peak)"
+rebuild_poll="${FILES}/envelope-anon-rebuild.jsonl"
+rebuild_poll_pid="$(start_anon_poll "${rebuild_poll}")"
 rebuild_log="${FILES}/rebuild-envelope.log"
 rebuild_start_ns="$(date +%s%N)"
 # `query` is required. Title matches the seeded titles once the index commits.
@@ -606,6 +674,8 @@ set -e
 rebuild_ms="$(( (rebuild_end_ns - rebuild_start_ns) / 1000000 ))"
 indexed="$(sed -n 's/search index rebuilt: \([0-9]*\) book(s)/\1/p' "${rebuild_log}" | head -n 1)"
 indexed="${indexed:-0}"
+stop_anon_poll "${rebuild_poll_pid}" "${rebuild_poll}"
+rebuild_window="$(anon_window_max "${rebuild_poll}")"
 rebuild_sample="$(sample_proc "${DAEMON_PID}")"
 scratch_after="$(scratch_snapshot)"
 if [[ "${REBUILD_RC}" != 0 ]]; then
@@ -624,12 +694,16 @@ fi
 
 scratch_before="$(scratch_snapshot)"
 peak_reset_api="$(reset_peak)"
+api_poll="${FILES}/envelope-anon-api.jsonl"
+api_poll_pid="$(start_anon_poll "${api_poll}")"
 set +e
 run_phase routes "${FILES}/envelope-routes.json"
 ROUTES_RC=$?
 run_phase mix "${FILES}/envelope-mix.json"
 API_MIX_RC=$?
 set -e
+stop_anon_poll "${api_poll_pid}" "${api_poll}"
+api_window="$(anon_window_max "${api_poll}")"
 api_sample="$(sample_proc "${DAEMON_PID}")"
 db_after_api="$(du_bytes "${FILES}/library.db")"
 wal_after_api="$(du_bytes "${FILES}/library.db-wal")"

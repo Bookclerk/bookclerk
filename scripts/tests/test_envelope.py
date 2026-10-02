@@ -85,30 +85,49 @@ class AssertionTests(unittest.TestCase):
                 },
                 "api": {
                     "per_route": {
-                        "GET /health": {"errors": 0, "p50_ms": 50_000, "min_total": None},
+                        "GET /health": {"errors": 0, "samples": 40, "p50_ms": 50_000, "min_total": None},
                         "GET /api/library/books?limit=40&offset=0": {
                             "errors": 0,
+                            "samples": 40,
                             "p50_ms": 80_000,
                             "min_total": 10_000,
                         },
+                        "GET /api/library/books?limit=40&offset=8000&status=acquired": {
+                            "errors": 0,
+                            "samples": 40,
+                            "p50_ms": 80_000,
+                            "min_total": 8_000,
+                        },
+                        "GET /api/library/books?account=envelope-b&limit=40": {
+                            "errors": 0,
+                            "samples": 40,
+                            "p50_ms": 80_000,
+                            "min_total": 2_000,
+                        },
                         "GET /api/library/books?q=Title&limit=40": {
                             "errors": 0,
+                            "samples": 40,
                             "p50_ms": 90_000,
                             "min_total": 500,
                         },
                         "GET /api/library/books?q=Title&limit=8": {
                             "errors": 0,
+                            "samples": 40,
                             "p50_ms": 90_000,
                             "min_total": 8,
                         },
                     },
                     "mix_60s": {"requests": 100, "errors": 0},
                     "sample": {"memory_peak": 736_337_920, "anon": 57_602_048},
+                    "anon_max": 57_602_048,
+                    "memory_current_max": 60_000_000,
                 },
                 "api_with_rebuild": {
                     "indexed": 10_000,
                     "mix_60s": {"requests": 80, "errors": 0},
                     "sample": {"memory_peak": 736_337_920, "anon": 65_904_640},
+                    "anon_max": 65_904_640,
+                    "memory_current_max": 70_000_000,
                 },
             },
         }
@@ -128,8 +147,13 @@ class AssertionTests(unittest.TestCase):
         self.assertTrue(any("populated index" in item for item in assertions.assert_envelope(empty)))
 
         peak = self._doc()
-        peak["windows"]["api"]["sample"]["anon"] = 256 * 1024 * 1024
+        peak["windows"]["api"]["anon_max"] = 256 * 1024 * 1024
         self.assertTrue(any("256 MiB" in item for item in assertions.assert_envelope(peak)))
+
+        snapshot = self._doc()
+        snapshot["windows"]["api"]["sample"]["anon"] = 256 * 1024 * 1024
+        snapshot["windows"]["api"]["anon_max"] = 40_000_000
+        self.assertEqual(assertions.assert_envelope(snapshot), [])
 
         current = self._doc()
         del current["windows"]["idle"]["anon"]
@@ -149,6 +173,19 @@ class AssertionTests(unittest.TestCase):
         del missing["affinity_cpus"]
         self.assertTrue(any("affinity" in item for item in assertions.assert_envelope(missing)))
 
+        absent = self._doc()
+        del absent["windows"]["api"]["per_route"]["GET /api/library/books?limit=40&offset=0"]
+        self.assertTrue(any("is missing" in item for item in assertions.assert_envelope(absent)))
+
+        empty = self._doc()
+        empty["windows"]["api"]["per_route"]["GET /api/library/books?q=Title&limit=8"]["samples"] = 0
+        self.assertTrue(any("no samples" in item for item in assertions.assert_envelope(empty)))
+
+        no_poll = self._doc()
+        del no_poll["windows"]["api_with_rebuild"]["anon_max"]
+        del no_poll["windows"]["api_with_rebuild"]["memory_current_max"]
+        self.assertTrue(any("anon_max" in item for item in assertions.assert_envelope(no_poll)))
+
 
 class ContainerScriptTests(unittest.TestCase):
     def test_docker_run_is_the_envelope_and_does_not_compile(self) -> None:
@@ -166,6 +203,11 @@ class ContainerScriptTests(unittest.TestCase):
         self.assertNotIn("cargo", inside)
         self.assertNotIn("rustc", inside)
         self.assertIn("small-vps.sh", inside)
+        harness = (BENCH / "small-vps.sh").read_text(encoding="utf-8")
+        self.assertIn("except TimeoutError", harness)
+        self.assertIn("except OSError", harness)
+        self.assertIn("anon_max", harness)
+        self.assertIn("start_anon_poll", harness)
 
 
 if __name__ == "__main__":

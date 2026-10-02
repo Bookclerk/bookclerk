@@ -1217,7 +1217,12 @@ async fn heartbeat_persists_fake_cgroup_observations() {
     assert_eq!(host.memory_current_bytes, Some(4096));
     assert_eq!(host.memory_anon_bytes, Some(2048));
     assert_eq!(host.scratch_bytes, Some(32));
+    // `filesystem_free_bytes` is implemented on Linux and macOS. Windows has no
+    // populated value, so the heartbeat stores None there.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     assert!(host.files_dir_free_bytes.is_some());
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    assert!(host.files_dir_free_bytes.is_none());
     assert!(host.logical_cpus.is_some());
     assert_eq!(host.created_at, session.host.created_at);
     assert_eq!(host.incarnation, "incarnation-obs");

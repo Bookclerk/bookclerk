@@ -20,12 +20,12 @@ pub const BOOK_PAGE_DEFAULT_LIMIT: u64 = 40;
 /// Upper clamp for a library book page. Matches the HTTP handler.
 pub const BOOK_PAGE_MAX_LIMIT: u64 = 500;
 
-/// Uuids per search-hit `IN` batch.
+/// Rows per guest `books` result, and uuids per search-hit `IN` batch.
 ///
-/// A single batch of 500 uuids is one large atomic request. Catalog reads
-/// already succeed at 64 full `books` rows (about 80 KiB, under the sqlite
-/// guest `maxResultBytes`). Search hydration uses the same batch size.
-const UUID_PAGE_CHUNK: usize = 64;
+/// A full `books` row is about 1.2 KiB on the Cap'n wire. 64 rows stay under
+/// the sqlite guest `maxResultBytes` (256 KiB). 256 rows do not. Unfiltered
+/// pages and search hydration both use this chunk.
+const BOOK_PAGE_CHUNK: usize = 64;
 
 /// One page of books plus the unpaged match count.
 #[derive(Debug, Clone)]
@@ -56,6 +56,10 @@ impl LibraryStore {
     /// `status` is the wire string from [`crate::AcquireStatus::as_str`].
     /// `limit` is clamped to 1..=500. `total` uses the same `WHERE` as the page.
     ///
+    /// The page is read in [`BOOK_PAGE_CHUNK`]-row pieces so a requested limit
+    /// of 256 stays under the guest result-byte cap. `limit`, `offset`, and
+    /// `total` are the caller's page, not the chunk.
+    ///
     /// # Errors
     ///
     /// Returns [`LibraryError::Other`] when the read fails.
@@ -66,8 +70,31 @@ impl LibraryStore {
         limit: u64,
         offset: u64,
     ) -> Result<BookPage> {
-        self.query_book_page(&[], account_id, status, limit, offset)
-            .await
+        let limit = limit.clamp(1, BOOK_PAGE_MAX_LIMIT);
+        let chunk = u64::try_from(BOOK_PAGE_CHUNK).unwrap_or(64);
+        let mut books = Vec::new();
+        let mut total = 0usize;
+        let mut remaining = limit;
+        let mut next_offset = offset;
+        let mut counted = false;
+        while remaining > 0 {
+            let take = remaining.min(chunk);
+            let page = self
+                .query_book_page(&[], account_id, status, take, next_offset)
+                .await?;
+            if !counted {
+                total = page.total;
+                counted = true;
+            }
+            let rows = u64::try_from(page.books.len()).unwrap_or(0);
+            books.extend(page.books);
+            if rows < take {
+                break;
+            }
+            remaining -= rows;
+            next_offset = next_offset.saturating_add(rows);
+        }
+        Ok(BookPage { books, total })
     }
 
     /// Pages books whose uuid is in `uuids`, then applies account and status.
@@ -99,14 +126,14 @@ impl LibraryStore {
             .len()
             .min(usize::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500));
         let uuids = &uuids[..capped];
-        if uuids.len() <= UUID_PAGE_CHUNK {
+        if uuids.len() <= BOOK_PAGE_CHUNK {
             return self
                 .query_book_page(uuids, account_id, status, limit, offset)
                 .await;
         }
         let mut books = Vec::new();
         let mut total = 0usize;
-        for chunk in uuids.chunks(UUID_PAGE_CHUNK) {
+        for chunk in uuids.chunks(BOOK_PAGE_CHUNK) {
             let page = self
                 .query_book_page(
                     chunk,
@@ -266,11 +293,13 @@ pub(crate) fn page_statements(
 fn where_sql(binds: &mut Binds, uuid_count: usize, has_account: bool, has_status: bool) -> String {
     let mut parts = Vec::new();
     if uuid_count > 0 {
+        // Search hits store a lowercased uuid. `lower` on both sides still
+        // finds a row whose stored uuid keeps its original case (`u-Alpha`).
         let marks = (0..uuid_count)
-            .map(|_| binds.next())
+            .map(|_| format!("lower({})", binds.next()))
             .collect::<Vec<_>>()
             .join(", ");
-        parts.push(format!("uuid IN ({marks})"));
+        parts.push(format!("lower(uuid) IN ({marks})"));
     }
     if has_account {
         let mark = binds.next();
@@ -291,7 +320,7 @@ fn where_sql(binds: &mut Binds, uuid_count: usize, has_account: bool, has_status
 fn filter_values(uuids: &[String], account_id: Option<&str>, status: Option<&str>) -> Vec<DbValue> {
     let mut values = Vec::with_capacity(uuids.len() + 2);
     for uuid in uuids {
-        values.push(DbValue::Text(uuid.clone()));
+        values.push(DbValue::Text(uuid.to_ascii_lowercase()));
     }
     if let Some(account_id) = account_id {
         values.push(DbValue::Text(account_id.to_string()));
@@ -511,6 +540,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(titles(last), ["Gamma"]);
+        let hits = ["u-gamma", "u-beta", "u-BETA", "u-alpha", "u-Alpha"]
+            .into_iter()
+            .map(|uuid| uuid.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let hydrated = store
+            .list_books_by_uuid_page(&hits, Some("case"), None, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(hydrated.total, 5);
+        assert_eq!(
+            titles(hydrated),
+            ["Alpha", "alpha", "BETA", "beta", "Gamma"]
+        );
     }
 
     #[tokio::test]
@@ -931,5 +973,100 @@ mod tests {
         assert!(small.total >= 500);
         assert_eq!(small.books[0].title, "Title 00000");
         assert_eq!(small.books[7].title, "Title 00007");
+    }
+
+    /// A non-search page of 256 full rows exceeds `maxResultBytes` in one
+    /// guest result. The same limit must still return the requested page.
+    #[tokio::test]
+    async fn filtered_page_limit_256_stays_under_sqlite_result_cap() {
+        struct CapsGuest {
+            db: sea_orm::DatabaseConnection,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::TypedAtomicExec for CapsGuest {
+            async fn execute_typed(
+                &self,
+                envelope: bookclerk_db_exec::AdapterExecuteRequest,
+            ) -> std::result::Result<
+                bookclerk_plugin_abi::ExecuteReply,
+                bookclerk_plugin_abi::PluginError,
+            > {
+                let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+                bookclerk_db_exec::execute_typed_envelope_on_connection(
+                    &self.db,
+                    &envelope,
+                    bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+                    bookclerk_db_exec::AtomicSession::default()
+                        .with_type_env(crate::migrations::host_sql_type_env()),
+                )
+                .await
+                .map_err(|err| bookclerk_plugin_abi::PluginError::internal(err.to_string()))
+            }
+        }
+
+        let store = memory_store().await;
+        let db = store.db.clone();
+        let store = store.with_typed_exec(std::sync::Arc::new(CapsGuest { db }));
+        store
+            .upsert_account("envelope-a", "us", None, false, "audible")
+            .await
+            .unwrap();
+        seed_envelope_books(&store, 256).await;
+        let page = store
+            .list_books_filtered_page(None, None, 256, 0)
+            .await
+            .unwrap_or_else(|err| panic!("limit 256: {err}"));
+        assert_eq!(page.books.len(), 256);
+        assert_eq!(page.total, 256);
+        assert_eq!(page.books[0].title, "Title 00000");
+        assert_eq!(page.books[255].title, "Title 00255");
+        let shifted = store
+            .list_books_filtered_page(None, None, 256, 10)
+            .await
+            .unwrap_or_else(|err| panic!("limit 256 offset 10: {err}"));
+        assert_eq!(shifted.books.len(), 246);
+        assert_eq!(shifted.total, 256);
+        assert_eq!(shifted.books[0].title, "Title 00010");
+    }
+
+    /// A lowercased search hit must hydrate the stored uuid, including the
+    /// mixed-case ids used by the page-order tests.
+    #[tokio::test]
+    async fn uuid_page_hydrates_mixed_case_stored_ids() {
+        let store = memory_store().await;
+        store
+            .upsert_account("case", "us", None, false, "audible")
+            .await
+            .unwrap();
+        for (uuid, title) in [
+            ("u-gamma", "Gamma"),
+            ("u-beta", "beta"),
+            ("u-BETA", "BETA"),
+            ("u-alpha", "alpha"),
+            ("u-Alpha", "Alpha"),
+        ] {
+            let mut book = NewBook::minimal(uuid, "case", "us", title);
+            book.uuid = Some(uuid.to_string());
+            store.upsert_book(&book).await.unwrap();
+        }
+        let hits = ["u-gamma", "u-beta", "u-BETA", "u-alpha", "u-Alpha"]
+            .into_iter()
+            .map(|uuid| uuid.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let page = store
+            .list_books_by_uuid_page(&hits, None, None, 10, 0)
+            .await
+            .unwrap_or_else(|err| panic!("mixed-case uuid page: {err}"));
+        assert_eq!(page.total, 5);
+        assert_eq!(page.books.len(), 5);
+        let titles = page
+            .books
+            .iter()
+            .map(|book| book.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(titles, ["Alpha", "alpha", "BETA", "beta", "Gamma"]);
+        assert!(page.books.iter().any(|book| book.uuid == "u-Alpha"));
+        assert!(page.books.iter().any(|book| book.uuid == "u-BETA"));
     }
 }
