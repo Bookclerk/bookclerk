@@ -156,7 +156,10 @@ installed. After the document exists, `PATCH /api/settings` rejects those
 keys. Change them with `PUT /api/config/plugin-instances/{id}/config`
 (`expected_revision`, scalar `settings`, and secret ref names). The device
 token stays on the account credential, not in the document.
-`sources.graphicaudio.enabled` stays in `config.toml`. Plugins with no
+`sources.graphicaudio.enabled` stays in `config.toml`. Setting it to false
+retires the running guest on reconcile and on reload. `bookclerk library scan`
+and `bookclerk library acquire` read the instance document and require
+`--instance` when more than one instance shares the plugin key. Plugins with no
 instance document still read their `[sources.*]` / `[integrations.*]` /
 `[output.*]` tables.
 

@@ -281,7 +281,7 @@ lock and rolls the tree back when health fails. Packages come from
 A deployed storefront is registered under its plugin instance id. Job and
 API lookup (`registry_for_job`, then `SourceRegistry::get`) resolves that id
 to that guest. A plugin key or alias resolves only when exactly one
-registered source matches. Two instances of one key stay distinct; the key
+registered source matches. Two instances of one key stay distinct. `sources.graphicaudio.enabled = false` retires the running guest. CLI scan and acquire use the instance document and require `--instance` when selection is ambiguous. The key
 alone does not pick one of them.
 
 GraphicAudio is the first migrated caller. When discovery or the install

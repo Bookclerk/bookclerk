@@ -490,6 +490,12 @@ pub struct SessionServices {
     /// `bookclerk-workerd`; [`SpawnTransport::DirectNativeDiagnostic`] is for
     /// tests and diagnostics only and no product binary selects it.
     pub spawn_transport: SpawnTransport,
+    /// Plugin instance id selected by CLI scan or acquire.
+    ///
+    /// `None` uses the only instance document for a plugin key, or transitional
+    /// file settings when that key has no document. Several documents require
+    /// this id. An id selects only the plugin key it belongs to.
+    pub selected_instance_id: Option<String>,
 }
 
 impl SessionServices {
@@ -499,6 +505,7 @@ impl SessionServices {
         Self {
             event_outbox: Some(store),
             spawn_transport: SpawnTransport::default(),
+            selected_instance_id: None,
         }
     }
 
@@ -508,6 +515,7 @@ impl SessionServices {
         Self {
             event_outbox: store.cloned(),
             spawn_transport: SpawnTransport::default(),
+            selected_instance_id: None,
         }
     }
 
@@ -520,6 +528,7 @@ impl SessionServices {
         Self {
             event_outbox: None,
             spawn_transport: SpawnTransport::DirectNativeDiagnostic,
+            selected_instance_id: None,
         }
     }
 }

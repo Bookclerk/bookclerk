@@ -6,9 +6,9 @@
 use std::path::Path;
 
 use bookclerk_library::control_plane::{
-    find_plugin_instance_by_key, instance_has_deployment, load_instance_config,
-    resolve_instance_bindings, InstanceBindingGrant, ResolvedInstanceBindings,
-    GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
+    list_plugin_instances_for_key, load_instance_config, load_plugin_instance,
+    resolve_instance_bindings, InstanceBindingGrant, PluginInstance, PluginInstanceId,
+    ResolvedInstanceBindings, GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_sdk::{BindingValues, ExtensibleConfig};
@@ -62,28 +62,53 @@ pub fn prepared_open_from_resolved(
 /// Resolves open bindings for `plugin`.
 ///
 /// `store == None` always uses `transitional` (database connect bootstrap has
-/// no library handle yet). A missing instance row, an instance with no
-/// document, or an instance that already has a deployment also uses
-/// `transitional`. Key lookup is only for plugins with no deployment. A
-/// deployment spawn does not call this function; it passes already resolved
-/// payloads. An instance document that fails validation, grant checks, or
-/// secret resolution is an error: this function does not fall back to
-/// `settings_table_for`.
+/// no library handle yet). Zero instance documents for the plugin key also
+/// use `transitional`. One document is the authority, including when that
+/// instance already has a deployment. Several documents are an error: pass a
+/// plugin instance id. A deployment spawn does not call this function; it
+/// passes already resolved payloads. An instance document that fails
+/// validation, grant checks, or secret resolution is an error: this function
+/// does not fall back to file settings.
 ///
 /// # Errors
 ///
-/// Returns an error when the grant cannot be loaded or an instance document
-/// cannot be resolved.
+/// Returns an error when the grant cannot be loaded, selection is ambiguous,
+/// or an instance document cannot be resolved.
 pub async fn prepare_open_bindings(
     store: Option<&LibraryStore>,
     files_dir: &Path,
     plugin: &DiscoveredPlugin,
     transitional: Value,
 ) -> Result<PreparedOpen> {
+    prepare_open_bindings_selecting(store, files_dir, plugin, transitional, None).await
+}
+
+/// [`prepare_open_bindings`] with an explicit plugin instance id.
+///
+/// The id selects the document for the plugin key it belongs to. Other plugin
+/// keys still use the single-document rule. An unknown id, or a selected
+/// instance with no document, is an error.
+///
+/// # Errors
+///
+/// Returns an error when the grant cannot be loaded, the selection cannot be
+/// resolved, or an instance document cannot be resolved.
+pub async fn prepare_open_bindings_selecting(
+    store: Option<&LibraryStore>,
+    files_dir: &Path,
+    plugin: &DiscoveredPlugin,
+    transitional: Value,
+    selected_instance_id: Option<&str>,
+) -> Result<PreparedOpen> {
     let grant = crate::spawn_grant(files_dir, plugin)?;
     if let Some(store) = store {
-        if let Some(resolved) =
-            instance_document(store, plugin.plugin_key().canonical(), &grant).await?
+        if let Some(resolved) = instance_document(
+            store,
+            plugin.plugin_key().canonical(),
+            &grant,
+            selected_instance_id,
+        )
+        .await?
         {
             let granted_config = resolved
                 .config
@@ -113,47 +138,98 @@ pub async fn prepare_open_bindings(
     })
 }
 
-/// Loads the instance document for `plugin_key` when one exists and no
-/// deployment owns that instance.
+/// Loads the instance document for `plugin_key`.
 ///
-/// Two instances may share a key. This lookup returns the oldest row, so it
-/// is not used once a deployment exists. The reconciler carries that
-/// deployment's instance id instead.
+/// No document uses transitional settings. One document is used even when a
+/// deployment exists. Several documents require `selected_instance_id`.
 ///
 /// # Errors
 ///
-/// Returns an error when the document exists but cannot be resolved. A missing
-/// row, or an instance that has a deployment, is `Ok(None)`.
+/// Returns an error when selection is ambiguous, the selected instance is
+/// missing, or a document cannot be resolved.
 async fn instance_document(
     store: &LibraryStore,
     plugin_key: &str,
     grant: &crate::PluginGrant,
+    selected_instance_id: Option<&str>,
 ) -> Result<Option<ResolvedInstanceBindings>> {
-    let Some(instance) = find_plugin_instance_by_key(store, plugin_key)
-        .await
-        .map_err(library_err)?
-    else {
-        return Ok(None);
-    };
-    if instance_has_deployment(store, &instance.id)
-        .await
-        .map_err(library_err)?
+    if let Some(selected) = selected_instance_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
     {
-        return Ok(None);
+        let id = PluginInstanceId::parse(selected).map_err(|_| {
+            crate::PluginError::message(format!("plugin instance `{selected}` was not found"))
+        })?;
+        match load_plugin_instance(store, &id)
+            .await
+            .map_err(library_err)?
+        {
+            Some(instance) if instance.plugin_key == plugin_key => {
+                return require_document(store, &instance, grant).await;
+            }
+            Some(_) => {}
+            None => {
+                return Err(crate::PluginError::message(format!(
+                    "plugin instance `{selected}` was not found"
+                )));
+            }
+        }
     }
-    match load_instance_config(store, &instance.id).await {
-        Ok(_) => {}
-        Err(LibraryError::NotFound(_)) => return Ok(None),
-        Err(err) => return Err(library_err(err)),
+    let instances = list_plugin_instances_for_key(store, plugin_key)
+        .await
+        .map_err(library_err)?;
+    let mut documented = Vec::new();
+    for instance in instances {
+        match load_instance_config(store, &instance.id).await {
+            Ok(_) => documented.push(instance),
+            Err(LibraryError::NotFound(_)) => {}
+            Err(err) => return Err(library_err(err)),
+        }
     }
+    match documented.len() {
+        0 => Ok(None),
+        1 => resolve_documented(store, &documented[0], grant)
+            .await
+            .map(Some),
+        _ => Err(crate::PluginError::message(format!(
+            "plugin `{plugin_key}` has {} instance documents; pass a plugin instance id",
+            documented.len()
+        ))),
+    }
+}
+
+/// Resolves `instance`, which the caller already knows has a document.
+async fn resolve_documented(
+    store: &LibraryStore,
+    instance: &PluginInstance,
+    grant: &crate::PluginGrant,
+) -> Result<ResolvedInstanceBindings> {
     let flags = InstanceBindingGrant {
         config: crate::grant_has_binding(grant, "config"),
         secrets: crate::grant_has_binding(grant, "secrets"),
     };
     resolve_instance_bindings(store, &instance.id, &flags)
         .await
-        .map(Some)
         .map_err(library_err)
+}
+
+/// Resolves a selected instance, refusing a missing document.
+async fn require_document(
+    store: &LibraryStore,
+    instance: &PluginInstance,
+    grant: &crate::PluginGrant,
+) -> Result<Option<ResolvedInstanceBindings>> {
+    match load_instance_config(store, &instance.id).await {
+        Ok(_) => {}
+        Err(LibraryError::NotFound(_)) => {
+            return Err(crate::PluginError::message(format!(
+                "plugin instance `{}` has no config document",
+                instance.id
+            )));
+        }
+        Err(err) => return Err(library_err(err)),
+    }
+    resolve_documented(store, instance, grant).await.map(Some)
 }
 
 /// Maps a library error onto the host error type.
@@ -225,15 +301,15 @@ pub async fn graphicaudio_document_exists(
     let Some(plugin_key) = graphicaudio_plugin_key(config)? else {
         return Ok(false);
     };
-    let Some(instance) = find_plugin_instance_by_key(store, &plugin_key)
+    let instances = list_plugin_instances_for_key(store, &plugin_key)
         .await
-        .map_err(library_err)?
-    else {
-        return Ok(false);
-    };
-    match load_instance_config(store, &instance.id).await {
-        Ok(_) => Ok(true),
-        Err(LibraryError::NotFound(_)) => Ok(false),
-        Err(err) => Err(library_err(err)),
+        .map_err(library_err)?;
+    for instance in instances {
+        match load_instance_config(store, &instance.id).await {
+            Ok(_) => return Ok(true),
+            Err(LibraryError::NotFound(_)) => {}
+            Err(err) => return Err(library_err(err)),
+        }
     }
+    Ok(false)
 }

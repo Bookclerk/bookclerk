@@ -98,6 +98,16 @@ build = [
     "bookclerk-plugin-database-postgres",
     "bookclerk-plugin-destination-local",
     "bookclerk-plugin-destination-s3",
+    "bookclerk-plugin-source-graphicaudio",
+    "bookclerk-jail",
+    "bookclerk-workerd",
+]
+ensure_workerd = true
+
+[test_guests.bookclerkd]
+build = [
+    "bookclerk-plugin-source-graphicaudio",
+    "bookclerk-plugin-destination-local",
     "bookclerk-jail",
     "bookclerk-workerd",
 ]

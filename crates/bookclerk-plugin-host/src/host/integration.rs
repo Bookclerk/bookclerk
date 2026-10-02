@@ -85,11 +85,12 @@ impl ExternalIntegration {
             .get("allow_credential_login")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let prepared = crate::instance_bindings::prepare_open_bindings(
+        let prepared = crate::instance_bindings::prepare_open_bindings_selecting(
             services.event_outbox.as_ref(),
             &config.paths().files_dir,
             plugin,
             config_json,
+            services.selected_instance_id.as_deref(),
         )
         .await?;
         Self::spawn_prepared(plugin, config, services, prepared, allow_credential_login).await
@@ -193,10 +194,21 @@ impl ExternalIntegration {
 
     /// Integration health RPC.
     ///
+    /// Guests that do not export `remoteLibrary` are ready once `open` has
+    /// succeeded. Event, job, OIDC, and CLI-only integrations use that
+    /// describe/open check. This function calls remote-library health only
+    /// when that entrypoint is exported.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the guest has no remote library or health reports not ok.
+    /// Returns an error when remote-library health reports not ok.
     pub async fn check_health(&self) -> Result<()> {
+        if !self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            return Ok(());
+        }
         let ok = self
             .session
             .remote_library(|src| async move { src.health().await })

@@ -31,7 +31,9 @@ fn find_guest_binary() -> Option<PathBuf> {
     } else {
         "release"
     };
-    let candidate = target.join(profile).join(name);
+    let candidate = target
+        .join(profile)
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     candidate.is_file().then_some(candidate)
 }
 
@@ -62,7 +64,10 @@ fn stage_graphicaudio() -> Staged {
         .join("../../crates/bookclerk-plugins/optional/source-graphicaudio");
     let install = tempfile::tempdir().unwrap();
     std::fs::copy(src.join("plugin.toml"), install.path().join("plugin.toml")).unwrap();
-    let dest = install.path().join("bookclerk-plugin-source-graphicaudio");
+    let dest = install.path().join(format!(
+        "bookclerk-plugin-source-graphicaudio{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     std::fs::copy(&binary, &dest).unwrap();
     #[cfg(unix)]
     {
@@ -227,12 +232,17 @@ async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
     .await
     .expect("spawn graphicaudio");
     let pid = source.guest_pid().expect("native guest pid");
-    let environ = std::fs::read(format!("/proc/{pid}/environ")).expect("guest environ");
-    let environ = String::from_utf8_lossy(&environ);
-    assert!(
-        !environ.contains("BOOKCLERK_GA_ACCESS"),
-        "guest inherited BOOKCLERK_GA_ACCESS: {environ}"
-    );
+    #[cfg(target_os = "linux")]
+    {
+        let environ = std::fs::read(format!("/proc/{pid}/environ")).expect("guest environ");
+        let environ = String::from_utf8_lossy(&environ);
+        assert!(
+            !environ.contains("BOOKCLERK_GA_ACCESS"),
+            "guest inherited BOOKCLERK_GA_ACCESS: {environ}"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = pid;
 
     bookclerk_library::configure_master_key(files).unwrap();
     let summary = source

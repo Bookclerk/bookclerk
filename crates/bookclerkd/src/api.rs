@@ -1274,6 +1274,9 @@ pub async fn start_integration_watchers(state: &AppState) {
             });
         })),
     };
+    state
+        .deployment_runtime()
+        .set_integration_context(ctx.clone());
     if let Err(err) = registry.start_all(ctx).await {
         tracing::warn!(%err, "integration start_all reported errors");
     }
@@ -1432,7 +1435,24 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         let mut sources = state.sources.write().await;
         let mut integrations = state.integrations.write().await;
         let mut destinations = state.destinations.write().await;
-        crate::registry::reattach_deployed_sources(&mut candidate_sources, &sources, &deployed);
+        let disabled_sources: Vec<String> = sources
+            .all()
+            .iter()
+            .filter_map(|source| {
+                let id = source.plugin_instance_id()?;
+                if deployed.contains(id) && !new_cfg.sources.is_enabled(source.id()) {
+                    Some(id.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        crate::registry::reattach_deployed_sources(
+            &mut candidate_sources,
+            &sources,
+            &deployed,
+            &new_cfg,
+        );
         crate::registry::reattach_deployed_integrations(
             &mut candidate_integrations,
             &integrations,
@@ -1445,6 +1465,10 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         drop(sources);
         drop(integrations);
         drop(destinations);
+        let runtime = state.deployment_runtime();
+        for id in &disabled_sources {
+            runtime.forget_guest(id);
+        }
         old_integrations.stop_except(&deployed).await;
         if let (Some(registry), Some(library)) = (candidate_db_registry, candidate_library) {
             *state.database_registry.write().await = registry;

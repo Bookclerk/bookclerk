@@ -78,6 +78,27 @@ async fn plugin_instance_ids_are_stable_uuids_independent_of_key() {
         .expect("ensure again");
     assert_eq!(ensured.id, again.id);
     assert_eq!(ensured.id, first.id);
+
+    let race_key = "platform:bookclerk/enrollment-race";
+    let (left, right) = tokio::join!(
+        ensure_plugin_instance(&store, &ConfigActor::Bootstrap, race_key),
+        ensure_plugin_instance(&store, &ConfigActor::Bootstrap, race_key),
+    );
+    let left = left.expect("left enrollment");
+    let right = right.expect("right enrollment");
+    assert_eq!(left.id, right.id);
+    let explicit = create_plugin_instance(&store, &operator(), race_key)
+        .await
+        .expect("explicit same-key instance");
+    assert_ne!(explicit.id, left.id);
+    let enrolled = ensure_plugin_instance(&store, &ConfigActor::Bootstrap, race_key)
+        .await
+        .expect("enrolled default");
+    assert_eq!(enrolled.id, left.id);
+    let listed = list_plugin_instances_for_key(&store, race_key)
+        .await
+        .expect("list");
+    assert_eq!(listed.len(), 2);
 }
 
 #[tokio::test]

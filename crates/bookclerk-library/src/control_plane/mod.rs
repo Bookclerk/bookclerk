@@ -45,7 +45,7 @@ pub use instance_config::{
 };
 pub use instances::{
     create_plugin_instance, ensure_plugin_instance, find_plugin_instance_by_key,
-    load_plugin_instance, PluginInstance, PluginInstanceId,
+    list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
 

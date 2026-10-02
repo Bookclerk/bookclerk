@@ -39,6 +39,7 @@ struct Probe {
     fail_health: bool,
     health_calls: AtomicUsize,
     spawns: Mutex<Vec<DeploymentSpawn>>,
+    retired: Mutex<Vec<String>>,
 }
 
 impl Probe {
@@ -48,6 +49,7 @@ impl Probe {
             fail_health,
             health_calls: AtomicUsize::new(0),
             spawns: Mutex::new(Vec::new()),
+            retired: Mutex::new(Vec::new()),
         }
     }
 
@@ -82,6 +84,13 @@ impl DeploymentRuntime for Probe {
     async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth {
         self.spawns.lock().expect("spawns").push(request.clone());
         SpawnHealth::Healthy
+    }
+
+    async fn retire_instance(&self, plugin_instance_id: &str) {
+        self.retired
+            .lock()
+            .expect("retired")
+            .push(plugin_instance_id.to_string());
     }
 }
 
@@ -385,6 +394,118 @@ async fn installer_commit_reaches_healthy_and_rollback_clears_ledger() {
 }
 
 #[tokio::test]
+async fn disabled_graphicaudio_retires_without_another_spawn() {
+    let _guard = TEST_LOCK.lock().await;
+    let mut world = open_world(false).await;
+    let probe = Probe::new(world.files.clone(), false);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("enabled reconcile");
+    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+    assert!(probe.retired.lock().expect("retired").is_empty());
+
+    world.manifest.id = "graphicaudio".into();
+    world.config.sources.set_enabled("graphicaudio", false);
+    crate::discover::DISCOVER_CALLS.store(0, Ordering::Relaxed);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("disabled reconcile");
+    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+    assert_eq!(
+        probe.retired.lock().expect("retired").as_slice(),
+        &[world.instance_id.as_str().to_string()]
+    );
+    assert_eq!(crate::discover::DISCOVER_CALLS.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
+    let _guard = TEST_LOCK.lock().await;
+    let world = open_world(false).await;
+    let probe = Probe::new(world.files.clone(), false);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("first reconcile");
+    crate::discover::DISCOVER_CALLS.store(0, Ordering::Relaxed);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("idle reconcile");
+    assert_eq!(crate::discover::DISCOVER_CALLS.load(Ordering::Relaxed), 0);
+    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+
+    let mut grants = PluginGrantStore::load(&world.files).expect("grants");
+    let mut both = packages(&world);
+    for (alias, operation) in [("fxleft", "import-left"), ("fxright", "import-right")] {
+        let archive = write_archive(&world.files, alias);
+        let manifest = package_manifest(alias);
+        let plugins = world.files.join("plugins");
+        let coordinate = Installer::local_archive_coordinate(&archive, &manifest);
+        let key = Installer::plugin_key_for(&coordinate, alias, &plugins)
+            .expect("plugin key")
+            .canonical()
+            .to_string();
+        let actor = ConfigActor::Bootstrap;
+        let instance = create_plugin_instance(&world.store, &actor, &key)
+            .await
+            .expect("instance");
+        import_instance_config_if_absent(
+            &world.store,
+            &actor,
+            &instance.id,
+            InstancePackagePolicy::Generic,
+            &mode_body("device"),
+            operation,
+        )
+        .await
+        .expect("import");
+        ensure_plugin_deployment(&world.store, &actor, &instance.id, &world.host_id)
+            .await
+            .expect("deployment");
+        let mut grant = PluginGrant::empty();
+        grant.schema_version = crate::GRANT_SCHEMA_VERSION;
+        grant.plugin_key = key.clone();
+        grant.plugin_id = alias.into();
+        grant.bindings.insert("config".into());
+        grant.network_mode = "deny".into();
+        grant.approved_at = "2026-01-01T00:00:00Z".into();
+        grants.upsert(grant);
+        both.insert(key, LocalPackage { archive, manifest });
+    }
+    grants.save(&world.files).expect("save grants");
+    let fresh = Probe::new(world.files.clone(), false);
+    crate::discover::DISCOVER_CALLS.store(0, Ordering::Relaxed);
+    reconcile_local_deployments(&world.store, &world.config, &world.host_id, &both, &fresh)
+        .await
+        .expect("two deployments");
+    assert_eq!(fresh.spawns.lock().expect("spawns").len(), 2);
+    assert_eq!(crate::discover::DISCOVER_CALLS.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn ledger_hit_skips_install_and_still_reaches_healthy() {
     let _guard = TEST_LOCK.lock().await;
     let world = open_world(false).await;
@@ -645,13 +766,57 @@ async fn plugin_without_an_instance_keeps_transitional_settings() {
     )
     .await
     .unwrap();
-    let prepared = prepare_open_bindings(Some(&store), files, &plugin, transitional)
+    let prepared = prepare_open_bindings(Some(&store), files, &plugin, transitional.clone())
         .await
         .unwrap();
     assert!(prepared.from_instance);
     assert_eq!(prepared.granted_config["mode"], "device");
     let bindings = prepared.bindings.config.json_value().unwrap();
     assert_eq!(bindings["mode"], "device");
+
+    ensure_plugin_deployment(&store, &actor, &instance.id, "host-1")
+        .await
+        .unwrap();
+    let prepared = prepare_open_bindings(Some(&store), files, &plugin, transitional.clone())
+        .await
+        .unwrap();
+    assert!(
+        prepared.from_instance,
+        "a deployment must not restore transitional settings"
+    );
+    assert_eq!(prepared.granted_config["mode"], "device");
+
+    let second = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical())
+        .await
+        .unwrap();
+    import_instance_config_if_absent(
+        &store,
+        &actor,
+        &second.id,
+        InstancePackagePolicy::Generic,
+        &mode_body("zip"),
+        "import-fixture-2",
+    )
+    .await
+    .unwrap();
+    let ambiguous = prepare_open_bindings(Some(&store), files, &plugin, transitional.clone())
+        .await
+        .expect_err("two documents need an instance id");
+    assert!(
+        ambiguous.to_string().contains("pass a plugin instance id"),
+        "{ambiguous}"
+    );
+    let selected = crate::instance_bindings::prepare_open_bindings_selecting(
+        Some(&store),
+        files,
+        &plugin,
+        transitional,
+        Some(second.id.as_str()),
+    )
+    .await
+    .unwrap();
+    assert!(selected.from_instance);
+    assert_eq!(selected.granted_config["mode"], "zip");
 }
 
 #[test]
@@ -676,7 +841,9 @@ fn graphicaudio_binary() -> PathBuf {
     } else {
         "release"
     };
-    let candidate = target.join(profile).join(name);
+    let candidate = target
+        .join(profile)
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(
         candidate.is_file(),
         "bookclerk-plugin-source-graphicaudio is missing at {}",
@@ -705,10 +872,22 @@ fn stage_graphicaudio_tree(files: &Path) -> PathBuf {
     let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
     std::fs::copy(toml, install.join("plugin.toml")).unwrap();
-    place_guest_binary(
-        &graphicaudio_binary(),
-        &install.join("bookclerk-plugin-source-graphicaudio"),
+    let binary_name = format!(
+        "bookclerk-plugin-source-graphicaudio{}",
+        std::env::consts::EXE_SUFFIX
     );
+    if !std::env::consts::EXE_SUFFIX.is_empty() {
+        let text = std::fs::read_to_string(install.join("plugin.toml")).unwrap();
+        std::fs::write(
+            install.join("plugin.toml"),
+            text.replace(
+                "./bookclerk-plugin-source-graphicaudio",
+                &format!("./{binary_name}"),
+            ),
+        )
+        .unwrap();
+    }
+    place_guest_binary(&graphicaudio_binary(), &install.join(binary_name));
     install
 }
 
@@ -758,7 +937,7 @@ async fn save_manifest_grant(files: &Path, plugin: &DiscoveredPlugin) {
 }
 
 #[tokio::test]
-async fn key_lookup_skips_an_instance_that_has_a_deployment() {
+async fn key_lookup_uses_the_document_when_a_deployment_exists() {
     let _guard = TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
@@ -808,9 +987,10 @@ async fn key_lookup_skips_an_instance_that_has_a_deployment() {
     .await
     .unwrap();
     assert!(
-        !prepared.from_instance,
-        "a deployed instance is not selected by plugin key"
+        prepared.from_instance,
+        "a deployed instance document stays the authority"
     );
+    assert_eq!(prepared.granted_config["mode"], "device");
 }
 
 #[tokio::test]

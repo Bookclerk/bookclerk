@@ -781,9 +781,18 @@ mod tests {
         } else {
             "release"
         };
-        let binary = target.join(profile).join(binary_name);
+        let exe_name = format!("{binary_name}{}", std::env::consts::EXE_SUFFIX);
+        let binary = target.join(profile).join(&exe_name);
         assert!(binary.is_file(), "missing {}", binary.display());
-        let staged_bin = staging.join(binary_name);
+        if !std::env::consts::EXE_SUFFIX.is_empty() {
+            let text = std::fs::read_to_string(staging.join("plugin.toml")).unwrap();
+            std::fs::write(
+                staging.join("plugin.toml"),
+                text.replace(&format!("./{binary_name}"), &format!("./{exe_name}")),
+            )
+            .unwrap();
+        }
+        let staged_bin = staging.join(&exe_name);
         if std::fs::hard_link(&binary, &staged_bin).is_err() {
             std::fs::copy(&binary, &staged_bin).unwrap();
         }
@@ -800,7 +809,7 @@ mod tests {
             .arg(&archive)
             .arg("-C")
             .arg(&staging)
-            .args(["plugin.toml", binary_name])
+            .args(["plugin.toml", exe_name.as_str()])
             .status()
             .expect("tar");
         assert!(tar.success());
@@ -815,7 +824,7 @@ mod tests {
                 "target": bookclerk_plugin_host::host_bookclerk_target(),
                 "url": format!("file://{}", archive.display()),
                 "archive_sha256": "ab".repeat(32),
-                "executable": binary_name
+                "executable": exe_name
             }]
         });
         std::fs::write(

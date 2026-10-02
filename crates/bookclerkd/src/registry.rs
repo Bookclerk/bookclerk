@@ -76,7 +76,7 @@ pub async fn registry_for_job(state: &crate::api::AppState) -> anyhow::Result<So
     let deployed = deployment_instance_ids(&library, &host.host_id).await?;
     let mut registry = registry_skipping_deployments(&cfg, &library, &skip).await?;
     let live = state.sources.read().await;
-    reattach_deployed_sources(&mut registry, &live, &deployed);
+    reattach_deployed_sources(&mut registry, &live, &deployed, &cfg);
     Ok(registry)
 }
 
@@ -90,11 +90,16 @@ pub(crate) fn reattach_deployed_sources(
     candidate: &mut SourceRegistry,
     live: &SourceRegistry,
     deployed: &BTreeSet<String>,
+    config: &Config,
 ) {
     for source in live.all() {
-        if session_is_deployed(source.plugin_instance_id(), deployed) {
-            candidate.register(source);
+        if !session_is_deployed(source.plugin_instance_id(), deployed) {
+            continue;
         }
+        if !config.sources.is_enabled(source.id()) {
+            continue;
+        }
+        candidate.register(source);
     }
 }
 
@@ -257,9 +262,10 @@ mod tests {
             key: "plugin",
             instance: Some("instance-a"),
         }));
+        let config = enabled_config("");
         let only_a = BTreeSet::from(["instance-a".to_string()]);
         let mut copied = SourceRegistry::new();
-        reattach_deployed_sources(&mut copied, &one, &only_a);
+        reattach_deployed_sources(&mut copied, &one, &only_a, &config);
         let by_key = copied.get("plugin").expect("legacy key");
         assert_eq!(by_key.plugin_instance_id(), Some("instance-a"));
 
@@ -278,7 +284,7 @@ mod tests {
         }));
         let deployed = BTreeSet::from(["instance-a".to_string(), "instance-b".to_string()]);
         let mut candidate = SourceRegistry::new();
-        reattach_deployed_sources(&mut candidate, &live, &deployed);
+        reattach_deployed_sources(&mut candidate, &live, &deployed, &config);
         assert!(candidate.get("plugin").is_none());
         assert_eq!(
             candidate.get("instance-a").expect("a").plugin_instance_id(),
@@ -306,5 +312,26 @@ mod tests {
             candidate_integrations.all()[0].plugin_instance_id(),
             Some("instance-a")
         );
+    }
+
+    #[test]
+    fn reattach_skips_a_disabled_storefront() {
+        let mut live = SourceRegistry::new();
+        live.register(Arc::new(StubSource {
+            key: "plugin",
+            instance: Some("instance-a"),
+        }));
+        let config = enabled_config("[sources.stub]\nenabled = false\n");
+        let deployed = BTreeSet::from(["instance-a".to_string()]);
+        let mut candidate = SourceRegistry::new();
+        reattach_deployed_sources(&mut candidate, &live, &deployed, &config);
+        assert!(candidate.all().is_empty());
+    }
+
+    fn enabled_config(body: &str) -> bookclerk_config::Config {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, body).unwrap();
+        bookclerk_config::Config::load(Some(dir.path().to_path_buf()), Some(path)).unwrap()
     }
 }

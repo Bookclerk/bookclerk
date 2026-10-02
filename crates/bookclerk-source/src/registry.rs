@@ -41,6 +41,16 @@ impl SourceRegistry {
         self.sources.insert(key, source);
     }
 
+    /// Drops the source registered under `plugin_instance_id`.
+    ///
+    /// Other instances of the same plugin key stay. Returns whether a row was removed.
+    pub fn remove_instance(&mut self, plugin_instance_id: &str) -> bool {
+        if plugin_instance_id.is_empty() {
+            return false;
+        }
+        self.sources.remove(plugin_instance_id).is_some()
+    }
+
     /// Look up a source by plugin instance id, PluginKey, or display alias.
     ///
     /// An instance id matches that deployed source. A plugin key or alias

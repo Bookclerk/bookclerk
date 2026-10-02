@@ -102,13 +102,61 @@ pub trait DeploymentRuntime: Send + Sync {
         let _ = plugin_instance_id;
         true
     }
+
+    /// Stops a guest this process is running for `plugin_instance_id`.
+    ///
+    /// Used when a storefront is disabled. The default does nothing so a
+    /// runtime that does not track processes still compiles. The deployment
+    /// row is left in place so a later enable can start it again.
+    async fn retire_instance(&self, plugin_instance_id: &str) {
+        let _ = plugin_instance_id;
+    }
+}
+
+/// One discovery pass shared by every deployment that still needs install or spawn.
+///
+/// Idle healthy deployments never call [`SharedPlugins::root`].
+struct SharedPlugins<'a> {
+    /// Live config whose plugin directories are hashed at most once.
+    config: &'a Config,
+    /// `None` until the first deployment on this tick needs a root.
+    cached: std::sync::Mutex<Option<Vec<crate::DiscoveredPlugin>>>,
+}
+
+impl<'a> SharedPlugins<'a> {
+    /// Discovery cache for one reconcile tick.
+    fn new(config: &'a Config) -> Self {
+        Self {
+            config,
+            cached: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Install directory for `canonical`, hashing plugin trees only on the first call.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the discovery cache lock is poisoned.
+    fn root(&self, canonical: &str) -> Option<PathBuf> {
+        let mut cached = self.cached.lock().expect("shared plugin discovery");
+        if cached.is_none() {
+            *cached = Some(crate::discover_plugins(self.config).unwrap_or_default());
+        }
+        cached.as_ref().and_then(|plugins| {
+            plugins.iter().find_map(|plugin| {
+                (plugin.plugin_key().canonical() == canonical).then(|| plugin.root.clone())
+            })
+        })
+    }
 }
 
 /// Ensures the GraphicAudio instance, its imported document, and a local deployment.
 ///
 /// A second call returns the same instance id. After the document exists this
 /// function does not read `[sources.graphicaudio]` or `BOOKCLERK_GA_ACCESS`.
-/// Invalid `access` fails the import and does not write the document.
+/// `sources.graphicaudio.enabled = false` returns before creating a deployment.
+/// An existing deployment stays so a later enable can start it. Invalid
+/// `access` fails the import and does not write the document.
 ///
 /// # Errors
 ///
@@ -119,6 +167,9 @@ pub async fn enroll_graphicaudio_instance(
     config: &Config,
     host_id: &str,
 ) -> Result<()> {
+    if !config.sources.is_enabled(GRAPHICAUDIO_MANIFEST_ID) {
+        return Ok(());
+    }
     let Some(plugin_key) = graphicaudio_plugin_key(config)? else {
         return Ok(());
     };
@@ -184,9 +235,18 @@ pub async fn reconcile_local_deployments(
     let deployments = list_present_deployments_for_host(store, host_id)
         .await
         .map_err(library_err)?;
+    let discovered = SharedPlugins::new(config);
     for deployment in deployments {
-        if let Err(err) =
-            reconcile_one(store, config, host_id, &deployment, packages, runtime).await
+        if let Err(err) = reconcile_one(
+            store,
+            config,
+            host_id,
+            &deployment,
+            packages,
+            runtime,
+            &discovered,
+        )
+        .await
         {
             tracing::warn!(
                 deployment_id = %deployment.deployment_id,
@@ -206,6 +266,7 @@ async fn reconcile_one(
     deployment: &bookclerk_library::control_plane::PluginDeployment,
     packages: &HashMap<String, LocalPackage>,
     runtime: &dyn DeploymentRuntime,
+    discovered: &SharedPlugins<'_>,
 ) -> Result<()> {
     let incarnation = current_process_incarnation().to_string();
     let deployment_id = deployment.deployment_id.clone();
@@ -278,12 +339,37 @@ async fn reconcile_one(
         }
     };
     let files_dir = config.paths().files_dir.clone();
+    if let Some(alias) = storefront_alias(&plugin_key, packages, &files_dir) {
+        if !config.sources.is_enabled(&alias) {
+            runtime.retire_instance(instance.id.as_str()).await;
+            return Ok(());
+        }
+    }
+
+    let existing = load_observation(store, &deployment.deployment_id, host_id)
+        .await
+        .map_err(library_err)?;
+    if let Some(existing) = &existing {
+        if existing.status == DeploymentStatus::Healthy
+            && existing.incarnation == incarnation
+            && existing.applied_config_revision == Some(bindings.config_revision)
+            && runtime
+                .guest_still_running(deployment.plugin_instance_id.as_str())
+                .await
+        {
+            return Ok(());
+        }
+    }
+
     let ledger = InstallLedger::load(&files_dir)
         .map_err(|err| crate::PluginError::message(err.to_string()))?;
     let in_ledger = ledger.get(&plugin_key).is_some();
-    let discovered = discovered_root(config, plugin_key.canonical());
+    let mut root = installed_root(&files_dir, &plugin_key);
+    if root.is_none() {
+        root = discovered.root(plugin_key.canonical());
+    }
 
-    if !in_ledger && discovered.is_none() {
+    if !in_ledger && root.is_none() {
         let Some(package) = packages.get(&instance.plugin_key) else {
             note(DeploymentStatus::Error, "not installed".into(), None).await;
             return Ok(());
@@ -330,25 +416,15 @@ async fn reconcile_one(
             return Ok(());
         }
         drop(lock);
+        root = Some(outcome.plugin_root);
     }
 
-    let existing = load_observation(store, &deployment.deployment_id, host_id)
-        .await
-        .map_err(library_err)?;
-    if let Some(existing) = &existing {
-        if existing.status == DeploymentStatus::Healthy
-            && existing.incarnation == incarnation
-            && existing.applied_config_revision == Some(bindings.config_revision)
-            && runtime
-                .guest_still_running(deployment.plugin_instance_id.as_str())
-                .await
-        {
-            return Ok(());
-        }
-    }
-
+    let Some(root) = root else {
+        note(DeploymentStatus::Error, "not installed".into(), None).await;
+        return Ok(());
+    };
     note(DeploymentStatus::Installed, String::new(), None).await;
-    request.plugin_root = discovered.or_else(|| installed_root(&files_dir, &plugin_key));
+    request.plugin_root = Some(root);
     note(
         DeploymentStatus::Running,
         String::new(),
@@ -379,12 +455,27 @@ async fn reconcile_one(
     Ok(())
 }
 
-/// Install directory when discovery already sees `canonical`.
-fn discovered_root(config: &Config, canonical: &str) -> Option<PathBuf> {
-    let plugins = crate::discover_plugins(config).ok()?;
-    plugins
-        .into_iter()
-        .find_map(|plugin| (plugin.plugin_key().canonical() == canonical).then_some(plugin.root))
+/// Display alias when this deployment is a content source.
+///
+/// Package kind answers first. A GraphicAudio ledger row covers a guest that
+/// was installed earlier and is no longer sitting in `plugin-packages/`.
+/// This does not hash plugin binaries.
+fn storefront_alias(
+    plugin_key: &PluginKey,
+    packages: &HashMap<String, LocalPackage>,
+    files_dir: &Path,
+) -> Option<String> {
+    if let Some(package) = packages.get(plugin_key.canonical()) {
+        if package.manifest.kind == bookclerk_plugin_catalog::PluginKind::Source {
+            return Some(package.manifest.id.clone());
+        }
+        return None;
+    }
+    let ledger = InstallLedger::load(files_dir).ok()?;
+    let row = ledger.get(plugin_key)?;
+    row.manifest_id
+        .eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID)
+        .then(|| GRAPHICAUDIO_MANIFEST_ID.to_string())
 }
 
 /// `plugins/<fs-id>` after a committed install.
@@ -457,6 +548,8 @@ pub struct LiveDeploymentRuntime {
     pub destinations: Arc<tokio::sync::RwLock<crate::DestinationRegistry>>,
     /// Sessions keyed by plugin instance id.
     guests: std::sync::Mutex<HashMap<String, TrackedGuest>>,
+    /// Lifecycle context for integrations this process starts.
+    integration_context: std::sync::Mutex<bookclerk_integrations::IntegrationContext>,
 }
 
 impl LiveDeploymentRuntime {
@@ -476,7 +569,61 @@ impl LiveDeploymentRuntime {
             integrations,
             destinations,
             guests: std::sync::Mutex::new(HashMap::new()),
+            integration_context: std::sync::Mutex::new(
+                bookclerk_integrations::IntegrationContext::default(),
+            ),
         }
+    }
+
+    /// Stores the daemon lifecycle context used when a deployment starts an integration.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the integration-context lock is poisoned.
+    pub fn set_integration_context(&self, ctx: bookclerk_integrations::IntegrationContext) {
+        *self
+            .integration_context
+            .lock()
+            .expect("deployment integration context") = ctx;
+    }
+
+    /// Context passed to [`bookclerk_integrations::Integration::start`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when the integration-context lock is poisoned.
+    fn integration_context(&self) -> bookclerk_integrations::IntegrationContext {
+        self.integration_context
+            .lock()
+            .expect("deployment integration context")
+            .clone()
+    }
+
+    /// Drops the tracked guest and the source registered under `plugin_instance_id`.
+    ///
+    /// Other instances of the same plugin key stay. Dropping the guest map
+    /// entry is what stops the process.
+    pub async fn retire_plugin_instance(&self, plugin_instance_id: &str) {
+        self.forget_guest(plugin_instance_id);
+        self.sources
+            .write()
+            .await
+            .remove_instance(plugin_instance_id);
+    }
+
+    /// Drops the tracked guest for `plugin_instance_id` without taking the source registry.
+    ///
+    /// Config reload already holds that registry. Dropping this entry stops the
+    /// process once the registry no longer keeps the session.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the deployment guest lock is poisoned.
+    pub fn forget_guest(&self, plugin_instance_id: &str) {
+        self.guests
+            .lock()
+            .expect("deployment guests")
+            .remove(plugin_instance_id);
     }
 
     /// `CONFIG` JSON the live `open` call delivered for `plugin_instance_id`.
@@ -522,6 +669,10 @@ impl LiveDeploymentRuntime {
     }
 
     /// Replaces the tracked session for one instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the deployment guest lock is poisoned.
     fn remember(&self, plugin_instance_id: &str, guest: TrackedGuest) {
         self.guests
             .lock()
@@ -660,25 +811,24 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
         probe_guest_health(&plugin, &config, prepared).await
     }
 
+    async fn retire_instance(&self, plugin_instance_id: &str) {
+        self.retire_plugin_instance(plugin_instance_id).await;
+    }
+
     async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth {
         let config = self.config.read().await.clone();
         let store = self.store.read().await.clone();
         let services = crate::SessionServices::with_event_outbox(store.clone());
-        let plugins = match crate::discover_plugins(&config) {
-            Ok(plugins) => plugins,
-            Err(err) => {
-                return SpawnHealth::SpawnFailed {
-                    detail: err.to_string(),
-                }
-            }
-        };
-        let Some(plugin) = plugins
-            .iter()
-            .find(|plugin| plugin.plugin_key().canonical() == request.plugin_key)
-        else {
+        let Some(root) = request.plugin_root.as_deref() else {
             return SpawnHealth::SpawnFailed {
                 detail: "installed plugin was not discovered".into(),
             };
+        };
+        let plugin = match open_installed_plugin(root, &config.paths().files_dir) {
+            Ok(plugin) => plugin,
+            Err(err) => {
+                return SpawnHealth::SpawnFailed { detail: err };
+            }
         };
         let prepared = crate::instance_bindings::prepared_open_from_resolved(
             request.config.clone(),
@@ -689,7 +839,7 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
             .manifest
             .has_entrypoint(crate::Entrypoint::Storefront)
         {
-            return spawn_storefront(self, plugin, &config, services, request, prepared).await;
+            return spawn_storefront(self, &plugin, &config, services, request, prepared).await;
         }
         if plugin
             .manifest
@@ -699,10 +849,10 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
                 .families()
                 .contains(&crate::PluginFamily::Integration)
         {
-            return spawn_integration(self, plugin, &config, services, request, prepared).await;
+            return spawn_integration(self, &plugin, &config, services, request, prepared).await;
         }
         if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage) {
-            return spawn_storage(self, plugin, &config, &store, request, prepared).await;
+            return spawn_storage(self, &plugin, &config, &store, request, prepared).await;
         }
         if plugin
             .manifest
@@ -891,12 +1041,37 @@ async fn spawn_integration(
     };
     match integration.check_health().await {
         Ok(()) => {
-            runtime.remember(&request.plugin_instance_id, tracked);
+            if let Err(err) = bookclerk_integrations::Integration::start(
+                &integration,
+                runtime.integration_context(),
+            )
+            .await
+            {
+                return SpawnHealth::HealthFailed {
+                    detail: err.to_string(),
+                };
+            }
+            let retired = runtime
+                .integrations
+                .write()
+                .await
+                .take_instance(&request.plugin_instance_id);
+            for previous in retired {
+                if let Err(err) = bookclerk_integrations::Integration::stop(previous.as_ref()).await
+                {
+                    tracing::warn!(
+                        plugin_instance_id = %request.plugin_instance_id,
+                        error = %err,
+                        "retired integration stop failed"
+                    );
+                }
+            }
             runtime
                 .integrations
                 .write()
                 .await
                 .register(Arc::new(integration));
+            runtime.remember(&request.plugin_instance_id, tracked);
             SpawnHealth::Healthy
         }
         Err(err) => SpawnHealth::HealthFailed {

@@ -98,11 +98,12 @@ impl ExternalSource {
         }
         let table = crate::settings_table(config, plugin);
         let transitional = toml_to_json(&toml::Value::Table(table));
-        let prepared = crate::instance_bindings::prepare_open_bindings(
+        let prepared = crate::instance_bindings::prepare_open_bindings_selecting(
             services.event_outbox.as_ref(),
             &config.paths().files_dir,
             plugin,
             transitional,
+            services.selected_instance_id.as_deref(),
         )
         .await?;
         Self::spawn_prepared(plugin, config, services, prepared).await
@@ -414,6 +415,13 @@ pub async fn load_external_sources_skipping(
                 registry.register(Arc::new(s));
             }
             Err(err) => {
+                let text = err.to_string();
+                if text.contains("pass a plugin instance id")
+                    || text.contains("plugin instance `")
+                    || text.contains("has no config document")
+                {
+                    return Err(err);
+                }
                 tracing::warn!(id = %plugin.manifest.id, %err, "skipping external source plugin");
             }
         }

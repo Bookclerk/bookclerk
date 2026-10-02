@@ -1104,6 +1104,10 @@ not stopped, so API and job lookup still reach the same process.
 A deployed storefront is registered under its plugin instance id. Job lookup
 resolves that id. A plugin key or alias resolves only when exactly one
 registered source matches, so two instances of one key stay distinct.
+`sources.graphicaudio.enabled = false` retires a running GraphicAudio guest on
+the next reconcile and on reload. The deployment row can remain.
+`bookclerk library scan` and `bookclerk library acquire` use that instance
+document. When several instances share the plugin key, pass `--instance`.
 
 Plugin `id` must match a config table. **External integrations default to
 disabled**; sources follow the usual `[sources.<id>]` rules (missing → enabled).

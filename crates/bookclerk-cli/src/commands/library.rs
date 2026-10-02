@@ -14,7 +14,7 @@ use clap::Subcommand;
 use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
 use crate::format_out;
 use crate::progress::BatchProgress;
-use crate::registry::{default_registry_with_plugins, resolve_source_id};
+use crate::registry::{default_registry_with_plugins, registry_with_instance, resolve_source_id};
 
 #[derive(Debug, Subcommand)]
 /// `bookclerk library` subcommands for scan, acquire, accounts, and export.
@@ -58,6 +58,9 @@ pub enum LibraryCommand {
         /// Limit to one content source (`audible`, `libro`, `graphicaudio`, or `chirp`). Default: all.
         #[arg(long)]
         source: Option<String>,
+        /// Plugin instance id when more than one instance shares a plugin key.
+        #[arg(long)]
+        instance: Option<String>,
         /// After scan, match existing files in storage to library rows.
         ///
         /// Lists `.m4b` / `.mp3` / `.m4a` / `.flac` / `.aac` / `.ogg` / `.oga`, probes object metadata (no body
@@ -83,6 +86,9 @@ pub enum LibraryCommand {
         /// Account id (required with `--asin` when multiple accounts exist).
         #[arg(long)]
         account: Option<String>,
+        /// Plugin instance id when more than one instance shares a plugin key.
+        #[arg(long)]
+        instance: Option<String>,
         /// Dry-run: print planned storage keys only.
         #[arg(long)]
         dry_run: bool,
@@ -237,6 +243,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             account,
             accounts,
             source,
+            instance,
             match_storage,
             fix_layout,
         } => {
@@ -244,7 +251,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             if let Some(one) = account {
                 scan_accounts.push(one);
             }
-            let registry = default_registry_with_plugins(config, &store).await?;
+            let registry = registry_with_instance(config, &store, instance.as_deref()).await?;
             let opts = ScanOptions {
                 accounts: scan_accounts.clone(),
                 page_size: 50,
@@ -312,6 +319,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             isbn,
             asins,
             account,
+            instance,
             dry_run,
             force,
             pdf,
@@ -334,7 +342,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             )
             .await?;
             let storage = destinations.listing_backend()?;
-            let registry = default_registry_with_plugins(&cfg, &store).await?;
+            let registry = registry_with_instance(&cfg, &store, instance.as_deref()).await?;
 
             // Match existing media first (same as bookclerkd) so we do not
             // re-download titles already on disk.

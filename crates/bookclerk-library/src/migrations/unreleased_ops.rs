@@ -832,6 +832,14 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_plugin_instances_plugin_key
         ON plugin_instances(plugin_key)",
     ),
+    // Default enrollment for one plugin key. Explicit create_plugin_instance
+    // does not write this row, so two instances may still share a key.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_instance_defaults (
+        plugin_key TEXT PRIMARY KEY NOT NULL,
+        plugin_instance_id TEXT NOT NULL
+    )",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_deployments (
         deployment_id TEXT PRIMARY KEY NOT NULL,

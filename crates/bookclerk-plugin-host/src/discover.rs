@@ -6,6 +6,8 @@
 //! [`PluginKey`], not the manifest alias.
 
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bookclerk_config::{Config, DatabasePluginKind};
 use bookclerk_library::BOOKCLERK_SCHEMA_NAMESPACE;
@@ -159,6 +161,10 @@ pub fn plugin_search_dirs(config: &Config) -> Vec<PathBuf> {
     dirs
 }
 
+/// Counts [`discover_plugins`] calls. Tests assert an idle reconcile does not hash.
+#[cfg(test)]
+pub static DISCOVER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 /// Discover plugins under the configured search directories.
 ///
 /// Accepts either:
@@ -172,6 +178,8 @@ pub fn plugin_search_dirs(config: &Config) -> Vec<PathBuf> {
 ///
 /// Returns [`PluginError`] on duplicate keys, duplicate aliases, missing binaries, or I/O failures.
 pub fn discover_plugins(config: &Config) -> Result<Vec<DiscoveredPlugin>> {
+    #[cfg(test)]
+    DISCOVER_CALLS.fetch_add(1, Ordering::Relaxed);
     let mut out = Vec::new();
     let mut seen: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
     for dir in plugin_search_dirs(config) {
