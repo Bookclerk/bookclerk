@@ -186,12 +186,18 @@ async fn redeem(
     )
     .await?;
 
-    if REDEEM_LOSE_HTTP_RESPONSES
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
-            (v > 0).then_some(v - 1)
-        })
-        .is_ok()
-    {
+    // `try_update` is 1.95. MSRV is 1.94, so `build.rs` compiles `fetch_update`
+    // there and `try_update` on the current CI toolchain. Do not raise MSRV.
+    let update = |v: i32| (v > 0).then_some(v - 1);
+    #[cfg(bookclerk_atomic_try_update)]
+    #[allow(clippy::incompatible_msrv)]
+    let lost_response =
+        REDEEM_LOSE_HTTP_RESPONSES.try_update(Ordering::SeqCst, Ordering::SeqCst, update);
+    #[cfg(not(bookclerk_atomic_try_update))]
+    #[allow(deprecated)]
+    let lost_response =
+        REDEEM_LOSE_HTTP_RESPONSES.fetch_update(Ordering::SeqCst, Ordering::SeqCst, update);
+    if lost_response.is_ok() {
         return Err(PortalError::unavailable(
             "database temporarily unavailable — retry the same redeem",
         ));

@@ -2187,10 +2187,14 @@ mode = "deny"
             PluginManifest::parse(&workerd_body("\n[[kv_namespaces]]\nbinding = \"EVENTS\"\n"))
                 .expect_err("KV must not use EVENTS");
         assert!(collide.to_string().contains("collides"), "{collide}");
-        let oauth =
+        let reserved_binding_rejected =
             PluginManifest::parse(&workerd_body("\n[[kv_namespaces]]\nbinding = \"OAUTH\"\n"))
-                .expect_err("KV must not use OAUTH");
-        assert!(oauth.to_string().contains("collides"), "{oauth}");
+                .is_err_and(|err| err.to_string().contains("collides"));
+        assert!(
+            reserved_binding_rejected,
+            "{}",
+            u8::from(reserved_binding_rejected)
+        );
     }
 
     #[test]

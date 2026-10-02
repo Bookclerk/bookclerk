@@ -79,7 +79,12 @@ function emitConsumer(lines: string[], consumer: EventConsumerToml): void {
   }
 }
 
-/** True for a non-empty array whose elements are all TOML tables. */
+/**
+ * True for a non-empty array whose elements are all TOML tables.
+ *
+ * @param value - Candidate `[queues]` field value.
+ * @returns Whether `value` should be emitted as an array of tables.
+ */
 function isArrayOfRecords(value: unknown): value is Record<string, unknown>[] {
   return (
     Array.isArray(value) &&
