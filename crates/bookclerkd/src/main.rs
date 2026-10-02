@@ -116,9 +116,11 @@ async fn main() -> anyhow::Result<()> {
     let database_registry = bookclerk_plugin_host::load_external_database(&config).await?;
     let library_store =
         bookclerk_plugin_host::open_library_store(&config, &database_registry).await?;
+    let scratch_dir = config.download_cache_dir();
     let control_plane = bookclerk_library::control_plane::bootstrap_control_plane(
         &library_store,
         &paths.files_dir,
+        &scratch_dir,
         config.auth_password().as_deref(),
         &config.events,
     )

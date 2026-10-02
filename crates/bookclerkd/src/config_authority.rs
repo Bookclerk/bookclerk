@@ -477,7 +477,8 @@ mod tests {
         let store = LibraryStore::from_connection(db);
         let files = tempfile::tempdir().expect("files");
         let mut config = Config::default();
-        let session = bootstrap_control_plane(&store, files.path(), None, &config.events)
+        let scratch = files.path().join("cache");
+        let session = bootstrap_control_plane(&store, files.path(), &scratch, None, &config.events)
             .await
             .expect("bootstrap");
         overlay_events(&mut config, &session.events, &session.cluster_id);

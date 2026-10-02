@@ -166,6 +166,21 @@ paths = [
     "crates/bookclerk-config/src/atomic_replace.rs",
 ]
 
+# 1 vCPU / 1 GiB measurement. The ubuntu-latest VM builds the release
+# binaries. `docker run --memory=1g --memory-swap=1g --cpus=1` is the cgroup
+# for the seed, daemon, and load. These paths select that job without a full
+# suite; `scripts/bench` is not a Cargo package.
+[envelope]
+paths = [
+    "scripts/bench/small-vps.sh",
+    "scripts/bench/envelope-container.sh",
+    "scripts/bench/envelope-inside.sh",
+    "scripts/bench/envelope_limits.py",
+    "scripts/bench/assert_envelope.py",
+    "crates/bookclerk-library/tests/envelope_seed.rs",
+    "crates/bookclerk-search/src/engine.rs",
+]
+
 # Native-behind-workerd gateway smoke (3 OS): `bookclerk-plugin-e2e --test
 # native_gateway` launches a guest through the production PluginSession path.
 [native_gateway]

@@ -183,6 +183,19 @@ class WorkflowContractTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(text.count("ci-exec.py run windows_cluster"), 1)
 
+    def test_envelope_builds_on_the_runner(self) -> None:
+        job = self.jobs["envelope"]
+        self.assertEqual(job["runs-on"], "ubuntu-latest")
+        self.assertEqual(job["timeout-minutes"], 180)
+        self.assertNotIn("container", job)
+        self.assertNotIn("CARGO_BUILD_JOBS", job.get("env") or {})
+        for step in job["steps"]:
+            script = step.get("run", "")
+            self.assertNotIn("pipefail", script, step.get("name"))
+        runs = [s for s in job["steps"] if "ci-exec.py run envelope" in s.get("run", "")]
+        self.assertEqual(len(runs), 1)
+        self.assertNotIn("if", runs[0])
+
     def test_native_gateway_smoke_inputs_exist(self) -> None:
         from ci_plan.plan import load_relations
 

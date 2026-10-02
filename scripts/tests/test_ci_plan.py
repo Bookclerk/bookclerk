@@ -1244,5 +1244,50 @@ class GithubActionsFilePathTests(unittest.TestCase):
                 self.assertEqual(fh.read(), "ok=1\n")
 
 
+class EnvelopeTests(unittest.TestCase):
+    """1 GiB / one-core measurement on ubuntu-latest."""
+
+    def test_harness_paths_select_the_job_without_a_full_suite(self) -> None:
+        for path in RELATIONS.envelope_paths:
+            self.assertTrue((REPO / path).is_file(), path)
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                self.assertTrue(p.selected("envelope"), p.checks.keys())
+                self.assertTrue(p.jobs["envelope"])
+
+    def test_script_only_does_not_select_rust_tests(self) -> None:
+        p = plan("scripts/bench/small-vps.sh")
+        self.assertFalse(p.selected("rust_test"))
+        self.assertEqual(p.prereqs("envelope"), [])
+        argv = check_argv(p, "envelope")
+        self.assertEqual(argv[0][:3], ["cargo", "install-platform", "--release"])
+        self.assertIn("envelope_seed", argv[1])
+        self.assertIn("--no-run", argv[1])
+        self.assertNotIn("--ignored", argv[1])
+        self.assertEqual(argv[2][:2], ["bash", "scripts/bench/envelope-container.sh"])
+        env = [c.env for _, c in planned_commands(artifact(p), "envelope", CTX) if not _]
+        self.assertNotIn("CARGO_BUILD_JOBS", env[0])
+        self.assertEqual(env[2]["ENVELOPE_LABEL"], "ci")
+        self.assertTrue(env[2]["BOOKCLERK_FILES_DIR"].endswith("/envelope"))
+
+    def test_search_rebuild_selects_envelope_and_library_tests(self) -> None:
+        p = plan("crates/bookclerk-search/src/engine.rs")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertTrue(p.selected("envelope"))
+        self.assertTrue(p.selected("rust_test"))
+
+    def test_docs_do_not_select_it(self) -> None:
+        p = plan("docs/plugins.md")
+        self.assertFalse(p.selected("envelope"))
+        self.assertFalse(p.jobs["envelope"])
+
+    def test_workflow_edit_is_a_full_suite_including_envelope(self) -> None:
+        p = plan(".github/workflows/ci.yml")
+        self.assertTrue(p.full_suite)
+        self.assertTrue(p.selected("envelope"))
+        self.assertTrue(p.jobs["envelope"])
+
+
 if __name__ == "__main__":
     unittest.main()

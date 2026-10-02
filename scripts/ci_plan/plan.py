@@ -140,6 +140,8 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     # Windows execution of the enrolled CLI startup target and the identity
     # file tests. It is not a substitute for confinement or native-gateway.
     "windows-cluster": ("windows_cluster",),
+    # ubuntu-latest VM build, then docker run --memory=1g --memory-swap=1g --cpus=1.
+    "envelope": ("envelope",),
 }
 CHECK_JOB = {check: job for job, checks in JOB_CHECKS.items() for check in checks}
 ALL_CHECKS = tuple(CHECK_JOB)
@@ -214,6 +216,7 @@ class Relations:
     native_gateway_packages: frozenset[str]
     native_gateway_paths: tuple[str, ...]
     windows_cluster_paths: tuple[str, ...]
+    envelope_paths: tuple[str, ...]
     release_shipped: tuple[str, ...]
     release_full_packages: frozenset[str]
     release_full_paths: tuple[str, ...]
@@ -232,6 +235,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
     jobs = raw.get("platform_jobs", {})
     gateway = raw.get("native_gateway", {})
     windows_cluster = raw.get("windows_cluster", {})
+    envelope = raw.get("envelope", {})
     return Relations(
         embeds=list(raw.get("embed", [])),
         test_inputs=list(raw.get("test_input", [])),
@@ -247,6 +251,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
         native_gateway_packages=frozenset(gateway.get("packages", [])),
         native_gateway_paths=tuple(gateway.get("paths", [])),
         windows_cluster_paths=tuple(windows_cluster.get("paths", [])),
+        envelope_paths=tuple(envelope.get("paths", [])),
         release_shipped=tuple(release.get("shipped", [])),
         release_full_packages=frozenset(release.get("full_packages", [])),
         release_full_paths=tuple(release.get("full_paths", [])),
@@ -587,6 +592,7 @@ class _Surfaces:
         self.release_full: list[str] = []
         self.native_gateway: list[str] = []
         self.windows_cluster: list[str] = []
+        self.envelope: list[str] = []
         self.fixture_checks: dict[str, list[str]] = {}
 
 
@@ -694,6 +700,11 @@ def build_plan(
             surf.native_gateway.append(path)
         if any(glob_match(path, p) for p in rel.windows_cluster_paths):
             surf.windows_cluster.append(path)
+        if any(glob_match(path, p) for p in rel.envelope_paths):
+            surf.envelope.append(path)
+            # scripts/bench is not a Cargo package. Classifying it here keeps a
+            # harness-only edit from escalating to the full suite.
+            classified = True
 
         if not classified:
             plan.mark_full(f"unclassified path {path}")
@@ -893,6 +904,9 @@ def _select_checks(
             "windows_cluster",
             [f"windows cluster input {p}" for p in surf.windows_cluster],
         )
+
+    if surf.envelope:
+        _select(plan, "envelope", [f"envelope input {p}" for p in surf.envelope])
 
     steps = [step for step, owner in rel.postgres_steps.items() if owner in unit]
     if steps:
