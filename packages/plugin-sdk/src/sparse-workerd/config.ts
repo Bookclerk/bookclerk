@@ -11,7 +11,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import type { Manifest } from "../tools/validate.js";
+import {
+  applyAuthorCompatibilityDate,
+  declaresPython,
+  moduleLoadKey,
+  unimplementedSurface,
+  validateAuthorCompatibilityFlags,
+  workerdModuleIsEmbedded,
+  type Manifest,
+} from "../tools/validate.js";
 import { assertPathInside, refuseSymlinkPath, packageRoot, ensureDirUnder, writeFileUnder, copyFileUnder } from "./ensure.js";
 
 /**
@@ -264,12 +272,7 @@ function moduleFieldFor(name: string): { field: string; python: boolean } {
     return { field: "esModule", python: false };
   }
   if (lower.endsWith(".json")) return { field: "json", python: false };
-  if (lower.endsWith(".txt") || lower.endsWith(".md")) {
-    return { field: "text", python: false };
-  }
-  throw new Error(
-    `unsupported workerd module type for \`${name}\` (use .js/.mjs/.py/.wasm/.json)`,
-  );
+  throw new Error(`workerd module \`${name}\` is not implemented yet`);
 }
 
 function collectModules(dir: string, pluginRoot: string): string[] {
@@ -361,10 +364,14 @@ export function materializeConfig(
   manifest: Manifest,
   options: MaterializeOptions,
 ): GeneratedConfig {
+  const blocked = unimplementedSurface(manifest);
+  if (blocked) throw new Error(blocked);
   const workerd = manifest.workerd;
   if (!workerd) {
     throw new Error('missing [workerd] table');
   }
+  const appliedDate = applyAuthorCompatibilityDate(workerd.compatibility_date);
+  if (appliedDate.warning) console.warn(appliedDate.warning);
   const root = fs.realpathSync(path.resolve(pluginRoot));
   const sdkRoot = path.resolve(options.sdkRoot ?? packageRoot());
   const stateDir = options.stateDir
@@ -431,6 +438,7 @@ export function materializeConfig(
       `(name = "${escapeCapnp(name)}", ${field} = embed "${escapeCapnp(embed)}")`,
     );
   }
+  const authorNames = new Set(seenNames);
 
   // The adapter isolate always needs the SDK embed; the author isolate gets it
   // when it has JS modules.
@@ -519,18 +527,35 @@ export function materializeConfig(
     }
   }
 
-  const flags = [...(workerd.compatibility_flags ?? [])];
-  if (needsPython) {
-    for (const required of ["python_workers", "disable_python_external_sdk"]) {
-      if (!flags.includes(required)) flags.push(required);
+  for (const mod of manifest.modules ?? []) {
+    // An explicit path is the file to embed. `name` is only the source when
+    // `path` was omitted, so a typoed path cannot pass because `name` exists.
+    const filePath = mod.path || mod.name;
+    const key = moduleLoadKey(modulesDirName, filePath);
+    if (!key || !authorNames.has(key)) {
+      if (workerdModuleIsEmbedded(filePath)) {
+        throw new Error(
+          `plugin.toml: [[modules]] \`${filePath}\` is not in the workerd load set`,
+        );
+      }
+      throw new Error(`plugin.toml: [[modules]] \`${filePath}\` is not implemented yet`);
     }
   }
+
+  const manifestPython = declaresPython(manifest);
+  // Flags follow the manifest declaration only. A `.py` the walk found but
+  // the manifest did not declare fails even when both flags are already set.
+  validateAuthorCompatibilityFlags(workerd.compatibility_flags ?? [], manifestPython);
+  if (needsPython && !manifestPython) {
+    throw new Error("plugin.toml: undeclared Python file in the workerd modules tree");
+  }
+  const flags = [...(workerd.compatibility_flags ?? [])];
   const flagsLine =
     flags.length === 0
       ? ""
       : `compatibilityFlags = [${flags.map((f) => `"${escapeCapnp(f)}"`).join(", ")}],`;
 
-  const domains = egressDomainsFor(needsPython, networkMode, networkDomains);
+  const domains = egressDomainsFor(manifestPython, networkMode, networkDomains);
   const policyJson = JSON.stringify({
     mode: networkMode === "outbound" ? "outbound" : "deny",
     domains,
@@ -561,7 +586,7 @@ export function materializeConfig(
   }
   const bridgeTokenBinding = `(name = "BRIDGE_TOKEN", text = "${escapeCapnp(bridgeToken)}")`;
 
-  const compatDate = escapeCapnp(workerd.compatibility_date);
+  const compatDate = escapeCapnp(appliedDate.applied);
   const config = `using Workerd = import "/workerd/workerd.capnp";
 
 const bookclerkPlugin :Workerd.Config = (

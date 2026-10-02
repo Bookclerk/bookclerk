@@ -10,7 +10,7 @@ import type { BookclerkEnv, DatabaseBinding } from "@bookclerk/plugin-sdk/worker
 export interface Env extends BookclerkEnv {
   /** `[vars]` plus operator settings decoded from the granted config payload. */
   CONFIG: Record<string, unknown>;
-  /** `[[kv_namespaces]]` store (surface reserved). */
+  /** `[[kv_namespaces]]` durable KV binding. Not implemented yet. */
   KV: unknown;
   /** `[[databases]]` plugin-owned database (D1-shaped `prepare`/`batch`/`exec`). */
   DB: DatabaseBinding;

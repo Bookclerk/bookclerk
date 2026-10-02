@@ -119,7 +119,7 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
     props.push({
       name: kv.binding ?? "KV",
       type: "unknown",
-      doc: "`[[kv_namespaces]]` store (surface reserved).",
+      doc: "`[[kv_namespaces]]` durable KV binding. Not implemented yet.",
     });
   }
   if (m.oauth) {

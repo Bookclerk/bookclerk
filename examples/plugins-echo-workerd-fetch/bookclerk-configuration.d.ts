@@ -10,6 +10,6 @@ import type { BookclerkEnv } from "@bookclerk/plugin-sdk/workerd";
 export interface Env extends BookclerkEnv {
   /** `[vars]` plus operator settings decoded from the granted config payload. */
   CONFIG: Record<string, unknown>;
-  /** `[[kv_namespaces]]` store (surface reserved). */
+  /** `[[kv_namespaces]]` durable KV binding. Not implemented yet. */
   KV: unknown;
 }

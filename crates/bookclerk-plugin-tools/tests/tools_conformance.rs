@@ -16,6 +16,26 @@ fn bookclerk_plugin() -> Command {
     cmd
 }
 
+fn check_fixture(name: &str) -> std::process::Output {
+    let dir = repo_root()
+        .join("crates/bookclerk-plugin-abi/fixtures/tools")
+        .join(name);
+    bookclerk_plugin()
+        .args(["check", dir.to_str().expect("utf8 path")])
+        .output()
+        .expect("run check")
+}
+
+fn assert_check_fails(name: &str, needle: &str) {
+    let out = check_fixture(name);
+    assert!(!out.status.success(), "{name} should fail");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(needle),
+        "{name} stderr missing {needle:?}: {err}"
+    );
+}
+
 #[test]
 fn check_valid_workerd() {
     let dir = repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/valid-workerd");
@@ -97,6 +117,103 @@ fn check_rejects_logo_parent() {
         .output()
         .expect("run check");
     assert!(!out.status.success());
+}
+
+#[test]
+fn check_warns_when_compatibility_date_is_newer_than_pin() {
+    let out = check_fixture("valid-compat-date-future");
+    assert!(
+        out.status.success(),
+        "newer date should load: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("Falling back"),
+        "stderr missing fallback warning: {err}"
+    );
+}
+
+#[test]
+fn check_rejects_non_calendar_compatibility_date() {
+    assert_check_fails("invalid-compat-date-shape", "YYYY-MM-DD");
+}
+
+#[test]
+fn check_rejects_unknown_compatibility_flag() {
+    assert_check_fails("invalid-compat-flag", "not allowed");
+}
+
+#[test]
+fn check_rejects_experimental_compatibility_flag() {
+    assert_check_fails("invalid-compat-experimental", "host-only");
+}
+
+#[test]
+fn check_rejects_python_without_flag_pair() {
+    assert_check_fails("invalid-python-flags-missing", "must include");
+}
+
+#[test]
+fn check_rejects_python_flags_without_python_module() {
+    assert_check_fails("invalid-flags-without-python", "Python module");
+}
+
+#[test]
+fn check_rejects_module_type_mismatch() {
+    assert_check_fails("invalid-module-type", "does not match");
+}
+
+#[test]
+fn check_rejects_module_path_when_name_matches_a_different_file() {
+    assert_check_fails("invalid-module-path", "missing.js");
+    assert_check_fails("invalid-module-path", "not in the workerd load set");
+}
+
+#[test]
+fn check_accepts_module_name_when_path_is_omitted() {
+    let out = check_fixture("valid-module-name-only");
+    assert!(
+        out.status.success(),
+        "omitted path should use name: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn check_rejects_kv_oauth_binding() {
+    assert_check_fails("invalid-kv-oauth", "OAUTH");
+    assert_check_fails("invalid-kv-oauth", "collides");
+}
+
+#[test]
+fn check_rejects_undeclared_python_file() {
+    assert_check_fails("invalid-undeclared-python", "undeclared Python file");
+}
+
+#[test]
+fn check_rejects_typescript_main_as_not_implemented() {
+    assert_check_fails("invalid-module-ts", "not implemented yet");
+}
+
+#[test]
+fn check_accepts_kv_declaration() {
+    let out = check_fixture("not-implemented-kv");
+    assert!(
+        out.status.success(),
+        "kv declaration must stay legal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn check_accepts_queues_declaration() {
+    let out = check_fixture("not-implemented-queues");
+    assert!(
+        out.status.success(),
+        "queues declaration must stay legal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

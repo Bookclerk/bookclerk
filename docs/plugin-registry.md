@@ -463,7 +463,7 @@ that only carries `[package.metadata.bookclerk]` and documentation.
 - [ ] `[package.metadata.bookclerk]` `kind` / `id` / `api_version` match the name and `plugin.toml`
 - [ ] Release assets: native per target, or one portable workerd archive, with checksums
 - [ ] `plugin.toml`: `api_version = 3`, `runtime`, and either `command` (native) or `[workerd]` + `modules/`
-- [ ] `[capabilities.network]` / `[capabilities.bindings]` declared honestly; state kept in
+- [ ] `[capabilities.network]` and any `[[databases]]` bindings declared honestly; state kept in
       `plugin_data_dir` / `TMPDIR`, never beside the binary
 - [ ] Document required config keys and any password env vars
 
