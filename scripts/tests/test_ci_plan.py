@@ -226,13 +226,14 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(p.params("e2e")["scope"], "full")
         self.assertEqual(
             sorted(p.lint_packages()),
-            # host and cli: their tests spawn guests through the launcher.
+            # host, cli, and the daemon: their tests spawn guests through the launcher.
             [
                 "bookclerk-cli",
                 "bookclerk-dev",
                 "bookclerk-plugin-host",
                 "bookclerk-plugin-tools",
                 "bookclerk-workerd",
+                "bookclerkd",
             ],
         )
         self.assertFalse(p.packages["bookclerk-cli"].compiled)

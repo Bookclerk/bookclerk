@@ -490,6 +490,12 @@ pub struct SessionServices {
     /// `bookclerk-workerd`; [`SpawnTransport::DirectNativeDiagnostic`] is for
     /// tests and diagnostics only and no product binary selects it.
     pub spawn_transport: SpawnTransport,
+    /// Plugin instance id selected by CLI scan or acquire.
+    ///
+    /// `None` uses the only instance document for a plugin key, or transitional
+    /// file settings when that key has no document. Several documents require
+    /// this id. An id selects only the plugin key it belongs to.
+    pub selected_instance_id: Option<String>,
 }
 
 impl SessionServices {
@@ -499,6 +505,7 @@ impl SessionServices {
         Self {
             event_outbox: Some(store),
             spawn_transport: SpawnTransport::default(),
+            selected_instance_id: None,
         }
     }
 
@@ -508,6 +515,7 @@ impl SessionServices {
         Self {
             event_outbox: store.cloned(),
             spawn_transport: SpawnTransport::default(),
+            selected_instance_id: None,
         }
     }
 
@@ -520,6 +528,7 @@ impl SessionServices {
         Self {
             event_outbox: None,
             spawn_transport: SpawnTransport::DirectNativeDiagnostic,
+            selected_instance_id: None,
         }
     }
 }
@@ -858,6 +867,20 @@ impl PluginSession {
     #[must_use]
     pub fn gateway_pid(&self) -> Option<u32> {
         self.gateway_pid
+    }
+
+    /// True when the guest process, and the gateway when one was spawned, are
+    /// still running.
+    #[must_use]
+    pub fn guest_running(&self) -> bool {
+        let guest_ok = self
+            .guest_pid
+            .is_some_and(crate::spawn_stdio::process_still_running);
+        let gateway_ok = self
+            .gateway_pid
+            .map(crate::spawn_stdio::process_still_running)
+            .unwrap_or(true);
+        guest_ok && gateway_ok
     }
 
     /// Host-owned gateway session directory, when this session has a sibling.

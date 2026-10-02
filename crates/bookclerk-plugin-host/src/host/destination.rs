@@ -31,6 +31,11 @@ pub struct DestinationRegistry {
     local: Option<Arc<dyn StorageBackend>>,
     /// Plugin sessions keyed by `(plugin_id, account_id)`.
     plugin_sessions: std::collections::HashMap<String, Arc<PluginSession>>,
+    /// Present deployment instance id for each session the reconciler spawned.
+    ///
+    /// Keyed by [`PluginSession::instance_key`]. A transitional session has no
+    /// entry, so reload does not copy it onto the replacement registry.
+    deployed_instances: std::collections::HashMap<String, String>,
 }
 
 impl DestinationRegistry {
@@ -84,6 +89,48 @@ impl DestinationRegistry {
         self.plugin_sessions
             .insert(session.instance_key().to_string(), session);
     }
+
+    /// Records that `instance_key` is the reconciler's session for `plugin_instance_id`.
+    pub(crate) fn note_deployed_instance(&mut self, instance_key: &str, plugin_instance_id: &str) {
+        if plugin_instance_id.is_empty() {
+            return;
+        }
+        self.deployed_instances
+            .insert(instance_key.to_string(), plugin_instance_id.to_string());
+    }
+
+    /// Copies deployed sessions from this registry onto `candidate`.
+    ///
+    /// `deployed_instances` is the set of present plugin instance ids. Reload
+    /// builds `candidate` without those plugin keys. Only sessions the
+    /// reconciler bound to one of those ids are copied, including the S3 or
+    /// local backend they own. A transitional session for the same key is left
+    /// behind.
+    pub fn reattach_owned(
+        &self,
+        candidate: &mut Self,
+        deployed_instances: &std::collections::BTreeSet<String>,
+    ) {
+        for session in self.plugin_sessions.values() {
+            let Some(instance_id) = self.deployed_instances.get(session.instance_key()) else {
+                continue;
+            };
+            if !deployed_instances.contains(instance_id) {
+                continue;
+            }
+            if session.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
+                if let Some(backend) = &self.s3 {
+                    candidate.s3 = Some(Arc::clone(backend));
+                }
+            } else if session.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
+                if let Some(backend) = &self.local {
+                    candidate.local = Some(Arc::clone(backend));
+                }
+            }
+            candidate.note_deployed_instance(session.instance_key(), instance_id);
+            candidate.set_plugin_session(Arc::clone(session));
+        }
+    }
 }
 
 /// Discover and spawn external output plugins.
@@ -100,6 +147,25 @@ impl DestinationRegistry {
 pub async fn load_external_destinations(
     config: &Config,
     db: Option<&DatabaseConnection>,
+) -> PluginResult<DestinationRegistry> {
+    load_external_destinations_with_store(config, db, None, &std::collections::BTreeSet::new())
+        .await
+}
+
+/// [`load_external_destinations`] with an open library and deployment skips.
+///
+/// `store` supplies instance documents. `skip` plugin keys are left to the
+/// deployment reconciler. Database connect bootstrap is not involved.
+///
+/// # Errors
+///
+/// Returns an error when discovery fails or an enabled destination guest fails
+/// to spawn.
+pub async fn load_external_destinations_with_store(
+    config: &Config,
+    db: Option<&DatabaseConnection>,
+    store: Option<&bookclerk_library::LibraryStore>,
+    skip: &std::collections::BTreeSet<String>,
 ) -> PluginResult<DestinationRegistry> {
     let mut registry = DestinationRegistry::default();
     let plugins = crate::discover_plugins(config)?;
@@ -125,9 +191,16 @@ pub async fn load_external_destinations(
                     "output plugin is not api_version 3; skipping"
                 );
             }
+            Some(plugin) if skip.contains(plugin.plugin_key().canonical()) => {
+                tracing::info!(
+                    plugin_key = %plugin.plugin_key().canonical(),
+                    "skipping S3 destination owned by a local deployment"
+                );
+            }
             Some(plugin) => {
-                let (storage_backend, session) =
-                    spawn_s3_guest(plugin, config, db).await.map_err(|err| {
+                let (storage_backend, session) = spawn_s3_guest(plugin, config, db, store)
+                    .await
+                    .map_err(|err| {
                         crate::PluginError::message(format!(
                             "failed to start S3 output plugin guest: {err}"
                         ))
@@ -159,8 +232,14 @@ pub async fn load_external_destinations(
                     plugin.alias()
                 )));
             }
+            Some(plugin) if skip.contains(plugin.plugin_key().canonical()) => {
+                tracing::info!(
+                    plugin_key = %plugin.plugin_key().canonical(),
+                    "skipping local destination owned by a local deployment"
+                );
+            }
             Some(plugin) => {
-                super::destination_local::try_load_local(plugin, config, &mut registry)
+                super::destination_local::try_load_local(plugin, config, store, &mut registry)
                     .await
                     .map_err(|err| {
                         crate::PluginError::message(format!(
@@ -179,14 +258,79 @@ pub async fn load_external_destinations(
     Ok(registry)
 }
 
+/// Spawns one deployed storage plugin into `registry`.
+///
+/// `prepared` is the deployment's resolved bindings. This function does not
+/// look up an instance by plugin key. The returned session is the one `open`
+/// used.
+///
+/// # Errors
+///
+/// Returns an error when the guest cannot start or `open` fails.
+pub(crate) async fn spawn_deployed_storage(
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+    store: Option<&bookclerk_library::LibraryStore>,
+    registry: &mut DestinationRegistry,
+    prepared: crate::instance_bindings::PreparedOpen,
+) -> PluginResult<Arc<PluginSession>> {
+    if plugin.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
+        let (storage_backend, session) =
+            spawn_s3_guest_prepared(plugin, config, None, prepared).await?;
+        registry.s3 = Some(Arc::new(storage_backend));
+        registry.set_plugin_session(Arc::clone(&session));
+        return Ok(session);
+    }
+    if plugin.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
+        let (storage, session) =
+            super::destination_local::spawn_local_prepared(plugin, config, prepared).await?;
+        registry.set_local(Arc::new(storage));
+        registry.set_plugin_session(Arc::clone(&session));
+        return Ok(session);
+    }
+    let session = Arc::new(
+        PluginSession::spawn_with(
+            plugin,
+            config,
+            prepared.spawn_config_table,
+            crate::OPERATOR_ACCOUNT,
+            &[],
+            crate::SessionServices::from_outbox(store),
+        )
+        .await?,
+    );
+    session.open(prepared.bindings).await?;
+    registry.set_plugin_session(Arc::clone(&session));
+    Ok(session)
+}
+
 /// Spawns the S3 destination as an external Cap'n Proto guest.
 async fn spawn_s3_guest(
     plugin: &DiscoveredPlugin,
     config: &Config,
     db: Option<&DatabaseConnection>,
+    store: Option<&bookclerk_library::LibraryStore>,
 ) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
     let table = crate::settings_table(config, plugin);
-    let config_json = toml_to_json(&toml::Value::Table(table));
+    let transitional = toml_to_json(&toml::Value::Table(table));
+    let prepared = crate::instance_bindings::prepare_open_bindings(
+        store,
+        &config.paths().files_dir,
+        plugin,
+        transitional,
+    )
+    .await?;
+    spawn_s3_guest_prepared(plugin, config, db, prepared).await
+}
+
+/// Spawns the S3 guest with bindings the caller already resolved.
+async fn spawn_s3_guest_prepared(
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+    db: Option<&DatabaseConnection>,
+    prepared: crate::instance_bindings::PreparedOpen,
+) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
+    let config_json = prepared.spawn_config_table;
     let s3_config = config.output.s3.clone();
     let prefix = normalize_storage_prefix(s3_config.prefix.trim());
     let credentials = resolve_host_credentials(db)
@@ -233,12 +377,15 @@ async fn spawn_s3_guest(
         )
         .await?,
     );
-    session
-        .open(BindingValues::config(
+    let open_bindings = if prepared.from_instance {
+        prepared.bindings
+    } else {
+        BindingValues::config(
             bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
                 .map_err(|err| crate::PluginError::message(err.to_string()))?,
-        ))
-        .await?;
+        )
+    };
+    session.open(open_bindings).await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))
 }
 

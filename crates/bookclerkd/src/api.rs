@@ -98,6 +98,8 @@ pub struct AppState {
     pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
     /// Process-stable catalog heartbeat key (resolved once at event runtime start).
     pub event_node_id: OnceLock<String>,
+    /// Guest sessions for deployed instances. One map for the process lifetime.
+    pub deployment_runtime: OnceLock<Arc<bookclerk_plugin_host::LiveDeploymentRuntime>>,
 }
 
 /// In-process tray Open Bookclerk ticket: hash of a one-time code plus expiry.
@@ -117,6 +119,22 @@ impl AppState {
     /// Clone the live operator auth `Arc` and drop the lock before further `.await`s.
     pub async fn auth_snapshot(&self) -> Arc<OperatorAuthState> {
         self.auth.read().await.clone()
+    }
+
+    /// Reconciler session map for this process. The first call creates it.
+    #[must_use]
+    pub fn deployment_runtime(&self) -> Arc<bookclerk_plugin_host::LiveDeploymentRuntime> {
+        self.deployment_runtime
+            .get_or_init(|| {
+                Arc::new(bookclerk_plugin_host::LiveDeploymentRuntime::new(
+                    Arc::clone(&self.config),
+                    Arc::clone(&self.library),
+                    Arc::clone(&self.sources),
+                    Arc::clone(&self.integrations),
+                    Arc::clone(&self.destinations),
+                ))
+            })
+            .clone()
     }
 }
 
@@ -818,6 +836,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             get(crate::config_authority::get_events_domain)
                 .put(crate::config_authority::put_events_domain),
         )
+        .route(
+            "/api/config/plugin-instances/{id}/config",
+            put(crate::config_authority::put_plugin_instance_config),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",
@@ -1252,6 +1274,9 @@ pub async fn start_integration_watchers(state: &AppState) {
             });
         })),
     };
+    state
+        .deployment_runtime()
+        .set_integration_context(ctx.clone());
     if let Err(err) = registry.start_all(ctx).await {
         tracing::warn!(%err, "integration start_all reported errors");
     }
@@ -1341,22 +1366,47 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         &control_plane.events,
         &control_plane.cluster_id,
     );
+    if let Err(err) = bookclerk_plugin_host::enroll_graphicaudio_instance(
+        &library_for_auth,
+        &new_cfg,
+        &control_plane.host.host_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %err,
+            "GraphicAudio instance import did not complete during reload"
+        );
+    }
+    let owned =
+        crate::registry::deployment_skip_keys(&library_for_auth, &control_plane.host.host_id)
+            .await?;
+    let deployed =
+        crate::registry::deployment_instance_ids(&library_for_auth, &control_plane.host.host_id)
+            .await?;
 
     let candidate_auth = build_operator_auth(&new_cfg, &library_for_auth).await?;
     // Defense in depth: never publish a non-loopback listen with auth disabled
     // in the *runtime* object (validate_daemon_listen already checked config).
     validate_daemon_listen_against_auth(&new_cfg, candidate_auth.enabled)?;
 
-    let candidate_destinations = {
+    let mut candidate_destinations = {
         let lib_db = library_for_auth.db();
-        bookclerk_plugin_host::load_external_destinations(&new_cfg, Some(lib_db)).await?
+        bookclerk_plugin_host::load_external_destinations_with_store(
+            &new_cfg,
+            Some(lib_db),
+            Some(&library_for_auth),
+            &owned,
+        )
+        .await?
     };
 
-    let candidate_sources =
-        crate::registry::default_registry_with_plugins(&new_cfg, &library_for_auth).await?;
-    let candidate_integrations = bookclerk_plugin_host::load_integrations(
+    let mut candidate_sources =
+        crate::registry::registry_skipping_deployments(&new_cfg, &library_for_auth, &owned).await?;
+    let mut candidate_integrations = bookclerk_plugin_host::load_integrations_skipping(
         &new_cfg,
         &bookclerk_plugin_host::SessionServices::with_event_outbox(library_for_auth.clone()),
+        &owned,
     )
     .await?;
 
@@ -1379,16 +1429,47 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // leave workers on the candidate `[media]` while AppState stays on the old one.
     bookclerk_media::init_pool_from_config(&new_cfg.media);
 
-    // Publish: stop old integrations, swap all slots, then notify listen.
+    // Publish: keep sessions bound to a present instance id. Stop every other
+    // integration, including a transitional guest that shares a deployed key.
     {
-        let old_integrations = {
-            let mut guard = state.integrations.write().await;
-            std::mem::replace(&mut *guard, candidate_integrations)
-        };
-        old_integrations.stop_all().await;
-
-        *state.sources.write().await = candidate_sources;
-        *state.destinations.write().await = candidate_destinations;
+        let mut sources = state.sources.write().await;
+        let mut integrations = state.integrations.write().await;
+        let mut destinations = state.destinations.write().await;
+        let disabled_sources: Vec<String> = sources
+            .all()
+            .iter()
+            .filter_map(|source| {
+                let id = source.plugin_instance_id()?;
+                if deployed.contains(id) && !new_cfg.sources.is_enabled(source.id()) {
+                    Some(id.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        crate::registry::reattach_deployed_sources(
+            &mut candidate_sources,
+            &sources,
+            &deployed,
+            &new_cfg,
+        );
+        crate::registry::reattach_deployed_integrations(
+            &mut candidate_integrations,
+            &integrations,
+            &deployed,
+        );
+        destinations.reattach_owned(&mut candidate_destinations, &deployed);
+        let old_integrations = std::mem::replace(&mut *integrations, candidate_integrations);
+        *sources = candidate_sources;
+        *destinations = candidate_destinations;
+        drop(sources);
+        drop(integrations);
+        drop(destinations);
+        let runtime = state.deployment_runtime();
+        for id in &disabled_sources {
+            runtime.forget_guest(id);
+        }
+        old_integrations.stop_except(&deployed).await;
         if let (Some(registry), Some(library)) = (candidate_db_registry, candidate_library) {
             *state.database_registry.write().await = registry;
             *state.library.write().await = library;
@@ -3313,6 +3394,33 @@ async fn patch_settings(
             })),
         )
             .into_response());
+    }
+    if updates
+        .iter()
+        .any(|(key, _)| bookclerk_plugin_host::is_graphicaudio_imported_setting(key))
+    {
+        let library = state.library_snapshot().await;
+        let cfg = state.config.read().await.clone();
+        match bookclerk_plugin_host::graphicaudio_document_exists(&library, &cfg).await {
+            Ok(true) => {
+                tracing::warn!(
+                    "rejected settings update for GraphicAudio keys owned by the instance document"
+                );
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "plugin_instance_configuration",
+                        "message": "GraphicAudio access, base_url, store_url, bitrate, and container are stored on the plugin instance; use PUT /api/config/plugin-instances/{id}/config",
+                    })),
+                )
+                    .into_response());
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::error!(error = %err, "could not read GraphicAudio instance document");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+            }
+        }
     }
 
     let _reload_guard = state.reload_lock.lock().await;
@@ -6139,6 +6247,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             event_node_id: std::sync::OnceLock::new(),
+            deployment_runtime: std::sync::OnceLock::new(),
         });
 
         let app = Router::new()
@@ -6238,6 +6347,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             event_node_id: std::sync::OnceLock::new(),
+            deployment_runtime: std::sync::OnceLock::new(),
         });
 
         let app = Router::new()

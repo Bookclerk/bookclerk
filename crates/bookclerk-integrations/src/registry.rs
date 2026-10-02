@@ -1,5 +1,6 @@
 //! Registry of outbound integrations.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tracing::{error, info, warn};
@@ -48,6 +49,27 @@ impl IntegrationRegistry {
         }
         info!(id = integration.id(), "registered integration");
         self.integrations.push(integration);
+    }
+
+    /// Removes every registration of `plugin_instance_id`.
+    ///
+    /// Other instances of the same plugin key stay. The caller stops each
+    /// returned integration before publishing a replacement.
+    #[must_use]
+    pub fn take_instance(&mut self, plugin_instance_id: &str) -> Vec<Arc<dyn Integration>> {
+        let mut retired = Vec::new();
+        if plugin_instance_id.is_empty() {
+            return retired;
+        }
+        self.integrations.retain(|integration| {
+            if integration.plugin_instance_id() == Some(plugin_instance_id) {
+                retired.push(Arc::clone(integration));
+                false
+            } else {
+                true
+            }
+        });
+        retired
     }
 
     /// Returns the integration with this id, if registered.
@@ -124,7 +146,23 @@ impl IntegrationRegistry {
 
     /// Stop all integrations (background watchers). Errors are logged, not fatal.
     pub async fn stop_all(&self) {
+        self.stop_except(&BTreeSet::new()).await;
+    }
+
+    /// Stops integrations that are not a present deployed instance.
+    ///
+    /// `keep` is plugin instance ids. Config reload reattaches those guests
+    /// onto the replacement registry and leaves them running. A transitional
+    /// integration is stopped even when its plugin key has a deployment.
+    /// Errors are logged, not fatal.
+    pub async fn stop_except(&self, keep: &BTreeSet<String>) {
         for integration in &self.integrations {
+            if integration
+                .plugin_instance_id()
+                .is_some_and(|id| !id.is_empty() && keep.contains(id))
+            {
+                continue;
+            }
             if let Err(err) = integration.stop().await {
                 error!(id = integration.id(), %err, "integration stop failed");
             }
@@ -218,5 +256,73 @@ impl IntegrationRegistry {
             }
         }
         summary
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use bookclerk_plugin_abi::{DomainEvent, EventResult};
+
+    use super::IntegrationRegistry;
+    use crate::traits::{Integration, IntegrationContext};
+    use crate::types::IntegrationHealth;
+
+    struct Stub {
+        instance: Option<&'static str>,
+    }
+
+    #[async_trait]
+    impl Integration for Stub {
+        fn id(&self) -> &str {
+            "stub"
+        }
+
+        fn plugin_key(&self) -> &str {
+            "plugin"
+        }
+
+        fn plugin_instance_id(&self) -> Option<&str> {
+            self.instance
+        }
+
+        async fn start(&self, _ctx: IntegrationContext) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        async fn deliver_domain_event(
+            &self,
+            _event: DomainEvent,
+        ) -> crate::error::Result<EventResult> {
+            Ok(EventResult::Ack)
+        }
+
+        async fn health(&self) -> crate::error::Result<IntegrationHealth> {
+            Ok(IntegrationHealth {
+                id: "stub".into(),
+                enabled: true,
+                ok: true,
+                detail: None,
+            })
+        }
+    }
+
+    #[test]
+    fn take_instance_leaves_the_other_instance_of_the_same_key() {
+        let mut registry = IntegrationRegistry::new();
+        registry.register(Arc::new(Stub {
+            instance: Some("instance-a"),
+        }));
+        registry.register(Arc::new(Stub {
+            instance: Some("instance-b"),
+        }));
+        let retired = registry.take_instance("instance-a");
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].plugin_instance_id(), Some("instance-a"));
+        assert_eq!(registry.all().len(), 1);
+        assert_eq!(registry.all()[0].plugin_instance_id(), Some("instance-b"));
+        assert!(registry.take_instance("instance-a").is_empty());
     }
 }

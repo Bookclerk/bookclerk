@@ -11,8 +11,7 @@ use bookclerk_integrations::{
     IntegrationRegistry, ProvidedOidcClient,
 };
 use bookclerk_plugin_sdk::{
-    AuthenticateUserParams, BindingValues, DomainEvent, EventResult, ExtensibleConfig,
-    ScanLibraryParams, PRODUCT_API_VERSION,
+    AuthenticateUserParams, DomainEvent, EventResult, ScanLibraryParams, PRODUCT_API_VERSION,
 };
 use serde_json::Value;
 use tracing::warn;
@@ -26,6 +25,10 @@ pub struct ExternalIntegration {
     /// Cap'n Proto session (never given `library.db`); opened once with the
     /// granted plugin config table as the `CONFIG` binding.
     session: Arc<PluginSession>,
+    /// `CONFIG` payload passed to `PluginWorker.open`.
+    opened_config: bookclerk_plugin_sdk::ExtensibleConfig,
+    /// `SECRETS` payload passed to `PluginWorker.open`.
+    opened_secrets: bookclerk_plugin_sdk::ExtensibleConfig,
     /// Operator-facing name from describe metadata (falls back to the manifest id).
     display_name: String,
     /// Whether this integration is enabled in host config after describe.
@@ -40,6 +43,8 @@ pub struct ExternalIntegration {
     poll_cancel: Arc<AtomicBool>,
     /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded poll loop exits.
     poll_epoch: Arc<AtomicU64>,
+    /// Deployment instance id. `None` until the reconciler binds one.
+    plugin_instance_id: Option<String>,
 }
 
 impl ExternalIntegration {
@@ -80,18 +85,50 @@ impl ExternalIntegration {
             .get("allow_credential_login")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let prepared = crate::instance_bindings::prepare_open_bindings_selecting(
+            services.event_outbox.as_ref(),
+            &config.paths().files_dir,
+            plugin,
+            config_json,
+            services.selected_instance_id.as_deref(),
+        )
+        .await?;
+        Self::spawn_prepared(plugin, config, services, prepared, allow_credential_login).await
+    }
+
+    /// Spawn with bindings the deployment reconciler already resolved.
+    ///
+    /// Does not look up an instance by plugin key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest cannot start or `open` fails.
+    pub(crate) async fn spawn_prepared(
+        plugin: &DiscoveredPlugin,
+        config: &Config,
+        services: SessionServices,
+        prepared: crate::instance_bindings::PreparedOpen,
+        allow_credential_login: bool,
+    ) -> Result<Self> {
+        if plugin.manifest.api_version != PRODUCT_API_VERSION {
+            return Err(crate::PluginError::message(format!(
+                "plugin `{}` api_version {} is not supported",
+                plugin.manifest.id, plugin.manifest.api_version
+            )));
+        }
+        let opened_config = prepared.bindings.config.clone();
+        let opened_secrets = prepared.bindings.secrets.clone();
         let session = Arc::new(
             PluginSession::spawn_with(
                 plugin,
                 config,
-                config_json.clone(),
+                prepared.spawn_config_table.clone(),
                 HOST_SHARED_ACCOUNT,
                 &[],
                 services,
             )
             .await?,
         );
-        let source_config = crate::spawn_config_for_grant(session.grant(), config_json);
         let describe = session.describe_snapshot();
         let display_name = describe
             .display_name
@@ -116,13 +153,11 @@ impl ExternalIntegration {
                 filter: s.filter.clone().filter(|v| !v.is_null()),
             })
             .collect();
-        session
-            .open(BindingValues::config(ExtensibleConfig::json(
-                &source_config,
-            )))
-            .await?;
+        session.open(prepared.bindings).await?;
         Ok(Self {
             session,
+            opened_config,
+            opened_secrets,
             display_name,
             enabled: true,
             brand,
@@ -130,7 +165,63 @@ impl ExternalIntegration {
             event_subscriptions,
             poll_cancel: Arc::new(AtomicBool::new(false)),
             poll_epoch: Arc::new(AtomicU64::new(0)),
+            plugin_instance_id: None,
         })
+    }
+
+    /// Records the deployment instance id used to recognize this guest on reload.
+    pub(crate) fn bind_plugin_instance(&mut self, plugin_instance_id: &str) {
+        self.plugin_instance_id = Some(plugin_instance_id.to_string());
+    }
+
+    /// Session opened for this integration.
+    #[must_use]
+    pub(crate) fn session(&self) -> &Arc<PluginSession> {
+        &self.session
+    }
+
+    /// `CONFIG` JSON passed to `open`.
+    #[must_use]
+    pub(crate) fn opened_config(&self) -> &bookclerk_plugin_sdk::ExtensibleConfig {
+        &self.opened_config
+    }
+
+    /// `SECRETS` JSON passed to `open`.
+    #[must_use]
+    pub(crate) fn opened_secrets(&self) -> &bookclerk_plugin_sdk::ExtensibleConfig {
+        &self.opened_secrets
+    }
+
+    /// Integration health RPC.
+    ///
+    /// Guests that do not export `remoteLibrary` are ready once `open` has
+    /// succeeded. Event, job, OIDC, and CLI-only integrations use that
+    /// describe/open check. This function calls remote-library health only
+    /// when that entrypoint is exported.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when remote-library health reports not ok.
+    pub async fn check_health(&self) -> Result<()> {
+        if !self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            return Ok(());
+        }
+        let ok = self
+            .session
+            .remote_library(|src| async move { src.health().await })
+            .await?;
+        if ok.ok {
+            Ok(())
+        } else {
+            Err(crate::PluginError::message(if ok.detail.is_empty() {
+                "health failed".to_string()
+            } else {
+                ok.detail
+            }))
+        }
     }
 
     /// Runs one typed `remoteLibrary` method through the plugin session.
@@ -163,6 +254,26 @@ pub async fn load_external_integrations(
     registry: &mut IntegrationRegistry,
     services: &SessionServices,
 ) -> Result<()> {
+    load_external_integrations_skipping(
+        config,
+        registry,
+        services,
+        &std::collections::BTreeSet::new(),
+    )
+    .await
+}
+
+/// [`load_external_integrations`] that leaves `skip` plugin keys to the deployment reconciler.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn load_external_integrations_skipping(
+    config: &Config,
+    registry: &mut IntegrationRegistry,
+    services: &SessionServices,
+    skip: &std::collections::BTreeSet<String>,
+) -> Result<()> {
     let plugins = crate::discover_plugins(config)?;
     let integrations: Vec<_> = plugins
         .into_iter()
@@ -185,6 +296,14 @@ pub async fn load_external_integrations(
         let Some(plugin) = crate::resolve_plugin_slot(&integrations, spec)? else {
             continue;
         };
+        if skip.contains(plugin.plugin_key().canonical()) {
+            tracing::info!(
+                plugin_key = %plugin.plugin_key().canonical(),
+                alias = %plugin.manifest.id,
+                "skipping external integration owned by a local deployment"
+            );
+            continue;
+        }
         if registry.get(plugin.plugin_key().canonical()).is_some() {
             tracing::debug!(
                 plugin_key = %plugin.plugin_key().canonical(),
@@ -223,6 +342,10 @@ impl Integration for ExternalIntegration {
 
     fn plugin_key(&self) -> &str {
         self.session.id()
+    }
+
+    fn plugin_instance_id(&self) -> Option<&str> {
+        self.plugin_instance_id.as_deref()
     }
 
     fn display_name(&self) -> &str {

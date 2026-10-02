@@ -1081,6 +1081,34 @@ same manifest alias) does not inherit grants.
 
 ## Enabling and settings in `config.toml`
 
+A plugin instance document, when one exists, is the `CONFIG` and `SECRETS`
+binding for that instance. Two instances may share a plugin key. A deployment
+spawn uses that instance's already resolved bindings. Key lookup remains only
+for a plugin that has no deployment, which keeps the tables below.
+GraphicAudio's imported keys (`access`, `base_url`, `store_url`, `bitrate`,
+`container`) are not written back to `[sources.graphicaudio]` after the first
+import.
+
+The local reconciler installs from `$BOOKCLERK_FILES_DIR/plugin-packages/<name>/`
+when the ledger and discovery both miss the key. That directory is the
+operator's authorized local source: `package.json` plus `archive.tar.gz`,
+with artifact URLs limited to files inside the package directory. The
+reconciler does not download plugins. It starts the staged guest and calls
+health before commit, and it respawns a guest that has exited even when the
+last observation was healthy. The daemon keeps one guest map for the process.
+Config reload builds registries that omit deployed keys, then copies live
+sources, integrations, and storage sessions that are bound to a present plugin
+instance id. A transitional guest for the same key is not copied. Reload stops
+that integration and drops the source or storage session. Copied guests are
+not stopped, so API and job lookup still reach the same process.
+A deployed storefront is registered under its plugin instance id. Job lookup
+resolves that id. A plugin key or alias resolves only when exactly one
+registered source matches, so two instances of one key stay distinct.
+`sources.graphicaudio.enabled = false` retires a running GraphicAudio guest on
+the next reconcile and on reload. The deployment row can remain.
+`bookclerk library scan` and `bookclerk library acquire` use that instance
+document. When several instances share the plugin key, pass `--instance`.
+
 Plugin `id` must match a config table. **External integrations default to
 disabled**; sources follow the usual `[sources.<id>]` rules (missing → enabled).
 `plugins enable` still refuses until a grant exists.

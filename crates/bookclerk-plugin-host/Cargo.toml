@@ -51,11 +51,13 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
 ] }
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
+wiremock.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 

@@ -886,6 +886,42 @@ pub(crate) fn exited_without_reaping(pid: u32) -> bool {
     unsafe { info.assume_init().si_pid() == pid as libc::pid_t }
 }
 
+/// True when `pid` still has a running process.
+///
+/// A zombie child counts as exited. A recycled pid can look alive; callers
+/// that still hold the session use this only to decide whether to respawn.
+#[cfg(unix)]
+pub(crate) fn process_still_running(pid: u32) -> bool {
+    if exited_without_reaping(pid) {
+        return false;
+    }
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// True when `pid` still has a running process.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(crate) fn process_still_running(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        let _ = CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
 /// Capture identities for leaders that exist right now.
 fn sibling_identities(gateway: Option<&Child>, guest: Option<&Child>) -> SiblingIdentities {
     #[cfg(unix)]

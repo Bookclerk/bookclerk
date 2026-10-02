@@ -12,10 +12,26 @@ pub async fn default_registry_with_plugins(
     config: &Config,
     outbox: &LibraryStore,
 ) -> anyhow::Result<SourceRegistry> {
-    Ok(
-        bookclerk_plugin_host::load_sources(config, &SessionServices::from_outbox(Some(outbox)))
-            .await?,
-    )
+    registry_with_instance(config, outbox, None).await
+}
+
+/// [`default_registry_with_plugins`] that selects one plugin instance.
+///
+/// `instance_id` applies to the plugin key that owns that id. A migrated
+/// instance uses its document. Several documents for one key require this id.
+///
+/// # Errors
+///
+/// Returns an error when discovery or guest spawn fails, or when instance
+/// selection is ambiguous or unknown.
+pub async fn registry_with_instance(
+    config: &Config,
+    outbox: &LibraryStore,
+    instance_id: Option<&str>,
+) -> anyhow::Result<SourceRegistry> {
+    let mut services = SessionServices::from_outbox(Some(outbox));
+    services.selected_instance_id = instance_id.map(str::to_string);
+    Ok(bookclerk_plugin_host::load_sources(config, &services).await?)
 }
 
 /// Integrations via the plugin host (in-process builtins + externals);

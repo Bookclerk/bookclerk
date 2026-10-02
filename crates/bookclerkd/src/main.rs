@@ -41,7 +41,7 @@ use crate::api::{
 };
 use crate::event_worker::start_event_runtime;
 use crate::job_worker::start_job_runtime;
-use crate::registry::default_registry_with_plugins;
+use crate::registry::deployment_skip_keys;
 use crate::scheduler::spawn_scheduler;
 
 #[derive(Debug, Parser)]
@@ -134,15 +134,34 @@ async fn main() -> anyhow::Result<()> {
         events_revision = control_plane.events.revision,
         "enrolled control plane; core.events is database-authoritative"
     );
+    if let Err(err) = bookclerk_plugin_host::enroll_graphicaudio_instance(
+        &library_store,
+        &config,
+        &control_plane.host.host_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %err,
+            "GraphicAudio instance import did not complete; file-backed settings stay in use"
+        );
+    }
+    let owned = deployment_skip_keys(&library_store, &control_plane.host.host_id).await?;
     let session_services =
         bookclerk_plugin_host::SessionServices::with_event_outbox(library_store.clone());
-    let integrations = bookclerk_plugin_host::load_integrations(&config, &session_services).await?;
-    let destinations =
-        bookclerk_plugin_host::load_external_destinations(&config, Some(library_store.db()))
+    let integrations =
+        bookclerk_plugin_host::load_integrations_skipping(&config, &session_services, &owned)
             .await?;
+    let destinations = bookclerk_plugin_host::load_external_destinations_with_store(
+        &config,
+        Some(library_store.db()),
+        Some(&library_store),
+        &owned,
+    )
+    .await?;
     let sources = {
         let cfg = config.clone();
-        default_registry_with_plugins(&cfg, &library_store).await?
+        registry::registry_skipping_deployments(&cfg, &library_store, &owned).await?
     };
     let library = Arc::new(RwLock::new(library_store));
     let database_registry = Arc::new(RwLock::new(database_registry));
@@ -173,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         event_node_id: std::sync::OnceLock::new(),
+        deployment_runtime: std::sync::OnceLock::new(),
     });
 
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
@@ -183,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
     start_job_runtime(state.clone()).await;
     start_event_runtime(state.clone());
     config_authority::spawn_config_reconciler(state.clone());
+    config_authority::spawn_deployment_reconciler(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

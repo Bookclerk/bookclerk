@@ -1865,6 +1865,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "wiremock",
 ]
 
 [[package]]
@@ -2199,6 +2200,7 @@ dependencies = [
  "bookclerk-integrations",
  "bookclerk-library",
  "bookclerk-media",
+ "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
  "bookclerk-search",
