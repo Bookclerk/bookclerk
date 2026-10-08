@@ -56,9 +56,9 @@ impl LibraryStore {
     /// `status` is the wire string from [`crate::AcquireStatus::as_str`].
     /// `limit` is clamped to 1..=500. `total` uses the same `WHERE` as the page.
     ///
-    /// The page is read in [`BOOK_PAGE_CHUNK`]-row pieces so a requested limit
-    /// of 256 stays under the guest result-byte cap. `limit`, `offset`, and
-    /// `total` are the caller's page, not the chunk.
+    /// The page is read 64 rows at a time so a requested limit of 256 stays
+    /// under the guest result-byte cap. `limit`, `offset`, and `total` are
+    /// the caller's page, not one of those pieces.
     ///
     /// # Errors
     ///
