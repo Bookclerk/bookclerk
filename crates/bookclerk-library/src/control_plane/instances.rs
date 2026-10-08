@@ -7,7 +7,7 @@
 use chrono::Utc;
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect, Statement, TransactionTrait, Value,
+    QuerySelect, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -226,15 +226,11 @@ async fn insert_default_enrollment(
     plugin_key: &str,
     plugin_instance_id: &str,
 ) -> Result<()> {
-    let backend = conn.get_database_backend();
-    conn.execute_raw(Statement::from_sql_and_values(
-        backend,
-        "INSERT INTO plugin_instance_defaults (plugin_key, plugin_instance_id) VALUES ($1, $2)",
-        vec![
-            Value::from(plugin_key.to_string()),
-            Value::from(plugin_instance_id.to_string()),
-        ],
-    ))
+    bookclerk_db_exec::execute_canonical(
+        conn,
+        "INSERT INTO plugin_instance_defaults (plugin_key, plugin_instance_id) VALUES (?, ?)",
+        [plugin_key.into(), plugin_instance_id.into()],
+    )
     .await
     .map_err(LibraryError::Orm)?;
     Ok(())
@@ -259,16 +255,14 @@ async fn default_instance_id(
     conn: &impl ConnectionTrait,
     plugin_key: &str,
 ) -> Result<Option<String>> {
-    let backend = conn.get_database_backend();
-    let row = conn
-        .query_one_raw(Statement::from_sql_and_values(
-            backend,
-            "SELECT plugin_instance_id FROM plugin_instance_defaults WHERE plugin_key = $1",
-            vec![Value::from(plugin_key.to_string())],
-        ))
-        .await
-        .map_err(LibraryError::Orm)?;
-    match row {
+    let rows = bookclerk_db_exec::query_canonical(
+        conn,
+        "SELECT plugin_instance_id FROM plugin_instance_defaults WHERE plugin_key = ?",
+        [plugin_key.into()],
+    )
+    .await
+    .map_err(LibraryError::Orm)?;
+    match rows.first() {
         Some(row) => Ok(Some(
             row.try_get("", "plugin_instance_id")
                 .map_err(LibraryError::Orm)?,
