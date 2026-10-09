@@ -65,6 +65,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid ON books(uuid)"),
+    // Search hydration matches `lower(uuid)`. A btree on the expression keeps
+    // that predicate off a table scan. Stored uuids that differ only by ASCII
+    // case stay distinct rows.
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid_lower ON books(lower(uuid))"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_status ON books(acquire_status)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_account ON books(account_id)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)"),

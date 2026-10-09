@@ -308,8 +308,14 @@ pub async fn heartbeat_process(
     files_dir: &Path,
     scratch_dir: &Path,
 ) -> Result<HostRecord> {
-    let observation =
-        sample_host_observation(process_cgroup_dir().as_deref(), files_dir, scratch_dir);
+    let cgroup = process_cgroup_dir();
+    let files = files_dir.to_path_buf();
+    let scratch = scratch_dir.to_path_buf();
+    let observation = tokio::task::spawn_blocking(move || {
+        sample_host_observation(cgroup.as_deref(), &files, &scratch)
+    })
+    .await
+    .map_err(|err| LibraryError::Other(anyhow::anyhow!("heartbeat sample panicked: {err}")))?;
     register_and_heartbeat(
         store,
         host_id,
@@ -356,15 +362,28 @@ fn scratch_tree_bytes(scratch_dir: &Path) -> u64 {
         .saturating_add(dir_bytes(&scratch_dir.join("acquire-pdf")))
 }
 
+/// Directory entries visited by one scratch walk before it returns what it has.
+const SCRATCH_WALK_ENTRY_CAP: u64 = 100_000;
+
 /// Recursive file size. Missing paths and unreadable entries count as zero.
+///
+/// The walk stops after 100_000 entries and returns the bytes counted so far.
 fn dir_bytes(path: &Path) -> u64 {
     let mut total = 0u64;
+    let mut seen = 0u64;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        if seen >= SCRATCH_WALK_ENTRY_CAP {
+            break;
+        }
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in rd.flatten() {
+            seen += 1;
+            if seen > SCRATCH_WALK_ENTRY_CAP {
+                break;
+            }
             let Ok(meta) = entry.metadata() else {
                 continue;
             };

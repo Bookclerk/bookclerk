@@ -22,26 +22,23 @@ EXPECTED_BOOKS_ROUTES = (
 )
 
 
+def _first_int(sample: dict, keys: tuple[str, ...]) -> tuple[str, int | None]:
+    """First integer among `keys`, else the first key and no sample."""
+    for key in keys:
+        value = sample.get(key)
+        if isinstance(value, int):
+            return key, value
+    return keys[0], None
+
+
 def _daemon_memory(sample: dict) -> tuple[str, int | None]:
-    """Anonymous memory for the daemon window, else `memory.current`."""
-    anon = sample.get("anon")
-    if isinstance(anon, int):
-        return "anon", anon
-    current = sample.get("memory_current")
-    if isinstance(current, int):
-        return "memory.current", current
-    return "anon", None
+    """Daemon RssAnon when the kernel reports it, else cgroup anon, else current."""
+    return _first_int(sample, ("rss_anon_bytes", "rss_anon", "anon", "memory_current"))
 
 
 def _polled_memory(window: dict) -> tuple[str, int | None]:
-    """Maximum anonymous memory polled during an active window."""
-    anon = window.get("anon_max")
-    if isinstance(anon, int):
-        return "anon_max", anon
-    current = window.get("memory_current_max")
-    if isinstance(current, int):
-        return "memory.current_max", current
-    return "anon_max", None
+    """Maximum daemon RssAnon during a window, else cgroup anon, else current."""
+    return _first_int(window, ("rss_anon_max", "anon_max", "memory_current_max"))
 
 
 def _cpu_is_one_core(cpu_max: str) -> bool:

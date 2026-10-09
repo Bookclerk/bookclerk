@@ -949,31 +949,15 @@ fn lock_waker(waker: &Mutex<Option<Waker>>) -> std::sync::MutexGuard<'_, Option<
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `try_update` on rustc 1.95+ and `fetch_update` on the 1.94 MSRV.
-///
-/// Current CI denies deprecated `fetch_update`. The rename is not in 1.94, so
-/// `build.rs` sets `bookclerk_atomic_try_update` only when rustc is new enough.
-/// MSRV stays 1.94.
-macro_rules! atomic_update {
-    ($atom:expr, $set:expr, $fetch:expr, $update:expr) => {{
-        #[cfg(bookclerk_atomic_try_update)]
-        #[allow(clippy::incompatible_msrv)]
-        {
-            $atom.try_update($set, $fetch, $update)
-        }
-        #[cfg(not(bookclerk_atomic_try_update))]
-        #[allow(deprecated)]
-        {
-            $atom.fetch_update($set, $fetch, $update)
-        }
-    }};
-}
-
 fn sub_atomic(counter: &AtomicUsize, n: usize) {
     if n == 0 {
         return;
     }
-    let _ = atomic_update!(counter, Ordering::AcqRel, Ordering::Acquire, |cur| {
+    // `try_update` is 1.95+ and does not compile on the 1.94 MSRV. `fetch_update`
+    // is slated for deprecation (1.99); the allow keeps `-D warnings` green once
+    // it lands. Switch to `try_update` when MSRV reaches 1.95.
+    #[allow(deprecated)]
+    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         Some(cur.saturating_sub(n))
     });
 }
@@ -1000,7 +984,9 @@ fn grant_send_credit(credit: &AtomicU32, in_flight: &AtomicU32, add: u32) {
             break take;
         }
     };
-    let _ = atomic_update!(credit, Ordering::AcqRel, Ordering::Acquire, |cur| {
+    // Same MSRV split as `sub_atomic`.
+    #[allow(deprecated)]
+    let _ = credit.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         let next = cur.saturating_add(grant).min(INITIAL_WINDOW);
         (next != cur).then_some(next)
     });

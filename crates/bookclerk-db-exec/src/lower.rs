@@ -1218,8 +1218,10 @@ pub(crate) fn lower_canonical_ddl_to_postgres_with(sql: &str, env: Option<&SqlTy
 /// never has to be sent to Postgres from a code span. A second pass is a
 /// no-op.
 ///
-/// `env` and `outputs` resolve tie-break types. When both miss a key, only
-/// `uuid` is collated.
+/// `env` and `outputs` resolve tie-break types. Typed `ORDER BY` text keys are
+/// recorded with `note_text` and wrapped before this pass. When both the
+/// catalog and the SELECT list miss a key, only the text page-order column
+/// `uuid` is collated so untyped DDL still matches the host index.
 pub(crate) fn rewrite_sqlite_nocase_with(
     sql: &str,
     env: Option<&SqlTypeEnv>,
@@ -1561,11 +1563,21 @@ fn sort_suffix_start(s: &str, words: &[&str]) -> Option<usize> {
     None
 }
 
+/// True when `s` contains the keyword `NULLS` outside a longer identifier.
+fn contains_nulls_keyword(s: &str) -> bool {
+    contains_keyword(s, "NULLS")
+}
+
 /// True when `s` contains the keyword `COLLATE` outside a longer identifier.
 fn contains_collate_keyword(s: &str) -> bool {
+    contains_keyword(s, "COLLATE")
+}
+
+/// True when `word` occurs in `s` on an identifier boundary.
+fn contains_keyword(s: &str, word: &str) -> bool {
     let mut i = 0;
     while i < s.len() {
-        if ident_eq_ci(s, i, "COLLATE") {
+        if ident_eq_ci(s, i, word) {
             return true;
         }
         let ch = s[i..].chars().next().unwrap_or('\0');
@@ -1600,11 +1612,12 @@ fn rewrite_nocase_idents(sql: &str) -> String {
         }
         if let Some(ident_len) = ident_len_at(sql, i) {
             let after_ident = i + ident_len;
-            let after_trivia = skip_trivia_idx(sql, after_ident);
+            let key_end = qualified_key_end(sql, after_ident);
+            let after_trivia = skip_trivia_idx(sql, key_end);
             if ident_eq_ci(sql, after_trivia, "COLLATE") {
                 let after_collate = skip_trivia_idx(sql, after_trivia + "COLLATE".len());
                 if ident_eq_ci(sql, after_collate, "NOCASE") {
-                    let ident = &sql[i..after_ident];
+                    let ident = &sql[i..key_end];
                     out.push_str("(lower(");
                     out.push_str(ident);
                     out.push_str(" COLLATE \"C\"))");
@@ -1618,6 +1631,17 @@ fn rewrite_nocase_idents(sql: &str) -> String {
         i += ch.len_utf8();
     }
     out
+}
+
+/// End of `qual.ident` when `after_ident` is the dot, otherwise `after_ident`.
+fn qualified_key_end(sql: &str, after_ident: usize) -> usize {
+    if sql.as_bytes().get(after_ident) != Some(&b'.') {
+        return after_ident;
+    }
+    let Some(col_len) = ident_len_at(sql, after_ident + 1) else {
+        return after_ident;
+    };
+    after_ident + 1 + col_len
 }
 
 /// Byte length of an unquoted identifier starting at `i`.
@@ -1636,8 +1660,10 @@ fn ident_len_at(sql: &str, i: usize) -> Option<usize> {
 
 /// Appends `NULLS FIRST` to each `CREATE INDEX` key that does not name one.
 ///
-/// Host `ORDER BY` desugar uses `NULLS FIRST`. A Postgres btree matches that
-/// order only when the index key says the same thing.
+/// Host `ORDER BY` desugar uses `NULLS FIRST` on every key. A Postgres btree
+/// matches that order only when every index key says the same thing, including
+/// expression keys such as `lower(uuid)`. The check is the keyword `NULLS`,
+/// so an identifier like `nulls_flag` still receives the clause.
 fn add_index_nulls_first(sql: &str) -> String {
     let Some(open) = index_column_list_open(sql) else {
         return sql.to_string();
@@ -1655,7 +1681,7 @@ fn add_index_nulls_first(sql: &str) -> String {
         }
         let trimmed = part.trim();
         inner.push_str(trimmed);
-        if !trimmed.to_ascii_uppercase().contains("NULLS") {
+        if !contains_nulls_keyword(trimmed) {
             inner.push_str(" NULLS FIRST");
         }
     }
@@ -3245,6 +3271,31 @@ mod nocase_index_postgres {
         assert!(
             !index.contains("(id COLLATE") && !index.contains(" id COLLATE"),
             "{index}"
+        );
+    }
+
+    #[test]
+    fn qualified_nocase_order_keeps_the_qualifier_inside_lower() {
+        let sql = "SELECT b.title FROM books b ORDER BY b.title COLLATE NOCASE, b.uuid";
+        let postgres = lower_canonical_sql(DatabaseBackend::Postgres, sql);
+        assert!(
+            postgres.contains("(lower(b.title COLLATE \"C\"))"),
+            "{postgres}"
+        );
+        assert!(
+            !postgres.contains("b.(lower"),
+            "qualifier must stay inside lower: {postgres}"
+        );
+    }
+
+    #[test]
+    fn nulls_inside_an_identifier_still_gets_nulls_first() {
+        let index = "CREATE INDEX idx ON books(nulls_flag, title COLLATE NOCASE)";
+        let lowered = lower_canonical_ddl_to_postgres(index);
+        assert!(lowered.contains("nulls_flag NULLS FIRST"), "{lowered}");
+        assert!(
+            !lowered.contains("nulls_flag NULLS FIRST NULLS"),
+            "{lowered}"
         );
     }
 }

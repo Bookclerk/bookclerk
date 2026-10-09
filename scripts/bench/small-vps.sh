@@ -111,6 +111,7 @@ doc = {
             "sample": parse(api_sample, {}),
             "anon_max": api_limits.get("anon_max"),
             "memory_current_max": api_limits.get("memory_current_max"),
+            "rss_anon_max": api_limits.get("rss_anon_max"),
             "library_db_bytes": int(db_after_api or 0),
             "library_db_wal_bytes": int(wal_after_api or 0),
             "scratch_before": parse(scratch_before, {}),
@@ -122,6 +123,7 @@ doc = {
             "sample": parse(rebuild_sample, {}),
             "anon_max": rebuild_limits.get("anon_max"),
             "memory_current_max": rebuild_limits.get("memory_current_max"),
+            "rss_anon_max": rebuild_limits.get("rss_anon_max"),
             "indexed": indexed_n,
             "elapsed_ms": elapsed,
             "books_per_ms": (indexed_n / elapsed) if elapsed else None,
@@ -353,12 +355,15 @@ reset_peak() {
 
 sample_proc() {
   local pid="$1"
-  local rss hwm
+  local rss hwm rss_anon
   rss="$(awk '/^VmRSS:/ {print $2}' "/proc/${pid}/status")"
   hwm="$(awk '/^VmHWM:/ {print $2}' "/proc/${pid}/status")"
-  python3 - "$CGROUP" "${rss:-0}" "${hwm:-0}" <<'PY'
+  rss_anon="$(awk '/^RssAnon:/ {print $2}' "/proc/${pid}/status")"
+  python3 - "$CGROUP" "${rss:-0}" "${hwm:-0}" "${rss_anon}" <<'PY'
 import json, sys
 cgroup, rss_kb, hwm_kb = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+rss_anon_raw = sys.argv[4]
+rss_anon_bytes = int(rss_anon_raw) * 1024 if rss_anon_raw else None
 def read(name):
     try:
         return open(f"{cgroup}/{name}", encoding="utf-8").read()
@@ -377,6 +382,7 @@ def num(text):
 print(json.dumps({
     "vm_rss_bytes": rss_kb * 1024,
     "vm_hwm_bytes": hwm_kb * 1024,
+    "rss_anon_bytes": rss_anon_bytes,
     "memory_current": num(read("memory.current")),
     "memory_peak": num(read("memory.peak")),
     "anon": stat.get("anon"),
@@ -413,7 +419,7 @@ stop_anon_poll() {
 anon_window_max() {
   python3 - "$1" <<'PY'
 import json, sys
-anons, currents = [], []
+anons, currents, rss_anons = [], [], []
 path = sys.argv[1]
 try:
     lines = open(path, encoding="utf-8")
@@ -431,9 +437,12 @@ for line in lines:
         anons.append(sample["anon"])
     if isinstance(sample.get("memory_current"), int):
         currents.append(sample["memory_current"])
+    if isinstance(sample.get("rss_anon_bytes"), int):
+        rss_anons.append(sample["rss_anon_bytes"])
 print(json.dumps({
     "anon_max": max(anons) if anons else None,
     "memory_current_max": max(currents) if currents else None,
+    "rss_anon_max": max(rss_anons) if rss_anons else None,
 }))
 PY
 }
@@ -507,9 +516,10 @@ fi
 run_phase() {
   local phase="$1"
   local out="$2"
-  ENVELOPE_PHASE="${phase}" ENVELOPE_PHASE_OUT="${out}" python3 - "${FILES}" "${token}" "${METRICS}" "${LABEL}" <<'PY'
+  ENVELOPE_PHASE="${phase}" ENVELOPE_PHASE_OUT="${out}" BOOKCLERK_ENVELOPE_TOKEN="${token}" python3 - "${FILES}" <<'PY'
 import json, os, random, sys, threading, time, urllib.error, urllib.request
-files, token, _metrics, _label = sys.argv[1:5]
+files = sys.argv[1]
+token = os.environ["BOOKCLERK_ENVELOPE_TOKEN"]
 base = "http://127.0.0.1:8787"
 auth = {"Authorization": f"Bearer {token}"}
 phase = os.environ["ENVELOPE_PHASE"]

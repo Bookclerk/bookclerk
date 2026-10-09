@@ -187,6 +187,16 @@ class AssertionTests(unittest.TestCase):
         del no_poll["windows"]["api_with_rebuild"]["memory_current_max"]
         self.assertTrue(any("anon_max" in item for item in assertions.assert_envelope(no_poll)))
 
+        rss = self._doc()
+        rss["windows"]["idle"]["rss_anon_bytes"] = 256 * 1024 * 1024
+        rss["windows"]["idle"]["anon"] = 1
+        self.assertTrue(any("rss_anon" in item for item in assertions.assert_envelope(rss)))
+        preferred = self._doc()
+        preferred["windows"]["api"]["rss_anon_max"] = 1024
+        preferred["windows"]["api"]["anon_max"] = 256 * 1024 * 1024
+        preferred["windows"]["api_with_rebuild"]["rss_anon_max"] = 1024
+        self.assertEqual(assertions.assert_envelope(preferred), [])
+
 
 class ContainerScriptTests(unittest.TestCase):
     def test_docker_run_is_the_envelope_and_does_not_compile(self) -> None:

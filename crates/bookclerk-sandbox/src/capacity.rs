@@ -64,16 +64,71 @@ pub fn process_cgroup_dir() -> Option<PathBuf> {
 
 /// Reads `cpu.max`, `memory.max`, `memory.current`, and `memory.stat` in `dir`.
 ///
+/// Effective `memory.max` is the minimum ceiling among `dir` and ancestors
+/// that still publish `memory.max` or `cpu.max`. Effective `cpu.max` is the
+/// tighter quota/period ratio on that same walk. `memory.current` and `anon`
+/// stay the leaf values. The walk stops when a parent has neither controller
+/// file, so a temporary test directory does not escape into `/tmp`.
+///
 /// Does not create `dir` or any controller file.
 #[must_use]
 pub fn read_cgroup_sample(dir: &Path) -> CgroupSample {
-    let (cpu_max_quota_us, cpu_max_period_us) = read_cpu_max(&dir.join("cpu.max"));
+    let mut cpu = read_cpu_max(&dir.join("cpu.max"));
+    let mut memory_max_bytes = read_memory_ceiling(&dir.join("memory.max"));
+    let mut cursor = dir.to_path_buf();
+    while let Some(parent) = cursor.parent().map(Path::to_path_buf) {
+        if parent == cursor {
+            break;
+        }
+        let parent_memory = parent.join("memory.max");
+        let parent_cpu = parent.join("cpu.max");
+        if !parent_memory.is_file() && !parent_cpu.is_file() {
+            break;
+        }
+        if parent_memory.is_file() {
+            if let Some(ceiling) = read_memory_ceiling(&parent_memory) {
+                memory_max_bytes = Some(
+                    memory_max_bytes
+                        .map(|current| current.min(ceiling))
+                        .unwrap_or(ceiling),
+                );
+            }
+        }
+        if parent_cpu.is_file() {
+            cpu = tighter_cpu(cpu, read_cpu_max(&parent_cpu));
+        }
+        cursor = parent;
+    }
     CgroupSample {
-        cpu_max_quota_us,
-        cpu_max_period_us,
-        memory_max_bytes: read_memory_ceiling(&dir.join("memory.max")),
+        cpu_max_quota_us: cpu.0,
+        cpu_max_period_us: cpu.1,
+        memory_max_bytes,
         memory_current_bytes: read_u64_file(&dir.join("memory.current")),
         memory_anon_bytes: read_memory_stat_field(&dir.join("memory.stat"), "anon"),
+    }
+}
+
+/// Keeps the cpu.max pair with the smaller quota/period ratio.
+///
+/// A missing pair loses to a present one. The comparison multiplies in `u128`
+/// so a large quota and period cannot overflow.
+fn tighter_cpu(
+    current: (Option<u64>, Option<u64>),
+    parent: (Option<u64>, Option<u64>),
+) -> (Option<u64>, Option<u64>) {
+    match (current, parent) {
+        ((None, _), parent) => parent,
+        (current, (None, _)) => current,
+        ((Some(cq), Some(cp)), (Some(pq), Some(pp))) if cp > 0 && pp > 0 => {
+            let left = u128::from(cq).saturating_mul(u128::from(pp));
+            let right = u128::from(pq).saturating_mul(u128::from(cp));
+            if left <= right {
+                (Some(cq), Some(cp))
+            } else {
+                (Some(pq), Some(pp))
+            }
+        }
+        (current, _) => current,
     }
 }
 
@@ -227,6 +282,24 @@ mod tests {
             ..CgroupSample::default()
         };
         assert!(!cgroup_sample_is_low_resource(&two));
+    }
+
+    #[test]
+    fn parent_ceiling_is_the_effective_limit() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        std::fs::write(parent.path().join("memory.max"), "1073741824\n").unwrap();
+        std::fs::write(parent.path().join("cpu.max"), "100000 100000\n").unwrap();
+        let child = parent.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("memory.max"), "2147483648\n").unwrap();
+        std::fs::write(child.join("memory.current"), "10\n").unwrap();
+        std::fs::write(child.join("memory.stat"), "anon 4\n").unwrap();
+        let sample = read_cgroup_sample(&child);
+        assert_eq!(sample.memory_max_bytes, Some(1_073_741_824));
+        assert_eq!(sample.cpu_max_quota_us, Some(100_000));
+        assert_eq!(sample.cpu_max_period_us, Some(100_000));
+        assert_eq!(sample.memory_current_bytes, Some(10));
+        assert_eq!(sample.memory_anon_bytes, Some(4));
     }
 
     #[test]

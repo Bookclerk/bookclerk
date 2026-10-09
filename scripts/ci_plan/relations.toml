@@ -178,6 +178,8 @@ paths = [
     "scripts/bench/envelope_limits.py",
     "scripts/bench/assert_envelope.py",
     "crates/bookclerk-library/tests/envelope_seed.rs",
+    "crates/bookclerk-library/src/store/books_page.rs",
+    "crates/bookclerkd/src/api.rs",
     "crates/bookclerk-search/src/engine.rs",
 ]
 

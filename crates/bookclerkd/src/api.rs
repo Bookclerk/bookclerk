@@ -3989,13 +3989,16 @@ async fn list_books(
     }))
 }
 
-/// Logs one library-books failure and returns it as a short JSON body.
+/// Logs one library-books failure and returns the branded internal-error body.
 fn books_query_error(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
-    let message = err.to_string();
-    tracing::error!(error = %message, "GET /api/library/books failed");
+    tracing::error!(error = %err, "GET /api/library/books failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({ "error": message })),
+        Json(serde_json::json!({
+            "error": "internal_error",
+            "message": "Something went wrong on the Bookclerk daemon.",
+            "status": 500,
+        })),
     )
 }
 

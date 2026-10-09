@@ -939,8 +939,10 @@ pub fn parse_create_index_sql(sql: &str) -> Option<CreateIndexSchema> {
 
 /// Column list of `CREATE INDEX … (ident [COLLATE NOCASE] [ASC|DESC], …)`.
 ///
-/// `COLLATE NOCASE` is the library title-order collation. Any other collation,
-/// and any leftover token, fails.
+/// `COLLATE NOCASE` is the library title-order collation. `lower(ident)` is
+/// the folded-uuid expression index. Any other collation, and any leftover
+/// token, fails. The recorded column is the inner identifier so the catalog
+/// check stays on a real column.
 fn parse_index_column_list(inner: &str) -> Option<Vec<String>> {
     let parts = split_top_level_commas(inner);
     if parts.is_empty() {
@@ -948,29 +950,52 @@ fn parse_index_column_list(inner: &str) -> Option<Vec<String>> {
     }
     let mut cols = Vec::new();
     for part in parts {
-        let (name, rest) = read_ident(part)?;
-        let mut rest = skip_ws(rest);
-        if starts_kw(rest, "COLLATE") {
-            rest = skip_ws(skip_kw(rest, "COLLATE")?);
-            let (collation, after) = read_ident(rest)?;
-            if !collation.eq_ignore_ascii_case("NOCASE") {
-                return None;
-            }
-            rest = skip_ws(after);
-        }
-        rest = if starts_kw(rest, "ASC") {
-            skip_ws(skip_kw(rest, "ASC")?)
-        } else if starts_kw(rest, "DESC") {
-            skip_ws(skip_kw(rest, "DESC")?)
-        } else {
-            rest
-        };
-        if !rest.is_empty() {
-            return None;
-        }
-        cols.push(name);
+        cols.push(parse_index_key(part)?);
     }
     Some(cols)
+}
+
+/// One index key: `lower(ident)` or `ident [COLLATE NOCASE] [ASC|DESC]`.
+fn parse_index_key(part: &str) -> Option<String> {
+    let part = skip_ws(part);
+    if starts_kw(part, "lower") {
+        let mut rest = skip_ws(skip_kw(part, "lower")?);
+        if !rest.starts_with('(') {
+            return None;
+        }
+        rest = skip_ws(&rest[1..]);
+        let (name, after) = read_ident(rest)?;
+        rest = skip_ws(after);
+        if !rest.starts_with(')') {
+            return None;
+        }
+        rest = skip_ws(&rest[1..]);
+        rest = skip_index_direction(rest)?;
+        return rest.is_empty().then_some(name);
+    }
+    let (name, rest) = read_ident(part)?;
+    let mut rest = skip_ws(rest);
+    if starts_kw(rest, "COLLATE") {
+        rest = skip_ws(skip_kw(rest, "COLLATE")?);
+        let (collation, after) = read_ident(rest)?;
+        if !collation.eq_ignore_ascii_case("NOCASE") {
+            return None;
+        }
+        rest = skip_ws(after);
+    }
+    rest = skip_index_direction(rest)?;
+    rest.is_empty().then_some(name)
+}
+
+/// Drops a trailing `ASC` or `DESC`.
+fn skip_index_direction(rest: &str) -> Option<&str> {
+    if starts_kw(rest, "ASC") {
+        Some(skip_ws(skip_kw(rest, "ASC")?))
+    } else if starts_kw(rest, "DESC") {
+        Some(skip_ws(skip_kw(rest, "DESC")?))
+    } else {
+        Some(rest)
+    }
 }
 
 /// Parses `DROP INDEX [IF EXISTS] name`.
@@ -2398,10 +2423,24 @@ fn take_order_key(
 ) -> Result<SqlType> {
     scan.skip();
     let start = scan.i;
-    if let Some(ident) = scan.read_ident() {
+    if let Some(first) = scan.read_ident() {
         scan.skip();
+        let (table, ident, ident_at) = if scan.peek_byte(b'.') {
+            scan.take_byte(b'.');
+            scan.skip();
+            let col_at = scan.i;
+            let Some(col) = scan.read_ident() else {
+                scan.i = start;
+                return infer_expr(scan, cx);
+            };
+            scan.skip();
+            (Some(first), col, col_at)
+        } else {
+            (None, first, start)
+        };
         // `COLLATE NOCASE` is the library title order. Any other collation is
-        // outside SQL v1.
+        // outside SQL v1. A table column qualifies even when the SELECT list
+        // does not repeat that name.
         let collated = if scan.peek_kw("COLLATE") {
             scan.take_kw("COLLATE");
             scan.skip();
@@ -2429,13 +2468,43 @@ fn take_order_key(
             || scan.peek_kw("INTERSECT")
             || scan.peek_kw("EXCEPT");
         if terminal {
-            if let Some((_, ty)) = cols.iter().find(|(n, _)| *n == ident) {
-                return Ok(*ty);
+            let from_list = table.is_none().then(|| {
+                cols.iter()
+                    .find(|(name, _)| *name == ident)
+                    .map(|(_, ty)| *ty)
+            });
+            if let Some(Some(ty)) = from_list {
+                note_order_key_text(scan, cx, ident_at, &ident, ty, collated);
+                return Ok(ty);
+            }
+            if let Ok(ty) = lookup_column(cx, table.as_deref(), &ident) {
+                note_order_key_text(scan, cx, ident_at, &ident, ty, collated);
+                return Ok(ty);
             }
         }
         scan.i = start;
     }
     infer_expr(scan, cx)
+}
+
+/// Records a bare TEXT `ORDER BY` key so typed lowering can collate it.
+///
+/// `COLLATE NOCASE` stays unannotated. The nocase rewrite turns that key into
+/// `lower(ident COLLATE "C")` and would miss the token if this span wrapped
+/// the identifier first.
+fn note_order_key_text(
+    scan: &TScan<'_>,
+    cx: &mut TypeCx<'_>,
+    ident_at: usize,
+    ident: &str,
+    ty: SqlType,
+    collated: bool,
+) {
+    if collated || !ty.is_text() {
+        return;
+    }
+    let end = ident_at.saturating_add(ident.len());
+    note_collated_text(cx, scan, ident_at, end);
 }
 
 fn select_item_name(
@@ -3140,16 +3209,75 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
             .ok_or_else(|| ty_err(cx.index, "qualified column"))?;
         let ty = lookup_column(cx, Some(&name), &col)?;
         if ty.is_text() {
-            cx.note_text(scan.abs(ident_start), scan.abs(scan.i));
+            note_collated_text(cx, scan, ident_start, scan.i);
         }
         let _ = col_start;
         return Ok(ty);
     }
     let ty = lookup_column(cx, None, &name)?;
     if ty.is_text() {
-        cx.note_text(scan.abs(ident_start), scan.abs(scan.i));
+        note_collated_text(cx, scan, ident_start, scan.i);
     }
     Ok(ty)
+}
+
+/// Records a TEXT span for Postgres `COLLATE "C"`.
+///
+/// Equality operands stay bare so an index prefix (`account_id = ?`) still
+/// matches. The argument of `lower` stays bare so `lower(uuid)` matches the
+/// expression index. `COLLATE NOCASE` keys are not recorded here; the nocase
+/// rewrite owns those.
+fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: usize) {
+    if skip_text_collate(scan.sql, start, end) {
+        return;
+    }
+    cx.note_text(scan.abs(start), scan.abs(end));
+}
+
+/// True when wrapping `sql[start..end]` in `COLLATE "C"` would miss an index.
+fn skip_text_collate(sql: &str, start: usize, end: usize) -> bool {
+    bare_equality_operand(sql, start, end) || lower_call_argument(sql, start)
+}
+
+/// True when the span sits on either side of `=` (not `!=`, `<=`, `>=`, `==`).
+fn bare_equality_operand(sql: &str, start: usize, end: usize) -> bool {
+    equality_after(sql, end) || equality_before(sql, start)
+}
+
+/// True when `=` follows the span, ignoring whitespace.
+fn equality_after(sql: &str, end: usize) -> bool {
+    let Some(rest) = sql.get(end..) else {
+        return false;
+    };
+    let Some(rest) = rest.trim_start().strip_prefix('=') else {
+        return false;
+    };
+    !rest.starts_with('=')
+}
+
+/// True when `=` precedes the span and is not part of a compound operator.
+fn equality_before(sql: &str, start: usize) -> bool {
+    let Some(head) = sql.get(..start) else {
+        return false;
+    };
+    let Some(before) = head.trim_end().strip_suffix('=') else {
+        return false;
+    };
+    !before.ends_with(['=', '!', '<', '>'])
+}
+
+/// True when the span is the argument of `lower(…)`.
+fn lower_call_argument(sql: &str, start: usize) -> bool {
+    let Some(head) = sql.get(..start) else {
+        return false;
+    };
+    let Some(head) = head.trim_end().strip_suffix('(') else {
+        return false;
+    };
+    head.trim_end()
+        .rsplit(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("lower"))
 }
 
 fn string_lit_start(scan: &TScan<'_>, end: usize) -> usize {
@@ -4550,6 +4678,24 @@ mod tests {
             err.to_string().contains("COLLATE") || err.to_string().contains("RTRIM"),
             "{err}"
         );
+        let folded = parse_create_index_sql("CREATE INDEX idx ON books (lower(uuid))")
+            .expect("expression index");
+        assert_eq!(folded.columns, vec!["uuid".to_string()]);
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (lower(uuid, 1))").is_none());
+        let mut order_env = SqlTypeEnv::new();
+        order_env.insert_table(
+            "books",
+            [
+                ("id".into(), SqlType::Integer),
+                ("title".into(), SqlType::Text),
+                ("uuid".into(), SqlType::Text),
+            ],
+        );
+        typecheck_execute_request(
+            &req("SELECT id FROM books ORDER BY title COLLATE NOCASE"),
+            &order_env,
+        )
+        .expect("nocase order of a table column that is not in the select list");
         assert!(parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE)").is_none());
         assert!(parse_create_index_sql("CREATE INDEX idx ON t ()").is_none());
         let ok = parse_create_index_sql("CREATE INDEX idx ON t (a ASC, b DESC)").expect("index");
