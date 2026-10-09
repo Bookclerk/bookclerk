@@ -142,10 +142,9 @@ async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
-    // A binding name such as `[oauth].binding` is an env identifier, not a
-    // credential. CodeQL flags the property because it is named oauth.
-    // codeql[js/clear-text-logging]
-    console.error(`${cmd} failed: ${err instanceof Error ? err.message : err}`);
+    // `[oauth].binding` is an env identifier, not a credential. The suppression
+    // has to sit on this line: a JS comment above only covers column 0.
+    console.error(`${cmd} failed: ${err instanceof Error ? err.message : err}`); // codeql[js/clear-text-logging]
     return 1;
   }
 }
