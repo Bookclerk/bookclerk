@@ -61,6 +61,11 @@ pub fn format_manifest(manifest: &PluginManifest) -> Result<String> {
 ///
 /// A non-empty array of flat records becomes `[[queues.key]]`. Scalars and
 /// empty arrays stay inline. A nested table is an error in all three tools.
+///
+/// # Errors
+///
+/// Returns a message error when `[queues]` is not a table, or when a field
+/// (or a field inside an array-of-tables row) is a nested table.
 fn ensure_queues_formattable(value: &toml::Value) -> Result<()> {
     let Some(table) = value.as_table() else {
         return Err(crate::Error::message(
