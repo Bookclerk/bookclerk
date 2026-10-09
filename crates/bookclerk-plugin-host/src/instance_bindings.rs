@@ -268,12 +268,17 @@ pub fn is_graphicaudio_imported_setting(key: &str) -> bool {
 /// Canonical plugin key for the installed GraphicAudio manifest, if any.
 ///
 /// Discovery wins. The install ledger is the fallback when the tree is recorded
-/// but not currently discovered.
+/// but not currently discovered. A config that was not loaded from a files
+/// directory has no install tree, so this returns `None` instead of reading
+/// `paths()`.
 ///
 /// # Errors
 ///
 /// Returns an error when the install ledger cannot be read.
 pub fn graphicaudio_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    if config.paths.is_none() {
+        return Ok(None);
+    }
     if let Ok(plugins) = crate::discover_plugins(config) {
         if let Some(plugin) = plugins.iter().find(|plugin| {
             plugin
@@ -319,4 +324,17 @@ pub async fn graphicaudio_document_exists(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::missing_docs_in_private_items)]
+
+    use super::graphicaudio_plugin_key;
+
+    #[test]
+    fn unloaded_config_has_no_graphicaudio_key() {
+        let key = graphicaudio_plugin_key(&bookclerk_config::Config::default()).expect("key");
+        assert!(key.is_none());
+    }
 }
