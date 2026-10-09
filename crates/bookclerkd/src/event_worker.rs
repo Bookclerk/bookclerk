@@ -187,13 +187,35 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
 
 /// Upsert this node's discovered + loaded integration subscriptions.
 ///
-/// Catalog `plugin_id` is the provenance-qualified PluginKey even though display
-/// aliases are unique within one host plugin namespace (`$FILES_DIR`). Persistent
-/// ownership stays on PluginKey so a later occupant of the same alias on this
-/// host cannot collapse two PluginKeys onto one row.
+/// Catalog `plugin_id` is the plugin instance id when the loaded integration
+/// has one. Otherwise it is the provenance-qualified PluginKey. Two instances
+/// of one key each get their own row so event delivery does not collapse them.
 pub async fn upsert_event_subscriber_catalog(state: &AppState) {
     let cfg = state.config.read().await.clone();
     let node_id = event_node_id(state, &cfg.paths().files_dir);
+    let loaded = {
+        let integrations = state.integrations.read().await;
+        integrations
+            .all()
+            .iter()
+            .map(|integration| LoadedSubscriber {
+                key: durable_plugin_identity(integration.plugin_key(), integration.id()),
+                instance_id: integration
+                    .plugin_instance_id()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string),
+                alias: integration.id().to_string(),
+                runtime_subs: catalog_from_runtime(&integration.event_subscriptions()),
+            })
+            .collect::<Vec<_>>()
+    };
+    let instance_keys: std::collections::HashSet<String> = loaded
+        .iter()
+        .filter(|row| row.instance_id.is_some())
+        .map(|row| row.key.clone())
+        .collect();
+    let mut granted_by_key =
+        std::collections::HashMap::<String, Vec<EventCatalogSubscription>>::new();
     let discovered = tokio::task::spawn_blocking({
         let cfg = cfg.clone();
         move || bookclerk_plugin_host::discover_plugins(&cfg)
@@ -217,6 +239,10 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
                             .cloned()
                     });
                 let subs = granted_catalog_subscriptions(&plugin, grant.as_ref());
+                if instance_keys.contains(&plugin_id) {
+                    granted_by_key.insert(plugin_id, subs);
+                    continue;
+                }
                 // Always upsert — including an empty list — so a narrowed or
                 // revoked grant clears the prior catalog row immediately instead
                 // of leaving deliveries live until the heartbeat TTL expires.
@@ -241,28 +267,57 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
             warn!(error = %err, "plugin discovery task for event catalog failed");
         }
     }
-    let integrations = state.integrations.read().await;
-    for integration in integrations.all() {
+    for row in &loaded {
+        if let Some(instance_id) = &row.instance_id {
+            let subs = granted_by_key
+                .get(&row.key)
+                .cloned()
+                .unwrap_or_else(|| row.runtime_subs.clone());
+            if let Err(err) = library
+                .upsert_event_subscriber(&node_id, instance_id, &subs, true)
+                .await
+            {
+                warn!(
+                    plugin_instance_id = %instance_id,
+                    plugin_key = %row.key,
+                    alias = %row.alias,
+                    error = %err,
+                    "instance event subscriber catalog upsert failed"
+                );
+            }
+            continue;
+        }
         // Discovered guests are also loaded into `state.integrations`. Their
         // grant-filtered catalog row was written above; do not overwrite it
         // with the full runtime/manifest subscription list.
-        let plugin_id = durable_plugin_identity(integration.plugin_key(), integration.id());
-        if catalogued.contains(&plugin_id) {
+        if catalogued.contains(&row.key) {
             continue;
         }
-        let subs = catalog_from_runtime(&integration.event_subscriptions());
         if let Err(err) = library
-            .upsert_event_subscriber(&node_id, &plugin_id, &subs, true)
+            .upsert_event_subscriber(&node_id, &row.key, &row.runtime_subs, true)
             .await
         {
             warn!(
-                plugin_key = %plugin_id,
-                alias = %integration.id(),
+                plugin_key = %row.key,
+                alias = %row.alias,
                 error = %err,
                 "loaded integration catalog upsert failed"
             );
         }
     }
+}
+
+/// One loaded integration captured before discovery so catalog rows can use
+/// its instance id.
+struct LoadedSubscriber {
+    /// PluginKey, or the display alias when the key is empty.
+    key: String,
+    /// Present when this process spawned that deployment.
+    instance_id: Option<String>,
+    /// Display alias for logs.
+    alias: String,
+    /// Runtime subscriptions used when discovery did not grant a catalog.
+    runtime_subs: Vec<EventCatalogSubscription>,
 }
 
 /// Process-stable per-files-dir node id used as the catalog heartbeat key.
@@ -497,7 +552,10 @@ async fn loaded_plugin_ids(state: &AppState) -> Vec<String> {
     let all = integrations.all();
     let mut ids = Vec::new();
     for integration in all {
-        let key = durable_plugin_identity(integration.plugin_key(), integration.id());
+        let key = match integration.plugin_instance_id().filter(|id| !id.is_empty()) {
+            Some(instance_id) => instance_id.to_string(),
+            None => durable_plugin_identity(integration.plugin_key(), integration.id()),
+        };
         ids.push(key.clone());
         let alias = integration.id();
         if alias != key

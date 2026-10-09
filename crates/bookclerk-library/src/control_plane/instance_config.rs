@@ -435,6 +435,7 @@ async fn resolve_secrets(
         })?;
         let text = String::from_utf8(plaintext)
             .map_err(|_| invalid(&format!("secret ref `{}` is not UTF-8", secret_ref.name)))?;
+        bookclerk_config::register_secret(&text);
         object.insert(secret_ref.key.clone(), Value::String(text));
     }
     Ok(ExtensibleConfig::json(&Value::Object(object)))

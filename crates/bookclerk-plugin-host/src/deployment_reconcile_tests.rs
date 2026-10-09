@@ -34,6 +34,42 @@ use bookclerk_plugin_catalog::{
 };
 static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Runs `fut` while counting [`discover_plugins`](crate::discover_plugins) calls on this task.
+async fn with_discover_count<F, T>(fut: F) -> (T, usize)
+where
+    F: std::future::Future<Output = T>,
+{
+    let calls = Arc::new(AtomicUsize::new(0));
+    let value = crate::discover::DISCOVER_CALLS
+        .scope(Arc::clone(&calls), fut)
+        .await;
+    (value, calls.load(Ordering::Relaxed))
+}
+
+/// Stops `pid` without the `kill` binary, which Windows images do not ship.
+#[allow(unsafe_code)]
+fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        assert_eq!(rc, 0, "kill {pid}: {}", std::io::Error::last_os_error());
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            assert!(!handle.is_null(), "OpenProcess {pid}");
+            let rc = TerminateProcess(handle, 1);
+            let _ = CloseHandle(handle);
+            assert_ne!(rc, 0, "TerminateProcess {pid}");
+        }
+    }
+}
+
 struct Probe {
     files: PathBuf,
     fail_health: bool,
@@ -412,22 +448,21 @@ async fn disabled_graphicaudio_retires_without_another_spawn() {
 
     world.manifest.id = "graphicaudio".into();
     world.config.sources.set_enabled("graphicaudio", false);
-    crate::discover::DISCOVER_CALLS.store(0, Ordering::Relaxed);
-    reconcile_local_deployments(
+    let (disabled, discover_calls) = with_discover_count(reconcile_local_deployments(
         &world.store,
         &world.config,
         &world.host_id,
         &packages(&world),
         &probe,
-    )
-    .await
-    .expect("disabled reconcile");
+    ))
+    .await;
+    disabled.expect("disabled reconcile");
     assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
     assert_eq!(
         probe.retired.lock().expect("retired").as_slice(),
         &[world.instance_id.as_str().to_string()]
     );
-    assert_eq!(crate::discover::DISCOVER_CALLS.load(Ordering::Relaxed), 0);
+    assert_eq!(discover_calls, 0);
 }
 
 #[tokio::test]
@@ -444,17 +479,16 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
     )
     .await
     .expect("first reconcile");
-    crate::discover::DISCOVER_CALLS.store(0, Ordering::Relaxed);
-    reconcile_local_deployments(
+    let (idle, discover_calls) = with_discover_count(reconcile_local_deployments(
         &world.store,
         &world.config,
         &world.host_id,
         &packages(&world),
         &probe,
-    )
-    .await
-    .expect("idle reconcile");
-    assert_eq!(crate::discover::DISCOVER_CALLS.load(Ordering::Relaxed), 0);
+    ))
+    .await;
+    idle.expect("idle reconcile");
+    assert_eq!(discover_calls, 0);
     assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
 
     let mut grants = PluginGrantStore::load(&world.files).expect("grants");
@@ -497,12 +531,17 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
     }
     grants.save(&world.files).expect("save grants");
     let fresh = Probe::new(world.files.clone(), false);
-    crate::discover::DISCOVER_CALLS.store(0, Ordering::Relaxed);
-    reconcile_local_deployments(&world.store, &world.config, &world.host_id, &both, &fresh)
-        .await
-        .expect("two deployments");
+    let (two, discover_calls) = with_discover_count(reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &both,
+        &fresh,
+    ))
+    .await;
+    two.expect("two deployments");
     assert_eq!(fresh.spawns.lock().expect("spawns").len(), 2);
-    assert_eq!(crate::discover::DISCOVER_CALLS.load(Ordering::Relaxed), 1);
+    assert_eq!(discover_calls, 1);
 }
 
 #[tokio::test]
@@ -1166,11 +1205,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
     let first_pid = runtime
         .tracked_guest_pid(instance.id.as_str())
         .expect("guest pid");
-    let status = std::process::Command::new("kill")
-        .args(["-KILL", &first_pid.to_string()])
-        .status()
-        .expect("kill");
-    assert!(status.success());
+    kill_pid(first_pid);
     let mut dead = false;
     for _ in 0..50 {
         if !DeploymentRuntime::guest_still_running(&runtime, instance.id.as_str()).await {
@@ -1236,7 +1271,7 @@ async fn broken_guest_health_rolls_the_install_back() {
 }
 
 #[test]
-fn authorized_package_loader_rejects_a_remote_artifact_url() {
+fn authorized_package_loader_skips_a_remote_artifact_url() {
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     let package = files.join(AUTHORIZED_PACKAGE_DIR).join("remote");
@@ -1261,6 +1296,9 @@ fn authorized_package_loader_rejects_a_remote_artifact_url() {
         serde_json::to_vec_pretty(&manifest).unwrap(),
     )
     .unwrap();
-    let err = load_authorized_local_packages(files).unwrap_err();
-    assert!(err.to_string().contains("not a file"), "{err}");
+    let loaded = load_authorized_local_packages(files).expect("bad package is skipped");
+    assert!(
+        loaded.is_empty(),
+        "a remote artifact must not enter the package map"
+    );
 }

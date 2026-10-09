@@ -102,9 +102,24 @@ async fn spawn_local_guest(
             .await?
         }
     };
-    let config_json = prepared.spawn_config_table;
-    let root = resolved_local_output_root(config);
-    let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
+    let config_json = prepared.spawn_config_table.clone();
+    let root = if prepared.from_instance {
+        instance_local_root(config, &prepared.granted_config)?
+    } else {
+        resolved_local_output_root(config)
+    };
+    let prefix = if prepared.from_instance {
+        normalize_storage_prefix(
+            prepared
+                .granted_config
+                .get("prefix")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim(),
+        )
+    } else {
+        normalize_storage_prefix(config.output.local.prefix.trim())
+    };
     let extra_env: Vec<(&str, std::ffi::OsString)> = if crate::is_first_party_local_output(plugin) {
         vec![(
             "BOOKCLERK_OUTPUT_LOCAL_ROOT",
@@ -138,6 +153,26 @@ async fn spawn_local_guest(
     };
     session.open(open_bindings).await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))
+}
+
+/// Root from the instance document. `[output.local]` is not a fallback.
+fn instance_local_root(config: &Config, granted: &Value) -> PluginResult<PathBuf> {
+    let text = granted
+        .get("root")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| {
+            crate::PluginError::message(
+                "deployed local destination config is missing root; [output.local] and BOOKCLERK_OUTPUT_LOCAL_ROOT are not the authority",
+            )
+        })?;
+    let root = PathBuf::from(text);
+    if root.is_absolute() {
+        Ok(root)
+    } else {
+        Ok(config.paths().files_dir.join(root))
+    }
 }
 
 /// Converts a plugin settings TOML table to JSON for the guest spawn config; `Null` on failure.

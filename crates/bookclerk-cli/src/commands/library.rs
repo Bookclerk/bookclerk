@@ -411,13 +411,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
 
             for (idx, book) in targets.into_iter().enumerate() {
                 batch.set(idx + 1, book.asin_or_isbn());
-                let content_source = registry.get(&book.source).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no content source registered for `{}` (title {})",
-                        book.source,
-                        book.asin_or_isbn()
-                    )
-                })?;
+                let content_source = registry
+                    .require(&book.source)
+                    .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
                 let req = AcquireRequest {
                     asin: book.download_product_id().to_string(),
                     book_uuid: Some(book.uuid.clone()),

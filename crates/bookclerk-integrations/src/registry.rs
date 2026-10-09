@@ -87,11 +87,24 @@ impl IntegrationRegistry {
         (matches.len() == 1).then(|| matches.remove(0))
     }
 
-    /// Integrations whose PluginKey or display alias match `id`.
+    /// Integrations whose instance id, PluginKey, or display alias match `id`.
+    ///
+    /// An instance id is one hit even when another instance shares the plugin
+    /// key. A key or alias matches every occupant so two instances stay
+    /// ambiguous to [`Self::get`].
     fn matches(&self, id: &str) -> Vec<Arc<dyn Integration>> {
         let needle = id.trim();
         if needle.is_empty() {
             return Vec::new();
+        }
+        let by_instance: Vec<_> = self
+            .integrations
+            .iter()
+            .filter(|integration| integration.plugin_instance_id() == Some(needle))
+            .cloned()
+            .collect();
+        if !by_instance.is_empty() {
+            return by_instance;
         }
         let by_key: Vec<_> = self
             .integrations

@@ -111,6 +111,14 @@ pub trait DeploymentRuntime: Send + Sync {
     async fn retire_instance(&self, plugin_instance_id: &str) {
         let _ = plugin_instance_id;
     }
+
+    /// Instance ids this process is still tracking.
+    ///
+    /// The default is empty. [`LiveDeploymentRuntime`] returns the guest map
+    /// so a deployment row that disappeared can be retired.
+    async fn tracked_instance_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// One discovery pass shared by every deployment that still needs install or spawn.
@@ -235,6 +243,10 @@ pub async fn reconcile_local_deployments(
     let deployments = list_present_deployments_for_host(store, host_id)
         .await
         .map_err(library_err)?;
+    let present: std::collections::BTreeSet<String> = deployments
+        .iter()
+        .map(|deployment| deployment.plugin_instance_id.as_str().to_string())
+        .collect();
     let discovered = SharedPlugins::new(config);
     for deployment in deployments {
         if let Err(err) = reconcile_one(
@@ -253,6 +265,11 @@ pub async fn reconcile_local_deployments(
                 error = %err,
                 "deployment reconcile failed before an observation write"
             );
+        }
+    }
+    for instance_id in runtime.tracked_instance_ids().await {
+        if !present.contains(&instance_id) {
+            runtime.retire_instance(&instance_id).await;
         }
     }
     Ok(())
@@ -341,6 +358,19 @@ async fn reconcile_one(
     let files_dir = config.paths().files_dir.clone();
     if let Some(alias) = storefront_alias(&plugin_key, packages, &files_dir) {
         if !config.sources.is_enabled(&alias) {
+            note(DeploymentStatus::Error, "source is disabled".into(), None).await;
+            runtime.retire_instance(instance.id.as_str()).await;
+            return Ok(());
+        }
+    }
+    if let Some(alias) = integration_alias(&plugin_key, packages, &files_dir) {
+        if integration_explicitly_disabled(config, &alias) {
+            note(
+                DeploymentStatus::Error,
+                "integration is disabled".into(),
+                None,
+            )
+            .await;
             runtime.retire_instance(instance.id.as_str()).await;
             return Ok(());
         }
@@ -357,6 +387,9 @@ async fn reconcile_one(
                 .guest_still_running(deployment.plugin_instance_id.as_str())
                 .await
         {
+            return Ok(());
+        }
+        if error_backoff_active(existing) {
             return Ok(());
         }
     }
@@ -457,25 +490,84 @@ async fn reconcile_one(
 
 /// Display alias when this deployment is a content source.
 ///
-/// Package kind answers first. A GraphicAudio ledger row covers a guest that
-/// was installed earlier and is no longer sitting in `plugin-packages/`.
-/// This does not hash plugin binaries.
+/// Package kind answers first. An installed `plugin.toml` answers next, for
+/// any source, including one that is no longer sitting in `plugin-packages/`.
+/// This does not hash plugin binaries and does not treat every ledger id as
+/// a storefront.
 fn storefront_alias(
     plugin_key: &PluginKey,
     packages: &HashMap<String, LocalPackage>,
     files_dir: &Path,
 ) -> Option<String> {
+    manifest_alias(
+        plugin_key,
+        packages,
+        files_dir,
+        bookclerk_plugin_catalog::PluginKind::Source,
+        crate::PluginFamily::Source,
+    )
+}
+
+/// Display alias when this deployment is an integration.
+fn integration_alias(
+    plugin_key: &PluginKey,
+    packages: &HashMap<String, LocalPackage>,
+    files_dir: &Path,
+) -> Option<String> {
+    manifest_alias(
+        plugin_key,
+        packages,
+        files_dir,
+        bookclerk_plugin_catalog::PluginKind::Integration,
+        crate::PluginFamily::Integration,
+    )
+}
+
+/// Package kind, else the installed manifest's family.
+fn manifest_alias(
+    plugin_key: &PluginKey,
+    packages: &HashMap<String, LocalPackage>,
+    files_dir: &Path,
+    package_kind: bookclerk_plugin_catalog::PluginKind,
+    family: crate::PluginFamily,
+) -> Option<String> {
     if let Some(package) = packages.get(plugin_key.canonical()) {
-        if package.manifest.kind == bookclerk_plugin_catalog::PluginKind::Source {
+        if package.manifest.kind == package_kind {
             return Some(package.manifest.id.clone());
         }
         return None;
     }
-    let ledger = InstallLedger::load(files_dir).ok()?;
-    let row = ledger.get(plugin_key)?;
-    row.manifest_id
-        .eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID)
-        .then(|| GRAPHICAUDIO_MANIFEST_ID.to_string())
+    let root = installed_root(files_dir, plugin_key)?;
+    let text = std::fs::read_to_string(root.join("plugin.toml")).ok()?;
+    let manifest = bookclerk_plugin_manifest::parse(&text).ok()?;
+    manifest
+        .families()
+        .contains(&family)
+        .then(|| manifest.id.clone())
+}
+
+/// True only when `[integrations.<alias>]` exists and `enabled` is false.
+///
+/// A missing table defaults to disabled for startup registration. That default
+/// must not retire a deployment that was created without a config table.
+fn integration_explicitly_disabled(config: &Config, alias: &str) -> bool {
+    config
+        .integrations
+        .plugin_table(alias)
+        .and_then(|table| table.get("enabled"))
+        .and_then(toml::Value::as_bool)
+        == Some(false)
+}
+
+/// Skip respawn while a recent error observation is still inside the backoff.
+fn error_backoff_active(existing: &DeploymentObservation) -> bool {
+    if existing.status != DeploymentStatus::Error {
+        return false;
+    }
+    let Ok(observed) = chrono::DateTime::parse_from_rfc3339(&existing.observed_at) else {
+        return false;
+    };
+    Utc::now().signed_duration_since(observed.with_timezone(&Utc)) < chrono::TimeDelta::seconds(30)
 }
 
 /// `plugins/<fs-id>` after a committed install.
@@ -497,7 +589,7 @@ async fn record_observation(
     let detail = if status == DeploymentStatus::Healthy {
         String::new()
     } else {
-        bounded_observation_detail(detail)
+        bounded_observation_detail(&bookclerk_config::redact_str(detail))
     };
     let observation = DeploymentObservation {
         deployment_id: deployment_id.to_string(),
@@ -529,7 +621,9 @@ struct TrackedGuest {
     session: Arc<crate::PluginSession>,
     /// `CONFIG` passed to `open`.
     config: ExtensibleConfig,
-    /// `SECRETS` passed to `open`.
+    /// `SECRETS` passed to `open`. Tests read this; production keeps the payload
+    /// beside the session that was opened with it.
+    #[cfg_attr(not(test), allow(dead_code))]
     secrets: ExtensibleConfig,
 }
 
@@ -645,6 +739,7 @@ impl LiveDeploymentRuntime {
     /// # Panics
     ///
     /// Panics when the deployment guest lock is poisoned.
+    #[cfg(test)]
     #[must_use]
     pub fn opened_secrets_json(&self, plugin_instance_id: &str) -> Option<serde_json::Value> {
         self.guests
@@ -690,8 +785,8 @@ impl LiveDeploymentRuntime {
 ///
 /// # Errors
 ///
-/// Returns an error when a package directory is incomplete, escapes the
-/// authorized root, names a remote artifact, or does not parse.
+/// Returns an error when `plugin-packages` itself cannot be read. One bad
+/// package is skipped and does not abort the rest of the directory.
 pub fn load_authorized_local_packages(files_dir: &Path) -> Result<HashMap<String, LocalPackage>> {
     let root = files_dir.join(AUTHORIZED_PACKAGE_DIR);
     if !root.exists() {
@@ -715,81 +810,89 @@ pub fn load_authorized_local_packages(files_dir: &Path) -> Result<HashMap<String
         if !dir.is_dir() {
             continue;
         }
-        let dir = dir
-            .canonicalize()
-            .map_err(|err| crate::PluginError::message(format!("plugin-packages: {err}")))?;
-        if !dir.starts_with(&root) {
-            return Err(crate::PluginError::message(
-                "plugin package directory escapes plugin-packages",
-            ));
+        if let Err(err) = load_one_authorized_package(files_dir, &root, &dir, &mut packages) {
+            tracing::warn!(
+                path = %dir.display(),
+                error = %err,
+                "skipping authorized plugin package"
+            );
         }
-        let manifest_path = dir.join("package.json");
-        let archive = dir.join("archive.tar.gz");
-        if !manifest_path.is_file() || !archive.is_file() {
-            return Err(crate::PluginError::message(format!(
-                "plugin package {} needs package.json and archive.tar.gz",
-                dir.display()
-            )));
-        }
-        let archive = archive
-            .canonicalize()
-            .map_err(|err| crate::PluginError::message(format!("plugin package archive: {err}")))?;
-        if !archive.starts_with(&dir) {
-            return Err(crate::PluginError::message(
-                "plugin package archive escapes its directory",
-            ));
-        }
-        let text = std::fs::read_to_string(&manifest_path).map_err(|err| {
-            crate::PluginError::message(format!("plugin package manifest: {err}"))
-        })?;
-        let manifest: bookclerk_plugin_catalog::BookclerkPackageManifest =
-            serde_json::from_str(&text).map_err(|err| {
-                crate::PluginError::message(format!("plugin package manifest: {err}"))
-            })?;
-        manifest
-            .validate_for_install()
-            .map_err(|err| crate::PluginError::message(err.to_string()))?;
-        for artifact in &manifest.artifacts {
-            if !local_artifact_url(&artifact.url, &dir) {
-                return Err(crate::PluginError::message(format!(
-                    "plugin package `{}` artifact URL is not a file inside {}",
-                    manifest.id,
-                    dir.display()
-                )));
-            }
-        }
-        let plugins_root = files_dir.join("plugins");
-        let coordinate = Installer::local_archive_coordinate(&archive, &manifest);
-        let key = Installer::plugin_key_for(&coordinate, &manifest.id, &plugins_root)
-            .map_err(|err| crate::PluginError::message(err.to_string()))?;
-        let canonical = key.canonical().to_string();
-        if packages.contains_key(&canonical) {
-            return Err(crate::PluginError::message(format!(
-                "two authorized packages resolve to `{canonical}`"
-            )));
-        }
-        packages.insert(canonical, LocalPackage { archive, manifest });
     }
     Ok(packages)
 }
 
+/// Loads one package directory. A bad package is skipped by the caller.
+fn load_one_authorized_package(
+    files_dir: &Path,
+    root: &Path,
+    dir: &Path,
+    packages: &mut HashMap<String, LocalPackage>,
+) -> Result<()> {
+    let dir = dir
+        .canonicalize()
+        .map_err(|err| crate::PluginError::message(format!("plugin-packages: {err}")))?;
+    if !dir.starts_with(root) {
+        return Err(crate::PluginError::message(
+            "plugin package directory escapes plugin-packages",
+        ));
+    }
+    let manifest_path = dir.join("package.json");
+    let archive = dir.join("archive.tar.gz");
+    if !manifest_path.is_file() || !archive.is_file() {
+        return Err(crate::PluginError::message(format!(
+            "plugin package {} needs package.json and archive.tar.gz",
+            dir.display()
+        )));
+    }
+    let archive = archive
+        .canonicalize()
+        .map_err(|err| crate::PluginError::message(format!("plugin package archive: {err}")))?;
+    if !archive.starts_with(&dir) {
+        return Err(crate::PluginError::message(
+            "plugin package archive escapes its directory",
+        ));
+    }
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|err| crate::PluginError::message(format!("plugin package manifest: {err}")))?;
+    let manifest: bookclerk_plugin_catalog::BookclerkPackageManifest = serde_json::from_str(&text)
+        .map_err(|err| crate::PluginError::message(format!("plugin package manifest: {err}")))?;
+    manifest
+        .validate_for_install()
+        .map_err(|err| crate::PluginError::message(err.to_string()))?;
+    for artifact in &manifest.artifacts {
+        if !local_artifact_url(&artifact.url, &dir) {
+            return Err(crate::PluginError::message(format!(
+                "plugin package `{}` artifact URL is not a file inside {}",
+                manifest.id,
+                dir.display()
+            )));
+        }
+    }
+    let plugins_root = files_dir.join("plugins");
+    let coordinate = Installer::local_archive_coordinate(&archive, &manifest);
+    let key = Installer::plugin_key_for(&coordinate, &manifest.id, &plugins_root)
+        .map_err(|err| crate::PluginError::message(err.to_string()))?;
+    let canonical = key.canonical().to_string();
+    if packages.contains_key(&canonical) {
+        return Err(crate::PluginError::message(format!(
+            "two authorized packages resolve to `{canonical}`"
+        )));
+    }
+    packages.insert(canonical, LocalPackage { archive, manifest });
+    Ok(())
+}
+
 /// True when `url` is a `file:` path that stays inside `package_dir`.
 fn local_artifact_url(url: &str, package_dir: &Path) -> bool {
-    let Some(rest) = url.trim().strip_prefix("file:") else {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
         return false;
     };
-    let path = if let Some(stripped) = rest.strip_prefix("//") {
-        if let Some(after_host) = stripped.strip_prefix("localhost") {
-            after_host
-        } else if stripped.starts_with('/') {
-            stripped
-        } else {
-            return false;
-        }
-    } else {
-        rest
+    if parsed.scheme() != "file" {
+        return false;
+    }
+    let Ok(path) = parsed.to_file_path() else {
+        return false;
     };
-    let path = Path::new(path);
     path.canonicalize()
         .is_ok_and(|canon| canon.starts_with(package_dir))
 }
@@ -873,6 +976,15 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
             .expect("deployment guests")
             .get(plugin_instance_id)
             .is_some_and(|guest| guest.session.guest_running())
+    }
+
+    async fn tracked_instance_ids(&self) -> Vec<String> {
+        self.guests
+            .lock()
+            .expect("deployment guests")
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 
@@ -1041,22 +1153,13 @@ async fn spawn_integration(
     };
     match integration.check_health().await {
         Ok(()) => {
-            if let Err(err) = bookclerk_integrations::Integration::start(
-                &integration,
-                runtime.integration_context(),
-            )
-            .await
-            {
-                return SpawnHealth::HealthFailed {
-                    detail: err.to_string(),
-                };
-            }
+            let context = runtime.integration_context();
             let retired = runtime
                 .integrations
                 .write()
                 .await
                 .take_instance(&request.plugin_instance_id);
-            for previous in retired {
+            for previous in &retired {
                 if let Err(err) = bookclerk_integrations::Integration::stop(previous.as_ref()).await
                 {
                     tracing::warn!(
@@ -1065,6 +1168,28 @@ async fn spawn_integration(
                         "retired integration stop failed"
                     );
                 }
+            }
+            if let Err(err) =
+                bookclerk_integrations::Integration::start(&integration, context.clone()).await
+            {
+                for previous in retired {
+                    if let Err(restart) = bookclerk_integrations::Integration::start(
+                        previous.as_ref(),
+                        context.clone(),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            plugin_instance_id = %request.plugin_instance_id,
+                            error = %restart,
+                            "could not restart the previous integration"
+                        );
+                    }
+                    runtime.integrations.write().await.register(previous);
+                }
+                return SpawnHealth::HealthFailed {
+                    detail: err.to_string(),
+                };
             }
             runtime
                 .integrations
@@ -1092,11 +1217,17 @@ async fn spawn_storage(
     let tracked_config = prepared.bindings.config.clone();
     let tracked_secrets = prepared.bindings.secrets.clone();
     let mut registry = runtime.destinations.write().await;
-    match crate::host::spawn_deployed_storage(plugin, config, Some(store), &mut registry, prepared)
-        .await
+    match crate::host::spawn_deployed_storage(
+        plugin,
+        config,
+        Some(store),
+        &mut registry,
+        &request.plugin_instance_id,
+        prepared,
+    )
+    .await
     {
         Ok(session) => {
-            registry.note_deployed_instance(session.instance_key(), &request.plugin_instance_id);
             runtime.remember(
                 &request.plugin_instance_id,
                 TrackedGuest {

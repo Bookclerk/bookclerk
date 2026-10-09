@@ -123,16 +123,40 @@ async fn product_hits(server: &MockServer) -> usize {
         .count()
 }
 
-#[allow(unsafe_code)]
-fn publish_transitional_access_env() {
-    // The parent must actually hold the env var the guest is forbidden to see.
-    // `set_var` is unsafe; this crate denies unsafe everywhere else.
-    unsafe { std::env::set_var("BOOKCLERK_GA_ACCESS", "web") };
+/// Restores `BOOKCLERK_GA_ACCESS` when the test drops it.
+struct AccessEnvGuard {
+    /// Value present before the test, if any.
+    previous: Option<String>,
+}
+
+impl AccessEnvGuard {
+    /// Publishes `web` and remembers the previous value.
+    ///
+    /// `set_var` is process-wide. The guard puts the old value back so a later
+    /// test does not observe this one.
+    #[allow(unsafe_code)]
+    fn publish() -> Self {
+        let previous = std::env::var("BOOKCLERK_GA_ACCESS").ok();
+        unsafe { std::env::set_var("BOOKCLERK_GA_ACCESS", "web") };
+        Self { previous }
+    }
+}
+
+impl Drop for AccessEnvGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("BOOKCLERK_GA_ACCESS", value),
+                None => std::env::remove_var("BOOKCLERK_GA_ACCESS"),
+            }
+        }
+    }
 }
 
 #[tokio::test]
 async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
-    publish_transitional_access_env();
+    let _access_env = AccessEnvGuard::publish();
     let staged = stage_graphicaudio();
     let server = MockServer::start().await;
     Mock::given(method("GET"))

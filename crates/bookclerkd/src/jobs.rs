@@ -306,10 +306,8 @@ pub async fn run_plugin_copy(
     }
     let destinations = state.destinations.read().await;
     let session = destinations
-        .plugin_session(plugin_id, bookclerk_plugin_host::OPERATOR_ACCOUNT)
-        .ok_or_else(|| {
-            anyhow::anyhow!("no plugin session for plugin `{plugin_id}` (guest not loaded)")
-        })?;
+        .require_plugin_session(plugin_id, bookclerk_plugin_host::OPERATOR_ACCOUNT)
+        .map_err(|err| anyhow::anyhow!(err))?;
     let lease = match ctx {
         Some(ctx) => bookclerk_plugin_host::JobInvocationLease {
             job_id: ctx.fence.job_id.clone(),
@@ -548,13 +546,9 @@ pub async fn run_acquire(
                 anyhow::bail!("cancelled after {idx}/{total} titles (lease fence lost)");
             }
         }
-        let content_source = registry.get(&book.source).ok_or_else(|| {
-            anyhow::anyhow!(
-                "no content source registered for `{}` (title {})",
-                book.source,
-                book.asin_or_isbn()
-            )
-        })?;
+        let content_source = registry
+            .require(&book.source)
+            .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
         let req = AcquireRequest {
             asin: book.download_product_id().to_string(),
             book_uuid: Some(book.uuid.clone()),

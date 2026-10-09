@@ -158,7 +158,9 @@ async fn instance_document(
         .filter(|id| !id.is_empty())
     {
         let id = PluginInstanceId::parse(selected).map_err(|_| {
-            crate::PluginError::message(format!("plugin instance `{selected}` was not found"))
+            crate::PluginError::instance_selection(format!(
+                "plugin instance `{selected}` was not found"
+            ))
         })?;
         match load_plugin_instance(store, &id)
             .await
@@ -167,9 +169,14 @@ async fn instance_document(
             Some(instance) if instance.plugin_key == plugin_key => {
                 return require_document(store, &instance, grant).await;
             }
-            Some(_) => {}
+            Some(instance) => {
+                return Err(crate::PluginError::instance_selection(format!(
+                    "plugin instance `{selected}` belongs to `{}`, not `{plugin_key}`",
+                    instance.plugin_key
+                )));
+            }
             None => {
-                return Err(crate::PluginError::message(format!(
+                return Err(crate::PluginError::instance_selection(format!(
                     "plugin instance `{selected}` was not found"
                 )));
             }
@@ -191,7 +198,7 @@ async fn instance_document(
         1 => resolve_documented(store, &documented[0], grant)
             .await
             .map(Some),
-        _ => Err(crate::PluginError::message(format!(
+        _ => Err(crate::PluginError::instance_selection(format!(
             "plugin `{plugin_key}` has {} instance documents; pass a plugin instance id",
             documented.len()
         ))),
@@ -222,7 +229,7 @@ async fn require_document(
     match load_instance_config(store, &instance.id).await {
         Ok(_) => {}
         Err(LibraryError::NotFound(_)) => {
-            return Err(crate::PluginError::message(format!(
+            return Err(crate::PluginError::instance_selection(format!(
                 "plugin instance `{}` has no config document",
                 instance.id
             )));

@@ -290,7 +290,14 @@ local deployment, and, if the document is absent, imports `access`,
 `base_url`, `store_url`, `bitrate`, and `container` from
 `[sources.graphicaudio]`. After that document exists it is the authority for
 those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
-TOML. Other plugins with no instance document keep `settings_table_for`.
+TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
+derived from `describe()`, and that schema debt stays until a later phase.
+Other plugins with no instance document keep `settings_table_for`.
+
+Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
+not by `PluginInstanceId`. Two instances of one key share credentials and scan
+rows. Acquire and scan fail closed when that key is ambiguous instead of
+moving those rows onto the instance id.
 
 KV and Queues are unchanged. Named SQL bindings do not replace them.
 
@@ -298,8 +305,11 @@ KV and Queues are unchanged. Named SQL bindings do not replace them.
 
 - New unreleased tables: `cluster_identity`, `hosts`,
   `configuration_documents`, `configuration_audit`,
-  `configuration_changes`, `plugin_instances`, `plugin_deployments`,
-  and `plugin_deployment_observations`. Checksum of the unreleased pack changes. Existing
+  `configuration_changes`, `plugin_instances`, `plugin_instance_defaults`,
+  `plugin_deployments`, and `plugin_deployment_observations`.
+  `plugin_instance_defaults` claims one id per plugin key for
+  `ensure_plugin_instance`. Explicit create does not write that row, so two
+  instances may still share a key. Checksum of the unreleased pack changes. Existing
   development databases fail closed until recreated (`cargo reset --yes` or a
   new database). That matches the unreleased-schema rule.
 - `bookclerk config get/set` for `events.*` reads and writes the database.

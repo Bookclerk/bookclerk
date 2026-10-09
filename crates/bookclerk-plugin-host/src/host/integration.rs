@@ -457,6 +457,17 @@ impl Integration for ExternalIntegration {
     }
 
     async fn health(&self) -> bookclerk_integrations::Result<IntegrationHealth> {
+        if !self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            return Ok(IntegrationHealth {
+                id: self.id().to_string(),
+                enabled: self.enabled,
+                ok: true,
+                detail: None,
+            });
+        }
         let dto = self
             .int_call(|stub| async move { stub.health().await })
             .await?;

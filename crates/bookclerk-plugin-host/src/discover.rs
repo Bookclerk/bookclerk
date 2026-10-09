@@ -161,9 +161,12 @@ pub fn plugin_search_dirs(config: &Config) -> Vec<PathBuf> {
     dirs
 }
 
-/// Counts [`discover_plugins`] calls. Tests assert an idle reconcile does not hash.
+// Counts `discover_plugins` calls inside one test task. Other tests do not
+// increment it. A process-wide counter raced with them.
 #[cfg(test)]
-pub static DISCOVER_CALLS: AtomicUsize = AtomicUsize::new(0);
+tokio::task_local! {
+    pub static DISCOVER_CALLS: std::sync::Arc<AtomicUsize>;
+}
 
 /// Discover plugins under the configured search directories.
 ///
@@ -179,7 +182,9 @@ pub static DISCOVER_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// Returns [`PluginError`] on duplicate keys, duplicate aliases, missing binaries, or I/O failures.
 pub fn discover_plugins(config: &Config) -> Result<Vec<DiscoveredPlugin>> {
     #[cfg(test)]
-    DISCOVER_CALLS.fetch_add(1, Ordering::Relaxed);
+    {
+        let _ = DISCOVER_CALLS.try_with(|calls| calls.fetch_add(1, Ordering::Relaxed));
+    }
     let mut out = Vec::new();
     let mut seen: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
     for dir in plugin_search_dirs(config) {

@@ -1083,8 +1083,9 @@ same manifest alias) does not inherit grants.
 
 A plugin instance document, when one exists, is the `CONFIG` and `SECRETS`
 binding for that instance. Two instances may share a plugin key. A deployment
-spawn uses that instance's already resolved bindings. Key lookup remains only
-for a plugin that has no deployment, which keeps the tables below.
+spawn uses that instance's already resolved bindings. It does not select the
+guest by plugin key. A plugin with no instance document still reads the
+tables below.
 GraphicAudio's imported keys (`access`, `base_url`, `store_url`, `bitrate`,
 `container`) are not written back to `[sources.graphicaudio]` after the first
 import.

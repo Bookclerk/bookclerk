@@ -22,33 +22,101 @@ const S3_PLUGIN_ID: &str = "s3";
 /// Manifest id of the platform local-filesystem destination guest.
 const LOCAL_PLUGIN_ID: &str = "local";
 
+/// Which single-slot backend a deployed destination owns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeployedKind {
+    /// Platform S3 output.
+    S3,
+    /// Platform local-filesystem output.
+    Local,
+    /// Another storage guest. It has a session and no `s3()` / `local()` slot.
+    Other,
+}
+
+/// One reconciler-spawned destination, addressed by plugin instance id.
+#[derive(Clone)]
+struct DeployedSlot {
+    /// Guest session.
+    session: Arc<PluginSession>,
+    /// Storage backend when this guest is S3 or local.
+    backend: Option<Arc<dyn StorageBackend>>,
+    /// Which acquire slot this backend fills.
+    kind: DeployedKind,
+}
+
 /// Long-lived external output plugins loaded at host startup.
 #[derive(Default, Clone)]
 pub struct DestinationRegistry {
-    /// Spawned S3 output backend when `[output.s3].enabled` and describe succeeded.
+    /// Transitional S3 backend. A deployed instance lives in [`Self::deployed`].
     s3: Option<Arc<dyn StorageBackend>>,
-    /// Spawned local-filesystem output backend when that plugin loaded.
+    /// Transitional local backend. A deployed instance lives in [`Self::deployed`].
     local: Option<Arc<dyn StorageBackend>>,
-    /// Plugin sessions keyed by `(plugin_id, account_id)`.
+    /// Transitional plugin sessions keyed by `(plugin_id, account_id)`.
     plugin_sessions: std::collections::HashMap<String, Arc<PluginSession>>,
-    /// Present deployment instance id for each session the reconciler spawned.
+    /// Reconciler sessions keyed by plugin instance id.
     ///
-    /// Keyed by [`PluginSession::instance_key`]. A transitional session has no
-    /// entry, so reload does not copy it onto the replacement registry.
-    deployed_instances: std::collections::HashMap<String, String>,
+    /// Two instances of one plugin key each keep their own guest. Reload copies
+    /// these slots and leaves transitional sessions behind.
+    deployed: std::collections::HashMap<String, DeployedSlot>,
 }
 
 impl DestinationRegistry {
-    /// External S3 output backend, when loaded.
+    /// External S3 output backend, when exactly one is loaded.
+    ///
+    /// Two deployed S3 instances return `None`. Acquire uses
+    /// [`Self::require_s3`] so that case fails closed instead of falling
+    /// through to `[output.s3]`.
     #[must_use]
     pub fn s3(&self) -> Option<Arc<dyn StorageBackend>> {
-        self.s3.clone()
+        self.require_s3().ok().flatten()
     }
 
-    /// External local-filesystem output backend, when loaded.
+    /// The S3 backend, or an error when more than one deployed instance owns it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when two deployed S3 instances would otherwise overwrite
+    /// one slot.
+    pub fn require_s3(&self) -> std::result::Result<Option<Arc<dyn StorageBackend>>, String> {
+        self.require_kind(DeployedKind::S3, &self.s3, "s3")
+    }
+
+    /// External local-filesystem output backend, when exactly one is loaded.
     #[must_use]
     pub fn local(&self) -> Option<Arc<dyn StorageBackend>> {
-        self.local.clone()
+        self.require_local().ok().flatten()
+    }
+
+    /// The local backend, or an error when more than one deployed instance owns it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when two deployed local instances would otherwise
+    /// overwrite one slot.
+    pub fn require_local(&self) -> std::result::Result<Option<Arc<dyn StorageBackend>>, String> {
+        self.require_kind(DeployedKind::Local, &self.local, "local")
+    }
+
+    /// One deployed backend of `kind`, else the transitional slot.
+    fn require_kind(
+        &self,
+        kind: DeployedKind,
+        transitional: &Option<Arc<dyn StorageBackend>>,
+        label: &str,
+    ) -> std::result::Result<Option<Arc<dyn StorageBackend>>, String> {
+        let deployed: Vec<_> = self
+            .deployed
+            .values()
+            .filter(|slot| slot.kind == kind)
+            .filter_map(|slot| slot.backend.clone())
+            .collect();
+        match deployed.len() {
+            0 => Ok(transitional.clone()),
+            1 => Ok(deployed.into_iter().next()),
+            count => Err(format!(
+                "{count} {label} destination instances are deployed; refusing to pick one"
+            )),
+        }
     }
 
     /// Plugin session for `plugin_id` and `account_id`, when that guest was loaded.
@@ -58,24 +126,55 @@ impl DestinationRegistry {
     /// an alias is invalid state and fails closed rather than returning a twin.
     #[must_use]
     pub fn plugin_session(&self, plugin_id: &str, account_id: &str) -> Option<Arc<PluginSession>> {
-        if let Some(session) = self
-            .plugin_sessions
-            .get(&crate::plugin_instance_key(plugin_id, account_id))
-        {
-            return Some(Arc::clone(session));
+        self.require_plugin_session(plugin_id, account_id).ok()
+    }
+
+    /// [`Self::plugin_session`] that reports same-key ambiguity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no guest is loaded, or when more than one session
+    /// matches `plugin_id`.
+    pub fn require_plugin_session(
+        &self,
+        plugin_id: &str,
+        account_id: &str,
+    ) -> std::result::Result<Arc<PluginSession>, String> {
+        if let Some(slot) = self.deployed.get(plugin_id) {
+            if slot.session.account_id() == account_id {
+                return Ok(Arc::clone(&slot.session));
+            }
         }
-        let hits: Vec<_> = self
-            .plugin_sessions
-            .values()
-            .filter(|session| {
-                session.account_id() == account_id
-                    && crate::identity_matches_occupancy(session.id(), session.alias(), plugin_id)
-            })
-            .cloned()
-            .collect();
-        match hits.as_slice() {
-            [one] => Some(Arc::clone(one)),
-            _ => None,
+        let mut hits: Vec<Arc<PluginSession>> = Vec::new();
+        let mut push = |session: &Arc<PluginSession>| {
+            if hits.iter().any(|existing| Arc::ptr_eq(existing, session)) {
+                return;
+            }
+            let exact = session.instance_key() == crate::plugin_instance_key(plugin_id, account_id);
+            let alias = session.account_id() == account_id
+                && crate::identity_matches_occupancy(session.id(), session.alias(), plugin_id);
+            if exact || alias {
+                hits.push(Arc::clone(session));
+            }
+        };
+        for slot in self.deployed.values() {
+            push(&slot.session);
+        }
+        for session in self.plugin_sessions.values() {
+            push(session);
+        }
+        match hits.len() {
+            1 => Ok(hits.remove(0)),
+            0 => Err(format!(
+                "no plugin session for plugin `{plugin_id}` (guest not loaded)"
+            )),
+            count => Err(format!(
+                "plugin `{plugin_id}` matches {count} destination sessions; pass a plugin instance id. candidates: {}",
+                hits.iter()
+                    .map(|session| session.instance_key())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
         }
     }
 
@@ -90,13 +189,27 @@ impl DestinationRegistry {
             .insert(session.instance_key().to_string(), session);
     }
 
-    /// Records that `instance_key` is the reconciler's session for `plugin_instance_id`.
-    pub(crate) fn note_deployed_instance(&mut self, instance_key: &str, plugin_instance_id: &str) {
+    /// Records a reconciler-spawned guest under `plugin_instance_id`.
+    ///
+    /// A second instance of the same plugin key does not replace this slot.
+    fn note_deployed_instance(
+        &mut self,
+        plugin_instance_id: &str,
+        session: Arc<PluginSession>,
+        backend: Option<Arc<dyn StorageBackend>>,
+        kind: DeployedKind,
+    ) {
         if plugin_instance_id.is_empty() {
             return;
         }
-        self.deployed_instances
-            .insert(instance_key.to_string(), plugin_instance_id.to_string());
+        self.deployed.insert(
+            plugin_instance_id.to_string(),
+            DeployedSlot {
+                session,
+                backend,
+                kind,
+            },
+        );
     }
 
     /// Copies deployed sessions from this registry onto `candidate`.
@@ -111,24 +224,11 @@ impl DestinationRegistry {
         candidate: &mut Self,
         deployed_instances: &std::collections::BTreeSet<String>,
     ) {
-        for session in self.plugin_sessions.values() {
-            let Some(instance_id) = self.deployed_instances.get(session.instance_key()) else {
-                continue;
-            };
+        for (instance_id, slot) in &self.deployed {
             if !deployed_instances.contains(instance_id) {
                 continue;
             }
-            if session.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
-                if let Some(backend) = &self.s3 {
-                    candidate.s3 = Some(Arc::clone(backend));
-                }
-            } else if session.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
-                if let Some(backend) = &self.local {
-                    candidate.local = Some(Arc::clone(backend));
-                }
-            }
-            candidate.note_deployed_instance(session.instance_key(), instance_id);
-            candidate.set_plugin_session(Arc::clone(session));
+            candidate.deployed.insert(instance_id.clone(), slot.clone());
         }
     }
 }
@@ -272,20 +372,30 @@ pub(crate) async fn spawn_deployed_storage(
     config: &Config,
     store: Option<&bookclerk_library::LibraryStore>,
     registry: &mut DestinationRegistry,
+    plugin_instance_id: &str,
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<Arc<PluginSession>> {
     if plugin.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
         let (storage_backend, session) =
             spawn_s3_guest_prepared(plugin, config, None, prepared).await?;
-        registry.s3 = Some(Arc::new(storage_backend));
-        registry.set_plugin_session(Arc::clone(&session));
+        let backend = Arc::new(storage_backend);
+        registry.note_deployed_instance(
+            plugin_instance_id,
+            Arc::clone(&session),
+            Some(backend),
+            DeployedKind::S3,
+        );
         return Ok(session);
     }
     if plugin.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
         let (storage, session) =
             super::destination_local::spawn_local_prepared(plugin, config, prepared).await?;
-        registry.set_local(Arc::new(storage));
-        registry.set_plugin_session(Arc::clone(&session));
+        registry.note_deployed_instance(
+            plugin_instance_id,
+            Arc::clone(&session),
+            Some(Arc::new(storage)),
+            DeployedKind::Local,
+        );
         return Ok(session);
     }
     let session = Arc::new(
@@ -300,7 +410,12 @@ pub(crate) async fn spawn_deployed_storage(
         .await?,
     );
     session.open(prepared.bindings).await?;
-    registry.set_plugin_session(Arc::clone(&session));
+    registry.note_deployed_instance(
+        plugin_instance_id,
+        Arc::clone(&session),
+        None,
+        DeployedKind::Other,
+    );
     Ok(session)
 }
 
@@ -330,6 +445,9 @@ async fn spawn_s3_guest_prepared(
     db: Option<&DatabaseConnection>,
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
+    if prepared.from_instance {
+        return spawn_s3_from_instance(plugin, config, prepared).await;
+    }
     let config_json = prepared.spawn_config_table;
     let s3_config = config.output.s3.clone();
     let prefix = normalize_storage_prefix(s3_config.prefix.trim());
@@ -387,6 +505,113 @@ async fn spawn_s3_guest_prepared(
     };
     session.open(open_bindings).await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))
+}
+
+/// Spawns a deployed S3 guest from the instance document only.
+///
+/// `[output.s3]`, `BOOKCLERK_AWS_*`, and the operator `encrypted_secrets` row
+/// are not consulted. A document that omits the bucket or credentials fails
+/// closed.
+async fn spawn_s3_from_instance(
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+    prepared: crate::instance_bindings::PreparedOpen,
+) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
+    let body = instance_s3_config(&prepared)?;
+    let session = Arc::new(
+        PluginSession::spawn_for_account_with_env(
+            plugin,
+            config,
+            body.clone(),
+            crate::OPERATOR_ACCOUNT,
+            &[],
+        )
+        .await?,
+    );
+    session
+        .open(bookclerk_plugin_sdk::BindingValues {
+            config: bookclerk_plugin_sdk::ExtensibleConfig::json(&body),
+            secrets: prepared.bindings.secrets,
+            ..bookclerk_plugin_sdk::BindingValues::default()
+        })
+        .await?;
+    Ok((PluginStorage::new(Arc::clone(&session)), session))
+}
+
+/// Bucket, region, and credentials from the instance document.
+fn instance_s3_config(
+    prepared: &crate::instance_bindings::PreparedOpen,
+) -> PluginResult<serde_json::Value> {
+    let mut body = prepared.granted_config.clone();
+    let bucket = json_text(&body, &["bucket"]);
+    let region = json_text(&body, &["region"]);
+    if bucket.is_empty() || region.is_empty() {
+        return Err(crate::PluginError::message(
+            "deployed s3 instance config is missing bucket or region; [output.s3] is not the authority",
+        ));
+    }
+    if let Some(object) = body.as_object_mut() {
+        object
+            .entry("prefix")
+            .or_insert_with(|| serde_json::Value::String(String::new()));
+    }
+    if !s3_credentials_present(&body) {
+        let Some(credentials) = credentials_from_secrets(&prepared.bindings.secrets) else {
+            return Err(crate::PluginError::message(
+                "deployed s3 instance has no credentials; host env and operator encrypted_secrets are not used",
+            ));
+        };
+        if let Some(object) = body.as_object_mut() {
+            object.insert("credentials".into(), credentials);
+        }
+    }
+    Ok(body)
+}
+
+/// True when the document already carries a non-empty access key.
+fn s3_credentials_present(body: &serde_json::Value) -> bool {
+    body.get("credentials")
+        .map(|credentials| {
+            !json_text(credentials, &["accessKeyId", "access_key_id"]).is_empty()
+                && !json_text(credentials, &["secretAccessKey", "secret_access_key"]).is_empty()
+        })
+        .unwrap_or(false)
+}
+
+/// Builds an [`OutputS3ContextDto`] credentials object from instance secrets.
+fn credentials_from_secrets(
+    secrets: &bookclerk_plugin_sdk::ExtensibleConfig,
+) -> Option<serde_json::Value> {
+    let value = secrets.json_value().ok()?;
+    let access = json_text(&value, &["accessKeyId", "access_key_id"]);
+    let secret = json_text(&value, &["secretAccessKey", "secret_access_key"]);
+    if access.is_empty() || secret.is_empty() {
+        return None;
+    }
+    let mut credentials = serde_json::json!({
+        "accessKeyId": access,
+        "secretAccessKey": secret,
+    });
+    let token = json_text(&value, &["sessionToken", "session_token"]);
+    if !token.is_empty() {
+        if let Some(object) = credentials.as_object_mut() {
+            object.insert("sessionToken".into(), serde_json::Value::String(token));
+        }
+    }
+    Some(credentials)
+}
+
+/// First non-empty string among `keys`.
+fn json_text(value: &serde_json::Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(text) = value.get(*key).and_then(serde_json::Value::as_str) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 /// Resolves AWS keys from `BOOKCLERK_AWS_*` env, else unseals the operator `encrypted_secrets` row (process DEK).

@@ -415,11 +415,7 @@ pub async fn load_external_sources_skipping(
                 registry.register(Arc::new(s));
             }
             Err(err) => {
-                let text = err.to_string();
-                if text.contains("pass a plugin instance id")
-                    || text.contains("plugin instance `")
-                    || text.contains("has no config document")
-                {
+                if err.is_instance_selection() {
                     return Err(err);
                 }
                 tracing::warn!(id = %plugin.manifest.id, %err, "skipping external source plugin");

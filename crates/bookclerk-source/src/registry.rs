@@ -136,6 +136,39 @@ impl SourceRegistry {
         sources
     }
 
+    /// Two instances of one plugin key cannot share a scan.
+    ///
+    /// Accounts and [`crate::SourceScope`] stay keyed by storefront id, so
+    /// scanning both would read and write the same rows twice. The caller
+    /// passes one plugin instance id instead.
+    fn ambiguous_same_key_scan(&self) -> Option<String> {
+        let mut by_key: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for source in self.sources.values() {
+            let label = match source.plugin_instance_id() {
+                Some(id) if !id.is_empty() => id.to_string(),
+                _ => source.id().to_string(),
+            };
+            by_key
+                .entry(source.plugin_key().to_string())
+                .or_default()
+                .push(label);
+        }
+        let problems: Vec<_> = by_key
+            .into_iter()
+            .filter(|(_, ids)| ids.len() > 1)
+            .map(|(key, ids)| format!("`{key}` ({})", ids.join(", ")))
+            .collect();
+        if problems.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "scan is ambiguous for {}; pass a plugin instance id. Accounts stay keyed by storefront id",
+                problems.join("; ")
+            ))
+        }
+    }
+
     /// Scan every registered source (honoring per-source account filters).
     ///
     /// When `opts.accounts` is non-empty, each source only receives the subset of
@@ -147,6 +180,9 @@ impl SourceRegistry {
     ///
     /// Returns an error when the operation fails.
     pub async fn scan_all(&self, library: &LibraryStore, opts: ScanOptions) -> Result<ScanSummary> {
+        if let Some(detail) = self.ambiguous_same_key_scan() {
+            return Err(SourceError::api(detail));
+        }
         let mut total = ScanSummary::default();
         let mut any = false;
         for source in self.all() {

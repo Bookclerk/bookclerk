@@ -2545,6 +2545,7 @@ fn plugin_settings_snapshot(
     sources: &SourceRegistry,
     integrations: &IntegrationRegistry,
     discovered_plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
+    omit_imported_graphicaudio: bool,
 ) -> Vec<PluginSettingsGroup> {
     let mut groups_by_key: std::collections::BTreeMap<(String, String), PluginSettingsGroup> =
         std::collections::BTreeMap::new();
@@ -2589,6 +2590,9 @@ fn plugin_settings_snapshot(
                     option.value = enabled.to_string();
                 }
             }
+            if omit_imported_graphicaudio {
+                hide_imported_graphicaudio(&mut group);
+            }
             group.plugin_key = Some(plugin.plugin_key().canonical().to_string());
             group.provenance = Some(plugin.identity.provenance.to_string());
             groups_by_key.insert(
@@ -2607,7 +2611,10 @@ fn plugin_settings_snapshot(
         let key = (String::from("source"), id.clone());
         if !groups_by_key.contains_key(&key) {
             let table = config.sources.table(&id).cloned().unwrap_or_default();
-            let group = build_source_settings_group(config, source.as_ref(), table);
+            let mut group = build_source_settings_group(config, source.as_ref(), table);
+            if omit_imported_graphicaudio {
+                hide_imported_graphicaudio(&mut group);
+            }
             groups_by_key.insert((group.family.clone(), group.id.clone()), group);
         }
     }
@@ -2626,6 +2633,19 @@ fn plugin_settings_snapshot(
     }
 
     groups_by_key.into_values().collect()
+}
+
+/// Drops GraphicAudio knobs that the instance document owns.
+///
+/// `enabled` stays. Operators edit the rest with
+/// `PUT /api/config/plugin-instances/{id}/config`.
+fn hide_imported_graphicaudio(group: &mut PluginSettingsGroup) {
+    if !group.id.eq_ignore_ascii_case("graphicaudio") {
+        return;
+    }
+    group
+        .settings
+        .retain(|option| !bookclerk_plugin_host::is_graphicaudio_imported_setting(&option.key));
 }
 
 /// Discovers plugins on a blocking thread with a 2s timeout; returns empty on failure.
@@ -3204,6 +3224,18 @@ async fn get_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SettingsResponse>, StatusCode> {
     let cfg = state.config.read().await.clone();
+    let library = state.library_snapshot().await;
+    let omit_imported_graphicaudio =
+        match bookclerk_plugin_host::graphicaudio_document_exists(&library, &cfg).await {
+            Ok(exists) => exists,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "hiding GraphicAudio settings because the instance document could not be read"
+                );
+                true
+            }
+        };
     let discovered_plugins = discover_plugins_for_settings(&cfg).await;
     let sources = state.sources.read().await;
     let integrations = state.integrations.read().await;
@@ -3238,7 +3270,13 @@ async fn get_settings(
     Ok(Json(SettingsResponse {
         settings,
         effective,
-        plugins: plugin_settings_snapshot(&cfg, &sources, &integrations, &discovered_plugins),
+        plugins: plugin_settings_snapshot(
+            &cfg,
+            &sources,
+            &integrations,
+            &discovered_plugins,
+            omit_imported_graphicaudio,
+        ),
         host_cpu_cores_max: host_cpu_cores_max(),
         jail_cpu_cores: cfg
             .plugins
