@@ -2424,18 +2424,20 @@ fn take_order_key(
     scan.skip();
     let start = scan.i;
     if let Some(first) = scan.read_ident() {
+        let after_first = scan.i;
         scan.skip();
-        let (table, ident) = if scan.peek_byte(b'.') {
+        let (table, ident, ident_end) = if scan.peek_byte(b'.') {
             scan.take_byte(b'.');
             scan.skip();
             let Some(col) = scan.read_ident() else {
                 scan.i = start;
                 return infer_expr(scan, cx);
             };
+            let ident_end = scan.i;
             scan.skip();
-            (Some(first), col)
+            (Some(first), col, ident_end)
         } else {
-            (None, first)
+            (None, first, after_first)
         };
         // `COLLATE NOCASE` is the library title order. Any other collation is
         // outside SQL v1. A table column qualifies even when the SELECT list
@@ -2467,21 +2469,28 @@ fn take_order_key(
             || scan.peek_kw("INTERSECT")
             || scan.peek_kw("EXCEPT");
         if terminal {
-            // Do not record a collate span. SELECT-list text is wrapped
-            // separately. Wrapping only the column of `e.id` produces the
-            // illegal token `e.(id COLLATE "C")`, and a bare `ORDER BY kind`
-            // must stay `kind NULLS FIRST` so backup capture matches.
-            // `COLLATE NOCASE` and the post-fold `uuid` tie-break are rewritten
-            // later, which is why this span is left unmarked.
+            // Unqualified select-list names stay bare (`ORDER BY kind NULLS
+            // FIRST`). Postgres orders that name by the select item, which is
+            // already `(kind COLLATE "C")`. Every other TEXT key, including
+            // `e.id` and a column that is not in the select list, records the
+            // whole identifier so the wrap is `(e.id COLLATE "C")`. The span
+            // starts at the qualifier. Wrapping only the column produces the
+            // illegal token `e.(id COLLATE "C")`. `COLLATE NOCASE` is left
+            // unmarked; the fold rewrite owns those keys.
             let from_list = table.is_none().then(|| {
                 cols.iter()
                     .find(|(name, _)| *name == ident)
                     .map(|(_, ty)| *ty)
             });
-            if let Some(Some(ty)) = from_list {
-                return Ok(ty);
-            }
-            if let Ok(ty) = lookup_column(cx, table.as_deref(), &ident) {
+            let unqualified_selected = matches!(from_list, Some(Some(_)));
+            let resolved = match from_list {
+                Some(Some(ty)) => Some(ty),
+                _ => lookup_column(cx, table.as_deref(), &ident).ok(),
+            };
+            if let Some(ty) = resolved {
+                if ty.is_text() && !collated && !unqualified_selected {
+                    note_collated_text(cx, scan, start, ident_end);
+                }
                 return Ok(ty);
             }
         }
@@ -3208,9 +3217,10 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
 ///
 /// A column compared to a placeholder (`account_id = ?`) stays bare so the
 /// index prefix still matches. A column compared to a literal (`body = 'A'`)
-/// is still collated. The argument of `lower` stays bare so `lower(uuid)`
-/// matches the expression index. `COLLATE NOCASE` keys are not recorded here;
-/// the nocase rewrite owns those.
+/// is still collated. Arguments of `lower` and `upper` are collated too, so
+/// Postgres folds with the C locale (`É` stays `É`, matching SQLite). The
+/// expression index lowers to the same `lower((uuid COLLATE "C"))` form.
+/// `COLLATE NOCASE` keys are not recorded here; the nocase rewrite owns those.
 fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: usize) {
     if skip_text_collate(scan.sql, start, end) {
         return;
@@ -3220,7 +3230,7 @@ fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: 
 
 /// True when wrapping `sql[start..end]` in `COLLATE "C"` would miss an index.
 fn skip_text_collate(sql: &str, start: usize, end: usize) -> bool {
-    equality_against_placeholder(sql, start, end) || lower_call_argument(sql, start)
+    equality_against_placeholder(sql, start, end)
 }
 
 /// True when the span is one side of `=` and the other side is `?` or `$n`.
@@ -3282,20 +3292,6 @@ fn ends_with_placeholder(sql: &str) -> bool {
         i -= 1;
     }
     i > 0 && i < bytes.len() && bytes[i - 1] == b'$'
-}
-
-/// True when the span is the argument of `lower(…)`.
-fn lower_call_argument(sql: &str, start: usize) -> bool {
-    let Some(head) = sql.get(..start) else {
-        return false;
-    };
-    let Some(head) = head.trim_end().strip_suffix('(') else {
-        return false;
-    };
-    head.trim_end()
-        .rsplit(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-        .next()
-        .is_some_and(|name| name.eq_ignore_ascii_case("lower"))
 }
 
 fn string_lit_start(scan: &TScan<'_>, end: usize) -> usize {

@@ -216,6 +216,7 @@ class Relations:
     native_gateway_packages: frozenset[str]
     native_gateway_paths: tuple[str, ...]
     windows_cluster_paths: tuple[str, ...]
+    envelope_packages: frozenset[str]
     envelope_paths: tuple[str, ...]
     release_shipped: tuple[str, ...]
     release_full_packages: frozenset[str]
@@ -251,6 +252,7 @@ def load_relations(path: str | Path | None = None) -> Relations:
         native_gateway_packages=frozenset(gateway.get("packages", [])),
         native_gateway_paths=tuple(gateway.get("paths", [])),
         windows_cluster_paths=tuple(windows_cluster.get("paths", [])),
+        envelope_packages=frozenset(envelope.get("packages", [])),
         envelope_paths=tuple(envelope.get("paths", [])),
         release_shipped=tuple(release.get("shipped", [])),
         release_full_packages=frozenset(release.get("full_packages", [])),
@@ -293,6 +295,8 @@ def validate_relations(rel: Relations, index: PackageIndex) -> list[str]:
             need(pkg, f"platform_jobs.{job}")
     for pkg in rel.native_gateway_packages:
         need(pkg, "native_gateway")
+    for pkg in rel.envelope_packages:
+        need(pkg, "envelope")
     for pkg in (*rel.release_shipped, *rel.release_full_packages):
         need(pkg, "release")
     return problems
@@ -905,8 +909,10 @@ def _select_checks(
             [f"windows cluster input {p}" for p in surf.windows_cluster],
         )
 
-    if surf.envelope:
-        _select(plan, "envelope", [f"envelope input {p}" for p in surf.envelope])
+    envelope_why = [f"envelope input {p}" for p in surf.envelope]
+    envelope_why += _why(sel, compiled & rel.envelope_packages, "envelope path compiled")
+    if envelope_why:
+        _select(plan, "envelope", envelope_why)
 
     steps = [step for step, owner in rel.postgres_steps.items() if owner in unit]
     if steps:

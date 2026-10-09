@@ -1647,6 +1647,31 @@ async fn postgres_binding_portable_functions() {
             bookclerk_db_exec::sql_v1::PORTABLE_INSERT_BLOB.to_vec()
         )
     );
+    let mut non_ascii = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_INSERT,
+        vec![bookclerk_plugin_abi::DbValue::Bytes(
+            bookclerk_db_exec::sql_v1::PORTABLE_INSERT_BLOB.to_vec(),
+        )],
+    );
+    non_ascii.result_selection = bookclerk_plugin_abi::DbResultSelection::AffectedRows;
+    run_postgres_binding(&db, binding_req("pg-ins-lower-non-ascii", vec![non_ascii]))
+        .await
+        .expect("non-ascii insert");
+    let mut folded = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_SELECT,
+        vec![],
+    );
+    folded.max_rows = 8;
+    let folded_reply =
+        run_postgres_binding(&db, binding_req("pg-sel-lower-non-ascii", vec![folded]))
+            .await
+            .expect("non-ascii lower");
+    assert_eq!(
+        folded_reply.statements[0].rows[0].values[0],
+        bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
+        )
+    );
 }
 
 #[tokio::test]

@@ -67,7 +67,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid ON books(uuid)"),
     // Search hydration matches `lower(uuid)`. A btree on the expression keeps
     // that predicate off a table scan. Stored uuids that differ only by ASCII
-    // case stay distinct rows.
+    // case stay distinct rows. Postgres lowering wraps the argument as
+    // `lower((uuid COLLATE "C"))` so the fold matches SQLite. `IF NOT EXISTS`
+    // leaves an index created from the older expression in place.
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid_lower ON books(lower(uuid))"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_status ON books(acquire_status)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_account ON books(account_id)"),

@@ -470,7 +470,16 @@ mod tests {
     fn binding_ddl_drops_sqlite_nocase_on_postgres_and_sqlite_keeps_it() {
         let sql =
             "CREATE INDEX IF NOT EXISTS idx_books_page_title ON books(title COLLATE NOCASE, uuid)";
-        let postgres = lower_binding_sql_for_backend(DatabaseBackend::Postgres, sql);
+        let mut env = bookclerk_plugin_abi::SqlTypeEnv::new();
+        env.insert_table(
+            "books",
+            vec![
+                ("title".into(), bookclerk_plugin_abi::SqlType::Text),
+                ("uuid".into(), bookclerk_plugin_abi::SqlType::Text),
+            ],
+        );
+        let postgres =
+            lower_binding_sql_for_backend_with(DatabaseBackend::Postgres, sql, Some(&env));
         assert!(
             !postgres.to_ascii_uppercase().contains("NOCASE"),
             "{postgres}"
@@ -542,6 +551,23 @@ mod tests {
         assert!(
             expand_host_schema_batch(DatabaseBackend::Postgres, &expanded).is_none(),
             "already-expanded identity companions must not be packed again"
+        );
+    }
+
+    #[test]
+    fn expand_host_schema_batch_collates_uuid_expression_index() {
+        let batch = vec![
+            "CREATE TABLE books (uuid TEXT)".to_string(),
+            "CREATE INDEX IF NOT EXISTS idx_books_uuid_lower ON books(lower(uuid))".to_string(),
+            "INSERT INTO bookclerk_schema_migrations (version) VALUES (1)".to_string(),
+        ];
+        let expanded =
+            expand_host_schema_batch(DatabaseBackend::Postgres, &batch).expect("schema batch");
+        assert!(
+            expanded
+                .iter()
+                .any(|sql| sql.contains("lower((uuid COLLATE \"C\"))")),
+            "{expanded:?}"
         );
     }
 

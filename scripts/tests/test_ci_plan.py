@@ -1289,6 +1289,26 @@ class EnvelopeTests(unittest.TestCase):
         self.assertTrue(p.selected("envelope"))
         self.assertTrue(p.selected("rust_test"))
 
+    def test_compiled_envelope_packages_select_the_job_without_a_full_suite(self) -> None:
+        sources = [
+            "crates/bookclerk-db-exec/src/lower.rs",
+            "crates/bookclerk-plugin-abi/src/sql_types.rs",
+            "crates/bookclerk-library/src/store.rs",
+            "crates/bookclerk-library/src/store/lock_retry.rs",
+            "crates/bookclerk-plugins/platform/database-sqlite/src/sqlite.rs",
+        ]
+        for path in sources:
+            self.assertTrue((REPO / path).is_file(), path)
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                self.assertTrue(p.selected("envelope"), p.checks.keys())
+
+    def test_db_exec_integration_test_does_not_select_envelope(self) -> None:
+        p = plan("crates/bookclerk-db-exec/tests/fuzz_corpus.rs")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertFalse(p.selected("envelope"))
+
     def test_docs_do_not_select_it(self) -> None:
         p = plan("docs/plugins.md")
         self.assertFalse(p.selected("envelope"))

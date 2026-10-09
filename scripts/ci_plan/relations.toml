@@ -168,9 +168,19 @@ paths = [
 
 # 1 vCPU / 1 GiB measurement. The ubuntu-latest VM builds the release
 # binaries. `docker run --memory=1g --memory-swap=1g --cpus=1` is the cgroup
-# for the seed, daemon, and load. These paths select that job without a full
-# suite; `scripts/bench` is not a Cargo package.
+# for the seed, daemon, and load. `packages` is the Cargo-compiled closure
+# (source or a normal/build dependency), same rule as `native_gateway`.
+# Test-only edits in those packages do not select the job. `paths` covers
+# the harness, which is not a Cargo package. Neither marks a full suite.
 [envelope]
+packages = [
+    "bookclerkd",
+    "bookclerk-library",
+    "bookclerk-search",
+    "bookclerk-db-exec",
+    "bookclerk-plugin-database-sqlite",
+    "bookclerk-media",
+]
 paths = [
     "scripts/bench/small-vps.sh",
     "scripts/bench/envelope-container.sh",

@@ -45,6 +45,21 @@ pub const PORTABLE_INSERT: &str =
 /// Blob payload for [`PORTABLE_INSERT`].
 pub const PORTABLE_INSERT_BLOB: &[u8] = &[1, 2, 3];
 
+/// Inserts a non-ASCII `body` so `lower` can be compared with SQLite.
+///
+/// SQLite `lower` folds ASCII only, so `É` stays `É`. Postgres `lower` uses
+/// the argument collation's `LC_CTYPE`. The typed lowering wraps the column
+/// as `lower((body COLLATE "C"))`, which keeps `É`.
+pub const PORTABLE_LOWER_NON_ASCII_INSERT: &str =
+    "INSERT INTO typed (n, body, payload, blob, r) VALUES (7, 'É', '{}', ?, 0)";
+
+/// `lower` of the row inserted by [`PORTABLE_LOWER_NON_ASCII_INSERT`].
+pub const PORTABLE_LOWER_NON_ASCII_SELECT: &str = "SELECT lower(body) FROM typed WHERE n = 7";
+
+/// SQLite's result for [`PORTABLE_LOWER_NON_ASCII_SELECT`], and Postgres once
+/// the argument is `COLLATE "C"`.
+pub const PORTABLE_LOWER_NON_ASCII_EXPECT: &str = "É";
+
 /// Scalar portable helpers (no aggregates).
 ///
 /// Column order matches [`portable_select_expects`]. `json_object` is

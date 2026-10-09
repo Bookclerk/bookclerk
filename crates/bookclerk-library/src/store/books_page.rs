@@ -82,8 +82,9 @@ impl LibraryStore {
     ///
     /// The page is read in pieces of at most 64 rows so a requested limit of
     /// 256 stays under the guest result-byte cap. A piece is halved when that
-    /// result would exceed the cap. `limit`, `offset`, and `total` are the
-    /// caller's page, not one of those pieces. `total` is counted once.
+    /// result would exceed the cap, and later pieces keep that smaller width.
+    /// `limit`, `offset`, and `total` are the caller's page, not one of those
+    /// pieces. `total` is counted once.
     ///
     /// # Errors
     ///
@@ -197,15 +198,19 @@ impl LibraryStore {
         let mut books = Vec::new();
         let mut remaining = limit;
         let mut next_offset = offset;
+        let mut width = chunk;
         while remaining > 0 {
-            let mut take = remaining.min(chunk);
+            let mut take = remaining.min(width);
             let rows = loop {
                 match self
                     .query_book_rows(uuids, uuid_match, account_id, status, take, next_offset)
                     .await
                 {
                     Ok(rows) => break rows,
-                    Err(err) if is_result_too_large(&err) && take > 1 => take /= 2,
+                    Err(err) if is_result_too_large(&err) && take > 1 => {
+                        take /= 2;
+                        width = take;
+                    }
                     Err(err) => return Err(err),
                 }
             };
@@ -287,13 +292,17 @@ impl LibraryStore {
     ) -> Result<Vec<BookRecord>> {
         let mut books = Vec::with_capacity(keys.len());
         let mut start = 0usize;
+        let mut width = BOOK_PAGE_CHUNK;
         while start < keys.len() {
-            let mut take = (keys.len() - start).min(BOOK_PAGE_CHUNK);
+            let mut take = (keys.len() - start).min(width);
             let rows = loop {
                 let slice = &keys[start..start + take];
                 match self.query_exact_rows(slice, account_id, status).await {
                     Ok(rows) => break rows,
-                    Err(err) if is_result_too_large(&err) && take > 1 => take /= 2,
+                    Err(err) if is_result_too_large(&err) && take > 1 => {
+                        take /= 2;
+                        width = take;
+                    }
                     Err(err) => return Err(err),
                 }
             };
@@ -370,7 +379,7 @@ fn nocase_key_order(left: &BookKey, right: &BookKey) -> std::cmp::Ordering {
 }
 
 /// True when `err` is a guest result-byte cap, not a lock.
-fn is_result_too_large(err: &LibraryError) -> bool {
+pub(crate) fn is_result_too_large(err: &LibraryError) -> bool {
     let upper = err.to_string().to_ascii_uppercase();
     upper.contains("MAXRESULTBYTES") || upper.contains("QUERY RESULT IS")
 }
@@ -1557,6 +1566,13 @@ mod tests {
                 .as_deref()
                 .is_some_and(|text| text.len() == 8_000)
         }));
+        let catalog = store
+            .list_books_page(None, None, 64)
+            .await
+            .unwrap_or_else(|err| panic!("enriched catalog page failed: {err}"));
+        assert_eq!(catalog.len(), 64);
+        assert_eq!(catalog[0].title, "Title 00000");
+        assert_eq!(catalog[63].title, "Title 00063");
     }
 
     /// A lowercased search hit must hydrate the stored uuid, including the

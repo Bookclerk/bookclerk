@@ -67,8 +67,11 @@ pub struct SearchEngine {
 /// Full `books` rows per rebuild page.
 ///
 /// 256 rows encode to about 310 KiB as a Cap'n `StatementResult`, over the
-/// sqlite guest `maxResultBytes` of 256 KiB. 64 rows are about 80 KiB.
-/// See `books_page_statement_result_wire_size` in `bookclerk-plugin-abi`.
+/// Starting page width for a catalog rebuild.
+///
+/// Enriched `books` rows can push 64 rows over the sqlite guest
+/// `maxResultBytes` (256 KiB). The catalog reader halves that width and
+/// reuses the fit for the rest of the page.
 const CATALOG_PAGE_ROWS: u64 = 64;
 
 /// Rereads of one page while the daemon holds the database file.
@@ -166,10 +169,10 @@ impl SearchEngine {
 
     /// Rebuild the entire index from the library DB.
     ///
-    /// Rows are read 64 at a time. A Cap'n `StatementResult` of 256 full
-    /// `books` rows is about 310 KiB, over the sqlite guest `maxResultBytes`
-    /// (256 KiB), so that page never commits and the index stays empty.
-    /// Pages of 64 rows are about 80 KiB.
+    /// Rows are read in pages that start at 64. A page of enriched `books`
+    /// rows can exceed the sqlite guest `maxResultBytes` (256 KiB). The reader
+    /// halves until a slice fits, then keeps that width, so the index still
+    /// receives every catalog row.
     ///
     /// # Errors
     ///
