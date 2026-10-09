@@ -1218,10 +1218,10 @@ pub(crate) fn lower_canonical_ddl_to_postgres_with(sql: &str, env: Option<&SqlTy
 /// never has to be sent to Postgres from a code span. A second pass is a
 /// no-op.
 ///
-/// `env` and `outputs` resolve tie-break types. Typed `ORDER BY` text keys are
-/// recorded with `note_text` and wrapped before this pass. When both the
-/// catalog and the SELECT list miss a key, only the text page-order column
-/// `uuid` is collated so untyped DDL still matches the host index.
+/// `env` and `outputs` resolve tie-break types. Typed `ORDER BY` keys are not
+/// wrapped here; a text key after a case-fold is. When both the catalog and
+/// the SELECT list miss a key, only the text page-order column `uuid` is
+/// collated so untyped DDL still matches the host index.
 pub(crate) fn rewrite_sqlite_nocase_with(
     sql: &str,
     env: Option<&SqlTypeEnv>,
@@ -2464,6 +2464,21 @@ mod tests {
         assert!(!update.contains("SET (body COLLATE"), "{update}");
         assert!(update.contains("WHERE (body COLLATE \"C\")"), "{update}");
         assert!(update.contains("('A' COLLATE \"C\")"), "{update}");
+
+        let qualified = lower_pg(
+            "SELECT e.body FROM t AS e WHERE e.body = ? ORDER BY e.body ASC",
+            &env,
+        );
+        assert!(
+            qualified.contains("ORDER BY e.body") && !qualified.contains(".("),
+            "qualified order key must stay a bare identifier ({} bytes)",
+            qualified.len()
+        );
+        assert!(
+            qualified.contains("e.body = $1") || qualified.contains("e.body = ?"),
+            "placeholder equality stays bare ({} bytes)",
+            qualified.len()
+        );
     }
 
     #[test]

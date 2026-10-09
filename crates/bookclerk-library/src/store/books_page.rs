@@ -911,19 +911,23 @@ mod tests {
             .unwrap_or("");
         assert!(
             predicate.contains("account_id = $1") && !predicate.contains("COLLATE"),
-            "equality prefix must stay bare so the page index matches:\n{lowered}"
+            "equality prefix must stay bare so the page index matches ({} bytes)",
+            lowered.len()
         );
         assert!(
             lowered.contains("(lower(title COLLATE \"C\"))"),
-            "production fold missing:\n{lowered}"
+            "production fold missing ({} bytes)",
+            lowered.len()
         );
         assert!(
             lowered.contains("(uuid COLLATE \"C\")"),
-            "production tie-break missing:\n{lowered}"
+            "production tie-break missing ({} bytes)",
+            lowered.len()
         );
         assert!(
             !lowered.to_ascii_uppercase().contains("NOCASE"),
-            "postgres must not receive COLLATE NOCASE:\n{lowered}"
+            "postgres must not receive COLLATE NOCASE ({} bytes)",
+            lowered.len()
         );
     }
 

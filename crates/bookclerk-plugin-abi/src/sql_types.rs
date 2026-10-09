@@ -2425,18 +2425,17 @@ fn take_order_key(
     let start = scan.i;
     if let Some(first) = scan.read_ident() {
         scan.skip();
-        let (table, ident, ident_at) = if scan.peek_byte(b'.') {
+        let (table, ident) = if scan.peek_byte(b'.') {
             scan.take_byte(b'.');
             scan.skip();
-            let col_at = scan.i;
             let Some(col) = scan.read_ident() else {
                 scan.i = start;
                 return infer_expr(scan, cx);
             };
             scan.skip();
-            (Some(first), col, col_at)
+            (Some(first), col)
         } else {
-            (None, first, start)
+            (None, first)
         };
         // `COLLATE NOCASE` is the library title order. Any other collation is
         // outside SQL v1. A table column qualifies even when the SELECT list
@@ -2468,43 +2467,27 @@ fn take_order_key(
             || scan.peek_kw("INTERSECT")
             || scan.peek_kw("EXCEPT");
         if terminal {
+            // Do not record a collate span. SELECT-list text is wrapped
+            // separately. Wrapping only the column of `e.id` produces the
+            // illegal token `e.(id COLLATE "C")`, and a bare `ORDER BY kind`
+            // must stay `kind NULLS FIRST` so backup capture matches.
+            // `COLLATE NOCASE` and the post-fold `uuid` tie-break are rewritten
+            // later, which is why this span is left unmarked.
             let from_list = table.is_none().then(|| {
                 cols.iter()
                     .find(|(name, _)| *name == ident)
                     .map(|(_, ty)| *ty)
             });
             if let Some(Some(ty)) = from_list {
-                note_order_key_text(scan, cx, ident_at, &ident, ty, collated);
                 return Ok(ty);
             }
             if let Ok(ty) = lookup_column(cx, table.as_deref(), &ident) {
-                note_order_key_text(scan, cx, ident_at, &ident, ty, collated);
                 return Ok(ty);
             }
         }
         scan.i = start;
     }
     infer_expr(scan, cx)
-}
-
-/// Records a bare TEXT `ORDER BY` key so typed lowering can collate it.
-///
-/// `COLLATE NOCASE` stays unannotated. The nocase rewrite turns that key into
-/// `lower(ident COLLATE "C")` and would miss the token if this span wrapped
-/// the identifier first.
-fn note_order_key_text(
-    scan: &TScan<'_>,
-    cx: &mut TypeCx<'_>,
-    ident_at: usize,
-    ident: &str,
-    ty: SqlType,
-    collated: bool,
-) {
-    if collated || !ty.is_text() {
-        return;
-    }
-    let end = ident_at.saturating_add(ident.len());
-    note_collated_text(cx, scan, ident_at, end);
 }
 
 fn select_item_name(
@@ -3223,10 +3206,11 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
 
 /// Records a TEXT span for Postgres `COLLATE "C"`.
 ///
-/// Equality operands stay bare so an index prefix (`account_id = ?`) still
-/// matches. The argument of `lower` stays bare so `lower(uuid)` matches the
-/// expression index. `COLLATE NOCASE` keys are not recorded here; the nocase
-/// rewrite owns those.
+/// A column compared to a placeholder (`account_id = ?`) stays bare so the
+/// index prefix still matches. A column compared to a literal (`body = 'A'`)
+/// is still collated. The argument of `lower` stays bare so `lower(uuid)`
+/// matches the expression index. `COLLATE NOCASE` keys are not recorded here;
+/// the nocase rewrite owns those.
 fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: usize) {
     if skip_text_collate(scan.sql, start, end) {
         return;
@@ -3236,34 +3220,68 @@ fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: 
 
 /// True when wrapping `sql[start..end]` in `COLLATE "C"` would miss an index.
 fn skip_text_collate(sql: &str, start: usize, end: usize) -> bool {
-    bare_equality_operand(sql, start, end) || lower_call_argument(sql, start)
+    equality_against_placeholder(sql, start, end) || lower_call_argument(sql, start)
 }
 
-/// True when the span sits on either side of `=` (not `!=`, `<=`, `>=`, `==`).
-fn bare_equality_operand(sql: &str, start: usize, end: usize) -> bool {
-    equality_after(sql, end) || equality_before(sql, start)
+/// True when the span is one side of `=` and the other side is `?` or `$n`.
+///
+/// `!=`, `<=`, `>=`, and `==` do not count. A literal on the other side does
+/// not count, so `body = 'A'` still collates the column.
+fn equality_against_placeholder(sql: &str, start: usize, end: usize) -> bool {
+    placeholder_after_eq(sql, end) || placeholder_before_eq(sql, start)
 }
 
-/// True when `=` follows the span, ignoring whitespace.
-fn equality_after(sql: &str, end: usize) -> bool {
+/// True when `=` follows the span and the next atom is a placeholder.
+fn placeholder_after_eq(sql: &str, end: usize) -> bool {
     let Some(rest) = sql.get(end..) else {
         return false;
     };
     let Some(rest) = rest.trim_start().strip_prefix('=') else {
         return false;
     };
-    !rest.starts_with('=')
+    if rest.starts_with('=') {
+        return false;
+    }
+    starts_with_placeholder(rest.trim_start())
 }
 
-/// True when `=` precedes the span and is not part of a compound operator.
-fn equality_before(sql: &str, start: usize) -> bool {
+/// True when `=` precedes the span and the previous atom is a placeholder.
+fn placeholder_before_eq(sql: &str, start: usize) -> bool {
     let Some(head) = sql.get(..start) else {
         return false;
     };
     let Some(before) = head.trim_end().strip_suffix('=') else {
         return false;
     };
-    !before.ends_with(['=', '!', '<', '>'])
+    if before.ends_with(['=', '!', '<', '>']) {
+        return false;
+    }
+    ends_with_placeholder(before.trim_end())
+}
+
+/// True when `sql` begins with `?` or `$` plus digits.
+fn starts_with_placeholder(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    if bytes.first() == Some(&b'?') {
+        return true;
+    }
+    let Some(rest) = sql.strip_prefix('$') else {
+        return false;
+    };
+    rest.starts_with(|ch: char| ch.is_ascii_digit())
+}
+
+/// True when `sql` ends with `?` or `$` plus digits.
+fn ends_with_placeholder(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    if bytes.last() == Some(&b'?') {
+        return true;
+    }
+    let mut i = bytes.len();
+    while i > 0 && bytes[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    i > 0 && i < bytes.len() && bytes[i - 1] == b'$'
 }
 
 /// True when the span is the argument of `lower(…)`.
