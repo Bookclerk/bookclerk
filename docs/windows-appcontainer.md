@@ -161,22 +161,34 @@ beside the session directory. The gateway jail can write only the session
 directory, so it cannot rewrite those paths and SIDs or delete the record to
 skip recovery. If that write fails, the spawn fails and no grants are applied.
 The lock stays until the journal is dropped, so a concurrent session plan does
-not treat this live directory as abandoned. The pre-grant write syncs the temp
-file and the rename (`sync_all`, and `MOVEFILE_WRITE_THROUGH` on Windows). On
-Windows the directory gets a protected DACL for Administrators, SYSTEM, and
-the owner, so a parent inheritable write ACE does not cover it. Revoke tries
-every entry and keeps only the ones that failed. The sweep holds
-`<session>.lock` until that revoke and the directory removal finish, then
-deletes the lock. A later sweep also deletes a `.lock` whose `.json` is gone.
-If revoke later fails or stops partway, the host tries to replace the file
-with the entries that failed and leaves the directory in place. A failed
-replacement does not remove the earlier file. Host startup retries every
-`plugin-state/*/acl-journals/session-*.json`, and the next native-behind-workerd
-plan of that plugin retries again. A journal is accepted only when every path
-is a local absolute path and it names at most two `S-1-15-2-*` package SIDs.
+not treat this live directory as abandoned. Every non-empty journal write,
+including the rewrite after a failed revoke, syncs the temp file and the
+rename (`sync_all`, and `MOVEFILE_WRITE_THROUGH` on Windows). An empty journal
+is deleted rather than renamed. On Windows the directory gets a protected
+DACL for Administrators, SYSTEM, and the owner, so a parent inheritable write
+ACE does not cover it. Revoke tries every entry and keeps only the ones that
+failed. Open and `try_lock` of `<session>.lock`, and deletion of an orphan
+lock, both hold `acl-journals/.sweep.lock` for that short section so one
+process cannot unlink a lock another process has opened but not locked yet.
+The sweep then holds `<session>.lock` until revoke and directory removal
+finish, and deletes that lock only after success. A later sweep also deletes
+a `.lock` whose `.json` is gone. If revoke later fails or stops partway, the
+host replaces the file with the entries that failed and leaves the directory
+in place. A failed replacement does not remove the earlier file. Host startup
+retries every `plugin-state/*/acl-journals/session-*.json`, and the next
+native-behind-workerd plan of that plugin retries again. A journal is accepted
+only when every path is a local absolute path and it names at most two
+AppContainer package SIDs with exactly seven RIDs after `S-1-15-2-`. That
+excludes `S-1-15-2-1` and `S-1-15-2-2`. A UNC share or a device path, including
+a UNC `[output.local].root`, fails that check and the error names the path;
+map a drive letter or use the S3 destination. A record that cannot be parsed
+or fails that check is renamed to `session-*.json.rejected` and logged once.
+The session directory stays. Sweeps skip the renamed file.
 `bookclerk plugins remove --purge-state` revokes that plugin's journal first
-and leaves plugin-state in place if a record remains. A file inside the session
-directory is not a journal. Revoke is
+and leaves plugin-state in place if a readable record remains, if a live
+session holds the lock, or if a `.json.rejected` file remains.
+`--discard-acl-journals` (with `--purge-state`) deletes rejected records with
+plugin state. A file inside the session directory is not a journal. Revoke is
 idempotent, treats a missing path as
 success, and removes only that session's SID. The jail may revoke as well when
 its process exits normally. Job kill skips that `Drop`, so the host journal is
