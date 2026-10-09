@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -208,6 +209,49 @@ class ContainerScriptTests(unittest.TestCase):
         self.assertIn("except OSError", harness)
         self.assertIn("anon_max", harness)
         self.assertIn("start_anon_poll", harness)
+        self.assertNotIn("$(start_anon_poll", harness)
+        self.assertIn("REPLY=$!", harness)
+        self.assertIn('start_anon_poll "${rebuild_poll}"\nrebuild_poll_pid="${REPLY}"', harness)
+        self.assertIn('start_anon_poll "${api_poll}"\napi_poll_pid="${REPLY}"', harness)
+
+    def test_anon_poll_returns_pid_before_stop_file(self) -> None:
+        text = (BENCH / "small-vps.sh").read_text(encoding="utf-8")
+        start = text.index("start_anon_poll() {")
+        stop = text.index("\nmove_into_cgroup()")
+        probe = f"""
+set -euo pipefail
+DAEMON_PID=$$
+sample_proc() {{ printf '%s\\n' '{{"anon":1}}'; }}
+{text[start:stop]}
+out=$(mktemp)
+start_ns=$(date +%s%N)
+start_anon_poll "$out"
+pid="$REPLY"
+elapsed_ms=$(( ($(date +%s%N) - start_ns) / 1000000 ))
+if [[ -z "$pid" || "$elapsed_ms" -ge 2000 ]]; then
+  echo "poller blocked pid=$pid elapsed_ms=$elapsed_ms" >&2
+  exit 1
+fi
+sleep 0.4
+stop_anon_poll "$pid" "$out"
+if ! grep -q '"anon": 1' "$out" && ! grep -q '"anon":1' "$out"; then
+  echo "poller wrote no samples" >&2
+  exit 1
+fi
+echo "pid=$pid elapsed_ms=$elapsed_ms"
+"""
+        result = subprocess.run(
+            ["bash", "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stderr + result.stdout,
+        )
+        self.assertIn("pid=", result.stdout)
 
 
 if __name__ == "__main__":

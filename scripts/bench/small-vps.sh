@@ -385,6 +385,10 @@ print(json.dumps({
 PY
 }
 
+# Start the poller as a background job of this shell and store its pid in REPLY.
+# Command substitution would give that loop the substitution's stdout pipe, and
+# Bash would wait for EOF before the assignment returned. The .stop file is
+# created only after the caller has the pid, so that wait never finishes.
 start_anon_poll() {
   local out="$1"
   rm -f "${out}.stop"
@@ -394,8 +398,8 @@ start_anon_poll() {
       sample_proc "${DAEMON_PID}" >>"${out}" || true
       sleep 0.25
     done
-  ) &
-  echo $!
+  ) >/dev/null &
+  REPLY=$!
 }
 
 stop_anon_poll() {
@@ -655,7 +659,8 @@ PY
 scratch_before_rebuild="$(scratch_snapshot)"
 peak_reset_rebuild="$(reset_peak)"
 rebuild_poll="${FILES}/envelope-anon-rebuild.jsonl"
-rebuild_poll_pid="$(start_anon_poll "${rebuild_poll}")"
+start_anon_poll "${rebuild_poll}"
+rebuild_poll_pid="${REPLY}"
 rebuild_log="${FILES}/rebuild-envelope.log"
 rebuild_start_ns="$(date +%s%N)"
 # `query` is required. Title matches the seeded titles once the index commits.
@@ -695,7 +700,8 @@ fi
 scratch_before="$(scratch_snapshot)"
 peak_reset_api="$(reset_peak)"
 api_poll="${FILES}/envelope-anon-api.jsonl"
-api_poll_pid="$(start_anon_poll "${api_poll}")"
+start_anon_poll "${api_poll}"
+api_poll_pid="${REPLY}"
 set +e
 run_phase routes "${FILES}/envelope-routes.json"
 ROUTES_RC=$?
