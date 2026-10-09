@@ -93,9 +93,11 @@ pub async fn create_plugin_instance(
 /// Returns the existing instance for `plugin_key`, or inserts one.
 ///
 /// GraphicAudio startup uses this so a second process start keeps the original id.
-/// Concurrent calls share one inserted row. Explicit [`create_plugin_instance`]
-/// can still mint another row for the same key; that path does not claim the
-/// default enrollment.
+/// Concurrent calls, including two connections to the same file, share one
+/// inserted row. A lock or uniqueness failure while inserting or committing
+/// rolls that attempt back and retries the whole transaction. Explicit
+/// [`create_plugin_instance`] can still mint another row for the same key;
+/// that path does not claim the default enrollment.
 ///
 /// # Errors
 ///
@@ -108,29 +110,61 @@ pub async fn ensure_plugin_instance(
     authorize_create(actor)?;
     validate_plugin_key(plugin_key)?;
     for _ in 0..4 {
-        if let Some(existing) = enrolled_or_oldest(store.db(), plugin_key).await? {
-            return Ok(existing);
+        match enrolled_or_oldest(store.db(), plugin_key).await {
+            Ok(Some(existing)) => return Ok(existing),
+            Ok(None) => {}
+            Err(err) => {
+                retry_enrollment(err)?;
+                continue;
+            }
         }
         let id = PluginInstanceId::mint();
-        let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
-        if let Some(existing) = enrolled_or_oldest(&txn, plugin_key).await? {
-            txn.rollback().await.map_err(LibraryError::Orm)?;
-            return Ok(existing);
+        let txn = match store.db().begin().await {
+            Ok(txn) => txn,
+            Err(err) => {
+                retry_enrollment(LibraryError::Orm(err))?;
+                continue;
+            }
+        };
+        match enrolled_or_oldest(&txn, plugin_key).await {
+            Ok(Some(existing)) => {
+                let _ = txn.rollback().await;
+                let _ = crate::take_txn_fault();
+                return Ok(existing);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let _ = txn.rollback().await;
+                retry_enrollment(err)?;
+                continue;
+            }
         }
-        insert_instance(&txn, actor, &id, plugin_key).await?;
-        match insert_default_enrollment(&txn, plugin_key, id.as_str()).await {
+        if let Err(err) = insert_instance(&txn, actor, &id, plugin_key).await {
+            let _ = txn.rollback().await;
+            retry_enrollment(err)?;
+            continue;
+        }
+        if let Err(err) = insert_default_enrollment(&txn, plugin_key, id.as_str()).await {
+            let _ = txn.rollback().await;
+            retry_enrollment(err)?;
+            continue;
+        }
+        match txn.commit().await {
             Ok(()) => {
-                txn.commit().await.map_err(LibraryError::Orm)?;
+                if let Some(fault) = crate::take_txn_fault() {
+                    let err = LibraryError::Orm(sea_orm::DbErr::Custom(fault));
+                    if enrollment_contention(&err) {
+                        continue;
+                    }
+                    return Err(err);
+                }
                 return load_plugin_instance(store, &id)
                     .await?
                     .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")));
             }
-            Err(err) if enrollment_contention(&err) => {
-                let _ = txn.rollback().await;
-            }
             Err(err) => {
-                let _ = txn.rollback().await;
-                return Err(err);
+                // `commit` consumes the transaction and rolls it back on failure.
+                retry_enrollment(LibraryError::Orm(err))?;
             }
         }
     }
@@ -299,9 +333,36 @@ async fn find_by_plugin_key_conn(
     Ok(row.map(instance_from_model))
 }
 
+/// `Ok(())` when `err` is enrollment contention and the caller should retry.
+///
+/// A sticky proxy commit fault replaces `err` when one is present, then the
+/// fault is cleared so the next attempt can `BEGIN`.
+///
+/// # Errors
+///
+/// Returns `err` when it is not lock or uniqueness contention.
+fn retry_enrollment(err: LibraryError) -> Result<()> {
+    let err = match crate::take_txn_fault() {
+        Some(fault) => LibraryError::Orm(sea_orm::DbErr::Custom(fault)),
+        None => err,
+    };
+    if enrollment_contention(&err) {
+        Ok(())
+    } else {
+        Err(err)
+    }
+}
+
 /// True when another bootstrap claimed the default enrollment or the write lock.
+///
+/// SQLite reports `SQLITE_BUSY` and `SQLITE_BUSY_SNAPSHOT` from a second
+/// connection at insert or commit. Both contain `busy`.
 fn enrollment_contention(err: &LibraryError) -> bool {
-    let text = err.to_string().to_ascii_lowercase();
+    let text = err.to_string();
+    if bookclerk_db_exec::classify_db_err_message(&text) != bookclerk_db_exec::DbErrorClass::Other {
+        return true;
+    }
+    let text = text.to_ascii_lowercase();
     text.contains("unique")
         || text.contains("duplicate")
         || text.contains("busy")

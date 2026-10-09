@@ -1,7 +1,7 @@
 //! Plugin instance identity, configuration, and deployment tests.
 
 use bookclerk_config::EventsConfig;
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, EntityTrait, TransactionTrait};
 use uuid::Uuid;
 
 use super::*;
@@ -99,6 +99,54 @@ async fn plugin_instance_ids_are_stable_uuids_independent_of_key() {
         .await
         .expect("list");
     assert_eq!(listed.len(), 2);
+}
+
+#[tokio::test]
+async fn ensure_shares_one_id_across_two_sqlite_connections() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    drop(file_store(&path).await);
+    let left_store = file_store(&path).await;
+    let right_store = file_store(&path).await;
+    let holder = file_store(&path).await;
+    let txn = holder.db().begin().await.expect("hold the file lock");
+    txn.execute_unprepared("CREATE TABLE IF NOT EXISTS enrollment_hold (id INTEGER PRIMARY KEY)")
+        .await
+        .expect("write while holding the lock");
+    let key = "platform:bookclerk/cross-connection";
+    let left_task = tokio::spawn(async move {
+        ensure_plugin_instance(&left_store, &ConfigActor::Bootstrap, key).await
+    });
+    let right_task = tokio::spawn(async move {
+        ensure_plugin_instance(&right_store, &ConfigActor::Bootstrap, key).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    txn.commit().await.expect("release the file lock");
+    let left = left_task
+        .await
+        .expect("left task")
+        .expect("left enrollment");
+    let right = right_task
+        .await
+        .expect("right task")
+        .expect("right enrollment");
+    assert_eq!(left.id, right.id);
+
+    let explicit = create_plugin_instance(&holder, &operator(), key)
+        .await
+        .expect("explicit same-key instance");
+    assert_ne!(explicit.id, left.id);
+    let enrolled = ensure_plugin_instance(&holder, &ConfigActor::Bootstrap, key)
+        .await
+        .expect("enrolled default");
+    assert_eq!(enrolled.id, left.id);
+    let listed = list_plugin_instances_for_key(&holder, key)
+        .await
+        .expect("list");
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().any(|row| row.id == left.id));
+    assert!(listed.iter().any(|row| row.id == explicit.id));
 }
 
 #[tokio::test]
