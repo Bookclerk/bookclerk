@@ -156,7 +156,8 @@ pub use spawn_plan::{
     WORKERD_LAUNCHER_ENV,
 };
 pub use spawn_stdio::{
-    note_spawn_stage, recent_spawn_diagnostics, TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE,
+    note_spawn_stage, recent_spawn_diagnostics, retry_abandoned_acl_journals,
+    revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE,
     TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };
 

@@ -230,13 +230,11 @@ impl SessionDirGuard {
 
 impl Drop for SessionDirGuard {
     fn drop(&mut self) {
+        // Still armed only when revoke returned Ok (or never started). A failed
+        // revoke disarms this guard so the session directory stays. A leftover
+        // journal file after a successful revoke does not keep the directory:
+        // that matches `VatHostCleanup`, which keys off `revoke_ok`.
         if let Some(dir) = self.0.take() {
-            // A failed journal revoke leaves the host-only record beside this
-            // directory. Removing the directory before that record is cleared
-            // would drop the retry signal the next session plan looks for.
-            if pending_acl_journal_path(&dir).is_ok_and(|path| path.is_file()) {
-                return;
-            }
             let _ = std::fs::remove_dir_all(dir);
         }
     }
@@ -1091,6 +1089,18 @@ impl AclJournal {
     ) {
         self.entries = entries;
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_entries_for_test(
+        entries: Vec<bookclerk_sandbox::spawn::AclJournalEntry>,
+        persist_dir: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            entries,
+            persist_dir,
+            owner: None,
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1110,7 +1120,7 @@ impl Drop for AclJournal {
                 return;
             };
             extend_unique_journal(&mut existing, std::mem::take(&mut self.entries));
-            if let Err(write_err) = write_pending_acl_journal(dir, &existing) {
+            if let Err(write_err) = write_pending_acl_journal(dir, &existing, false) {
                 if pending_acl_journal_path(dir).is_ok_and(|path| path.is_file()) {
                     tracing::warn!(
                         error = %write_err,
@@ -1122,6 +1132,13 @@ impl Drop for AclJournal {
                         "could not persist the ACL journal; package SID grants have no retry record"
                     );
                 }
+            }
+        } else if let Some(dir) = &self.persist_dir {
+            // A record this process refused to parse stays on disk. Deleting it
+            // would drop the only copy of grants that were not revoked.
+            if read_pending_acl_journal(dir).is_ok() {
+                let _ = write_pending_acl_journal(dir, &[], false);
+                let _ = remove_owner_lock_file(dir);
             }
         }
     }
@@ -1183,6 +1200,15 @@ fn ensure_host_journal_dir(paths: &HostJournalPaths) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
+    #[cfg(windows)]
+    {
+        bookclerk_sandbox::spawn::protect_host_journal_dir(dir).map_err(|err| {
+            std::io::Error::other(format!(
+                "could not protect the ACL journal directory {}: {err}",
+                dir.display()
+            ))
+        })?;
+    }
     Ok(())
 }
 
@@ -1194,64 +1220,54 @@ fn ensure_host_journal_dir(paths: &HostJournalPaths) -> std::io::Result<()> {
 struct JournalOwnerLock {
     // Held open so the exclusive lock survives until this session drops.
     _file: std::fs::File,
+    lock_path: PathBuf,
 }
 
 impl JournalOwnerLock {
-    #[cfg(any(windows, test))]
-    fn acquire(session_dir: &std::path::Path) -> Result<Self> {
-        let paths = host_journal_paths(session_dir).map_err(|err| {
-            PluginError::message(format!(
-                "could not lock the ACL journal before granting package access: {err}"
-            ))
-        })?;
-        ensure_host_journal_dir(&paths).map_err(|err| {
-            PluginError::message(format!(
-                "could not lock the ACL journal before granting package access: {err}"
-            ))
-        })?;
+    /// Take the lock without blocking. `Ok(None)` means another live owner holds it.
+    fn try_take(session_dir: &std::path::Path) -> std::io::Result<Option<Self>> {
+        let paths = host_journal_paths(session_dir)?;
+        ensure_host_journal_dir(&paths)?;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
-            .open(&paths.lock_file)
-            .map_err(|err| {
-                PluginError::message(format!(
-                    "could not lock the ACL journal before granting package access: {err}"
-                ))
-            })?;
-        fs4::FileExt::lock(&file).map_err(|err| {
-            PluginError::message(format!(
-                "could not lock the ACL journal before granting package access: {err}"
-            ))
-        })?;
-        Ok(Self { _file: file })
+            .truncate(false)
+            .open(&paths.lock_file)?;
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => Ok(Some(Self {
+                _file: file,
+                lock_path: paths.lock_file,
+            })),
+            Err(fs4::TryLockError::WouldBlock) => Ok(None),
+            Err(fs4::TryLockError::Error(err)) => Err(err),
+        }
     }
 
-    /// True when a live session still holds [`Self::acquire`]'s lock.
-    fn is_held_by_live_owner(session_dir: &std::path::Path) -> bool {
-        let Ok(paths) = host_journal_paths(session_dir) else {
-            // Fail closed: do not reap a directory we cannot name a lock for.
-            return true;
-        };
-        if !paths.lock_file.is_file() {
-            return false;
+    #[cfg(any(windows, test))]
+    fn acquire(session_dir: &std::path::Path) -> Result<Self> {
+        match Self::try_take(session_dir) {
+            Ok(Some(lock)) => Ok(lock),
+            Ok(None) => Err(PluginError::message(
+                "could not lock the ACL journal before granting package access: lock is already held",
+            )),
+            Err(err) => Err(PluginError::message(format!(
+                "could not lock the ACL journal before granting package access: {err}"
+            ))),
         }
-        let Ok(file) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&paths.lock_file)
-        else {
-            // Fail closed: do not reap a directory whose owner lock cannot be probed.
-            return true;
-        };
-        match fs4::FileExt::try_lock(&file) {
-            Ok(()) => {
-                let _ = fs4::FileExt::unlock(&file);
-                false
-            }
-            Err(_) => true,
-        }
+    }
+
+    fn delete_file(&self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+fn remove_owner_lock_file(session_dir: &std::path::Path) -> std::io::Result<()> {
+    let paths = host_journal_paths(session_dir)?;
+    match std::fs::remove_file(&paths.lock_file) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
     }
 }
 
@@ -1279,11 +1295,88 @@ fn persist_planned_acl_journal(
     if entries.is_empty() {
         return Ok(());
     }
-    write_pending_acl_journal(session_dir, entries).map_err(|err| {
+    validate_acl_journal(entries).map_err(|err| {
+        PluginError::message(format!(
+            "could not persist the ACL journal before granting package access: {err}"
+        ))
+    })?;
+    write_pending_acl_journal(session_dir, entries, true).map_err(|err| {
         PluginError::message(format!(
             "could not persist the ACL journal before granting package access: {err}"
         ))
     })
+}
+
+/// `S-1-15-2-<decimal RID>...` with at least one sub-authority.
+fn package_sid_allowed(sid: &str) -> bool {
+    let Some(rest) = sid.strip_prefix("S-1-15-2-") else {
+        return false;
+    };
+    let mut count = 0usize;
+    for part in rest.split('-') {
+        if part.is_empty()
+            || part.len() > 10
+            || !part.chars().all(|c| c.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 1
+}
+
+/// Absolute local path. UNC, device paths, and `..` are rejected.
+fn journal_path_allowed(path: &std::path::Path) -> bool {
+    let raw = path.to_string_lossy();
+    if raw.is_empty() || raw.contains('\0') {
+        return false;
+    }
+    if raw.starts_with(r"\\") || raw.starts_with("//") {
+        let verbatim = raw.starts_with(r"\\?\") || raw.starts_with("//?/");
+        if !verbatim {
+            return false;
+        }
+        let rest = &raw[4..];
+        let lower = rest.to_ascii_lowercase();
+        if lower.starts_with(r"unc\") || lower.starts_with("unc/") {
+            return false;
+        }
+        let mut chars = rest.chars();
+        let Some(drive) = chars.next() else {
+            return false;
+        };
+        if !drive.is_ascii_alphabetic() || chars.next() != Some(':') {
+            return false;
+        }
+    } else if !path.is_absolute() {
+        return false;
+    }
+    !path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+}
+
+fn validate_acl_journal(
+    entries: &[bookclerk_sandbox::spawn::AclJournalEntry],
+) -> std::io::Result<()> {
+    let mut sids = std::collections::BTreeSet::new();
+    for entry in entries {
+        if !package_sid_allowed(&entry.package_sid) || !journal_path_allowed(&entry.path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ACL journal entry is not a local AppContainer grant",
+            ));
+        }
+        sids.insert(entry.package_sid.as_str());
+        if sids.len() > 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ACL journal names more than two package SIDs",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn read_pending_acl_journal(
@@ -1296,7 +1389,7 @@ fn read_pending_acl_journal(
     let bytes = std::fs::read(&path)?;
     let pending: Vec<PendingAclEntry> = serde_json::from_slice(&bytes)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    Ok(pending
+    let entries: Vec<_> = pending
         .into_iter()
         .map(|entry| bookclerk_sandbox::spawn::AclJournalEntry {
             path: PathBuf::from(entry.path),
@@ -1304,12 +1397,15 @@ fn read_pending_acl_journal(
             is_dir: entry.is_dir,
             propagate: entry.propagate,
         })
-        .collect())
+        .collect();
+    validate_acl_journal(&entries)?;
+    Ok(entries)
 }
 
 fn write_pending_acl_journal(
     session_dir: &std::path::Path,
     entries: &[bookclerk_sandbox::spawn::AclJournalEntry],
+    durable: bool,
 ) -> std::io::Result<()> {
     let paths = host_journal_paths(session_dir)?;
     if entries.is_empty() {
@@ -1336,8 +1432,77 @@ fn write_pending_acl_journal(
     // rename leaves the earlier host journal in place. That pre-grant file is
     // the retry record when this refresh cannot land. The temp file is in the
     // host-only directory, not the session directory the gateway can write.
-    std::fs::write(&paths.tmp, body)?;
-    std::fs::rename(&paths.tmp, &paths.journal)
+    // The pre-grant write syncs the temp file and the rename. A suffix rewrite
+    // stays best-effort: the earlier durable file is still the retry record.
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&paths.tmp)?;
+        std::io::Write::write_all(&mut file, &body)?;
+        if durable {
+            file.sync_all()?;
+        }
+    }
+    replace_journal_file(&paths.tmp, &paths.journal, durable)
+}
+
+fn replace_journal_file(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    durable: bool,
+) -> std::io::Result<()> {
+    if !durable {
+        return std::fs::rename(from, to);
+    }
+    #[cfg(windows)]
+    {
+        replace_journal_file_write_through(from, to)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)?;
+        if let Some(parent) = to.parent() {
+            let dir = std::fs::File::open(parent)?;
+            dir.sync_all()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // MoveFileExW with WRITE_THROUGH; same boundary as bookclerk-config.
+fn replace_journal_file_write_through(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(path: &std::path::Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+    let src = wide(from);
+    let dst = wide(to);
+    // SAFETY: both buffers are NUL-terminated and live until this returns.
+    let ok = unsafe {
+        MoveFileExW(
+            src.as_ptr(),
+            dst.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn same_acl_grant(
@@ -1365,11 +1530,12 @@ fn extend_unique_journal(
 /// Revoke `entries` plus the host-only record for `session_dir`.
 ///
 /// The record is `acl-journals/<session>.json` in the parent of `session_dir`,
-/// not a file the gateway can rewrite. Success clears that file. Failure tries
-/// to rewrite it with the unrevoked suffix and leaves `entries` empty only when
-/// that write succeeded. A failed rewrite does not remove an earlier file: the
-/// journal written before ACEs were granted stays, and the next session plan
-/// retries it. The caller must not remove `session_dir` unless this returns `Ok`.
+/// not a file the gateway can rewrite. Every entry is attempted. Success clears
+/// that file. Failure rewrites it with only the entries that failed, and leaves
+/// `entries` empty only when that write succeeded. A failed rewrite does not
+/// remove an earlier file: the journal written before ACEs were granted stays,
+/// and the next session plan retries it. The caller must not remove
+/// `session_dir` unless this returns `Ok`.
 pub(crate) fn revoke_journal_for_session(
     entries: &mut Vec<bookclerk_sandbox::spawn::AclJournalEntry>,
     session_dir: &std::path::Path,
@@ -1389,20 +1555,41 @@ pub(crate) fn revoke_journal_for_session(
             });
         }
     };
-    extend_unique_journal(&mut pending, std::mem::take(entries));
+    let caller = std::mem::take(entries);
+    extend_unique_journal(&mut pending, caller.iter().cloned());
+    if let Err(err) = validate_acl_journal(&pending) {
+        *entries = caller;
+        tracing::warn!(
+            error = %err,
+            path = %session_dir.display(),
+            "rejected an ACL journal that is not a local AppContainer grant"
+        );
+        return Err(bookclerk_sandbox::SandboxError::Backend {
+            label: "appcontainer".into(),
+            backend: "appcontainer",
+            detail: format!("rejected the ACL journal: {err}"),
+        });
+    }
     match bookclerk_sandbox::spawn::revoke_acl_journal_retain(&mut pending) {
         Ok(()) => {
-            if let Err(err) = write_pending_acl_journal(session_dir, &[]) {
+            if let Err(err) = write_pending_acl_journal(session_dir, &[], false) {
                 tracing::warn!(
                     error = %err,
                     path = %session_dir.display(),
                     "could not remove the pending ACL journal after revoke"
                 );
             }
+            if let Err(err) = remove_owner_lock_file(session_dir) {
+                tracing::warn!(
+                    error = %err,
+                    path = %session_dir.display(),
+                    "could not remove the ACL journal owner lock after revoke"
+                );
+            }
             Ok(())
         }
         Err(err) => {
-            if write_pending_acl_journal(session_dir, &pending).is_ok() {
+            if write_pending_acl_journal(session_dir, &pending, false).is_ok() {
                 entries.clear();
             } else {
                 match pending_acl_journal_path(session_dir) {
@@ -1440,10 +1627,59 @@ pub(crate) fn revoke_journal_for_session(
 ///
 /// Scans `state_root/acl-journals/session-*.json` only. A file inside a session
 /// directory is ignored: the gateway can write there, and those bytes are not
-/// a revoke list.
+/// a revoke list. The sweep holds the owner lock until revoke and directory
+/// removal finish, and skips a session whose lock is already held.
 pub(crate) fn retry_abandoned_session_journals(state_root: &std::path::Path) {
     let journals = state_root.join(ACL_JOURNAL_DIR);
-    let Ok(read) = std::fs::read_dir(&journals) else {
+    if let Ok(read) = std::fs::read_dir(&journals) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+                continue;
+            };
+            if !stem.starts_with("session-") || stem.contains('.') {
+                continue;
+            }
+            let session_dir = state_root.join(stem);
+            let owner = match JournalOwnerLock::try_take(&session_dir) {
+                Ok(Some(owner)) => owner,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        path = %session_dir.display(),
+                        "could not lock an abandoned ACL journal; leaving it in place"
+                    );
+                    continue;
+                }
+            };
+            let mut entries = Vec::new();
+            if revoke_journal_for_session(&mut entries, &session_dir).is_ok() {
+                match std::fs::remove_dir_all(&session_dir) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            path = %session_dir.display(),
+                            "ACL journal revoked but the session directory could not be removed"
+                        );
+                    }
+                }
+                owner.delete_file();
+            }
+            drop(owner);
+        }
+    }
+    remove_orphan_owner_locks(&journals);
+}
+
+fn remove_orphan_owner_locks(journals: &std::path::Path) {
+    let Ok(read) = std::fs::read_dir(journals) else {
         return;
     };
     for entry in read.flatten() {
@@ -1452,31 +1688,80 @@ pub(crate) fn retry_abandoned_session_journals(state_root: &std::path::Path) {
             continue;
         }
         let name = entry.file_name();
-        let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+        let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".lock")) else {
             continue;
         };
         if !stem.starts_with("session-") || stem.contains('.') {
             continue;
         }
-        let session_dir = state_root.join(stem);
-        if JournalOwnerLock::is_held_by_live_owner(&session_dir) {
+        if journals.join(format!("{stem}.json")).is_file() {
             continue;
         }
-        let mut entries = Vec::new();
-        if revoke_journal_for_session(&mut entries, &session_dir).is_ok() {
-            match std::fs::remove_dir_all(&session_dir) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        path = %session_dir.display(),
-                        "ACL journal revoked but the session directory could not be removed"
-                    );
-                }
-            }
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+        else {
+            continue;
+        };
+        if fs4::FileExt::try_lock(&file).is_err() {
+            continue;
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = fs4::FileExt::unlock(&file);
+    }
+}
+
+/// Retry abandoned journals for every plugin under `files_dir/plugin-state`.
+///
+/// Host startup calls this so a crash does not wait for the next spawn of the
+/// same plugin. A live session's owner lock is left alone.
+pub fn retry_abandoned_acl_journals(files_dir: &std::path::Path) {
+    let root = files_dir.join("plugin-state");
+    let Ok(read) = std::fs::read_dir(&root) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            retry_abandoned_session_journals(&path);
         }
     }
+}
+
+/// Revoke this plugin's journal before `--purge-state` deletes the directory.
+///
+/// # Errors
+///
+/// Returns an error when a journal file is still present, so purge does not
+/// discard the only retry record while package-SID ACEs remain.
+pub fn revoke_plugin_state_before_purge(
+    state_root: &std::path::Path,
+) -> std::result::Result<(), String> {
+    retry_abandoned_session_journals(state_root);
+    if plugin_state_has_pending_acl_journal(state_root) {
+        Err(format!(
+            "plugin state {} still has an ACL journal after revoke; --purge-state left it in place so the package SID grants can be retried",
+            state_root.display()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn plugin_state_has_pending_acl_journal(state_root: &std::path::Path) -> bool {
+    let journals = state_root.join(ACL_JOURNAL_DIR);
+    let Ok(read) = std::fs::read_dir(&journals) else {
+        return false;
+    };
+    read.flatten().any(|entry| {
+        let name = entry.file_name();
+        let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+            return false;
+        };
+        stem.starts_with("session-") && !stem.contains('.') && entry.path().is_file()
+    })
 }
 
 /// Paths the jail will ACE, taken from the specs and profiles already built.
@@ -3296,8 +3581,19 @@ mod tests {
     }
 
     fn entry(path: &str, sid: &str) -> bookclerk_sandbox::spawn::AclJournalEntry {
+        let leaf = path.trim_start_matches('/').replace(['/', '\\'], "-");
+        let path = {
+            #[cfg(windows)]
+            {
+                std::path::PathBuf::from(format!(r"C:\bookclerk-acl-test\{leaf}"))
+            }
+            #[cfg(not(windows))]
+            {
+                std::path::PathBuf::from(format!("/{leaf}"))
+            }
+        };
         bookclerk_sandbox::spawn::AclJournalEntry {
-            path: std::path::PathBuf::from(path),
+            path,
             package_sid: sid.to_string(),
             is_dir: true,
             propagate: false,
@@ -3323,21 +3619,18 @@ mod tests {
             .collect()
     }
 
-    /// Serializes `BOOKCLERK_TEST_FAIL_ACL_REVOKE`. The hook is process-global.
-    fn acl_revoke_hook_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().expect("acl revoke hook lock")
-    }
-
-    /// `after_clear` runs with the hook unset while the lock is still held, so
-    /// a retry cannot race another test that sets the hook.
+    /// `after_clear` runs with this thread's hook cleared.
     fn with_forced_acl_revoke(value: &str, during: impl FnOnce(), after_clear: impl FnOnce()) {
-        let _guard = acl_revoke_hook_lock();
-        std::env::set_var("BOOKCLERK_TEST_FAIL_ACL_REVOKE", value);
+        let index = if let Some(rest) = value.strip_prefix("index:") {
+            rest.parse().ok()
+        } else {
+            Some(0)
+        };
+        bookclerk_sandbox::spawn::set_test_fail_acl_revoke(index);
         struct Clear;
         impl Drop for Clear {
             fn drop(&mut self) {
-                std::env::remove_var("BOOKCLERK_TEST_FAIL_ACL_REVOKE");
+                bookclerk_sandbox::spawn::set_test_fail_acl_revoke(None);
             }
         }
         let clear = Clear;
@@ -3363,7 +3656,8 @@ mod tests {
                 assert!(session.is_dir(), "session directory stays");
                 assert_eq!(
                     pending_sids(&session),
-                    vec!["S-1-15-2-111".to_string(), "S-1-15-2-222".to_string()]
+                    vec!["S-1-15-2-111".to_string()],
+                    "only the entry that failed stays; later entries are still revoked"
                 );
                 let mut again = Vec::new();
                 assert!(revoke_journal_for_session(&mut again, &session).is_err());
@@ -3415,7 +3709,6 @@ mod tests {
 
     #[test]
     fn live_session_journal_is_not_reaped() {
-        let _hook = acl_revoke_hook_lock();
         let root = tempfile::tempdir().expect("temp");
         let session = root.path().join("session-live");
         std::fs::create_dir(&session).expect("session dir");
@@ -3447,6 +3740,14 @@ mod tests {
         assert!(
             !session.exists(),
             "once the owner lock is gone, the sweep revokes and removes the directory"
+        );
+        assert!(
+            !root
+                .path()
+                .join("acl-journals")
+                .join("session-live.lock")
+                .exists(),
+            "a successful revoke deletes the owner lock"
         );
     }
 
@@ -3510,12 +3811,16 @@ mod tests {
         let mut entries = vec![
             entry("/host/files", "S-1-15-2-111"),
             entry("/host/plugin", "S-1-15-2-222"),
+            entry("/host/data", "S-1-15-2-222"),
         ];
         with_forced_acl_revoke(
             "index:1",
             || {
                 assert!(revoke_journal_for_session(&mut entries, &session).is_err());
-                assert!(entries.is_empty(), "persisted suffix is not left in memory");
+                assert!(
+                    entries.is_empty(),
+                    "persisted failures are not left in memory"
+                );
                 assert_eq!(pending_sids(&session), vec!["S-1-15-2-222".to_string()]);
                 assert!(
                     session.is_dir(),
@@ -3582,7 +3887,8 @@ mod tests {
                 let sids = pending_sids(&session);
                 assert_eq!(
                     sids,
-                    vec!["S-1-15-2-111".to_string(), "S-1-15-2-222".to_string()]
+                    vec!["S-1-15-2-111".to_string()],
+                    "the failing entry stays; the later grant is still revoked"
                 );
                 assert_eq!(
                     std::fs::read(&planted_path).expect("plant"),
@@ -3623,13 +3929,63 @@ mod tests {
         persist_planned_acl_journal(&kept, &[entry("/host/files", "S-1-15-2-111")])
             .expect("host journal");
         {
-            let _guard = SessionDirGuard(Some(kept.clone()));
+            let mut guard = SessionDirGuard(Some(kept.clone()));
+            assert!(guard.disarm().is_some());
         }
         assert!(
             kept.is_dir(),
-            "the host journal keeps the session directory"
+            "disarm is what keeps the directory after a failed revoke"
+        );
+        {
+            let _guard = SessionDirGuard(Some(kept.clone()));
+        }
+        assert!(
+            !kept.exists(),
+            "a successful revoke removes the directory even when the journal file remains"
         );
         assert!(host_journal(&kept).is_file());
+    }
+
+    #[test]
+    fn journal_rejects_a_foreign_sid_and_a_unc_path() {
+        let root = tempfile::tempdir().expect("temp");
+        let session = root.path().join("session-foreign");
+        std::fs::create_dir(&session).expect("session dir");
+        let pending = host_journal(&session);
+        std::fs::create_dir_all(pending.parent().expect("journal dir")).expect("journal dir");
+        let body = br#"[{"path":"\\\\server\\share\\docs","package_sid":"S-1-5-32-544","is_dir":true,"propagate":false}]"#;
+        std::fs::write(&pending, body).expect("pending");
+        let mut entries = vec![entry("/host/files", "S-1-15-2-111")];
+        let err = revoke_journal_for_session(&mut entries, &session).expect_err("rejected");
+        assert!(
+            err.to_string().contains("rejected the ACL journal")
+                || err
+                    .to_string()
+                    .contains("could not read the pending ACL journal"),
+            "{err}"
+        );
+        assert_eq!(
+            entries.len(),
+            1,
+            "caller entries stay when the record is rejected"
+        );
+        assert_eq!(std::fs::read(&pending).expect("read"), body);
+        retry_abandoned_session_journals(root.path());
+        assert!(session.is_dir(), "a rejected record is not revoked");
+        assert_eq!(std::fs::read(&pending).expect("read"), body);
+    }
+
+    #[test]
+    fn startup_sweep_retries_journals_under_plugin_state() {
+        let root = tempfile::tempdir().expect("temp");
+        let state = root.path().join("plugin-state").join("pk-test");
+        let session = state.join("session-startup");
+        std::fs::create_dir_all(&session).expect("session dir");
+        persist_planned_acl_journal(&session, &[entry("/host/files", "S-1-15-2-111")])
+            .expect("journal");
+        retry_abandoned_acl_journals(root.path());
+        assert!(!session.exists());
+        assert!(!host_journal(&session).exists());
     }
 
     #[test]

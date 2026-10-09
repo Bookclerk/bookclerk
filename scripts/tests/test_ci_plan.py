@@ -668,6 +668,18 @@ class NativeGatewayTests(unittest.TestCase):
                     ["cargo", "clippy", "-p", "bookclerk-workerd", "--all-targets", "--", "-D", "warnings"],
                     ["cargo", "clippy", "-p", "bookclerk-plugin-sdk", "--features", "http", "--all-targets", "--", "-D", "warnings"],
                     ["cargo", "clippy", "-p", "bookclerk-plugin-host", "--lib", "--", "-D", "warnings"],
+                    [
+                        "cargo",
+                        "test",
+                        "-p",
+                        "bookclerk-plugin-host",
+                        "--lib",
+                        "--",
+                        "spawn_stdio::tests",
+                        "acl_journal_",
+                        "--test-threads=1",
+                        "--nocapture",
+                    ],
                     ["cargo", "test", "-p", "bookclerk-workerd", "--lib"],
                     [
                         "cargo",

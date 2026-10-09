@@ -92,9 +92,10 @@ pub mod spawn {
     pub use crate::platform::windows_pipe::NamedPipeSecurity;
     pub use crate::platform::windows_spawn::{
         grant_path_access, is_os_managed_path, plan_acl_journal, plan_appcontainer,
-        profile_name_for_label, revoke_acl_journal, revoke_acl_journal_retain, run_appcontainer,
-        run_appcontainer_with_handoff, run_unconfined_with_handoff, unique_profile_moniker,
-        AclGrant, AclJournalEntry, AppContainerLaunch, AppContainerSession,
+        profile_name_for_label, protect_host_journal_dir, revoke_acl_journal,
+        revoke_acl_journal_retain, run_appcontainer, run_appcontainer_with_handoff,
+        run_unconfined_with_handoff, set_test_fail_acl_revoke, unique_profile_moniker, AclGrant,
+        AclJournalEntry, AppContainerLaunch, AppContainerSession,
     };
 
     #[cfg(windows)]
