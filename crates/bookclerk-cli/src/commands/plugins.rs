@@ -790,7 +790,17 @@ fn run_remove(
 ) -> anyhow::Result<()> {
     let plugins_root = config.paths().files_dir.join("plugins");
     let mutation_lock = PluginMutationLock::acquire(&config.paths().files_dir)?;
-    Installer::remove_with_lock(&mutation_lock, &plugins_root, id, purge_state)?;
+    if purge_state {
+        Installer::remove_with_lock_preparing_purge(
+            &mutation_lock,
+            &plugins_root,
+            id,
+            true,
+            bookclerk_plugin_host::revoke_plugin_state_before_purge,
+        )?;
+    } else {
+        Installer::remove_with_lock(&mutation_lock, &plugins_root, id, false)?;
+    }
     let payload = json!({ "id": id, "purge_state": purge_state });
     emit(format, &payload, || {
         println!(

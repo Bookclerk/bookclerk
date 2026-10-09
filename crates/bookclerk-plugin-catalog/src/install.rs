@@ -22,6 +22,9 @@ use crate::target::{host_bookclerk_target, select_target, ArchiveFormat};
 use crate::trust::TrustPolicy;
 use bookclerk_plugin_manifest::{NetworkMode, PluginFamily, PluginManifest};
 
+/// Revokes host ACL journals before `--purge-state` deletes plugin state.
+type PurgeStatePrep<'a> = dyn FnMut(&Path) -> std::result::Result<(), String> + 'a;
+
 /// Host-owned directory under `$FILES_DIR` for held plugin-state during remove.
 ///
 /// Not inside a plugin-controlled install tree. Used so `--purge-state` can
@@ -585,7 +588,7 @@ impl Installer {
     /// or state cannot be held, restored, or finalized.
     pub fn remove(plugins_root: &Path, spec: &str, purge_state: bool) -> Result<()> {
         let _lock = acquire_plugins_lock(plugins_root)?;
-        Self::remove_locked(plugins_root, spec, purge_state)
+        Self::remove_locked(plugins_root, spec, purge_state, None)
     }
 
     /// Remove while already holding the host-local plugin mutation lock.
@@ -600,11 +603,39 @@ impl Installer {
         purge_state: bool,
     ) -> Result<()> {
         lock.require_plugins_root(plugins_root)?;
-        Self::remove_locked(plugins_root, spec, purge_state)
+        Self::remove_locked(plugins_root, spec, purge_state, None)
+    }
+
+    /// Remove, and run `prep` on an existing plugin-state directory before purge.
+    ///
+    /// `prep` revokes host ACL journals. If it fails, the install tree is
+    /// restored and plugin-state is left in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns when `lock` does not cover `plugins_root`, `prep` fails, or
+    /// remove fails.
+    pub fn remove_with_lock_preparing_purge<F>(
+        lock: &PluginMutationLock,
+        plugins_root: &Path,
+        spec: &str,
+        purge_state: bool,
+        mut prep: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&Path) -> std::result::Result<(), String>,
+    {
+        lock.require_plugins_root(plugins_root)?;
+        Self::remove_locked(plugins_root, spec, purge_state, Some(&mut prep))
     }
 
     /// Remove body. The caller already holds the host mutation lock.
-    fn remove_locked(plugins_root: &Path, spec: &str, purge_state: bool) -> Result<()> {
+    fn remove_locked(
+        plugins_root: &Path,
+        spec: &str,
+        purge_state: bool,
+        mut prep: Option<&mut PurgeStatePrep<'_>>,
+    ) -> Result<()> {
         let dest = resolve_installed_dir(plugins_root, spec)?;
         let files_dir = plugins_root.parent();
         let mut ledger = match files_dir {
@@ -628,6 +659,21 @@ impl Installer {
         if purge_state {
             if let (Some(dir), Some(state)) = (files_dir, state_dest.as_ref()) {
                 if state.exists() {
+                    if let Some(prep) = prep.as_mut() {
+                        if let Err(err) = prep(state) {
+                            return Err(remove_after_hold_failure(RemoveHoldRestore {
+                                tree_hold: &tree_hold,
+                                dest: &dest,
+                                state_hold: None,
+                                state_dest: None,
+                                files_dir: dir,
+                                key: &key,
+                                previous_ledger,
+                                err: CatalogError::message(err),
+                                what: "plugin state ACL journal",
+                            }));
+                        }
+                    }
                     let hold_parent = dir.join(PLUGIN_HOLD_DIR);
                     fs::create_dir_all(&hold_parent)?;
                     let hold =
