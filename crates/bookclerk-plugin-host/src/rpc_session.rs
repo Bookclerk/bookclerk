@@ -2012,11 +2012,16 @@ impl Drop for VatHostCleanup {
         let revoke_ok = true;
         #[cfg(target_os = "linux")]
         drop(self.cgroup.take());
-        match self.session_dir.take() {
-            Some(dir) if revoke_ok => drop(dir),
-            Some(dir) => dir.disarm(),
-            None => {}
-        }
+        release_session_dir(revoke_ok, self.session_dir.take());
+    }
+}
+
+/// Remove the session directory only when journal revoke succeeded.
+fn release_session_dir(revoke_ok: bool, dir: Option<RemoveOnDrop>) {
+    match dir {
+        Some(dir) if revoke_ok => drop(dir),
+        Some(dir) => dir.disarm(),
+        None => {}
     }
 }
 
@@ -2263,6 +2268,24 @@ impl Drop for StartupOwner {
     }
 }
 
+/// Revoke the journal for a spawn the vat never took. `true` means the session
+/// directory must stay.
+#[cfg(windows)]
+fn abandoned_revoke_failed(
+    journal: &mut crate::spawn_stdio::AclJournal,
+    dir: Option<&std::path::Path>,
+) -> bool {
+    let mut entries = journal.take_entries();
+    let failed = match dir {
+        Some(path) => crate::spawn_stdio::revoke_journal_for_session(&mut entries, path).is_err(),
+        None => bookclerk_sandbox::spawn::revoke_acl_journal_retain(&mut entries).is_err(),
+    };
+    if !entries.is_empty() {
+        journal.restore_entries(entries);
+    }
+    failed && dir.is_some()
+}
+
 /// Kill both siblings, abort the proxy, and remove host-owned session state.
 ///
 /// On Windows the session directory is removed only after the ACL journal
@@ -2284,17 +2307,7 @@ fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
     let keep_dir = {
         drop(spawned.appcontainer.take());
         drop(spawned.guest_appcontainer.take());
-        let mut entries = spawned.acl_journal.take_entries();
-        let failed = match dir.as_deref() {
-            Some(path) => {
-                crate::spawn_stdio::revoke_journal_for_session(&mut entries, path).is_err()
-            }
-            None => bookclerk_sandbox::spawn::revoke_acl_journal_retain(&mut entries).is_err(),
-        };
-        if !entries.is_empty() {
-            spawned.acl_journal.restore_entries(entries);
-        }
-        failed && dir.is_some()
+        abandoned_revoke_failed(&mut spawned.acl_journal, dir.as_deref())
     };
     #[cfg(not(windows))]
     let keep_dir = false;
@@ -3865,6 +3878,90 @@ mod tests {
     };
     use sea_orm::EntityTrait;
     use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn release_session_dir_keeps_the_directory_when_revoke_fails() {
+        let root = tempfile::tempdir().expect("temp");
+        let session = root.path().join("session-gate");
+        std::fs::create_dir(&session).expect("session dir");
+        release_session_dir(false, Some(RemoveOnDrop::arm(session.clone())));
+        assert!(
+            session.is_dir(),
+            "a failed revoke must not remove the session directory"
+        );
+        release_session_dir(true, Some(RemoveOnDrop::arm(session.clone())));
+        assert!(
+            !session.exists(),
+            "a successful revoke removes the session directory"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acl_journal_vat_keeps_the_session_directory() {
+        let root = tempfile::tempdir().expect("temp");
+        let session = root.path().join("session-vat");
+        std::fs::create_dir(&session).expect("session dir");
+        let journal = crate::spawn_stdio::AclJournal::from_entries_for_test(
+            vec![bookclerk_sandbox::spawn::AclJournalEntry {
+                path: std::path::PathBuf::from(r"C:\bookclerk-acl-test\files"),
+                package_sid: "S-1-15-2-111".to_string(),
+                is_dir: true,
+                propagate: false,
+            }],
+            Some(session.clone()),
+        );
+        bookclerk_sandbox::spawn::set_test_fail_acl_revoke(Some(0));
+        {
+            let cleanup = VatHostCleanup {
+                packages: Some(WindowsPackageCleanup {
+                    _gateway: None,
+                    _guest: None,
+                    _journal: journal,
+                }),
+                session_dir: Some(RemoveOnDrop::arm(session.clone())),
+            };
+            drop(cleanup);
+        }
+        bookclerk_sandbox::spawn::set_test_fail_acl_revoke(None);
+        assert!(
+            session.is_dir(),
+            "VatHostCleanup leaves the directory when revoke fails"
+        );
+        crate::spawn_stdio::retry_abandoned_session_journals(root.path());
+        assert!(
+            !session.exists(),
+            "the sweep removes the directory once revoke succeeds"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acl_journal_abandon_keeps_the_session_directory() {
+        let root = tempfile::tempdir().expect("temp");
+        let session = root.path().join("session-abandon");
+        std::fs::create_dir(&session).expect("session dir");
+        let mut journal = crate::spawn_stdio::AclJournal::from_entries_for_test(
+            vec![bookclerk_sandbox::spawn::AclJournalEntry {
+                path: std::path::PathBuf::from(r"C:\bookclerk-acl-test\files"),
+                package_sid: "S-1-15-2-111".to_string(),
+                is_dir: true,
+                propagate: false,
+            }],
+            Some(session.clone()),
+        );
+        bookclerk_sandbox::spawn::set_test_fail_acl_revoke(Some(0));
+        assert!(
+            abandoned_revoke_failed(&mut journal, Some(&session)),
+            "abandon keeps the directory when revoke fails"
+        );
+        assert!(session.is_dir());
+        bookclerk_sandbox::spawn::set_test_fail_acl_revoke(None);
+        assert!(
+            !abandoned_revoke_failed(&mut journal, Some(&session)),
+            "abandon reports the directory may be removed once revoke succeeds"
+        );
+    }
 
     #[test]
     fn instance_key_separates_accounts() {

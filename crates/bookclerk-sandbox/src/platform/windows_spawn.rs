@@ -528,54 +528,166 @@ pub fn revoke_acl_journal(entries: &[AclJournalEntry]) -> Result<(), SandboxErro
     revoke_acl_journal_retain(&mut owned)
 }
 
-/// Revoke `entries` in order.
+/// Revoke every entry, including the ones after a failure.
 ///
-/// On success `entries` is empty. On failure it keeps the entry that failed
-/// and every entry not yet attempted, so the caller can retry. A missing path
-/// counts as already revoked and is not retained. `BOOKCLERK_TEST_FAIL_ACL_REVOKE`
-/// forces a failure before any Win32 call: `1` fails on the first entry,
-/// `index:N` fails on entry `N`.
+/// On success `entries` is empty. On failure it keeps only the entries whose
+/// revoke failed. Later entries are still attempted, so one path that always
+/// denies `WRITE_DAC` does not pin the rest of the journal. A missing path
+/// counts as already revoked and is not retained.
 ///
 /// # Errors
 ///
-/// Returns [`SandboxError::Backend`] when a present path cannot be updated or
-/// the test hook forces a failure.
+/// Returns the first [`SandboxError::Backend`]. [`set_test_fail_acl_revoke`]
+/// forces one index to fail before any Win32 call. That hook is thread-local
+/// and is not read from the environment.
 pub fn revoke_acl_journal_retain(entries: &mut Vec<AclJournalEntry>) -> Result<(), SandboxError> {
-    let mut index = 0;
-    while index < entries.len() {
+    let mut kept = Vec::new();
+    let mut first_err: Option<SandboxError> = None;
+    for (index, entry) in entries.iter().enumerate() {
         if forced_acl_revoke_index() == Some(index) {
-            entries.drain(..index);
-            return Err(SandboxError::Backend {
-                label: "appcontainer".into(),
-                backend: "appcontainer",
-                detail: "BOOKCLERK_TEST_FAIL_ACL_REVOKE".into(),
-            });
+            if first_err.is_none() {
+                first_err = Some(SandboxError::Backend {
+                    label: "appcontainer".into(),
+                    backend: "appcontainer",
+                    detail: "test ACL revoke failure".into(),
+                });
+            }
+            kept.push(entry.clone());
+            continue;
         }
         #[cfg(windows)]
-        if entries[index].path.exists() {
+        if entry.path.exists() {
             if let Err(err) = revoke_package_access(
-                &entries[index].path,
-                &entries[index].package_sid,
-                entries[index].is_dir,
-                entries[index].propagate,
+                &entry.path,
+                &entry.package_sid,
+                entry.is_dir,
+                entry.propagate,
             ) {
-                entries.drain(..index);
-                return Err(err);
+                if first_err.is_none() {
+                    first_err = Some(err);
+                }
+                kept.push(entry.clone());
+                continue;
             }
         }
-        index += 1;
     }
-    entries.clear();
-    Ok(())
+    *entries = kept;
+    match first_err {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
-/// `Some(index)` when `BOOKCLERK_TEST_FAIL_ACL_REVOKE` should fail that entry.
+thread_local! {
+    /// Thread-local revoke failure. `Some(index)` fails that entry and continues
+    /// with the rest. Defaults to off. Not consulted from the environment, so a
+    /// leaked `BOOKCLERK_TEST_FAIL_ACL_REVOKE` cannot fail production cleanup.
+    static TEST_FAIL_ACL_REVOKE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Fail one journal entry on this thread, then continue with the rest.
+///
+/// `None` clears the hook. Production hosts do not call this. The value is
+/// not taken from the environment.
+pub fn set_test_fail_acl_revoke(index: Option<usize>) {
+    TEST_FAIL_ACL_REVOKE.with(|slot| slot.set(index));
+}
+
+/// Index this thread should fail, when a test has armed the hook.
 fn forced_acl_revoke_index() -> Option<usize> {
-    let raw = std::env::var("BOOKCLERK_TEST_FAIL_ACL_REVOKE").ok()?;
-    if let Some(rest) = raw.strip_prefix("index:") {
-        return rest.parse().ok();
+    TEST_FAIL_ACL_REVOKE.with(|slot| slot.get())
+}
+
+/// Replace the DACL on `path` with a protected ACL for Administrators, SYSTEM,
+/// and the owner. Inheritance from the parent is blocked.
+///
+/// # Errors
+///
+/// Returns [`SandboxError::Backend`] when the security descriptor cannot be
+/// built or applied. Non-Windows hosts succeed without changing permissions.
+pub fn protect_host_journal_dir(path: &Path) -> Result<(), SandboxError> {
+    #[cfg(windows)]
+    {
+        protect_host_journal_dir_windows(path)
     }
-    Some(0)
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+/// Replace the directory DACL with a protected ACL for Administrators, SYSTEM,
+/// and the owner. Inheritance from the parent is blocked.
+#[cfg(windows)]
+fn protect_host_journal_dir_windows(path: &Path) -> Result<(), SandboxError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows::Win32::Security::{
+        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
+
+    // P = protected (do not inherit). BA/SY/OW = Administrators, SYSTEM, owner.
+    let sddl: Vec<u16> = "D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;OW)"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let path_w: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let fail = |detail: String| SandboxError::Backend {
+        label: "appcontainer".into(),
+        backend: "appcontainer",
+        detail,
+    };
+    unsafe {
+        let mut sd = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut sd,
+            None,
+        )
+        .map_err(|err| fail(format!("journal directory SDDL failed: {err}")))?;
+        let mut present = windows::core::BOOL(0);
+        let mut defaulted = windows::core::BOOL(0);
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        if let Err(err) = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) {
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            return Err(fail(format!("journal directory DACL missing: {err}")));
+        }
+        if !present.as_bool() || dacl.is_null() {
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            return Err(fail(
+                "journal directory security descriptor has no DACL".into(),
+            ));
+        }
+        let status = SetNamedSecurityInfoW(
+            PCWSTR(path_w.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(dacl.cast_const()),
+            None,
+        );
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        if status.0 != 0 {
+            return Err(fail(format!(
+                "SetNamedSecurityInfoW(journal directory) failed: {status:?}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Grant the Package SID access to `path` for one RPC / spawn allowlist entry.
@@ -2426,6 +2538,33 @@ use std::os::windows::ffi::OsStrExt;
 mod tests {
     use super::*;
     use crate::Policy;
+
+    /// One journal row. Paths need not exist; missing paths count as revoked.
+    fn journal_entry(path: &str, sid: &str) -> AclJournalEntry {
+        AclJournalEntry {
+            path: PathBuf::from(path),
+            package_sid: sid.to_string(),
+            is_dir: true,
+            propagate: false,
+        }
+    }
+
+    #[test]
+    fn revoke_keeps_only_the_failing_entry_and_continues() {
+        set_test_fail_acl_revoke(Some(1));
+        let mut entries = vec![
+            journal_entry("/bookclerk-acl-test/first", "S-1-15-2-111"),
+            journal_entry("/bookclerk-acl-test/middle", "S-1-15-2-222"),
+            journal_entry("/bookclerk-acl-test/last", "S-1-15-2-333"),
+        ];
+        let err = revoke_acl_journal_retain(&mut entries).expect_err("middle entry fails");
+        assert!(err.to_string().contains("test ACL revoke failure"));
+        assert_eq!(entries.len(), 1, "later entries are still revoked");
+        assert_eq!(entries[0].package_sid, "S-1-15-2-222");
+        set_test_fail_acl_revoke(None);
+        revoke_acl_journal_retain(&mut entries).expect("retry clears the kept entry");
+        assert!(entries.is_empty());
+    }
 
     #[test]
     fn appcontainer_child_env_keeps_curated_env_and_replaces_profile_paths() {
