@@ -7,7 +7,7 @@
 use chrono::Utc;
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect, TransactionTrait,
+    QuerySelect,
 };
 use uuid::Uuid;
 
@@ -94,10 +94,11 @@ pub async fn create_plugin_instance(
 ///
 /// GraphicAudio startup uses this so a second process start keeps the original id.
 /// Concurrent calls, including two connections to the same file, share one
-/// inserted row. A lock or uniqueness failure while inserting or committing
-/// rolls that attempt back and retries the whole transaction. Explicit
-/// [`create_plugin_instance`] can still mint another row for the same key;
-/// that path does not claim the default enrollment.
+/// inserted row. The claim is one canonical host batch (no interactive
+/// `BEGIN`), so D1 and other non-interactive adapters can run it. A lock or
+/// uniqueness failure retries that batch. Explicit [`create_plugin_instance`]
+/// can still mint another row for the same key; that path does not claim the
+/// default enrollment.
 ///
 /// # Errors
 ///
@@ -113,59 +114,73 @@ pub async fn ensure_plugin_instance(
         match enrolled_or_oldest(store.db(), plugin_key).await {
             Ok(Some(existing)) => return Ok(existing),
             Ok(None) => {}
-            Err(err) => {
-                retry_enrollment(err)?;
-                continue;
-            }
+            Err(err) if enrollment_contention(&err) => continue,
+            Err(err) => return Err(err),
         }
         let id = PluginInstanceId::mint();
-        let txn = match store.db().begin().await {
-            Ok(txn) => txn,
-            Err(err) => {
-                retry_enrollment(LibraryError::Orm(err))?;
-                continue;
-            }
-        };
-        match enrolled_or_oldest(&txn, plugin_key).await {
-            Ok(Some(existing)) => {
-                let _ = txn.rollback().await;
-                let _ = crate::take_txn_fault();
-                return Ok(existing);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                let _ = txn.rollback().await;
-                retry_enrollment(err)?;
-                continue;
-            }
-        }
-        if let Err(err) = insert_instance(&txn, actor, &id, plugin_key).await {
-            let _ = txn.rollback().await;
-            retry_enrollment(err)?;
-            continue;
-        }
-        if let Err(err) = insert_default_enrollment(&txn, plugin_key, id.as_str()).await {
-            let _ = txn.rollback().await;
-            retry_enrollment(err)?;
-            continue;
-        }
-        match txn.commit().await {
-            Ok(()) => {
-                if let Some(fault) = crate::take_txn_fault() {
-                    let err = LibraryError::Orm(sea_orm::DbErr::Custom(fault));
-                    if enrollment_contention(&err) {
-                        continue;
-                    }
-                    return Err(err);
+        let now = Utc::now().to_rfc3339();
+        let operation_id = format!("enroll-plugin-instance-{}", id.as_str());
+        match super::batch::execute_host_batch(
+            store,
+            super::batch::request(
+                &operation_id,
+                vec![
+                    super::batch::exec(
+                        "DELETE FROM plugin_instance_defaults
+                         WHERE plugin_key = ?
+                           AND NOT EXISTS (
+                               SELECT 1 FROM plugin_instances
+                                WHERE plugin_instances.plugin_instance_id
+                                      = plugin_instance_defaults.plugin_instance_id
+                           )",
+                        vec![super::batch::text(plugin_key)],
+                    ),
+                    super::batch::exec(
+                        "INSERT INTO plugin_instances (
+                            plugin_instance_id, plugin_key, created_at, created_by
+                         )
+                         SELECT ?, ?, ?, ?
+                          WHERE NOT EXISTS (
+                              SELECT 1 FROM plugin_instance_defaults WHERE plugin_key = ?
+                          )",
+                        vec![
+                            super::batch::text(id.as_str()),
+                            super::batch::text(plugin_key),
+                            super::batch::text(&now),
+                            super::batch::text(actor.audit_id()),
+                            super::batch::text(plugin_key),
+                        ],
+                    ),
+                    super::batch::exec(
+                        "INSERT INTO plugin_instance_defaults (plugin_key, plugin_instance_id)
+                         SELECT ?, ?
+                          WHERE EXISTS (
+                              SELECT 1 FROM plugin_instances WHERE plugin_instance_id = ?
+                          )
+                            AND NOT EXISTS (
+                              SELECT 1 FROM plugin_instance_defaults WHERE plugin_key = ?
+                          )",
+                        vec![
+                            super::batch::text(plugin_key),
+                            super::batch::text(id.as_str()),
+                            super::batch::text(id.as_str()),
+                            super::batch::text(plugin_key),
+                        ],
+                    ),
+                ],
+            ),
+        )
+        .await
+        {
+            Ok(reply) => {
+                if super::batch::rows_affected(&reply, 2) > 0 {
+                    return load_plugin_instance(store, &id)
+                        .await?
+                        .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")));
                 }
-                return load_plugin_instance(store, &id)
-                    .await?
-                    .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")));
             }
-            Err(err) => {
-                // `commit` consumes the transaction and rolls it back on failure.
-                retry_enrollment(LibraryError::Orm(err))?;
-            }
+            Err(err) if enrollment_contention(&err) => continue,
+            Err(err) => return Err(err),
         }
     }
     enrolled_or_oldest(store.db(), plugin_key)
@@ -214,6 +229,10 @@ pub async fn list_plugin_instances_for_key(
 
 /// Earliest instance row for `plugin_key`, if any.
 ///
+/// Oldest-wins. Do not use this for spawn or CLI selection: two instances may
+/// share a key, and those callers fail closed or take an explicit instance id.
+/// No production path calls this helper.
+///
 /// # Errors
 ///
 /// Returns an error when the read fails.
@@ -247,26 +266,6 @@ async fn insert_instance(
         .exec(conn)
         .await
         .map_err(LibraryError::Orm)?;
-    Ok(())
-}
-
-/// Claims the default enrollment for `plugin_key`.
-///
-/// The primary key is the plugin key, so a second concurrent bootstrap cannot
-/// insert a different default instance. Explicit instance creation does not
-/// call this.
-async fn insert_default_enrollment(
-    conn: &impl ConnectionTrait,
-    plugin_key: &str,
-    plugin_instance_id: &str,
-) -> Result<()> {
-    bookclerk_db_exec::execute_canonical(
-        conn,
-        "INSERT INTO plugin_instance_defaults (plugin_key, plugin_instance_id) VALUES (?, ?)",
-        [plugin_key.into(), plugin_instance_id.into()],
-    )
-    .await
-    .map_err(LibraryError::Orm)?;
     Ok(())
 }
 
@@ -331,26 +330,6 @@ async fn find_by_plugin_key_conn(
         .await
         .map_err(LibraryError::Orm)?;
     Ok(row.map(instance_from_model))
-}
-
-/// `Ok(())` when `err` is enrollment contention and the caller should retry.
-///
-/// A sticky proxy commit fault replaces `err` when one is present, then the
-/// fault is cleared so the next attempt can `BEGIN`.
-///
-/// # Errors
-///
-/// Returns `err` when it is not lock or uniqueness contention.
-fn retry_enrollment(err: LibraryError) -> Result<()> {
-    let err = match crate::take_txn_fault() {
-        Some(fault) => LibraryError::Orm(sea_orm::DbErr::Custom(fault)),
-        None => err,
-    };
-    if enrollment_contention(&err) {
-        Ok(())
-    } else {
-        Err(err)
-    }
 }
 
 /// True when another bootstrap claimed the default enrollment or the write lock.

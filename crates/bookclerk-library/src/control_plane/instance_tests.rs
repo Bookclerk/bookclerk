@@ -1,5 +1,9 @@
 //! Plugin instance identity, configuration, and deployment tests.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use bookclerk_config::EventsConfig;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, EntityTrait, TransactionTrait};
 use uuid::Uuid;
@@ -147,6 +151,65 @@ async fn ensure_shares_one_id_across_two_sqlite_connections() {
     assert_eq!(listed.len(), 2);
     assert!(listed.iter().any(|row| row.id == left.id));
     assert!(listed.iter().any(|row| row.id == explicit.id));
+}
+
+/// Applies a host batch on an open connection and never calls `BEGIN`.
+struct OpenBatchExec {
+    /// Same file the store already migrated.
+    db: sea_orm::DatabaseConnection,
+    /// How many batches enrollment sent.
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl crate::TypedAtomicExec for OpenBatchExec {
+    async fn execute_typed(
+        &self,
+        envelope: bookclerk_db_exec::AdapterExecuteRequest,
+    ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, bookclerk_plugin_abi::PluginError>
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        bookclerk_db_exec::execute_typed_on_open_connection(
+            &self.db,
+            &envelope,
+            bookclerk_db_exec::ExecCaps::from(8u32),
+            bookclerk_db_exec::AtomicSession::from_deadline(None),
+            None,
+        )
+        .await
+        .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))
+    }
+}
+
+#[tokio::test]
+async fn ensure_uses_a_host_batch_when_begin_is_rejected() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let store = file_store(&path).await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let db = store.db().clone();
+    let store = store.with_typed_exec(Arc::new(OpenBatchExec {
+        db,
+        calls: calls.clone(),
+    }));
+    crate::inject_begin_failures(8);
+    let key = "platform:bookclerk/d1-batch";
+    let enrolled = ensure_plugin_instance(&store, &ConfigActor::Bootstrap, key)
+        .await
+        .expect("batch enrollment");
+    assert!(calls.load(Ordering::SeqCst) >= 1);
+    let again = ensure_plugin_instance(&store, &ConfigActor::Bootstrap, key)
+        .await
+        .expect("second enrollment");
+    assert_eq!(again.id, enrolled.id);
+    assert_eq!(
+        list_plugin_instances_for_key(&store, key)
+            .await
+            .expect("list")
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
