@@ -203,33 +203,22 @@ impl LibraryStore {
         page_values: Vec<DbValue>,
         cap: u32,
     ) -> Result<bookclerk_plugin_abi::ExecuteReply> {
-        let mut pause = std::time::Duration::from_millis(20);
-        let mut attempt = 0u32;
-        loop {
-            let result = self
-                .execute_host_batch_limited(
-                    ExecuteRequest {
-                        operation_id: format!("books-page-{}", uuid::Uuid::new_v4()),
-                        request_hash: String::new(),
-                        deadline_unix_ms: 0,
-                        statements: vec![
-                            select_stmt(&count_sql, filters.clone(), 1),
-                            select_stmt(&page_sql, page_values.clone(), cap),
-                        ],
-                    },
-                    u32::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500),
-                )
-                .await;
-            match result {
-                Ok(reply) => return Ok(reply),
-                Err(err) if page_lock_contention(&err) && attempt + 1 < PAGE_LOCK_ATTEMPTS => {
-                    attempt += 1;
-                    tokio::time::sleep(pause).await;
-                    pause = (pause * 2).min(std::time::Duration::from_millis(250));
-                }
-                Err(err) => return Err(err),
-            }
-        }
+        super::lock_retry::retry_read_lock(|| async {
+            self.execute_host_batch_limited(
+                ExecuteRequest {
+                    operation_id: format!("books-page-{}", uuid::Uuid::new_v4()),
+                    request_hash: String::new(),
+                    deadline_unix_ms: 0,
+                    statements: vec![
+                        select_stmt(&count_sql, filters.clone(), 1),
+                        select_stmt(&page_sql, page_values.clone(), cap),
+                    ],
+                },
+                u32::try_from(BOOK_PAGE_MAX_LIMIT).unwrap_or(500),
+            )
+            .await
+        })
+        .await
     }
 }
 
@@ -240,17 +229,6 @@ fn nocase_title_then_uuid(left: &BookRecord, right: &BookRecord) -> std::cmp::Or
         .cmp(&right.title.to_ascii_lowercase())
         .then_with(|| left.uuid.cmp(&right.uuid))
 }
-
-/// True when `err` is SQLite lock contention from an overlapping writer.
-fn page_lock_contention(err: &LibraryError) -> bool {
-    let upper = err.to_string().to_ascii_uppercase();
-    upper.contains("SQLITE_BUSY")
-        || upper.contains("SQLITE_LOCKED")
-        || matches!(err, LibraryError::Unavailable(_))
-}
-
-/// Rereads of one page while another connection holds the database file.
-const PAGE_LOCK_ATTEMPTS: u32 = 8;
 
 /// One canonical `SELECT`. `max_rows` is the proven upper bound.
 fn select_stmt(sql: &str, parameters: Vec<DbValue>, max_rows: u32) -> TypedDbStatement {

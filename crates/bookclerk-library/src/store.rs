@@ -571,22 +571,35 @@ impl LibraryStore {
     /// Same cardinality as [`Self::count_accounts`]. Prefer this when the caller
     /// only needs a number for an operator-facing summary.
     ///
+    /// A peer writer on the same SQLite file (TRUNCATE journal) can make this
+    /// read return `SQLITE_BUSY`. The read is repeated until the lock clears
+    /// or the attempt budget is spent.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
+    /// lock is still held after the retries.
     pub async fn count_identities(&self) -> Result<i64> {
-        let count = accounts::Entity::find()
-            .count(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(count as i64)
+        lock_retry::retry_read_lock(|| async {
+            let count = accounts::Entity::find()
+                .count(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            Ok(count as i64)
+        })
+        .await
     }
 
     /// Count account rows (SQL `COUNT`, not a full fetch).
     ///
+    /// Uses [`Self::count_identities`], including its wait for a peer SQLite lock.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
+    /// lock is still held after the retries.
     pub async fn count_accounts(&self) -> Result<i64> {
         self.count_identities().await
     }
@@ -4001,16 +4014,28 @@ impl LibraryStore {
 
     /// Count book rows (SQL `COUNT`, not a full fetch).
     ///
+    /// A peer writer on the same SQLite file (TRUNCATE journal) can make this
+    /// read return `SQLITE_BUSY`. The read is repeated until the lock clears
+    /// or the attempt budget is spent. `account_id` is unchanged.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
+    /// lock is still held after the retries.
     pub async fn count_books(&self, account_id: Option<&str>) -> Result<i64> {
-        let mut query = books::Entity::find();
-        if let Some(account_id) = account_id {
-            query = query.filter(books::Column::AccountId.eq(account_id));
-        }
-        let count = query.count(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(count as i64)
+        lock_retry::retry_read_lock(|| async {
+            let mut query = books::Entity::find();
+            if let Some(account_id) = account_id {
+                query = query.filter(books::Column::AccountId.eq(account_id));
+            }
+            let count = query
+                .count(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            Ok(count as i64)
+        })
+        .await
     }
 
     /// Resolve `title_id` to the stored public book model, or error if missing.
@@ -4398,6 +4423,10 @@ impl LibraryStore {
 
     /// Counts books whose acquire status equals `status`.
     ///
+    /// A peer writer on the same SQLite file (TRUNCATE journal) can make this
+    /// read return `SQLITE_BUSY`. The read is repeated until the lock clears
+    /// or the attempt budget is spent. `status` is unchanged.
+    ///
     /// # Arguments
     ///
     /// * `status` - Acquire or request status value.
@@ -4408,14 +4437,19 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
+    /// lock is still held after the retries.
     pub async fn count_by_status(&self, status: AcquireStatus) -> Result<i64> {
-        let count = books::Entity::find()
-            .filter(books::Column::AcquireStatus.eq(status.as_str()))
-            .count(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(count as i64)
+        lock_retry::retry_read_lock(|| async {
+            let count = books::Entity::find()
+                .filter(books::Column::AcquireStatus.eq(status.as_str()))
+                .count(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            Ok(count as i64)
+        })
+        .await
     }
 
     /// Persist enrichment fields without touching scan / ownership columns.
@@ -7003,6 +7037,7 @@ pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_tes
 pub(crate) mod job_queue;
 
 mod books_page;
+mod lock_retry;
 pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
 
 #[cfg(test)]
