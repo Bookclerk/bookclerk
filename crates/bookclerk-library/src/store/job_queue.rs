@@ -18,6 +18,20 @@ use crate::models::{
     JOB_PAYLOAD_VERSION,
 };
 
+/// Rereads of the jobs list while another connection holds the database file.
+const JOB_LIST_LOCK_ATTEMPTS: u32 = 8;
+
+/// True when `err` is SQLite file-lock contention from an overlapping writer.
+fn job_read_lock_contention(err: &LibraryError) -> bool {
+    match err {
+        LibraryError::Unavailable(_) => true,
+        other => {
+            let upper = other.to_string().to_ascii_uppercase();
+            upper.contains("SQLITE_BUSY") || upper.contains("SQLITE_LOCKED")
+        }
+    }
+}
+
 impl LibraryStore {
     /// Admit a job in one transaction, coalescing onto an active dedup key.
     ///
@@ -665,16 +679,17 @@ impl LibraryStore {
 
     /// List recent jobs, newest first, capped at `limit` (minimum 1).
     ///
+    /// A peer writer on the same SQLite file (TRUNCATE journal) can make this
+    /// read return `SQLITE_BUSY`. The read is repeated until the lock clears
+    /// or the attempt budget is spent. `limit` is unchanged.
+    ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
+    /// lock is still held after the retries.
     pub async fn list_jobs(&self, limit: u64) -> Result<Vec<JobRecord>> {
-        let rows = jobs::Entity::find()
-            .order_by_desc(jobs::Column::CreatedAt)
-            .limit(limit.max(1))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = self.list_job_rows_through_lock(limit).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             let id = row.id.clone();
@@ -689,6 +704,32 @@ impl LibraryStore {
             }
         }
         Ok(out)
+    }
+
+    /// Loads job rows, waiting out `SQLITE_BUSY` / `SQLITE_LOCKED` from a peer writer.
+    async fn list_job_rows_through_lock(&self, limit: u64) -> Result<Vec<jobs::Model>> {
+        let mut pause = std::time::Duration::from_millis(20);
+        let mut attempt = 0u32;
+        loop {
+            match jobs::Entity::find()
+                .order_by_desc(jobs::Column::CreatedAt)
+                .limit(limit.max(1))
+                .all(&self.db)
+                .await
+            {
+                Ok(rows) => return Ok(rows),
+                Err(err) => {
+                    let mapped = LibraryError::from_db_err(err);
+                    if job_read_lock_contention(&mapped) && attempt + 1 < JOB_LIST_LOCK_ATTEMPTS {
+                        attempt += 1;
+                        tokio::time::sleep(pause).await;
+                        pause = (pause * 2).min(std::time::Duration::from_millis(250));
+                        continue;
+                    }
+                    return Err(mapped);
+                }
+            }
+        }
     }
 
     /// Delete terminal jobs older than `retention_days`.
