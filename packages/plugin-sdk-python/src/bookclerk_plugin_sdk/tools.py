@@ -43,10 +43,20 @@ WORKERD_PIN_COMPAT_DATE = "2026-08-01"
 _LOAD_SUFFIXES = (".js", ".mjs", ".py", ".wasm", ".json")
 
 
+def _is_ascii_digit_run(text: str) -> bool:
+    return bool(text) and all("0" <= char <= "9" for char in text)
+
+
 def _is_calendar_date(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
     if len(text) != 10 or text[4] != "-" or text[7] != "-":
         return False
-    if not (text[:4].isdigit() and text[5:7].isdigit() and text[8:10].isdigit()):
+    if not (
+        _is_ascii_digit_run(text[:4])
+        and _is_ascii_digit_run(text[5:7])
+        and _is_ascii_digit_run(text[8:10])
+    ):
         return False
     year, month, day = int(text[:4]), int(text[5:7]), int(text[8:10])
     if month == 2:
@@ -163,6 +173,9 @@ def validate_author_compatibility_flags(flags: list[Any], python: bool) -> None:
 def declares_python(m: dict[str, Any]) -> bool:
     """True when the manifest declares Python. Flags are not evidence.
 
+    An explicit ``path`` is the load-set key. ``name`` is that key only when
+    ``path`` is omitted.
+
     Args:
         m: Manifest dictionary.
 
@@ -184,6 +197,9 @@ def declares_python(m: dict[str, Any]) -> bool:
 
 def unimplemented_surface(m: dict[str, Any]) -> str | None:
     """Spawn/load message when KV or Queues are declared.
+
+    The refusal is runtime-agnostic: a native plugin that declares KV or
+    Queues fails spawn the same way a workerd plugin does.
 
     Args:
         m: Manifest dictionary.
@@ -251,11 +267,18 @@ def validate_module_declarations(main_module: str, modules: list[Any]) -> None:
             )
 
 
+def _normalize_dot_segments(raw: str) -> str:
+    """Drop ``.`` segments. ``..`` and empty segments stay."""
+    parts = [segment for segment in raw.replace("\\", "/").split("/") if segment != "."]
+    return "/".join(parts)
+
+
 def module_load_key(modules_dir: str, raw: str) -> str:
     """Relative key a modules-directory walk uses for a ``[[modules]]`` path.
 
-    Leading ``./`` is removed before the modules-dir prefix, then again after
-    it, so ``./modules/index.js`` matches a walk key of ``index.js``.
+    ``.`` segments are dropped, then a leading modules-dir prefix is removed,
+    so ``./modules/index.js`` and ``modules/pkg/./echo.wasm`` match walk keys.
+    ``..`` segments are left in place.
 
     Args:
         modules_dir: ``[workerd].modules_dir``.
@@ -264,15 +287,11 @@ def module_load_key(modules_dir: str, raw: str) -> str:
     Returns:
         Slash-separated key with a leading modules-dir prefix removed.
     """
-    key = raw.replace("\\", "/")
-    while key.startswith("./"):
-        key = key[2:]
-    directory = modules_dir.strip("/")
+    key = _normalize_dot_segments(raw)
+    directory = _normalize_dot_segments(modules_dir.strip("/"))
     prefix = f"{directory}/"
     if directory and key.startswith(prefix):
-        key = key[len(prefix) :]
-    while key.startswith("./"):
-        key = key[2:]
+        return key[len(prefix) :]
     return key
 
 
@@ -460,11 +479,12 @@ def validate_manifest(m: dict[str, Any]) -> None:
         w = m.get("workerd")
         if not isinstance(w, dict):
             raise ValueError('plugin.toml: `[workerd]` is required when runtime = "workerd"')
-        if not str(w.get("compatibility_date") or "").strip():
+        compat = w.get("compatibility_date")
+        if not isinstance(compat, str) or not compat.strip():
             raise ValueError("plugin.toml: workerd.compatibility_date is required")
         if not str(w.get("main_module") or "").strip():
             raise ValueError("plugin.toml: workerd.main_module is required")
-        validate_author_compatibility_date(str(w.get("compatibility_date")))
+        validate_author_compatibility_date(compat)
         validate_module_declarations(str(w.get("main_module")), list(m.get("modules") or []))
         validate_author_compatibility_flags(
             list(w.get("compatibility_flags") or []),
@@ -535,15 +555,39 @@ def _validate_surface(m: dict[str, Any]) -> None:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
     reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV}
+    named: list[tuple[str, str]] = []
+    secrets = m.get(_SEALED_TABLE)
+    if isinstance(secrets, dict):
+        named.append(("secrets", str(secrets.get("binding") or _SEALED_ENV)))
+    work_fs = m.get("work_fs")
+    if isinstance(work_fs, dict):
+        named.append(("work_fs", str(work_fs.get("binding") or "WORK_FS")))
+    oauth = m.get(_LOOPBACK_TABLE)
+    if isinstance(oauth, dict):
+        named.append(("oauth", str(oauth.get("binding") or _LOOPBACK_ENV)))
     for kv in m.get("kv_namespaces") or []:
-        name = str(kv.get("binding") or "KV")
+        named.append(("kv_namespaces", str(kv.get("binding") or "KV")))
+    for producer in (m.get("events") or {}).get("producers") or []:
+        named.append(("events.producers", str(producer.get("binding") or "EVENTS")))
+    for table, name in named:
         if not _DATABASE_BINDING_RE.match(name) or len(name) > 32:
             raise ValueError(
-                f"plugin.toml: [kv_namespaces] binding `{name}` must be `[A-Z][A-Z0-9_]*`"
+                f"plugin.toml: [{table}] binding `{name}` must be `[A-Z][A-Z0-9_]*`"
             )
-        if name in reserved or name in bindings:
+        if table == "kv_namespaces" and name in reserved:
             raise ValueError(
-                f"plugin.toml: [kv_namespaces] binding `{name}` collides with another binding"
+                f"plugin.toml: [{table}] binding `{name}` collides with another binding"
+            )
+        if name == "CONFIG" or name in bindings:
+            raise ValueError(
+                f"plugin.toml: [{table}] binding `{name}` collides with another binding"
+            )
+    for table, name in named:
+        if table == "events.producers":
+            continue
+        if name in bindings:
+            raise ValueError(
+                f"plugin.toml: [{table}] binding `{name}` collides with another binding"
             )
         bindings.add(name)
 
@@ -611,14 +655,6 @@ def _collect_author_module_keys(modules_dir: Path) -> set[str]:
                 continue
             found.add(child.relative_to(modules_dir).as_posix())
     return found
-
-
-def _ensure_python_flags(flags: list[Any] | None) -> list[str]:
-    out = [str(f) for f in (flags or [])]
-    for required in PYTHON_WORKERD_FLAGS:
-        if required not in out:
-            out.append(required)
-    return out
 
 
 def _sdk_workerd_embed_src() -> Path:
@@ -728,7 +764,12 @@ def check_plugin(plugin_dir: Path) -> str:
     runtime = m.get("runtime") or "native"
     if runtime == "workerd":
         w = m["workerd"]
-        applied = apply_author_compatibility_date(str(w.get("compatibility_date") or ""))
+        compat = w.get("compatibility_date")
+        if not isinstance(compat, str):
+            raise ValueError(
+                "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD"
+            )
+        applied = apply_author_compatibility_date(compat)
         if applied.warning:
             print(applied.warning, file=sys.stderr)
         modules_dir = _workerd_modules_dir(root, m)
@@ -738,13 +779,13 @@ def check_plugin(plugin_dir: Path) -> str:
         if not main.is_file():
             raise FileNotFoundError(f"workerd main_module missing: {main}")
         entrypoints = [str(e) for e in (m.get("entrypoints") or [])]
-        main_lower = w["main_module"].lower()
-        if main_lower.endswith((".js", ".mjs")):
-            src = main.read_text(encoding="utf-8")
-            check_main_module_source(main.name, src, entrypoints, "js")
-        if _is_python_workerd(m):
+        main_lower = str(w["main_module"]).lower()
+        if main_lower.endswith(".py"):
             src = main.read_text(encoding="utf-8")
             check_main_module_source(main.name, src, entrypoints, "python")
+        elif main_lower.endswith((".js", ".mjs")):
+            src = main.read_text(encoding="utf-8")
+            check_main_module_source(main.name, src, entrypoints, "js")
         _enforce_workerd_load_set(m, modules_dir)
     elif runtime == "native":
         cmd = Path(m["command"])
@@ -760,8 +801,8 @@ def sync_embed(plugin_dir: Path) -> str:
 
     Prefer package imports — ``bookclerk-workerd`` injects
     ``bookclerk_plugin_sdk.workerd`` at runtime. This writes the same files so a
-    staged tree is self-contained without host injection. Also ensures Python
-    Workers compatibility flags in ``plugin.toml``.
+    staged tree is self-contained without host injection. It does not insert
+    compatibility flags; the host and ``check`` require the author to write them.
 
     Args:
         plugin_dir: Path to a workerd Python plugin root.
@@ -807,43 +848,7 @@ def sync_embed(plugin_dir: Path) -> str:
             '"""Bookclerk plugin SDK (vendored for workerd). Prefer .workerd."""\n',
         )
     dest = copy_file_under(pkg, "workerd.py", _sdk_workerd_embed_src())
-
-    new_text = _ensure_python_flags_in_toml_text(text, m)
-    if new_text != text:
-        refuse_symlink_path(root, toml_path)
-        write_file_under(root, "plugin.toml", new_text)
-        return f"synced {dest} + python workerd flags in {toml_path}"
     return f"synced {dest}"
-
-
-def _ensure_python_flags_in_toml_text(text: str, m: dict[str, Any]) -> str:
-    """Insert or replace `compatibility_flags` for Python workerd without a full fmt."""
-    w = m.get("workerd") or {}
-    flags = list(w.get("compatibility_flags") or [])
-    if all(f in flags for f in PYTHON_WORKERD_FLAGS):
-        return text
-    flag_block = (
-        "compatibility_flags = [\n"
-        + "".join(f'    "{f}",\n' for f in _ensure_python_flags(flags))
-        + "]"
-    )
-    if re.search(r"(?m)^\s*compatibility_flags\s*=", text):
-        return re.sub(
-            r"(?ms)^\s*compatibility_flags\s*=\s*\[.*?\]",
-            flag_block,
-            text,
-            count=1,
-        )
-    date = str(w.get("compatibility_date") or "")
-    needle = f'compatibility_date = "{date}"'
-    if needle in text:
-        return text.replace(needle, f"{needle}\n{flag_block}", 1)
-    return re.sub(
-        r"(?m)^\[workerd\]\s*$",
-        f"[workerd]\n{flag_block}",
-        text,
-        count=1,
-    )
 
 
 def _esc(s: str) -> str:
@@ -908,14 +913,35 @@ def _is_array_of_records(value: Any) -> bool:
     )
 
 
+def _reject_dropped_queue_tables(queues: dict[str, Any]) -> None:
+    """Fail when a ``[queues]`` value would be omitted instead of emitted."""
+    for key, value in queues.items():
+        if _is_array_of_records(value):
+            for row in value:
+                for field, field_value in row.items():
+                    if _value(field_value) is None:
+                        raise ValueError(
+                            "plugin.toml: [queues] "
+                            f"`{key}.{field}` nested table cannot be formatted"
+                        )
+            continue
+        if _value(value) is None:
+            raise ValueError(
+                f"plugin.toml: [queues] `{key}` nested table cannot be formatted"
+            )
+
+
 def _emit_queues(lines: list[str], queues: Any) -> None:
     """Write a declared ``[queues]`` table back out. Absent means omitted.
 
     Only a non-empty list of dicts uses ``[[queues.key]]``. Scalar lists and
-    empty lists stay inline arrays.
+    empty lists stay inline arrays. Nested tables raise instead of disappearing.
     """
     if not isinstance(queues, dict):
+        if queues is not None:
+            raise ValueError("plugin.toml: [queues] nested table cannot be formatted")
         return
+    _reject_dropped_queue_tables(queues)
     scalars = {
         key: value for key, value in queues.items() if not _is_array_of_records(value)
     }
@@ -945,17 +971,17 @@ def _named_binding(lines: list[str], header: str, binding: Any) -> None:
 def format_manifest(m: dict[str, Any]) -> str:
     """Emit canonical TOML matching Rust ``format_manifest`` gold fixtures.
 
+    Flags are emitted as written. This function does not insert the Python pair.
+
     Args:
         m: Validated manifest dictionary.
 
     Returns:
         Canonical ``plugin.toml`` text ending with a newline.
-    """
-    if (m.get("runtime") or "native") == "workerd" and _is_python_workerd(m):
-        w = dict(m.get("workerd") or {})
-        w["compatibility_flags"] = _ensure_python_flags(w.get("compatibility_flags"))
-        m = {**m, "workerd": w}
 
+    Raises:
+        ValueError: When ``[queues]`` contains a nested table.
+    """
     lines: list[str] = []
     lines.append(f"api_version = {m['api_version']}")
     lines.append(f"id = {_esc(m['id'])}")
@@ -1213,7 +1239,6 @@ def package_plugin(plugin_dir: Path, out_dir: Path) -> Path:
                 encoding="utf-8",
             )
             shutil.copy2(_sdk_workerd_embed_src(), resolve_under(pkg, "workerd.py"))
-            toml_text = _ensure_python_flags_in_toml_text(toml_text, m)
         resolve_under(staging, "plugin.toml").write_text(toml_text, encoding="utf-8")
         stem = f"bookclerk-plugin-{plugin_id}-{version}-workerd"
 

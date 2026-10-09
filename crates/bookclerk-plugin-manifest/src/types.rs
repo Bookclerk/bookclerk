@@ -704,8 +704,9 @@ impl PluginManifest {
     /// True when the manifest itself declares a Python workerd guest.
     ///
     /// Python means any of: `main_module` ending in `.py`, or a `[[modules]]`
-    /// row with `type = "python"` or a `.py` path/name. Compatibility flags
-    /// are not evidence. A `.py` file that exists only on disk is not a
+    /// row with `type = "python"` or a `.py` load-set key. An explicit `path`
+    /// is that key; `name` is the key only when `path` is omitted. Compatibility
+    /// flags are not evidence. A `.py` file that exists only on disk is not a
     /// declaration: check and materialize reject it.
     ///
     /// # Returns
@@ -723,15 +724,23 @@ impl PluginManifest {
             }
         }
         self.modules.iter().any(|module| {
-            module.module_type.eq_ignore_ascii_case("python")
-                || module.name.to_ascii_lowercase().ends_with(".py")
-                || module.path.to_ascii_lowercase().ends_with(".py")
+            if module.module_type.eq_ignore_ascii_case("python") {
+                return true;
+            }
+            let key = if module.path.is_empty() {
+                module.name.as_str()
+            } else {
+                module.path.as_str()
+            };
+            key.to_ascii_lowercase().ends_with(".py")
         })
     }
 
     /// Spawn/load error when the manifest declares a surface the host cannot
     /// run yet.
     ///
+    /// The refusal is runtime-agnostic: a native plugin that declares KV or
+    /// Queues fails spawn the same way a workerd plugin does.
     /// `[[kv_namespaces]]` and `[queues]` stay in the schema. The message
     /// contains "not implemented yet" and does not suggest `[[databases]]`
     /// or events as a substitute. `None` means load may continue.
@@ -2211,5 +2220,56 @@ mode = "deny"
             !message.to_ascii_lowercase().contains("retired"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn explicit_module_path_wins_over_py_name() {
+        let parsed = PluginManifest::parse(&workerd_body(
+            "\n[[modules]]\nname = \"helper.py\"\npath = \"index.js\"\ntype = \"js\"\n",
+        ))
+        .expect("path is the load-set key");
+        let path_wins = !parsed.declares_python();
+        assert!(path_wins, "{}", u8::from(path_wins));
+    }
+
+    #[test]
+    fn custom_bindings_collide_across_tables() {
+        let secret = r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+[secrets]
+binding = "SHARED"
+[[kv_namespaces]]
+binding = "SHARED"
+[capabilities.network]
+mode = "deny"
+"#;
+        let secret_rejected =
+            PluginManifest::parse(secret).is_err_and(|err| err.to_string().contains("collides"));
+        assert!(secret_rejected, "{}", u8::from(secret_rejected));
+        let work_fs = secret.replace("[secrets]", "[work_fs]");
+        let work_fs_rejected =
+            PluginManifest::parse(&work_fs).is_err_and(|err| err.to_string().contains("collides"));
+        assert!(work_fs_rejected, "{}", u8::from(work_fs_rejected));
+        let producer = r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+[[events.producers]]
+type = "book_ready"
+binding = "DB"
+[[databases]]
+binding = "DB"
+[capabilities.network]
+mode = "deny"
+"#;
+        let producer_rejected =
+            PluginManifest::parse(producer).is_err_and(|err| err.to_string().contains("collides"));
+        assert!(producer_rejected, "{}", u8::from(producer_rejected));
     }
 }

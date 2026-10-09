@@ -28,9 +28,6 @@ mode = "deny"
 # Isolated plugin-owned databases (Workers-style named bindings).
 [vars]
 
-[[kv_namespaces]]
-binding = "KV"
-
 [[databases]]
 binding = "DB"
 

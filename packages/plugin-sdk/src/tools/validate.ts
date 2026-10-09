@@ -396,16 +396,38 @@ function validateSurface(m: Manifest): void {
     bindings.add(name);
   }
   const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH"]);
+  const named: Array<[string, string]> = [];
+  if (m.secrets) named.push(["secrets", m.secrets.binding || "SECRETS"]);
+  if (m.work_fs) named.push(["work_fs", m.work_fs.binding || "WORK_FS"]);
+  if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH"]);
   for (const kv of m.kv_namespaces ?? []) {
-    const name = kv.binding || "KV";
+    named.push(["kv_namespaces", kv.binding || "KV"]);
+  }
+  for (const producer of m.events?.producers ?? []) {
+    named.push(["events.producers", producer.binding || "EVENTS"]);
+  }
+  for (const [table, name] of named) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
       throw new Error(
-        `plugin.toml: [kv_namespaces] binding \`${name}\` must be \`[A-Z][A-Z0-9_]*\``,
+        `plugin.toml: [${table}] binding \`${name}\` must be \`[A-Z][A-Z0-9_]*\``,
       );
     }
-    if (reserved.has(name) || bindings.has(name)) {
+    if (table === "kv_namespaces" && reserved.has(name)) {
       throw new Error(
-        `plugin.toml: [kv_namespaces] binding \`${name}\` collides with another binding`,
+        `plugin.toml: [${table}] binding \`${name}\` collides with another binding`,
+      );
+    }
+    if (name === "CONFIG" || bindings.has(name)) {
+      throw new Error(
+        `plugin.toml: [${table}] binding \`${name}\` collides with another binding`,
+      );
+    }
+  }
+  for (const [table, name] of named) {
+    if (table === "events.producers") continue;
+    if (bindings.has(name)) {
+      throw new Error(
+        `plugin.toml: [${table}] binding \`${name}\` collides with another binding`,
       );
     }
     bindings.add(name);
@@ -520,8 +542,9 @@ export function validateAuthorCompatibilityFlags(
 }
 
 /**
- * True when the manifest declares Python (main `.py` or a `[[modules]]` row).
- * Flags are not evidence.
+ * True when the manifest declares Python (main `.py`, `type = "python"`, or a
+ * `.py` load-set key). An explicit `path` is that key; `name` is used only
+ * when `path` is omitted. Flags are not evidence.
  *
  * @param m - Manifest under validation.
  * @returns Whether Python flags and Pyodide consent hosts apply.
@@ -540,6 +563,9 @@ export function declaresPython(m: Manifest): boolean {
 
 /**
  * Spawn/load message when KV or Queues are declared.
+ *
+ * The refusal is runtime-agnostic: a native plugin that declares KV or Queues
+ * fails spawn the same way a workerd plugin does.
  *
  * @param m - Manifest that may declare unimplemented surfaces.
  * @returns The refusal, or `null` when neither surface is declared.
@@ -589,24 +615,40 @@ export function validateModuleDeclarations(
 /**
  * Relative key a modules-directory walk uses for a `[[modules]]` path.
  *
- * Leading `./` is removed before the modules-dir prefix, then again after it,
- * so `./modules/index.js` matches a walk key of `index.js`.
+ * `.` segments are dropped, then a leading modules-dir prefix is removed, so
+ * `./modules/index.js` and `modules/pkg/./echo.wasm` match walk keys.
+ * `..` segments are left in place.
  *
  * @param modulesDir - `[workerd].modules_dir`.
  * @param raw - Author path or name.
  * @returns Slash-separated key with a leading modules-dir prefix removed.
  */
 export function moduleLoadKey(modulesDir: string, raw: string): string {
-  let key = raw.replace(/\\/g, "/");
-  while (key.startsWith("./")) key = key.slice(2);
-  let start = 0;
-  let end = modulesDir.length;
-  while (start < end && modulesDir[start] === "/") start += 1;
-  while (end > start && modulesDir[end - 1] === "/") end -= 1;
-  const dir = modulesDir.slice(start, end);
-  if (dir && key.startsWith(`${dir}/`)) key = key.slice(dir.length + 1);
-  while (key.startsWith("./")) key = key.slice(2);
+  const key = normalizeDotSegments(raw);
+  const dir = normalizeDotSegments(trimSlashes(modulesDir));
+  if (dir && key.startsWith(`${dir}/`)) return key.slice(dir.length + 1);
   return key;
+}
+
+function trimSlashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "/") start += 1;
+  while (end > start && value[end - 1] === "/") end -= 1;
+  return value.slice(start, end);
+}
+
+function normalizeDotSegments(raw: string): string {
+  const slash = raw.replace(/\\/g, "/");
+  const parts: string[] = [];
+  let start = 0;
+  for (let i = 0; i <= slash.length; i += 1) {
+    if (i !== slash.length && slash[i] !== "/") continue;
+    const segment = slash.slice(start, i);
+    if (segment !== ".") parts.push(segment);
+    start = i + 1;
+  }
+  return parts.join("/");
 }
 
 /**

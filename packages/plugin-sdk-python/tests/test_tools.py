@@ -89,6 +89,16 @@ def test_check_rejects_module_type_mismatch():
         check_plugin(FIXTURES / "invalid-module-type")
 
 
+def test_check_accepts_explicit_path_over_py_name():
+    msg = check_plugin(FIXTURES / "valid-module-path-wins")
+    assert "path_wins_over_py_name" in msg
+
+
+def test_check_lints_js_main_when_a_python_helper_is_declared():
+    msg = check_plugin(FIXTURES / "valid-js-with-python-helper")
+    assert "js_main_python_helper" in msg
+
+
 def test_check_rejects_module_path_when_name_matches_a_different_file():
     with pytest.raises(ValueError, match="not in the workerd load set"):
         check_plugin(FIXTURES / "invalid-module-path")
@@ -99,6 +109,20 @@ def test_check_rejects_module_path_when_name_matches_a_different_file():
 def test_check_accepts_module_name_when_path_is_omitted():
     msg = check_plugin(FIXTURES / "valid-module-name-only")
     assert "echo_workerd_name_only" in msg
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "invalid-kv-secret",
+        "invalid-kv-work-fs",
+        "invalid-kv-oauth-name",
+        "invalid-producer-database",
+    ],
+)
+def test_check_rejects_custom_binding_collisions(name: str):
+    with pytest.raises(ValueError, match="collides"):
+        check_plugin(FIXTURES / name)
 
 
 def test_check_rejects_kv_oauth_binding():
@@ -137,6 +161,7 @@ def test_materialize_rejects_disk_only_python_even_with_both_flags():
     from bookclerk_plugin_sdk.tools import module_load_key
 
     assert module_load_key("modules", "./modules/index.js") == "index.js"
+    assert module_load_key("modules", "modules/pkg/./echo.wasm") == "pkg/echo.wasm"
     manifest = tomllib.loads(
         (FIXTURES / "invalid-undeclared-python" / "plugin.toml").read_text(encoding="utf-8")
     )
@@ -196,6 +221,61 @@ def test_format_keeps_queues_declaration():
     rendered = format_manifest(tomllib.loads(text))
     assert "[[queues.producers]]" in rendered
     assert "not implemented" not in rendered.lower()
+
+
+def test_calendar_date_rejects_unicode_digits_and_unquoted_toml_dates():
+    import tomllib
+
+    from bookclerk_plugin_sdk.tools import validate_author_compatibility_date, validate_manifest
+
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        validate_author_compatibility_date("２０２６-０８-０１")
+    text = """
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+[workerd]
+compatibility_date = 2026-08-01
+main_module = "index.js"
+[capabilities.network]
+mode = "deny"
+"""
+    with pytest.raises(ValueError, match="compatibility_date"):
+        validate_manifest(tomllib.loads(text))
+
+
+def test_format_manifest_does_not_insert_python_flags():
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "workerd",
+            "entrypoints": ["cli"],
+            "workerd": {
+                "compatibility_date": "2026-08-01",
+                "main_module": "plugin.py",
+            },
+            "modules": [{"name": "plugin.py", "type": "python"}],
+            "capabilities": {"network": {"mode": "deny"}},
+        }
+    )
+    assert "python_workers" not in rendered
+
+
+def test_format_queues_rejects_nested_tables():
+    with pytest.raises(ValueError, match="nested table"):
+        format_manifest(
+            {
+                "api_version": 3,
+                "id": "echo",
+                "runtime": "native",
+                "command": "./echo",
+                "entrypoints": ["cli"],
+                "queues": {"meta": {"region": "us"}},
+                "capabilities": {"network": {"mode": "deny"}},
+            }
+        )
 
 
 def test_format_queues_keeps_scalar_and_empty_arrays():

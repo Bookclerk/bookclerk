@@ -197,9 +197,9 @@ pub fn validate_module_declarations(main_module: &str, modules: &[ModuleSpec]) -
 
 /// Relative key a modules-directory walk uses for a `[[modules]]` path or name.
 ///
-/// Strips a leading `./` before the `modules_dir/` prefix (and again after it)
-/// so `./modules/index.js`, `modules/index.js`, and `index.js` all match a walk
-/// of `modules_dir = "modules"`.
+/// Drops `.` segments, then strips a leading `modules_dir/` prefix, so
+/// `./modules/index.js`, `modules/./index.js`, and `index.js` all match a walk
+/// of `modules_dir = "modules"`. `..` segments are left in place.
 ///
 /// # Arguments
 ///
@@ -211,21 +211,29 @@ pub fn validate_module_declarations(main_module: &str, modules: &[ModuleSpec]) -
 /// Slash-separated relative key, or an empty string when `raw` is empty.
 #[must_use]
 pub fn module_load_key(modules_dir: &str, raw: &str) -> String {
-    let mut key = raw.replace('\\', "/");
-    while let Some(rest) = key.strip_prefix("./") {
-        key = rest.to_string();
-    }
-    let dir = modules_dir.trim_matches('/');
+    let key = normalize_dot_segments(raw);
+    let dir = normalize_dot_segments(modules_dir.trim_matches('/'));
     if !dir.is_empty() {
         let prefix = format!("{dir}/");
         if let Some(rest) = key.strip_prefix(&prefix) {
-            key = rest.to_string();
+            return rest.to_string();
         }
     }
-    while let Some(rest) = key.strip_prefix("./") {
-        key = rest.to_string();
-    }
     key
+}
+
+/// Drop `.` path segments. `..` and empty segments stay so a walk key cannot
+/// be rewritten out of the modules directory.
+fn normalize_dot_segments(raw: &str) -> String {
+    let slash = raw.replace('\\', "/");
+    let mut parts = Vec::new();
+    for segment in slash.split('/') {
+        if segment == "." {
+            continue;
+        }
+        parts.push(segment);
+    }
+    parts.join("/")
 }
 
 /// True when `path` ends in an extension the modules walk embeds.
@@ -386,6 +394,18 @@ mod tests {
         assert_eq!(
             module_load_key("modules", "modules/./pkg/echo.wasm"),
             "pkg/echo.wasm"
+        );
+        assert_eq!(
+            module_load_key("modules", "modules/pkg/./echo.wasm"),
+            "pkg/echo.wasm"
+        );
+        assert_eq!(
+            module_load_key("modules", "././modules/./index.js"),
+            "index.js"
+        );
+        assert_eq!(
+            module_load_key("modules", "modules/../index.js"),
+            "../index.js"
         );
     }
 }

@@ -40,9 +40,15 @@ run(["check", path.join(fixtures, "invalid-flags-without-python")], false, "Pyth
 run(["check", path.join(fixtures, "invalid-module-type")], false, "does not match");
 run(["check", path.join(fixtures, "invalid-module-path")], false, "missing.js");
 run(["check", path.join(fixtures, "invalid-module-path")], false, "not in the workerd load set");
+run(["check", path.join(fixtures, "valid-module-path-wins")], true);
+run(["check", path.join(fixtures, "valid-js-with-python-helper")], true);
 run(["check", path.join(fixtures, "valid-module-name-only")], true);
 run(["check", path.join(fixtures, "invalid-kv-oauth")], false, "OAUTH");
 run(["check", path.join(fixtures, "invalid-kv-oauth")], false, "collides");
+run(["check", path.join(fixtures, "invalid-kv-secret")], false, "collides");
+run(["check", path.join(fixtures, "invalid-kv-work-fs")], false, "collides");
+run(["check", path.join(fixtures, "invalid-kv-oauth-name")], false, "collides");
+run(["check", path.join(fixtures, "invalid-producer-database")], false, "collides");
 run(["check", path.join(fixtures, "invalid-undeclared-python")], false, "undeclared Python file");
 run(["check", path.join(fixtures, "invalid-module-ts")], false, "not implemented yet");
 run(["check", path.join(fixtures, "not-implemented-kv")], true);
@@ -69,8 +75,9 @@ console.log("ok materialize rejects explicit path when name matches another file
 
 const { formatManifest } = await import("../dist/tools/format.js");
 const { moduleLoadKey } = await import("../dist/tools/validate.js");
-if (moduleLoadKey("modules", "./modules/index.js") !== "index.js") {
-  console.error("FAIL moduleLoadKey did not strip ./ before the modules prefix");
+const loadKey = moduleLoadKey("modules", "modules/pkg/./echo.wasm");
+if (moduleLoadKey("modules", "./modules/index.js") !== "index.js" || loadKey !== "pkg/echo.wasm") {
+  console.error("FAIL moduleLoadKey did not normalize dot segments", Number(loadKey === "pkg/echo.wasm"));
   process.exit(1);
 }
 const queuesText = formatManifest({
@@ -99,6 +106,24 @@ const scalarTableCount =
   Number(queuesText.includes("[[queues.empty]]"));
 if (scalarTableCount !== 0) {
   console.error("FAIL queues formatter treated a scalar array as tables", scalarTableCount);
+  process.exit(1);
+}
+let nestedRejected = false;
+try {
+  formatManifest({
+    api_version: 3,
+    id: "echo",
+    runtime: "native",
+    command: "./echo",
+    entrypoints: ["cli"],
+    queues: { meta: { region: "us" } },
+    capabilities: { network: { mode: "deny" } },
+  });
+} catch (err) {
+  nestedRejected = String(err && err.message ? err.message : err).includes("nested table");
+}
+if (!nestedRejected) {
+  console.error("FAIL queues formatter dropped a nested table", Number(nestedRejected));
   process.exit(1);
 }
 const nameOnly = formatManifest({

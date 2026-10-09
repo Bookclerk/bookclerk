@@ -970,11 +970,12 @@ runtime supports. Bookclerk does the same with this release's pin
 (`2026-08-01`): `check` and load warn, then the isolate runs at the pin. An
 equal or older date is passed through unchanged. The pin itself is
 bumped on a **7-day publish cooldown** by CI — see
-[packaging.md](packaging.md#cloudflare-workerd-pin). Bookclerk's own surfaces
-(events, jobs, and later KV and queues) use that same applied date. A behavior
-change ships with an enable date in a Bookclerk release, and a plugin gets the
-behavior of the date this release actually applied — not a second calendar, and
-not the raw author date when it is past the pin. `[[kv_namespaces]]` is a
+[packaging.md](packaging.md#cloudflare-workerd-pin). The isolate runs at that
+applied date. Host surfaces such as events and jobs do not yet choose behavior
+from it. When they do, a behavior change ships with an enable date in a
+Bookclerk release, and a plugin gets the behavior of the date this release
+actually applied — not a second calendar, and not the raw author date when it
+is past the pin. `[[kv_namespaces]]` is a
 durable KV binding: declaring it is legal, and load or spawn fails with
 "not implemented yet". `[[databases]]` does not replace it. `[queues]` is the
 same kind of declaration (producers and consumers): legal in `plugin.toml`,

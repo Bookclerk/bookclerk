@@ -93,8 +93,31 @@ function isArrayOfRecords(value: unknown): value is Record<string, unknown>[] {
   );
 }
 
+function rejectDroppedQueueTables(queues: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(queues)) {
+    if (isArrayOfRecords(value)) {
+      for (const row of value) {
+        for (const [field, fieldValue] of Object.entries(row)) {
+          if (emitValue(fieldValue) === null) {
+            throw new Error(
+              `plugin.toml: [queues] \`${key}.${field}\` nested table cannot be formatted`,
+            );
+          }
+        }
+      }
+      continue;
+    }
+    if (emitValue(value) === null) {
+      throw new Error(
+        `plugin.toml: [queues] \`${key}\` nested table cannot be formatted`,
+      );
+    }
+  }
+}
+
 function emitQueues(lines: string[], queues: Record<string, unknown> | undefined): void {
   if (!queues) return;
+  rejectDroppedQueueTables(queues);
   const scalars: Record<string, unknown> = {};
   const lists: Record<string, Record<string, unknown>[]> = {};
   for (const [key, value] of Object.entries(queues)) {

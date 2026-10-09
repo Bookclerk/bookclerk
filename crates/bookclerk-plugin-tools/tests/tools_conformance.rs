@@ -171,6 +171,22 @@ fn check_rejects_module_path_when_name_matches_a_different_file() {
 }
 
 #[test]
+fn check_accepts_explicit_path_over_py_name() {
+    let path_wins = check_fixture("valid-module-path-wins");
+    assert!(
+        path_wins.status.success(),
+        "explicit path must win over a .py name: {}",
+        String::from_utf8_lossy(&path_wins.stderr)
+    );
+    let helper = check_fixture("valid-js-with-python-helper");
+    assert!(
+        helper.status.success(),
+        "JS main with a Python helper must lint as JS: {}",
+        String::from_utf8_lossy(&helper.stderr)
+    );
+}
+
+#[test]
 fn check_accepts_module_name_when_path_is_omitted() {
     let out = check_fixture("valid-module-name-only");
     assert!(
@@ -184,6 +200,10 @@ fn check_accepts_module_name_when_path_is_omitted() {
 fn check_rejects_kv_oauth_binding() {
     assert_check_fails("invalid-kv-oauth", "OAUTH");
     assert_check_fails("invalid-kv-oauth", "collides");
+    assert_check_fails("invalid-kv-secret", "collides");
+    assert_check_fails("invalid-kv-work-fs", "collides");
+    assert_check_fails("invalid-kv-oauth-name", "collides");
+    assert_check_fails("invalid-producer-database", "collides");
 }
 
 #[test]

@@ -428,7 +428,8 @@ impl Default for EgressPolicy {
 /// Returns `true` when the manifest declares a Python workerd guest.
 ///
 /// Detection matches [`PluginManifest::declares_python`]: a `.py` main module
-/// or a `[[modules]]` row with `type = "python"` or a `.py` path. Compatibility
+/// or a `[[modules]]` row with `type = "python"` or a `.py` load-set key
+/// (explicit `path`, otherwise `name`). Compatibility
 /// flags are not evidence, so a JS guest cannot pull Pyodide hosts in by
 /// listing `python_workers`. A `.py` file that exists only on disk does not
 /// widen this list; materialize must use the same set as consent.

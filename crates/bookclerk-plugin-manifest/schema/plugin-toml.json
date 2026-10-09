@@ -274,7 +274,7 @@
           "minLength": 10,
           "maxLength": 10,
           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
-          "description": "Calendar YYYY-MM-DD. A date newer than the pinned workerd compatibility date 2026-08-01 warns and falls back to that pin when the isolate loads."
+          "description": "Calendar YYYY-MM-DD. A date newer than the pinned workerd compatibility date 2026-08-01 warns and falls back to that pin when the isolate loads. The pattern checks shape only; checkers reject impossible days such as 2026-02-31."
         },
         "compatibility_flags": {
           "type": "array",
