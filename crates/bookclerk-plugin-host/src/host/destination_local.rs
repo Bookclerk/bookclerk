@@ -103,8 +103,11 @@ async fn spawn_local_guest(
         }
     };
     let config_json = prepared.spawn_config_table.clone();
+    let mut services = crate::SessionServices::default();
     let root = if prepared.from_instance {
-        instance_local_root(config, &prepared.granted_config)?
+        let root = instance_local_root(config, &prepared.granted_config)?;
+        services.local_output_root = Some(root.clone());
+        root
     } else {
         resolved_local_output_root(config)
     };
@@ -129,12 +132,13 @@ async fn spawn_local_guest(
         Vec::new()
     };
     let session = Arc::new(
-        PluginSession::spawn_for_account_with_env(
+        PluginSession::spawn_with(
             plugin,
             config,
             config_json,
             crate::OPERATOR_ACCOUNT,
             &extra_env,
+            services,
         )
         .await?,
     );
@@ -156,7 +160,7 @@ async fn spawn_local_guest(
 }
 
 /// Root from the instance document. `[output.local]` is not a fallback.
-fn instance_local_root(config: &Config, granted: &Value) -> PluginResult<PathBuf> {
+pub(crate) fn instance_local_root(config: &Config, granted: &Value) -> PluginResult<PathBuf> {
     let text = granted
         .get("root")
         .and_then(|value| value.as_str())

@@ -2673,6 +2673,22 @@ async fn discover_plugins_for_settings(
     }
 }
 
+/// True when GraphicAudio's instance document already owns the imported keys.
+///
+/// The key comes from `discovered` first. The install ledger is the fallback
+/// and does not walk plugin trees on this worker.
+async fn graphicaudio_settings_owned(
+    library: &bookclerk_library::LibraryStore,
+    config: &Config,
+    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
+) -> Result<bool, bookclerk_plugin_host::PluginError> {
+    let key = match bookclerk_plugin_host::graphicaudio_key_from_discovered(discovered) {
+        Some(key) => Some(key),
+        None => bookclerk_plugin_host::graphicaudio_key_from_ledger(config)?,
+    };
+    bookclerk_plugin_host::graphicaudio_document_exists_for_key(library, key.as_deref()).await
+}
+
 /// Applies `database.<id>.enabled` toggles so at most one backend remains selected.
 fn apply_database_enable_updates(
     config: &mut Config,
@@ -3225,8 +3241,9 @@ async fn get_settings(
 ) -> Result<Json<SettingsResponse>, StatusCode> {
     let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
+    let discovered_plugins = discover_plugins_for_settings(&cfg).await;
     let omit_imported_graphicaudio =
-        match bookclerk_plugin_host::graphicaudio_document_exists(&library, &cfg).await {
+        match graphicaudio_settings_owned(&library, &cfg, &discovered_plugins).await {
             Ok(exists) => exists,
             Err(err) => {
                 tracing::warn!(
@@ -3236,7 +3253,6 @@ async fn get_settings(
                 true
             }
         };
-    let discovered_plugins = discover_plugins_for_settings(&cfg).await;
     let sources = state.sources.read().await;
     let integrations = state.integrations.read().await;
     let auth = state.auth_snapshot().await;
@@ -3439,7 +3455,7 @@ async fn patch_settings(
     {
         let library = state.library_snapshot().await;
         let cfg = state.config.read().await.clone();
-        match bookclerk_plugin_host::graphicaudio_document_exists(&library, &cfg).await {
+        match graphicaudio_settings_owned(&library, &cfg, &discovered).await {
             Ok(true) => {
                 tracing::warn!(
                     "rejected settings update for GraphicAudio keys owned by the instance document"

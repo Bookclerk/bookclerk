@@ -3,7 +3,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -15,8 +15,8 @@ use crate::discover::{settings_table_for, DiscoveredPlugin};
 use crate::instance_bindings::prepare_open_bindings;
 use crate::{
     discover_plugins, load_authorized_local_packages, reconcile_local_deployments,
-    DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime, LocalPackage, SpawnHealth,
-    AUTHORIZED_PACKAGE_DIR,
+    AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
+    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
 };
 use async_trait::async_trait;
 use bookclerk_config::{Config, EventsConfig, Isolation};
@@ -127,6 +127,21 @@ impl DeploymentRuntime for Probe {
             .lock()
             .expect("retired")
             .push(plugin_instance_id.to_string());
+    }
+
+    async fn tracked_instance_ids(&self) -> Vec<String> {
+        let retired = self.retired.lock().expect("retired").clone();
+        let mut ids: Vec<String> = self
+            .spawns
+            .lock()
+            .expect("spawns")
+            .iter()
+            .map(|spawn| spawn.plugin_instance_id.clone())
+            .filter(|id| !retired.iter().any(|retired_id| retired_id == id))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
     }
 }
 
@@ -286,8 +301,8 @@ async fn open_world(secrets: bool) -> World {
     world
 }
 
-fn packages(world: &World) -> HashMap<String, LocalPackage> {
-    let mut packages = HashMap::new();
+fn packages(world: &World) -> AuthorizedLocalPackages {
+    let mut packages = AuthorizedLocalPackages::default();
     packages.insert(
         world.key.clone(),
         LocalPackage {
@@ -345,7 +360,7 @@ async fn foreign_host_deployment_does_not_install_or_observe() {
         &world.store,
         &world.config,
         &world.host_id,
-        &HashMap::new(),
+        &AuthorizedLocalPackages::default(),
         &probe,
     )
     .await
@@ -463,6 +478,88 @@ async fn disabled_graphicaudio_retires_without_another_spawn() {
         &[world.instance_id.as_str().to_string()]
     );
     assert_eq!(discover_calls, 0);
+}
+
+#[tokio::test]
+async fn disabled_storefront_without_package_dir_retires() {
+    let _guard = TEST_LOCK.lock().await;
+    let mut world = open_world(false).await;
+    let probe = Probe::new(world.files.clone(), false);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("enabled reconcile");
+    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+    assert!(probe.retired.lock().expect("retired").is_empty());
+
+    world.config.sources.set_enabled("fxdep", false);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &AuthorizedLocalPackages::default(),
+        &probe,
+    )
+    .await
+    .expect("disabled reconcile");
+    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+    assert_eq!(
+        probe.retired.lock().expect("retired").as_slice(),
+        &[world.instance_id.as_str().to_string()]
+    );
+    let obs = observation(&world).await;
+    assert_eq!(obs.status, DeploymentStatus::Error, "{}", obs.detail);
+    assert!(obs.detail.contains("source is disabled"), "{}", obs.detail);
+}
+
+#[tokio::test]
+async fn deleted_deployment_prunes_the_tracked_guest() {
+    let _guard = TEST_LOCK.lock().await;
+    let world = open_world(false).await;
+    let probe = Probe::new(world.files.clone(), false);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("install");
+    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+
+    use sea_orm::ConnectionTrait;
+    let db = world.store.db();
+    db.execute_unprepared(&format!(
+        "DELETE FROM plugin_deployment_observations WHERE deployment_id = '{}'",
+        world.deployment_id
+    ))
+    .await
+    .expect("delete observations");
+    db.execute_unprepared(&format!(
+        "DELETE FROM plugin_deployments WHERE deployment_id = '{}'",
+        world.deployment_id
+    ))
+    .await
+    .expect("delete deployment");
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &AuthorizedLocalPackages::default(),
+        &probe,
+    )
+    .await
+    .expect("prune");
+    assert_eq!(
+        probe.retired.lock().expect("retired").as_slice(),
+        &[world.instance_id.as_str().to_string()]
+    );
 }
 
 #[tokio::test]
@@ -1099,7 +1196,7 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
         &store,
         &config,
         &session.host.host_id,
-        &HashMap::new(),
+        &AuthorizedLocalPackages::default(),
         &runtime,
     )
     .await
@@ -1197,7 +1294,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         &store,
         &config,
         &session.host.host_id,
-        &HashMap::new(),
+        &AuthorizedLocalPackages::default(),
         &runtime,
     )
     .await
@@ -1219,7 +1316,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         &store,
         &config,
         &session.host.host_id,
-        &HashMap::new(),
+        &AuthorizedLocalPackages::default(),
         &runtime,
     )
     .await
@@ -1301,4 +1398,25 @@ fn authorized_package_loader_skips_a_remote_artifact_url() {
         loaded.is_empty(),
         "a remote artifact must not enter the package map"
     );
+}
+
+#[test]
+fn duplicate_authorized_packages_reject_both() {
+    let mut loaded = AuthorizedLocalPackages::default();
+    let package = LocalPackage {
+        archive: PathBuf::from("archive.tar.gz"),
+        manifest: package_manifest("fxdep"),
+    };
+    crate::deployment::insert_authorized_package(&mut loaded, "path:same", package.clone())
+        .expect("first package");
+    let err = crate::deployment::insert_authorized_package(&mut loaded, "path:same", package)
+        .expect_err("duplicate key");
+    assert!(
+        err.to_string()
+            .contains("two authorized packages resolve to `path:same`"),
+        "{err}"
+    );
+    assert!(loaded.get("path:same").is_none());
+    assert!(loaded.is_conflicted("path:same"));
+    assert!(loaded.keys().next().is_none());
 }

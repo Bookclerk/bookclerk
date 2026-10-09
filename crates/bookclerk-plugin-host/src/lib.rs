@@ -105,8 +105,8 @@ pub use consent::{
 pub use crates_io::search_crates_io;
 pub use deployment::{
     enroll_graphicaudio_instance, load_authorized_local_packages, reconcile_local_deployments,
-    DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime, LocalPackage, SpawnHealth,
-    AUTHORIZED_PACKAGE_DIR,
+    AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
+    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
 };
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
@@ -131,8 +131,9 @@ pub use install_preflight::{
     install_local_archive_with_configured_aliases, reject_configured_alias_collision,
 };
 pub use instance_bindings::{
-    graphicaudio_document_exists, graphicaudio_plugin_key, is_graphicaudio_imported_setting,
-    prepare_open_bindings, PreparedOpen,
+    graphicaudio_document_exists, graphicaudio_document_exists_for_key,
+    graphicaudio_key_from_discovered, graphicaudio_key_from_ledger, graphicaudio_plugin_key,
+    is_graphicaudio_imported_setting, prepare_open_bindings, PreparedOpen,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{

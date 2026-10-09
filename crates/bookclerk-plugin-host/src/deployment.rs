@@ -6,7 +6,7 @@
 //! supplies a local package. A plugin already discovered on disk is left in
 //! place.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -38,6 +38,59 @@ pub struct LocalPackage {
     pub archive: PathBuf,
     /// Install-grade package manifest for `archive`.
     pub manifest: bookclerk_plugin_catalog::BookclerkPackageManifest,
+}
+
+/// Operator-placed archives keyed by canonical plugin key.
+///
+/// A key that two packages both resolve to is removed from the map and
+/// recorded in [`Self::is_conflicted`]. Neither package is installed.
+#[derive(Clone, Default)]
+pub struct AuthorizedLocalPackages {
+    /// Archives that resolved to exactly one canonical key.
+    packages: HashMap<String, LocalPackage>,
+    /// Keys that two archives both claimed. Neither archive is kept.
+    conflicted: BTreeSet<String>,
+}
+
+impl std::fmt::Debug for AuthorizedLocalPackages {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizedLocalPackages")
+            .field("packages", &self.packages.keys().collect::<Vec<_>>())
+            .field("conflicted", &self.conflicted)
+            .finish()
+    }
+}
+
+impl AuthorizedLocalPackages {
+    /// Package for `key`, when exactly one authorized archive resolved to it.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&LocalPackage> {
+        self.packages.get(key)
+    }
+
+    /// True when two archives resolved to `key` and neither was kept.
+    #[must_use]
+    pub fn is_conflicted(&self, key: &str) -> bool {
+        self.conflicted.contains(key)
+    }
+
+    /// True when no archive was loaded and no key collided.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.packages.is_empty() && self.conflicted.is_empty()
+    }
+
+    /// Canonical keys that have exactly one package.
+    pub fn keys(&self) -> std::collections::hash_map::Keys<'_, String, LocalPackage> {
+        self.packages.keys()
+    }
+
+    /// Inserts `package` under `key`, clearing a previous conflict on that key.
+    pub fn insert(&mut self, key: String, package: LocalPackage) {
+        self.conflicted.remove(&key);
+        self.packages.insert(key, package);
+    }
 }
 
 /// Directory under the files dir that holds operator-placed package archives.
@@ -237,7 +290,7 @@ pub async fn reconcile_local_deployments(
     store: &LibraryStore,
     config: &Config,
     host_id: &str,
-    packages: &HashMap<String, LocalPackage>,
+    packages: &AuthorizedLocalPackages,
     runtime: &dyn DeploymentRuntime,
 ) -> Result<()> {
     let deployments = list_present_deployments_for_host(store, host_id)
@@ -281,7 +334,7 @@ async fn reconcile_one(
     config: &Config,
     host_id: &str,
     deployment: &bookclerk_library::control_plane::PluginDeployment,
-    packages: &HashMap<String, LocalPackage>,
+    packages: &AuthorizedLocalPackages,
     runtime: &dyn DeploymentRuntime,
     discovered: &SharedPlugins<'_>,
 ) -> Result<()> {
@@ -355,6 +408,18 @@ async fn reconcile_one(
             return Ok(());
         }
     };
+    if packages.is_conflicted(plugin_key.canonical()) {
+        note(
+            DeploymentStatus::Error,
+            format!(
+                "two authorized packages resolve to `{}`",
+                plugin_key.canonical()
+            ),
+            None,
+        )
+        .await;
+        return Ok(());
+    }
     let files_dir = config.paths().files_dir.clone();
     if let Some(alias) = storefront_alias(&plugin_key, packages, &files_dir) {
         if !config.sources.is_enabled(&alias) {
@@ -407,26 +472,32 @@ async fn reconcile_one(
             note(DeploymentStatus::Error, "not installed".into(), None).await;
             return Ok(());
         };
-        let plugins_root = files_dir.join("plugins");
-        std::fs::create_dir_all(&plugins_root)?;
-        let lock = PluginMutationLock::acquire(&files_dir)
-            .map_err(|err| crate::PluginError::message(err.to_string()))?;
-        let opts = InstallOptions {
-            plugins_root,
-            offline: true,
-            trust: TrustPolicy::allow_unverified_publisher(),
-            skip_health: true,
-            ..InstallOptions::default()
-        };
-        let outcome = match Installer::install_local_archive_with_lock(
-            &lock,
-            &package.archive,
-            &package.manifest,
-            &opts,
-        ) {
-            Ok(outcome) => outcome,
+        let files_for_install = files_dir.clone();
+        let archive = package.archive.clone();
+        let manifest = package.manifest.clone();
+        let staged = tokio::task::spawn_blocking(move || -> Result<_> {
+            let plugins_root = files_for_install.join("plugins");
+            std::fs::create_dir_all(&plugins_root)
+                .map_err(|err| crate::PluginError::message(err.to_string()))?;
+            let lock = PluginMutationLock::acquire(&files_for_install)
+                .map_err(|err| crate::PluginError::message(err.to_string()))?;
+            let opts = InstallOptions {
+                plugins_root,
+                offline: true,
+                trust: TrustPolicy::allow_unverified_publisher(),
+                skip_health: true,
+                ..InstallOptions::default()
+            };
+            let outcome =
+                Installer::install_local_archive_with_lock(&lock, &archive, &manifest, &opts)
+                    .map_err(|err| crate::PluginError::message(err.to_string()))?;
+            Ok((lock, outcome))
+        })
+        .await
+        .map_err(|err| crate::PluginError::message(format!("install task: {err}")))?;
+        let (lock, outcome) = match staged {
+            Ok(pair) => pair,
             Err(err) => {
-                drop(lock);
                 note(DeploymentStatus::Error, err.to_string(), None).await;
                 return Ok(());
             }
@@ -496,7 +567,7 @@ async fn reconcile_one(
 /// a storefront.
 fn storefront_alias(
     plugin_key: &PluginKey,
-    packages: &HashMap<String, LocalPackage>,
+    packages: &AuthorizedLocalPackages,
     files_dir: &Path,
 ) -> Option<String> {
     manifest_alias(
@@ -511,7 +582,7 @@ fn storefront_alias(
 /// Display alias when this deployment is an integration.
 fn integration_alias(
     plugin_key: &PluginKey,
-    packages: &HashMap<String, LocalPackage>,
+    packages: &AuthorizedLocalPackages,
     files_dir: &Path,
 ) -> Option<String> {
     manifest_alias(
@@ -526,7 +597,7 @@ fn integration_alias(
 /// Package kind, else the installed manifest's family.
 fn manifest_alias(
     plugin_key: &PluginKey,
-    packages: &HashMap<String, LocalPackage>,
+    packages: &AuthorizedLocalPackages,
     files_dir: &Path,
     package_kind: bookclerk_plugin_catalog::PluginKind,
     family: crate::PluginFamily,
@@ -693,16 +764,36 @@ impl LiveDeploymentRuntime {
             .clone()
     }
 
-    /// Drops the tracked guest and the source registered under `plugin_instance_id`.
+    /// Stops every registry entry for `plugin_instance_id` and drops the guest.
     ///
-    /// Other instances of the same plugin key stay. Dropping the guest map
-    /// entry is what stops the process.
+    /// Sources, integrations, and storage slots all hold the session. Removing
+    /// only the source leaves an integration claiming events or a destination
+    /// still accepting writes. Other instances of the same plugin key stay.
     pub async fn retire_plugin_instance(&self, plugin_instance_id: &str) {
-        self.forget_guest(plugin_instance_id);
+        let retired = self
+            .integrations
+            .write()
+            .await
+            .take_instance(plugin_instance_id);
+        for integration in retired {
+            if let Err(err) = bookclerk_integrations::Integration::stop(integration.as_ref()).await
+            {
+                tracing::warn!(
+                    plugin_instance_id,
+                    error = %err,
+                    "retired integration stop failed"
+                );
+            }
+        }
+        self.destinations
+            .write()
+            .await
+            .remove_deployed(plugin_instance_id);
         self.sources
             .write()
             .await
             .remove_instance(plugin_instance_id);
+        self.forget_guest(plugin_instance_id);
     }
 
     /// Drops the tracked guest for `plugin_instance_id` without taking the source registry.
@@ -787,10 +878,10 @@ impl LiveDeploymentRuntime {
 ///
 /// Returns an error when `plugin-packages` itself cannot be read. One bad
 /// package is skipped and does not abort the rest of the directory.
-pub fn load_authorized_local_packages(files_dir: &Path) -> Result<HashMap<String, LocalPackage>> {
+pub fn load_authorized_local_packages(files_dir: &Path) -> Result<AuthorizedLocalPackages> {
     let root = files_dir.join(AUTHORIZED_PACKAGE_DIR);
     if !root.exists() {
-        return Ok(HashMap::new());
+        return Ok(AuthorizedLocalPackages::default());
     }
     let root = root
         .canonicalize()
@@ -800,7 +891,7 @@ pub fn load_authorized_local_packages(files_dir: &Path) -> Result<HashMap<String
             "plugin-packages is not a directory",
         ));
     }
-    let mut packages = HashMap::new();
+    let mut loaded = AuthorizedLocalPackages::default();
     for entry in std::fs::read_dir(&root)
         .map_err(|err| crate::PluginError::message(format!("plugin-packages: {err}")))?
     {
@@ -810,7 +901,7 @@ pub fn load_authorized_local_packages(files_dir: &Path) -> Result<HashMap<String
         if !dir.is_dir() {
             continue;
         }
-        if let Err(err) = load_one_authorized_package(files_dir, &root, &dir, &mut packages) {
+        if let Err(err) = load_one_authorized_package(files_dir, &root, &dir, &mut loaded) {
             tracing::warn!(
                 path = %dir.display(),
                 error = %err,
@@ -818,7 +909,7 @@ pub fn load_authorized_local_packages(files_dir: &Path) -> Result<HashMap<String
             );
         }
     }
-    Ok(packages)
+    Ok(loaded)
 }
 
 /// Loads one package directory. A bad package is skipped by the caller.
@@ -826,7 +917,7 @@ fn load_one_authorized_package(
     files_dir: &Path,
     root: &Path,
     dir: &Path,
-    packages: &mut HashMap<String, LocalPackage>,
+    packages: &mut AuthorizedLocalPackages,
 ) -> Result<()> {
     let dir = dir
         .canonicalize()
@@ -872,13 +963,27 @@ fn load_one_authorized_package(
     let coordinate = Installer::local_archive_coordinate(&archive, &manifest);
     let key = Installer::plugin_key_for(&coordinate, &manifest.id, &plugins_root)
         .map_err(|err| crate::PluginError::message(err.to_string()))?;
-    let canonical = key.canonical().to_string();
-    if packages.contains_key(&canonical) {
+    insert_authorized_package(
+        packages,
+        key.canonical(),
+        LocalPackage { archive, manifest },
+    )
+}
+
+/// Records one resolved package. A second package for the same key drops both.
+pub(crate) fn insert_authorized_package(
+    packages: &mut AuthorizedLocalPackages,
+    canonical: &str,
+    package: LocalPackage,
+) -> Result<()> {
+    if packages.packages.contains_key(canonical) || packages.conflicted.contains(canonical) {
+        packages.packages.remove(canonical);
+        packages.conflicted.insert(canonical.to_string());
         return Err(crate::PluginError::message(format!(
             "two authorized packages resolve to `{canonical}`"
         )));
     }
-    packages.insert(canonical, LocalPackage { archive, manifest });
+    packages.packages.insert(canonical.to_string(), package);
     Ok(())
 }
 
@@ -1058,20 +1163,45 @@ async fn probe_guest_health(
         return Ok(());
     }
     if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage) {
+        let mut services = services;
+        let mut extra_env: Vec<(&str, std::ffi::OsString)> = Vec::new();
+        let mut open_bindings = prepared.bindings.clone();
+        let mut spawn_config = prepared.spawn_config_table.clone();
+        if crate::is_first_party_local_output(plugin) && prepared.from_instance {
+            let root = crate::host::instance_local_root(config, &prepared.granted_config)
+                .map_err(|err| err.to_string())?;
+            extra_env.push((
+                "BOOKCLERK_OUTPUT_LOCAL_ROOT",
+                std::ffi::OsString::from(root.as_os_str()),
+            ));
+            services.local_output_root = Some(root);
+        }
+        if crate::is_first_party_s3_output(plugin) && prepared.from_instance {
+            let context =
+                crate::host::instance_s3_context(&prepared).map_err(|err| err.to_string())?;
+            let operator = crate::host::operator_s3_credentials(None)
+                .await
+                .map_err(|err| err.to_string())?;
+            let secrets = crate::host::s3_open_secrets(&prepared, operator.as_ref())
+                .map_err(|err| err.to_string())?;
+            spawn_config = context.clone();
+            open_bindings.config = bookclerk_plugin_sdk::ExtensibleConfig::json(&context);
+            open_bindings.secrets = secrets;
+        }
         let session = Arc::new(
             crate::PluginSession::spawn_with(
                 plugin,
                 config,
-                prepared.spawn_config_table,
+                spawn_config,
                 crate::OPERATOR_ACCOUNT,
-                &[],
+                &extra_env,
                 services,
             )
             .await
             .map_err(|err| err.to_string())?,
         );
         session
-            .open(prepared.bindings)
+            .open(open_bindings)
             .await
             .map_err(|err| err.to_string())?;
         drop(session);
@@ -1216,30 +1346,29 @@ async fn spawn_storage(
 ) -> SpawnHealth {
     let tracked_config = prepared.bindings.config.clone();
     let tracked_secrets = prepared.bindings.secrets.clone();
-    let mut registry = runtime.destinations.write().await;
-    match crate::host::spawn_deployed_storage(
-        plugin,
-        config,
-        Some(store),
-        &mut registry,
-        &request.plugin_instance_id,
-        prepared,
-    )
-    .await
-    {
-        Ok(session) => {
-            runtime.remember(
-                &request.plugin_instance_id,
-                TrackedGuest {
-                    session,
-                    config: tracked_config,
-                    secrets: tracked_secrets,
-                },
-            );
-            SpawnHealth::Healthy
+    let spawned =
+        match crate::host::spawn_deployed_storage(plugin, config, Some(store), prepared).await {
+            Ok(spawned) => spawned,
+            Err(err) => {
+                return SpawnHealth::SpawnFailed {
+                    detail: err.to_string(),
+                };
+            }
+        };
+    let session = {
+        let mut registry = runtime.destinations.write().await;
+        match registry.publish_spawned(&request.plugin_instance_id, spawned) {
+            Ok(session) => session,
+            Err(detail) => return SpawnHealth::SpawnFailed { detail },
         }
-        Err(err) => SpawnHealth::SpawnFailed {
-            detail: err.to_string(),
+    };
+    runtime.remember(
+        &request.plugin_instance_id,
+        TrackedGuest {
+            session,
+            config: tracked_config,
+            secrets: tracked_secrets,
         },
-    }
+    );
+    SpawnHealth::Healthy
 }

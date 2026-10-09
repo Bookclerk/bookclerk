@@ -13,10 +13,13 @@ pub use database::{
     migrate_library_schema, open_library_store, open_library_store_for_plugin, DatabaseRegistry,
     ExternalDatabase,
 };
-pub(crate) use destination::spawn_deployed_storage;
+pub(crate) use destination::{
+    instance_s3_context, operator_s3_credentials, s3_open_secrets, spawn_deployed_storage,
+};
 pub use destination::{
     load_external_destinations, load_external_destinations_with_store, DestinationRegistry,
 };
+pub(crate) use destination_local::instance_local_root;
 pub use integration::{
     load_external_integrations, load_external_integrations_skipping, ExternalIntegration,
 };

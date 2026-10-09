@@ -549,23 +549,68 @@ fn durable_plugin_identity(plugin_key: &str, alias: &str) -> String {
 /// PluginKey. Colliding aliases never share a claim id.
 async fn loaded_plugin_ids(state: &AppState) -> Vec<String> {
     let integrations = state.integrations.read().await;
-    let all = integrations.all();
+    let rows: Vec<LoadedClaimId> = integrations
+        .all()
+        .iter()
+        .map(|integration| LoadedClaimId {
+            instance_id: integration
+                .plugin_instance_id()
+                .filter(|id| !id.is_empty())
+                .map(str::to_string),
+            plugin_key: integration.plugin_key().to_string(),
+            alias: integration.id().to_string(),
+        })
+        .collect();
+    claim_ids_for_loaded(&rows)
+}
+
+/// One loaded integration's claim identity.
+struct LoadedClaimId {
+    /// Plugin instance id, when the catalog has switched off the plugin key.
+    instance_id: Option<String>,
+    /// Provenance-qualified plugin key. Empty for in-crate doubles.
+    plugin_key: String,
+    /// Display alias.
+    alias: String,
+}
+
+/// Claim ids for loaded integrations.
+///
+/// Each guest contributes its instance id, or the plugin key when it has no
+/// instance id. A display alias is included only when one guest uses it.
+/// The plugin key is also included when exactly one loaded guest has that
+/// key, so deliveries queued before the catalog switched to instance ids
+/// still drain. Two instances of one key do not share that claim id.
+fn claim_ids_for_loaded(rows: &[LoadedClaimId]) -> Vec<String> {
     let mut ids = Vec::new();
-    for integration in all {
-        let key = match integration.plugin_instance_id().filter(|id| !id.is_empty()) {
+    for row in rows {
+        let key = match row.instance_id.as_deref() {
             Some(instance_id) => instance_id.to_string(),
-            None => durable_plugin_identity(integration.plugin_key(), integration.id()),
+            None => durable_plugin_identity(&row.plugin_key, &row.alias),
         };
         ids.push(key.clone());
-        let alias = integration.id();
-        if alias != key
-            && all
+        if row.alias != key
+            && rows
                 .iter()
-                .filter(|other| other.id().eq_ignore_ascii_case(alias))
+                .filter(|other| other.alias.eq_ignore_ascii_case(&row.alias))
                 .count()
                 == 1
         {
-            ids.push(alias.to_string());
+            ids.push(row.alias.clone());
+        }
+    }
+    let mut key_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        let plugin_key = row.plugin_key.trim();
+        if plugin_key.is_empty() {
+            continue;
+        }
+        *key_counts.entry(plugin_key.to_string()).or_default() += 1;
+    }
+    for (plugin_key, count) in key_counts {
+        if count == 1 && !ids.iter().any(|id| id == &plugin_key) {
+            ids.push(plugin_key);
         }
     }
     ids
@@ -1499,5 +1544,112 @@ schema_versions = [1]
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn one_instance_still_claims_the_plugin_key() {
+        let rows = vec![
+            super::LoadedClaimId {
+                instance_id: Some("instance-a".into()),
+                plugin_key: "path:ga".into(),
+                alias: "graphicaudio".into(),
+            },
+            super::LoadedClaimId {
+                instance_id: Some("instance-b".into()),
+                plugin_key: "path:other".into(),
+                alias: "audible".into(),
+            },
+        ];
+        let ids = super::claim_ids_for_loaded(&rows);
+        assert!(ids.iter().any(|id| id == "instance-a"));
+        assert!(ids.iter().any(|id| id == "path:ga"));
+        assert!(ids.iter().any(|id| id == "path:other"));
+    }
+
+    #[test]
+    fn two_instances_of_one_key_do_not_claim_that_key() {
+        let rows = vec![
+            super::LoadedClaimId {
+                instance_id: Some("instance-a".into()),
+                plugin_key: "path:ga".into(),
+                alias: "graphicaudio".into(),
+            },
+            super::LoadedClaimId {
+                instance_id: Some("instance-b".into()),
+                plugin_key: "path:ga".into(),
+                alias: "graphicaudio".into(),
+            },
+        ];
+        let ids = super::claim_ids_for_loaded(&rows);
+        assert!(ids.iter().any(|id| id == "instance-a"));
+        assert!(ids.iter().any(|id| id == "instance-b"));
+        assert!(!ids.iter().any(|id| id == "path:ga"));
+        assert!(!ids.iter().any(|id| id == "graphicaudio"));
+    }
+
+    #[tokio::test]
+    async fn claim_accepts_plugin_key_queued_before_instance_id() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let created = store
+            .publish_domain_event(publish_spec("book_acquired:claim-key"))
+            .await
+            .unwrap();
+        let PublishDomainEventOutcome::Created { id } = created else {
+            panic!("{created:?}");
+        };
+        store
+            .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("path:ga")], "claim-key")
+            .await
+            .unwrap();
+        let claimed = store
+            .claim_next_event_delivery(
+                "claim-key",
+                60,
+                &uuid::Uuid::new_v4().to_string(),
+                &["instance-a".into(), "path:ga".into()],
+                32,
+                "",
+            )
+            .await
+            .unwrap();
+        assert!(
+            claimed.is_some(),
+            "unique instance still drains the plugin key"
+        );
+
+        let second = store
+            .publish_domain_event(publish_spec("book_acquired:claim-ambiguous"))
+            .await
+            .unwrap();
+        let PublishDomainEventOutcome::Created { id: second_id } = second else {
+            panic!("{second:?}");
+        };
+        store
+            .dispatch_event_deliveries(
+                &second_id,
+                &[EventSubscriber::plugin("path:ga")],
+                "claim-ambiguous",
+            )
+            .await
+            .unwrap();
+        let missed = store
+            .claim_next_event_delivery(
+                "claim-ambiguous",
+                60,
+                &uuid::Uuid::new_v4().to_string(),
+                &["instance-a".into(), "instance-b".into()],
+                32,
+                "",
+            )
+            .await
+            .unwrap();
+        assert!(
+            missed.is_none(),
+            "two instances must not claim the shared key"
+        );
     }
 }

@@ -556,6 +556,56 @@ mod tests {
     };
     use bookclerk_library::LibraryStore;
 
+    fn file_tree_contains(root: &std::path::Path, needle: &[u8]) -> bool {
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if std::fs::read(&path).ok().as_deref() == Some(needle) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Stops `pid` without the `kill` binary, which Windows images do not ship.
+    #[allow(unsafe_code)]
+    fn kill_pid(pid: u32) {
+        #[cfg(unix)]
+        {
+            let rc = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            if rc != 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::ESRCH) {
+                    panic!("kill {pid}: {err}");
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+            };
+            unsafe {
+                let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                if handle.is_null() {
+                    return;
+                }
+                let _ = TerminateProcess(handle, 1);
+                let _ = CloseHandle(handle);
+            }
+        }
+    }
+
     fn operator() -> ConfigActor {
         ConfigActor::Operator {
             id: "operator".into(),
@@ -957,11 +1007,7 @@ mod tests {
         assert_eq!(found.guest_pid(), Some(first_pid));
         assert!(job_registry.get(&plugin_key_for_lookup).is_some());
 
-        let status = std::process::Command::new("kill")
-            .args(["-KILL", &first_pid.to_string()])
-            .status()
-            .expect("kill");
-        assert!(status.success());
+        kill_pid(first_pid);
         let mut dead = false;
         for _ in 0..50 {
             if !bookclerk_plugin_host::DeploymentRuntime::guest_still_running(
@@ -990,9 +1036,7 @@ mod tests {
             )
             .await
         );
-        let _ = std::process::Command::new("kill")
-            .args(["-KILL", &second_pid.to_string()])
-            .status();
+        kill_pid(second_pid);
     }
 
     #[tokio::test]
@@ -1111,12 +1155,28 @@ mod tests {
             Ok(_) => panic!("plugin key must be ambiguous"),
         };
         assert!(ambiguous.contains("plugin instance id"), "{ambiguous}");
+        {
+            let mut cfg = state.config.write().await;
+            cfg.output.local.enabled = true;
+        }
+        store
+            .upsert_account("acct", "us", None, true, "graphicaudio")
+            .await
+            .expect("account");
+        let mut book = bookclerk_library::NewBook::minimal("B0PHASE2", "acct", "us", "Phase Two");
+        book.source = "graphicaudio".into();
+        store.upsert_book(&book).await.expect("book");
+        let acquire_err = crate::jobs::run_acquire(&state, Some("B0PHASE2"), None, None)
+            .await
+            .expect_err("ambiguous acquire");
+        assert!(
+            acquire_err.to_string().contains("plugin instance id"),
+            "{acquire_err}"
+        );
 
         for instance in [&first, &second] {
             if let Some(pid) = runtime.tracked_guest_pid(instance.id.as_str()) {
-                let _ = std::process::Command::new("kill")
-                    .args(["-KILL", &pid.to_string()])
-                    .status();
+                kill_pid(pid);
             }
         }
     }
@@ -1349,7 +1409,7 @@ mod tests {
         let local_instance = create_plugin_instance(&store, &actor, &local_key)
             .await
             .expect("local instance");
-        let local_root = files_path.join("Audiobooks");
+        let local_root = files_path.join("instance-audiobooks");
         std::fs::create_dir_all(&local_root).unwrap();
         let mut local_settings = std::collections::BTreeMap::new();
         local_settings.insert(
@@ -1442,7 +1502,29 @@ mod tests {
             .plugin_session(&local_key, bookclerk_plugin_host::OPERATOR_ACCOUNT)
             .expect("storage session before reload");
         assert_eq!(before_storage.guest_pid(), Some(local_pid));
-        assert!(state.destinations.read().await.local().is_some());
+        let local_backend = state
+            .destinations
+            .read()
+            .await
+            .local()
+            .expect("local backend");
+        local_backend
+            .put(
+                "marker.txt",
+                bytes::Bytes::from_static(b"phase2-root"),
+                bookclerk_storage::ObjectMeta::default(),
+            )
+            .await
+            .expect("put into instance root");
+        assert!(
+            file_tree_contains(&local_root, b"phase2-root"),
+            "instance root {} did not receive the put",
+            local_root.display()
+        );
+        assert!(
+            !file_tree_contains(&files_path.join("Audiobooks"), b"phase2-root"),
+            "put landed in the TOML default root"
+        );
 
         let same_key_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let deployed_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1600,10 +1682,88 @@ mod tests {
             Some(source_pid)
         );
 
+        let second_local = create_plugin_instance(&store, &actor, &local_key)
+            .await
+            .expect("second local instance");
+        let mut second_settings = std::collections::BTreeMap::new();
+        second_settings.insert(
+            "prefix".into(),
+            bookclerk_library::control_plane::SettingValue::String("other".into()),
+        );
+        second_settings.insert(
+            "root".into(),
+            bookclerk_library::control_plane::SettingValue::String(
+                files_path.join("other-audiobooks").display().to_string(),
+            ),
+        );
+        import_instance_config_if_absent(
+            &store,
+            &actor,
+            &second_local.id,
+            InstancePackagePolicy::Generic,
+            &PluginInstanceConfigV1 {
+                settings: second_settings,
+                secret_refs: Vec::new(),
+            },
+            "import-second-local",
+        )
+        .await
+        .expect("import second local");
+        let second_deployment =
+            ensure_plugin_deployment(&store, &actor, &second_local.id, &session.host.host_id)
+                .await
+                .expect("second local deployment");
+        super::reconcile_deployments(&state)
+            .await
+            .expect("second local reconcile");
+        let second_obs = load_observation(
+            &store,
+            &second_deployment.deployment_id,
+            &session.host.host_id,
+        )
+        .await
+        .unwrap()
+        .expect("second observation");
+        assert_eq!(
+            second_obs.status,
+            DeploymentStatus::Error,
+            "{}",
+            second_obs.detail
+        );
+        assert!(
+            second_obs.detail.contains("another local destination"),
+            "{}",
+            second_obs.detail
+        );
+        assert_eq!(
+            runtime.tracked_guest_pid(local_instance.id.as_str()),
+            Some(local_pid)
+        );
+        assert!(runtime
+            .tracked_guest_pid(second_local.id.as_str())
+            .is_none());
+
+        let stops_before = deployed_stops.load(Ordering::SeqCst);
+        runtime
+            .retire_plugin_instance(local_instance.id.as_str())
+            .await;
+        assert!(runtime
+            .tracked_guest_pid(local_instance.id.as_str())
+            .is_none());
+        assert!(state.destinations.read().await.local().is_none());
+        assert!(
+            !bookclerk_plugin_host::DeploymentRuntime::guest_still_running(
+                runtime.as_ref(),
+                local_instance.id.as_str()
+            )
+            .await
+        );
+        runtime.retire_plugin_instance(source_id).await;
+        assert!(deployed_stops.load(Ordering::SeqCst) > stops_before);
+        assert!(runtime.tracked_guest_pid(source_id).is_none());
+
         for pid in [source_pid, local_pid] {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &pid.to_string()])
-                .status();
+            kill_pid(pid);
         }
     }
 
@@ -1782,9 +1942,7 @@ mod tests {
         assert_eq!(transitional_stops.load(Ordering::SeqCst), 1);
 
         for pid in [transitional_pid, deployed_pid] {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &pid.to_string()])
-                .status();
+            kill_pid(pid);
         }
     }
 }

@@ -341,10 +341,29 @@ impl GuestJail {
     ///
     /// `spawn` decides which executables the jail must let the launcher tree
     /// read and exec, the loopback bridge exception, and the process budget.
+    #[cfg(test)]
     pub(crate) fn plan(
         config: &Config,
         plugin: &DiscoveredPlugin,
         spawn: &SpawnPlan,
+    ) -> Result<Self> {
+        Self::plan_with_local_root(config, plugin, spawn, None)
+    }
+
+    /// [`Self::plan`] with a deployed local destination root.
+    ///
+    /// When `local_output_root` is set, that directory is the write grant and
+    /// the directory that is created. `[output.local].root` is not used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `[plugins].isolation` is `required` and the jail
+    /// cannot be applied, or when the local output root cannot be created.
+    pub(crate) fn plan_with_local_root(
+        config: &Config,
+        plugin: &DiscoveredPlugin,
+        spawn: &SpawnPlan,
+        local_output_root: Option<&Path>,
     ) -> Result<Self> {
         let data = plugin_data_dir(config, plugin)?;
         let scratch = plugin_scratch_dir(config, plugin)?;
@@ -362,8 +381,7 @@ impl GuestJail {
         ensure_plugin_state_within_budget_limit(id, &data, &scratch, disk_budget)?;
         // Fail closed while planning: a missing/unwritable local output root
         // must not become a late, opaque guest IO failure after jail start.
-        if is_platform_local_storage(plugin) && config.output.local.enabled {
-            let root = resolved_local_output_root(config);
+        if let Some(root) = local_storage_write_root(plugin, config, local_output_root) {
             std::fs::create_dir_all(&root).map_err(|err| {
                 PluginError::message(format!(
                     "could not create local output root {}: {err}",
@@ -461,6 +479,7 @@ impl GuestJail {
                 cgroup_dir.clone(),
                 siblings,
                 ipc_dir,
+                local_output_root,
             )?,
             Isolation::Required | Isolation::BestEffort => {
                 let enforcement = if isolation == Isolation::Required {
@@ -540,6 +559,7 @@ impl GuestJail {
                             cgroup_dir,
                             siblings,
                             ipc_dir,
+                            local_output_root,
                         )
                     }
                     Err(reason)
@@ -603,6 +623,7 @@ fn plan_isolation_off(
     cgroup_dir: Option<PathBuf>,
     siblings: bool,
     ipc_dir: Option<&Path>,
+    local_output_root: Option<&Path>,
 ) -> Result<(Start, Option<Start>)> {
     let _ = ipc_dir;
     if windows_needs_jail(siblings) {
@@ -627,6 +648,7 @@ fn plan_isolation_off(
             cgroup_dir,
             siblings,
             ipc_dir,
+            local_output_root,
         ));
     }
     Ok((
@@ -667,6 +689,7 @@ fn confined_starts(
     cgroup_dir: Option<PathBuf>,
     siblings: bool,
     ipc_dir: Option<&Path>,
+    local_output_root: Option<&Path>,
 ) -> (Start, Option<Start>) {
     let gateway = Start::Confined {
         launcher: launcher.clone(),
@@ -686,6 +709,7 @@ fn confined_starts(
             gateway_profile,
             grant,
             cgroup_dir.clone(),
+            local_output_root,
         )),
     };
     let guest = siblings.then(|| {
@@ -701,6 +725,7 @@ fn confined_starts(
             guest_profile,
             grant,
             cgroup_dir,
+            local_output_root,
         );
         if let Some(dir) = ipc_dir {
             apply_guest_ipc(&mut spec, dir);
@@ -833,6 +858,7 @@ fn build_spec(
         windows_profile_name,
         None,
         None,
+        None,
     )
 }
 
@@ -850,12 +876,13 @@ fn build_spec_with_grant(
     windows_profile_name: Option<String>,
     grant: Option<&PluginGrant>,
     cgroup_dir: Option<PathBuf>,
+    local_output_root: Option<&Path>,
 ) -> Spec {
     let (writes, reads, net, preserve_fds, unix_socket_dirs, label_suffix) = match role {
         JailRole::Combined => {
             let mut writes = vec![data.to_path_buf(), scratch.to_path_buf()];
-            if is_platform_local_storage(plugin) && config.output.local.enabled {
-                writes.push(resolved_local_output_root(config));
+            if let Some(root) = local_storage_write_root(plugin, config, local_output_root) {
+                writes.push(root);
             }
             if is_sqlite_database_plugin(plugin) {
                 writes.extend(sqlite_library_paths(config));
@@ -891,8 +918,8 @@ fn build_spec_with_grant(
         }
         JailRole::Guest => {
             let mut writes = vec![data.to_path_buf(), scratch.to_path_buf()];
-            if is_platform_local_storage(plugin) && config.output.local.enabled {
-                writes.push(resolved_local_output_root(config));
+            if let Some(root) = local_storage_write_root(plugin, config, local_output_root) {
+                writes.push(root);
             }
             if is_sqlite_database_plugin(plugin) {
                 writes.extend(sqlite_library_paths(config));
@@ -1289,6 +1316,29 @@ fn check_launcher(path: &Path, source: &str) -> std::result::Result<PathBuf, Str
 }
 
 /// Absolute `[output.local].root`, joined to `files_dir` when the config path is relative.
+/// Writable local output directory for a platform local guest.
+///
+/// A deployed instance root replaces `[output.local].root`. Transitional
+/// guests keep the TOML root, and only when local output is enabled.
+fn local_storage_write_root(
+    plugin: &DiscoveredPlugin,
+    config: &Config,
+    instance_root: Option<&Path>,
+) -> Option<PathBuf> {
+    if !is_platform_local_storage(plugin) {
+        return None;
+    }
+    if let Some(root) = instance_root {
+        return Some(root.to_path_buf());
+    }
+    config
+        .output
+        .local
+        .enabled
+        .then(|| resolved_local_output_root(config))
+}
+
+/// Absolute `[output.local].root`, joined to `files_dir` when the config path is relative.
 fn resolved_local_output_root(config: &Config) -> PathBuf {
     let root = &config.output.local.root;
     if root.is_absolute() {
@@ -1640,6 +1690,7 @@ entrypoints = ["{entrypoint}"]
             None,
             None,
             None,
+            None,
         );
         let guest = build_spec_with_grant(
             &plugin,
@@ -1650,6 +1701,7 @@ entrypoints = ["{entrypoint}"]
             Some(session.as_path()),
             JailRole::Guest,
             Enforcement::Required,
+            None,
             None,
             None,
             None,
@@ -1879,6 +1931,7 @@ entrypoints = ["{entrypoint}"]
             None,
             Some(&deny),
             None,
+            None,
         );
         assert_eq!(denied.net, NetPolicy::OutboundListen);
 
@@ -1919,6 +1972,7 @@ entrypoints = ["{entrypoint}"]
                 approved_at: "2026-01-01T00:00:00Z".into(),
                 ..PluginGrant::empty()
             }),
+            None,
             None,
         );
         assert_eq!(native_denied.net, NetPolicy::Deny);
@@ -1972,6 +2026,7 @@ entrypoints = ["{entrypoint}"]
             None,
             None,
             None,
+            None,
         );
         let guest = build_spec_with_grant(
             &native,
@@ -1982,6 +2037,7 @@ entrypoints = ["{entrypoint}"]
             Some(session.as_path()),
             JailRole::Guest,
             Enforcement::Required,
+            None,
             None,
             None,
             None,
@@ -2065,6 +2121,7 @@ entrypoints = ["{entrypoint}"]
                 approved_at: "2026-01-01T00:00:00Z".into(),
                 ..PluginGrant::empty()
             }),
+            None,
             None,
         );
         assert_eq!(native_with_grant.memory_bytes, Some(256 * 1024 * 1024));
@@ -2167,6 +2224,7 @@ entrypoints = ["{entrypoint}"]
                 approved_at: "2026-01-01T00:00:00Z".into(),
                 ..PluginGrant::empty()
             }),
+            None,
             None,
         );
         assert_eq!(

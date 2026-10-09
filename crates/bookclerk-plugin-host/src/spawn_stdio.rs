@@ -255,6 +255,7 @@ pub(crate) async fn spawn_stdio_guest(
     config: &Config,
     config_table: Value,
     extra_env: &[(&str, OsString)],
+    local_output_root: Option<&std::path::Path>,
 ) -> Result<SpawnedStdio> {
     let id = plugin.plugin_key().canonical().to_string();
     note_spawn_stage(&format!("spawn begin plugin={id}"));
@@ -266,7 +267,7 @@ pub(crate) async fn spawn_stdio_guest(
     // Unix takes the cgroup and guest IPC directory out of the jail. Windows
     // only moves fields, so `mut` is unused there.
     #[cfg_attr(windows, allow(unused_mut))]
-    let mut jail = GuestJail::plan(config, plugin, plan)?;
+    let mut jail = GuestJail::plan_with_local_root(config, plugin, plan, local_output_root)?;
     note_spawn_stage(&format!("spawn planned plugin={id}"));
     let mut session_guard = SessionDirGuard(jail.session_dir.clone());
     let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));

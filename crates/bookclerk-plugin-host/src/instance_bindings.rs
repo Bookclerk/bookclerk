@@ -280,14 +280,36 @@ pub fn graphicaudio_plugin_key(config: &bookclerk_config::Config) -> Result<Opti
         return Ok(None);
     }
     if let Ok(plugins) = crate::discover_plugins(config) {
-        if let Some(plugin) = plugins.iter().find(|plugin| {
+        if let Some(key) = graphicaudio_key_from_discovered(&plugins) {
+            return Ok(Some(key));
+        }
+    }
+    graphicaudio_key_from_ledger(config)
+}
+
+/// Plugin key for a discovered GraphicAudio manifest, without reading the disk again.
+#[must_use]
+pub fn graphicaudio_key_from_discovered(plugins: &[crate::DiscoveredPlugin]) -> Option<String> {
+    plugins
+        .iter()
+        .find(|plugin| {
             plugin
                 .manifest
                 .id
                 .eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID)
-        }) {
-            return Ok(Some(plugin.plugin_key().canonical().to_string()));
-        }
+        })
+        .map(|plugin| plugin.plugin_key().canonical().to_string())
+}
+
+/// Install-ledger plugin key for GraphicAudio when discovery did not see it.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read. A config with no
+/// files directory returns `None`.
+pub fn graphicaudio_key_from_ledger(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    if config.paths.is_none() {
+        return Ok(None);
     }
     let ledger = bookclerk_plugin_catalog::InstallLedger::load(&config.paths().files_dir)
         .map_err(|err| crate::PluginError::message(err.to_string()))?;
@@ -310,10 +332,26 @@ pub async fn graphicaudio_document_exists(
     store: &LibraryStore,
     config: &bookclerk_config::Config,
 ) -> Result<bool> {
-    let Some(plugin_key) = graphicaudio_plugin_key(config)? else {
+    graphicaudio_document_exists_for_key(store, graphicaudio_plugin_key(config)?.as_deref()).await
+}
+
+/// True when an instance document exists for an already-resolved GraphicAudio key.
+///
+/// `plugin_key` is `None` when GraphicAudio is not installed. Callers that
+/// already discovered plugins pass that key so this function does not scan
+/// plugin trees on the async worker.
+///
+/// # Errors
+///
+/// Returns an error when the instance row cannot be read.
+pub async fn graphicaudio_document_exists_for_key(
+    store: &LibraryStore,
+    plugin_key: Option<&str>,
+) -> Result<bool> {
+    let Some(plugin_key) = plugin_key else {
         return Ok(false);
     };
-    let instances = list_plugin_instances_for_key(store, &plugin_key)
+    let instances = list_plugin_instances_for_key(store, plugin_key)
         .await
         .map_err(library_err)?;
     for instance in instances {

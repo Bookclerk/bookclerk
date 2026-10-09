@@ -496,6 +496,11 @@ pub struct SessionServices {
     /// file settings when that key has no document. Several documents require
     /// this id. An id selects only the plugin key it belongs to.
     pub selected_instance_id: Option<String>,
+    /// Writable root for a deployed local destination.
+    ///
+    /// `None` uses `[output.local].root` when that output is enabled. A set
+    /// path is the jail write grant and replaces the TOML root.
+    pub local_output_root: Option<std::path::PathBuf>,
 }
 
 impl SessionServices {
@@ -506,6 +511,7 @@ impl SessionServices {
             event_outbox: Some(store),
             spawn_transport: SpawnTransport::default(),
             selected_instance_id: None,
+            local_output_root: None,
         }
     }
 
@@ -516,6 +522,7 @@ impl SessionServices {
             event_outbox: store.cloned(),
             spawn_transport: SpawnTransport::default(),
             selected_instance_id: None,
+            local_output_root: None,
         }
     }
 
@@ -529,6 +536,7 @@ impl SessionServices {
             event_outbox: None,
             spawn_transport: SpawnTransport::DirectNativeDiagnostic,
             selected_instance_id: None,
+            local_output_root: None,
         }
     }
 }
@@ -663,9 +671,15 @@ impl PluginSession {
             )));
         }
         let plan = SpawnPlan::resolve(plugin, services.spawn_transport)?;
-        let spawned =
-            crate::spawn_stdio::spawn_stdio_guest(plugin, &plan, config, config_table, extra_env)
-                .await?;
+        let spawned = crate::spawn_stdio::spawn_stdio_guest(
+            plugin,
+            &plan,
+            config,
+            config_table,
+            extra_env,
+            services.local_output_root.as_deref(),
+        )
+        .await?;
         Self::connect_spawned(spawned, plugin, &plan, account_id, services, config).await
     }
 

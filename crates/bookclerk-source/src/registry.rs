@@ -136,12 +136,12 @@ impl SourceRegistry {
         sources
     }
 
-    /// Two instances of one plugin key cannot share a scan.
+    /// Plugin keys that have more than one registered instance.
     ///
     /// Accounts and [`crate::SourceScope`] stay keyed by storefront id, so
-    /// scanning both would read and write the same rows twice. The caller
-    /// passes one plugin instance id instead.
-    fn ambiguous_same_key_scan(&self) -> Option<String> {
+    /// scanning both would read and write the same rows twice. Those keys are
+    /// skipped. Other sources in the same scan still run.
+    fn ambiguous_plugin_keys(&self) -> std::collections::BTreeMap<String, Vec<String>> {
         let mut by_key: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for source in self.sources.values() {
@@ -154,19 +154,8 @@ impl SourceRegistry {
                 .or_default()
                 .push(label);
         }
-        let problems: Vec<_> = by_key
-            .into_iter()
-            .filter(|(_, ids)| ids.len() > 1)
-            .map(|(key, ids)| format!("`{key}` ({})", ids.join(", ")))
-            .collect();
-        if problems.is_empty() {
-            None
-        } else {
-            Some(format!(
-                "scan is ambiguous for {}; pass a plugin instance id. Accounts stay keyed by storefront id",
-                problems.join("; ")
-            ))
-        }
+        by_key.retain(|_, ids| ids.len() > 1);
+        by_key
     }
 
     /// Scan every registered source (honoring per-source account filters).
@@ -180,12 +169,21 @@ impl SourceRegistry {
     ///
     /// Returns an error when the operation fails.
     pub async fn scan_all(&self, library: &LibraryStore, opts: ScanOptions) -> Result<ScanSummary> {
-        if let Some(detail) = self.ambiguous_same_key_scan() {
-            return Err(SourceError::api(detail));
-        }
+        let ambiguous = self.ambiguous_plugin_keys();
         let mut total = ScanSummary::default();
         let mut any = false;
+        for (key, ids) in &ambiguous {
+            let detail = format!(
+                "scan skipped `{key}` ({}); pass a plugin instance id. Accounts stay keyed by storefront id",
+                ids.join(", ")
+            );
+            tracing::warn!("{detail}");
+            total.warnings.push(detail);
+        }
         for source in self.all() {
+            if ambiguous.contains_key(source.plugin_key()) {
+                continue;
+            }
             if opts.is_cancelled() {
                 return Err(crate::error::SourceError::Other(anyhow::anyhow!(
                     "cancelled"
@@ -372,6 +370,91 @@ mod tests {
         })
     }
 
+    struct Counting {
+        id: &'static str,
+        key: &'static str,
+        instance: Option<&'static str>,
+        scans: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ContentSource for Counting {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn plugin_key(&self) -> &str {
+            self.key
+        }
+
+        fn plugin_instance_id(&self) -> Option<&str> {
+            self.instance
+        }
+
+        fn aliases(&self) -> &'static [&'static str] {
+            &[]
+        }
+
+        fn portal_auth_mode(&self) -> PortalAuthMode {
+            PortalAuthMode::Password
+        }
+
+        fn portal_brand(&self) -> SourceBrand {
+            BRAND
+        }
+
+        async fn login(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: crate::types::LoginOptions,
+        ) -> Result<crate::types::SourceAccount> {
+            unimplemented!("scan stub")
+        }
+
+        async fn list_accounts(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+        ) -> Result<Vec<crate::types::SourceAccount>> {
+            Ok(Vec::new())
+        }
+
+        async fn scan(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: crate::types::ScanOptions,
+        ) -> Result<crate::types::ScanSummary> {
+            self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::types::ScanSummary {
+                accounts: 1,
+                ..crate::types::ScanSummary::default()
+            })
+        }
+
+        async fn fetch_title(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _account_id: &str,
+            _title_id: &str,
+            _opts: &crate::types::FetchOptions,
+        ) -> Result<crate::types::SourceFetch> {
+            unimplemented!("scan stub")
+        }
+    }
+
+    fn counting(
+        id: &'static str,
+        key: &'static str,
+        instance: Option<&'static str>,
+        scans: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Arc<dyn ContentSource> {
+        Arc::new(Counting {
+            id,
+            key,
+            instance,
+            scans,
+        })
+    }
+
     #[test]
     fn legacy_key_and_alias_resolve_a_single_source() {
         let mut registry = SourceRegistry::new();
@@ -431,6 +514,56 @@ mod tests {
             registry.get("instance-b").unwrap().plugin_instance_id(),
             Some("instance-b")
         );
+    }
+
+    #[tokio::test]
+    async fn scan_all_skips_only_the_ambiguous_key() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .expect("sqlite");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("schema");
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let audible = Arc::new(AtomicUsize::new(0));
+        let graphic = Arc::new(AtomicUsize::new(0));
+        let mut registry = SourceRegistry::new();
+        registry.register(counting(
+            "audible",
+            "local/audible",
+            None,
+            Arc::clone(&audible),
+        ));
+        registry.register(counting(
+            "graphicaudio",
+            "local/graphicaudio",
+            Some("instance-a"),
+            Arc::clone(&graphic),
+        ));
+        registry.register(counting(
+            "graphicaudio",
+            "local/graphicaudio",
+            Some("instance-b"),
+            Arc::clone(&graphic),
+        ));
+        let summary = registry
+            .scan_all(&store, crate::types::ScanOptions::default())
+            .await
+            .expect("other sources still scan");
+        assert_eq!(audible.load(Ordering::SeqCst), 1);
+        assert_eq!(graphic.load(Ordering::SeqCst), 0);
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("local/graphicaudio")),
+            "{:?}",
+            summary.warnings
+        );
+        assert_eq!(summary.accounts, 1);
     }
 
     #[test]

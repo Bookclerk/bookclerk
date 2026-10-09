@@ -154,8 +154,9 @@ impl Drop for AccessEnvGuard {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
+    let _lock = bookclerk_config::ProcessEnvGuard::enter();
     let _access_env = AccessEnvGuard::publish();
     let staged = stage_graphicaudio();
     let server = MockServer::start().await;

@@ -428,9 +428,16 @@ pub async fn run_scan(
         books_upserted = summary.books_upserted,
         pages = summary.pages,
         skipped_disabled = summary.skipped_disabled,
+        ambiguous = summary.warnings.len(),
         elapsed_ms = started.elapsed().as_millis() as u64,
         "run_scan finished"
     );
+    if !summary.warnings.is_empty() {
+        warn!(
+            warnings = %summary.warnings.join("; "),
+            "scan skipped ambiguous plugin keys"
+        );
+    }
     if cfg.library.enrich_from_audible {
         if let Err(err) =
             bookclerk_enrich::enrich_books_from_audible(&library, cfg.library.enrich_min_confidence)
@@ -439,10 +446,15 @@ pub async fn run_scan(
             warn!(error = %err, "Audible enrichment failed");
         }
     }
-    Ok(format!(
+    let mut message = format!(
         "{} account(s), {} book upsert(s), {} page(s), {} skipped (scan disabled)",
         summary.accounts, summary.books_upserted, summary.pages, summary.skipped_disabled
-    ))
+    );
+    if !summary.warnings.is_empty() {
+        message.push_str("; skipped ambiguous keys: ");
+        message.push_str(&summary.warnings.join("; "));
+    }
+    Ok(message)
 }
 
 /// Acquire pending titles synchronously.
