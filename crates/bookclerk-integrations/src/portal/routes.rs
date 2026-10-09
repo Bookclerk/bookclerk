@@ -19,21 +19,6 @@ use tracing::{info, warn};
 
 use super::brands::{integration_brand, Brand};
 
-/// `try_update` on Rust 1.95+, `fetch_update` on the 1.94 MSRV.
-macro_rules! atomic_update {
-    ($atom:expr, $set:expr, $fetch:expr, $update:expr) => {{
-        #[cfg(atomic_try_update)]
-        {
-            #[allow(clippy::incompatible_msrv)]
-            $atom.try_update($set, $fetch, $update)
-        }
-        #[cfg(not(atomic_try_update))]
-        {
-            #[allow(deprecated)]
-            $atom.fetch_update($set, $fetch, $update)
-        }
-    }};
-}
 use crate::registry::IntegrationRegistry;
 use crate::tickets::{
     identity_from_session, inspect_claim_ticket, mint_claim_ticket,
@@ -202,14 +187,12 @@ async fn redeem(
     )
     .await?;
 
-    // `try_update` is 1.95. MSRV is 1.94, where the same call is `fetch_update`.
-    // Current CI denies that deprecated name, so the build script picks one.
-    let lost_response = atomic_update!(
-        REDEEM_LOSE_HTTP_RESPONSES,
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-        |v| (v > 0).then_some(v - 1)
-    );
+    // MSRV is 1.94. `fetch_update` is the name that compiles there.
+    #[allow(deprecated)]
+    let lost_response =
+        REDEEM_LOSE_HTTP_RESPONSES.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+            (v > 0).then_some(v - 1)
+        });
     if lost_response.is_ok() {
         return Err(PortalError::unavailable(
             "database temporarily unavailable — retry the same redeem",

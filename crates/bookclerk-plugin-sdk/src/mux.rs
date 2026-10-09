@@ -949,29 +949,13 @@ fn lock_waker(waker: &Mutex<Option<Waker>>) -> std::sync::MutexGuard<'_, Option<
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `try_update` on Rust 1.95+, `fetch_update` on the 1.94 MSRV.
-macro_rules! atomic_update {
-    ($atom:expr, $set:expr, $fetch:expr, $update:expr) => {{
-        #[cfg(atomic_try_update)]
-        {
-            #[allow(clippy::incompatible_msrv)]
-            $atom.try_update($set, $fetch, $update)
-        }
-        #[cfg(not(atomic_try_update))]
-        {
-            #[allow(deprecated)]
-            $atom.fetch_update($set, $fetch, $update)
-        }
-    }};
-}
-
 fn sub_atomic(counter: &AtomicUsize, n: usize) {
     if n == 0 {
         return;
     }
-    // `try_update` is 1.95. MSRV is 1.94, where the same call is `fetch_update`.
-    // Current CI denies that deprecated name, so the build script picks one.
-    let _ = atomic_update!(counter, Ordering::AcqRel, Ordering::Acquire, |cur| {
+    // MSRV is 1.94. `fetch_update` is the name that compiles there.
+    #[allow(deprecated)]
+    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         Some(cur.saturating_sub(n))
     });
 }
@@ -998,9 +982,9 @@ fn grant_send_credit(credit: &AtomicU32, in_flight: &AtomicU32, add: u32) {
             break take;
         }
     };
-    // `try_update` is 1.95. MSRV is 1.94, where the same call is `fetch_update`.
-    // Current CI denies that deprecated name, so the build script picks one.
-    let _ = atomic_update!(credit, Ordering::AcqRel, Ordering::Acquire, |cur| {
+    // MSRV is 1.94. `fetch_update` is the name that compiles there.
+    #[allow(deprecated)]
+    let _ = credit.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         let next = cur.saturating_add(grant).min(INITIAL_WINDOW);
         (next != cur).then_some(next)
     });
