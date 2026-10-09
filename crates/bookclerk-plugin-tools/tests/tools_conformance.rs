@@ -204,6 +204,12 @@ fn check_rejects_kv_oauth_binding() {
     assert_check_fails("invalid-kv-work-fs", "collides");
     assert_check_fails("invalid-kv-oauth-name", "collides");
     assert_check_fails("invalid-producer-database", "collides");
+    let shared = check_fixture("valid-producer-shares-oauth-name");
+    assert!(
+        shared.status.success(),
+        "a producer may reuse the oauth binding name ({})",
+        u8::from(shared.status.success())
+    );
 }
 
 #[test]

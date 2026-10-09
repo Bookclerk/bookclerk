@@ -30,6 +30,7 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `invalid-kv-work-fs/` | `check` fails (KV binding collides with a custom `[work_fs]` name) |
 | `invalid-kv-oauth-name/` | `check` fails (KV binding collides with a custom `[oauth]` name) |
 | `invalid-producer-database/` | `check` fails (event producer binding collides with `[[databases]]`) |
+| `valid-producer-shares-oauth-name/` | `check` ok (an event producer may reuse a custom `[oauth]` binding name) |
 | `invalid-undeclared-python/` | `check` fails (disk-only `.py` is not a declared Python module, even if flags are added later) |
 | `not-implemented-kv/` | `check` ok (`[[kv_namespaces]]` stays legal). Load and spawn fail with "not implemented yet". |
 | `not-implemented-queues/` | `check` ok (`[queues]` stays legal). Load and spawn fail with "not implemented yet". |

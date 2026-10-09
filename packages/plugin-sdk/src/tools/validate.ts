@@ -312,7 +312,10 @@ export function validateManifest(m: Manifest): void {
         'plugin.toml: `[workerd]` is required when runtime = "workerd"',
       );
     }
-    if (!m.workerd.compatibility_date?.trim()) {
+    if (
+      typeof m.workerd.compatibility_date !== "string" ||
+      !m.workerd.compatibility_date.trim()
+    ) {
       throw new Error("plugin.toml: workerd.compatibility_date is required");
     }
     if (!m.workerd.main_module?.trim()) {
@@ -399,18 +402,7 @@ function validateSurface(m: Manifest): void {
   const named: Array<[string, string]> = [];
   if (m.secrets) named.push(["secrets", m.secrets.binding || "SECRETS"]);
   if (m.work_fs) named.push(["work_fs", m.work_fs.binding || "WORK_FS"]);
-  // The oauth binding is a credential-adjacent name. Shape and collision
-  // failures use a fixed message so the value never reaches a logged Error.
-  if (m.oauth) {
-    const oauthName = m.oauth.binding || "OAUTH";
-    if (!/^[A-Z][A-Z0-9_]*$/.test(oauthName) || oauthName.length > 32) {
-      throw new Error("plugin.toml: [oauth] binding must be `[A-Z][A-Z0-9_]*`");
-    }
-    if (oauthName === "CONFIG" || bindings.has(oauthName)) {
-      throw new Error("plugin.toml: [oauth] binding collides with another binding");
-    }
-    bindings.add(oauthName);
-  }
+  if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH"]);
   for (const kv of m.kv_namespaces ?? []) {
     named.push(["kv_namespaces", kv.binding || "KV"]);
   }

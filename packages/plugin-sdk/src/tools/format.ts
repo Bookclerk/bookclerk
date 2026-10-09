@@ -100,7 +100,7 @@ function rejectDroppedQueueTables(queues: Record<string, unknown>): void {
         for (const [field, fieldValue] of Object.entries(row)) {
           if (emitValue(fieldValue) === null) {
             throw new Error(
-              `plugin.toml: [queues] \`${key}.${field}\` nested table cannot be formatted`,
+              `plugin.toml: [queues] \`${key}.${field}\` value cannot be formatted`,
             );
           }
         }
@@ -109,7 +109,7 @@ function rejectDroppedQueueTables(queues: Record<string, unknown>): void {
     }
     if (emitValue(value) === null) {
       throw new Error(
-        `plugin.toml: [queues] \`${key}\` nested table cannot be formatted`,
+        `plugin.toml: [queues] \`${key}\` value cannot be formatted`,
       );
     }
   }

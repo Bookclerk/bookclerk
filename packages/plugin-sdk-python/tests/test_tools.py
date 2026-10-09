@@ -111,6 +111,11 @@ def test_check_accepts_module_name_when_path_is_omitted():
     assert "echo_workerd_name_only" in msg
 
 
+def test_check_accepts_producer_that_shares_oauth_name():
+    msg = check_plugin(FIXTURES / "valid-producer-shares-oauth-name")
+    assert "producer_shares_oauth" in msg
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -161,6 +166,7 @@ def test_materialize_rejects_disk_only_python_even_with_both_flags():
     from bookclerk_plugin_sdk.tools import module_load_key
 
     assert module_load_key("modules", "./modules/index.js") == "index.js"
+    assert module_load_key("./modules", "modules/index.js") == "index.js"
     assert module_load_key("modules", "modules/pkg/./echo.wasm") == "pkg/echo.wasm"
     manifest = tomllib.loads(
         (FIXTURES / "invalid-undeclared-python" / "plugin.toml").read_text(encoding="utf-8")
@@ -264,7 +270,7 @@ def test_format_manifest_does_not_insert_python_flags():
 
 
 def test_format_queues_rejects_nested_tables():
-    with pytest.raises(ValueError, match="nested table"):
+    with pytest.raises(ValueError, match="cannot be formatted"):
         format_manifest(
             {
                 "api_version": 3,
@@ -276,6 +282,26 @@ def test_format_queues_rejects_nested_tables():
                 "capabilities": {"network": {"mode": "deny"}},
             }
         )
+
+
+def test_format_queues_rejects_toml_dates():
+    import tomllib
+
+    text = """
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+
+[queues]
+since = 2026-01-01
+
+[capabilities.network]
+mode = "deny"
+"""
+    with pytest.raises(ValueError, match="cannot be formatted"):
+        format_manifest(tomllib.loads(text))
 
 
 def test_format_queues_keeps_scalar_and_empty_arrays():

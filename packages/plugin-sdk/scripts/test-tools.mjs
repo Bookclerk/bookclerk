@@ -49,6 +49,7 @@ run(["check", path.join(fixtures, "invalid-kv-secret")], false, "collides");
 run(["check", path.join(fixtures, "invalid-kv-work-fs")], false, "collides");
 run(["check", path.join(fixtures, "invalid-kv-oauth-name")], false, "collides");
 run(["check", path.join(fixtures, "invalid-producer-database")], false, "collides");
+run(["check", path.join(fixtures, "valid-producer-shares-oauth-name")], true);
 run(["check", path.join(fixtures, "invalid-undeclared-python")], false, "undeclared Python file");
 run(["check", path.join(fixtures, "invalid-module-ts")], false, "not implemented yet");
 run(["check", path.join(fixtures, "not-implemented-kv")], true);
@@ -76,8 +77,17 @@ console.log("ok materialize rejects explicit path when name matches another file
 const { formatManifest } = await import("../dist/tools/format.js");
 const { moduleLoadKey } = await import("../dist/tools/validate.js");
 const loadKey = moduleLoadKey("modules", "modules/pkg/./echo.wasm");
-if (moduleLoadKey("modules", "./modules/index.js") !== "index.js" || loadKey !== "pkg/echo.wasm") {
-  console.error("FAIL moduleLoadKey did not normalize dot segments", Number(loadKey === "pkg/echo.wasm"));
+const dotDir = moduleLoadKey("./modules", "modules/index.js") === "index.js";
+if (
+  moduleLoadKey("modules", "./modules/index.js") !== "index.js" ||
+  loadKey !== "pkg/echo.wasm" ||
+  !dotDir
+) {
+  console.error(
+    "FAIL moduleLoadKey did not normalize dot segments",
+    Number(loadKey === "pkg/echo.wasm"),
+    Number(dotDir),
+  );
   process.exit(1);
 }
 const queuesText = formatManifest({
@@ -120,10 +130,60 @@ try {
     capabilities: { network: { mode: "deny" } },
   });
 } catch (err) {
-  nestedRejected = String(err && err.message ? err.message : err).includes("nested table");
+  nestedRejected = String(err && err.message ? err.message : err).includes("cannot be formatted");
 }
 if (!nestedRejected) {
   console.error("FAIL queues formatter dropped a nested table", Number(nestedRejected));
+  process.exit(1);
+}
+let dateRejected = false;
+try {
+  formatManifest(
+    parse(`
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+
+[queues]
+since = 2026-01-01
+
+[capabilities.network]
+mode = "deny"
+`),
+  );
+} catch (err) {
+  dateRejected = String(err && err.message ? err.message : err).includes("cannot be formatted");
+}
+if (!dateRejected) {
+  console.error("FAIL queues formatter accepted a TOML date", Number(dateRejected));
+  process.exit(1);
+}
+const { validateManifest } = await import("../dist/tools/validate.js");
+let unquotedDateRejected = false;
+try {
+  validateManifest(
+    parse(`
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = 2026-08-01
+main_module = "index.js"
+
+[capabilities.network]
+mode = "deny"
+`),
+  );
+} catch (err) {
+  unquotedDateRejected =
+    err instanceof Error && err.message.includes("compatibility_date is required");
+}
+if (!unquotedDateRejected) {
+  console.error("FAIL unquoted compatibility_date was not rejected as a non-string", Number(unquotedDateRejected));
   process.exit(1);
 }
 const nameOnly = formatManifest({

@@ -922,12 +922,12 @@ def _reject_dropped_queue_tables(queues: dict[str, Any]) -> None:
                     if _value(field_value) is None:
                         raise ValueError(
                             "plugin.toml: [queues] "
-                            f"`{key}.{field}` nested table cannot be formatted"
+                            f"`{key}.{field}` value cannot be formatted"
                         )
             continue
         if _value(value) is None:
             raise ValueError(
-                f"plugin.toml: [queues] `{key}` nested table cannot be formatted"
+                f"plugin.toml: [queues] `{key}` value cannot be formatted"
             )
 
 
@@ -939,7 +939,7 @@ def _emit_queues(lines: list[str], queues: Any) -> None:
     """
     if not isinstance(queues, dict):
         if queues is not None:
-            raise ValueError("plugin.toml: [queues] nested table cannot be formatted")
+            raise ValueError("plugin.toml: [queues] value cannot be formatted")
         return
     _reject_dropped_queue_tables(queues)
     scalars = {
@@ -980,7 +980,7 @@ def format_manifest(m: dict[str, Any]) -> str:
         Canonical ``plugin.toml`` text ending with a newline.
 
     Raises:
-        ValueError: When ``[queues]`` contains a nested table.
+        ValueError: When ``[queues]`` contains a nested table or a datetime.
     """
     lines: list[str] = []
     lines.append(f"api_version = {m['api_version']}")

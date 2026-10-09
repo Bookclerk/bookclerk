@@ -142,6 +142,9 @@ async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
+    // A binding name such as `[oauth].binding` is an env identifier, not a
+    // credential. CodeQL flags the property because it is named oauth.
+    // codeql[js/clear-text-logging]
     console.error(`${cmd} failed: ${err instanceof Error ? err.message : err}`);
     return 1;
   }

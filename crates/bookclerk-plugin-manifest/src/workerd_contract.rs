@@ -391,6 +391,7 @@ mod tests {
             "nested/a.js"
         );
         assert_eq!(module_load_key("modules", "./modules/index.js"), "index.js");
+        assert_eq!(module_load_key("./modules", "modules/index.js"), "index.js");
         assert_eq!(
             module_load_key("modules", "modules/./pkg/echo.wasm"),
             "pkg/echo.wasm"
