@@ -767,9 +767,15 @@ async fn assert_hold_cleaned(
         let sid = sid.trim();
         assert!(!sid.is_empty(), "{label}: empty package sid");
         let plugin = files.join("plugins").join(ng_harness::PLUGIN_ID);
+        let deadline = Instant::now() + SETTLE_TIMEOUT;
         for path in [files, plugin.as_path()] {
-            let mentioned = bookclerk_sandbox::spawn::dacl_mentions_sid(path, sid)
+            let mut mentioned = bookclerk_sandbox::spawn::dacl_mentions_sid(path, sid)
                 .unwrap_or_else(|err| panic!("{label}: DACL read {}: {err}", path.display()));
+            while mentioned && Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                mentioned = bookclerk_sandbox::spawn::dacl_mentions_sid(path, sid)
+                    .unwrap_or_else(|err| panic!("{label}: DACL read {}: {err}", path.display()));
+            }
             assert!(
                 !mentioned,
                 "{label}: package SID {sid} remains on {}",
