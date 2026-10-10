@@ -6,7 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_plugin_manifest::{parse, Entrypoint, PluginRuntimeKind};
+use bookclerk_plugin_manifest::{
+    apply_author_compatibility_date, module_load_key, parse, validate_author_compatibility_flags,
+    workerd_module_is_embedded, Entrypoint, PluginManifest, PluginRuntimeKind,
+};
 
 use bookclerk_plugin_sdk::{Result, SdkError};
 
@@ -68,6 +71,11 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
                 .workerd
                 .as_ref()
                 .ok_or_else(|| SdkError::message("workerd config missing"))?;
+            if let Ok(applied) = apply_author_compatibility_date(&w.compatibility_date) {
+                if let Some(warning) = applied.warning {
+                    eprintln!("{warning}");
+                }
+            }
             let modules_dir = plugin_dir.join(&w.modules_dir);
             if !modules_dir.is_dir() {
                 return Err(SdkError::message(format!(
@@ -94,6 +102,7 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
                 let src = std::fs::read_to_string(&main).unwrap_or_default();
                 check_main_module_source(&w.main_module, &src, &manifest.entrypoints, language)?;
             }
+            enforce_workerd_load_set(&manifest, &modules_dir)?;
         }
     }
 
@@ -109,6 +118,104 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
             .join(","),
         manifest.runtime
     ))
+}
+
+/// Requires every `[[modules]]` row to be a file the modules walk embeds.
+/// Python flags follow the manifest declaration. A `.py` file the walk finds
+/// but the manifest does not declare fails even when both flags are set. An
+/// explicit `path` must be in the load set; `name` is the source only when
+/// `path` is omitted.
+///
+/// # Errors
+///
+/// Returns [`SdkError`] when a row is missing, a symlink is present, Python
+/// flags disagree with the manifest, or a `.py` file is not declared.
+fn enforce_workerd_load_set(manifest: &PluginManifest, modules_dir: &Path) -> Result<()> {
+    let load_set = collect_author_module_keys(modules_dir)?;
+    let modules_dir_name = manifest
+        .workerd
+        .as_ref()
+        .map(|w| w.modules_dir.as_str())
+        .unwrap_or("modules");
+    for module in &manifest.modules {
+        // An explicit path is the file to embed. `name` is only the source when
+        // `path` was omitted, so a typoed path cannot pass because `name` exists.
+        let path = if module.path.is_empty() {
+            module.name.as_str()
+        } else {
+            module.path.as_str()
+        };
+        let key = module_load_key(modules_dir_name, path);
+        let loaded = !key.is_empty() && load_set.iter().any(|have| have == &key);
+        if !loaded {
+            if workerd_module_is_embedded(path) {
+                return Err(SdkError::message(format!(
+                    "plugin.toml: [[modules]] `{path}` is not in the workerd load set"
+                )));
+            }
+            return Err(SdkError::message(format!(
+                "plugin.toml: [[modules]] `{path}` is not implemented yet"
+            )));
+        }
+    }
+    let disk_python = load_set
+        .iter()
+        .any(|name| name.to_ascii_lowercase().ends_with(".py"));
+    if let Some(w) = manifest.workerd.as_ref() {
+        validate_author_compatibility_flags(&w.compatibility_flags, manifest.declares_python())
+            .map_err(|err| SdkError::message(err.to_string()))?;
+        if disk_python && !manifest.declares_python() {
+            return Err(SdkError::message(
+                "plugin.toml: undeclared Python file in the workerd modules tree",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Relative keys of embeddable files under `modules_dir`. Symlinks are refused.
+fn collect_author_module_keys(modules_dir: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    collect_author_module_keys_inner(modules_dir, modules_dir, &mut out)?;
+    Ok(out)
+}
+
+/// Recursive walk used by [`collect_author_module_keys`].
+fn collect_author_module_keys_inner(dir: &Path, root: &Path, out: &mut Vec<String>) -> Result<()> {
+    let entries = std::fs::read_dir(dir).map_err(|err| {
+        SdkError::message(format!(
+            "read workerd modules tree {}: {err}",
+            dir.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|err| SdkError::message(format!("read modules entry: {err}")))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| SdkError::message(format!("stat {}: {err}", entry.path().display())))?;
+        if file_type.is_symlink() {
+            return Err(SdkError::message(format!(
+                "refusing symlink in workerd modules tree: {}",
+                entry.path().display()
+            )));
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_author_module_keys_inner(&path, root, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if !workerd_module_is_embedded(&file_name) {
+            continue;
+        }
+        let rel = path.strip_prefix(root).unwrap_or(path.as_path());
+        out.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+    Ok(())
 }
 
 /// Source language of a workerd `main_module`, chosen by file extension.

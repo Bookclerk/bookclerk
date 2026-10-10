@@ -3,8 +3,9 @@
 
 Selects the newest GitHub release whose published_at is at least COOLDOWN_DAYS
 old (supply-chain cooldown, akin to Dependabot). Writes
-`crates/bookclerk-workerd/workerd-pin.json`, then regenerates `pin.rs` and SDK
-stub copies via `scripts/sync-workerd-pin.py`.
+`crates/bookclerk-workerd/workerd-pin.json`, then regenerates `pin.rs`, the
+Rust / TypeScript / Python author-contract compatibility date (and the schema
+sentences that quote it), and SDK stub copies via `scripts/sync-workerd-pin.py`.
 
 Exit codes:
   0 — pin updated (or --check with a candidate available)
@@ -164,7 +165,7 @@ def main() -> int:
     parser.add_argument(
         "--write",
         action="store_true",
-        help="write workerd-pin.json (+ sync pin.rs / stubs) when a newer eligible release exists",
+        help="write workerd-pin.json (+ sync pin.rs, author-contract dates, stubs) when a newer eligible release exists",
     )
     args = parser.parse_args()
     if not args.check and not args.write:

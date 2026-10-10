@@ -40,8 +40,11 @@ function emitValue(value: unknown): string | null {
   if (typeof value === "string") return esc(value);
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number" || typeof value === "bigint") return String(value);
-  if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
-    return emitStringArray(value as string[]);
+  if (Array.isArray(value)) {
+    if (value.some((item) => item !== null && typeof item === "object")) return null;
+    const rendered = value.map((item) => emitValue(item));
+    if (rendered.some((item) => item === null)) return null;
+    return emitArray(rendered as string[]);
   }
   return null;
 }
@@ -73,6 +76,67 @@ function emitConsumer(lines: string[], consumer: EventConsumerToml): void {
     lines.push("");
     lines.push("[events.consumers.filter]");
     emitTableRows(lines, consumer.filter);
+  }
+}
+
+/**
+ * True for a non-empty array whose elements are all TOML tables.
+ *
+ * @param value - Candidate `[queues]` field value.
+ * @returns Whether `value` should be emitted as an array of tables.
+ */
+function isArrayOfRecords(value: unknown): value is Record<string, unknown>[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((row) => row != null && typeof row === "object" && !Array.isArray(row))
+  );
+}
+
+function rejectDroppedQueueTables(queues: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(queues)) {
+    if (isArrayOfRecords(value)) {
+      for (const row of value) {
+        for (const [field, fieldValue] of Object.entries(row)) {
+          if (emitValue(fieldValue) === null) {
+            throw new Error(
+              `plugin.toml: [queues] \`${key}.${field}\` value cannot be formatted`,
+            );
+          }
+        }
+      }
+      continue;
+    }
+    if (emitValue(value) === null) {
+      throw new Error(
+        `plugin.toml: [queues] \`${key}\` value cannot be formatted`,
+      );
+    }
+  }
+}
+
+function emitQueues(lines: string[], queues: Record<string, unknown> | undefined): void {
+  if (!queues) return;
+  rejectDroppedQueueTables(queues);
+  const scalars: Record<string, unknown> = {};
+  const lists: Record<string, Record<string, unknown>[]> = {};
+  for (const [key, value] of Object.entries(queues)) {
+    if (isArrayOfRecords(value)) lists[key] = value;
+    else scalars[key] = value;
+  }
+  if (Object.keys(scalars).length > 0 || Object.keys(lists).length === 0) {
+    lines.push("");
+    lines.push("[queues]");
+    emitTableRows(lines, scalars);
+  }
+  for (const key of Object.keys(lists).sort()) {
+    for (const row of lists[key] ?? []) {
+      lines.push("");
+      lines.push(`[[queues.${key}]]`);
+      if (row && typeof row === "object") {
+        emitTableRows(lines, row as Record<string, unknown>);
+      }
+    }
   }
 }
 
@@ -147,7 +211,7 @@ export function formatManifest(m: Manifest): string {
       lines.push("");
       lines.push("[[modules]]");
       lines.push(`name = ${esc(mod.name)}`);
-      lines.push(`path = ${esc(mod.path)}`);
+      if (mod.path) lines.push(`path = ${esc(mod.path)}`);
       lines.push(`type = ${esc(mod.type ?? "js")}`);
     }
   }
@@ -183,6 +247,7 @@ export function formatManifest(m: Manifest): string {
   for (const kv of m.kv_namespaces ?? []) {
     emitNamedBinding(lines, "[[kv_namespaces]]", kv);
   }
+  emitQueues(lines, m.queues);
   emitNamedBinding(lines, "[work_fs]", m.work_fs);
   emitNamedBinding(lines, "[oauth]", m.oauth);
 

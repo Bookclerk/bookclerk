@@ -126,7 +126,7 @@ jobs:
 
             ## Test plan
             - [x] `scripts/bump-workerd-pin.py` (cooldown filter + digests → workerd-pin.json)
-            - [x] `scripts/sync-workerd-pin.py --check` (pin.rs + SDK stub + bridge copies)
+            - [x] `scripts/sync-workerd-pin.py --check` (pin.rs, author-contract dates, SDK stub, bridge copies)
             - [x] `cargo ensure-workerd` for the new pin
             - [x] `scripts/test-workerd-echo.sh`
 
@@ -137,8 +137,13 @@ jobs:
           add-paths: |
             crates/bookclerk-workerd/workerd-pin.json
             crates/bookclerk-workerd/src/pin.rs
+            crates/bookclerk-plugin-manifest/src/workerd_contract.rs
+            crates/bookclerk-plugin-manifest/schema/plugin-toml.json
+            crates/bookclerk-plugin-abi/schema/plugin-toml.json
+            packages/plugin-sdk/src/tools/validate.ts
             packages/plugin-sdk/workerd-pin.json
             packages/plugin-sdk/bridge/
+            packages/plugin-sdk-python/src/bookclerk_plugin_sdk/tools.py
             packages/plugin-sdk-python/workerd-pin.json
             packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd-pin.json
             packages/plugin-sdk-python/src/bookclerk_plugin_sdk/bridge/

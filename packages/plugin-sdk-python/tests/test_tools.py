@@ -53,6 +53,342 @@ def test_check_rejects_logo_parent():
         check_plugin(FIXTURES / "invalid-logo-parent")
 
 
+def test_check_warns_when_compatibility_date_is_newer_than_pin(capsys):
+    result = check_plugin(FIXTURES / "valid-compat-date-future")
+    assert result.startswith("ok ")
+    assert "Falling back" in capsys.readouterr().err
+
+
+def test_check_rejects_non_calendar_compatibility_date():
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        check_plugin(FIXTURES / "invalid-compat-date-shape")
+
+
+def test_check_rejects_unknown_compatibility_flag():
+    with pytest.raises(ValueError, match="not allowed"):
+        check_plugin(FIXTURES / "invalid-compat-flag")
+
+
+def test_check_rejects_experimental_flag():
+    with pytest.raises(ValueError, match="host-only"):
+        check_plugin(FIXTURES / "invalid-compat-experimental")
+
+
+def test_check_rejects_python_without_flag_pair():
+    with pytest.raises(ValueError, match="must include"):
+        check_plugin(FIXTURES / "invalid-python-flags-missing")
+
+
+def test_check_rejects_python_flags_without_module():
+    with pytest.raises(ValueError, match="Python module"):
+        check_plugin(FIXTURES / "invalid-flags-without-python")
+
+
+def test_check_rejects_module_type_mismatch():
+    with pytest.raises(ValueError, match="does not match"):
+        check_plugin(FIXTURES / "invalid-module-type")
+
+
+def test_check_accepts_explicit_path_over_py_name():
+    msg = check_plugin(FIXTURES / "valid-module-path-wins")
+    assert "path_wins_over_py_name" in msg
+
+
+def test_check_lints_js_main_when_a_python_helper_is_declared():
+    msg = check_plugin(FIXTURES / "valid-js-with-python-helper")
+    assert "js_main_python_helper" in msg
+
+
+def test_check_rejects_module_path_when_name_matches_a_different_file():
+    with pytest.raises(ValueError, match="not in the workerd load set"):
+        check_plugin(FIXTURES / "invalid-module-path")
+    with pytest.raises(ValueError, match=r"missing\.js"):
+        check_plugin(FIXTURES / "invalid-module-path")
+
+
+def test_check_accepts_module_name_when_path_is_omitted():
+    msg = check_plugin(FIXTURES / "valid-module-name-only")
+    assert "echo_workerd_name_only" in msg
+
+
+def test_check_accepts_producer_that_shares_oauth_name():
+    msg = check_plugin(FIXTURES / "valid-producer-shares-oauth-name")
+    assert "producer_shares_oauth" in msg
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "invalid-kv-secret",
+        "invalid-kv-work-fs",
+        "invalid-kv-oauth-name",
+        "invalid-producer-database",
+    ],
+)
+def test_check_rejects_custom_binding_collisions(name: str):
+    with pytest.raises(ValueError, match="collides"):
+        check_plugin(FIXTURES / name)
+
+
+def test_check_rejects_kv_oauth_binding():
+    with pytest.raises(ValueError, match="collides"):
+        check_plugin(FIXTURES / "invalid-kv-oauth")
+
+
+def test_binding_errors_identify_the_row_not_the_name():
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    base = {
+        "api_version": 3,
+        "id": "echo",
+        "runtime": "native",
+        "command": "./echo",
+        "entrypoints": ["cli"],
+        "capabilities": {"network": {"mode": "deny"}},
+    }
+    duplicate = {
+        **base,
+        "kv_namespaces": [{"binding": "CACHE"}, {"binding": "CACHE"}],
+    }
+    with pytest.raises(
+        ValueError, match=r"\[kv_namespaces\]\[1\] binding collides"
+    ) as duplicate_err:
+        validate_manifest(duplicate)
+    assert "CACHE" not in str(duplicate_err.value)
+
+    reserved = {
+        **base,
+        "kv_namespaces": [{"binding": "CACHE"}, {"binding": "OAUTH"}],
+    }
+    with pytest.raises(
+        ValueError, match=r"\[kv_namespaces\]\[1\] binding collides"
+    ) as reserved_err:
+        validate_manifest(reserved)
+    assert "OAUTH" not in str(reserved_err.value)
+
+    pattern = {
+        **base,
+        "events": {
+            "producers": [
+                {"type": "book_ready", "binding": "EVENTS"},
+                {"type": "scan_done", "binding": "not-valid"},
+            ]
+        },
+    }
+    with pytest.raises(
+        ValueError, match=r"\[events\.producers\]\[1\] binding must be"
+    ) as pattern_err:
+        validate_manifest(pattern)
+    assert "not-valid" not in str(pattern_err.value)
+
+
+def test_check_rejects_undeclared_python_file():
+    with pytest.raises(ValueError, match="undeclared Python file"):
+        check_plugin(FIXTURES / "invalid-undeclared-python")
+
+
+def test_materialize_rejects_module_path_when_name_matches_a_different_file():
+    import tomllib
+
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
+
+    manifest = tomllib.loads(
+        (FIXTURES / "invalid-module-path" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    with pytest.raises(ValueError, match=r"missing\.js"):
+        materialize_config(
+            FIXTURES / "invalid-module-path",
+            manifest,
+            listen_port=0,
+            bridge_token="token",
+        )
+
+
+def test_materialize_rejects_disk_only_python_even_with_both_flags():
+    import tomllib
+
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
+    from bookclerk_plugin_sdk.tools import module_load_key
+
+    assert module_load_key("modules", "./modules/index.js") == "index.js"
+    assert module_load_key("./modules", "modules/index.js") == "index.js"
+    assert module_load_key("modules", "modules/pkg/./echo.wasm") == "pkg/echo.wasm"
+    manifest = tomllib.loads(
+        (FIXTURES / "invalid-undeclared-python" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    with pytest.raises(ValueError, match="undeclared Python file"):
+        materialize_config(
+            FIXTURES / "invalid-undeclared-python",
+            manifest,
+            listen_port=0,
+            bridge_token="token",
+        )
+    flagged = tomllib.loads(
+        (FIXTURES / "invalid-undeclared-python" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    flagged["workerd"]["compatibility_flags"] = [
+        "python_workers",
+        "disable_python_external_sdk",
+    ]
+    with pytest.raises(ValueError, match="Python module"):
+        materialize_config(
+            FIXTURES / "invalid-undeclared-python",
+            flagged,
+            listen_port=0,
+            bridge_token="token",
+        )
+
+
+def test_check_rejects_typescript_main():
+    with pytest.raises(ValueError, match="not implemented yet"):
+        check_plugin(FIXTURES / "invalid-module-ts")
+
+
+def test_check_accepts_kv_and_queues_declarations():
+    assert "not_implemented_kv" in check_plugin(FIXTURES / "not-implemented-kv")
+    assert "not_implemented_queues" in check_plugin(FIXTURES / "not-implemented-queues")
+
+
+def test_materialize_refuses_kv_and_queues_fixtures():
+    import tomllib
+
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
+
+    for name in ("not-implemented-kv", "not-implemented-queues"):
+        manifest = tomllib.loads((FIXTURES / name / "plugin.toml").read_text(encoding="utf-8"))
+        with pytest.raises(ValueError, match="not implemented yet"):
+            materialize_config(
+                FIXTURES / name,
+                manifest,
+                listen_port=0,
+                bridge_token="token",
+            )
+
+
+def test_format_keeps_queues_declaration():
+    text = (FIXTURES / "not-implemented-queues" / "plugin.toml").read_text(encoding="utf-8")
+    import tomllib
+
+    rendered = format_manifest(tomllib.loads(text))
+    assert "[[queues.producers]]" in rendered
+    assert "not implemented" not in rendered.lower()
+
+
+def test_calendar_date_rejects_unicode_digits_and_unquoted_toml_dates():
+    import tomllib
+
+    from bookclerk_plugin_sdk.tools import validate_author_compatibility_date, validate_manifest
+
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        validate_author_compatibility_date("２０２６-０８-０１")
+    text = """
+api_version = 3
+id = "echo"
+runtime = "workerd"
+entrypoints = ["cli"]
+[workerd]
+compatibility_date = 2026-08-01
+main_module = "index.js"
+[capabilities.network]
+mode = "deny"
+"""
+    with pytest.raises(ValueError, match="compatibility_date"):
+        validate_manifest(tomllib.loads(text))
+
+
+def test_format_manifest_does_not_insert_python_flags():
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "workerd",
+            "entrypoints": ["cli"],
+            "workerd": {
+                "compatibility_date": "2026-08-01",
+                "main_module": "plugin.py",
+            },
+            "modules": [{"name": "plugin.py", "type": "python"}],
+            "capabilities": {"network": {"mode": "deny"}},
+        }
+    )
+    assert "python_workers" not in rendered
+
+
+def test_format_queues_rejects_nested_tables():
+    with pytest.raises(ValueError, match="cannot be formatted"):
+        format_manifest(
+            {
+                "api_version": 3,
+                "id": "echo",
+                "runtime": "native",
+                "command": "./echo",
+                "entrypoints": ["cli"],
+                "queues": {"meta": {"region": "us"}},
+                "capabilities": {"network": {"mode": "deny"}},
+            }
+        )
+
+
+def test_format_queues_rejects_toml_dates():
+    import tomllib
+
+    text = """
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+
+[queues]
+since = 2026-01-01
+
+[capabilities.network]
+mode = "deny"
+"""
+    with pytest.raises(ValueError, match="cannot be formatted"):
+        format_manifest(tomllib.loads(text))
+
+
+def test_format_queues_keeps_scalar_and_empty_arrays():
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "native",
+            "command": "./echo",
+            "entrypoints": ["cli"],
+            "queues": {
+                "producers": [{"binding": "MY_QUEUE", "queue": "jobs"}],
+                "names": ["a"],
+                "empty": [],
+            },
+        }
+    )
+    assert "[[queues.producers]]" in rendered
+    assert 'names = ["a"]' in rendered
+    assert "empty = []" in rendered
+    assert "[[queues.names]]" not in rendered
+    assert "[[queues.empty]]" not in rendered
+
+
+def test_format_omits_module_path_when_absent():
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "workerd",
+            "entrypoints": ["cli"],
+            "workerd": {
+                "compatibility_date": "2026-08-01",
+                "main_module": "index.js",
+            },
+            "modules": [{"name": "index.js"}],
+        }
+    )
+    assert 'name = "index.js"' in rendered
+    assert "path =" not in rendered
+
+
 def test_check_rejects_native_with_domains():
     with pytest.raises(ValueError, match="only valid for runtime"):
         check_plugin(FIXTURES / "invalid-native-with-domains")
@@ -204,7 +540,9 @@ def test_refuse_symlink_blocks_bookclerk_dir_link(tmp_path: Path):
     modules = plugin / "modules"
     modules.mkdir(parents=True)
     (plugin / "plugin.toml").write_text(
-        (ECHO_PY / "plugin.toml").read_text(encoding="utf-8"),
+        (ECHO_PY / "plugin.toml")
+        .read_text(encoding="utf-8")
+        .replace('[[kv_namespaces]]\nbinding = "KV"\n', ""),
         encoding="utf-8",
     )
     (modules / "plugin.py").write_text(
@@ -242,7 +580,9 @@ def test_refuse_symlink_blocks_main_module_link(tmp_path: Path):
     modules = plugin / "modules"
     modules.mkdir(parents=True)
     (plugin / "plugin.toml").write_text(
-        (ECHO_PY / "plugin.toml").read_text(encoding="utf-8"),
+        (ECHO_PY / "plugin.toml")
+        .read_text(encoding="utf-8")
+        .replace('[[kv_namespaces]]\nbinding = "KV"\n', ""),
         encoding="utf-8",
     )
     outside = tmp_path / "outside_main.py"
@@ -522,6 +862,40 @@ def test_materialize_nested_modules_and_double_dot_name(tmp_path: Path):
     text = generated.config_path.read_text(encoding="utf-8")
     assert "/dist/modules/nested/edition..2.js" in text
     shutil.rmtree(generated.state_dir, ignore_errors=True)
+
+
+def test_materialize_falls_back_when_compatibility_date_is_newer_than_pin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
+    from bookclerk_plugin_sdk.tools import WORKERD_PIN_COMPAT_DATE
+
+    plugin = tmp_path / "plugin"
+    modules = plugin / "modules"
+    modules.mkdir(parents=True)
+    (modules / "index.js").write_text("export default class X {}\n", encoding="utf-8")
+    generated = materialize_config(
+        plugin,
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "workerd",
+            "entrypoints": ["cli"],
+            "workerd": {
+                "compatibility_date": "2026-09-30",
+                "main_module": "index.js",
+                "modules_dir": "modules",
+                "entrypoint": "default",
+            },
+            "capabilities": {"network": {"mode": "deny"}},
+        },
+        listen_port=0,
+        bridge_token="token",
+    )
+    text = generated.config_path.read_text(encoding="utf-8")
+    assert f'compatibilityDate = "{WORKERD_PIN_COMPAT_DATE}"' in text
+    assert "2026-09-30" not in text
+    assert "Falling back" in capsys.readouterr().err
 
 
 def test_workerd_cache_and_currency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

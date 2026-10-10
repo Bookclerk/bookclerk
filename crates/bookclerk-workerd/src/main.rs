@@ -2,8 +2,9 @@
 //!
 //! Speaks the same Workers RPC stdio ABI as native guests. Loads author modules
 //! via a pinned Cloudflare `workerd` binary, applies domain-allowlisted egress
-//! (redirect hops allowed), and warns when `compatibility_date` is newer than
-//! the bundled knowledge date.
+//! (redirect hops allowed). A `compatibility_date` newer than the bundled pin
+//! warns and loads at the pin. `[[kv_namespaces]]` and `[queues]` fail load
+//! with "not implemented yet".
 //!
 //! Under Linux Landlock `OutboundListen`, only `bind(port=0)` is allowed — the
 //! launcher binds the bridge RPC socket itself and passes it to workerd via
@@ -29,7 +30,7 @@ use bookclerk_workerd::egress::EgressProxy;
 use bookclerk_workerd::ensure::ensure_workerd;
 use bookclerk_workerd::generate_bridge_token;
 use bookclerk_workerd::grant::OperatorGrantEnv;
-use bookclerk_workerd::pin::{binary_name, BUNDLED_WORKERD_COMPAT_DATE, WORKERD_RELEASE_TAG};
+use bookclerk_workerd::pin::{binary_name, WORKERD_RELEASE_TAG};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 
@@ -74,6 +75,9 @@ async fn run() -> Result<()> {
 
     let root = plugin_root()?;
     let manifest = load_manifest(&root)?;
+    if let Some(message) = manifest.unimplemented_surface() {
+        bail!("{message}");
+    }
 
     if let Ok(rpc_spec) = std::env::var(bookclerk_sandbox::GATEWAY_GUEST_RPC_ENV) {
         if rpc_spec.is_empty() {
@@ -90,13 +94,10 @@ async fn run() -> Result<()> {
         .as_ref()
         .context("bookclerk-workerd requires runtime = \"workerd\" and [workerd] table (or BOOKCLERK_GATEWAY_GUEST_RPC)")?;
 
-    if workerd_meta.compatibility_date.as_str() > BUNDLED_WORKERD_COMPAT_DATE {
-        warn!(
-            plugin = %manifest.id,
-            plugin_date = %workerd_meta.compatibility_date,
-            bundled = BUNDLED_WORKERD_COMPAT_DATE,
-            "plugin compatibility_date is newer than this Bookclerk build; continuing (Wrangler-like warn)"
-        );
+    if let Err(err) = bookclerk_plugin_manifest::validate_author_compatibility_date(
+        &workerd_meta.compatibility_date,
+    ) {
+        bail!("{err}");
     }
 
     let modules_dir = root.join(&workerd_meta.modules_dir);
