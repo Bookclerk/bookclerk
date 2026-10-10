@@ -3905,7 +3905,7 @@ mod tests {
         let journal = crate::spawn_stdio::AclJournal::from_entries_for_test(
             vec![bookclerk_sandbox::spawn::AclJournalEntry {
                 path: std::path::PathBuf::from(r"C:\bookclerk-acl-test\files"),
-                package_sid: "S-1-15-2-111".to_string(),
+                package_sid: "S-1-15-2-111-2-3-4-5-6-7".to_string(),
                 is_dir: true,
                 propagate: false,
             }],
@@ -3944,7 +3944,7 @@ mod tests {
         let mut journal = crate::spawn_stdio::AclJournal::from_entries_for_test(
             vec![bookclerk_sandbox::spawn::AclJournalEntry {
                 path: std::path::PathBuf::from(r"C:\bookclerk-acl-test\files"),
-                package_sid: "S-1-15-2-111".to_string(),
+                package_sid: "S-1-15-2-111-2-3-4-5-6-7".to_string(),
                 is_dir: true,
                 propagate: false,
             }],
