@@ -198,7 +198,6 @@ fn check_accepts_module_name_when_path_is_omitted() {
 
 #[test]
 fn check_rejects_kv_oauth_binding() {
-    assert_check_fails("invalid-kv-oauth", "OAUTH");
     assert_check_fails("invalid-kv-oauth", "collides");
     assert_check_fails("invalid-kv-secret", "collides");
     assert_check_fails("invalid-kv-work-fs", "collides");

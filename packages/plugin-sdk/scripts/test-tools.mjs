@@ -43,7 +43,6 @@ run(["check", path.join(fixtures, "invalid-module-path")], false, "not in the wo
 run(["check", path.join(fixtures, "valid-module-path-wins")], true);
 run(["check", path.join(fixtures, "valid-js-with-python-helper")], true);
 run(["check", path.join(fixtures, "valid-module-name-only")], true);
-run(["check", path.join(fixtures, "invalid-kv-oauth")], false, "OAUTH");
 run(["check", path.join(fixtures, "invalid-kv-oauth")], false, "collides");
 run(["check", path.join(fixtures, "invalid-kv-secret")], false, "collides");
 run(["check", path.join(fixtures, "invalid-kv-work-fs")], false, "collides");

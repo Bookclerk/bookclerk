@@ -572,22 +572,22 @@ def _validate_surface(m: dict[str, Any]) -> None:
     for table, name in named:
         if not _DATABASE_BINDING_RE.match(name) or len(name) > 32:
             raise ValueError(
-                f"plugin.toml: [{table}] binding `{name}` must be `[A-Z][A-Z0-9_]*`"
+                f"plugin.toml: [{table}] binding must be `[A-Z][A-Z0-9_]*`"
             )
         if table == "kv_namespaces" and name in reserved:
             raise ValueError(
-                f"plugin.toml: [{table}] binding `{name}` collides with another binding"
+                f"plugin.toml: [{table}] binding collides with another binding"
             )
         if name == "CONFIG" or name in bindings:
             raise ValueError(
-                f"plugin.toml: [{table}] binding `{name}` collides with another binding"
+                f"plugin.toml: [{table}] binding collides with another binding"
             )
     for table, name in named:
         if table == "events.producers":
             continue
         if name in bindings:
             raise ValueError(
-                f"plugin.toml: [{table}] binding `{name}` collides with another binding"
+                f"plugin.toml: [{table}] binding collides with another binding"
             )
         bindings.add(name)
 
@@ -1383,13 +1383,13 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
         name = str(db.get("binding"))
         if name in _RESERVED_BINDINGS:
             raise ValueError(
-                f"plugin.toml: [[databases]] binding `{name}` collides with a Bookclerk binding"
+                "plugin.toml: [[databases]] binding collides with a Bookclerk binding"
             )
         props.append((name, "DatabaseBinding", "`[[databases]]` plugin-owned database (D1-shaped prepare/batch/exec)."))
     seen: set[str] = set()
     for name, _, _ in props:
         if name in seen:
-            raise ValueError(f"plugin.toml: binding `{name}` is declared twice")
+            raise ValueError("plugin.toml: binding is declared twice")
         seen.add(name)
     return props
 

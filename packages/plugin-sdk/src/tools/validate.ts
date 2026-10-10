@@ -411,27 +411,19 @@ function validateSurface(m: Manifest): void {
   }
   for (const [table, name] of named) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
-      throw new Error(
-        `plugin.toml: [${table}] binding \`${name}\` must be \`[A-Z][A-Z0-9_]*\``,
-      );
+      throw new Error(`plugin.toml: [${table}] binding must be \`[A-Z][A-Z0-9_]*\``);
     }
     if (table === "kv_namespaces" && reserved.has(name)) {
-      throw new Error(
-        `plugin.toml: [${table}] binding \`${name}\` collides with another binding`,
-      );
+      throw new Error(`plugin.toml: [${table}] binding collides with another binding`);
     }
     if (name === "CONFIG" || bindings.has(name)) {
-      throw new Error(
-        `plugin.toml: [${table}] binding \`${name}\` collides with another binding`,
-      );
+      throw new Error(`plugin.toml: [${table}] binding collides with another binding`);
     }
   }
   for (const [table, name] of named) {
     if (table === "events.producers") continue;
     if (bindings.has(name)) {
-      throw new Error(
-        `plugin.toml: [${table}] binding \`${name}\` collides with another binding`,
-      );
+      throw new Error(`plugin.toml: [${table}] binding collides with another binding`);
     }
     bindings.add(name);
   }

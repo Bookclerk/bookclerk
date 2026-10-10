@@ -131,8 +131,6 @@ def test_check_rejects_custom_binding_collisions(name: str):
 
 
 def test_check_rejects_kv_oauth_binding():
-    with pytest.raises(ValueError, match="OAUTH"):
-        check_plugin(FIXTURES / "invalid-kv-oauth")
     with pytest.raises(ValueError, match="collides"):
         check_plugin(FIXTURES / "invalid-kv-oauth")
 

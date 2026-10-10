@@ -142,9 +142,7 @@ async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
-    // `[oauth].binding` is an env identifier, not a credential. The suppression
-    // has to sit on this line: a JS comment above only covers column 0.
-    console.error(`${cmd} failed: ${err instanceof Error ? err.message : err}`); // codeql[js/clear-text-logging]
+    console.error(`${cmd} failed: ${err instanceof Error ? err.message : err}`);
     return 1;
   }
 }

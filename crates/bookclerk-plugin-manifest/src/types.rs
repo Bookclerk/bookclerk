@@ -1206,7 +1206,7 @@ impl PluginManifest {
             for (table, name) in &named {
                 if !is_valid_database_binding_name(name) {
                     return Err(Error::message(format!(
-                        "plugin.toml: [{table}] binding `{name}` must be `[A-Z][A-Z0-9_]*`"
+                        "plugin.toml: [{table}] binding must be `[A-Z][A-Z0-9_]*`"
                     )));
                 }
                 if *table == "kv_namespaces"
@@ -1220,19 +1220,19 @@ impl PluginManifest {
                     )
                 {
                     return Err(Error::message(format!(
-                        "plugin.toml: [{table}] binding `{name}` collides with another binding"
+                        "plugin.toml: [{table}] binding collides with another binding"
                     )));
                 }
                 if *name == CONFIG_BINDING || seen.contains(name) {
                     return Err(Error::message(format!(
-                        "plugin.toml: [{table}] binding `{name}` collides with another binding"
+                        "plugin.toml: [{table}] binding collides with another binding"
                     )));
                 }
             }
             for (table, name) in &named {
                 if *table != "events.producers" && !seen.insert(name) {
                     return Err(Error::message(format!(
-                        "plugin.toml: [{table}] binding `{name}` collides with another binding"
+                        "plugin.toml: [{table}] binding collides with another binding"
                     )));
                 }
             }
