@@ -940,6 +940,47 @@ mod tests {
         );
     }
 
+    /// Exact hydration `uuid IN (?, …)` stays bare so Postgres can use
+    /// `idx_books_uuid` and `UNIQUE(uuid)`.
+    #[test]
+    fn exact_hydration_sql_keeps_uuid_in_list_bare() {
+        let (page_sql, _) = statements_for(BOOK_PAGE_COLUMNS, UuidMatch::Exact, 2, false, false);
+        let desugared = bookclerk_plugin_abi::desugar_canonical_sql(&page_sql);
+        let env = crate::migrations::host_sql_type_env();
+        let req = ExecuteRequest {
+            operation_id: "exact-plan".into(),
+            request_hash: String::new(),
+            deadline_unix_ms: 0,
+            statements: vec![select_stmt(
+                &desugared,
+                vec![
+                    DbValue::Text("u-one".into()),
+                    DbValue::Text("u-two".into()),
+                    DbValue::Int64(2),
+                    DbValue::Int64(0),
+                ],
+                2,
+            )],
+        };
+        let proofs = bookclerk_plugin_abi::typecheck_execute_request_proofs(&req, &env)
+            .unwrap_or_else(|err| panic!("exact sql typecheck: {err}"));
+        let lowered = bookclerk_db_exec::lower_canonical_sql_typed(
+            sea_orm::DatabaseBackend::Postgres,
+            &desugared,
+            Some(&proofs[0]),
+        )
+        .unwrap_or_else(|err| panic!("lower exact sql: {err}"));
+        let predicate = lowered
+            .split_once(" WHERE ")
+            .and_then(|(_, rest)| rest.split_once(" ORDER BY "))
+            .map(|(pred, _)| pred)
+            .unwrap_or("");
+        assert!(
+            predicate.contains("uuid IN ($1, $2)") && !predicate.contains("COLLATE"),
+            "exact uuid IN must stay bare so idx_books_uuid matches: {predicate}"
+        );
+    }
+
     async fn postgres_page_plan(store: &LibraryStore) -> String {
         let lowered = lowered_account_page_sql();
         let mut sql = lowered;

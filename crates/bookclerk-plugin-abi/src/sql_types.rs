@@ -1630,6 +1630,7 @@ fn typecheck_statement(
         output_columns: Vec::new(),
         require_named_derived: false,
         suppress_string_collate: false,
+        collate_call_arg: false,
     };
     typecheck_sql(sql, &mut cx)?;
     let proof = cx.into_proof(sql);
@@ -1769,6 +1770,7 @@ fn typecheck_index_where(
         output_columns: Vec::new(),
         require_named_derived: false,
         suppress_string_collate: false,
+        collate_call_arg: false,
     };
     let mut scan = TScan {
         sql: predicate,
@@ -1843,6 +1845,7 @@ fn typecheck_create_checks(
         output_columns: Vec::new(),
         require_named_derived: false,
         suppress_string_collate: false,
+        collate_call_arg: false,
     };
     for check in schema
         .column_checks
@@ -1909,6 +1912,8 @@ struct TypeCx<'a> {
     /// When set, string literals are not recorded as TEXT collate sites
     /// (`json_extract` path arguments).
     suppress_string_collate: bool,
+    /// When set, a `?` argument of `lower` or `upper` is a TEXT collate site.
+    collate_call_arg: bool,
 }
 
 impl TypeCx<'_> {
@@ -3143,8 +3148,12 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
         return Ok(SqlType::Boolean);
     }
     if scan.take_byte(b'?') {
+        let end = scan.i;
         let ty = cx.binds.get(cx.bind_i).copied().unwrap_or(SqlType::Null);
         cx.bind_i += 1;
+        if cx.collate_call_arg {
+            cx.note_text(scan.abs(end - 1), scan.abs(end));
+        }
         return Ok(ty);
     }
     if scan.take_blob_hex() {
@@ -3215,12 +3224,13 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
 
 /// Records a TEXT span for Postgres `COLLATE "C"`.
 ///
-/// A column compared to a placeholder (`account_id = ?`) stays bare so the
-/// index prefix still matches. A column compared to a literal (`body = 'A'`)
-/// is still collated. Arguments of `lower` and `upper` are collated too, so
-/// Postgres folds with the C locale (`É` stays `É`, matching SQLite). The
-/// expression index lowers to the same `lower((uuid COLLATE "C"))` form.
-/// `COLLATE NOCASE` keys are not recorded here; the nocase rewrite owns those.
+/// A column compared to a placeholder (`account_id = ?`, `uuid IN (?, ?)`)
+/// stays bare so the index prefix still matches. A column compared to a
+/// literal (`body = 'A'`, `uuid IN ('a')`) is still collated. Arguments of
+/// `lower` and `upper`, including `?`, are collated too, so Postgres folds
+/// with the C locale (`É` stays `É`, matching SQLite). The expression index
+/// lowers to the same `lower((uuid COLLATE "C"))` form. `COLLATE NOCASE` keys
+/// are not recorded here; the nocase rewrite owns those.
 fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: usize) {
     if skip_text_collate(scan.sql, start, end) {
         return;
@@ -3230,7 +3240,77 @@ fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: 
 
 /// True when wrapping `sql[start..end]` in `COLLATE "C"` would miss an index.
 fn skip_text_collate(sql: &str, start: usize, end: usize) -> bool {
-    equality_against_placeholder(sql, start, end)
+    equality_against_placeholder(sql, start, end) || in_list_of_placeholders(sql, end)
+}
+
+/// True when `IN (` follows the span and every list item is `?` or `$n`.
+///
+/// `uuid IN (?, ?)` is byte equality, same as `uuid = ?`, so the column stays
+/// bare and Postgres can use `idx_books_uuid`. A literal in the list does not
+/// count. `NOT IN` does not count.
+fn in_list_of_placeholders(sql: &str, end: usize) -> bool {
+    let Some(rest) = sql.get(end..) else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if !starts_with_keyword(rest, "IN") {
+        return false;
+    }
+    let rest = rest[2..].trim_start();
+    let Some(rest) = rest.strip_prefix('(') else {
+        return false;
+    };
+    placeholder_list_only(rest.trim_start())
+}
+
+/// True when `sql` starts with `word` on an identifier boundary.
+fn starts_with_keyword(sql: &str, word: &str) -> bool {
+    let Some(head) = sql.get(..word.len()) else {
+        return false;
+    };
+    if !head.eq_ignore_ascii_case(word) {
+        return false;
+    }
+    !matches!(
+        sql[word.len()..].chars().next(),
+        Some(ch) if ch.is_ascii_alphanumeric() || ch == '_'
+    )
+}
+
+/// True when `sql` is `?` / `$n` items separated by commas and closed by `)`.
+fn placeholder_list_only(mut sql: &str) -> bool {
+    if sql.starts_with(')') {
+        return false;
+    }
+    loop {
+        sql = sql.trim_start();
+        let Some(rest) = consume_placeholder(sql) else {
+            return false;
+        };
+        sql = rest.trim_start();
+        if sql.starts_with(')') {
+            return true;
+        }
+        let Some(rest) = sql.strip_prefix(',') else {
+            return false;
+        };
+        sql = rest;
+    }
+}
+
+/// The tail after one `?` or `$` plus digits, when `sql` starts with one.
+fn consume_placeholder(sql: &str) -> Option<&str> {
+    if let Some(rest) = sql.strip_prefix('?') {
+        return Some(rest);
+    }
+    let rest = sql.strip_prefix('$')?;
+    let digits = rest
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if digits == 0 {
+        return None;
+    }
+    Some(&rest[digits..])
 }
 
 /// True when the span is one side of `=` and the other side is `?` or `$n`.
@@ -3340,11 +3420,18 @@ fn infer_call(
         if name == "count" && scan.take_byte(b'*') {
             args.push(SqlType::Integer);
         } else {
+            let fold = name == "lower" || name == "upper";
+            if fold {
+                cx.collate_call_arg = true;
+            }
             loop {
                 args.push(infer_expr(scan, cx)?);
                 if !scan.take_byte(b',') {
                     break;
                 }
+            }
+            if fold {
+                cx.collate_call_arg = false;
             }
         }
     }

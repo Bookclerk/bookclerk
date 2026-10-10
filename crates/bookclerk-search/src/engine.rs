@@ -64,9 +64,6 @@ pub struct SearchEngine {
     finished: Field,
 }
 
-/// Full `books` rows per rebuild page.
-///
-/// 256 rows encode to about 310 KiB as a Cap'n `StatementResult`, over the
 /// Starting page width for a catalog rebuild.
 ///
 /// Enriched `books` rows can push 64 rows over the sqlite guest

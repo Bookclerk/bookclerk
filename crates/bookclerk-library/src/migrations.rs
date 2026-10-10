@@ -686,11 +686,19 @@ mod tests {
 
     #[test]
     fn postgres_lowering_of_baseline_is_mechanically_complete() {
-        let lowered = current_canonical_statements()
-            .iter()
-            .map(|stmt| bookclerk_db_exec::lower_canonical_ddl_to_postgres(stmt))
-            .collect::<Vec<_>>()
-            .join(";\n");
+        let mut env = bookclerk_plugin_abi::SqlTypeEnv::new();
+        let mut parts = Vec::new();
+        for stmt in current_canonical_statements() {
+            let lowered = bookclerk_db_exec::lower_canonical_ddl_to_postgres_with(stmt, Some(&env))
+                .expect("baseline ddl");
+            env.merge(
+                &bookclerk_plugin_abi::sql_type_env_from_canonical_statements(std::iter::once(
+                    stmt.as_str(),
+                )),
+            );
+            parts.push(lowered);
+        }
+        let lowered = parts.join(";\n");
         // No SQLite-isms may survive the mechanical lowering; the CI Postgres
         // sidecar applies this exact output (`postgres_test_store`).
         for token in [
@@ -713,6 +721,10 @@ mod tests {
         );
         assert!(lowered.contains(" BYTEA"), "blob columns");
         assert!(lowered.contains(" DOUBLE PRECISION"), "real columns");
+        assert!(
+            lowered.contains("lower((uuid COLLATE \"C\"))"),
+            "expression index must match the collated predicate"
+        );
         assert!(lowered.contains("UNIQUE(account_id, source, event_type, dedup_key)"));
         // Word-boundary safety: string literals stay untouched.
         assert!(lowered.contains(r#"'["openid","profile","email"]'"#));

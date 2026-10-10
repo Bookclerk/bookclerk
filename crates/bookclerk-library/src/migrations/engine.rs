@@ -512,6 +512,7 @@ mod tests {
             sea_orm::DatabaseBackend::Postgres,
             &planned,
         )
+        .expect("lower")
         .unwrap_or(planned);
         for (i, sql) in expanded.iter().enumerate() {
             let ddl = bookclerk_plugin_abi::statement_is_ddl(sql);
@@ -532,7 +533,8 @@ mod tests {
             "{}",
             stmts[0]
         );
-        let lowered = bookclerk_db_exec::lower_canonical_ddl_to_postgres(&stmts[0]);
+        let lowered =
+            bookclerk_db_exec::lower_canonical_ddl_to_postgres(&stmts[0]).expect("slot lock ddl");
         assert!(
             !lowered.contains("SELECT *"),
             "postgres lowering must not wrap slot insert as SELECT *: {lowered}"
@@ -721,6 +723,7 @@ mod tests {
             .expect("one frozen step");
         let expanded =
             bookclerk_db_exec::expand_host_schema_batch(sea_orm::DatabaseBackend::Sqlite, &batch)
+                .expect("lower")
                 .unwrap_or(batch);
         let skip = u32::try_from(expanded.len().saturating_sub(1)).unwrap_or(0);
         crate::inject_atomic_interrupt_after(

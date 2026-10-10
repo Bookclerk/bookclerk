@@ -60,6 +60,10 @@ pub const PORTABLE_LOWER_NON_ASCII_SELECT: &str = "SELECT lower(body) FROM typed
 /// the argument is `COLLATE "C"`.
 pub const PORTABLE_LOWER_NON_ASCII_EXPECT: &str = "É";
 
+/// `lower` of a bound placeholder. Postgres must collate the parameter
+/// (`lower(($1 COLLATE "C"))`) so `É` stays `É`, matching SQLite.
+pub const PORTABLE_LOWER_PLACEHOLDER_SELECT: &str = "SELECT lower(?) FROM typed WHERE n = 7";
+
 /// Scalar portable helpers (no aggregates).
 ///
 /// Column order matches [`portable_select_expects`]. `json_object` is

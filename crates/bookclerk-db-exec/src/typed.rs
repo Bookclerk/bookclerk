@@ -38,7 +38,6 @@ use crate::proxy_txn::{
     consume_savepoint_rollback_injection, is_txn_broken, note_commit_failed,
     suspend_execute_row_cap, take_txn_fault, with_exec_budget, AtomicInterruptPhase, ExecBudget,
 };
-use crate::schema_postgres::expand_host_schema_execute_request_grouped;
 use crate::{
     cap_query_sql, record_query_rows_seen, set_positional_result_columns,
     take_positional_result_columns,
@@ -245,7 +244,10 @@ fn create_fingerprint_matches(
     for lowered in [
         crate::schema_postgres::schema_sql_for_backend(backend, canonical),
         crate::schema_postgres::lower_binding_sql_for_backend(backend, canonical),
-    ] {
+    ]
+    .into_iter()
+    .flatten()
+    {
         if lowered.as_ref() == canonical {
             continue;
         }
@@ -2088,6 +2090,7 @@ where
                 &canonical,
                 Some(&env),
             )
+            .map_err(|err| DbErr::Custom(err.to_string()))?
             .into_owned()
         } else {
             let lowered = crate::lower::lower_canonical_sql_typed_with(
@@ -2255,14 +2258,24 @@ where
     // Host schema batches travel canonical; this adapter edge lowers/splits
     // them for the live backend and collapses the results back to the wire
     // request shape below. Proofs are checked against the wire SQL first.
+    // The live catalog is loaded first so a later index-only step types its
+    // keys from existing tables instead of emitting a different index.
     let wire = req.clone();
-    let (req, schema_groups) = expand_host_schema_execute_request_grouped(backend, &req);
+    let mut env = catalog_env_for_typed(db, &session).await?;
+    let (req, schema_groups) =
+        crate::schema_postgres::expand_host_schema_execute_request_grouped_with(
+            backend,
+            &req,
+            Some(&env),
+        )
+        .map_err(|err| DbErr::Custom(err.to_string()))?;
     let canonical_sqls: Vec<String> = req.statements.iter().map(|s| s.sql.clone()).collect();
     // Binding CREATE/DROP stays canonical on the wire; Postgres adapters
     // lower types/`AUTOINCREMENT` here (not in `lower_canonical_sql`).
-    let req = crate::schema_postgres::lower_binding_ddl_execute_request(backend, &req);
+    let req =
+        crate::schema_postgres::lower_binding_ddl_execute_request_with(backend, &req, Some(&env))
+            .map_err(|err| DbErr::Custom(err.to_string()))?;
     let sql_started = Instant::now();
-    let mut env = catalog_env_for_typed(db, &session).await?;
     let mut type_req = req.clone();
     for (stmt, canon) in type_req.statements.iter_mut().zip(canonical_sqls.iter()) {
         stmt.sql = canon.clone();

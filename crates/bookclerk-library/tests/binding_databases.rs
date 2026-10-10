@@ -626,6 +626,20 @@ async fn binding_portable_functions_and_ddl_types() {
         folded_reply.statements[0].rows[0].values[0],
         DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
     );
+    let mut placeholder = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_PLACEHOLDER_SELECT,
+        vec![DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into(),
+        )],
+    );
+    placeholder.max_rows = 8;
+    let placeholder_reply = run_binding(&db, req("sel-lower-placeholder", vec![placeholder]))
+        .await
+        .expect("placeholder lower");
+    assert_eq!(
+        placeholder_reply.statements[0].rows[0].values[0],
+        DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
+    );
 }
 
 #[tokio::test]

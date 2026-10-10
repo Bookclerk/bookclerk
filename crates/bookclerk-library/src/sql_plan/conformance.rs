@@ -1438,7 +1438,7 @@ async fn postgres_binding_db() -> sea_orm::DatabaseConnection {
         .expect("connect to disposable postgres binding database");
     let backend = sea_orm::ConnectionTrait::get_database_backend(&db);
     for sql in crate::migrations::binding_bootstrap_statements() {
-        let sql = bookclerk_db_exec::schema_sql_for_backend(backend, sql);
+        let sql = bookclerk_db_exec::schema_sql_for_backend(backend, sql).expect("binding ddl");
         sea_orm::ConnectionTrait::execute_raw(
             &db,
             sea_orm::Statement::from_string(backend, sql.into_owned()),
@@ -1668,6 +1668,25 @@ async fn postgres_binding_portable_functions() {
             .expect("non-ascii lower");
     assert_eq!(
         folded_reply.statements[0].rows[0].values[0],
+        bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
+        )
+    );
+    let mut placeholder = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_PLACEHOLDER_SELECT,
+        vec![bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into(),
+        )],
+    );
+    placeholder.max_rows = 8;
+    let placeholder_reply = run_postgres_binding(
+        &db,
+        binding_req("pg-sel-lower-placeholder", vec![placeholder]),
+    )
+    .await
+    .expect("placeholder lower");
+    assert_eq!(
+        placeholder_reply.statements[0].rows[0].values[0],
         bookclerk_plugin_abi::DbValue::Text(
             bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
         )

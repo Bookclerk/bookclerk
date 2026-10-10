@@ -129,7 +129,10 @@ fn lower_canonical_to_postgres_helpers_with(
     // SQLite `COLLATE NOCASE` folds ASCII case, then compares code points.
     // Postgres has no such collation; `lower(ident COLLATE "C")` is that fold,
     // and a following text tie-break is `COLLATE "C"`.
-    let sql = rewrite_sqlite_nocase_with(sql, env, outputs);
+    // Query lowering does not reject an untyped `CREATE INDEX`. DDL entry
+    // points return that error instead of emitting a different index.
+    let sql = rewrite_sqlite_nocase_with(sql, env, outputs)
+        .unwrap_or_else(|err| panic!("query lowering hit a CREATE INDEX type error: {err}"));
     let sql = sqlite_fns_to_postgres(&sql);
     rewrite_placeholders_postgres(&sql)
 }
@@ -1184,20 +1187,32 @@ fn ddl_type_rewrite_at(sql: &str, i: usize) -> Option<(usize, &'static str)> {
 /// `INSERT OR IGNORE`). Host schema packs use this through
 /// [`crate::schema_sql_for_backend`]; binding DDL uses the type rewrite at
 /// the adapter edge and then the DML helper pass.
-#[must_use]
-pub fn lower_canonical_ddl_to_postgres(sql: &str) -> String {
+/// # Errors
+///
+/// Returns when a Postgres `CREATE INDEX` has a `COLLATE NOCASE` tie-break or
+/// a `lower`/`upper` column argument whose type is not in `env` (and this
+/// call passes no env). The statement is not rewritten into a different index.
+pub fn lower_canonical_ddl_to_postgres(sql: &str) -> Result<String, PluginError> {
     lower_canonical_ddl_to_postgres_with(sql, None)
 }
 
 /// [`lower_canonical_ddl_to_postgres`] using `env` for tie-break column types.
-pub(crate) fn lower_canonical_ddl_to_postgres_with(sql: &str, env: Option<&SqlTypeEnv>) -> String {
+///
+/// # Errors
+///
+/// Returns when a Postgres `CREATE INDEX` key that needs `COLLATE "C"` cannot
+/// be typed from `env`.
+pub fn lower_canonical_ddl_to_postgres_with(
+    sql: &str,
+    env: Option<&SqlTypeEnv>,
+) -> Result<String, PluginError> {
     // SQLite `COLLATE NOCASE` is the library title index. Postgres gets an
     // expression index on `lower(title COLLATE "C")` and a text `COLLATE "C"`
     // tie-break so the page order matches. Numeric keys stay bare.
-    let stripped = rewrite_sqlite_nocase_with(sql, env, &[]);
+    let stripped = rewrite_sqlite_nocase_with(sql, env, &[])?;
     let typed = rewrite_canonical_ddl_types_for_postgres(&stripped);
     let sql = rewrite_insert_or_ignore_unique_conflict(&typed);
-    lower_canonical_to_postgres_helpers_with(&sql, env, &[])
+    Ok(lower_canonical_to_postgres_helpers_with(&sql, env, &[]))
 }
 
 /// Rewrites `ident COLLATE NOCASE` to `(lower(ident COLLATE "C"))`.
@@ -1223,23 +1238,30 @@ pub(crate) fn lower_canonical_ddl_to_postgres_with(sql: &str, env: Option<&SqlTy
 /// a no-op.
 ///
 /// `env` and `outputs` resolve tie-break and `lower`/`upper` argument types.
-/// An unresolved name, including `uuid`, stays bare. Typed `ORDER BY` keys
-/// that the proof already wrapped start with `(` and are left alone. A text
-/// key after a case-fold is wrapped when the catalog or SELECT list says TEXT.
+/// An unresolved `ORDER BY` name stays bare. A `CREATE INDEX` that cannot type
+/// a post-fold key or a `lower`/`upper` column argument returns an error
+/// instead of emitting that key without `COLLATE "C"`. Typed keys that the
+/// proof already wrapped start with `(` and are left alone.
+///
+/// # Errors
+///
+/// Returns when `sql` is a `CREATE INDEX` and a key that needs `COLLATE "C"`
+/// has no TEXT type in `env` or `outputs`.
 pub(crate) fn rewrite_sqlite_nocase_with(
     sql: &str,
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
-) -> String {
+) -> Result<String, PluginError> {
     let rewritten = rewrite_nocase_idents(sql);
     let tables = statement_tables(&rewritten);
-    let folded_fns = collate_text_function_args(&rewritten, env, outputs, &tables);
-    let collated = collate_post_fold_keys(&folded_fns, env, outputs, &tables);
-    if is_create_index(&collated) {
+    let strict = is_create_index(&rewritten);
+    let folded_fns = collate_text_function_args(&rewritten, env, outputs, &tables, strict)?;
+    let collated = collate_post_fold_keys(&folded_fns, env, outputs, &tables, strict)?;
+    Ok(if is_create_index(&collated) {
         add_index_nulls_first(&collated)
     } else {
         collated
-    }
+    })
 }
 
 /// Collates text sort keys that follow a case-fold key with `COLLATE "C"`.
@@ -1252,13 +1274,14 @@ fn collate_post_fold_keys(
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
     tables: &[String],
-) -> String {
+    strict: bool,
+) -> Result<String, PluginError> {
     let sql = if is_create_index(sql) {
-        collate_index_keys(sql, env, outputs, tables)
+        collate_index_keys(sql, env, outputs, tables, strict)?
     } else {
         sql.to_string()
     };
-    collate_order_by_lists(&sql, env, outputs, tables)
+    collate_order_by_lists(&sql, env, outputs, tables, strict)
 }
 
 /// Rewrites the column list of a `CREATE INDEX` that contains a fold key.
@@ -1267,19 +1290,20 @@ fn collate_index_keys(
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
     tables: &[String],
-) -> String {
+    strict: bool,
+) -> Result<String, PluginError> {
     let Some(open) = index_column_list_open(sql) else {
-        return sql.to_string();
+        return Ok(sql.to_string());
     };
     let Some(close) = matching_paren(sql, open) else {
-        return sql.to_string();
+        return Ok(sql.to_string());
     };
-    let inner = collate_key_list(&sql[open + 1..close], env, outputs, tables);
+    let inner = collate_key_list(&sql[open + 1..close], env, outputs, tables, strict)?;
     let mut out = String::with_capacity(sql.len() + inner.len());
     out.push_str(&sql[..=open]);
     out.push_str(&inner);
     out.push_str(&sql[close..]);
-    out
+    Ok(out)
 }
 
 /// Rewrites every `ORDER BY` key list in `sql`.
@@ -1288,7 +1312,8 @@ fn collate_order_by_lists(
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
     tables: &[String],
-) -> String {
+    strict: bool,
+) -> Result<String, PluginError> {
     let mut out = String::with_capacity(sql.len() + 16);
     let mut i = 0;
     while i < sql.len() {
@@ -1305,7 +1330,13 @@ fn collate_order_by_lists(
                 let list = &sql[list_start..list_end];
                 let body_len = list.trim_end().len();
                 out.push_str(&sql[i..list_start]);
-                out.push_str(&collate_key_list(&list[..body_len], env, outputs, tables));
+                out.push_str(&collate_key_list(
+                    &list[..body_len],
+                    env,
+                    outputs,
+                    tables,
+                    strict,
+                )?);
                 out.push_str(&list[body_len..]);
                 i = list_end;
                 continue;
@@ -1315,7 +1346,7 @@ fn collate_order_by_lists(
         out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    Ok(out)
 }
 
 /// End of an `ORDER BY` key list: `LIMIT`, a sibling set-op, or a `)` at depth 0.
@@ -1364,7 +1395,8 @@ fn collate_key_list(
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
     tables: &[String],
-) -> String {
+    strict: bool,
+) -> Result<String, PluginError> {
     let parts = split_top_level_commas(inner);
     let mut seen_fold = false;
     let mut out = String::with_capacity(inner.len() + 16);
@@ -1379,14 +1411,14 @@ fn collate_key_list(
             continue;
         }
         if seen_fold {
-            if let Some(wrapped) = collate_bare_sort_ident(trimmed, env, outputs, tables) {
+            if let Some(wrapped) = collate_bare_sort_ident(trimmed, env, outputs, tables, strict)? {
                 out.push_str(&wrapped);
                 continue;
             }
         }
         out.push_str(trimmed);
     }
-    out
+    Ok(out)
 }
 
 /// True when `key` is the `(lower(… COLLATE …))` fold produced for `NOCASE`.
@@ -1403,17 +1435,30 @@ fn collate_bare_sort_ident(
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
     tables: &[String],
-) -> Option<String> {
+    strict: bool,
+) -> Result<Option<String>, PluginError> {
     let key = key.trim();
     if key.starts_with('(') || contains_collate_keyword(key) {
-        return None;
+        return Ok(None);
     }
     let (expr, suffix) = split_sort_suffix(key);
-    let column = sort_column_name(expr)?;
-    if !tie_break_is_text(column, env, outputs, tables) {
-        return None;
+    let Some(column) = sort_column_name(expr) else {
+        return Ok(None);
+    };
+    match tie_break_type(column, env, outputs, tables) {
+        ResolvedSort::Text => Ok(Some(format!("({expr} COLLATE \"C\"){suffix}"))),
+        ResolvedSort::Other => Ok(None),
+        ResolvedSort::Unknown if strict => Err(untyped_index_key(column)),
+        ResolvedSort::Unknown => Ok(None),
     }
-    Some(format!("({expr} COLLATE \"C\"){suffix}"))
+}
+
+/// Postgres would otherwise build this index without `COLLATE "C"`.
+fn untyped_index_key(column: &str) -> PluginError {
+    PluginError::invalid_params(format!(
+        "Postgres CREATE INDEX cannot type `{column}` for COLLATE \"C\"; \
+         the column must be TEXT in the catalog or an earlier CREATE TABLE in this batch"
+    ))
 }
 
 /// Column of a bare `ident` or `qual.ident` sort expression.
@@ -1434,24 +1479,39 @@ fn sort_column_name(expr: &str) -> Option<&str> {
     Some(&expr[col_at..col_at + col])
 }
 
-/// True when a post-fold bare key should use `COLLATE "C"`.
+/// How a post-fold key or `lower`/`upper` argument was typed.
+enum ResolvedSort {
+    Text,
+    Other,
+    Unknown,
+}
+
+/// Catalog or SELECT-list type of `ident`.
 ///
-/// A catalog or SELECT-list type wins. TEXT is collated. INTEGER, REAL, BLOB,
-/// and any other resolved type stay bare so Postgres does not reject
-/// `COLLATE "C"` on a non-text value. An unresolved name stays bare. The
-/// column name `uuid` is not special.
-fn tie_break_is_text(
+/// TEXT is collated. INTEGER, REAL, BLOB, and any other resolved type stay
+/// bare so Postgres does not reject `COLLATE "C"` on a non-text value. An
+/// unresolved name is [`ResolvedSort::Unknown`]. The column name `uuid` is
+/// not special. A `CREATE INDEX` treats unknown as an error.
+fn tie_break_type(
     ident: &str,
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
     tables: &[String],
-) -> bool {
+) -> ResolvedSort {
     if let Some(env) = env {
         if let Some(ty) = column_type_in_scope(env, tables, ident) {
-            return ty.is_text();
+            return if ty.is_text() {
+                ResolvedSort::Text
+            } else {
+                ResolvedSort::Other
+            };
         }
     }
-    output_column_type(outputs, ident).is_some_and(SqlType::is_text)
+    match output_column_type(outputs, ident) {
+        Some(ty) if ty.is_text() => ResolvedSort::Text,
+        Some(_) => ResolvedSort::Other,
+        None => ResolvedSort::Unknown,
+    }
 }
 
 /// Declared type of `ident` on the statement's tables, when every hit agrees.
@@ -1717,7 +1777,8 @@ fn collate_text_function_args(
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
     tables: &[String],
-) -> String {
+    strict: bool,
+) -> Result<String, PluginError> {
     let mut out = String::with_capacity(sql.len() + 16);
     let mut i = 0;
     while i < sql.len() {
@@ -1733,7 +1794,7 @@ fn collate_text_function_args(
             if fold && sql.as_bytes().get(after) == Some(&b'(') {
                 if let Some(close) = matching_paren(sql, after) {
                     let inner = &sql[after + 1..close];
-                    if let Some(wrapped) = collate_fn_arg(inner, env, outputs, tables) {
+                    if let Some(wrapped) = collate_fn_arg(inner, env, outputs, tables, strict)? {
                         out.push_str(&sql[i..after]);
                         out.push('(');
                         out.push_str(&wrapped);
@@ -1748,7 +1809,7 @@ fn collate_text_function_args(
         out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    Ok(out)
 }
 
 /// `(ident COLLATE "C")` when `inner` is one resolved TEXT column reference.
@@ -1757,16 +1818,24 @@ fn collate_fn_arg(
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
     tables: &[String],
-) -> Option<String> {
+    strict: bool,
+) -> Result<Option<String>, PluginError> {
     let arg = inner.trim();
     if arg.is_empty() || arg.starts_with('(') || contains_collate_keyword(arg) {
-        return None;
+        return Ok(None);
     }
-    let column = sort_column_name(arg)?;
-    if !tie_break_is_text(column, env, outputs, tables) {
-        return None;
+    let Some(column) = sort_column_name(arg) else {
+        return Ok(None);
+    };
+    match tie_break_type(column, env, outputs, tables) {
+        ResolvedSort::Text => Ok(Some(format!("({arg} COLLATE \"C\")"))),
+        ResolvedSort::Other if strict => Err(PluginError::invalid_params(format!(
+            "Postgres CREATE INDEX lower/upper argument `{column}` is not TEXT"
+        ))),
+        ResolvedSort::Other => Ok(None),
+        ResolvedSort::Unknown if strict => Err(untyped_index_key(column)),
+        ResolvedSort::Unknown => Ok(None),
     }
-    Some(format!("({arg} COLLATE \"C\")"))
 }
 
 /// End of `qual.ident` when `after_ident` is the dot, otherwise `after_ident`.
@@ -2616,6 +2685,28 @@ mod tests {
             qualified.len()
         );
 
+        let mut books = SqlTypeEnv::new();
+        books.insert_table("books", vec![("uuid".into(), SqlType::Text)]);
+        let exact = lower_pg("SELECT 1 FROM books WHERE uuid IN (?, ?)", &books);
+        assert!(
+            exact.contains("WHERE uuid IN ($1, $2)"),
+            "placeholder IN must stay bare so idx_books_uuid matches: {exact}"
+        );
+        assert!(
+            !exact.contains("WHERE (uuid COLLATE"),
+            "placeholder IN must not collate the column: {exact}"
+        );
+        let literal_in = lower_pg("SELECT 1 FROM books WHERE uuid IN ('a')", &books);
+        assert!(
+            literal_in.contains("(uuid COLLATE \"C\") IN"),
+            "a literal IN list still collates: {literal_in}"
+        );
+        let folded = lower_pg("SELECT lower(?)", &SqlTypeEnv::new());
+        assert!(
+            folded.contains("lower(($1 COLLATE \"C\"))"),
+            "a placeholder argument of lower must use the C locale: {folded}"
+        );
+
         let mut jobs = SqlTypeEnv::new();
         jobs.insert_table(
             "jobs",
@@ -3386,6 +3477,7 @@ mod nocase_index_postgres {
 
     fn lower_ddl(sql: &str) -> String {
         super::lower_canonical_ddl_to_postgres_with(sql, Some(&books_env()))
+            .unwrap_or_else(|err| panic!("{sql}: {err}"))
     }
 
     fn lower_dml(sql: &str) -> String {
@@ -3522,7 +3614,8 @@ mod nocase_index_postgres {
         let index = super::lower_canonical_ddl_to_postgres_with(
             "CREATE INDEX idx ON books(title COLLATE NOCASE, slug, id)",
             Some(&env),
-        );
+        )
+        .expect("typed index");
         assert!(index.contains("(slug COLLATE \"C\")"), "{index}");
         assert!(
             !index.contains("(id COLLATE") && !index.contains(" id COLLATE"),
@@ -3547,7 +3640,7 @@ mod nocase_index_postgres {
     #[test]
     fn nulls_inside_an_identifier_still_gets_nulls_first() {
         let index = "CREATE INDEX idx ON books(nulls_flag, title COLLATE NOCASE)";
-        let lowered = lower_canonical_ddl_to_postgres(index);
+        let lowered = lower_canonical_ddl_to_postgres(index).expect("index without a tie-break");
         assert!(lowered.contains("nulls_flag NULLS FIRST"), "{lowered}");
         assert!(
             !lowered.contains("nulls_flag NULLS FIRST NULLS"),
@@ -3586,6 +3679,28 @@ mod nocase_index_postgres {
         assert!(
             !postgres.contains("(uuid COLLATE"),
             "a blob column named uuid must not take a text collation: {postgres}"
+        );
+    }
+
+    #[test]
+    fn untyped_create_index_fails_closed() {
+        let tie = "CREATE INDEX idx ON books(title COLLATE NOCASE, uuid)";
+        let err = lower_canonical_ddl_to_postgres(tie).expect_err("untyped tie-break");
+        assert!(
+            err.to_string().contains("uuid"),
+            "the error names the untyped key: {err}"
+        );
+        let expr = "CREATE INDEX idx ON books(lower(uuid))";
+        let err = lower_canonical_ddl_to_postgres(expr).expect_err("untyped lower()");
+        assert!(err.to_string().contains("uuid"), "{err}");
+        let non_text = {
+            let mut env = SqlTypeEnv::new();
+            env.insert_table("books", vec![("uuid".into(), SqlType::Blob)]);
+            super::lower_canonical_ddl_to_postgres_with(expr, Some(&env))
+        };
+        assert!(
+            non_text.is_err(),
+            "lower() of a non-text column must not build an index"
         );
     }
 
