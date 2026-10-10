@@ -186,12 +186,16 @@ async fn redeem(
     )
     .await?;
 
-    if REDEEM_LOSE_HTTP_RESPONSES
+    // `try_update` is 1.95+ and does not compile on the 1.94 MSRV. `fetch_update`
+    // is slated for deprecation (1.99); the allow keeps `-D warnings` green once
+    // it lands. Switch to `try_update` when MSRV reaches 1.95.
+    #[allow(deprecated)]
+    let lose_response = REDEEM_LOSE_HTTP_RESPONSES
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
             (v > 0).then_some(v - 1)
         })
-        .is_ok()
-    {
+        .is_ok();
+    if lose_response {
         return Err(PortalError::unavailable(
             "database temporarily unavailable — retry the same redeem",
         ));
