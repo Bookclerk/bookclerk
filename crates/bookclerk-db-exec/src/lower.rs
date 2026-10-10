@@ -475,7 +475,52 @@ fn sqlite_fns_to_postgres(sql: &str) -> String {
         "json(CASE WHEN resume_pending != 0 THEN 'true' ELSE 'false' END)",
         "(resume_pending != 0)",
     );
+    let sql = rewrite_substr(&sql);
     rewrite_julianday_delta(&sql)
+}
+
+/// Casts `substr` start and length arguments to `INTEGER`.
+///
+/// Postgres `substr(text, int, int)` does not accept bigint. A bound INTEGER
+/// parameter is bigint, so `substr(body, ?, ?)` would otherwise be
+/// `substr(text, bigint, bigint)`. SQLite keeps the original call.
+fn rewrite_substr(sql: &str) -> String {
+    let mut i = 0;
+    let mut out = String::with_capacity(sql.len() + 32);
+    while i < sql.len() {
+        if let Some(len) = literal_or_comment_len(&sql[i..]) {
+            out.push_str(&sql[i..i + len]);
+            i += len;
+            continue;
+        }
+        if ident_call_at(sql, i, "substr") {
+            let open = sql[i + "substr".len()..]
+                .char_indices()
+                .find(|(_, c)| !c.is_whitespace())
+                .map(|(off, _)| i + "substr".len() + off)
+                .unwrap_or(i + "substr".len());
+            if let Some((args, rest)) = split_call_args(&sql[open + 1..]) {
+                if args.len() == 2 || args.len() == 3 {
+                    let rewritten: Vec<String> =
+                        args.iter().map(|arg| rewrite_substr(arg)).collect();
+                    out.push_str("substr(");
+                    out.push_str(&rewritten[0]);
+                    for arg in rewritten.iter().skip(1) {
+                        out.push_str(", CAST(");
+                        out.push_str(arg);
+                        out.push_str(" AS INTEGER)");
+                    }
+                    out.push(')');
+                    i = sql.len() - rest.len();
+                    continue;
+                }
+            }
+        }
+        let ch = sql[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Replaces a function ident (`name(`) with `pg_name(` (case-insensitive).
@@ -3406,12 +3451,30 @@ mod tests {
             vec![DbValue::Int64(1), DbValue::Int64(1)],
         );
         assert!(
-            nested.contains("substr((body COLLATE \"C\"), $1, $2)"),
-            "the text column stays collated and the integer binds stay bare: {nested}"
+            nested
+                .contains("substr((body COLLATE \"C\"), CAST($1 AS INTEGER), CAST($2 AS INTEGER))"),
+            "the text column stays collated and the integer binds are int4: {nested}"
         );
         assert!(
             !nested.contains("$1 COLLATE") && !nested.contains("$2 COLLATE"),
             "{nested}"
+        );
+        let sqlite = lower_canonical_sql(
+            DatabaseBackend::Sqlite,
+            "SELECT lower(substr(body, ?, ?)) FROM typed WHERE n = 7",
+        );
+        assert_eq!(
+            sqlite,
+            "SELECT lower(substr(body, ?, ?)) FROM typed WHERE n = 7"
+        );
+        let two = lower_pg_binds(
+            "SELECT substr(body, ?) FROM typed",
+            &env,
+            vec![DbValue::Int64(1)],
+        );
+        assert!(
+            two.contains("substr((body COLLATE \"C\"), CAST($1 AS INTEGER))"),
+            "{two}"
         );
         let subquery = lower_pg_binds(
             "SELECT lower((SELECT name FROM typed WHERE id = ?))",

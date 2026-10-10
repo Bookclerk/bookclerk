@@ -67,8 +67,9 @@ pub const PORTABLE_LOWER_PLACEHOLDER_SELECT: &str = "SELECT lower(?) FROM typed 
 /// `lower(substr(body, ?, ?))` with integer binds.
 ///
 /// The placeholders are the substr index and length, not text arguments of
-/// `lower`. Postgres rejects `COLLATE` on bigint, so they stay bare. The
-/// first character of the non-ASCII row is still `É`.
+/// `lower`. Postgres rejects `COLLATE` on bigint, so they stay bare. It also
+/// rejects `substr(text, bigint, bigint)`, so lowering casts those arguments
+/// to `INTEGER`. The first character of the non-ASCII row is still `É`.
 pub const PORTABLE_LOWER_SUBSTR_SELECT: &str =
     "SELECT lower(substr(body, ?, ?)) FROM typed WHERE n = 7";
 
