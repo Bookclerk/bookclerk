@@ -135,6 +135,53 @@ def test_check_rejects_kv_oauth_binding():
         check_plugin(FIXTURES / "invalid-kv-oauth")
 
 
+def test_binding_errors_identify_the_row_not_the_name():
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    base = {
+        "api_version": 3,
+        "id": "echo",
+        "runtime": "native",
+        "command": "./echo",
+        "entrypoints": ["cli"],
+        "capabilities": {"network": {"mode": "deny"}},
+    }
+    duplicate = {
+        **base,
+        "kv_namespaces": [{"binding": "CACHE"}, {"binding": "CACHE"}],
+    }
+    with pytest.raises(
+        ValueError, match=r"\[kv_namespaces\]\[1\] binding collides"
+    ) as duplicate_err:
+        validate_manifest(duplicate)
+    assert "CACHE" not in str(duplicate_err.value)
+
+    reserved = {
+        **base,
+        "kv_namespaces": [{"binding": "CACHE"}, {"binding": "OAUTH"}],
+    }
+    with pytest.raises(
+        ValueError, match=r"\[kv_namespaces\]\[1\] binding collides"
+    ) as reserved_err:
+        validate_manifest(reserved)
+    assert "OAUTH" not in str(reserved_err.value)
+
+    pattern = {
+        **base,
+        "events": {
+            "producers": [
+                {"type": "book_ready", "binding": "EVENTS"},
+                {"type": "scan_done", "binding": "not-valid"},
+            ]
+        },
+    }
+    with pytest.raises(
+        ValueError, match=r"\[events\.producers\]\[1\] binding must be"
+    ) as pattern_err:
+        validate_manifest(pattern)
+    assert "not-valid" not in str(pattern_err.value)
+
+
 def test_check_rejects_undeclared_python_file():
     with pytest.raises(ValueError, match="undeclared Python file"):
         check_plugin(FIXTURES / "invalid-undeclared-python")

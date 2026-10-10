@@ -399,31 +399,41 @@ function validateSurface(m: Manifest): void {
     bindings.add(name);
   }
   const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH"]);
-  const named: Array<[string, string]> = [];
-  if (m.secrets) named.push(["secrets", m.secrets.binding || "SECRETS"]);
-  if (m.work_fs) named.push(["work_fs", m.work_fs.binding || "WORK_FS"]);
-  if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH"]);
-  for (const kv of m.kv_namespaces ?? []) {
-    named.push(["kv_namespaces", kv.binding || "KV"]);
+  // Row index, not the binding text. The text can be an oauth name, and an
+  // error that includes it is logged as clear text.
+  const named: Array<[string, string, number]> = [];
+  if (m.secrets) named.push(["secrets", m.secrets.binding || "SECRETS", 0]);
+  if (m.work_fs) named.push(["work_fs", m.work_fs.binding || "WORK_FS", 0]);
+  if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH", 0]);
+  for (const [index, kv] of (m.kv_namespaces ?? []).entries()) {
+    named.push(["kv_namespaces", kv.binding || "KV", index]);
   }
-  for (const producer of m.events?.producers ?? []) {
-    named.push(["events.producers", producer.binding || "EVENTS"]);
+  for (const [index, producer] of (m.events?.producers ?? []).entries()) {
+    named.push(["events.producers", producer.binding || "EVENTS", index]);
   }
-  for (const [table, name] of named) {
+  for (const [table, name, index] of named) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
-      throw new Error(`plugin.toml: [${table}] binding must be \`[A-Z][A-Z0-9_]*\``);
+      throw new Error(
+        `plugin.toml: [${table}][${index}] binding must be \`[A-Z][A-Z0-9_]*\``,
+      );
     }
     if (table === "kv_namespaces" && reserved.has(name)) {
-      throw new Error(`plugin.toml: [${table}] binding collides with another binding`);
+      throw new Error(
+        `plugin.toml: [${table}][${index}] binding collides with another binding`,
+      );
     }
     if (name === "CONFIG" || bindings.has(name)) {
-      throw new Error(`plugin.toml: [${table}] binding collides with another binding`);
+      throw new Error(
+        `plugin.toml: [${table}][${index}] binding collides with another binding`,
+      );
     }
   }
-  for (const [table, name] of named) {
+  for (const [table, name, index] of named) {
     if (table === "events.producers") continue;
     if (bindings.has(name)) {
-      throw new Error(`plugin.toml: [${table}] binding collides with another binding`);
+      throw new Error(
+        `plugin.toml: [${table}][${index}] binding collides with another binding`,
+      );
     }
     bindings.add(name);
   }

@@ -555,39 +555,43 @@ def _validate_surface(m: dict[str, Any]) -> None:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
     reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV}
-    named: list[tuple[str, str]] = []
+    # Row index, not the binding text. The text can be an oauth name, and an
+    # error that includes it is logged as clear text.
+    named: list[tuple[str, str, int]] = []
     secrets = m.get(_SEALED_TABLE)
     if isinstance(secrets, dict):
-        named.append(("secrets", str(secrets.get("binding") or _SEALED_ENV)))
+        named.append(("secrets", str(secrets.get("binding") or _SEALED_ENV), 0))
     work_fs = m.get("work_fs")
     if isinstance(work_fs, dict):
-        named.append(("work_fs", str(work_fs.get("binding") or "WORK_FS")))
+        named.append(("work_fs", str(work_fs.get("binding") or "WORK_FS"), 0))
     oauth = m.get(_LOOPBACK_TABLE)
     if isinstance(oauth, dict):
-        named.append(("oauth", str(oauth.get("binding") or _LOOPBACK_ENV)))
-    for kv in m.get("kv_namespaces") or []:
-        named.append(("kv_namespaces", str(kv.get("binding") or "KV")))
-    for producer in (m.get("events") or {}).get("producers") or []:
-        named.append(("events.producers", str(producer.get("binding") or "EVENTS")))
-    for table, name in named:
+        named.append(("oauth", str(oauth.get("binding") or _LOOPBACK_ENV), 0))
+    for index, kv in enumerate(m.get("kv_namespaces") or []):
+        named.append(("kv_namespaces", str(kv.get("binding") or "KV"), index))
+    for index, producer in enumerate((m.get("events") or {}).get("producers") or []):
+        named.append(
+            ("events.producers", str(producer.get("binding") or "EVENTS"), index)
+        )
+    for table, name, index in named:
         if not _DATABASE_BINDING_RE.match(name) or len(name) > 32:
             raise ValueError(
-                f"plugin.toml: [{table}] binding must be `[A-Z][A-Z0-9_]*`"
+                f"plugin.toml: [{table}][{index}] binding must be `[A-Z][A-Z0-9_]*`"
             )
         if table == "kv_namespaces" and name in reserved:
             raise ValueError(
-                f"plugin.toml: [{table}] binding collides with another binding"
+                f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
         if name == "CONFIG" or name in bindings:
             raise ValueError(
-                f"plugin.toml: [{table}] binding collides with another binding"
+                f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
-    for table, name in named:
+    for table, name, index in named:
         if table == "events.producers":
             continue
         if name in bindings:
             raise ValueError(
-                f"plugin.toml: [{table}] binding collides with another binding"
+                f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
         bindings.add(name)
 

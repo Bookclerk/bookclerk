@@ -1187,31 +1187,33 @@ impl PluginManifest {
                     )));
                 }
             }
-            let mut named: Vec<(&str, &str)> = Vec::new();
+            // Row index, not the binding text. The text can be an oauth name,
+            // and an error that includes it is logged as clear text.
+            let mut named: Vec<(&str, &str, usize)> = Vec::new();
             if let Some(b) = &self.secrets {
-                named.push(("secrets", b.name_or(DEFAULT_SECRETS_BINDING)));
+                named.push(("secrets", b.name_or(DEFAULT_SECRETS_BINDING), 0));
             }
             if let Some(b) = &self.work_fs {
-                named.push(("work_fs", b.name_or(DEFAULT_WORK_FS_BINDING)));
+                named.push(("work_fs", b.name_or(DEFAULT_WORK_FS_BINDING), 0));
             }
             if let Some(b) = &self.oauth {
-                named.push(("oauth", b.name_or(DEFAULT_OAUTH_BINDING)));
+                named.push(("oauth", b.name_or(DEFAULT_OAUTH_BINDING), 0));
             }
-            for b in &self.kv_namespaces {
-                named.push(("kv_namespaces", b.name_or(DEFAULT_KV_BINDING)));
+            for (index, b) in self.kv_namespaces.iter().enumerate() {
+                named.push(("kv_namespaces", b.name_or(DEFAULT_KV_BINDING), index));
             }
-            for p in &self.events.producers {
-                named.push(("events.producers", p.binding_name()));
+            for (index, p) in self.events.producers.iter().enumerate() {
+                named.push(("events.producers", p.binding_name(), index));
             }
-            for (table, name) in &named {
+            for &(table, name, index) in &named {
                 if !is_valid_database_binding_name(name) {
                     return Err(Error::message(format!(
-                        "plugin.toml: [{table}] binding must be `[A-Z][A-Z0-9_]*`"
+                        "plugin.toml: [{table}][{index}] binding must be `[A-Z][A-Z0-9_]*`"
                     )));
                 }
-                if *table == "kv_namespaces"
+                if table == "kv_namespaces"
                     && matches!(
-                        *name,
+                        name,
                         CONFIG_BINDING
                             | DEFAULT_SECRETS_BINDING
                             | DEFAULT_EVENTS_BINDING
@@ -1220,19 +1222,19 @@ impl PluginManifest {
                     )
                 {
                     return Err(Error::message(format!(
-                        "plugin.toml: [{table}] binding collides with another binding"
+                        "plugin.toml: [{table}][{index}] binding collides with another binding"
                     )));
                 }
-                if *name == CONFIG_BINDING || seen.contains(name) {
+                if name == CONFIG_BINDING || seen.contains(name) {
                     return Err(Error::message(format!(
-                        "plugin.toml: [{table}] binding collides with another binding"
+                        "plugin.toml: [{table}][{index}] binding collides with another binding"
                     )));
                 }
             }
-            for (table, name) in &named {
-                if *table != "events.producers" && !seen.insert(name) {
+            for &(table, name, index) in &named {
+                if table != "events.producers" && !seen.insert(name) {
                     return Err(Error::message(format!(
-                        "plugin.toml: [{table}] binding collides with another binding"
+                        "plugin.toml: [{table}][{index}] binding collides with another binding"
                     )));
                 }
             }
@@ -2271,5 +2273,67 @@ mode = "deny"
         let producer_rejected =
             PluginManifest::parse(producer).is_err_and(|err| err.to_string().contains("collides"));
         assert!(producer_rejected, "{}", u8::from(producer_rejected));
+    }
+
+    #[test]
+    fn binding_errors_identify_the_row_not_the_name() {
+        let second_kv = PluginManifest::parse(&native(
+            r#"
+[[kv_namespaces]]
+binding = "CACHE"
+[[kv_namespaces]]
+binding = "CACHE"
+"#,
+        ))
+        .is_err_and(|err| {
+            let msg = err.to_string();
+            msg.contains("[kv_namespaces][1] binding collides with another binding")
+                && !msg.contains("CACHE")
+        });
+        assert!(second_kv, "{}", u8::from(second_kv));
+
+        let reserved = PluginManifest::parse(&native(
+            r#"
+[[kv_namespaces]]
+binding = "CACHE"
+[[kv_namespaces]]
+binding = "OAUTH"
+"#,
+        ))
+        .is_err_and(|err| {
+            let msg = err.to_string();
+            msg.contains("[kv_namespaces][1] binding collides with another binding")
+                && !msg.contains("OAUTH")
+        });
+        assert!(reserved, "{}", u8::from(reserved));
+
+        let pattern = PluginManifest::parse(&native(
+            r#"
+[[events.producers]]
+type = "book_ready"
+binding = "EVENTS"
+[[events.producers]]
+type = "scan_done"
+binding = "not-valid"
+"#,
+        ))
+        .is_err_and(|err| {
+            let msg = err.to_string();
+            msg.contains("[events.producers][1] binding must be `[A-Z][A-Z0-9_]*`")
+                && !msg.contains("not-valid")
+        });
+        assert!(pattern, "{}", u8::from(pattern));
+
+        let secrets = PluginManifest::parse(&native(
+            r#"
+[secrets]
+binding = "CONFIG"
+"#,
+        ))
+        .is_err_and(|err| {
+            err.to_string()
+                .contains("[secrets][0] binding collides with another binding")
+        });
+        assert!(secrets, "{}", u8::from(secrets));
     }
 }

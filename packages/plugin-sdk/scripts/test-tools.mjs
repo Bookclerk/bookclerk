@@ -185,6 +185,51 @@ if (!unquotedDateRejected) {
   console.error("FAIL unquoted compatibility_date was not rejected as a non-string", Number(unquotedDateRejected));
   process.exit(1);
 }
+const bindingBase = {
+  api_version: 3,
+  id: "echo",
+  runtime: "native",
+  command: "./echo",
+  entrypoints: ["cli"],
+  capabilities: { network: { mode: "deny" } },
+};
+function bindingMessage(manifest) {
+  try {
+    validateManifest(manifest);
+  } catch (err) {
+    return err instanceof Error ? err.message : "";
+  }
+  return "";
+}
+const duplicateKv = bindingMessage({
+  ...bindingBase,
+  kv_namespaces: [{ binding: "CACHE" }, { binding: "CACHE" }],
+});
+const reservedKv = bindingMessage({
+  ...bindingBase,
+  kv_namespaces: [{ binding: "CACHE" }, { binding: "OAUTH" }],
+});
+const badProducer = bindingMessage({
+  ...bindingBase,
+  events: {
+    producers: [
+      { type: "book_ready", binding: "EVENTS" },
+      { type: "scan_done", binding: "not-valid" },
+    ],
+  },
+});
+const rowIndexed =
+  duplicateKv.includes("[kv_namespaces][1] binding collides") &&
+  !duplicateKv.includes("CACHE") &&
+  reservedKv.includes("[kv_namespaces][1] binding collides") &&
+  !reservedKv.includes("OAUTH") &&
+  badProducer.includes("[events.producers][1] binding must be") &&
+  !badProducer.includes("not-valid");
+if (!rowIndexed) {
+  console.error("FAIL binding errors omitted the row index", Number(rowIndexed));
+  process.exit(1);
+}
+console.log("ok binding errors name the row index");
 const nameOnly = formatManifest({
   api_version: 3,
   id: "echo",
