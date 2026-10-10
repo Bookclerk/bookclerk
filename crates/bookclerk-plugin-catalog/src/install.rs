@@ -2376,6 +2376,29 @@ mod tests {
     }
 
     #[test]
+    fn remove_purge_state_restores_tree_and_ledger_when_prep_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugins, dest, key, _, _, _) = installed_echo(tmp.path());
+        let state = dest_state(tmp.path(), &key);
+        write_state_marker(&state, "keep-me");
+        let lock = PluginMutationLock::acquire(tmp.path()).unwrap();
+        let err =
+            Installer::remove_with_lock_preparing_purge(&lock, &plugins, "echo", true, |_| {
+                Err("prep failed".into())
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prep failed"), "{err}");
+        assert!(err.contains("plugin state ACL journal"), "{err}");
+        assert!(path_under(tmp.path(), &dest).is_dir());
+        assert_eq!(
+            fs::read(under_tmp(&state, "data/marker")).unwrap(),
+            b"keep-me"
+        );
+        assert!(InstallLedger::load(tmp.path()).unwrap().get(&key).is_some());
+    }
+
+    #[test]
     fn remove_with_valid_receipt_drops_tree_and_ledger_row() {
         let tmp = tempfile::tempdir().unwrap();
         let (plugins, dest, key, _, _, _) = installed_echo(tmp.path());
