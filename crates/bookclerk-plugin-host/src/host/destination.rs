@@ -574,13 +574,24 @@ async fn spawn_s3_from_instance(
     let context = instance_s3_context(&prepared)?;
     let operator = operator_s3_credentials(db).await?;
     let secrets = s3_open_secrets(&prepared, operator.as_ref())?;
+    let endpoint = context
+        .get("endpoint")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(str::to_string);
+    let services = crate::SessionServices {
+        deployed_s3_endpoint: Some(endpoint),
+        ..crate::SessionServices::default()
+    };
     let session = Arc::new(
-        PluginSession::spawn_for_account_with_env(
+        PluginSession::spawn_with(
             plugin,
             config,
             context.clone(),
             crate::OPERATOR_ACCOUNT,
             &[],
+            services,
         )
         .await?,
     );
@@ -880,5 +891,82 @@ mod tests {
             .expect("context")
             .get("credentials")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn operator_row_is_visible_when_the_database_is_passed() {
+        let _lock = bookclerk_config::ProcessEnvGuard::enter();
+        let previous = AwsEnv::clear();
+        let files = tempfile::tempdir().expect("files");
+        bookclerk_library::configure_master_key(files.path()).expect("dek");
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .expect("sqlite");
+        bookclerk_storage::save_s3_credentials(
+            &db,
+            &bookclerk_storage::S3Credentials {
+                access_key_id: "AKIADB".into(),
+                secret_access_key: "from-db".into(),
+                session_token: None,
+                label: None,
+            },
+        )
+        .await
+        .expect("save operator row");
+
+        let from_db = super::operator_s3_credentials(Some(&db))
+            .await
+            .expect("db")
+            .expect("operator row");
+        assert_eq!(from_db.access_key_id, "AKIADB");
+        assert!(
+            super::operator_s3_credentials(None)
+                .await
+                .expect("no env")
+                .is_none(),
+            "db=None must not see the operator encrypted_secrets row"
+        );
+        drop(previous);
+    }
+
+    struct AwsEnv {
+        access: Option<String>,
+        secret: Option<String>,
+        token: Option<String>,
+    }
+
+    impl AwsEnv {
+        #[allow(unsafe_code)]
+        fn clear() -> Self {
+            let saved = Self {
+                access: std::env::var(bookclerk_storage::ENV_AWS_ACCESS_KEY_ID).ok(),
+                secret: std::env::var(bookclerk_storage::ENV_AWS_SECRET_ACCESS_KEY).ok(),
+                token: std::env::var(bookclerk_storage::ENV_AWS_SESSION_TOKEN).ok(),
+            };
+            unsafe {
+                std::env::remove_var(bookclerk_storage::ENV_AWS_ACCESS_KEY_ID);
+                std::env::remove_var(bookclerk_storage::ENV_AWS_SECRET_ACCESS_KEY);
+                std::env::remove_var(bookclerk_storage::ENV_AWS_SESSION_TOKEN);
+            }
+            saved
+        }
+    }
+
+    impl Drop for AwsEnv {
+        fn drop(&mut self) {
+            restore(bookclerk_storage::ENV_AWS_ACCESS_KEY_ID, &self.access);
+            restore(bookclerk_storage::ENV_AWS_SECRET_ACCESS_KEY, &self.secret);
+            restore(bookclerk_storage::ENV_AWS_SESSION_TOKEN, &self.token);
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn restore(key: &str, value: &Option<String>) {
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 }

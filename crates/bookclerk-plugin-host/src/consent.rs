@@ -2039,13 +2039,29 @@ pub fn overlay_host_implied_network(
     config: &Config,
     discovered: &[crate::discover::DiscoveredPlugin],
 ) {
+    overlay_host_implied_network_with(grant, plugin, config, discovered, None);
+}
+
+/// [`overlay_host_implied_network`] with a deployed S3 document endpoint.
+///
+/// `deployed_s3_endpoint` of `Some` means this spawn is a deployed S3
+/// instance. The inner value is the document `endpoint` (`None` when the
+/// document has no custom endpoint). That path does not read
+/// `[output.s3].endpoint`.
+pub(crate) fn overlay_host_implied_network_with(
+    grant: &mut PluginGrant,
+    plugin: &crate::discover::DiscoveredPlugin,
+    config: &Config,
+    discovered: &[crate::discover::DiscoveredPlugin],
+    deployed_s3_endpoint: Option<Option<&str>>,
+) {
     if !grant.network_mode.eq_ignore_ascii_case("outbound") {
         return;
     }
     overlay_postgres_url(grant, plugin, config, discovered);
     overlay_d1_api_base(grant, plugin, config, discovered);
     overlay_audiobookshelf_url(grant, plugin, config, discovered);
-    overlay_s3_endpoint(grant, plugin, config, discovered);
+    overlay_s3_endpoint(grant, plugin, config, discovered, deployed_s3_endpoint);
 }
 
 /// SHA-256 of host config that participates in implied network overlays.
@@ -2261,8 +2277,15 @@ fn overlay_s3_endpoint(
     plugin: &crate::discover::DiscoveredPlugin,
     config: &Config,
     discovered: &[crate::discover::DiscoveredPlugin],
+    deployed_s3_endpoint: Option<Option<&str>>,
 ) {
     if !plugin.alias().eq_ignore_ascii_case("s3") {
+        return;
+    }
+    if let Some(endpoint) = deployed_s3_endpoint {
+        if let Some(endpoint) = endpoint.filter(|endpoint| !endpoint.trim().is_empty()) {
+            overlay_http_url(grant, endpoint, 443);
+        }
         return;
     }
     let spec = crate::occupancy_spec(&config.output.s3.plugin, "s3");
@@ -3106,6 +3129,58 @@ mode = "outbound"
         overlay_host_implied_network(&mut grant, &plugin, &config, std::slice::from_ref(&plugin));
         assert!(grant.egress_policy().allows_tcp("127.0.0.1", 9000));
         assert!(grant.address_cidrs.contains("127.0.0.1/32"));
+    }
+
+    #[test]
+    fn deployed_s3_document_host_is_the_network_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = discovered(
+            dir.path(),
+            r#"
+api_version = 3
+id = "s3"
+runtime = "native"
+command = "./guest"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "outbound"
+
+[vars]
+"#,
+        );
+        let mut config = Config::default();
+        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
+        let mut grant = consent_request(&plugin.manifest, plugin.plugin_key());
+        overlay_host_implied_network_with(
+            &mut grant,
+            &plugin,
+            &config,
+            std::slice::from_ref(&plugin),
+            Some(Some("http://minio.lan:9000")),
+        );
+        let policy = grant.egress_policy();
+        assert!(
+            policy.allows_tcp("minio.lan", 9000),
+            "document endpoint must be in the spawn network grant: {policy:?}"
+        );
+        assert!(
+            !policy.allows_tcp("127.0.0.1", 9000),
+            "a stale [output.s3].endpoint must not be granted to a deployed instance: {policy:?}"
+        );
+
+        let mut bare = consent_request(&plugin.manifest, plugin.plugin_key());
+        overlay_host_implied_network_with(
+            &mut bare,
+            &plugin,
+            &config,
+            std::slice::from_ref(&plugin),
+            Some(None),
+        );
+        assert!(
+            bare.tcp.is_empty(),
+            "a document with no endpoint must not inherit the TOML endpoint: {bare:?}"
+        );
     }
 
     #[test]

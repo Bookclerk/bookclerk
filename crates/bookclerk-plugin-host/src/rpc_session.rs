@@ -501,6 +501,13 @@ pub struct SessionServices {
     /// `None` uses `[output.local].root` when that output is enabled. A set
     /// path is the jail write grant and replaces the TOML root.
     pub local_output_root: Option<std::path::PathBuf>,
+    /// Deployed S3 network authority.
+    ///
+    /// `None` keeps the transitional `[output.s3].endpoint` overlay. `Some`
+    /// replaces that overlay with the instance document endpoint. `Some(None)`
+    /// means the document has no custom endpoint, so the TOML endpoint is not
+    /// granted.
+    pub deployed_s3_endpoint: Option<Option<String>>,
 }
 
 impl SessionServices {
@@ -512,6 +519,7 @@ impl SessionServices {
             spawn_transport: SpawnTransport::default(),
             selected_instance_id: None,
             local_output_root: None,
+            deployed_s3_endpoint: None,
         }
     }
 
@@ -523,6 +531,7 @@ impl SessionServices {
             spawn_transport: SpawnTransport::default(),
             selected_instance_id: None,
             local_output_root: None,
+            deployed_s3_endpoint: None,
         }
     }
 
@@ -537,6 +546,7 @@ impl SessionServices {
             spawn_transport: SpawnTransport::DirectNativeDiagnostic,
             selected_instance_id: None,
             local_output_root: None,
+            deployed_s3_endpoint: None,
         }
     }
 }
@@ -671,6 +681,10 @@ impl PluginSession {
             )));
         }
         let plan = SpawnPlan::resolve(plugin, services.spawn_transport)?;
+        let deployed_s3_endpoint = services
+            .deployed_s3_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.as_deref());
         let spawned = crate::spawn_stdio::spawn_stdio_guest(
             plugin,
             &plan,
@@ -678,6 +692,7 @@ impl PluginSession {
             config_table,
             extra_env,
             services.local_output_root.as_deref(),
+            deployed_s3_endpoint,
         )
         .await?;
         Self::connect_spawned(spawned, plugin, &plan, account_id, services, config).await
@@ -719,6 +734,10 @@ impl PluginSession {
         let gateway_pid = spawned.gateway_pid;
         let session_dir = spawned.session_dir.clone();
         let instance_key = plugin_instance_key(&id, account_id);
+        let deployed_s3_endpoint = services
+            .deployed_s3_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.as_deref());
         let identity = ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
             .with_overlay_config(config)
             .with_persisted_and_effective(&spawned.persisted_grant, &spawned.grant);
@@ -748,7 +767,7 @@ impl PluginSession {
         wait_test_hold("BOOKCLERK_TEST_STARTUP_HOLD_DIR", None).await;
         {
             let _epoch = crate::authority::lock_grant_epoch();
-            grant_still_current(&files_dir, plugin, config, &identity)?;
+            grant_still_current(&files_dir, plugin, config, &identity, deployed_s3_endpoint)?;
         }
         // The first read matched. Release the epoch lock so a revoke can land,
         // then re-read and register as one critical section. Describe starts
@@ -762,7 +781,9 @@ impl PluginSession {
         let shutdown_tx = tx.clone();
         let authority_fence = {
             let _epoch = crate::authority::lock_grant_epoch();
-            if let Err(err) = grant_still_current(&files_dir, plugin, config, &identity) {
+            if let Err(err) =
+                grant_still_current(&files_dir, plugin, config, &identity, deployed_s3_endpoint)
+            {
                 cancel.store(true, Ordering::SeqCst);
                 return Err(err);
             }
@@ -826,7 +847,7 @@ impl PluginSession {
                 desc.api_version
             )));
         }
-        grant_still_current(&files_dir, plugin, config, &identity)?;
+        grant_still_current(&files_dir, plugin, config, &identity, deployed_s3_endpoint)?;
         let authority_fence = owner.disarm();
         Ok(Self {
             tx,
@@ -2368,9 +2389,11 @@ fn grant_still_current(
     plugin: &DiscoveredPlugin,
     config: &Config,
     identity: &ExecutorIdentity,
+    deployed_s3_endpoint: Option<Option<&str>>,
 ) -> Result<()> {
     let persisted = crate::consent::spawn_grant(files_dir, plugin)?;
-    let effective = crate::spawn_stdio::effective_spawn_grant(&persisted, plugin, config);
+    let effective =
+        crate::spawn_stdio::effective_spawn_grant(&persisted, plugin, config, deployed_s3_endpoint);
     let grant_rev = crate::consent::grant_revision(&persisted);
     let authority_rev = crate::authority::authority_revision(&effective);
     if grant_rev != identity.grant_revision || authority_rev != identity.authority_revision {
@@ -3942,7 +3965,7 @@ mod tests {
         let journal = crate::spawn_stdio::AclJournal::from_entries_for_test(
             vec![bookclerk_sandbox::spawn::AclJournalEntry {
                 path: std::path::PathBuf::from(r"C:\bookclerk-acl-test\files"),
-                package_sid: "S-1-15-2-111".to_string(),
+                package_sid: "S-1-15-2-111-2-3-4-5-6-7".to_string(),
                 is_dir: true,
                 propagate: false,
             }],
@@ -3981,7 +4004,7 @@ mod tests {
         let mut journal = crate::spawn_stdio::AclJournal::from_entries_for_test(
             vec![bookclerk_sandbox::spawn::AclJournalEntry {
                 path: std::path::PathBuf::from(r"C:\bookclerk-acl-test\files"),
-                package_sid: "S-1-15-2-111".to_string(),
+                package_sid: "S-1-15-2-111-2-3-4-5-6-7".to_string(),
                 is_dir: true,
                 propagate: false,
             }],

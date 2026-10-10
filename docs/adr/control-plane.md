@@ -305,7 +305,8 @@ Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
 not by `PluginInstanceId`. Two instances of one key share credentials and scan
 rows. Acquire fails closed when that key is ambiguous instead of moving those
 rows onto the instance id. Scan records a warning and skips only the ambiguous
-key.
+key. When that key is the only store that would have been scanned, the error
+is that warning.
 
 KV and Queues are unchanged. Named SQL bindings do not replace them.
 

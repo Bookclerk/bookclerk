@@ -1010,13 +1010,14 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
         request: &DeploymentSpawn,
     ) -> std::result::Result<(), String> {
         let config = self.config.read().await.clone();
+        let store = self.store.read().await.clone();
         let plugin = open_installed_plugin(plugin_root, &config.paths().files_dir)?;
         let prepared = crate::instance_bindings::prepared_open_from_resolved(
             request.config.clone(),
             request.secrets.clone(),
             request.config_revision,
         );
-        probe_guest_health(&plugin, &config, prepared).await
+        probe_guest_health(&plugin, &config, prepared, store.db()).await
     }
 
     async fn retire_instance(&self, plugin_instance_id: &str) {
@@ -1123,6 +1124,16 @@ fn open_installed_plugin(
     .map_err(|err| err.to_string())
 }
 
+/// Document `endpoint` when the S3 context includes one.
+fn json_endpoint(context: &serde_json::Value) -> Option<String> {
+    context
+        .get("endpoint")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(str::to_string)
+}
+
 /// Starts the staged guest, calls health, and drops the temporary session.
 ///
 /// The install lock is still held. This function does not acquire it.
@@ -1130,6 +1141,7 @@ async fn probe_guest_health(
     plugin: &crate::DiscoveredPlugin,
     config: &Config,
     prepared: crate::PreparedOpen,
+    db: &sea_orm::DatabaseConnection,
 ) -> std::result::Result<(), String> {
     let services = crate::SessionServices::default();
     if plugin
@@ -1179,11 +1191,12 @@ async fn probe_guest_health(
         if crate::is_first_party_s3_output(plugin) && prepared.from_instance {
             let context =
                 crate::host::instance_s3_context(&prepared).map_err(|err| err.to_string())?;
-            let operator = crate::host::operator_s3_credentials(None)
+            let operator = crate::host::operator_s3_credentials(Some(db))
                 .await
                 .map_err(|err| err.to_string())?;
             let secrets = crate::host::s3_open_secrets(&prepared, operator.as_ref())
                 .map_err(|err| err.to_string())?;
+            services.deployed_s3_endpoint = Some(json_endpoint(&context));
             spawn_config = context.clone();
             open_bindings.config = bookclerk_plugin_sdk::ExtensibleConfig::json(&context);
             open_bindings.secrets = secrets;

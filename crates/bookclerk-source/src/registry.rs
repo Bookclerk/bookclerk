@@ -218,6 +218,9 @@ impl SourceRegistry {
             }
         }
         if !any && total.accounts == 0 {
+            if !ambiguous.is_empty() {
+                return Err(SourceError::api(total.warnings.join("; ")));
+            }
             return Err(SourceError::no_accounts(
                 "no accounts configured — connect a store in the Bookclerk Accounts UI",
             ));
@@ -564,6 +567,60 @@ mod tests {
             summary.warnings
         );
         assert_eq!(summary.accounts, 1);
+    }
+
+    #[tokio::test]
+    async fn scan_all_reports_ambiguity_when_nothing_else_scans() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .expect("sqlite");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("schema");
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let graphic = Arc::new(AtomicUsize::new(0));
+        let mut registry = SourceRegistry::new();
+        registry.register(counting(
+            "graphicaudio",
+            "local/graphicaudio",
+            Some("instance-a"),
+            Arc::clone(&graphic),
+        ));
+        registry.register(counting(
+            "graphicaudio",
+            "local/graphicaudio",
+            Some("instance-b"),
+            Arc::clone(&graphic),
+        ));
+        let err = registry
+            .scan_all(&store, crate::types::ScanOptions::default())
+            .await
+            .expect_err("ambiguity is the error when nothing else scans");
+        let text = err.to_string();
+        assert!(text.contains("instance-a"), "{text}");
+        assert!(text.contains("instance-b"), "{text}");
+        assert!(text.contains("plugin instance id"), "{text}");
+        assert!(
+            !text.contains("connect a store"),
+            "a connected ambiguous store must not look unconfigured: {text}"
+        );
+        assert_eq!(graphic.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let mut filtered = crate::types::ScanOptions::default();
+        filtered.accounts.push("ga-user".into());
+        let filtered_err = registry
+            .scan_all(&store, filtered)
+            .await
+            .expect_err("an explicit account still reports the skipped key");
+        let filtered_text = filtered_err.to_string();
+        assert!(filtered_text.contains("instance-a"), "{filtered_text}");
+        assert!(
+            !filtered_text.contains("connect a store"),
+            "{filtered_text}"
+        );
     }
 
     #[test]

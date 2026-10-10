@@ -90,6 +90,11 @@ pub enum PluginsCommand {
         /// Also delete `$FILES_DIR/plugin-state/<PluginKey>/`.
         #[arg(long)]
         purge_state: bool,
+        /// Delete rejected ACL journals with plugin state. Requires `--purge-state`.
+        /// Does not revoke the package-SID ACEs those records name; read the
+        /// rejected file and remove those ACEs by hand first.
+        #[arg(long)]
+        discard_acl_journals: bool,
     },
     /// Show details for one discovered plugin (local + receipt).
     Info {
@@ -337,7 +342,11 @@ pub async fn run(
             )
             .await
         }
-        PluginsCommand::Remove { id, purge_state } => run_remove(config, &id, purge_state, format),
+        PluginsCommand::Remove {
+            id,
+            purge_state,
+            discard_acl_journals,
+        } => run_remove(config, &id, purge_state, discard_acl_journals, format),
         PluginsCommand::Info { id } => {
             let plugin = find_plugin(config, &id)?;
             let schema = plugin.manifest.cli.clone().unwrap_or_default();
@@ -786,8 +795,12 @@ fn run_remove(
     config: &Config,
     id: &str,
     purge_state: bool,
+    discard_acl_journals: bool,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
+    if discard_acl_journals && !purge_state {
+        anyhow::bail!("--discard-acl-journals requires --purge-state");
+    }
     let plugins_root = config.paths().files_dir.join("plugins");
     let mutation_lock = PluginMutationLock::acquire(&config.paths().files_dir)?;
     if purge_state {
@@ -796,7 +809,9 @@ fn run_remove(
             &plugins_root,
             id,
             true,
-            bookclerk_plugin_host::revoke_plugin_state_before_purge,
+            |state| {
+                bookclerk_plugin_host::revoke_plugin_state_before_purge(state, discard_acl_journals)
+            },
         )?;
     } else {
         Installer::remove_with_lock(&mutation_lock, &plugins_root, id, false)?;
