@@ -234,6 +234,29 @@ pub fn fence_plugin_key(plugin_key: &str) {
     fence_stale_sessions(plugin_key, "");
 }
 
+/// Cancels one live session and runs its shutdown hook.
+///
+/// Host-overlay reload uses this so a stale revision on one vat does not
+/// cancel another vat that shares the PluginKey. A transitional S3 session
+/// and a deployed S3 session can share `s3` while holding different effective
+/// revisions.
+pub(crate) fn fence_session(flag: &Arc<AtomicBool>) {
+    let hook = {
+        let Ok(guard) = live().lock() else {
+            return;
+        };
+        let Some(session) = guard
+            .iter()
+            .find(|session| Arc::ptr_eq(&session.cancelled, flag))
+        else {
+            return;
+        };
+        session.cancelled.store(true, Ordering::SeqCst);
+        Arc::clone(&session.shutdown)
+    };
+    hook();
+}
+
 /// Fences live sessions for `plugin_key` whose revision is not `current_revision`.
 ///
 /// Pass an empty `current_revision` to fence every session for the key.
@@ -316,6 +339,8 @@ pub(crate) struct LiveOverlaySession {
     pub revision: String,
     /// Deployed S3 document endpoint, or `None` for a transitional session.
     pub deployed_s3_endpoint: Option<Option<String>>,
+    /// Cancel flag for this vat. Overlay fencing uses this, not the PluginKey.
+    pub cancelled: Arc<AtomicBool>,
 }
 
 /// Live sessions for overlay reconciliation, including each deployed S3 endpoint.
@@ -328,6 +353,7 @@ pub(crate) fn live_overlay_sessions() -> Vec<LiveOverlaySession> {
                 plugin_key: session.plugin_key.clone(),
                 revision: session.revision.clone(),
                 deployed_s3_endpoint: session.deployed_s3_endpoint.clone(),
+                cancelled: Arc::clone(&session.cancelled),
             })
             .collect(),
         Err(_) => Vec::new(),

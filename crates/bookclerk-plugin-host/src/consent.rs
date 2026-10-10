@@ -2120,6 +2120,10 @@ pub fn host_overlay_config_digest(config: &Config) -> String {
 /// registration. That path does not read `[output.s3].endpoint`, so a settings
 /// reload cannot cancel an in-flight upload because the TOML endpoint differs
 /// or is unset. Transitional sessions still overlay the TOML endpoint.
+///
+/// A revision mismatch fences that session only. Several vats may share one
+/// PluginKey with different effective revisions, and cancelling the key would
+/// kill a deployed upload when a transitional session's TOML endpoint changes.
 pub fn reconcile_host_overlay_authority(config: &Config) {
     let discovered = match crate::discover_plugins(config) {
         Ok(found) => found,
@@ -2161,7 +2165,7 @@ pub fn reconcile_host_overlay_authority(config: &Config) {
         );
         let current = crate::authority::authority_revision(&effective);
         if current != session.revision {
-            crate::authority::fence_stale_sessions(key, &current);
+            crate::authority::fence_session(&session.cancelled);
         }
     }
 }
@@ -3332,8 +3336,27 @@ mode = "outbound"
             !crate::authority::is_fenced(&deployed_flag.0),
             "the document-endpoint session must stay live beside the bare deployed session"
         );
-        drop(deployed_flag);
-        drop(bare_flag);
+
+        let stale_sibling = register_s3(
+            key,
+            &persisted,
+            "not-the-document-revision",
+            Some(Some("http://minio.lan:9000".into())),
+        );
+        reconcile_host_overlay_authority(&config);
+        assert!(
+            crate::authority::is_fenced(&stale_sibling.0),
+            "a deployed session whose revision no longer matches must fence"
+        );
+        assert!(
+            !crate::authority::is_fenced(&deployed_flag.0),
+            "fencing one deployed session must not cancel its sibling"
+        );
+        assert!(
+            !crate::authority::is_fenced(&bare_flag.0),
+            "fencing one deployed session must not cancel the other deployed instance"
+        );
+        drop(stale_sibling);
 
         config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
         let mut transitional = persisted.clone();
@@ -3346,11 +3369,20 @@ mode = "outbound"
             !crate::authority::is_fenced(&transitional_flag.0),
             "an unrelated reload must not fence a transitional session whose TOML endpoint is unchanged"
         );
+        assert!(!crate::authority::is_fenced(&deployed_flag.0));
         config.output.s3.endpoint = Some("http://10.1.1.1:9000".into());
         reconcile_host_overlay_authority(&config);
         assert!(
             crate::authority::is_fenced(&transitional_flag.0),
             "a transitional session must still fence when [output.s3].endpoint changes"
+        );
+        assert!(
+            !crate::authority::is_fenced(&deployed_flag.0),
+            "a TOML endpoint change must not cancel a deployed session that shares the plugin key"
+        );
+        assert!(
+            !crate::authority::is_fenced(&bare_flag.0),
+            "a TOML endpoint change must not cancel a deployed instance with no document endpoint"
         );
     }
 
