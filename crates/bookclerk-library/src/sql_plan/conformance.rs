@@ -1708,6 +1708,23 @@ async fn postgres_binding_portable_functions() {
             bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
         )
     );
+    let mut wide = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_SUBSTR_SELECT,
+        vec![
+            bookclerk_plugin_abi::DbValue::Int64(1),
+            bookclerk_plugin_abi::DbValue::Int64(i64::MAX),
+        ],
+    );
+    wide.max_rows = 8;
+    let wide_reply = run_postgres_binding(&db, binding_req("pg-sel-lower-substr-wide", vec![wide]))
+        .await
+        .expect("wide lower substr");
+    assert_eq!(
+        wide_reply.statements[0].rows[0].values[0],
+        bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
+        )
+    );
 }
 
 #[tokio::test]

@@ -483,7 +483,10 @@ fn sqlite_fns_to_postgres(sql: &str) -> String {
 ///
 /// Postgres `substr(text, int, int)` does not accept bigint. A bound INTEGER
 /// parameter is bigint, so `substr(body, ?, ?)` would otherwise be
-/// `substr(text, bigint, bigint)`. SQLite keeps the original call.
+/// `substr(text, bigint, bigint)`. The argument is evaluated once and clamped
+/// into the int4 range so a length above 2³¹−1 still means "the rest of the
+/// string" instead of `integer out of range`. NULL stays NULL. SQLite keeps
+/// the original call.
 fn rewrite_substr(sql: &str) -> String {
     let mut i = 0;
     let mut out = String::with_capacity(sql.len() + 32);
@@ -506,9 +509,8 @@ fn rewrite_substr(sql: &str) -> String {
                     out.push_str("substr(");
                     out.push_str(&rewritten[0]);
                     for arg in rewritten.iter().skip(1) {
-                        out.push_str(", CAST(");
-                        out.push_str(arg);
-                        out.push_str(" AS INTEGER)");
+                        out.push_str(", ");
+                        out.push_str(&postgres_substr_index(arg));
                     }
                     out.push(')');
                     i = sql.len() - rest.len();
@@ -521,6 +523,16 @@ fn rewrite_substr(sql: &str) -> String {
         i += ch.len_utf8();
     }
     out
+}
+
+/// One evaluation of `arg`, clamped into Postgres `int4`, with NULL preserved.
+///
+/// `LEAST`/`GREATEST` skip NULL, and writing `arg` twice would bind `?` twice.
+/// The scalar subquery names the value once.
+fn postgres_substr_index(arg: &str) -> String {
+    format!(
+        "CAST((SELECT CASE WHEN v IS NULL THEN NULL ELSE LEAST(GREATEST(v, (-2147483648)::bigint), 2147483647::bigint) END FROM (SELECT ({arg}) AS v) AS s) AS INTEGER)"
+    )
 }
 
 /// Replaces a function ident (`name(`) with `pg_name(` (case-insensitive).
@@ -3451,9 +3463,11 @@ mod tests {
             vec![DbValue::Int64(1), DbValue::Int64(1)],
         );
         assert!(
-            nested
-                .contains("substr((body COLLATE \"C\"), CAST($1 AS INTEGER), CAST($2 AS INTEGER))"),
-            "the text column stays collated and the integer binds are int4: {nested}"
+            nested.contains("substr((body COLLATE \"C\"), ")
+                && nested.matches("$1").count() == 1
+                && nested.matches("$2").count() == 1
+                && nested.contains("LEAST(GREATEST(v, (-2147483648)::bigint), 2147483647::bigint)"),
+            "the text column stays collated and each integer bind is clamped once: {nested}"
         );
         assert!(
             !nested.contains("$1 COLLATE") && !nested.contains("$2 COLLATE"),
@@ -3473,7 +3487,9 @@ mod tests {
             vec![DbValue::Int64(1)],
         );
         assert!(
-            two.contains("substr((body COLLATE \"C\"), CAST($1 AS INTEGER))"),
+            two.contains("substr((body COLLATE \"C\"), ")
+                && two.matches("$1").count() == 1
+                && two.contains("LEAST(GREATEST(v, (-2147483648)::bigint), 2147483647::bigint)"),
             "{two}"
         );
         let subquery = lower_pg_binds(

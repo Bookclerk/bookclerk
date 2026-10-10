@@ -652,6 +652,18 @@ async fn binding_portable_functions_and_ddl_types() {
         nested_reply.statements[0].rows[0].values[0],
         DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
     );
+    let mut wide = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_SUBSTR_SELECT,
+        vec![DbValue::Int64(1), DbValue::Int64(i64::MAX)],
+    );
+    wide.max_rows = 8;
+    let wide_reply = run_binding(&db, req("sel-lower-substr-wide", vec![wide]))
+        .await
+        .expect("wide lower substr");
+    assert_eq!(
+        wide_reply.statements[0].rows[0].values[0],
+        DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
+    );
 }
 
 #[tokio::test]
