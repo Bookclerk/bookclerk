@@ -1335,6 +1335,7 @@ mod tests {
             SCHEMA_VERSION,
         ));
         let ddl = bookclerk_db_exec::expand_host_schema_batch(DbBackend::Postgres, &batch)
+            .expect("lower")
             .expect("postgres schema batch")
             .len()
             .saturating_sub(1) as u32;

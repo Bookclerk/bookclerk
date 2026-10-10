@@ -775,9 +775,11 @@ async fn open_control_plane(
     bookclerk_library::control_plane::ControlPlaneSession,
 )> {
     let store = crate::registry::open_library(config).await?;
+    let scratch_dir = config.download_cache_dir();
     let session = bootstrap_control_plane(
         &store,
         &config.paths().files_dir,
+        &scratch_dir,
         config.auth_password().as_deref(),
         &config.events,
     )

@@ -147,9 +147,58 @@ applicable and does not fake enforcement.
 
 The host keeps a journal of each session's package SID and the paths that
 session's spec grants: inheritable leaf ACEs, no-inherit ancestor traverse, and
-the profile folder plus `Temp`. After the session Job is closed, on graceful
-exit, and on failed startup, the host revokes that journal under
-`Local\bookclerk-dacl-tx`. Revoke is idempotent, treats a missing path as
+the profile folder plus `Temp`. After the session Job is closed and the
+siblings have been reaped, on graceful exit and on failed startup, the host
+deletes the AppContainer profiles and then revokes that journal under
+`Local\bookclerk-dacl-tx`. The session directory is removed only when that
+revoke returns success.
+`DeleteAppContainerProfile` does not strip package-SID ACEs, and the profile
+moniker (`bc.<stem>.<hex>`) is not the SID. Directory removal is the signal
+that those ACEs are gone, and only on that success path. Before the jail
+grants those ACEs, the host locks `acl-journals/<session>.lock` and writes the
+complete journal to `acl-journals/<session>.json` in the plugin-state directory,
+beside the session directory. The gateway jail can write only the session
+directory, so it cannot rewrite those paths and SIDs or delete the record to
+skip recovery. If that write fails, the spawn fails and no grants are applied.
+The lock stays until the journal is dropped, so a concurrent session plan does
+not treat this live directory as abandoned. Every non-empty journal write,
+including the rewrite after a failed revoke, syncs the temp file and the
+rename (`sync_all`, and `MOVEFILE_WRITE_THROUGH` on Windows). An empty journal
+is deleted rather than renamed. On Windows the directory gets a protected
+DACL for Administrators, SYSTEM, and the owner, so a parent inheritable write
+ACE does not cover it. Revoke tries every entry and keeps only the ones that
+failed. Open and `try_lock` of `<session>.lock`, and deletion of an orphan
+lock, both hold `acl-journals/.sweep.lock` for that short section so one
+process cannot unlink a lock another process has opened but not locked yet.
+The sweep then holds `<session>.lock` until revoke and directory removal
+finish, and deletes that lock only after success. A later sweep also deletes
+a `.lock` whose `.json` is gone. If revoke later fails or stops partway, the
+host replaces the file with the entries that failed and leaves the directory
+in place. A failed replacement does not remove the earlier file. Host startup
+retries every `plugin-state/*/acl-journals/session-*.json`, and the next
+native-behind-workerd plan of that plugin retries again. A journal is accepted
+only when every path is a local absolute path and it names at most two
+AppContainer package SIDs with exactly seven RIDs after `S-1-15-2-`. That
+excludes `S-1-15-2-1` and `S-1-15-2-2`. A UNC share or a device path, including
+a UNC `[output.local].root`, fails that check and the error names the path;
+map a drive letter or use the S3 destination. A record that cannot be parsed
+or fails that check is renamed to `session-*.json.rejected` and logged once.
+Nothing revokes the grants in that file. The session directory stays. Sweeps
+skip the renamed file. The log says other recovery can continue and that an
+operator must read the rejected file and remove those ACEs by hand
+(`icacls <path> /remove *S-1-15-2-…`). If revoke of the in-memory grants
+failed in the same drop, those grants are written to a new `session-*.json`
+so the next sweep can retry them.
+`bookclerk plugins remove --purge-state` revokes that plugin's journal first
+and leaves plugin-state in place if a readable record remains, if a live
+session holds the lock, or if a `.json.rejected` file remains.
+`--discard-acl-journals` (with `--purge-state`) deletes rejected records with
+plugin state. It does not revoke the package-SID ACEs those records name.
+After discard those ACEs stay on the host paths and the only list of them is
+gone. Read the rejected file and remove the ACEs by hand
+(`icacls <path> /remove *S-1-15-2-…`) before passing the flag. A file inside the session
+directory is not a journal. Revoke is
+idempotent, treats a missing path as
 success, and removes only that session's SID. The jail may revoke as well when
 its process exits normally. Job kill skips that `Drop`, so the host journal is
 the owner that still runs. Ancestor traverse stays a `SetKernelObjectSecurity`

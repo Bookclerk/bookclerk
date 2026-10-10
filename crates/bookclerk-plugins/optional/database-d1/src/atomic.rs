@@ -156,7 +156,8 @@ impl D1Proxy {
             bookclerk_db_exec::expand_host_schema_execute_request_grouped(
                 sea_orm::DatabaseBackend::Sqlite,
                 &req,
-            );
+            )
+            .map_err(|err| DbErr::Custom(err.to_string()))?;
         let host_schema = expanded
             .statements
             .last()

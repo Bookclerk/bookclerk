@@ -8,9 +8,10 @@ use crate::isolation::Isolation;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct MediaConfig {
-    /// Maximum codec jobs running at once. `0` derives a value from the
-    /// machine's available parallelism, capped so a large host does not run
-    /// dozens of memory-hungry encoders at the same time.
+    /// Maximum codec jobs running at once. `0` derives one worker per core,
+    /// capped at 8, unless this process's cgroup reports `memory.max` at or
+    /// below 1 GiB or a `cpu.max` quota of at most one core — then the
+    /// automatic choice is 1. A value above 0 is an explicit operator cap.
     pub workers: usize,
     /// How strictly workers must be confined.
     pub isolation: Isolation,

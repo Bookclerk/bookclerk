@@ -2005,6 +2005,89 @@ async fn claim_heartbeat_and_expired_lease_reclaim() {
 }
 
 #[tokio::test]
+async fn list_jobs_waits_out_a_peer_sqlite_lock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("library.db");
+    let db = bookclerk_plugin_database_sqlite::open(&path)
+        .await
+        .expect("open");
+    crate::host_schema::apply_host_schema(&db)
+        .await
+        .expect("schema");
+    let store = LibraryStore::from_connection(db);
+    let created = store
+        .enqueue_job(scan_spec(None, 8))
+        .await
+        .expect("enqueue");
+    assert!(matches!(created, EnqueueOutcome::Created { .. }));
+
+    let holder = rusqlite::Connection::open(&path).expect("holder");
+    holder
+        .busy_timeout(std::time::Duration::from_millis(50))
+        .expect("busy timeout");
+    holder.execute_batch("BEGIN EXCLUSIVE").expect("lock");
+
+    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
+    let listed = tokio::spawn(async move {
+        let result = store.list_jobs(10).await;
+        let _ = done_tx.send(());
+        result
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    assert!(
+        done_rx.try_recv().is_err(),
+        "list_jobs returned while the peer still held the database file"
+    );
+    holder.execute_batch("COMMIT").expect("unlock");
+
+    let jobs = listed.await.expect("join").expect("list after unlock");
+    assert_eq!(jobs.len(), 1);
+}
+
+#[tokio::test]
+async fn count_books_waits_out_a_peer_sqlite_lock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("library.db");
+    let db = bookclerk_plugin_database_sqlite::open(&path)
+        .await
+        .expect("open");
+    crate::host_schema::apply_host_schema(&db)
+        .await
+        .expect("schema");
+    let store = LibraryStore::from_connection(db);
+    store
+        .upsert_account("user-1", "us", None, true, "audible")
+        .await
+        .expect("account");
+    store
+        .upsert_book(&NewBook::minimal("B00STAT", "user-1", "us", "Status"))
+        .await
+        .expect("book");
+
+    let holder = rusqlite::Connection::open(&path).expect("holder");
+    holder
+        .busy_timeout(std::time::Duration::from_millis(50))
+        .expect("busy timeout");
+    holder.execute_batch("BEGIN EXCLUSIVE").expect("lock");
+
+    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
+    let counted = tokio::spawn(async move {
+        let result = store.count_books(None).await;
+        let _ = done_tx.send(());
+        result
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    assert!(
+        done_rx.try_recv().is_err(),
+        "count_books returned while the peer still held the database file"
+    );
+    holder.execute_batch("COMMIT").expect("unlock");
+
+    let count = counted.await.expect("join").expect("count after unlock");
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
 async fn completed_acquire_is_not_repeated_unsafely() {
     let store = test_store().await;
     store

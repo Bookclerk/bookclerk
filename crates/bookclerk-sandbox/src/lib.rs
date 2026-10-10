@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
+mod capacity;
 #[cfg(unix)]
 mod guest_ipc;
 mod link;
@@ -36,6 +37,10 @@ mod spawn_diag;
 mod spawn_path;
 mod spec;
 
+pub use capacity::{
+    cgroup_sample_is_low_resource, filesystem_free_bytes, logical_cpu_count, process_cgroup_dir,
+    read_cgroup_sample, CgroupSample, LOW_RESOURCE_MEMORY_MAX_BYTES,
+};
 #[cfg(unix)]
 pub use guest_ipc::{create_guest_ipc_dir, ensure_guest_ipc_fits, MACOS_SUN_PATH_CAPACITY};
 
@@ -92,9 +97,10 @@ pub mod spawn {
     pub use crate::platform::windows_pipe::NamedPipeSecurity;
     pub use crate::platform::windows_spawn::{
         grant_path_access, is_os_managed_path, plan_acl_journal, plan_appcontainer,
-        profile_name_for_label, revoke_acl_journal, run_appcontainer,
-        run_appcontainer_with_handoff, run_unconfined_with_handoff, unique_profile_moniker,
-        AclGrant, AclJournalEntry, AppContainerLaunch, AppContainerSession,
+        profile_name_for_label, protect_host_journal_dir, revoke_acl_journal,
+        revoke_acl_journal_retain, run_appcontainer, run_appcontainer_with_handoff,
+        run_unconfined_with_handoff, set_test_fail_acl_revoke, unique_profile_moniker, AclGrant,
+        AclJournalEntry, AppContainerLaunch, AppContainerSession,
     };
 
     #[cfg(windows)]

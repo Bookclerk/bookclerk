@@ -4,7 +4,7 @@
 //! branch on engine identity.
 
 use bookclerk_plugin_abi::{
-    DbPlanStatementKind, DbResultSelection, DbRow, DbValue, ExecuteReply, ExecuteRequest,
+    DbPlanStatementKind, DbResultSelection, DbRow, DbType, DbValue, ExecuteReply, ExecuteRequest,
     TypedDbStatement,
 };
 
@@ -56,6 +56,14 @@ pub(super) fn text(value: &str) -> DbValue {
 /// Integer bind.
 pub(super) fn int(value: i64) -> DbValue {
     DbValue::Int64(value)
+}
+
+/// Integer bind, or NULL when the observation is missing.
+pub(super) fn int_opt(value: Option<i64>) -> DbValue {
+    match value {
+        Some(value) => DbValue::Int64(value),
+        None => DbValue::Null(DbType::Int64),
+    }
 }
 
 /// Text cell at `index`, or an error when the cell is missing or not text.

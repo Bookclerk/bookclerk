@@ -937,7 +937,12 @@ pub fn parse_create_index_sql(sql: &str) -> Option<CreateIndexSchema> {
     })
 }
 
-/// Column list of `CREATE INDEX … (ident [ASC|DESC], …)`. Leftover tokens fail.
+/// Column list of `CREATE INDEX … (ident [COLLATE NOCASE] [ASC|DESC], …)`.
+///
+/// `COLLATE NOCASE` is the library title-order collation. `lower(ident)` is
+/// the folded-uuid expression index. Any other collation, and any leftover
+/// token, fails. The recorded column is the inner identifier so the catalog
+/// check stays on a real column.
 fn parse_index_column_list(inner: &str) -> Option<Vec<String>> {
     let parts = split_top_level_commas(inner);
     if parts.is_empty() {
@@ -945,21 +950,52 @@ fn parse_index_column_list(inner: &str) -> Option<Vec<String>> {
     }
     let mut cols = Vec::new();
     for part in parts {
-        let (name, rest) = read_ident(part)?;
-        let rest = skip_ws(rest);
-        let rest = if starts_kw(rest, "ASC") {
-            skip_ws(skip_kw(rest, "ASC")?)
-        } else if starts_kw(rest, "DESC") {
-            skip_ws(skip_kw(rest, "DESC")?)
-        } else {
-            rest
-        };
-        if !rest.is_empty() {
-            return None;
-        }
-        cols.push(name);
+        cols.push(parse_index_key(part)?);
     }
     Some(cols)
+}
+
+/// One index key: `lower(ident)` or `ident [COLLATE NOCASE] [ASC|DESC]`.
+fn parse_index_key(part: &str) -> Option<String> {
+    let part = skip_ws(part);
+    if starts_kw(part, "lower") {
+        let mut rest = skip_ws(skip_kw(part, "lower")?);
+        if !rest.starts_with('(') {
+            return None;
+        }
+        rest = skip_ws(&rest[1..]);
+        let (name, after) = read_ident(rest)?;
+        rest = skip_ws(after);
+        if !rest.starts_with(')') {
+            return None;
+        }
+        rest = skip_ws(&rest[1..]);
+        rest = skip_index_direction(rest)?;
+        return rest.is_empty().then_some(name);
+    }
+    let (name, rest) = read_ident(part)?;
+    let mut rest = skip_ws(rest);
+    if starts_kw(rest, "COLLATE") {
+        rest = skip_ws(skip_kw(rest, "COLLATE")?);
+        let (collation, after) = read_ident(rest)?;
+        if !collation.eq_ignore_ascii_case("NOCASE") {
+            return None;
+        }
+        rest = skip_ws(after);
+    }
+    rest = skip_index_direction(rest)?;
+    rest.is_empty().then_some(name)
+}
+
+/// Drops a trailing `ASC` or `DESC`.
+fn skip_index_direction(rest: &str) -> Option<&str> {
+    if starts_kw(rest, "ASC") {
+        Some(skip_ws(skip_kw(rest, "ASC")?))
+    } else if starts_kw(rest, "DESC") {
+        Some(skip_ws(skip_kw(rest, "DESC")?))
+    } else {
+        Some(rest)
+    }
 }
 
 /// Parses `DROP INDEX [IF EXISTS] name`.
@@ -1594,6 +1630,7 @@ fn typecheck_statement(
         output_columns: Vec::new(),
         require_named_derived: false,
         suppress_string_collate: false,
+        collate_call_arg: false,
     };
     typecheck_sql(sql, &mut cx)?;
     let proof = cx.into_proof(sql);
@@ -1733,6 +1770,7 @@ fn typecheck_index_where(
         output_columns: Vec::new(),
         require_named_derived: false,
         suppress_string_collate: false,
+        collate_call_arg: false,
     };
     let mut scan = TScan {
         sql: predicate,
@@ -1807,6 +1845,7 @@ fn typecheck_create_checks(
         output_columns: Vec::new(),
         require_named_derived: false,
         suppress_string_collate: false,
+        collate_call_arg: false,
     };
     for check in schema
         .column_checks
@@ -1873,6 +1912,9 @@ struct TypeCx<'a> {
     /// When set, string literals are not recorded as TEXT collate sites
     /// (`json_extract` path arguments).
     suppress_string_collate: bool,
+    /// When set, a direct `?` argument of `lower` or `upper` whose bind is
+    /// TEXT or NULL is a collate site. Nested calls and subqueries clear it.
+    collate_call_arg: bool,
 }
 
 impl TypeCx<'_> {
@@ -2387,9 +2429,41 @@ fn take_order_key(
 ) -> Result<SqlType> {
     scan.skip();
     let start = scan.i;
-    if let Some(ident) = scan.read_ident() {
+    if let Some(first) = scan.read_ident() {
+        let after_first = scan.i;
         scan.skip();
-        let terminal = scan.i >= scan.sql.len()
+        let (table, ident, ident_end) = if scan.peek_byte(b'.') {
+            scan.take_byte(b'.');
+            scan.skip();
+            let Some(col) = scan.read_ident() else {
+                scan.i = start;
+                return infer_expr(scan, cx);
+            };
+            let ident_end = scan.i;
+            scan.skip();
+            (Some(first), col, ident_end)
+        } else {
+            (None, first, after_first)
+        };
+        // `COLLATE NOCASE` is the library title order. Any other collation is
+        // outside SQL v1. A table column qualifies even when the SELECT list
+        // does not repeat that name.
+        let collated = if scan.peek_kw("COLLATE") {
+            scan.take_kw("COLLATE");
+            scan.skip();
+            let nocase = scan
+                .read_ident()
+                .is_some_and(|name| name.eq_ignore_ascii_case("NOCASE"));
+            if !nocase {
+                return Err(ty_err(cx.index, "COLLATE"));
+            }
+            scan.skip();
+            true
+        } else {
+            false
+        };
+        let terminal = collated
+            || scan.i >= scan.sql.len()
             || scan.peek_byte(b',')
             || scan.peek_byte(b')')
             || scan.peek_kw("ASC")
@@ -2401,8 +2475,29 @@ fn take_order_key(
             || scan.peek_kw("INTERSECT")
             || scan.peek_kw("EXCEPT");
         if terminal {
-            if let Some((_, ty)) = cols.iter().find(|(n, _)| *n == ident) {
-                return Ok(*ty);
+            // Unqualified select-list names stay bare (`ORDER BY kind NULLS
+            // FIRST`). Postgres orders that name by the select item, which is
+            // already `(kind COLLATE "C")`. Every other TEXT key, including
+            // `e.id` and a column that is not in the select list, records the
+            // whole identifier so the wrap is `(e.id COLLATE "C")`. The span
+            // starts at the qualifier. Wrapping only the column produces the
+            // illegal token `e.(id COLLATE "C")`. `COLLATE NOCASE` is left
+            // unmarked; the fold rewrite owns those keys.
+            let from_list = table.is_none().then(|| {
+                cols.iter()
+                    .find(|(name, _)| *name == ident)
+                    .map(|(_, ty)| *ty)
+            });
+            let unqualified_selected = matches!(from_list, Some(Some(_)));
+            let resolved = match from_list {
+                Some(Some(ty)) => Some(ty),
+                _ => lookup_column(cx, table.as_deref(), &ident).ok(),
+            };
+            if let Some(ty) = resolved {
+                if ty.is_text() && !collated && !unqualified_selected {
+                    note_collated_text(cx, scan, start, ident_end);
+                }
+                return Ok(ty);
             }
         }
         scan.i = start;
@@ -3054,8 +3149,12 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
         return Ok(SqlType::Boolean);
     }
     if scan.take_byte(b'?') {
+        let end = scan.i;
         let ty = cx.binds.get(cx.bind_i).copied().unwrap_or(SqlType::Null);
         cx.bind_i += 1;
+        if cx.collate_call_arg && matches!(ty, SqlType::Null | SqlType::Text) {
+            cx.note_text(scan.abs(end - 1), scan.abs(end));
+        }
         return Ok(ty);
     }
     if scan.take_blob_hex() {
@@ -3088,9 +3187,12 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
         };
         if body.peek_kw("SELECT") || body.peek_kw("WITH") || body.peek_kw("VALUES") {
             let saved_named = cx.require_named_derived;
+            let saved_collate = cx.collate_call_arg;
             cx.require_named_derived = false;
+            cx.collate_call_arg = false;
             let cols = infer_select(&mut body, cx)?;
             cx.require_named_derived = saved_named;
+            cx.collate_call_arg = saved_collate;
             return Ok(cols.first().map(|(_, t)| *t).unwrap_or(SqlType::Null));
         }
         return infer_expr(&mut body, cx);
@@ -3112,16 +3214,170 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
             .ok_or_else(|| ty_err(cx.index, "qualified column"))?;
         let ty = lookup_column(cx, Some(&name), &col)?;
         if ty.is_text() {
-            cx.note_text(scan.abs(ident_start), scan.abs(scan.i));
+            note_collated_text(cx, scan, ident_start, scan.i);
         }
         let _ = col_start;
         return Ok(ty);
     }
     let ty = lookup_column(cx, None, &name)?;
     if ty.is_text() {
-        cx.note_text(scan.abs(ident_start), scan.abs(scan.i));
+        note_collated_text(cx, scan, ident_start, scan.i);
     }
     Ok(ty)
+}
+
+/// Records a TEXT span for Postgres `COLLATE "C"`.
+///
+/// A column compared to a placeholder (`account_id = ?`, `uuid IN (?, ?)`)
+/// stays bare so the index prefix still matches. A column compared to a
+/// literal (`body = 'A'`, `uuid IN ('a')`) is still collated. A direct `?`
+/// argument of `lower` or `upper` is collated only when the bind is TEXT or
+/// NULL, so Postgres folds with the C locale (`É` stays `É`, matching
+/// SQLite). Nested calls and subqueries do not collate their placeholders, and
+/// an INTEGER bind never receives `COLLATE`. The expression index lowers to
+/// the same `lower((uuid COLLATE "C"))` form. `COLLATE NOCASE` keys are not
+/// recorded here; the nocase rewrite owns those.
+fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: usize) {
+    if skip_text_collate(scan.sql, start, end) {
+        return;
+    }
+    cx.note_text(scan.abs(start), scan.abs(end));
+}
+
+/// True when wrapping `sql[start..end]` in `COLLATE "C"` would miss an index.
+fn skip_text_collate(sql: &str, start: usize, end: usize) -> bool {
+    equality_against_placeholder(sql, start, end) || in_list_of_placeholders(sql, end)
+}
+
+/// True when `IN (` follows the span and every list item is `?` or `$n`.
+///
+/// `uuid IN (?, ?)` is byte equality, same as `uuid = ?`, so the column stays
+/// bare and Postgres can use `idx_books_uuid`. A literal in the list does not
+/// count. `NOT IN` does not count.
+fn in_list_of_placeholders(sql: &str, end: usize) -> bool {
+    let Some(rest) = sql.get(end..) else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if !starts_with_keyword(rest, "IN") {
+        return false;
+    }
+    let rest = rest[2..].trim_start();
+    let Some(rest) = rest.strip_prefix('(') else {
+        return false;
+    };
+    placeholder_list_only(rest.trim_start())
+}
+
+/// True when `sql` starts with `word` on an identifier boundary.
+fn starts_with_keyword(sql: &str, word: &str) -> bool {
+    let Some(head) = sql.get(..word.len()) else {
+        return false;
+    };
+    if !head.eq_ignore_ascii_case(word) {
+        return false;
+    }
+    !matches!(
+        sql[word.len()..].chars().next(),
+        Some(ch) if ch.is_ascii_alphanumeric() || ch == '_'
+    )
+}
+
+/// True when `sql` is `?` / `$n` items separated by commas and closed by `)`.
+fn placeholder_list_only(mut sql: &str) -> bool {
+    if sql.starts_with(')') {
+        return false;
+    }
+    loop {
+        sql = sql.trim_start();
+        let Some(rest) = consume_placeholder(sql) else {
+            return false;
+        };
+        sql = rest.trim_start();
+        if sql.starts_with(')') {
+            return true;
+        }
+        let Some(rest) = sql.strip_prefix(',') else {
+            return false;
+        };
+        sql = rest;
+    }
+}
+
+/// The tail after one `?` or `$` plus digits, when `sql` starts with one.
+fn consume_placeholder(sql: &str) -> Option<&str> {
+    if let Some(rest) = sql.strip_prefix('?') {
+        return Some(rest);
+    }
+    let rest = sql.strip_prefix('$')?;
+    let digits = rest
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if digits == 0 {
+        return None;
+    }
+    Some(&rest[digits..])
+}
+
+/// True when the span is one side of `=` and the other side is `?` or `$n`.
+///
+/// `!=`, `<=`, `>=`, and `==` do not count. A literal on the other side does
+/// not count, so `body = 'A'` still collates the column.
+fn equality_against_placeholder(sql: &str, start: usize, end: usize) -> bool {
+    placeholder_after_eq(sql, end) || placeholder_before_eq(sql, start)
+}
+
+/// True when `=` follows the span and the next atom is a placeholder.
+fn placeholder_after_eq(sql: &str, end: usize) -> bool {
+    let Some(rest) = sql.get(end..) else {
+        return false;
+    };
+    let Some(rest) = rest.trim_start().strip_prefix('=') else {
+        return false;
+    };
+    if rest.starts_with('=') {
+        return false;
+    }
+    starts_with_placeholder(rest.trim_start())
+}
+
+/// True when `=` precedes the span and the previous atom is a placeholder.
+fn placeholder_before_eq(sql: &str, start: usize) -> bool {
+    let Some(head) = sql.get(..start) else {
+        return false;
+    };
+    let Some(before) = head.trim_end().strip_suffix('=') else {
+        return false;
+    };
+    if before.ends_with(['=', '!', '<', '>']) {
+        return false;
+    }
+    ends_with_placeholder(before.trim_end())
+}
+
+/// True when `sql` begins with `?` or `$` plus digits.
+fn starts_with_placeholder(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    if bytes.first() == Some(&b'?') {
+        return true;
+    }
+    let Some(rest) = sql.strip_prefix('$') else {
+        return false;
+    };
+    rest.starts_with(|ch: char| ch.is_ascii_digit())
+}
+
+/// True when `sql` ends with `?` or `$` plus digits.
+fn ends_with_placeholder(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    if bytes.last() == Some(&b'?') {
+        return true;
+    }
+    let mut i = bytes.len();
+    while i > 0 && bytes[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    i > 0 && i < bytes.len() && bytes[i - 1] == b'$'
 }
 
 fn string_lit_start(scan: &TScan<'_>, end: usize) -> usize {
@@ -3154,6 +3410,11 @@ fn infer_call(
 ) -> Result<SqlType> {
     let mut args = Vec::new();
     cx.functions.insert(name.to_ascii_lowercase());
+    let saved_collate = cx.collate_call_arg;
+    // Only a direct `?` argument of `lower`/`upper` is a collate site. A nested
+    // call or subquery clears the flag so `lower(substr(body, ?, ?))` does not
+    // wrap integer binds.
+    cx.collate_call_arg = name == "lower" || name == "upper";
     if name == "json_extract" {
         if !scan.peek_byte(b')') {
             args.push(infer_expr(scan, cx)?);
@@ -3178,6 +3439,7 @@ fn infer_call(
             }
         }
     }
+    cx.collate_call_arg = saved_collate;
     if !scan.take_byte(b')') {
         return Err(ty_err(cx.index, "call )"));
     }
@@ -4497,7 +4759,50 @@ mod tests {
         );
         assert!(parse_create_index_sql("CREATE INDEX idx ON t (a) USING btree").is_none());
         assert!(parse_create_index_sql("CREATE INDEX idx ON t (a) INCLUDE (id)").is_none());
-        assert!(parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE NOCASE)").is_none());
+        let nocase =
+            parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE NOCASE)").expect("nocase");
+        assert_eq!(nocase.columns, vec!["body".to_string()]);
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE RTRIM)").is_none());
+        let mut env = SqlTypeEnv::new();
+        env.insert_table(
+            "books",
+            [
+                ("title".into(), SqlType::Text),
+                ("uuid".into(), SqlType::Text),
+            ],
+        );
+        let ordered = crate::desugar_canonical_sql(
+            "SELECT title, uuid FROM books ORDER BY title COLLATE NOCASE, uuid LIMIT 1",
+        );
+        typecheck_execute_request(&req(&ordered), &env).expect("nocase order");
+        let err = typecheck_execute_request(
+            &req("SELECT title FROM books ORDER BY title COLLATE RTRIM"),
+            &env,
+        )
+        .expect_err("other collations stay outside SQL v1");
+        assert!(
+            err.to_string().contains("COLLATE") || err.to_string().contains("RTRIM"),
+            "{err}"
+        );
+        let folded = parse_create_index_sql("CREATE INDEX idx ON books (lower(uuid))")
+            .expect("expression index");
+        assert_eq!(folded.columns, vec!["uuid".to_string()]);
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (lower(uuid, 1))").is_none());
+        let mut order_env = SqlTypeEnv::new();
+        order_env.insert_table(
+            "books",
+            [
+                ("id".into(), SqlType::Integer),
+                ("title".into(), SqlType::Text),
+                ("uuid".into(), SqlType::Text),
+            ],
+        );
+        typecheck_execute_request(
+            &req("SELECT id FROM books ORDER BY title COLLATE NOCASE"),
+            &order_env,
+        )
+        .expect("nocase order of a table column that is not in the select list");
+        assert!(parse_create_index_sql("CREATE INDEX idx ON t (body COLLATE)").is_none());
         assert!(parse_create_index_sql("CREATE INDEX idx ON t ()").is_none());
         let ok = parse_create_index_sql("CREATE INDEX idx ON t (a ASC, b DESC)").expect("index");
         assert_eq!(ok.table, "t");

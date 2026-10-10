@@ -64,6 +64,50 @@ pub struct SearchEngine {
     finished: Field,
 }
 
+/// Starting page width for a catalog rebuild.
+///
+/// Enriched `books` rows can push 64 rows over the sqlite guest
+/// `maxResultBytes` (256 KiB). The catalog reader halves that width and
+/// reuses the fit for the rest of the page.
+const CATALOG_PAGE_ROWS: u64 = 64;
+
+/// Rereads of one page while the daemon holds the database file.
+const PAGE_LOCK_ATTEMPTS: u32 = 20;
+
+/// True when `err` is SQLite lock contention from the overlapping daemon.
+fn database_lock_contention(err: &bookclerk_library::LibraryError) -> bool {
+    let upper = err.to_string().to_ascii_uppercase();
+    upper.contains("SQLITE_BUSY") || upper.contains("SQLITE_LOCKED")
+}
+
+/// Reads one catalog page, waiting out a lock held by the live daemon.
+///
+/// # Errors
+///
+/// Returns the library error when the read fails for a reason other than
+/// lock contention, or when the lock outlasts [`PAGE_LOCK_ATTEMPTS`].
+async fn read_catalog_page(
+    library: &LibraryStore,
+    after_id: Option<i64>,
+) -> Result<Vec<BookRecord>> {
+    let mut pause = std::time::Duration::from_millis(20);
+    let mut attempt = 0u32;
+    loop {
+        match library
+            .list_books_page(None, after_id, CATALOG_PAGE_ROWS)
+            .await
+        {
+            Ok(page) => return Ok(page),
+            Err(err) if database_lock_contention(&err) && attempt + 1 < PAGE_LOCK_ATTEMPTS => {
+                attempt += 1;
+                tokio::time::sleep(pause).await;
+                pause = (pause * 2).min(std::time::Duration::from_millis(250));
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+}
+
 impl SearchEngine {
     /// Open or create a search index at `dir`.
     ///
@@ -122,6 +166,11 @@ impl SearchEngine {
 
     /// Rebuild the entire index from the library DB.
     ///
+    /// Rows are read in pages that start at 64. A page of enriched `books`
+    /// rows can exceed the sqlite guest `maxResultBytes` (256 KiB). The reader
+    /// halves until a slice fits, then keeps that width, so the index still
+    /// receives every catalog row.
+    ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
@@ -134,14 +183,28 @@ impl SearchEngine {
             .delete_all_documents()
             .map_err(|err| SearchError::Index(err.to_string()))?;
 
-        let books = library.list_books(None).await?;
-        for book in &books {
-            self.add_book(&mut writer, book)?;
+        let mut after_id = None;
+        let mut count = 0usize;
+        loop {
+            let page = read_catalog_page(library, after_id).await?;
+            let Some(last) = page.last() else {
+                break;
+            };
+            let last_id = last.id;
+            let full_page = u64::try_from(page.len()).unwrap_or(u64::MAX) == CATALOG_PAGE_ROWS;
+            for book in &page {
+                self.add_book(&mut writer, book)?;
+            }
+            count += page.len();
+            if !full_page {
+                break;
+            }
+            after_id = Some(last_id);
         }
         writer
             .commit()
             .map_err(|err| SearchError::Index(err.to_string()))?;
-        Ok(books.len())
+        Ok(count)
     }
 
     /// Indexes one library row; missing optional strings become empty, bools become `true`/`false`.
@@ -218,10 +281,13 @@ impl SearchEngine {
             return Ok(Vec::new());
         }
 
+        // Each HTTP search opens its own reader and drops it. A commit watcher
+        // would spawn a thread per request and panic if that spawn fails,
+        // which the books handler turns into an empty 500.
         let reader = self
             .index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(|err| SearchError::Index(err.to_string()))?;
 
@@ -370,5 +436,56 @@ mod tests {
         assert_eq!(engine.search("9781234567890", 10).unwrap().len(), 1);
         assert_eq!(engine.search("asin:b00test01", 10).unwrap().len(), 1);
         assert_eq!(engine.search("isbn:9781234567890", 10).unwrap().len(), 1);
+    }
+
+    /// One page is `CATALOG_PAGE_ROWS` rows. The next title has to be indexed too.
+    #[tokio::test]
+    async fn rebuild_reads_past_one_catalog_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        library
+            .upsert_account("acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let past = u32::try_from(CATALOG_PAGE_ROWS).unwrap();
+        let n = past + 1;
+        for i in 0..n {
+            let book = NewBook::minimal(
+                format!("P{i:05}"),
+                "acct",
+                "us",
+                format!("PagedTitle{i:05}"),
+            );
+            library.upsert_book(&book).await.unwrap();
+        }
+        let engine = SearchEngine::open(dir.path()).unwrap();
+        let indexed = engine.rebuild(&library).await.unwrap();
+        assert_eq!(indexed, usize::try_from(n).unwrap());
+        assert_eq!(engine.search("PagedTitle00000", 10).unwrap().len(), 1);
+        assert_eq!(
+            engine
+                .search(&format!("PagedTitle{past:05}"), 10)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn rebuild_retries_only_database_lock_errors() {
+        let busy = bookclerk_library::LibraryError::Unavailable(
+            "SQLITE_BUSY (5): database is locked".into(),
+        );
+        assert!(database_lock_contention(&busy));
+        let locked = bookclerk_library::LibraryError::Unavailable(
+            "SQLITE_LOCKED (6): database is locked".into(),
+        );
+        assert!(database_lock_contention(&locked));
+        let cap = bookclerk_library::LibraryError::Unavailable(
+            "encoded result is 316712 bytes; guest maxResultBytes is 262144".into(),
+        );
+        assert!(!database_lock_contention(&cap));
     }
 }

@@ -31,7 +31,7 @@ use bookclerk_plugin_host::{
     PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
     PLUGIN_STATE_BUDGET_MIB_MAX,
 };
-use bookclerk_search::{SearchEngine, SearchHit};
+use bookclerk_search::SearchEngine;
 use bookclerk_source::SourceRegistry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -1329,9 +1329,11 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         Some(lib) => lib.clone(),
         None => state.library_snapshot().await,
     };
+    let scratch_dir = new_cfg.download_cache_dir();
     let control_plane = bookclerk_library::control_plane::bootstrap_control_plane(
         &library_for_auth,
         &files_dir,
+        &scratch_dir,
         new_cfg.auth_password().as_deref(),
         &new_cfg.events,
     )
@@ -3939,68 +3941,65 @@ async fn list_books(
     State(state): State<Arc<AppState>>,
     _headers: HeaderMap,
     Query(query): Query<BooksQuery>,
-) -> Result<Json<BooksResponse>, StatusCode> {
+) -> Result<Json<BooksResponse>, (StatusCode, Json<serde_json::Value>)> {
     let library = state.library_snapshot().await;
     let limit = query.limit.unwrap_or(40).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
-    let status_filter = query.status.as_deref().and_then(AcquireStatus::parse);
+    let status = query
+        .status
+        .as_deref()
+        .and_then(AcquireStatus::parse)
+        .map(AcquireStatus::as_str);
+    let account = query.account.as_deref().filter(|value| !value.is_empty());
 
     // Authenticated callers (operator or user) share the full library for
     // browsing. Account *linking* and acquire remain capability-gated; store
     // connect is User-only.
+    //
+    // Both branches filter, sort, and page in SQL. Search still uses Tantivy
+    // to choose at most 500 uuids; those rows are loaded in batches and only
+    // the requested page is returned.
 
-    let mut books = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let page = if let Some(q) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let index_dir = state.config.read().await.paths().search_index_dir.clone();
         // Offloaded: Tantivy query work would otherwise block this request task.
         let hits = SearchEngine::open_and_search(index_dir, q.to_string(), 500)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let mut out = Vec::new();
-        for hit in hits {
-            if let Some(account) = query.account.as_deref() {
-                if hit.account_id != account {
-                    continue;
-                }
-            }
-            if let Some(book) = book_for_search_hit(&library, &hit)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            {
-                out.push(book);
-            }
-        }
-        out
-    } else if let Some(account) = query.account.as_deref() {
+            .map_err(books_query_error)?;
+        let uuids = hits
+            .into_iter()
+            .map(|hit| hit.uuid)
+            .filter(|uuid| !uuid.is_empty())
+            .collect::<Vec<_>>();
         library
-            .list_books(Some(account))
+            .list_books_by_uuid_page(&uuids, account, status, limit as u64, offset as u64)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(books_query_error)?
     } else {
         library
-            .list_books(None)
+            .list_books_filtered_page(account, status, limit as u64, offset as u64)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(books_query_error)?
     };
-
-    if let Some(status) = status_filter {
-        books.retain(|b| b.acquire_status == status);
-    }
-
-    books.sort_by(|a, b| {
-        a.title
-            .to_ascii_lowercase()
-            .cmp(&b.title.to_ascii_lowercase())
-            .then_with(|| a.uuid.cmp(&b.uuid))
-    });
-
-    let total = books.len();
-    let page = books.into_iter().skip(offset).take(limit).collect();
     Ok(Json(BooksResponse {
-        books: page,
-        total,
+        books: page.books,
+        total: page.total,
         limit,
         offset,
     }))
+}
+
+/// Logs one library-books failure and returns the branded internal-error body.
+fn books_query_error(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    tracing::error!(error = %err, "GET /api/library/books failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "error": "internal_error",
+            "message": "Something went wrong on the Bookclerk daemon.",
+            "status": 500,
+        })),
+    )
 }
 
 /// Returns one title by UUID, or 404 when it is absent.
@@ -4063,46 +4062,6 @@ fn resolve_local_key(root: &Path, prefix: &str, key: &str) -> PathBuf {
         path.push(part);
     }
     path
-}
-
-/// Resolve a search hit without scanning the full account library.
-///
-/// The index stores ids lowercased and returns `asin` uppercased for display, so
-/// an exact `get_book(&hit.asin)` can miss. Prefer uuid, then a small set of
-/// case-normalized title_id candidates.
-async fn book_for_search_hit(
-    library: &LibraryStore,
-    hit: &SearchHit,
-) -> Result<Option<BookRecord>, bookclerk_library::LibraryError> {
-    if !hit.uuid.is_empty() {
-        if let Some(book) = library.get_book_by_uuid(&hit.uuid).await? {
-            return Ok(Some(book));
-        }
-    }
-    for candidate in title_id_candidates(&hit.asin) {
-        if let Some(book) = library.get_book(&candidate, &hit.account_id).await? {
-            return Ok(Some(book));
-        }
-    }
-    Ok(None)
-}
-
-/// Yields the original title id plus case-folded variants for search-hit lookup.
-fn title_id_candidates(id: &str) -> Vec<String> {
-    let mut out = Vec::with_capacity(3);
-    if id.is_empty() {
-        return out;
-    }
-    out.push(id.to_string());
-    let lower = id.to_ascii_lowercase();
-    if lower != id {
-        out.push(lower);
-    }
-    let upper = id.to_ascii_uppercase();
-    if upper != id && out.iter().all(|c| c != &upper) {
-        out.push(upper);
-    }
-    out
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -5239,21 +5198,10 @@ mod tests {
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_plugin_settings_group, current_settings_snapshot, database_backends_requiring_grant,
         normalize_disabled_shelves, normalize_setting_value, stamp_settings_occupancy,
-        title_id_candidates, validate_daemon_listen, validate_daemon_listen_against_auth,
-        InviteLinkError, PluginGrantOverride,
+        validate_daemon_listen, validate_daemon_listen_against_auth, InviteLinkError,
+        PluginGrantOverride,
     };
     use bookclerk_config::{Config, ListenAddrs};
-
-    #[test]
-    fn title_id_candidates_dedupes_case_folds() {
-        assert_eq!(
-            title_id_candidates("B00Test"),
-            vec!["B00Test", "b00test", "B00TEST"]
-        );
-        assert_eq!(title_id_candidates("b00test"), vec!["b00test", "B00TEST"]);
-        assert_eq!(title_id_candidates("B00TEST"), vec!["B00TEST", "b00test"]);
-        assert!(title_id_candidates("").is_empty());
-    }
 
     #[test]
     fn invite_link_error_classifies_missing_invalid_expired_redeemed() {
@@ -6355,7 +6303,8 @@ mode = "deny"
             .unwrap();
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
-        let session = bootstrap_control_plane(&store, dir.path(), None, &cfg.events)
+        let scratch = dir.path().join("cache");
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);
@@ -6436,7 +6385,8 @@ mode = "deny"
             .unwrap();
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
-        let session = bootstrap_control_plane(&store, dir.path(), None, &cfg.events)
+        let scratch = dir.path().join("cache");
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);
@@ -6537,7 +6487,8 @@ mode = "deny"
             .unwrap();
         bookclerk_library::apply_host_schema(&db).await.unwrap();
         let store = LibraryStore::from_connection(db);
-        let session = bootstrap_control_plane(&store, dir.path(), None, &cfg.events)
+        let scratch = dir.path().join("cache");
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg.events)
             .await
             .unwrap();
         overlay_events(&mut cfg, &session.events, &session.cluster_id);
@@ -6577,5 +6528,161 @@ mode = "deny"
         let loaded = load_events(&store).await.unwrap();
         assert_eq!(loaded.revision, revision);
         assert_eq!(loaded.body.retention_days, retention);
+    }
+
+    /// Library pages filter, sort, and paginate in SQL, including the search path.
+    #[tokio::test]
+    async fn library_books_page_filters_in_sql_and_limits_search_hydration() {
+        use std::sync::Arc;
+
+        use axum::extract::{Query, State};
+        use axum::http::HeaderMap;
+        use bookclerk_integrations::IntegrationRegistry;
+        use bookclerk_library::{AcquireStatus, LibraryStore, NewBook};
+        use bookclerk_plugin_host::{DatabaseRegistry, DestinationRegistry};
+        use bookclerk_search::SearchEngine;
+        use bookclerk_source::SourceRegistry;
+        use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+
+        use crate::api::AppState;
+        use crate::auth::OperatorAuthState;
+
+        let files = tempfile::tempdir().unwrap();
+        let mut cfg = Config::load(Some(files.path().to_path_buf()), None).unwrap();
+        cfg.daemon.auth.enabled = false;
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        store
+            .upsert_account("envelope-a", "us", None, false, "audible")
+            .await
+            .unwrap();
+        store
+            .upsert_account("envelope-b", "us", None, false, "audible")
+            .await
+            .unwrap();
+        for i in 0..20u32 {
+            let account = if i < 16 { "envelope-a" } else { "envelope-b" };
+            let book = NewBook::minimal(format!("B{i:05}"), account, "us", format!("Title {i:05}"));
+            let saved = store.upsert_book(&book).await.unwrap();
+            let status = if i % 10 == 0 {
+                AcquireStatus::Error
+            } else {
+                AcquireStatus::Acquired
+            };
+            store
+                .set_acquire_status(&saved.uuid, &saved.account_id, status, None, None)
+                .await
+                .unwrap();
+        }
+        SearchEngine::open(&cfg.paths().search_index_dir)
+            .unwrap()
+            .rebuild(&store)
+            .await
+            .unwrap();
+
+        let state = Arc::new(AppState {
+            config: Arc::new(RwLock::new(cfg)),
+            library: Arc::new(RwLock::new(store)),
+            database_registry: Arc::new(RwLock::new(DatabaseRegistry::default())),
+            job_notify: Arc::new(Notify::new()),
+            job_runtime: Arc::new(RwLock::new(())),
+            work_lock: Mutex::new(()),
+            discover_gate: Arc::new(Semaphore::new(1)),
+            integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
+            sources: Arc::new(RwLock::new(SourceRegistry::new())),
+            destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
+            auth: Arc::new(RwLock::new(Arc::new(OperatorAuthState::new(
+                String::new(),
+                12,
+                false,
+                5,
+                30,
+            )))),
+            reload_lock: Mutex::new(()),
+            listen_reload: Arc::new(Notify::new()),
+            last_bound_listen: RwLock::new(None),
+            tray: RwLock::new(None),
+            tray_handoff: Mutex::new(None),
+            event_node_id: std::sync::OnceLock::new(),
+        });
+
+        let page = super::list_books(
+            State(state.clone()),
+            HeaderMap::new(),
+            Query(super::BooksQuery {
+                account: None,
+                status: None,
+                q: None,
+                limit: Some(5),
+                offset: Some(0),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.total, 20);
+        assert_eq!(page.books.len(), 5);
+        assert_eq!(page.limit, 5);
+        assert_eq!(page.books[0].title, "Title 00000");
+        assert!(page.books[0].title < page.books[4].title);
+
+        let acquired = super::list_books(
+            State(state.clone()),
+            HeaderMap::new(),
+            Query(super::BooksQuery {
+                account: None,
+                status: Some("acquired".into()),
+                q: None,
+                limit: Some(40),
+                offset: Some(0),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(acquired.total, 18);
+        assert_eq!(acquired.books.len(), 18);
+        assert!(acquired
+            .books
+            .iter()
+            .all(|book| book.acquire_status == AcquireStatus::Acquired));
+
+        let searched = super::list_books(
+            State(state.clone()),
+            HeaderMap::new(),
+            Query(super::BooksQuery {
+                account: None,
+                status: None,
+                q: Some("Title".into()),
+                limit: Some(8),
+                offset: Some(0),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(searched.books.len(), 8);
+        assert!(searched.total >= 8);
+        assert!(searched.total <= 20);
+
+        let account_b = super::list_books(
+            State(state),
+            HeaderMap::new(),
+            Query(super::BooksQuery {
+                account: Some("envelope-b".into()),
+                status: None,
+                q: Some("Title".into()),
+                limit: Some(40),
+                offset: Some(0),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(account_b.total, 4);
+        assert_eq!(account_b.books.len(), 4);
+        assert!(account_b
+            .books
+            .iter()
+            .all(|book| book.account_id == "envelope-b"));
     }
 }

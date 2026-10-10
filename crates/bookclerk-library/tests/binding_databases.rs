@@ -604,6 +604,66 @@ async fn binding_portable_functions_and_ddl_types() {
         blob_reply.statements[0].rows[0].values[0],
         DbValue::Bytes(bookclerk_db_exec::sql_v1::PORTABLE_INSERT_BLOB.to_vec())
     );
+    let mut non_ascii = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_INSERT,
+        vec![DbValue::Bytes(
+            bookclerk_db_exec::sql_v1::PORTABLE_INSERT_BLOB.to_vec(),
+        )],
+    );
+    non_ascii.result_selection = DbResultSelection::AffectedRows;
+    run_binding(&db, req("ins-lower-non-ascii", vec![non_ascii]))
+        .await
+        .expect("non-ascii insert");
+    let mut folded = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_SELECT,
+        vec![],
+    );
+    folded.max_rows = 8;
+    let folded_reply = run_binding(&db, req("sel-lower-non-ascii", vec![folded]))
+        .await
+        .expect("non-ascii lower");
+    assert_eq!(
+        folded_reply.statements[0].rows[0].values[0],
+        DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
+    );
+    let mut placeholder = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_PLACEHOLDER_SELECT,
+        vec![DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into(),
+        )],
+    );
+    placeholder.max_rows = 8;
+    let placeholder_reply = run_binding(&db, req("sel-lower-placeholder", vec![placeholder]))
+        .await
+        .expect("placeholder lower");
+    assert_eq!(
+        placeholder_reply.statements[0].rows[0].values[0],
+        DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
+    );
+    let mut nested = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_SUBSTR_SELECT,
+        vec![DbValue::Int64(1), DbValue::Int64(1)],
+    );
+    nested.max_rows = 8;
+    let nested_reply = run_binding(&db, req("sel-lower-substr", vec![nested]))
+        .await
+        .expect("nested lower substr");
+    assert_eq!(
+        nested_reply.statements[0].rows[0].values[0],
+        DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
+    );
+    let mut wide = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_SUBSTR_SELECT,
+        vec![DbValue::Int64(1), DbValue::Int64(i64::MAX)],
+    );
+    wide.max_rows = 8;
+    let wide_reply = run_binding(&db, req("sel-lower-substr-wide", vec![wide]))
+        .await
+        .expect("wide lower substr");
+    assert_eq!(
+        wide_reply.statements[0].rows[0].values[0],
+        DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
+    );
 }
 
 #[tokio::test]
