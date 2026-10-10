@@ -1181,7 +1181,8 @@ fn ensure_host_journal_dir(paths: &HostJournalPaths) -> std::io::Result<()> {
 ///
 /// The next session plan retries every `acl-journals/session-*.json`. A live
 /// session has that file too, so the sweep skips one while this lock is held.
-/// The lock file is in that same host-only directory. Process exit releases it.
+/// The lock file is in that same host-only directory. Drop unlocks that file
+/// before closing it. Process exit releases it too.
 struct JournalOwnerLock {
     // Held open so the exclusive lock survives until this session drops.
     _file: std::fs::File,
@@ -1236,10 +1237,19 @@ impl JournalOwnerLock {
     }
 }
 
+impl Drop for JournalOwnerLock {
+    fn drop(&mut self) {
+        // Closing the fd leaves this flock held when another thread in the
+        // same process is also calling `flock`. The sweep then skips the
+        // session until process exit. Unlock the fd that acquired it.
+        let _ = fs4::FileExt::unlock(&self._file);
+    }
+}
+
 /// Directory lock shared by session-lock create and orphan unlink.
 ///
-/// Held only for that short section. Drop closes the file and releases the
-/// lock. Do not acquire this twice in one process: a nested `flock` can
+/// Held only for that short section. Drop unlocks this file before closing
+/// it. Do not acquire this twice in one process: a nested `flock` can
 /// deadlock or drop the outer lock on unlock. The session lock stays a
 /// non-blocking `try_lock`.
 struct JournalSweepLock {
@@ -1258,6 +1268,14 @@ impl JournalSweepLock {
             .open(path)?;
         fs4::FileExt::lock(&file)?;
         Ok(Self { _file: file })
+    }
+}
+
+impl Drop for JournalSweepLock {
+    fn drop(&mut self) {
+        // Same as `JournalOwnerLock`: `close` alone can leave this flock held,
+        // and the next acquire would block on it.
+        let _ = fs4::FileExt::unlock(&self._file);
     }
 }
 
