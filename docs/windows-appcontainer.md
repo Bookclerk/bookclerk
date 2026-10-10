@@ -183,12 +183,21 @@ excludes `S-1-15-2-1` and `S-1-15-2-2`. A UNC share or a device path, including
 a UNC `[output.local].root`, fails that check and the error names the path;
 map a drive letter or use the S3 destination. A record that cannot be parsed
 or fails that check is renamed to `session-*.json.rejected` and logged once.
-The session directory stays. Sweeps skip the renamed file.
+Nothing revokes the grants in that file. The session directory stays. Sweeps
+skip the renamed file. The log says other recovery can continue and that an
+operator must read the rejected file and remove those ACEs by hand
+(`icacls <path> /remove *S-1-15-2-…`). If revoke of the in-memory grants
+failed in the same drop, those grants are written to a new `session-*.json`
+so the next sweep can retry them.
 `bookclerk plugins remove --purge-state` revokes that plugin's journal first
 and leaves plugin-state in place if a readable record remains, if a live
 session holds the lock, or if a `.json.rejected` file remains.
 `--discard-acl-journals` (with `--purge-state`) deletes rejected records with
-plugin state. A file inside the session directory is not a journal. Revoke is
+plugin state. It does not revoke the package-SID ACEs those records name.
+After discard those ACEs stay on the host paths and the only list of them is
+gone. Read the rejected file and remove the ACEs by hand
+(`icacls <path> /remove *S-1-15-2-…`) before passing the flag. A file inside the session
+directory is not a journal. Revoke is
 idempotent, treats a missing path as
 success, and removes only that session's SID. The jail may revoke as well when
 its process exits normally. Job kill skips that `Drop`, so the host journal is

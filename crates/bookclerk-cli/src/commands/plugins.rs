@@ -91,6 +91,8 @@ pub enum PluginsCommand {
         #[arg(long)]
         purge_state: bool,
         /// Delete rejected ACL journals with plugin state. Requires `--purge-state`.
+        /// Does not revoke the package-SID ACEs those records name; read the
+        /// rejected file and remove those ACEs by hand first.
         #[arg(long)]
         discard_acl_journals: bool,
     },
