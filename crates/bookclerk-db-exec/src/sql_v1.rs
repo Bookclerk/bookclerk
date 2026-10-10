@@ -64,6 +64,14 @@ pub const PORTABLE_LOWER_NON_ASCII_EXPECT: &str = "É";
 /// (`lower(($1 COLLATE "C"))`) so `É` stays `É`, matching SQLite.
 pub const PORTABLE_LOWER_PLACEHOLDER_SELECT: &str = "SELECT lower(?) FROM typed WHERE n = 7";
 
+/// `lower(substr(body, ?, ?))` with integer binds.
+///
+/// The placeholders are the substr index and length, not text arguments of
+/// `lower`. Postgres rejects `COLLATE` on bigint, so they stay bare. The
+/// first character of the non-ASCII row is still `É`.
+pub const PORTABLE_LOWER_SUBSTR_SELECT: &str =
+    "SELECT lower(substr(body, ?, ?)) FROM typed WHERE n = 7";
+
 /// Scalar portable helpers (no aggregates).
 ///
 /// Column order matches [`portable_select_expects`]. `json_object` is

@@ -90,7 +90,7 @@ pub fn lower_binding_sql_for_backend_with<'a>(
 ) -> Result<Cow<'a, str>, bookclerk_plugin_abi::PluginError> {
     match backend {
         DatabaseBackend::Postgres if bookclerk_plugin_abi::statement_is_ddl(sql) => {
-            let folded = crate::lower::rewrite_sqlite_nocase_with(sql, env, &[])?;
+            let folded = crate::lower::rewrite_sqlite_nocase_with(sql, env, &[], true)?;
             Ok(Cow::Owned(
                 crate::lower::rewrite_canonical_ddl_types_for_postgres(&folded),
             ))
@@ -484,8 +484,13 @@ fn is_safe_ident(s: &str) -> bool {
 
 /// Expands a typed host schema batch at the adapter execution edge.
 ///
-/// Returns the expanded request and per-original-statement expansion counts
-/// (identity when the batch is not a host schema apply unit).
+/// Returns the expanded request. When the batch is not a host schema apply
+/// unit, the request is unchanged.
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
 pub fn expand_host_schema_execute_request(
     backend: DatabaseBackend,
     req: &ExecuteRequest,

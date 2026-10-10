@@ -1912,7 +1912,8 @@ struct TypeCx<'a> {
     /// When set, string literals are not recorded as TEXT collate sites
     /// (`json_extract` path arguments).
     suppress_string_collate: bool,
-    /// When set, a `?` argument of `lower` or `upper` is a TEXT collate site.
+    /// When set, a direct `?` argument of `lower` or `upper` whose bind is
+    /// TEXT or NULL is a collate site. Nested calls and subqueries clear it.
     collate_call_arg: bool,
 }
 
@@ -3151,7 +3152,7 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
         let end = scan.i;
         let ty = cx.binds.get(cx.bind_i).copied().unwrap_or(SqlType::Null);
         cx.bind_i += 1;
-        if cx.collate_call_arg {
+        if cx.collate_call_arg && matches!(ty, SqlType::Null | SqlType::Text) {
             cx.note_text(scan.abs(end - 1), scan.abs(end));
         }
         return Ok(ty);
@@ -3186,9 +3187,12 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
         };
         if body.peek_kw("SELECT") || body.peek_kw("WITH") || body.peek_kw("VALUES") {
             let saved_named = cx.require_named_derived;
+            let saved_collate = cx.collate_call_arg;
             cx.require_named_derived = false;
+            cx.collate_call_arg = false;
             let cols = infer_select(&mut body, cx)?;
             cx.require_named_derived = saved_named;
+            cx.collate_call_arg = saved_collate;
             return Ok(cols.first().map(|(_, t)| *t).unwrap_or(SqlType::Null));
         }
         return infer_expr(&mut body, cx);
@@ -3226,11 +3230,13 @@ fn infer_atom(scan: &mut TScan<'_>, cx: &mut TypeCx<'_>) -> Result<SqlType> {
 ///
 /// A column compared to a placeholder (`account_id = ?`, `uuid IN (?, ?)`)
 /// stays bare so the index prefix still matches. A column compared to a
-/// literal (`body = 'A'`, `uuid IN ('a')`) is still collated. Arguments of
-/// `lower` and `upper`, including `?`, are collated too, so Postgres folds
-/// with the C locale (`É` stays `É`, matching SQLite). The expression index
-/// lowers to the same `lower((uuid COLLATE "C"))` form. `COLLATE NOCASE` keys
-/// are not recorded here; the nocase rewrite owns those.
+/// literal (`body = 'A'`, `uuid IN ('a')`) is still collated. A direct `?`
+/// argument of `lower` or `upper` is collated only when the bind is TEXT or
+/// NULL, so Postgres folds with the C locale (`É` stays `É`, matching
+/// SQLite). Nested calls and subqueries do not collate their placeholders, and
+/// an INTEGER bind never receives `COLLATE`. The expression index lowers to
+/// the same `lower((uuid COLLATE "C"))` form. `COLLATE NOCASE` keys are not
+/// recorded here; the nocase rewrite owns those.
 fn note_collated_text(cx: &mut TypeCx<'_>, scan: &TScan<'_>, start: usize, end: usize) {
     if skip_text_collate(scan.sql, start, end) {
         return;
@@ -3404,6 +3410,11 @@ fn infer_call(
 ) -> Result<SqlType> {
     let mut args = Vec::new();
     cx.functions.insert(name.to_ascii_lowercase());
+    let saved_collate = cx.collate_call_arg;
+    // Only a direct `?` argument of `lower`/`upper` is a collate site. A nested
+    // call or subquery clears the flag so `lower(substr(body, ?, ?))` does not
+    // wrap integer binds.
+    cx.collate_call_arg = name == "lower" || name == "upper";
     if name == "json_extract" {
         if !scan.peek_byte(b')') {
             args.push(infer_expr(scan, cx)?);
@@ -3420,21 +3431,15 @@ fn infer_call(
         if name == "count" && scan.take_byte(b'*') {
             args.push(SqlType::Integer);
         } else {
-            let fold = name == "lower" || name == "upper";
-            if fold {
-                cx.collate_call_arg = true;
-            }
             loop {
                 args.push(infer_expr(scan, cx)?);
                 if !scan.take_byte(b',') {
                     break;
                 }
             }
-            if fold {
-                cx.collate_call_arg = false;
-            }
         }
     }
+    cx.collate_call_arg = saved_collate;
     if !scan.take_byte(b')') {
         return Err(ty_err(cx.index, "call )"));
     }

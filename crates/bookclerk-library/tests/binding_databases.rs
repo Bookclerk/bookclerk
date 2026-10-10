@@ -640,6 +640,18 @@ async fn binding_portable_functions_and_ddl_types() {
         placeholder_reply.statements[0].rows[0].values[0],
         DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
     );
+    let mut nested = stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_SUBSTR_SELECT,
+        vec![DbValue::Int64(1), DbValue::Int64(1)],
+    );
+    nested.max_rows = 8;
+    let nested_reply = run_binding(&db, req("sel-lower-substr", vec![nested]))
+        .await
+        .expect("nested lower substr");
+    assert_eq!(
+        nested_reply.statements[0].rows[0].values[0],
+        DbValue::Text(bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into())
+    );
 }
 
 #[tokio::test]

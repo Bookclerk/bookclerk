@@ -129,10 +129,10 @@ fn lower_canonical_to_postgres_helpers_with(
     // SQLite `COLLATE NOCASE` folds ASCII case, then compares code points.
     // Postgres has no such collation; `lower(ident COLLATE "C")` is that fold,
     // and a following text tie-break is `COLLATE "C"`.
-    // Query lowering does not reject an untyped `CREATE INDEX`. DDL entry
-    // points return that error instead of emitting a different index.
-    let sql = rewrite_sqlite_nocase_with(sql, env, outputs)
-        .unwrap_or_else(|err| panic!("query lowering hit a CREATE INDEX type error: {err}"));
+    // Query entry points do not fail closed. An untyped `CREATE INDEX` stays
+    // a bare key here. DDL entry points pass `fail_closed` and return the error.
+    let sql =
+        rewrite_sqlite_nocase_with(sql, env, outputs, false).unwrap_or_else(|_| sql.to_string());
     let sql = sqlite_fns_to_postgres(&sql);
     rewrite_placeholders_postgres(&sql)
 }
@@ -1209,7 +1209,7 @@ pub fn lower_canonical_ddl_to_postgres_with(
     // SQLite `COLLATE NOCASE` is the library title index. Postgres gets an
     // expression index on `lower(title COLLATE "C")` and a text `COLLATE "C"`
     // tie-break so the page order matches. Numeric keys stay bare.
-    let stripped = rewrite_sqlite_nocase_with(sql, env, &[])?;
+    let stripped = rewrite_sqlite_nocase_with(sql, env, &[], true)?;
     let typed = rewrite_canonical_ddl_types_for_postgres(&stripped);
     let sql = rewrite_insert_or_ignore_unique_conflict(&typed);
     Ok(lower_canonical_to_postgres_helpers_with(&sql, env, &[]))
@@ -1238,23 +1238,26 @@ pub fn lower_canonical_ddl_to_postgres_with(
 /// a no-op.
 ///
 /// `env` and `outputs` resolve tie-break and `lower`/`upper` argument types.
-/// An unresolved `ORDER BY` name stays bare. A `CREATE INDEX` that cannot type
-/// a post-fold key or a `lower`/`upper` column argument returns an error
-/// instead of emitting that key without `COLLATE "C"`. Typed keys that the
-/// proof already wrapped start with `(` and are left alone.
+/// An unresolved `ORDER BY` name stays bare. When `fail_closed` is set, a
+/// `CREATE INDEX` that cannot type a post-fold key or a `lower`/`upper`
+/// column argument returns an error instead of emitting that key without
+/// `COLLATE "C"`. Query lowering passes `fail_closed = false` so those entry
+/// points stay infallible. Typed keys that the proof already wrapped start
+/// with `(` and are left alone.
 ///
 /// # Errors
 ///
-/// Returns when `sql` is a `CREATE INDEX` and a key that needs `COLLATE "C"`
-/// has no TEXT type in `env` or `outputs`.
+/// Returns when `fail_closed` is set, `sql` is a `CREATE INDEX`, and a key
+/// that needs `COLLATE "C"` has no TEXT type in `env` or `outputs`.
 pub(crate) fn rewrite_sqlite_nocase_with(
     sql: &str,
     env: Option<&SqlTypeEnv>,
     outputs: &[(String, SqlType)],
+    fail_closed: bool,
 ) -> Result<String, PluginError> {
     let rewritten = rewrite_nocase_idents(sql);
     let tables = statement_tables(&rewritten);
-    let strict = is_create_index(&rewritten);
+    let strict = fail_closed && is_create_index(&rewritten);
     let folded_fns = collate_text_function_args(&rewritten, env, outputs, &tables, strict)?;
     let collated = collate_post_fold_keys(&folded_fns, env, outputs, &tables, strict)?;
     Ok(if is_create_index(&collated) {
@@ -2204,13 +2207,17 @@ mod tests {
     };
 
     fn proof_of(sql: &str, env: &SqlTypeEnv) -> ResolvedStatement {
+        proof_of_binds(sql, env, Vec::new())
+    }
+
+    fn proof_of_binds(sql: &str, env: &SqlTypeEnv, parameters: Vec<DbValue>) -> ResolvedStatement {
         let req = ExecuteRequest {
             operation_id: "t".into(),
             request_hash: String::new(),
             deadline_unix_ms: 0,
             statements: vec![TypedDbStatement {
                 sql: sql.into(),
-                parameters: Vec::new(),
+                parameters,
                 kind: DbPlanStatementKind::Select,
                 max_rows: 0,
                 result_selection: DbResultSelection::Rows,
@@ -2222,7 +2229,11 @@ mod tests {
     }
 
     fn lower_pg(sql: &str, env: &SqlTypeEnv) -> String {
-        let proof = proof_of(sql, env);
+        lower_pg_binds(sql, env, Vec::new())
+    }
+
+    fn lower_pg_binds(sql: &str, env: &SqlTypeEnv, parameters: Vec<DbValue>) -> String {
+        let proof = proof_of_binds(sql, env, parameters);
         lower_canonical_sql_typed(DatabaseBackend::Postgres, sql, Some(&proof))
             .unwrap_or_else(|err| panic!("{sql}: {err}"))
     }
@@ -3376,6 +3387,56 @@ mod tests {
             "N+1 proven preflight {pre} must miss the physical ceiling"
         );
     }
+
+    #[test]
+    fn nested_lower_does_not_collate_integer_binds() {
+        let mut env = SqlTypeEnv::new();
+        env.insert_table(
+            "typed",
+            vec![
+                ("body".into(), SqlType::Text),
+                ("n".into(), SqlType::Integer),
+                ("id".into(), SqlType::Integer),
+                ("name".into(), SqlType::Text),
+            ],
+        );
+        let nested = lower_pg_binds(
+            "SELECT lower(substr(body, ?, ?)) FROM typed WHERE n = 7",
+            &env,
+            vec![DbValue::Int64(1), DbValue::Int64(1)],
+        );
+        assert!(
+            nested.contains("substr((body COLLATE \"C\"), $1, $2)"),
+            "the text column stays collated and the integer binds stay bare: {nested}"
+        );
+        assert!(
+            !nested.contains("$1 COLLATE") && !nested.contains("$2 COLLATE"),
+            "{nested}"
+        );
+        let subquery = lower_pg_binds(
+            "SELECT lower((SELECT name FROM typed WHERE id = ?))",
+            &env,
+            vec![DbValue::Int64(1)],
+        );
+        assert!(
+            subquery.contains("WHERE id = $1") && !subquery.contains("$1 COLLATE"),
+            "a subquery integer bind stays bare: {subquery}"
+        );
+        let direct_text = lower_pg_binds("SELECT lower(?)", &env, vec![DbValue::Text("É".into())]);
+        assert!(
+            direct_text.contains("lower(($1 COLLATE \"C\"))"),
+            "a direct TEXT placeholder still uses the C locale: {direct_text}"
+        );
+        let nested_lower = lower_pg_binds(
+            "SELECT lower(lower(?))",
+            &env,
+            vec![DbValue::Text("É".into())],
+        );
+        assert!(
+            nested_lower.contains("lower(lower(($1 COLLATE \"C\")))"),
+            "a direct placeholder of an inner lower still collates: {nested_lower}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3457,7 +3518,9 @@ mod nocase_index_postgres {
     use bookclerk_plugin_abi::{SqlType, SqlTypeEnv};
     use sea_orm::DatabaseBackend;
 
-    use super::{lower_canonical_ddl_to_postgres, lower_canonical_sql};
+    use super::{
+        lower_canonical_ddl_to_postgres, lower_canonical_sql, lower_canonical_to_postgres,
+    };
 
     fn books_env() -> SqlTypeEnv {
         let mut env = SqlTypeEnv::new();
@@ -3679,6 +3742,30 @@ mod nocase_index_postgres {
         assert!(
             !postgres.contains("(uuid COLLATE"),
             "a blob column named uuid must not take a text collation: {postgres}"
+        );
+    }
+
+    #[test]
+    fn query_lowering_does_not_panic_on_untyped_create_index() {
+        let sql = "CREATE INDEX idx ON books(title COLLATE NOCASE, uuid)";
+        let postgres = lower_canonical_sql(DatabaseBackend::Postgres, sql);
+        assert!(
+            postgres.contains("(lower(title COLLATE \"C\"))"),
+            "{postgres}"
+        );
+        assert!(
+            !postgres.contains("(uuid COLLATE"),
+            "an untyped tie-break stays bare on the query path: {postgres}"
+        );
+        assert!(postgres.contains("NULLS FIRST"), "{postgres}");
+        assert_eq!(lower_canonical_to_postgres(sql), postgres);
+        let expr = lower_canonical_sql(
+            DatabaseBackend::Postgres,
+            "CREATE INDEX idx ON books(lower(uuid))",
+        );
+        assert!(
+            expr.contains("lower(uuid)") && !expr.contains("(uuid COLLATE"),
+            "{expr}"
         );
     }
 
