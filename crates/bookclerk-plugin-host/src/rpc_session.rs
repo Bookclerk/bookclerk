@@ -787,7 +787,7 @@ impl PluginSession {
                 cancel.store(true, Ordering::SeqCst);
                 return Err(err);
             }
-            crate::authority::register_session_revisions_on(
+            crate::authority::register_session_revisions_on_with_deployed_s3(
                 plugin.plugin_key().canonical(),
                 &identity.grant_revision,
                 &identity.authority_revision,
@@ -795,6 +795,7 @@ impl PluginSession {
                     let _ = shutdown_tx.send(Work::Shutdown);
                 }),
                 Arc::clone(&cancel),
+                services.deployed_s3_endpoint.clone(),
             )
         };
         let spawned = held
