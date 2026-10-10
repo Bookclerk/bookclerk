@@ -226,13 +226,14 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(p.params("e2e")["scope"], "full")
         self.assertEqual(
             sorted(p.lint_packages()),
-            # host and cli: their tests spawn guests through the launcher.
+            # host, cli, and the daemon: their tests spawn guests through the launcher.
             [
                 "bookclerk-cli",
                 "bookclerk-dev",
                 "bookclerk-plugin-host",
                 "bookclerk-plugin-tools",
                 "bookclerk-workerd",
+                "bookclerkd",
             ],
         )
         self.assertFalse(p.packages["bookclerk-cli"].compiled)
@@ -667,6 +668,18 @@ class NativeGatewayTests(unittest.TestCase):
                     ["cargo", "clippy", "-p", "bookclerk-workerd", "--all-targets", "--", "-D", "warnings"],
                     ["cargo", "clippy", "-p", "bookclerk-plugin-sdk", "--features", "http", "--all-targets", "--", "-D", "warnings"],
                     ["cargo", "clippy", "-p", "bookclerk-plugin-host", "--lib", "--", "-D", "warnings"],
+                    [
+                        "cargo",
+                        "test",
+                        "-p",
+                        "bookclerk-plugin-host",
+                        "--lib",
+                        "--",
+                        "spawn_stdio::tests",
+                        "acl_journal_",
+                        "--test-threads=1",
+                        "--nocapture",
+                    ],
                     ["cargo", "test", "-p", "bookclerk-workerd", "--lib"],
                     [
                         "cargo",

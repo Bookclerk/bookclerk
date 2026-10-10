@@ -31,17 +31,24 @@
 //! See `docs/plugins.md`, `docs/adr/plugin-workers-rpc-workerd.md`, and
 //! `docs/plugin-registry.md`.
 
+#[cfg(test)]
+mod deployment_reconcile_tests;
+#[cfg(test)]
+mod graphicaudio_instance_test;
+
 mod authority;
 mod builtins;
 mod callback_proxy;
 mod consent;
 mod crates_io;
+mod deployment;
 mod destinations;
 mod discover;
 mod error;
 mod event_publisher;
 mod host;
 mod install_preflight;
+mod instance_bindings;
 mod jail;
 mod manifest;
 mod registry;
@@ -67,9 +74,12 @@ pub use authority::{
     register_session_with_shutdown, spawn_grant_watcher, unregister_session, watch_grants_loop,
     SessionShutdown, GRANT_WATCH_INTERVAL,
 };
+pub use bookclerk_plugin_catalog::host_bookclerk_target;
 pub use bookclerk_plugin_manifest::TcpGrant;
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
-pub use builtins::{load_integrations, load_sources};
+pub use builtins::{
+    load_integrations, load_integrations_skipping, load_sources, load_sources_skipping,
+};
 pub use callback_proxy::CallbackProxy;
 pub use consent::{
     active_processes_for, canonical_event_filter, consent_request, consent_request_alias,
@@ -93,6 +103,11 @@ pub use consent::{
     WORKERD_GRANT_SUBREQUESTS_ENV,
 };
 pub use crates_io::search_crates_io;
+pub use deployment::{
+    enroll_graphicaudio_instance, load_authorized_local_packages, reconcile_local_deployments,
+    AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
+    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
+};
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
     discover_plugins, first_party_database_kind, identity_matches_occupancy,
@@ -105,14 +120,20 @@ pub use error::{PluginError, Result};
 pub use event_publisher::{EventOutbox, OutboxEventPublisher};
 pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
-    load_external_database, load_external_destinations, load_external_integrations,
-    load_external_sources, migrate_database_plugin, migrate_library_schema, open_library_store,
-    open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
-    DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
+    load_external_database, load_external_destinations, load_external_destinations_with_store,
+    load_external_integrations, load_external_integrations_skipping, load_external_sources,
+    load_external_sources_skipping, migrate_database_plugin, migrate_library_schema,
+    open_library_store, open_library_store_for_plugin, restore_plugin_backup_units,
+    DatabaseRegistry, DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
 };
 pub use install_preflight::{
     configured_alias_occupants, install_from_manifest_with_configured_aliases,
     install_local_archive_with_configured_aliases, reject_configured_alias_collision,
+};
+pub use instance_bindings::{
+    graphicaudio_document_exists, graphicaudio_document_exists_for_key,
+    graphicaudio_key_from_discovered, graphicaudio_key_from_ledger, graphicaudio_plugin_key,
+    is_graphicaudio_imported_setting, prepare_open_bindings, PreparedOpen,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{
@@ -136,7 +157,8 @@ pub use spawn_plan::{
     WORKERD_LAUNCHER_ENV,
 };
 pub use spawn_stdio::{
-    note_spawn_stage, recent_spawn_diagnostics, TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE,
+    note_spawn_stage, recent_spawn_diagnostics, retry_abandoned_acl_journals,
+    revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE,
     TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };
 

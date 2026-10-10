@@ -953,6 +953,8 @@ fn sub_atomic(counter: &AtomicUsize, n: usize) {
     if n == 0 {
         return;
     }
+    // MSRV is 1.94. `fetch_update` is the name that compiles there.
+    #[allow(deprecated)]
     let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         Some(cur.saturating_sub(n))
     });
@@ -980,6 +982,8 @@ fn grant_send_credit(credit: &AtomicU32, in_flight: &AtomicU32, add: u32) {
             break take;
         }
     };
+    // MSRV is 1.94. `fetch_update` is the name that compiles there.
+    #[allow(deprecated)]
     let _ = credit.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         let next = cur.saturating_add(grant).min(INITIAL_WINDOW);
         (next != cur).then_some(next)

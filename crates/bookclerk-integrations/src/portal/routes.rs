@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use super::brands::{integration_brand, Brand};
+
 use crate::registry::IntegrationRegistry;
 use crate::tickets::{
     identity_from_session, inspect_claim_ticket, mint_claim_ticket,
@@ -186,12 +187,13 @@ async fn redeem(
     )
     .await?;
 
-    if REDEEM_LOSE_HTTP_RESPONSES
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+    // MSRV is 1.94. `fetch_update` is the name that compiles there.
+    #[allow(deprecated)]
+    let lost_response =
+        REDEEM_LOSE_HTTP_RESPONSES.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
             (v > 0).then_some(v - 1)
-        })
-        .is_ok()
-    {
+        });
+    if lost_response.is_ok() {
         return Err(PortalError::unavailable(
             "database temporarily unavailable — retry the same redeem",
         ));

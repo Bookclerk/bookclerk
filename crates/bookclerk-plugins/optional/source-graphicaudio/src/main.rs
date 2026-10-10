@@ -18,6 +18,11 @@ use serde_json::Value;
 /// GraphicAudio source guest; password login via `BOOKCLERK_GA_PASSWORD` or Accounts.
 struct GraphicAudioRoot;
 
+/// Granted `CONFIG` captured at `open` for login and scan.
+struct GraphicAudioContentSource {
+    config: Value,
+}
+
 #[async_trait(?Send)]
 impl PluginWorker for GraphicAudioRoot {
     async fn describe(&self) -> Result<PluginDescribe, PluginError> {
@@ -49,16 +54,15 @@ impl PluginWorker for GraphicAudioRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        _bindings: Bindings,
+        bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let config = bindings.config.json_value().unwrap_or(Value::Null);
         Ok(Entrypoints {
-            storefront: Some(Box::new(GraphicAudioContentSource)),
+            storefront: Some(Box::new(GraphicAudioContentSource { config })),
             ..Entrypoints::default()
         })
     }
 }
-
-struct GraphicAudioContentSource;
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
@@ -82,10 +86,10 @@ impl ContentSourceRole for GraphicAudioContentSource {
     }
 
     async fn login(&self, params: LoginParams) -> Result<LoginResult, PluginError> {
-        let cfg = Value::Null;
-        let access_url = bookclerk_plugin_source_graphicaudio::resolve_access_base_url(&cfg);
-        let store_url = bookclerk_plugin_source_graphicaudio::resolve_store_base_url(&cfg);
-        let access = bookclerk_plugin_source_graphicaudio::resolve_access(&cfg);
+        let access_url =
+            bookclerk_plugin_source_graphicaudio::resolve_access_base_url(&self.config);
+        let store_url = bookclerk_plugin_source_graphicaudio::resolve_store_base_url(&self.config);
+        let access = bookclerk_plugin_source_graphicaudio::resolve_access(&self.config);
         bookclerk_plugin_source_graphicaudio::guest_login_rpc(
             &access_url,
             &store_url,
@@ -97,10 +101,10 @@ impl ContentSourceRole for GraphicAudioContentSource {
     }
 
     async fn scan(&self, params: ScanParams) -> Result<ScanSummary, PluginError> {
-        let cfg = Value::Null;
-        let access_url = bookclerk_plugin_source_graphicaudio::resolve_access_base_url(&cfg);
-        let store_url = bookclerk_plugin_source_graphicaudio::resolve_store_base_url(&cfg);
-        let access = bookclerk_plugin_source_graphicaudio::resolve_access(&cfg);
+        let access_url =
+            bookclerk_plugin_source_graphicaudio::resolve_access_base_url(&self.config);
+        let store_url = bookclerk_plugin_source_graphicaudio::resolve_store_base_url(&self.config);
+        let access = bookclerk_plugin_source_graphicaudio::resolve_access(&self.config);
         bookclerk_plugin_source_graphicaudio::guest_scan_rpc(
             &access_url,
             &store_url,

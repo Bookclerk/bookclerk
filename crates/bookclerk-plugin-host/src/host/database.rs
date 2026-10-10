@@ -154,7 +154,24 @@ impl ExternalDatabase {
             )));
         }
         let table = crate::settings_table(config, plugin);
-        let config_json = toml_to_json(&toml::Value::Table(table));
+        let transitional = toml_to_json(&toml::Value::Table(table));
+        let prepared = crate::instance_bindings::prepare_open_bindings_selecting(
+            services.event_outbox.as_ref(),
+            &config.paths().files_dir,
+            plugin,
+            transitional,
+            services.selected_instance_id.as_deref(),
+        )
+        .await?;
+        // First-party connect params stay in `connect_bindings`. An instance
+        // document replaces only the settings object a third-party adapter
+        // receives. Bootstrap spawn has no library store, so it cannot read
+        // the document it is about to open.
+        let config_json = if prepared.from_instance {
+            prepared.granted_config
+        } else {
+            prepared.spawn_config_table
+        };
         let plugin_data_dir = plugin_data_dir(config, plugin)?;
         let extra_env = match crate::first_party_database_kind(plugin) {
             Some(DatabasePluginKind::D1) | Some(DatabasePluginKind::Postgres) => Vec::new(),

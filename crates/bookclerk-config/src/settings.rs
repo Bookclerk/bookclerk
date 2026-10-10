@@ -383,6 +383,59 @@ impl DiagnosticsConfig {
     }
 }
 
+/// Process-wide lock around `BOOKCLERK_*` environment reads and test writes.
+///
+/// `std::env::set_var` races with `std::env::var`. [`Config::load`] holds this
+/// lock while it reads overrides. A test that publishes an override holds the
+/// same lock for the whole mutation, including the later load on that thread.
+pub struct ProcessEnvGuard {
+    /// `None` only after drop has started.
+    _guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+impl ProcessEnvGuard {
+    /// Blocks until this thread owns the process environment lock.
+    #[must_use]
+    pub fn enter() -> Self {
+        let guard = process_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        PROCESS_ENV_HELD.with(|held| held.set(true));
+        Self {
+            _guard: Some(guard),
+        }
+    }
+}
+
+impl Drop for ProcessEnvGuard {
+    fn drop(&mut self) {
+        PROCESS_ENV_HELD.with(|held| held.set(false));
+    }
+}
+
+/// Process-wide mutex serializing `BOOKCLERK_*` environment access.
+fn process_env_lock() -> &'static std::sync::Mutex<()> {
+    static PROCESS_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &PROCESS_ENV
+}
+
+// True on a thread that already holds `ProcessEnvGuard`.
+std::thread_local! {
+    static PROCESS_ENV_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `body` while the process environment lock is held.
+///
+/// A caller that already entered [`ProcessEnvGuard`] on this thread does not
+/// lock again.
+fn with_process_env<T>(body: impl FnOnce() -> T) -> T {
+    if PROCESS_ENV_HELD.with(|held| held.get()) {
+        return body();
+    }
+    let _guard = ProcessEnvGuard::enter();
+    body()
+}
+
 impl Config {
     /// Load config: defaults ← optional TOML file ← environment overrides.
     ///
@@ -407,7 +460,7 @@ impl Config {
             Self::default()
         };
 
-        cfg.apply_env_overrides();
+        with_process_env(|| cfg.apply_env_overrides());
         // Record the path actually used for load so writers (`config set`,
         // `plugins enable`, …) update the same file the user pointed at via
         // `--config` / `BOOKCLERK_CONFIG`, not only `{files_dir}/config.toml`.

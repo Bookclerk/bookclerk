@@ -23,6 +23,12 @@ pub const CLUSTER_SCOPE_TYPE: &str = "cluster";
 /// Scope type stored for host documents.
 pub const HOST_SCOPE_TYPE: &str = "host";
 
+/// Scope type stored for one plugin instance's configuration.
+pub const PLUGIN_INSTANCE_SCOPE_TYPE: &str = "plugin_instance";
+
+/// Namespace of a plugin instance's typed configuration document.
+pub const PLUGIN_INSTANCE_CONFIG_NAMESPACE: &str = "config";
+
 /// Maximum UTF-8 size of `document_json`.
 pub const MAX_CONFIGURATION_DOCUMENT_BYTES: usize = 16 * 1024;
 
@@ -62,7 +68,7 @@ pub enum ConfigActor {
 
 impl ConfigActor {
     /// Audit string stored on a committed document.
-    fn audit_id(&self) -> &str {
+    pub(super) fn audit_id(&self) -> &str {
         match self {
             Self::Operator { id } | Self::Administrator { id } | Self::Member { id } => id,
             Self::Bootstrap => "bootstrap",
@@ -83,9 +89,9 @@ impl ConfigActor {
 /// Address of one configuration document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentKey {
-    /// `cluster` or `host`.
+    /// `cluster`, `host`, or `plugin_instance`.
     pub scope_type: String,
-    /// `singleton` or a host id.
+    /// `singleton`, a host id, or a plugin instance id.
     pub scope_id: String,
     /// Domain namespace.
     pub namespace: String,
@@ -109,6 +115,19 @@ impl DocumentKey {
             scope_type: HOST_SCOPE_TYPE.to_string(),
             scope_id: host_id.to_string(),
             namespace: namespace.to_string(),
+        }
+    }
+
+    /// Plugin-instance configuration document.
+    ///
+    /// The address is `(plugin_instance, instance_id, config)`. It does not
+    /// include a plugin key, capability, alias, or host id.
+    #[must_use]
+    pub fn plugin_instance(instance_id: &str) -> Self {
+        Self {
+            scope_type: PLUGIN_INSTANCE_SCOPE_TYPE.to_string(),
+            scope_id: instance_id.to_string(),
+            namespace: PLUGIN_INSTANCE_CONFIG_NAMESPACE.to_string(),
         }
     }
 }

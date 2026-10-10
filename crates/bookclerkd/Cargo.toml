@@ -57,11 +57,17 @@ svg-hush.workspace = true
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
 ] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 async-trait.workspace = true
+bytes.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
+bookclerk-plugin-catalog.workspace = true
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 http-body-util = "0.1"
 tempfile.workspace = true

@@ -31,6 +31,7 @@ bookclerk-source.workspace = true
 bookclerk-storage.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+fs4.workspace = true
 sea-orm.workspace = true
 hex.workspace = true
 sha2.workspace = true
@@ -51,11 +52,13 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
 ] }
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
+wiremock.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 

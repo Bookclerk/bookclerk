@@ -48,6 +48,15 @@ package = "bookclerk-cli"
 paths = ["crates/bookclerk-plugins/platform/database-sqlite/plugin.toml"]
 
 [[test_input]]
+package = "bookclerkd"
+# Daemon reconcile and reload tests read these manifests to build grants
+# and package those guests as local archives.
+paths = [
+    "crates/bookclerk-plugins/optional/source-graphicaudio/plugin.toml",
+    "crates/bookclerk-plugins/platform/destination-local/plugin.toml",
+]
+
+[[test_input]]
 package = "bookclerk-plugin-host"
 # plugin_inventory walks every plugin.toml. (rpc_proxy_like's sqlite/postgres
 # guest directories are covered by [test_guests.bookclerk-plugin-host].)
@@ -89,6 +98,16 @@ build = [
     "bookclerk-plugin-database-postgres",
     "bookclerk-plugin-destination-local",
     "bookclerk-plugin-destination-s3",
+    "bookclerk-plugin-source-graphicaudio",
+    "bookclerk-jail",
+    "bookclerk-workerd",
+]
+ensure_workerd = true
+
+[test_guests.bookclerkd]
+build = [
+    "bookclerk-plugin-source-graphicaudio",
+    "bookclerk-plugin-destination-local",
     "bookclerk-jail",
     "bookclerk-workerd",
 ]

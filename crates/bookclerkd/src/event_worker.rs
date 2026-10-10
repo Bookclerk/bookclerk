@@ -187,13 +187,35 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
 
 /// Upsert this node's discovered + loaded integration subscriptions.
 ///
-/// Catalog `plugin_id` is the provenance-qualified PluginKey even though display
-/// aliases are unique within one host plugin namespace (`$FILES_DIR`). Persistent
-/// ownership stays on PluginKey so a later occupant of the same alias on this
-/// host cannot collapse two PluginKeys onto one row.
+/// Catalog `plugin_id` is the plugin instance id when the loaded integration
+/// has one. Otherwise it is the provenance-qualified PluginKey. Two instances
+/// of one key each get their own row so event delivery does not collapse them.
 pub async fn upsert_event_subscriber_catalog(state: &AppState) {
     let cfg = state.config.read().await.clone();
     let node_id = event_node_id(state, &cfg.paths().files_dir);
+    let loaded = {
+        let integrations = state.integrations.read().await;
+        integrations
+            .all()
+            .iter()
+            .map(|integration| LoadedSubscriber {
+                key: durable_plugin_identity(integration.plugin_key(), integration.id()),
+                instance_id: integration
+                    .plugin_instance_id()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string),
+                alias: integration.id().to_string(),
+                runtime_subs: catalog_from_runtime(&integration.event_subscriptions()),
+            })
+            .collect::<Vec<_>>()
+    };
+    let instance_keys: std::collections::HashSet<String> = loaded
+        .iter()
+        .filter(|row| row.instance_id.is_some())
+        .map(|row| row.key.clone())
+        .collect();
+    let mut granted_by_key =
+        std::collections::HashMap::<String, Vec<EventCatalogSubscription>>::new();
     let discovered = tokio::task::spawn_blocking({
         let cfg = cfg.clone();
         move || bookclerk_plugin_host::discover_plugins(&cfg)
@@ -217,6 +239,10 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
                             .cloned()
                     });
                 let subs = granted_catalog_subscriptions(&plugin, grant.as_ref());
+                if instance_keys.contains(&plugin_id) {
+                    granted_by_key.insert(plugin_id, subs);
+                    continue;
+                }
                 // Always upsert — including an empty list — so a narrowed or
                 // revoked grant clears the prior catalog row immediately instead
                 // of leaving deliveries live until the heartbeat TTL expires.
@@ -241,28 +267,57 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
             warn!(error = %err, "plugin discovery task for event catalog failed");
         }
     }
-    let integrations = state.integrations.read().await;
-    for integration in integrations.all() {
+    for row in &loaded {
+        if let Some(instance_id) = &row.instance_id {
+            let subs = granted_by_key
+                .get(&row.key)
+                .cloned()
+                .unwrap_or_else(|| row.runtime_subs.clone());
+            if let Err(err) = library
+                .upsert_event_subscriber(&node_id, instance_id, &subs, true)
+                .await
+            {
+                warn!(
+                    plugin_instance_id = %instance_id,
+                    plugin_key = %row.key,
+                    alias = %row.alias,
+                    error = %err,
+                    "instance event subscriber catalog upsert failed"
+                );
+            }
+            continue;
+        }
         // Discovered guests are also loaded into `state.integrations`. Their
         // grant-filtered catalog row was written above; do not overwrite it
         // with the full runtime/manifest subscription list.
-        let plugin_id = durable_plugin_identity(integration.plugin_key(), integration.id());
-        if catalogued.contains(&plugin_id) {
+        if catalogued.contains(&row.key) {
             continue;
         }
-        let subs = catalog_from_runtime(&integration.event_subscriptions());
         if let Err(err) = library
-            .upsert_event_subscriber(&node_id, &plugin_id, &subs, true)
+            .upsert_event_subscriber(&node_id, &row.key, &row.runtime_subs, true)
             .await
         {
             warn!(
-                plugin_key = %plugin_id,
-                alias = %integration.id(),
+                plugin_key = %row.key,
+                alias = %row.alias,
                 error = %err,
                 "loaded integration catalog upsert failed"
             );
         }
     }
+}
+
+/// One loaded integration captured before discovery so catalog rows can use
+/// its instance id.
+struct LoadedSubscriber {
+    /// PluginKey, or the display alias when the key is empty.
+    key: String,
+    /// Present when this process spawned that deployment.
+    instance_id: Option<String>,
+    /// Display alias for logs.
+    alias: String,
+    /// Runtime subscriptions used when discovery did not grant a catalog.
+    runtime_subs: Vec<EventCatalogSubscription>,
 }
 
 /// Process-stable per-files-dir node id used as the catalog heartbeat key.
@@ -494,20 +549,68 @@ fn durable_plugin_identity(plugin_key: &str, alias: &str) -> String {
 /// PluginKey. Colliding aliases never share a claim id.
 async fn loaded_plugin_ids(state: &AppState) -> Vec<String> {
     let integrations = state.integrations.read().await;
-    let all = integrations.all();
+    let rows: Vec<LoadedClaimId> = integrations
+        .all()
+        .iter()
+        .map(|integration| LoadedClaimId {
+            instance_id: integration
+                .plugin_instance_id()
+                .filter(|id| !id.is_empty())
+                .map(str::to_string),
+            plugin_key: integration.plugin_key().to_string(),
+            alias: integration.id().to_string(),
+        })
+        .collect();
+    claim_ids_for_loaded(&rows)
+}
+
+/// One loaded integration's claim identity.
+struct LoadedClaimId {
+    /// Plugin instance id, when the catalog has switched off the plugin key.
+    instance_id: Option<String>,
+    /// Provenance-qualified plugin key. Empty for in-crate doubles.
+    plugin_key: String,
+    /// Display alias.
+    alias: String,
+}
+
+/// Claim ids for loaded integrations.
+///
+/// Each guest contributes its instance id, or the plugin key when it has no
+/// instance id. A display alias is included only when one guest uses it.
+/// The plugin key is also included when exactly one loaded guest has that
+/// key, so deliveries queued before the catalog switched to instance ids
+/// still drain. Two instances of one key do not share that claim id.
+fn claim_ids_for_loaded(rows: &[LoadedClaimId]) -> Vec<String> {
     let mut ids = Vec::new();
-    for integration in all {
-        let key = durable_plugin_identity(integration.plugin_key(), integration.id());
+    for row in rows {
+        let key = match row.instance_id.as_deref() {
+            Some(instance_id) => instance_id.to_string(),
+            None => durable_plugin_identity(&row.plugin_key, &row.alias),
+        };
         ids.push(key.clone());
-        let alias = integration.id();
-        if alias != key
-            && all
+        if row.alias != key
+            && rows
                 .iter()
-                .filter(|other| other.id().eq_ignore_ascii_case(alias))
+                .filter(|other| other.alias.eq_ignore_ascii_case(&row.alias))
                 .count()
                 == 1
         {
-            ids.push(alias.to_string());
+            ids.push(row.alias.clone());
+        }
+    }
+    let mut key_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        let plugin_key = row.plugin_key.trim();
+        if plugin_key.is_empty() {
+            continue;
+        }
+        *key_counts.entry(plugin_key.to_string()).or_default() += 1;
+    }
+    for (plugin_key, count) in key_counts {
+        if count == 1 && !ids.iter().any(|id| id == &plugin_key) {
+            ids.push(plugin_key);
         }
     }
     ids
@@ -1441,5 +1544,112 @@ schema_versions = [1]
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn one_instance_still_claims_the_plugin_key() {
+        let rows = vec![
+            super::LoadedClaimId {
+                instance_id: Some("instance-a".into()),
+                plugin_key: "path:ga".into(),
+                alias: "graphicaudio".into(),
+            },
+            super::LoadedClaimId {
+                instance_id: Some("instance-b".into()),
+                plugin_key: "path:other".into(),
+                alias: "audible".into(),
+            },
+        ];
+        let ids = super::claim_ids_for_loaded(&rows);
+        assert!(ids.iter().any(|id| id == "instance-a"));
+        assert!(ids.iter().any(|id| id == "path:ga"));
+        assert!(ids.iter().any(|id| id == "path:other"));
+    }
+
+    #[test]
+    fn two_instances_of_one_key_do_not_claim_that_key() {
+        let rows = vec![
+            super::LoadedClaimId {
+                instance_id: Some("instance-a".into()),
+                plugin_key: "path:ga".into(),
+                alias: "graphicaudio".into(),
+            },
+            super::LoadedClaimId {
+                instance_id: Some("instance-b".into()),
+                plugin_key: "path:ga".into(),
+                alias: "graphicaudio".into(),
+            },
+        ];
+        let ids = super::claim_ids_for_loaded(&rows);
+        assert!(ids.iter().any(|id| id == "instance-a"));
+        assert!(ids.iter().any(|id| id == "instance-b"));
+        assert!(!ids.iter().any(|id| id == "path:ga"));
+        assert!(!ids.iter().any(|id| id == "graphicaudio"));
+    }
+
+    #[tokio::test]
+    async fn claim_accepts_plugin_key_queued_before_instance_id() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let created = store
+            .publish_domain_event(publish_spec("book_acquired:claim-key"))
+            .await
+            .unwrap();
+        let PublishDomainEventOutcome::Created { id } = created else {
+            panic!("{created:?}");
+        };
+        store
+            .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("path:ga")], "claim-key")
+            .await
+            .unwrap();
+        let claimed = store
+            .claim_next_event_delivery(
+                "claim-key",
+                60,
+                &uuid::Uuid::new_v4().to_string(),
+                &["instance-a".into(), "path:ga".into()],
+                32,
+                "",
+            )
+            .await
+            .unwrap();
+        assert!(
+            claimed.is_some(),
+            "unique instance still drains the plugin key"
+        );
+
+        let second = store
+            .publish_domain_event(publish_spec("book_acquired:claim-ambiguous"))
+            .await
+            .unwrap();
+        let PublishDomainEventOutcome::Created { id: second_id } = second else {
+            panic!("{second:?}");
+        };
+        store
+            .dispatch_event_deliveries(
+                &second_id,
+                &[EventSubscriber::plugin("path:ga")],
+                "claim-ambiguous",
+            )
+            .await
+            .unwrap();
+        let missed = store
+            .claim_next_event_delivery(
+                "claim-ambiguous",
+                60,
+                &uuid::Uuid::new_v4().to_string(),
+                &["instance-a".into(), "instance-b".into()],
+                32,
+                "",
+            )
+            .await
+            .unwrap();
+        assert!(
+            missed.is_none(),
+            "two instances must not claim the shared key"
+        );
     }
 }

@@ -124,6 +124,9 @@ async fn measure(
     let services = SessionServices {
         event_outbox: None,
         spawn_transport: transport,
+        selected_instance_id: None,
+        local_output_root: None,
+        deployed_s3_endpoint: None,
     };
     let spawn_started = Instant::now();
     let ext = ExternalDatabase::spawn_with(&staged.plugin, config, services)

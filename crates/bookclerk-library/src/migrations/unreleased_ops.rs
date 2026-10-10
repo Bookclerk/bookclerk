@@ -820,4 +820,59 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         completed INTEGER NOT NULL DEFAULT 0
     )",
     ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_instances (
+        plugin_instance_id TEXT PRIMARY KEY NOT NULL,
+        plugin_key TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_instances_plugin_key
+        ON plugin_instances(plugin_key)",
+    ),
+    // Default enrollment for one plugin key. Explicit create_plugin_instance
+    // does not write this row, so two instances may still share a key.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_instance_defaults (
+        plugin_key TEXT PRIMARY KEY NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
+        FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_deployments (
+        deployment_id TEXT PRIMARY KEY NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
+        host_id TEXT NOT NULL,
+        desired TEXT NOT NULL CHECK (desired IN ('present')),
+        revision INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        UNIQUE (plugin_instance_id, host_id),
+        FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_deployments_host_id
+        ON plugin_deployments(host_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_deployment_observations (
+        deployment_id TEXT NOT NULL,
+        host_id TEXT NOT NULL,
+        incarnation TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('installed', 'running', 'healthy', 'error')),
+        detail TEXT NOT NULL,
+        applied_config_revision INTEGER,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY (deployment_id, host_id),
+        FOREIGN KEY (deployment_id) REFERENCES plugin_deployments(deployment_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_deployment_observations_host_id
+        ON plugin_deployment_observations(host_id)",
+    ),
 ];

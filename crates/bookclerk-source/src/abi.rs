@@ -562,6 +562,7 @@ pub fn scan_summary_from_abi(summary: &abi::ScanSummary, upserted: usize) -> cra
         },
         pages: summary.pages,
         skipped_disabled: count_usize(summary.skipped_disabled),
+        warnings: Vec::new(),
     }
 }
 

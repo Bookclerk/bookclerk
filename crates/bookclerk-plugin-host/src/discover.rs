@@ -6,6 +6,8 @@
 //! [`PluginKey`], not the manifest alias.
 
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bookclerk_config::{Config, DatabasePluginKind};
 use bookclerk_library::BOOKCLERK_SCHEMA_NAMESPACE;
@@ -159,6 +161,13 @@ pub fn plugin_search_dirs(config: &Config) -> Vec<PathBuf> {
     dirs
 }
 
+// Counts `discover_plugins` calls inside one test task. Other tests do not
+// increment it. A process-wide counter raced with them.
+#[cfg(test)]
+tokio::task_local! {
+    pub static DISCOVER_CALLS: std::sync::Arc<AtomicUsize>;
+}
+
 /// Discover plugins under the configured search directories.
 ///
 /// Accepts either:
@@ -172,6 +181,10 @@ pub fn plugin_search_dirs(config: &Config) -> Vec<PathBuf> {
 ///
 /// Returns [`PluginError`] on duplicate keys, duplicate aliases, missing binaries, or I/O failures.
 pub fn discover_plugins(config: &Config) -> Result<Vec<DiscoveredPlugin>> {
+    #[cfg(test)]
+    {
+        let _ = DISCOVER_CALLS.try_with(|calls| calls.fetch_add(1, Ordering::Relaxed));
+    }
     let mut out = Vec::new();
     let mut seen: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
     for dir in plugin_search_dirs(config) {

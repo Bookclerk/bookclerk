@@ -59,6 +59,13 @@ struct LiveSession {
     grant_revision: String,
     /// [`authority_revision`] of the effective runtime grant at spawn.
     revision: String,
+    /// Deployed S3 document endpoint captured at registration.
+    ///
+    /// `None` is a transitional session: overlay reads `[output.s3].endpoint`.
+    /// `Some(endpoint)` is a deployed instance. `Some(None)` means the document
+    /// has no custom endpoint, so a later TOML endpoint must not be granted
+    /// and must not change this session's authority revision.
+    deployed_s3_endpoint: Option<Option<String>>,
     /// Set when a later grant for this key no longer matches `revision`.
     cancelled: Arc<AtomicBool>,
     /// Proactively stop the vat / child / mediated resources.
@@ -152,7 +159,8 @@ pub fn register_session_revisions(
 ///
 /// Authority revocation stores `true` on `cancelled` before the shutdown hook
 /// runs, so describe, ordinary RPCs, and the host proxy observe it without
-/// waiting for the vat work queue.
+/// waiting for the vat work queue. The session is transitional: config reload
+/// overlays `[output.s3].endpoint`.
 #[must_use]
 pub fn register_session_revisions_on(
     plugin_key: &str,
@@ -161,11 +169,46 @@ pub fn register_session_revisions_on(
     shutdown: SessionShutdown,
     cancelled: Arc<AtomicBool>,
 ) -> Arc<AtomicBool> {
+    register_session_revisions_on_with_deployed_s3(
+        plugin_key,
+        grant_revision,
+        revision,
+        shutdown,
+        cancelled,
+        None,
+    )
+}
+
+/// [`register_session_revisions_on`] that records the deployed S3 endpoint.
+///
+/// `deployed_s3_endpoint` matches the spawn-time value. `None` overlays
+/// `[output.s3].endpoint` on config reload. `Some` overlays only the document
+/// endpoint (`Some(None)` when the document has none), so a TOML edit cannot
+/// rewrite this session's authority revision.
+///
+/// # Arguments
+///
+/// * `plugin_key` - Canonical PluginKey for the vat.
+/// * `grant_revision` - Digest of the persisted operator grant.
+/// * `revision` - Effective [`authority_revision`] at spawn.
+/// * `shutdown` - Hook invoked when this session is fenced.
+/// * `cancelled` - Flag the proxy already holds.
+/// * `deployed_s3_endpoint` - Document endpoint for a deployed S3 instance.
+#[must_use]
+pub(crate) fn register_session_revisions_on_with_deployed_s3(
+    plugin_key: &str,
+    grant_revision: &str,
+    revision: &str,
+    shutdown: SessionShutdown,
+    cancelled: Arc<AtomicBool>,
+    deployed_s3_endpoint: Option<Option<String>>,
+) -> Arc<AtomicBool> {
     if let Ok(mut guard) = live().lock() {
         guard.push(LiveSession {
             plugin_key: plugin_key.to_string(),
             grant_revision: grant_revision.to_string(),
             revision: revision.to_string(),
+            deployed_s3_endpoint,
             cancelled: Arc::clone(&cancelled),
             shutdown,
         });
@@ -189,6 +232,29 @@ pub fn live_session_count() -> usize {
 /// Fences every live session for `plugin_key` (grant/authority change).
 pub fn fence_plugin_key(plugin_key: &str) {
     fence_stale_sessions(plugin_key, "");
+}
+
+/// Cancels one live session and runs its shutdown hook.
+///
+/// Host-overlay reload uses this so a stale revision on one vat does not
+/// cancel another vat that shares the PluginKey. A transitional S3 session
+/// and a deployed S3 session can share `s3` while holding different effective
+/// revisions.
+pub(crate) fn fence_session(flag: &Arc<AtomicBool>) {
+    let hook = {
+        let Ok(guard) = live().lock() else {
+            return;
+        };
+        let Some(session) = guard
+            .iter()
+            .find(|session| Arc::ptr_eq(&session.cancelled, flag))
+        else {
+            return;
+        };
+        session.cancelled.store(true, Ordering::SeqCst);
+        Arc::clone(&session.shutdown)
+    };
+    hook();
 }
 
 /// Fences live sessions for `plugin_key` whose revision is not `current_revision`.
@@ -264,13 +330,31 @@ pub fn apply_grant_store(store: &PluginGrantStore) {
     }
 }
 
-/// Live `(plugin_key, authority_revision)` pairs for overlay reconciliation.
+/// One live session's inputs for host-overlay reconciliation.
+#[derive(Clone, Debug)]
+pub(crate) struct LiveOverlaySession {
+    /// Canonical PluginKey.
+    pub plugin_key: String,
+    /// Effective [`authority_revision`] recorded at spawn.
+    pub revision: String,
+    /// Deployed S3 document endpoint, or `None` for a transitional session.
+    pub deployed_s3_endpoint: Option<Option<String>>,
+    /// Cancel flag for this vat. Overlay fencing uses this, not the PluginKey.
+    pub cancelled: Arc<AtomicBool>,
+}
+
+/// Live sessions for overlay reconciliation, including each deployed S3 endpoint.
 #[must_use]
-pub fn live_authority_snapshot() -> Vec<(String, String)> {
+pub(crate) fn live_overlay_sessions() -> Vec<LiveOverlaySession> {
     match live().lock() {
         Ok(guard) => guard
             .iter()
-            .map(|session| (session.plugin_key.clone(), session.revision.clone()))
+            .map(|session| LiveOverlaySession {
+                plugin_key: session.plugin_key.clone(),
+                revision: session.revision.clone(),
+                deployed_s3_endpoint: session.deployed_s3_endpoint.clone(),
+                cancelled: Arc::clone(&session.cancelled),
+            })
             .collect(),
         Err(_) => Vec::new(),
     }

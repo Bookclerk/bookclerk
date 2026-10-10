@@ -248,11 +248,77 @@ before a receipt replay. `PATCH /api/settings` rejects a body that mixes
 `events.*` with file-backed keys before either authority is written. The
 response includes `revision` on success and `current_revision` on conflict.
 
+## Phase 2 addendum: one plugin instance
+
+A plugin instance is a durable id, not a function of the plugin key, alias,
+capability, or host. `plugin_instances.plugin_instance_id` is a hyphenated UUID.
+Two rows may name the same canonical plugin key. The instance row stores that
+key and nothing about which host runs it.
+
+The instance's settings and secret refs live in `configuration_documents` at
+scope `plugin_instance`, namespace `config`, schema version 1. Secret refs
+store names only. Ciphertext stays in `encrypted_secrets` (`kind =
+plugin_instance`). Compare-and-swap uses the same revision and receipt path as
+`core.events`.
+
+`plugin_deployments` is the desired row: one instance, one host, `desired =
+present`. `plugin_deployment_observations` is written only by that host's
+reconciler (`installed`, `running`, `healthy`, `error`). A desired write does
+not update observations. This slice reconciles the local host only. It does
+not place work, roll versions, or uninstall.
+
+The reconciler passes the deployment's instance id and resolved bindings into
+`open`. It does not look the instance up by plugin key. A healthy observation
+is skipped only while that session's process is still running. The daemon
+keeps that session map for the process lifetime, so the next tick sees the
+same guest. Config reload copies source, integration, and storage sessions that are bound
+to a present plugin instance id onto the replacement registries and does not
+stop those sessions. A transitional guest for the same plugin key is dropped
+and, for integrations, stopped. Install stages the archive on a blocking
+thread while the host mutation lock is held, then runs health. Health failure
+rolls that staged tree back before commit. A crash between stage and commit
+can leave the tree active; the next process does not replay that pre-commit
+health check. Packages come from `plugin-packages/` on the local files
+directory, not from a download.
+
+A deployed storefront is registered under its plugin instance id. Job and
+API lookup (`registry_for_job`, then `SourceRegistry::get`) resolves that id
+to that guest. A plugin key or alias resolves only when exactly one
+registered source matches. Two instances are distinct only by instance id
+(`registry.get(id)`). Key and alias lookups, scan, acquire, and storage slots
+fail closed when a key is shared. Scan skips only that key and continues the
+other storefronts. `sources.graphicaudio.enabled = false` retires the running
+guest. CLI scan and acquire use the instance document and require `--instance`
+when selection is ambiguous. The key alone does not pick one of them.
+
+GraphicAudio is the first migrated caller. When discovery or the install
+ledger contains manifest id `graphicaudio`, startup ensures one instance, one
+local deployment, and, if the document is absent, imports `access`,
+`base_url`, `store_url`, `bitrate`, and `container` from
+`[sources.graphicaudio]`. After that document exists it is the authority for
+those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
+TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
+derived from `describe()`, and that schema debt stays until a later phase.
+Other plugins with no instance document keep `settings_table_for`.
+
+Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
+not by `PluginInstanceId`. Two instances of one key share credentials and scan
+rows. Acquire fails closed when that key is ambiguous instead of moving those
+rows onto the instance id. Scan records a warning and skips only the ambiguous
+key. When that key is the only store that would have been scanned, the error
+is that warning.
+
+KV and Queues are unchanged. Named SQL bindings do not replace them.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `hosts`,
   `configuration_documents`, `configuration_audit`,
-  `configuration_changes`. Checksum of the unreleased pack changes. Existing
+  `configuration_changes`, `plugin_instances`, `plugin_instance_defaults`,
+  `plugin_deployments`, and `plugin_deployment_observations`.
+  `plugin_instance_defaults` claims one id per plugin key for
+  `ensure_plugin_instance`. Explicit create does not write that row, so two
+  instances may still share a key. Checksum of the unreleased pack changes. Existing
   development databases fail closed until recreated (`cargo reset --yes` or a
   new database). That matches the unreleased-schema rule.
 - `bookclerk config get/set` for `events.*` reads and writes the database.
@@ -269,8 +335,9 @@ response includes `revision` on success and `current_revision` on conflict.
 
 Not in this spike, and not claimed as production HA:
 
-- PluginInstance records, CONFIG/SECRETS from instance state, and
-  PluginDeployment reconciliation (Phase 2).
+- One local deployment is reconciled (Phase 2 vertical slice). Placement,
+  multi-host reconciliation, rollouts, and moving the rest of `config.toml`
+  onto instance documents are still open.
 - Moving the rest of `config.toml` (library, jobs, sources, output, media,
   plugins, diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap
   is part of that, not this slice.
@@ -281,6 +348,18 @@ Not in this spike, and not claimed as production HA:
 - Dashboard, drain, and rolling upgrades (Phase 5).
 - Resizing the local event delivery task count without a process restart.
 - A general key-management provider. Operators copy `master.key`.
+- Install crash window between stage and commit. There is no durable
+  pending-install marker. A restart can observe a staged tree that never
+  passed pre-commit health. Health failure in a live process still rolls
+  that tree back before commit.
+- The reconciler holds the process-wide plugin mutation lock across extract
+  and the health check. Extract runs on a blocking thread. The lock is still
+  held across the health await so a second installer cannot commit the same
+  tree.
+- GraphicAudio writable settings remain a hard-coded allowlist. They are not
+  derived from `describe()`.
+- Accounts and `SourceScope` stay storefront-keyed. Moving those rows onto
+  the plugin instance id is a later phase.
 - D1 multi-host execution. The executing D1 tests in this repository are an
   HTTP mock over one SQLite connection. This spike's shared-database proof is
   two PostgreSQL pools plus two SQLite connections. A live D1 database was

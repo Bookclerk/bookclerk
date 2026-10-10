@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 
 use crate::api::AppState;
 use crate::job_handler::JobExecCtx;
-use crate::registry::default_registry_with_plugins;
+use crate::registry::registry_for_job;
 
 /// Result of admitting work into the durable queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,10 +306,8 @@ pub async fn run_plugin_copy(
     }
     let destinations = state.destinations.read().await;
     let session = destinations
-        .plugin_session(plugin_id, bookclerk_plugin_host::OPERATOR_ACCOUNT)
-        .ok_or_else(|| {
-            anyhow::anyhow!("no plugin session for plugin `{plugin_id}` (guest not loaded)")
-        })?;
+        .require_plugin_session(plugin_id, bookclerk_plugin_host::OPERATOR_ACCOUNT)
+        .map_err(|err| anyhow::anyhow!(err))?;
     let lease = match ctx {
         Some(ctx) => bookclerk_plugin_host::JobInvocationLease {
             job_id: ctx.fence.job_id.clone(),
@@ -411,7 +409,7 @@ pub async fn run_scan(
     if job_cancelled(ctx, &library).await {
         anyhow::bail!("cancelled");
     }
-    let registry = default_registry_with_plugins(&cfg, &library).await?;
+    let registry = registry_for_job(state).await?;
     let summary = registry
         .scan_all(
             &library,
@@ -430,9 +428,16 @@ pub async fn run_scan(
         books_upserted = summary.books_upserted,
         pages = summary.pages,
         skipped_disabled = summary.skipped_disabled,
+        ambiguous = summary.warnings.len(),
         elapsed_ms = started.elapsed().as_millis() as u64,
         "run_scan finished"
     );
+    if !summary.warnings.is_empty() {
+        warn!(
+            warnings = %summary.warnings.join("; "),
+            "scan skipped ambiguous plugin keys"
+        );
+    }
     if cfg.library.enrich_from_audible {
         if let Err(err) =
             bookclerk_enrich::enrich_books_from_audible(&library, cfg.library.enrich_min_confidence)
@@ -441,10 +446,15 @@ pub async fn run_scan(
             warn!(error = %err, "Audible enrichment failed");
         }
     }
-    Ok(format!(
+    let mut message = format!(
         "{} account(s), {} book upsert(s), {} page(s), {} skipped (scan disabled)",
         summary.accounts, summary.books_upserted, summary.pages, summary.skipped_disabled
-    ))
+    );
+    if !summary.warnings.is_empty() {
+        message.push_str("; skipped ambiguous keys: ");
+        message.push_str(&summary.warnings.join("; "));
+    }
+    Ok(message)
 }
 
 /// Acquire pending titles synchronously.
@@ -470,7 +480,7 @@ pub async fn run_acquire(
     .await?;
     let storage = destinations.listing_backend()?;
     let options = DownloadOptions::from(&cfg);
-    let registry = default_registry_with_plugins(&cfg, &library).await?;
+    let registry = registry_for_job(state).await?;
 
     let mut index = bookclerk_acquire::scan_storage(
         &library,
@@ -548,13 +558,9 @@ pub async fn run_acquire(
                 anyhow::bail!("cancelled after {idx}/{total} titles (lease fence lost)");
             }
         }
-        let content_source = registry.get(&book.source).ok_or_else(|| {
-            anyhow::anyhow!(
-                "no content source registered for `{}` (title {})",
-                book.source,
-                book.asin_or_isbn()
-            )
-        })?;
+        let content_source = registry
+            .require(&book.source)
+            .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
         let req = AcquireRequest {
             asin: book.download_product_id().to_string(),
             book_uuid: Some(book.uuid.clone()),
