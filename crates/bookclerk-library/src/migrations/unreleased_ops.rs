@@ -65,9 +65,32 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid ON books(uuid)"),
+    // Search hydration matches `lower(uuid)`. A btree on the expression keeps
+    // that predicate off a table scan. Stored uuids that differ only by ASCII
+    // case stay distinct rows. Postgres lowering wraps the argument as
+    // `lower((uuid COLLATE "C"))` so the fold matches SQLite. `IF NOT EXISTS`
+    // leaves an index created from the older expression in place.
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid_lower ON books(lower(uuid))"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_status ON books(acquire_status)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_account ON books(account_id)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)"),
+    // Title order for library pages is ASCII case-fold, then code points, then
+    // `uuid` in code-point order. SQLite serves the fold with `COLLATE NOCASE`
+    // and the tie with BINARY. Postgres lowering rewrites the fold to
+    // `lower(title COLLATE "C")`, the tie to `(uuid COLLATE "C")`, and marks
+    // the index `NULLS FIRST`. Binary `idx_books_title` cannot serve the plan.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_books_page_title ON books(title COLLATE NOCASE, uuid)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_books_page_status ON books(acquire_status, title COLLATE NOCASE, uuid)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_books_page_account ON books(account_id, title COLLATE NOCASE, uuid)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_books_page_account_status ON books(account_id, acquire_status, title COLLATE NOCASE, uuid)",
+    ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_pdf_status ON books(pdf_status)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_tags ON books(tags)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_series_asin ON books(series_asin)"),
@@ -747,7 +770,15 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         heartbeat_at TEXT NOT NULL,
         software_version TEXT NOT NULL,
         schema_state TEXT NOT NULL,
-        compatible INTEGER NOT NULL
+        compatible INTEGER NOT NULL,
+        logical_cpus INTEGER,
+        cpu_max_quota_us INTEGER,
+        cpu_max_period_us INTEGER,
+        memory_max_bytes INTEGER,
+        memory_current_bytes INTEGER,
+        memory_anon_bytes INTEGER,
+        files_dir_free_bytes INTEGER,
+        scratch_bytes INTEGER
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_hosts_heartbeat ON hosts(heartbeat_at)"),

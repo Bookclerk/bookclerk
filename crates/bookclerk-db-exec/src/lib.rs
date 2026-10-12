@@ -77,8 +77,8 @@ pub use guest_receipt::{
     GUEST_RECEIPT_STUB_SUFFIX, GUEST_RECEIPT_WRAP_PREFIX, GUEST_RECEIPT_WRITE_GATE,
 };
 pub use lower::{
-    lower_canonical_ddl_to_postgres, lower_canonical_sql, lower_canonical_sql_typed,
-    lower_canonical_to_postgres,
+    lower_canonical_ddl_to_postgres, lower_canonical_ddl_to_postgres_with, lower_canonical_sql,
+    lower_canonical_sql_typed, lower_canonical_to_postgres,
 };
 pub use proxy_txn::{
     arm_exec_budget, clear_exec_budget, consume_atomic_interrupt, consume_begin_injection,

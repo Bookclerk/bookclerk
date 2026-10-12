@@ -85,9 +85,12 @@ still prefers the TOML events table.
   different hosts even when they share the database.
 - **Incarnation** — a UUID kept in process memory and written on heartbeat.
   Restart mints a new incarnation and keeps the same HostId. The `hosts` row
-  stores the latest incarnation, heartbeat time, software version, and schema
-  display as **observations**. `created_at` and `cluster_id` are identity and
-  are not refreshed.
+  stores the latest incarnation, heartbeat time, software version, schema
+  display, and capacity sample as **observations**. The capacity sample is
+  `logical_cpus`, `cpu_max_quota_us`, `cpu_max_period_us`, `memory_max_bytes`,
+  `memory_current_bytes`, `memory_anon_bytes`, `files_dir_free_bytes`, and
+  `scratch_bytes`. Missing cgroup files stay null. `created_at` and
+  `cluster_id` are identity and are not refreshed.
 
 Connecting a files directory whose `cluster_id` does not match
 `cluster_identity.cluster_id` fails. The identity file and the database row
@@ -205,10 +208,14 @@ do not commit, do not write a change notice, and are not logged as applied.
 ### Desired state versus observations
 
 `configuration_documents` is desired state. `hosts.incarnation`,
-`heartbeat_at`, `software_version`, `schema_state`, and `compatible` are
-observations from the last heartbeat. Physical plugin install files and the
-host install ledger stay on the host. This spike does not reconcile desired
-plugin deployments.
+`heartbeat_at`, `software_version`, `schema_state`, `compatible`, and the
+capacity columns (`logical_cpus`, `cpu_max_quota_us`, `cpu_max_period_us`,
+`memory_max_bytes`, `memory_current_bytes`, `memory_anon_bytes`,
+`files_dir_free_bytes`, `scratch_bytes`) are observations from the last
+heartbeat. They are not a `host.runtime` document and they are not a second
+copy of `media.workers`. Physical plugin install files and the host install
+ledger stay on the host. This spike does not reconcile desired plugin
+deployments.
 
 ### Secret root
 

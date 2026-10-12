@@ -1,0 +1,17 @@
+api_version = 3
+id = "echo_workerd_name_only"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[[modules]]
+name = "index.js"
+
+[capabilities.network]
+mode = "deny"

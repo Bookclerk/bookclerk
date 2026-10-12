@@ -258,6 +258,9 @@ pub(crate) async fn spawn_stdio_guest(
     local_output_root: Option<&std::path::Path>,
     deployed_s3_endpoint: Option<Option<&str>>,
 ) -> Result<SpawnedStdio> {
+    if let Some(message) = plugin.manifest.unimplemented_surface() {
+        return Err(PluginError::message(message));
+    }
     let id = plugin.plugin_key().canonical().to_string();
     note_spawn_stage(&format!("spawn begin plugin={id}"));
     tokio::task::yield_now().await;

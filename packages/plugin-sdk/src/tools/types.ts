@@ -119,7 +119,7 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
     props.push({
       name: kv.binding ?? "KV",
       type: "unknown",
-      doc: "`[[kv_namespaces]]` store (surface reserved).",
+      doc: "`[[kv_namespaces]]` durable KV binding. Not implemented yet.",
     });
   }
   if (m.oauth) {
@@ -132,7 +132,7 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
   for (const db of m.databases ?? []) {
     if (RESERVED_BINDINGS.has(db.binding)) {
       throw new Error(
-        `plugin.toml: [[databases]] binding \`${db.binding}\` collides with a Bookclerk binding`,
+        "plugin.toml: [[databases]] binding collides with a Bookclerk binding",
       );
     }
     props.push({
@@ -144,7 +144,7 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
   const seen = new Set<string>();
   for (const p of props) {
     if (seen.has(p.name)) {
-      throw new Error(`plugin.toml: binding \`${p.name}\` is declared twice`);
+      throw new Error("plugin.toml: binding is declared twice");
     }
     seen.add(p.name);
   }

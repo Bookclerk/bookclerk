@@ -665,16 +665,17 @@ impl LibraryStore {
 
     /// List recent jobs, newest first, capped at `limit` (minimum 1).
     ///
+    /// A peer writer on the same SQLite file (TRUNCATE journal) can make this
+    /// read return `SQLITE_BUSY`. The read is repeated until the lock clears
+    /// or the attempt budget is spent. `limit` is unchanged.
+    ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
+    /// lock is still held after the retries.
     pub async fn list_jobs(&self, limit: u64) -> Result<Vec<JobRecord>> {
-        let rows = jobs::Entity::find()
-            .order_by_desc(jobs::Column::CreatedAt)
-            .limit(limit.max(1))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = self.list_job_rows_through_lock(limit).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             let id = row.id.clone();
@@ -689,6 +690,19 @@ impl LibraryStore {
             }
         }
         Ok(out)
+    }
+
+    /// Loads job rows, waiting out `SQLITE_BUSY` / `SQLITE_LOCKED` from a peer writer.
+    async fn list_job_rows_through_lock(&self, limit: u64) -> Result<Vec<jobs::Model>> {
+        super::lock_retry::retry_read_lock(|| async {
+            jobs::Entity::find()
+                .order_by_desc(jobs::Column::CreatedAt)
+                .limit(limit.max(1))
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)
+        })
+        .await
     }
 
     /// Delete terminal jobs older than `retention_days`.

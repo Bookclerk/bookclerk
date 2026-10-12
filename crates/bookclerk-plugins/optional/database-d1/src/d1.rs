@@ -2574,6 +2574,7 @@ mod tests {
         // Adapter edge: split the canonical host-schema pack for the SQLite
         // family before the HTTP batch (mirrors `run_typed_atomic`).
         let stmts = bookclerk_db_exec::expand_host_schema_batch(DatabaseBackend::Sqlite, &stmts)
+            .expect("lower")
             .unwrap_or(stmts);
         let batch: Vec<(String, Vec<JsonValue>)> = stmts
             .into_iter()

@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
+mod capacity;
 #[cfg(unix)]
 mod guest_ipc;
 mod link;
@@ -36,6 +37,10 @@ mod spawn_diag;
 mod spawn_path;
 mod spec;
 
+pub use capacity::{
+    cgroup_sample_is_low_resource, filesystem_free_bytes, logical_cpu_count, process_cgroup_dir,
+    read_cgroup_sample, CgroupSample, LOW_RESOURCE_MEMORY_MAX_BYTES,
+};
 #[cfg(unix)]
 pub use guest_ipc::{create_guest_ipc_dir, ensure_guest_ipc_fits, MACOS_SUN_PATH_CAPACITY};
 

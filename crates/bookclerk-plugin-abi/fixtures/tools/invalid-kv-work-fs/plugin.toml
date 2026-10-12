@@ -1,0 +1,15 @@
+api_version = 3
+id = "kv_work_fs_collision"
+version = "0.1.0"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+
+[work_fs]
+binding = "SHARED"
+
+[[kv_namespaces]]
+binding = "SHARED"
+
+[capabilities.network]
+mode = "deny"

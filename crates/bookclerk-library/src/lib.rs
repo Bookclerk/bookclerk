@@ -140,9 +140,9 @@ pub use sql_plan::{
 pub use store::{
     event_outbox::prepare_publish_domain_event, fallback_work_key, inject_dispatch_page_failures,
     plugin_databases::PluginDatabaseRecord, prefer_enrichment_source, set_dispatch_chunk_for_test,
-    wishlist_identities_match, CatalogEnrichmentFields, LibraryStore, NewBook,
+    wishlist_identities_match, BookPage, CatalogEnrichmentFields, LibraryStore, NewBook,
     NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NewWork, SavedFilterRecord,
-    UserBookFields, WishlistIdentity,
+    UserBookFields, WishlistIdentity, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
 };
 pub use text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,

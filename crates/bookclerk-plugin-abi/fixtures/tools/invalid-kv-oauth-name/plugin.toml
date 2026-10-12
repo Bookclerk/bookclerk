@@ -1,0 +1,15 @@
+api_version = 3
+id = "kv_oauth_name_collision"
+version = "0.1.0"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+
+[oauth]
+binding = "LOOP"
+
+[[kv_namespaces]]
+binding = "LOOP"
+
+[capabilities.network]
+mode = "deny"
