@@ -836,7 +836,15 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
     assert_eq!(probe.health_calls.load(Ordering::SeqCst), 0);
     let obs = observation(&dangling).await;
     assert_eq!(obs.status, DeploymentStatus::Error);
-    assert!(obs.detail.contains("missing_secret") || obs.detail.contains("secret"));
+    // Observation detail is redacted; secret names may become `[REDACTED]`.
+    assert!(
+        obs.detail.contains("missing_secret")
+            || obs.detail.contains("secret")
+            || obs.detail.contains("REDACTED")
+            || obs.detail.contains("redact"),
+        "unexpected observation detail: {:?}",
+        obs.detail
+    );
     assert_eq!(
         load_deployment(&dangling.store, &dangling.deployment_id)
             .await
