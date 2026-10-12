@@ -1,0 +1,16 @@
+api_version = 3
+id = "producer_shares_oauth"
+version = "0.1.0"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+
+[oauth]
+binding = "LOOP"
+
+[[events.producers]]
+type = "book_ready"
+binding = "LOOP"
+
+[capabilities.network]
+mode = "deny"

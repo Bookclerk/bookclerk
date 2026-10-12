@@ -37,7 +37,10 @@ export type Manifest = {
   workerd?: {
     /** Cloudflare Workers compatibility date (`YYYY-MM-DD`) for the isolate. */
     compatibility_date: string;
-    /** Optional Cloudflare compatibility flags (Python Workers need `python_workers`, …). */
+    /**
+     * Author compatibility flags. Only `python_workers` and
+     * `disable_python_external_sdk`, and only together when the guest is Python.
+     */
     compatibility_flags?: string[];
     /** Entrypoint module filename under `modules_dir` (for example `plugin.js`). */
     main_module: string;
@@ -48,8 +51,11 @@ export type Manifest = {
     /** Optional CPU / subrequest limits enforced by the host egress policy. */
     limits?: { cpu_ms?: number; subrequests?: number };
   };
-  /** Extra module descriptors for legacy / advanced layouts outside `modules_dir`. */
-  modules?: Array<{ name: string; path: string; type?: string }>;
+  /**
+   * Extra module descriptors. `path` is the source file. When `path` is
+   * omitted or empty, `name` is the source in the modules directory.
+   */
+  modules?: Array<{ name: string; path?: string; type?: string }>;
   /** `[triggers]` — command types the default entrypoint's `job(controller)` runs. */
   triggers?: { jobs?: string[] };
   /** `[events]` — consumer triggers and producer publish grants. */
@@ -65,8 +71,15 @@ export type Manifest = {
   vars?: Record<string, unknown>;
   /** `[secrets]` — sealed operator secrets binding (default name `SECRETS`). */
   secrets?: { binding?: string };
-  /** `[[kv_namespaces]]` — plugin KV bindings (default name `KV`). */
+  /**
+   * `[[kv_namespaces]]` — durable KV bindings (default name `KV`).
+   * Legal to declare. Not implemented yet; distinct from `databases`.
+   */
   kv_namespaces?: Array<{ binding?: string }>;
+  /**
+   * `[queues]` producers and consumers. Legal to declare. Not implemented yet.
+   */
+  queues?: Record<string, unknown>;
   /** `[work_fs]` — scratch filesystem binding (default name `WORK_FS`). */
   work_fs?: { binding?: string };
   /** `[oauth]` — loopback OAuth callback binding (default name `OAUTH`). */
@@ -299,12 +312,21 @@ export function validateManifest(m: Manifest): void {
         'plugin.toml: `[workerd]` is required when runtime = "workerd"',
       );
     }
-    if (!m.workerd.compatibility_date?.trim()) {
+    if (
+      typeof m.workerd.compatibility_date !== "string" ||
+      !m.workerd.compatibility_date.trim()
+    ) {
       throw new Error("plugin.toml: workerd.compatibility_date is required");
     }
     if (!m.workerd.main_module?.trim()) {
       throw new Error("plugin.toml: workerd.main_module is required");
     }
+    validateAuthorCompatibilityDate(m.workerd.compatibility_date);
+    validateModuleDeclarations(m.workerd.main_module, m.modules ?? []);
+    validateAuthorCompatibilityFlags(
+      m.workerd.compatibility_flags ?? [],
+      declaresPython(m),
+    );
     if (
       m.capabilities?.network?.mode === "outbound" &&
       (!m.capabilities.network.domains ||
@@ -376,4 +398,308 @@ function validateSurface(m: Manifest): void {
     }
     bindings.add(name);
   }
+  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH"]);
+  // Row index, not the binding text. The text can be an oauth name, and an
+  // error that includes it is logged as clear text.
+  const named: Array<[string, string, number]> = [];
+  if (m.secrets) named.push(["secrets", m.secrets.binding || "SECRETS", 0]);
+  if (m.work_fs) named.push(["work_fs", m.work_fs.binding || "WORK_FS", 0]);
+  if (m.oauth) named.push(["oauth", m.oauth.binding || "OAUTH", 0]);
+  for (const [index, kv] of (m.kv_namespaces ?? []).entries()) {
+    named.push(["kv_namespaces", kv.binding || "KV", index]);
+  }
+  for (const [index, producer] of (m.events?.producers ?? []).entries()) {
+    named.push(["events.producers", producer.binding || "EVENTS", index]);
+  }
+  for (const [table, name, index] of named) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
+      throw new Error(
+        `plugin.toml: [${table}][${index}] binding must be \`[A-Z][A-Z0-9_]*\``,
+      );
+    }
+    if (table === "kv_namespaces" && reserved.has(name)) {
+      throw new Error(
+        `plugin.toml: [${table}][${index}] binding collides with another binding`,
+      );
+    }
+    if (name === "CONFIG" || bindings.has(name)) {
+      throw new Error(
+        `plugin.toml: [${table}][${index}] binding collides with another binding`,
+      );
+    }
+  }
+  for (const [table, name, index] of named) {
+    if (table === "events.producers") continue;
+    if (bindings.has(name)) {
+      throw new Error(
+        `plugin.toml: [${table}][${index}] binding collides with another binding`,
+      );
+    }
+    bindings.add(name);
+  }
+}
+
+/** Newest compatibility date the pinned workerd binary honors. */
+export const WORKERD_PIN_COMPAT_DATE = "2026-08-01";
+
+/** Author flags allowed on this pin. Required together for Python guests. */
+export const PYTHON_COMPATIBILITY_FLAGS = [
+  "python_workers",
+  "disable_python_external_sdk",
+] as const;
+
+/** Date written into the workerd config, plus a fallback warning when clamped. */
+export interface AppliedCompatibilityDate {
+  /** Author date on or before the pin, otherwise {@link WORKERD_PIN_COMPAT_DATE}. */
+  applied: string;
+  /** Wrangler-style warning when `applied` was clamped. `null` otherwise. */
+  warning: string | null;
+}
+
+/**
+ * Rejects a compatibility date that is not a real `YYYY-MM-DD`.
+ *
+ * A date newer than the pin is still valid. Load falls back and warns; see
+ * {@link applyAuthorCompatibilityDate}.
+ *
+ * @param date - `workerd.compatibility_date`.
+ * @throws {Error} When the date is not a calendar day.
+ */
+export function validateAuthorCompatibilityDate(date: string): void {
+  if (!isCalendarDate(date)) {
+    throw new Error(
+      "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD",
+    );
+  }
+}
+
+/**
+ * Resolves an author compatibility date against this Bookclerk release.
+ *
+ * workerd enables flags whose default-on date is on or before the date it is
+ * given, and refuses a date newer than the one baked into the binary. Wrangler
+ * warns and starts at the newest date that binary supports. Bookclerk host
+ * surfaces must use `applied`, the same date the isolate runs.
+ *
+ * @param date - `workerd.compatibility_date`.
+ * @returns The date to pass to workerd, and a warning when it was clamped.
+ * @throws {Error} When the date is not a calendar day.
+ */
+export function applyAuthorCompatibilityDate(
+  date: string,
+): AppliedCompatibilityDate {
+  validateAuthorCompatibilityDate(date);
+  if (date > WORKERD_PIN_COMPAT_DATE) {
+    return {
+      applied: WORKERD_PIN_COMPAT_DATE,
+      warning: compatibilityDateFallbackWarning(date),
+    };
+  }
+  return { applied: date, warning: null };
+}
+
+function compatibilityDateFallbackWarning(requested: string): string {
+  return (
+    `The latest compatibility date supported by the installed Bookclerk workerd runtime is "${WORKERD_PIN_COMPAT_DATE}",\n` +
+    `but you've requested "${requested}". Falling back to "${WORKERD_PIN_COMPAT_DATE}"...\n` +
+    "Features enabled by your requested compatibility date may not be available.\n" +
+    "Upgrade Bookclerk to a release that supports this date."
+  );
+}
+
+/**
+ * Enforces the Python flag pair. Does not insert missing flags.
+ *
+ * @param flags - Author `compatibility_flags`.
+ * @param python - True when the manifest declares a Python module. A
+ * disk-only `.py` file is not enough.
+ * @throws {Error} When a flag is outside the allowlist or the pair is wrong.
+ */
+export function validateAuthorCompatibilityFlags(
+  flags: readonly string[],
+  python: boolean,
+): void {
+  for (const flag of flags) {
+    if (flag === "experimental") {
+      throw new Error(
+        "plugin.toml: workerd.compatibility_flags `experimental` is host-only",
+      );
+    }
+    if (!(PYTHON_COMPATIBILITY_FLAGS as readonly string[]).includes(flag)) {
+      throw new Error(
+        `plugin.toml: workerd.compatibility_flags \`${flag}\` is not allowed`,
+      );
+    }
+  }
+  const has = (name: string) => flags.includes(name);
+  const both = PYTHON_COMPATIBILITY_FLAGS.every((flag) => has(flag));
+  const any = PYTHON_COMPATIBILITY_FLAGS.some((flag) => has(flag));
+  if (python && !both) {
+    throw new Error(
+      "plugin.toml: workerd.compatibility_flags must include python_workers and disable_python_external_sdk when the guest is Python",
+    );
+  }
+  if (any && !python) {
+    throw new Error(
+      "plugin.toml: workerd.compatibility_flags require a Python module",
+    );
+  }
+}
+
+/**
+ * True when the manifest declares Python (main `.py`, `type = "python"`, or a
+ * `.py` load-set key). An explicit `path` is that key; `name` is used only
+ * when `path` is omitted. Flags are not evidence.
+ *
+ * @param m - Manifest under validation.
+ * @returns Whether Python flags and Pyodide consent hosts apply.
+ */
+export function declaresPython(m: Manifest): boolean {
+  if ((m.runtime ?? "native") !== "workerd") return false;
+  const main = m.workerd?.main_module ?? "";
+  if (main.toLowerCase().endsWith(".py")) return true;
+  for (const mod of m.modules ?? []) {
+    const type = (mod.type ?? "js").toLowerCase();
+    const path = (mod.path || mod.name || "").toLowerCase();
+    if (type === "python" || path.endsWith(".py")) return true;
+  }
+  return false;
+}
+
+/**
+ * Spawn/load message when KV or Queues are declared.
+ *
+ * The refusal is runtime-agnostic: a native plugin that declares KV or Queues
+ * fails spawn the same way a workerd plugin does.
+ *
+ * @param m - Manifest that may declare unimplemented surfaces.
+ * @returns The refusal, or `null` when neither surface is declared.
+ */
+export function unimplementedSurface(m: Manifest): string | null {
+  if ((m.kv_namespaces?.length ?? 0) > 0) {
+    return "[[kv_namespaces]] is not implemented yet";
+  }
+  if (m.queues != null) {
+    return "[queues] is not implemented yet";
+  }
+  return null;
+}
+
+/**
+ * Checks main and `[[modules]]` extensions. Unimplemented extensions say
+ * "not implemented yet". A type that disagrees with the extension is rejected.
+ *
+ * @param mainModule - `[workerd].main_module`.
+ * @param modules - `[[modules]]` rows.
+ * @throws {Error} When a file would not be embedded or its type disagrees.
+ */
+export function validateModuleDeclarations(
+  mainModule: string,
+  modules: ReadonlyArray<{ name: string; path?: string; type?: string }>,
+): void {
+  if (embedClass(mainModule) == null) {
+    throw new Error(
+      `plugin.toml: workerd.main_module \`${mainModule}\` is not implemented yet`,
+    );
+  }
+  for (const mod of modules) {
+    const path = mod.path || mod.name;
+    const embed = embedClass(path);
+    if (embed == null) {
+      throw new Error(`plugin.toml: [[modules]] \`${path}\` is not implemented yet`);
+    }
+    const type = mod.type ?? "js";
+    if (!moduleTypeMatches(embed, type)) {
+      throw new Error(
+        `plugin.toml: [[modules]] \`${path}\` type \`${type}\` does not match the file extension`,
+      );
+    }
+  }
+}
+
+/**
+ * Relative key a modules-directory walk uses for a `[[modules]]` path.
+ *
+ * `.` segments are dropped, then a leading modules-dir prefix is removed, so
+ * `./modules/index.js` and `modules/pkg/./echo.wasm` match walk keys.
+ * `..` segments are left in place.
+ *
+ * @param modulesDir - `[workerd].modules_dir`.
+ * @param raw - Author path or name.
+ * @returns Slash-separated key with a leading modules-dir prefix removed.
+ */
+export function moduleLoadKey(modulesDir: string, raw: string): string {
+  const key = normalizeDotSegments(raw);
+  const dir = normalizeDotSegments(trimSlashes(modulesDir));
+  if (dir && key.startsWith(`${dir}/`)) return key.slice(dir.length + 1);
+  return key;
+}
+
+function trimSlashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "/") start += 1;
+  while (end > start && value[end - 1] === "/") end -= 1;
+  return value.slice(start, end);
+}
+
+function normalizeDotSegments(raw: string): string {
+  const slash = raw.replace(/\\/g, "/");
+  const parts: string[] = [];
+  let start = 0;
+  for (let i = 0; i <= slash.length; i += 1) {
+    if (i !== slash.length && slash[i] !== "/") continue;
+    const segment = slash.slice(start, i);
+    if (segment !== ".") parts.push(segment);
+    start = i + 1;
+  }
+  return parts.join("/");
+}
+
+/**
+ * True when the walk embeds this filename.
+ *
+ * @param path - Module path or filename.
+ * @returns Whether the extension is `.js`, `.mjs`, `.py`, `.wasm`, or `.json`.
+ */
+export function workerdModuleIsEmbedded(path: string): boolean {
+  return embedClass(path) != null;
+}
+
+function embedClass(path: string): "js" | "python" | "wasm" | "json" | null {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".py")) return "python";
+  if (lower.endsWith(".wasm")) return "wasm";
+  if (lower.endsWith(".mjs") || lower.endsWith(".js")) return "js";
+  if (lower.endsWith(".json")) return "json";
+  return null;
+}
+
+function moduleTypeMatches(embed: string, moduleType: string): boolean {
+  const kind = moduleType.trim().toLowerCase();
+  if (embed === "python") return kind === "python";
+  if (embed === "wasm") return kind === "wasm";
+  if (embed === "json") return kind === "json";
+  if (embed === "js") return kind === "js" || kind === "javascript" || kind === "esm" || kind === "esmodule";
+  return false;
+}
+
+function isCalendarDate(text: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const year = Number(text.slice(0, 4));
+  const month = Number(text.slice(5, 7));
+  const day = Number(text.slice(8, 10));
+  const max = daysInMonth(year, month);
+  return max != null && day >= 1 && day <= max;
+}
+
+function daysInMonth(year: number, month: number): number | null {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  if ([1, 3, 5, 7, 8, 10, 12].includes(month)) return 31;
+  if ([4, 6, 9, 11].includes(month)) return 30;
+  return null;
+}
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }

@@ -4315,7 +4315,7 @@ entrypoints = ["cli"]
 
 [workerd]
 compatibility_date = "2026-08-01"
-compatibility_flags = ["python_workers"]
+compatibility_flags = ["python_workers", "disable_python_external_sdk"]
 main_module = "plugin.py"
 
 [[modules]]

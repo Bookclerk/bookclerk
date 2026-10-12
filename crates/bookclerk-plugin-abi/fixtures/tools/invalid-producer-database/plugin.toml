@@ -1,0 +1,16 @@
+api_version = 3
+id = "producer_database_collision"
+version = "0.1.0"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+
+[[events.producers]]
+type = "book_ready"
+binding = "DB"
+
+[[databases]]
+binding = "DB"
+
+[capabilities.network]
+mode = "deny"
