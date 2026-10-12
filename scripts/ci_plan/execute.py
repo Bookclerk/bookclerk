@@ -539,6 +539,21 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
                     ["cargo", "clippy", "-p", "bookclerk-plugin-sdk", "--features", "http", "--all-targets", "--", "-D", "warnings"],
                 ),
                 Command("clippy bookclerk-plugin-host --lib", ["cargo", "clippy", "-p", "bookclerk-plugin-host", "--lib", "--", "-D", "warnings"]),
+                Command(
+                    "plugin-host ACL journal lib tests",
+                    [
+                        "cargo",
+                        "test",
+                        "-p",
+                        "bookclerk-plugin-host",
+                        "--lib",
+                        "--",
+                        "spawn_stdio::tests",
+                        "acl_journal_",
+                        "--test-threads=1",
+                        "--nocapture",
+                    ],
+                ),
                 Command("named-pipe SOCKET_PROXY", ["cargo", "test", "-p", "bookclerk-workerd", "--lib"]),
                 # Gateway clippy does not run bookclerk-storage. This is the
                 # Windows FlushFileBuffers path for a writable stage journal.

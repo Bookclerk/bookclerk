@@ -112,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
 
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
+    bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
 
     let database_registry = bookclerk_plugin_host::load_external_database(&config).await?;
     let library_store =

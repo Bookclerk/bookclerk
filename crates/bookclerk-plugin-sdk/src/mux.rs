@@ -953,9 +953,9 @@ fn sub_atomic(counter: &AtomicUsize, n: usize) {
     if n == 0 {
         return;
     }
-    // `try_update` is 1.95 and does not compile on the 1.94 MSRV. `fetch_update`
-    // does. It is deprecated once `try_update` exists; this allow is a no-op on
-    // 1.94 and keeps current CI's `-D warnings` from rejecting the call.
+    // `try_update` is 1.95+ and does not compile on the 1.94 MSRV. `fetch_update`
+    // is slated for deprecation (1.99); the allow keeps `-D warnings` green once
+    // it lands. Switch to `try_update` when MSRV reaches 1.95.
     #[allow(deprecated)]
     let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         Some(cur.saturating_sub(n))
@@ -984,8 +984,7 @@ fn grant_send_credit(credit: &AtomicU32, in_flight: &AtomicU32, add: u32) {
             break take;
         }
     };
-    // Same MSRV split as `sub_atomic`: `fetch_update` on 1.94, allowed through
-    // the deprecation clippy denies on newer toolchains.
+    // Same MSRV split as `sub_atomic`.
     #[allow(deprecated)]
     let _ = credit.fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
         let next = cur.saturating_add(grant).min(INITIAL_WINDOW);
