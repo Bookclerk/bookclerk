@@ -1374,45 +1374,68 @@ impl LibraryStore {
 
     /// Count deliveries in `state`.
     ///
+    /// A peer writer on the same SQLite file can make this read return
+    /// `SQLITE_BUSY`. The read is repeated until the lock clears or the
+    /// attempt budget is spent. `state` is unchanged.
+    ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
+    /// Returns [`LibraryError::Orm`] when the read fails for a reason other
+    /// than file-lock contention, and [`LibraryError::Unavailable`] when the
+    /// lock is still held after the retries.
     pub async fn count_event_deliveries(&self, state: &str) -> Result<i64> {
-        let n = event_deliveries::Entity::find()
-            .filter(event_deliveries::Column::State.eq(state))
-            .count(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let n = super::lock_retry::retry_read_lock(|| async {
+            event_deliveries::Entity::find()
+                .filter(event_deliveries::Column::State.eq(state))
+                .count(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)
+        })
+        .await?;
         i64::try_from(n).map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))
     }
 
     /// Operator-visible delivery-queue counters (pending vs suspended split).
     ///
+    /// Each read waits out a peer SQLite file lock the same way
+    /// [`Self::count_event_deliveries`] does.
+    ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
+    /// Returns [`LibraryError::Orm`] when a read fails for a reason other than
+    /// file-lock contention, and [`LibraryError::Unavailable`] when a lock is
+    /// still held after the retries.
     pub async fn event_delivery_metrics(&self) -> Result<EventDeliveryMetrics> {
         let pending_all = self.count_event_deliveries(STATE_PENDING).await?;
         let suspended = i64::try_from(
-            event_deliveries::Entity::find()
-                .filter(event_deliveries::Column::State.eq(STATE_PENDING))
-                .filter(event_deliveries::Column::CheckpointJson.is_not_null())
-                .count(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?,
+            super::lock_retry::retry_read_lock(|| async {
+                event_deliveries::Entity::find()
+                    .filter(event_deliveries::Column::State.eq(STATE_PENDING))
+                    .filter(event_deliveries::Column::CheckpointJson.is_not_null())
+                    .count(&self.db)
+                    .await
+                    .map_err(LibraryError::from_db_err)
+            })
+            .await?,
         )
         .map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
-        let oldest = event_deliveries::Entity::find()
-            .filter(event_deliveries::Column::State.eq(STATE_PENDING))
-            .order_by_asc(event_deliveries::Column::CreatedAt)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let oldest = super::lock_retry::retry_read_lock(|| async {
+            event_deliveries::Entity::find()
+                .filter(event_deliveries::Column::State.eq(STATE_PENDING))
+                .order_by_asc(event_deliveries::Column::CreatedAt)
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)
+        })
+        .await?;
         let oldest_pending_age_secs = oldest.map(|row| {
             let created = parse_dt(&row.created_at);
             (Utc::now() - created).num_seconds().max(0)
         });
-        let stats = ensure_event_outbox_stats(&self.db).await?;
+        let stats = super::lock_retry::retry_read_lock(|| async {
+            ensure_event_outbox_stats(&self.db).await
+        })
+        .await?;
         let dispatch_latency_ms_avg = if stats.dispatch_count > 0 {
             Some(stats.dispatch_latency_ms_sum / stats.dispatch_count)
         } else {

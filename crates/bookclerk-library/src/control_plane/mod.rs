@@ -197,6 +197,9 @@ pub struct ControlPlaneSession {
 /// authority. A later TOML load or environment override must not replace it
 /// without a compare-and-swap write.
 ///
+/// `scratch_dir` is [`bookclerk_config::Config::download_cache_dir`]: the
+/// heartbeat records the byte size of its `acquire` and `acquire-pdf` trees.
+///
 /// # Errors
 ///
 /// Returns an error when the secret root, cluster binding, schema, or events
@@ -204,13 +207,33 @@ pub struct ControlPlaneSession {
 pub async fn bootstrap_control_plane(
     store: &LibraryStore,
     files_dir: &Path,
+    scratch_dir: &Path,
     password: Option<&str>,
     events_seed: &bookclerk_config::EventsConfig,
 ) -> Result<ControlPlaneSession> {
     let _identity = identity::load_or_create_host_identity(files_dir)?;
     let secret = align_cluster_root(store, files_dir, password).await?;
     let identity = identity::bind_cluster_id(files_dir, &secret.cluster_id)?;
-    let host = heartbeat_process(store, &identity.host_id, &secret.cluster_id).await?;
+    let host = heartbeat_process(
+        store,
+        &identity.host_id,
+        &secret.cluster_id,
+        files_dir,
+        scratch_dir,
+    )
+    .await?;
+    tracing::info!(
+        host_id = %host.host_id,
+        logical_cpus = ?host.logical_cpus,
+        cpu_max_quota_us = ?host.cpu_max_quota_us,
+        cpu_max_period_us = ?host.cpu_max_period_us,
+        memory_max_bytes = ?host.memory_max_bytes,
+        memory_current_bytes = ?host.memory_current_bytes,
+        memory_anon_bytes = ?host.memory_anon_bytes,
+        files_dir_free_bytes = ?host.files_dir_free_bytes,
+        scratch_bytes = ?host.scratch_bytes,
+        "host capacity observation"
+    );
     let events = import_events_if_absent(
         store,
         &ConfigActor::Bootstrap,

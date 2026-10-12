@@ -1125,6 +1125,7 @@ mod tests {
                 .expect("one suffix");
         let expanded =
             bookclerk_db_exec::expand_host_schema_batch(sea_orm::DatabaseBackend::Sqlite, &batch)
+                .expect("lower")
                 .unwrap_or(batch);
         let skip = u32::try_from(expanded.len().saturating_sub(1)).unwrap_or(0);
         crate::inject_atomic_interrupt_after(

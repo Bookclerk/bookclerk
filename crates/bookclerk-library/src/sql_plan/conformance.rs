@@ -1438,7 +1438,7 @@ async fn postgres_binding_db() -> sea_orm::DatabaseConnection {
         .expect("connect to disposable postgres binding database");
     let backend = sea_orm::ConnectionTrait::get_database_backend(&db);
     for sql in crate::migrations::binding_bootstrap_statements() {
-        let sql = bookclerk_db_exec::schema_sql_for_backend(backend, sql);
+        let sql = bookclerk_db_exec::schema_sql_for_backend(backend, sql).expect("binding ddl");
         sea_orm::ConnectionTrait::execute_raw(
             &db,
             sea_orm::Statement::from_string(backend, sql.into_owned()),
@@ -1645,6 +1645,84 @@ async fn postgres_binding_portable_functions() {
         blob_reply.statements[0].rows[0].values[0],
         bookclerk_plugin_abi::DbValue::Bytes(
             bookclerk_db_exec::sql_v1::PORTABLE_INSERT_BLOB.to_vec()
+        )
+    );
+    let mut non_ascii = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_INSERT,
+        vec![bookclerk_plugin_abi::DbValue::Bytes(
+            bookclerk_db_exec::sql_v1::PORTABLE_INSERT_BLOB.to_vec(),
+        )],
+    );
+    non_ascii.result_selection = bookclerk_plugin_abi::DbResultSelection::AffectedRows;
+    run_postgres_binding(&db, binding_req("pg-ins-lower-non-ascii", vec![non_ascii]))
+        .await
+        .expect("non-ascii insert");
+    let mut folded = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_SELECT,
+        vec![],
+    );
+    folded.max_rows = 8;
+    let folded_reply =
+        run_postgres_binding(&db, binding_req("pg-sel-lower-non-ascii", vec![folded]))
+            .await
+            .expect("non-ascii lower");
+    assert_eq!(
+        folded_reply.statements[0].rows[0].values[0],
+        bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
+        )
+    );
+    let mut placeholder = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_PLACEHOLDER_SELECT,
+        vec![bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into(),
+        )],
+    );
+    placeholder.max_rows = 8;
+    let placeholder_reply = run_postgres_binding(
+        &db,
+        binding_req("pg-sel-lower-placeholder", vec![placeholder]),
+    )
+    .await
+    .expect("placeholder lower");
+    assert_eq!(
+        placeholder_reply.statements[0].rows[0].values[0],
+        bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
+        )
+    );
+    let mut nested = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_SUBSTR_SELECT,
+        vec![
+            bookclerk_plugin_abi::DbValue::Int64(1),
+            bookclerk_plugin_abi::DbValue::Int64(1),
+        ],
+    );
+    nested.max_rows = 8;
+    let nested_reply = run_postgres_binding(&db, binding_req("pg-sel-lower-substr", vec![nested]))
+        .await
+        .expect("nested lower substr");
+    assert_eq!(
+        nested_reply.statements[0].rows[0].values[0],
+        bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
+        )
+    );
+    let mut wide = binding_stmt(
+        bookclerk_db_exec::sql_v1::PORTABLE_LOWER_SUBSTR_SELECT,
+        vec![
+            bookclerk_plugin_abi::DbValue::Int64(1),
+            bookclerk_plugin_abi::DbValue::Int64(i64::MAX),
+        ],
+    );
+    wide.max_rows = 8;
+    let wide_reply = run_postgres_binding(&db, binding_req("pg-sel-lower-substr-wide", vec![wide]))
+        .await
+        .expect("wide lower substr");
+    assert_eq!(
+        wide_reply.statements[0].rows[0].values[0],
+        bookclerk_plugin_abi::DbValue::Text(
+            bookclerk_db_exec::sql_v1::PORTABLE_LOWER_NON_ASCII_EXPECT.into()
         )
     );
 }

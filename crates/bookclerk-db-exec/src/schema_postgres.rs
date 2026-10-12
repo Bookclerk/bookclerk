@@ -21,11 +21,33 @@ use sea_orm::DatabaseBackend;
 /// Panics when `backend` is not SQLite or PostgreSQL. `DatabaseBackend` is
 /// non-exhaustive; BookclerkSQL adapters do not implement other SeaORM
 /// families.
-#[must_use]
-pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<'_, str> {
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
+pub fn schema_sql_for_backend(
+    backend: DatabaseBackend,
+    canonical: &str,
+) -> Result<Cow<'_, str>, bookclerk_plugin_abi::PluginError> {
+    schema_sql_for_backend_with(backend, canonical, None)
+}
+
+/// [`schema_sql_for_backend`] using `env` when a post-fold index key needs a type.
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
+fn schema_sql_for_backend_with<'a>(
+    backend: DatabaseBackend,
+    canonical: &'a str,
+    env: Option<&bookclerk_plugin_abi::SqlTypeEnv>,
+) -> Result<Cow<'a, str>, bookclerk_plugin_abi::PluginError> {
     match backend {
-        DatabaseBackend::Postgres => Cow::Owned(crate::lower_canonical_ddl_to_postgres(canonical)),
-        DatabaseBackend::Sqlite => Cow::Borrowed(canonical),
+        DatabaseBackend::Postgres => Ok(Cow::Owned(
+            crate::lower::lower_canonical_ddl_to_postgres_with(canonical, env)?,
+        )),
+        DatabaseBackend::Sqlite => Ok(Cow::Borrowed(canonical)),
         other => crate::exec::reject_unknown_seaorm_backend(other),
     }
 }
@@ -33,21 +55,47 @@ pub fn schema_sql_for_backend(backend: DatabaseBackend, canonical: &str) -> Cow<
 /// Mechanical type/identity lowering for one **binding** statement.
 ///
 /// Hosts emit canonical SQLite-shaped `CREATE`/`DROP`. Postgres adapters
-/// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here; SQLite/D1 leave the
-/// statement unchanged. DML stays for [`crate::lower_canonical_sql`].
+/// rewrite `AUTOINCREMENT`/`BLOB`/`INTEGER`/`REAL` here and turn
+/// `ident COLLATE NOCASE` into `(lower(ident COLLATE "C"))`, with a text
+/// tie-break as `(ident COLLATE "C")`, so page order matches SQLite.
+/// Numeric tie-break keys stay bare. SQLite leaves the statement unchanged,
+/// including `NOCASE` page indexes. DML stays for [`crate::lower_canonical_sql`].
 ///
 /// # Panics
 ///
 /// Panics when `backend` is not SQLite or PostgreSQL. `DatabaseBackend` is
 /// non-exhaustive; BookclerkSQL adapters do not implement other SeaORM
 /// families.
-#[must_use]
-pub fn lower_binding_sql_for_backend(backend: DatabaseBackend, sql: &str) -> Cow<'_, str> {
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
+pub fn lower_binding_sql_for_backend(
+    backend: DatabaseBackend,
+    sql: &str,
+) -> Result<Cow<'_, str>, bookclerk_plugin_abi::PluginError> {
+    lower_binding_sql_for_backend_with(backend, sql, None)
+}
+
+/// [`lower_binding_sql_for_backend`] using `env` for post-fold tie-break types.
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
+pub fn lower_binding_sql_for_backend_with<'a>(
+    backend: DatabaseBackend,
+    sql: &'a str,
+    env: Option<&bookclerk_plugin_abi::SqlTypeEnv>,
+) -> Result<Cow<'a, str>, bookclerk_plugin_abi::PluginError> {
     match backend {
         DatabaseBackend::Postgres if bookclerk_plugin_abi::statement_is_ddl(sql) => {
-            Cow::Owned(crate::lower::rewrite_canonical_ddl_types_for_postgres(sql))
+            let folded = crate::lower::rewrite_sqlite_nocase_with(sql, env, &[], true)?;
+            Ok(Cow::Owned(
+                crate::lower::rewrite_canonical_ddl_types_for_postgres(&folded),
+            ))
         }
-        DatabaseBackend::Postgres | DatabaseBackend::Sqlite => Cow::Borrowed(sql),
+        DatabaseBackend::Postgres | DatabaseBackend::Sqlite => Ok(Cow::Borrowed(sql)),
         other => crate::exec::reject_unknown_seaorm_backend(other),
     }
 }
@@ -55,27 +103,45 @@ pub fn lower_binding_sql_for_backend(backend: DatabaseBackend, sql: &str) -> Cow
 /// Applies [`lower_binding_sql_for_backend`] to every statement in `req`.
 ///
 /// Identity when no statement changes (SQLite/D1, or Postgres DML-only).
-#[must_use]
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
 pub fn lower_binding_ddl_execute_request(
     backend: DatabaseBackend,
     req: &ExecuteRequest,
-) -> ExecuteRequest {
+) -> Result<ExecuteRequest, bookclerk_plugin_abi::PluginError> {
+    lower_binding_ddl_execute_request_with(backend, req, None)
+}
+
+/// [`lower_binding_ddl_execute_request`] using `env` for index key types.
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
+pub fn lower_binding_ddl_execute_request_with(
+    backend: DatabaseBackend,
+    req: &ExecuteRequest,
+    env: Option<&bookclerk_plugin_abi::SqlTypeEnv>,
+) -> Result<ExecuteRequest, bookclerk_plugin_abi::PluginError> {
     if backend != DatabaseBackend::Postgres {
-        return req.clone();
+        return Ok(req.clone());
     }
     let mut out = req.clone();
     let mut changed = false;
     for stmt in &mut out.statements {
-        let lowered = lower_binding_sql_for_backend(backend, &stmt.sql);
+        let lowered = lower_binding_sql_for_backend_with(backend, &stmt.sql, env)?;
         if lowered.as_ref() != stmt.sql.as_str() {
             stmt.sql = lowered.into_owned();
             changed = true;
         }
     }
     if changed {
-        out
+        Ok(out)
     } else {
-        req.clone()
+        Ok(req.clone())
     }
 }
 
@@ -92,33 +158,70 @@ pub fn is_host_schema_version_marker(sql: &str) -> bool {
 ///
 /// Each incoming string is already one canonical statement. Adapters lower
 /// per statement and may insert identity companions; they do not split SQL.
-#[must_use]
-pub fn expand_host_schema_batch(backend: DatabaseBackend, batch: &[String]) -> Option<Vec<String>> {
-    expand_host_schema_batch_grouped(backend, batch).map(|(stmts, _)| stmts)
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
+pub fn expand_host_schema_batch(
+    backend: DatabaseBackend,
+    batch: &[String],
+) -> Result<Option<Vec<String>>, bookclerk_plugin_abi::PluginError> {
+    Ok(expand_host_schema_batch_grouped(backend, batch)?.map(|(stmts, _)| stmts))
 }
 
+/// Lowered statements plus how many physical statements each canonical one became.
+type HostSchemaExpansion = (Vec<String>, Vec<usize>);
+
 /// [`expand_host_schema_batch`] plus per-original-statement expansion counts.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
 pub fn expand_host_schema_batch_grouped(
     backend: DatabaseBackend,
     batch: &[String],
-) -> Option<(Vec<String>, Vec<usize>)> {
+) -> Result<Option<HostSchemaExpansion>, bookclerk_plugin_abi::PluginError> {
+    expand_host_schema_batch_grouped_with(backend, batch, None)
+}
+
+/// [`expand_host_schema_batch_grouped`] seeded with `base` before the batch.
+///
+/// Later statements in the batch still add tables. A frozen step that only
+/// adds an index can type its keys from `base` (the live catalog) instead of
+/// emitting a different index.
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
+pub fn expand_host_schema_batch_grouped_with(
+    backend: DatabaseBackend,
+    batch: &[String],
+    base: Option<&bookclerk_plugin_abi::SqlTypeEnv>,
+) -> Result<Option<HostSchemaExpansion>, bookclerk_plugin_abi::PluginError> {
     if batch.len() < 2 {
-        return None;
+        return Ok(None);
     }
-    let version = batch.last()?;
+    let version = batch.last().expect("batch length checked");
     if !is_host_schema_version_marker(version) {
-        return None;
+        return Ok(None);
     }
     // Identity companions are adapter-private plpgsql (`$bookclerk_ident$`).
     // Re-running this expander would SQL-v1-split those bodies on `;`.
     if batch.iter().any(|sql| sql.contains("$bookclerk_ident$")) {
-        return None;
+        return Ok(None);
     }
     let mut stmts: Vec<String> = Vec::new();
     let mut groups: Vec<usize> = Vec::new();
+    let mut env = base.cloned().unwrap_or_default();
     for stmt in &batch[..batch.len() - 1] {
-        let lowered = schema_sql_for_backend(backend, stmt).into_owned();
+        let lowered = schema_sql_for_backend_with(backend, stmt, Some(&env))?.into_owned();
+        env.merge(
+            &bookclerk_plugin_abi::sql_type_env_from_canonical_statements(std::iter::once(
+                stmt.as_str(),
+            )),
+        );
         let companions = if backend == DatabaseBackend::Postgres {
             postgres_identity_companions(stmt)
         } else {
@@ -130,7 +233,7 @@ pub fn expand_host_schema_batch_grouped(
     }
     stmts.push(version.clone());
     groups.push(1);
-    Some((stmts, groups))
+    Ok(Some((stmts, groups)))
 }
 
 /// Postgres-only companion DDL: transactional identity counter + BEFORE INSERT trigger.
@@ -264,7 +367,14 @@ where
     C: sea_orm::ConnectionTrait,
 {
     let backend = conn.get_database_backend();
-    let lowered = schema_sql_for_backend(backend, canonical).into_owned();
+    let env = if backend == DatabaseBackend::Postgres {
+        Some(crate::typed::load_physical_sql_type_env(conn).await?)
+    } else {
+        None
+    };
+    let lowered = schema_sql_for_backend_with(backend, canonical, env.as_ref())
+        .map_err(|err| sea_orm::DbErr::Custom(err.to_string()))?
+        .into_owned();
     conn.execute_raw(sea_orm::Statement::from_string(backend, lowered))
         .await?;
     if backend == DatabaseBackend::Postgres {
@@ -288,7 +398,14 @@ where
     C: sea_orm::ConnectionTrait,
 {
     let backend = conn.get_database_backend();
-    let lowered = schema_sql_for_backend(backend, canonical).into_owned();
+    let env = if backend == DatabaseBackend::Postgres {
+        Some(crate::typed::load_sql_type_env(conn).await?)
+    } else {
+        None
+    };
+    let lowered = schema_sql_for_backend_with(backend, canonical, env.as_ref())
+        .map_err(|err| sea_orm::DbErr::Custom(err.to_string()))?
+        .into_owned();
     conn.execute_raw(sea_orm::Statement::from_string(backend, lowered))
         .await?;
     for companion in binding_companions(backend, canonical) {
@@ -367,31 +484,54 @@ fn is_safe_ident(s: &str) -> bool {
 
 /// Expands a typed host schema batch at the adapter execution edge.
 ///
-/// Returns the expanded request and per-original-statement expansion counts
-/// (identity when the batch is not a host schema apply unit).
-#[must_use]
+/// Returns the expanded request. When the batch is not a host schema apply
+/// unit, the request is unchanged.
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
 pub fn expand_host_schema_execute_request(
     backend: DatabaseBackend,
     req: &ExecuteRequest,
-) -> ExecuteRequest {
-    expand_host_schema_execute_request_grouped(backend, req).0
+) -> Result<ExecuteRequest, bookclerk_plugin_abi::PluginError> {
+    Ok(expand_host_schema_execute_request_grouped(backend, req)?.0)
 }
 
 /// [`expand_host_schema_execute_request`] plus collapse groups.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
 pub fn expand_host_schema_execute_request_grouped(
     backend: DatabaseBackend,
     req: &ExecuteRequest,
-) -> (ExecuteRequest, Vec<usize>) {
+) -> Result<(ExecuteRequest, Vec<usize>), bookclerk_plugin_abi::PluginError> {
+    expand_host_schema_execute_request_grouped_with(backend, req, None)
+}
+
+/// [`expand_host_schema_execute_request_grouped`] seeded with `base`.
+///
+/// # Errors
+///
+/// Returns when Postgres cannot type a `CREATE INDEX` key that needs
+/// `COLLATE "C"`.
+pub fn expand_host_schema_execute_request_grouped_with(
+    backend: DatabaseBackend,
+    req: &ExecuteRequest,
+    base: Option<&bookclerk_plugin_abi::SqlTypeEnv>,
+) -> Result<(ExecuteRequest, Vec<usize>), bookclerk_plugin_abi::PluginError> {
     let batch: Vec<String> = req.statements.iter().map(|s| s.sql.clone()).collect();
-    let Some((expanded, groups)) = expand_host_schema_batch_grouped(backend, &batch) else {
-        return (req.clone(), vec![1usize; req.statements.len()]);
+    let Some((expanded, groups)) = expand_host_schema_batch_grouped_with(backend, &batch, base)?
+    else {
+        return Ok((req.clone(), vec![1usize; req.statements.len()]));
     };
     if expanded == batch {
-        return (req.clone(), groups);
+        return Ok((req.clone(), groups));
     }
     let Some(template) = req.statements.first().cloned() else {
-        return (req.clone(), groups);
+        return Ok((req.clone(), groups));
     };
     let marker_template = req
         .statements
@@ -412,13 +552,13 @@ pub fn expand_host_schema_execute_request_grouped(
             stmt
         })
         .collect();
-    (
+    Ok((
         ExecuteRequest {
             statements,
             ..req.clone()
         },
         groups,
-    )
+    ))
 }
 
 /// Collapses adapter-expanded host-schema results using per-statement groups.
@@ -434,6 +574,39 @@ pub fn collapse_host_schema_results(
 mod tests {
     use super::*;
     use bookclerk_plugin_abi::{DbPlanStatementKind, DbResultSelection, TypedDbStatement};
+
+    #[test]
+    fn binding_ddl_drops_sqlite_nocase_on_postgres_and_sqlite_keeps_it() {
+        let sql =
+            "CREATE INDEX IF NOT EXISTS idx_books_page_title ON books(title COLLATE NOCASE, uuid)";
+        let mut env = bookclerk_plugin_abi::SqlTypeEnv::new();
+        env.insert_table(
+            "books",
+            vec![
+                ("title".into(), bookclerk_plugin_abi::SqlType::Text),
+                ("uuid".into(), bookclerk_plugin_abi::SqlType::Text),
+            ],
+        );
+        let postgres =
+            lower_binding_sql_for_backend_with(DatabaseBackend::Postgres, sql, Some(&env))
+                .expect("typed index");
+        assert!(
+            !postgres.to_ascii_uppercase().contains("NOCASE"),
+            "{postgres}"
+        );
+        assert!(
+            postgres.contains("(lower(title COLLATE \"C\")) NULLS FIRST"),
+            "{postgres}"
+        );
+        assert!(
+            postgres.contains("(uuid COLLATE \"C\") NULLS FIRST"),
+            "{postgres}"
+        );
+        let sqlite =
+            lower_binding_sql_for_backend(DatabaseBackend::Sqlite, sql).expect("sqlite ddl");
+        assert!(sqlite.contains("COLLATE NOCASE"), "{sqlite}");
+        assert!(!sqlite.contains("lower(title)"), "{sqlite}");
+    }
 
     #[test]
     fn collapse_restores_wire_request_shape() {
@@ -466,8 +639,9 @@ mod tests {
             canonical.to_string(),
             "INSERT INTO bookclerk_schema_migrations (version) VALUES (1)".to_string(),
         ];
-        let expanded =
-            expand_host_schema_batch(DatabaseBackend::Postgres, &batch).expect("host schema batch");
+        let expanded = expand_host_schema_batch(DatabaseBackend::Postgres, &batch)
+            .expect("lower")
+            .expect("host schema batch");
         assert!(
             expanded.iter().any(|s| s.contains("BIGINT PRIMARY KEY")),
             "adapter must lower canonical sqlite DDL for postgres: {expanded:?}"
@@ -487,8 +661,28 @@ mod tests {
             Some("INSERT INTO bookclerk_schema_migrations (version) VALUES (1)")
         );
         assert!(
-            expand_host_schema_batch(DatabaseBackend::Postgres, &expanded).is_none(),
+            expand_host_schema_batch(DatabaseBackend::Postgres, &expanded)
+                .expect("lower")
+                .is_none(),
             "already-expanded identity companions must not be packed again"
+        );
+    }
+
+    #[test]
+    fn expand_host_schema_batch_collates_uuid_expression_index() {
+        let batch = vec![
+            "CREATE TABLE books (uuid TEXT)".to_string(),
+            "CREATE INDEX IF NOT EXISTS idx_books_uuid_lower ON books(lower(uuid))".to_string(),
+            "INSERT INTO bookclerk_schema_migrations (version) VALUES (1)".to_string(),
+        ];
+        let expanded = expand_host_schema_batch(DatabaseBackend::Postgres, &batch)
+            .expect("lower")
+            .expect("schema batch");
+        assert!(
+            expanded
+                .iter()
+                .any(|sql| sql.contains("lower((uuid COLLATE \"C\"))")),
+            "{expanded:?}"
         );
     }
 
@@ -516,7 +710,8 @@ mod tests {
             ],
             deadline_unix_ms: 0,
         };
-        let expanded = expand_host_schema_execute_request(DatabaseBackend::Postgres, &req);
+        let expanded =
+            expand_host_schema_execute_request(DatabaseBackend::Postgres, &req).expect("lower");
         assert!(
             expanded.statements.len() > req.statements.len(),
             "identity CREATE TABLE must expand with serial-sync companions"
@@ -571,9 +766,11 @@ mod tests {
             ],
             deadline_unix_ms: 0,
         };
-        let sqlite = lower_binding_ddl_execute_request(DatabaseBackend::Sqlite, &req);
+        let sqlite =
+            lower_binding_ddl_execute_request(DatabaseBackend::Sqlite, &req).expect("sqlite ddl");
         assert_eq!(sqlite.statements[0].sql, canonical);
-        let pg = lower_binding_ddl_execute_request(DatabaseBackend::Postgres, &req);
+        let pg = lower_binding_ddl_execute_request(DatabaseBackend::Postgres, &req)
+            .expect("postgres ddl");
         assert!(
             pg.statements[0].sql.contains("BIGINT PRIMARY KEY"),
             "{}",
@@ -626,7 +823,8 @@ mod tests {
             }],
             deadline_unix_ms: 0,
         };
-        let pg = lower_binding_ddl_execute_request(DatabaseBackend::Postgres, &req);
+        let pg = lower_binding_ddl_execute_request(DatabaseBackend::Postgres, &req)
+            .expect("postgres ddl");
         assert!(
             pg.statements[0].sql.contains("BIGINT PRIMARY KEY"),
             "{}",

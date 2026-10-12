@@ -153,7 +153,7 @@ load-bearing when external guests are the packaged default.
 
 ```toml
 [media]
-workers = 0             # 0 derives one per core, capped at 8
+workers = 0             # 0 derives one per core, capped at 8; 1 when memory.max <= 1 GiB or cpu.max is one core
 isolation = "required"  # required | best-effort | off
 # worker_bin = "/usr/local/bin/bookclerk-media-worker"
 ```

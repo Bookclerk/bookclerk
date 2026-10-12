@@ -1564,4 +1564,126 @@ mod tests {
         let err = decode_execute_request_bytes(&[0, 0, 0]).unwrap_err();
         assert!(err.to_string().contains("truncated"), "{err}");
     }
+
+    /// Wire size of one full `books` row page. Search rebuild pages must stay
+    /// under `maxResultBytes` on this encoding, not on compact JSON.
+    #[test]
+    fn books_page_statement_result_wire_size() {
+        fn text(value: &str) -> DbValue {
+            DbValue::Text(value.to_string())
+        }
+        let columns = [
+            ("id", DbType::Int64),
+            ("uuid", DbType::Text),
+            ("source", DbType::Text),
+            ("account_id", DbType::Text),
+            ("product_id", DbType::Text),
+            ("asin", DbType::Text),
+            ("isbn", DbType::Text),
+            ("marketplace", DbType::Text),
+            ("title", DbType::Text),
+            ("authors", DbType::Text),
+            ("narrators", DbType::Text),
+            ("series", DbType::Text),
+            ("series_index", DbType::Text),
+            ("series_asin", DbType::Text),
+            ("acquire_status", DbType::Text),
+            ("storage_key", DbType::Text),
+            ("error_message", DbType::Text),
+            ("purchased_at", DbType::Text),
+            ("tags", DbType::Text),
+            ("rating_overall", DbType::Float64),
+            ("rating_performance", DbType::Float64),
+            ("rating_story", DbType::Float64),
+            ("is_finished", DbType::Int64),
+            ("pdf_status", DbType::Text),
+            ("pdf_storage_key", DbType::Text),
+            ("publisher", DbType::Text),
+            ("length_minutes", DbType::Int64),
+            ("is_abridged", DbType::Int64),
+            ("content_kind", DbType::Text),
+            ("categories", DbType::Text),
+            ("subtitle", DbType::Text),
+            ("published_at", DbType::Text),
+            ("description", DbType::Text),
+            ("language", DbType::Text),
+            ("cover_url", DbType::Text),
+            ("subjects", DbType::Text),
+            ("enrich_source", DbType::Text),
+            ("enrich_confidence", DbType::Float64),
+            ("enrich_updated_at", DbType::Text),
+            ("created_at", DbType::Text),
+            ("updated_at", DbType::Text),
+        ];
+        let cols: Vec<DbColumn> = columns
+            .iter()
+            .map(|(name, db_type)| DbColumn {
+                name: (*name).to_string(),
+                db_type: *db_type,
+            })
+            .collect();
+        let row = DbRow {
+            values: vec![
+                DbValue::Int64(10_000),
+                text("01234567-89ab-cdef-0123-456789abcdef"),
+                text("audible"),
+                text("envelope-a"),
+                text("B09999"),
+                text("B09999"),
+                DbValue::null(DbType::Text),
+                text("us"),
+                text("Title 09999"),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                text("not_acquired"),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Float64),
+                DbValue::null(DbType::Float64),
+                DbValue::null(DbType::Float64),
+                DbValue::Int64(0),
+                text("not_acquired"),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Int64),
+                DbValue::Int64(0),
+                text("book"),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Text),
+                DbValue::null(DbType::Float64),
+                DbValue::null(DbType::Text),
+                text("2026-10-01T10:57:53.123456789+00:00"),
+                text("2026-10-01T10:57:53.123456789+00:00"),
+            ],
+        };
+        assert_eq!(row.values.len(), cols.len());
+        let cap = usize::try_from(FIRST_PARTY_MAX_RESULT_BYTES).unwrap();
+        let page64 = StatementResult::from_rows(cols.clone(), vec![row.clone(); 64]).unwrap();
+        let bytes64 = crate::encoded_statement_result_bytes(&page64)
+            .unwrap()
+            .len();
+        assert!(
+            bytes64 <= cap,
+            "64-row books page is {bytes64} bytes; maxResultBytes is {cap}"
+        );
+        let page256 = StatementResult::from_rows(cols, vec![row; 256]).unwrap();
+        let bytes256 = crate::encoded_statement_result_bytes(&page256)
+            .unwrap()
+            .len();
+        assert!(
+            bytes256 > cap,
+            "256-row books page is {bytes256} bytes and was expected to exceed {cap}"
+        );
+    }
 }
