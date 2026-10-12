@@ -960,10 +960,27 @@ absolute `command` is granted read access on its own, so a manifest may point at
 a binary installed elsewhere. For `runtime = "workerd"`, the host resolves
 `bookclerk-workerd` beside itself; that launcher requires the pinned Cloudflare
 `workerd` binary (`cargo ensure-workerd` / platform package) and loads
-`[workerd]` + `modules/` into a real isolate. If `compatibility_date` is newer
-than the Bookclerk pin, the host **warns** and still loads. The pin itself is
+`[workerd]` + `modules/` into a real isolate. `compatibility_date` must be a
+real calendar `YYYY-MM-DD`. workerd turns that date into runtime behavior: each
+compatibility flag whose default-on date is on or before it is enabled, and the
+binary refuses to start when the date is newer than the
+`supported-compatibility-date` baked into that build. Wrangler does not pass
+that newer date through. It warns and starts at the newest date the installed
+runtime supports. Bookclerk does the same with this release's pin
+(`2026-08-01`): `check` and load warn, then the isolate runs at the pin. An
+equal or older date is passed through unchanged. The pin itself is
 bumped on a **7-day publish cooldown** by CI — see
-[packaging.md](packaging.md#cloudflare-workerd-pin).
+[packaging.md](packaging.md#cloudflare-workerd-pin). The isolate runs at that
+applied date. Host surfaces such as events and jobs do not yet choose behavior
+from it. When they do, a behavior change ships with an enable date in a
+Bookclerk release, and a plugin gets the behavior of the date this release
+actually applied — not a second calendar, and not the raw author date when it
+is past the pin. `[[kv_namespaces]]` is a
+durable KV binding: declaring it is legal, and load or spawn fails with
+"not implemented yet". `[[databases]]` does not replace it. `[queues]` is the
+same kind of declaration (producers and consumers): legal in `plugin.toml`,
+not implemented yet, and not a substitute for `[[events.consumers]]` or
+`[[events.producers]]`.
 
 Unknown capability keys are parse errors rather than silent defaults — a typo in
 a security-relevant field must not read as "whatever we would have picked".
@@ -1234,10 +1251,14 @@ export `cli` (and optional event/job triggers) — not a `kind = "integration"`.
 | --- | --- |
 | `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `job` triggers) |
 | Named `export class` entrypoints | `entrypoints = ["storefront", …]` + matching `*Entrypoint` subclass |
-| `env.DB` / `env.KV` / `env.SECRETS` | `[[databases]]`, `[[kv_namespaces]]`, `[secrets]` → granted on `env` |
-| Queue consumer | `[[events.consumers]]` → `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend` |
-| `env.QUEUE.send` | `[[events.producers]]` → `env.EVENTS.publish` (host outbox; forced `source`) |
-| Cron / scheduled | `[triggers] jobs` → `job(controller)` (durable command envelope) |
+| `env.DB` | `[[databases]]` → granted on `env` |
+| `env.KV` | `[[kv_namespaces]]` durable KV binding. Not implemented yet. |
+| `env.SECRETS` | `[secrets]` → granted on `env` |
+| `[queues]` producers and consumers | Not implemented yet. Declaring the table is legal. |
+| `[[events.consumers]]` | `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend` |
+| `[[events.producers]]` | `env.EVENTS.publish` (host outbox; forced `source`) |
+| Cron / scheduled | Not implemented yet. |
+| `[triggers] jobs` | `job(controller)` (durable command envelope) |
 | `wrangler types` | `bookclerk-plugin types` → generated `Env` |
 | Workers for Platforms / Dynamic Workers | **Not used** — local embedded workerd + OS jail only |
 
@@ -1515,11 +1536,15 @@ Built-in ids: `sqlite`, `d1`, `postgres` (match `[database].plugin`).
 Plugins may declare Workers-style **named database bindings** in the manifest:
 
 ```toml
-[capabilities.bindings]
-databases = ["DB", "CACHE"]   # [A-Z][A-Z0-9_]*, unique, max 8
+[[databases]]
+binding = "DB"
+
+[[databases]]
+binding = "CACHE"   # [A-Z][A-Z0-9_]*, unique, max 8
 ```
 
-Named bindings are **plugin-private state**, not a place to put host tables.
+SQL bindings do not replace `[[kv_namespaces]]`. Named bindings are
+**plugin-private state**, not a place to put host tables.
 The durable job queue, library catalog, and secrets stay on the host library
 database; `job(job)` never gets an `env` binding pointed at
 `library.db`. Bindings are provisioned by the active adapter — physically

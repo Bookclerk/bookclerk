@@ -7,7 +7,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { assertPathInside, copyFileUnder, ensureDirUnder, refuseSymlinkExistingComponents, refuseSymlinkPath } from "../sparse-workerd/ensure.js";
-import { validateLogo, validateManifest, type Manifest } from "./validate.js";
+import {
+  declaresPython,
+  moduleLoadKey,
+  applyAuthorCompatibilityDate,
+  validateAuthorCompatibilityFlags,
+  validateLogo,
+  validateManifest,
+  workerdModuleIsEmbedded,
+  type Manifest,
+} from "./validate.js";
 
 /**
  * Optional vendor filename for offline archives (host normally injects the package).
@@ -140,6 +149,10 @@ export function checkPlugin(pluginDir: string): string {
   }
   const runtime = m.runtime ?? "native";
   if (runtime === "workerd") {
+    const workerd = m.workerd;
+    if (!workerd) throw new Error("workerd config missing");
+    const applied = applyAuthorCompatibilityDate(workerd.compatibility_date);
+    if (applied.warning) console.warn(applied.warning);
     const modulesDir = assertPathInside(root, m.workerd?.modules_dir ?? "modules");
     if (!fs.existsSync(modulesDir) || !fs.statSync(modulesDir).isDirectory()) {
       throw new Error(`workerd modules_dir missing: ${modulesDir}`);
@@ -157,6 +170,7 @@ export function checkPlugin(pluginDir: string): string {
       const src = fs.readFileSync(main, "utf8");
       checkMainModuleSource(path.basename(main), src, entrypoints, "python");
     }
+    enforceWorkerdLoadSet(m, modulesDir);
   } else if (runtime === "native") {
     const cmd = m.command!;
     const resolved = path.isAbsolute(cmd)
@@ -170,6 +184,69 @@ export function checkPlugin(pluginDir: string): string {
     }
   }
   return `ok id=${m.id} entrypoints=${(m.entrypoints ?? []).join(",")} runtime=${runtime}`;
+}
+
+/**
+ * Requires `[[modules]]` rows to be files the walk embeds. Python flags follow
+ * the manifest declaration. A `.py` file the walk finds but the manifest does
+ * not declare fails even when both flags are set. An explicit `path` must be
+ * in the load set; `name` is the source only when `path` is omitted.
+ *
+ * @param m - Parsed manifest.
+ * @param modulesDir - Absolute modules directory.
+ * @throws {Error} When a row is missing, a symlink is present, or flags disagree.
+ */
+function enforceWorkerdLoadSet(m: Manifest, modulesDir: string): void {
+  const loadSet = collectAuthorModuleKeys(modulesDir);
+  const modulesDirName = m.workerd?.modules_dir ?? "modules";
+  for (const mod of m.modules ?? []) {
+    // An explicit path is the file to embed. `name` is only the source when
+    // `path` was omitted, so a typoed path cannot pass because `name` exists.
+    const filePath = mod.path || mod.name;
+    const key = moduleLoadKey(modulesDirName, filePath);
+    const loaded = Boolean(key && loadSet.has(key));
+    if (!loaded) {
+      if (workerdModuleIsEmbedded(filePath)) {
+        throw new Error(
+          `plugin.toml: [[modules]] \`${filePath}\` is not in the workerd load set`,
+        );
+      }
+      throw new Error(`plugin.toml: [[modules]] \`${filePath}\` is not implemented yet`);
+    }
+  }
+  const diskPython = [...loadSet].some((name) => name.toLowerCase().endsWith(".py"));
+  if (m.workerd) {
+    validateAuthorCompatibilityFlags(
+      m.workerd.compatibility_flags ?? [],
+      declaresPython(m),
+    );
+    if (diskPython && !declaresPython(m)) {
+      throw new Error(
+        "plugin.toml: undeclared Python file in the workerd modules tree",
+      );
+    }
+  }
+}
+
+function collectAuthorModuleKeys(modulesDir: string): Set<string> {
+  const out = new Set<string>();
+  const walk = (dir: string) => {
+    for (const name of fs.readdirSync(dir)) {
+      const abs = path.join(dir, name);
+      const stat = fs.lstatSync(abs);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`refusing symlink in workerd modules tree: ${abs}`);
+      }
+      if (stat.isDirectory()) {
+        walk(abs);
+        continue;
+      }
+      if (!stat.isFile() || !workerdModuleIsEmbedded(name)) continue;
+      out.add(path.relative(modulesDir, abs).split(path.sep).join("/"));
+    }
+  };
+  walk(modulesDir);
+  return out;
 }
 
 /**

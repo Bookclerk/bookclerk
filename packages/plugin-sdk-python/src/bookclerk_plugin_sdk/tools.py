@@ -20,7 +20,7 @@ import sys
 import time
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .path_guard import (
     resolve_under,
@@ -36,6 +36,275 @@ from .path_guard import (
 # Required for local bookclerk-workerd / Pyodide without pywrangler.
 PYTHON_WORKERD_FLAGS = ("python_workers", "disable_python_external_sdk")
 """Compatibility flags required for Python Workers under bookclerk-workerd."""
+
+WORKERD_PIN_COMPAT_DATE = "2026-08-01"
+"""Newest ``compatibility_date`` the pinned workerd binary honors."""
+
+_LOAD_SUFFIXES = (".js", ".mjs", ".py", ".wasm", ".json")
+
+
+def _is_ascii_digit_run(text: str) -> bool:
+    return bool(text) and all("0" <= char <= "9" for char in text)
+
+
+def _is_calendar_date(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    if len(text) != 10 or text[4] != "-" or text[7] != "-":
+        return False
+    if not (
+        _is_ascii_digit_run(text[:4])
+        and _is_ascii_digit_run(text[5:7])
+        and _is_ascii_digit_run(text[8:10])
+    ):
+        return False
+    year, month, day = int(text[:4]), int(text[5:7]), int(text[8:10])
+    if month == 2:
+        leap = (year % 4 == 0 and year % 100 != 0) or year % 400 == 0
+        max_day = 29 if leap else 28
+    elif month in (1, 3, 5, 7, 8, 10, 12):
+        max_day = 31
+    elif month in (4, 6, 9, 11):
+        max_day = 30
+    else:
+        return False
+    return 1 <= day <= max_day
+
+
+class AppliedCompatibilityDate(NamedTuple):
+    """Date passed to workerd, and a fallback warning when the author date is newer.
+
+    Host surfaces (events, jobs, and later bindings) must follow ``applied``.
+    That is the date workerd actually runs.
+    """
+
+    applied: str
+    warning: str | None
+
+
+def validate_author_compatibility_date(date: str) -> None:
+    """Reject a compatibility date that is not a real ``YYYY-MM-DD``.
+
+    A date newer than the pin is still valid. Load falls back and warns; see
+    :func:`apply_author_compatibility_date`.
+
+    Args:
+        date: ``workerd.compatibility_date``.
+
+    Raises:
+        ValueError: When the date is not a calendar day.
+    """
+    if not _is_calendar_date(date):
+        raise ValueError(
+            "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD"
+        )
+
+
+def apply_author_compatibility_date(date: str) -> AppliedCompatibilityDate:
+    """Resolve an author compatibility date against this Bookclerk release.
+
+    workerd enables flags whose default-on date is on or before the date it is
+    given, and refuses a date newer than the one baked into the binary.
+    Wrangler warns and starts at the newest date that binary supports.
+
+    Args:
+        date: ``workerd.compatibility_date``.
+
+    Returns:
+        The date to pass to workerd, and a warning when it was clamped.
+
+    Raises:
+        ValueError: When the date is not a calendar day.
+    """
+    validate_author_compatibility_date(date)
+    if date > WORKERD_PIN_COMPAT_DATE:
+        return AppliedCompatibilityDate(
+            WORKERD_PIN_COMPAT_DATE,
+            _compatibility_date_fallback_warning(date),
+        )
+    return AppliedCompatibilityDate(date, None)
+
+
+def _compatibility_date_fallback_warning(requested: str) -> str:
+    return (
+        "The latest compatibility date supported by the installed Bookclerk "
+        f'workerd runtime is "{WORKERD_PIN_COMPAT_DATE}",\n'
+        f'but you\'ve requested "{requested}". Falling back to '
+        f'"{WORKERD_PIN_COMPAT_DATE}"...\n'
+        "Features enabled by your requested compatibility date may not be available.\n"
+        "Upgrade Bookclerk to a release that supports this date."
+    )
+
+
+def validate_author_compatibility_flags(flags: list[Any], python: bool) -> None:
+    """Enforce the Python flag pair. Does not insert missing flags.
+
+    Args:
+        flags: Author ``compatibility_flags``.
+        python: True when the manifest declares a Python module. A disk-only
+            ``.py`` file is not enough.
+
+    Raises:
+        ValueError: When a flag is outside the allowlist or the pair is wrong.
+    """
+    names = [str(flag) for flag in flags]
+    for flag in names:
+        if flag == "experimental":
+            raise ValueError(
+                "plugin.toml: workerd.compatibility_flags `experimental` is host-only"
+            )
+        if flag not in PYTHON_WORKERD_FLAGS:
+            raise ValueError(
+                f"plugin.toml: workerd.compatibility_flags `{flag}` is not allowed"
+            )
+    both = all(flag in names for flag in PYTHON_WORKERD_FLAGS)
+    any_flag = any(flag in names for flag in PYTHON_WORKERD_FLAGS)
+    if python and not both:
+        raise ValueError(
+            "plugin.toml: workerd.compatibility_flags must include "
+            "python_workers and disable_python_external_sdk when the guest is Python"
+        )
+    if any_flag and not python:
+        raise ValueError(
+            "plugin.toml: workerd.compatibility_flags require a Python module"
+        )
+
+
+def declares_python(m: dict[str, Any]) -> bool:
+    """True when the manifest declares Python. Flags are not evidence.
+
+    An explicit ``path`` is the load-set key. ``name`` is that key only when
+    ``path`` is omitted.
+
+    Args:
+        m: Manifest dictionary.
+
+    Returns:
+        Whether Python flags and Pyodide consent hosts apply.
+    """
+    if (m.get("runtime") or "native") != "workerd":
+        return False
+    w = m.get("workerd") or {}
+    if str(w.get("main_module") or "").lower().endswith(".py"):
+        return True
+    for mod in m.get("modules") or []:
+        kind = str(mod.get("type") or "js").lower()
+        path = str(mod.get("path") or mod.get("name") or "").lower()
+        if kind == "python" or path.endswith(".py"):
+            return True
+    return False
+
+
+def unimplemented_surface(m: dict[str, Any]) -> str | None:
+    """Spawn/load message when KV or Queues are declared.
+
+    The refusal is runtime-agnostic: a native plugin that declares KV or
+    Queues fails spawn the same way a workerd plugin does.
+
+    Args:
+        m: Manifest dictionary.
+
+    Returns:
+        The refusal, or ``None`` when neither surface is declared.
+    """
+    if m.get("kv_namespaces"):
+        return "[[kv_namespaces]] is not implemented yet"
+    if m.get("queues") is not None:
+        return "[queues] is not implemented yet"
+    return None
+
+
+def _embed_class(path: str) -> str | None:
+    lower = path.lower()
+    if lower.endswith(".py"):
+        return "python"
+    if lower.endswith(".wasm"):
+        return "wasm"
+    if lower.endswith(".mjs") or lower.endswith(".js"):
+        return "js"
+    if lower.endswith(".json"):
+        return "json"
+    return None
+
+
+def _module_type_matches(embed: str, module_type: str) -> bool:
+    kind = module_type.strip().lower()
+    if embed == "python":
+        return kind == "python"
+    if embed == "wasm":
+        return kind == "wasm"
+    if embed == "json":
+        return kind == "json"
+    if embed == "js":
+        return kind in ("js", "javascript", "esm", "esmodule")
+    return False
+
+
+def validate_module_declarations(main_module: str, modules: list[Any]) -> None:
+    """Check main and ``[[modules]]`` extensions.
+
+    Args:
+        main_module: ``[workerd].main_module``.
+        modules: ``[[modules]]`` rows.
+
+    Raises:
+        ValueError: When a file would not be embedded or its type disagrees.
+    """
+    if _embed_class(main_module) is None:
+        raise ValueError(
+            f"plugin.toml: workerd.main_module `{main_module}` is not implemented yet"
+        )
+    for mod in modules:
+        path = str(mod.get("path") or mod.get("name") or "")
+        embed = _embed_class(path)
+        if embed is None:
+            raise ValueError(f"plugin.toml: [[modules]] `{path}` is not implemented yet")
+        module_type = str(mod.get("type") or "js")
+        if not _module_type_matches(embed, module_type):
+            raise ValueError(
+                f"plugin.toml: [[modules]] `{path}` type `{module_type}` "
+                "does not match the file extension"
+            )
+
+
+def _normalize_dot_segments(raw: str) -> str:
+    """Drop ``.`` segments. ``..`` and empty segments stay."""
+    parts = [segment for segment in raw.replace("\\", "/").split("/") if segment != "."]
+    return "/".join(parts)
+
+
+def module_load_key(modules_dir: str, raw: str) -> str:
+    """Relative key a modules-directory walk uses for a ``[[modules]]`` path.
+
+    ``.`` segments are dropped, then a leading modules-dir prefix is removed,
+    so ``./modules/index.js`` and ``modules/pkg/./echo.wasm`` match walk keys.
+    ``..`` segments are left in place.
+
+    Args:
+        modules_dir: ``[workerd].modules_dir``.
+        raw: Author path or name.
+
+    Returns:
+        Slash-separated key with a leading modules-dir prefix removed.
+    """
+    key = _normalize_dot_segments(raw)
+    directory = _normalize_dot_segments(modules_dir.strip("/"))
+    prefix = f"{directory}/"
+    if directory and key.startswith(prefix):
+        return key[len(prefix) :]
+    return key
+
+
+def workerd_module_is_embedded(path: str) -> bool:
+    """True when the walk embeds this filename.
+
+    Args:
+        path: Module path or filename.
+
+    Returns:
+        Whether the extension is ``.js``, ``.mjs``, ``.py``, ``.wasm``, or ``.json``.
+    """
+    return _embed_class(path) is not None
 
 LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico")
 """Allowed file extensions for embedded ``plugin.toml`` logo paths."""
@@ -210,10 +479,17 @@ def validate_manifest(m: dict[str, Any]) -> None:
         w = m.get("workerd")
         if not isinstance(w, dict):
             raise ValueError('plugin.toml: `[workerd]` is required when runtime = "workerd"')
-        if not str(w.get("compatibility_date") or "").strip():
+        compat = w.get("compatibility_date")
+        if not isinstance(compat, str) or not compat.strip():
             raise ValueError("plugin.toml: workerd.compatibility_date is required")
         if not str(w.get("main_module") or "").strip():
             raise ValueError("plugin.toml: workerd.main_module is required")
+        validate_author_compatibility_date(compat)
+        validate_module_declarations(str(w.get("main_module")), list(m.get("modules") or []))
+        validate_author_compatibility_flags(
+            list(w.get("compatibility_flags") or []),
+            declares_python(m),
+        )
         if net.get("mode") == "outbound" and not net.get("domains"):
             raise ValueError(
                 'plugin.toml: capabilities.network.domains is required when runtime = "workerd" '
@@ -278,6 +554,46 @@ def _validate_surface(m: dict[str, Any]) -> None:
         if name in bindings:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
+    reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV}
+    # Row index, not the binding text. The text can be an oauth name, and an
+    # error that includes it is logged as clear text.
+    named: list[tuple[str, str, int]] = []
+    secrets = m.get(_SEALED_TABLE)
+    if isinstance(secrets, dict):
+        named.append(("secrets", str(secrets.get("binding") or _SEALED_ENV), 0))
+    work_fs = m.get("work_fs")
+    if isinstance(work_fs, dict):
+        named.append(("work_fs", str(work_fs.get("binding") or "WORK_FS"), 0))
+    oauth = m.get(_LOOPBACK_TABLE)
+    if isinstance(oauth, dict):
+        named.append(("oauth", str(oauth.get("binding") or _LOOPBACK_ENV), 0))
+    for index, kv in enumerate(m.get("kv_namespaces") or []):
+        named.append(("kv_namespaces", str(kv.get("binding") or "KV"), index))
+    for index, producer in enumerate((m.get("events") or {}).get("producers") or []):
+        named.append(
+            ("events.producers", str(producer.get("binding") or "EVENTS"), index)
+        )
+    for table, name, index in named:
+        if not _DATABASE_BINDING_RE.match(name) or len(name) > 32:
+            raise ValueError(
+                f"plugin.toml: [{table}][{index}] binding must be `[A-Z][A-Z0-9_]*`"
+            )
+        if table == "kv_namespaces" and name in reserved:
+            raise ValueError(
+                f"plugin.toml: [{table}][{index}] binding collides with another binding"
+            )
+        if name == "CONFIG" or name in bindings:
+            raise ValueError(
+                f"plugin.toml: [{table}][{index}] binding collides with another binding"
+            )
+    for table, name, index in named:
+        if table == "events.producers":
+            continue
+        if name in bindings:
+            raise ValueError(
+                f"plugin.toml: [{table}][{index}] binding collides with another binding"
+            )
+        bindings.add(name)
 
 
 def _workerd_modules_dir(plugin_dir: Path, m: dict[str, Any]) -> Path:
@@ -286,16 +602,63 @@ def _workerd_modules_dir(plugin_dir: Path, m: dict[str, Any]) -> Path:
 
 
 def _is_python_workerd(m: dict[str, Any]) -> bool:
+    return declares_python(m)
+
+
+def _enforce_workerd_load_set(m: dict[str, Any], modules_dir: Path) -> None:
+    """Require ``[[modules]]`` rows to be files the walk embeds.
+
+    Python flags follow the manifest declaration. A ``.py`` file the walk finds
+    but the manifest does not declare fails even when both flags are set. An
+    explicit ``path`` must be in the load set; ``name`` is the source only when
+    ``path`` is omitted.
+
+    Args:
+        m: Parsed manifest.
+        modules_dir: Absolute modules directory.
+
+    Raises:
+        ValueError: When a row is missing, a symlink is present, flags disagree,
+            or a Python file is not declared.
+    """
+    load_set = _collect_author_module_keys(modules_dir)
     w = m.get("workerd") or {}
-    return str(w.get("main_module") or "").lower().endswith(".py")
+    modules_dir_name = str(w.get("modules_dir") or "modules")
+    for mod in m.get("modules") or []:
+        # An explicit path is the file to embed. `name` is only the source when
+        # `path` was omitted, so a typoed path cannot pass because `name` exists.
+        file_path = str(mod.get("path") or mod.get("name") or "")
+        key = module_load_key(modules_dir_name, file_path)
+        if not key or key not in load_set:
+            if workerd_module_is_embedded(file_path):
+                raise ValueError(
+                    f"plugin.toml: [[modules]] `{file_path}` is not in the workerd load set"
+                )
+            raise ValueError(f"plugin.toml: [[modules]] `{file_path}` is not implemented yet")
+    disk_python = any(name.lower().endswith(".py") for name in load_set)
+    validate_author_compatibility_flags(
+        list(w.get("compatibility_flags") or []), declares_python(m)
+    )
+    if disk_python and not declares_python(m):
+        raise ValueError("plugin.toml: undeclared Python file in the workerd modules tree")
 
 
-def _ensure_python_flags(flags: list[Any] | None) -> list[str]:
-    out = [str(f) for f in (flags or [])]
-    for required in PYTHON_WORKERD_FLAGS:
-        if required not in out:
-            out.append(required)
-    return out
+def _collect_author_module_keys(modules_dir: Path) -> set[str]:
+    found: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(modules_dir, followlinks=False):
+        root = Path(dirpath)
+        for name in list(dirnames):
+            child = root / name
+            if child.is_symlink():
+                raise ValueError(f"refusing symlink in workerd modules tree: {child}")
+        for name in filenames:
+            child = root / name
+            if child.is_symlink():
+                raise ValueError(f"refusing symlink in workerd modules tree: {child}")
+            if not workerd_module_is_embedded(name):
+                continue
+            found.add(child.relative_to(modules_dir).as_posix())
+    return found
 
 
 def _sdk_workerd_embed_src() -> Path:
@@ -405,6 +768,14 @@ def check_plugin(plugin_dir: Path) -> str:
     runtime = m.get("runtime") or "native"
     if runtime == "workerd":
         w = m["workerd"]
+        compat = w.get("compatibility_date")
+        if not isinstance(compat, str):
+            raise ValueError(
+                "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD"
+            )
+        applied = apply_author_compatibility_date(compat)
+        if applied.warning:
+            print(applied.warning, file=sys.stderr)
         modules_dir = _workerd_modules_dir(root, m)
         if not modules_dir.is_dir():
             raise FileNotFoundError(f"workerd modules_dir missing: {modules_dir}")
@@ -412,22 +783,14 @@ def check_plugin(plugin_dir: Path) -> str:
         if not main.is_file():
             raise FileNotFoundError(f"workerd main_module missing: {main}")
         entrypoints = [str(e) for e in (m.get("entrypoints") or [])]
-        main_lower = w["main_module"].lower()
-        if main_lower.endswith((".js", ".mjs")):
-            src = main.read_text(encoding="utf-8")
-            check_main_module_source(main.name, src, entrypoints, "js")
-        if _is_python_workerd(m):
+        main_lower = str(w["main_module"]).lower()
+        if main_lower.endswith(".py"):
             src = main.read_text(encoding="utf-8")
             check_main_module_source(main.name, src, entrypoints, "python")
-            flags = list(w.get("compatibility_flags") or [])
-            missing = [f for f in PYTHON_WORKERD_FLAGS if f not in flags]
-            if missing:
-                raise ValueError(
-                    "plugin.toml: workerd.compatibility_flags must include "
-                    f"{', '.join(PYTHON_WORKERD_FLAGS)} for Python Workers "
-                    f"(missing: {', '.join(missing)}). "
-                    "Run: bookclerk-plugin fmt  # or sync-embed"
-                )
+        elif main_lower.endswith((".js", ".mjs")):
+            src = main.read_text(encoding="utf-8")
+            check_main_module_source(main.name, src, entrypoints, "js")
+        _enforce_workerd_load_set(m, modules_dir)
     elif runtime == "native":
         cmd = Path(m["command"])
         resolved = cli_user_path(cmd) if cmd.is_absolute() else resolve_under(root, cmd)
@@ -442,8 +805,8 @@ def sync_embed(plugin_dir: Path) -> str:
 
     Prefer package imports — ``bookclerk-workerd`` injects
     ``bookclerk_plugin_sdk.workerd`` at runtime. This writes the same files so a
-    staged tree is self-contained without host injection. Also ensures Python
-    Workers compatibility flags in ``plugin.toml``.
+    staged tree is self-contained without host injection. It does not insert
+    compatibility flags; the host and ``check`` require the author to write them.
 
     Args:
         plugin_dir: Path to a workerd Python plugin root.
@@ -489,43 +852,7 @@ def sync_embed(plugin_dir: Path) -> str:
             '"""Bookclerk plugin SDK (vendored for workerd). Prefer .workerd."""\n',
         )
     dest = copy_file_under(pkg, "workerd.py", _sdk_workerd_embed_src())
-
-    new_text = _ensure_python_flags_in_toml_text(text, m)
-    if new_text != text:
-        refuse_symlink_path(root, toml_path)
-        write_file_under(root, "plugin.toml", new_text)
-        return f"synced {dest} + python workerd flags in {toml_path}"
     return f"synced {dest}"
-
-
-def _ensure_python_flags_in_toml_text(text: str, m: dict[str, Any]) -> str:
-    """Insert or replace `compatibility_flags` for Python workerd without a full fmt."""
-    w = m.get("workerd") or {}
-    flags = list(w.get("compatibility_flags") or [])
-    if all(f in flags for f in PYTHON_WORKERD_FLAGS):
-        return text
-    flag_block = (
-        "compatibility_flags = [\n"
-        + "".join(f'    "{f}",\n' for f in _ensure_python_flags(flags))
-        + "]"
-    )
-    if re.search(r"(?m)^\s*compatibility_flags\s*=", text):
-        return re.sub(
-            r"(?ms)^\s*compatibility_flags\s*=\s*\[.*?\]",
-            flag_block,
-            text,
-            count=1,
-        )
-    date = str(w.get("compatibility_date") or "")
-    needle = f'compatibility_date = "{date}"'
-    if needle in text:
-        return text.replace(needle, f"{needle}\n{flag_block}", 1)
-    return re.sub(
-        r"(?m)^\[workerd\]\s*$",
-        f"[workerd]\n{flag_block}",
-        text,
-        count=1,
-    )
 
 
 def _esc(s: str) -> str:
@@ -561,8 +888,16 @@ def _value(value: Any) -> str | None:
         return _esc(value)
     if isinstance(value, (int, float)):
         return str(value)
-    if isinstance(value, list) and all(isinstance(v, str) for v in value):
-        return _string_array(list(value))
+    if isinstance(value, list):
+        rendered: list[str] = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                return None
+            one = _value(item)
+            if one is None:
+                return None
+            rendered.append(one)
+        return _array(rendered)
     return None
 
 
@@ -571,6 +906,60 @@ def _table_rows(lines: list[str], table: dict[str, Any]) -> None:
         rendered = _value(table[key])
         if rendered is not None:
             lines.append(f"{key} = {rendered}")
+
+
+def _is_array_of_records(value: Any) -> bool:
+    """True for a non-empty list whose elements are all dicts."""
+    return (
+        isinstance(value, list)
+        and len(value) > 0
+        and all(isinstance(row, dict) for row in value)
+    )
+
+
+def _reject_dropped_queue_tables(queues: dict[str, Any]) -> None:
+    """Fail when a ``[queues]`` value would be omitted instead of emitted."""
+    for key, value in queues.items():
+        if _is_array_of_records(value):
+            for row in value:
+                for field, field_value in row.items():
+                    if _value(field_value) is None:
+                        raise ValueError(
+                            "plugin.toml: [queues] "
+                            f"`{key}.{field}` value cannot be formatted"
+                        )
+            continue
+        if _value(value) is None:
+            raise ValueError(
+                f"plugin.toml: [queues] `{key}` value cannot be formatted"
+            )
+
+
+def _emit_queues(lines: list[str], queues: Any) -> None:
+    """Write a declared ``[queues]`` table back out. Absent means omitted.
+
+    Only a non-empty list of dicts uses ``[[queues.key]]``. Scalar lists and
+    empty lists stay inline arrays. Nested tables raise instead of disappearing.
+    """
+    if not isinstance(queues, dict):
+        if queues is not None:
+            raise ValueError("plugin.toml: [queues] value cannot be formatted")
+        return
+    _reject_dropped_queue_tables(queues)
+    scalars = {
+        key: value for key, value in queues.items() if not _is_array_of_records(value)
+    }
+    lists = {key: value for key, value in queues.items() if _is_array_of_records(value)}
+    if scalars or not lists:
+        lines.append("")
+        lines.append("[queues]")
+        _table_rows(lines, scalars)
+    for key in sorted(lists):
+        for row in lists[key]:
+            lines.append("")
+            lines.append(f"[[queues.{key}]]")
+            if isinstance(row, dict):
+                _table_rows(lines, row)
 
 
 def _named_binding(lines: list[str], header: str, binding: Any) -> None:
@@ -586,17 +975,17 @@ def _named_binding(lines: list[str], header: str, binding: Any) -> None:
 def format_manifest(m: dict[str, Any]) -> str:
     """Emit canonical TOML matching Rust ``format_manifest`` gold fixtures.
 
+    Flags are emitted as written. This function does not insert the Python pair.
+
     Args:
         m: Validated manifest dictionary.
 
     Returns:
         Canonical ``plugin.toml`` text ending with a newline.
-    """
-    if (m.get("runtime") or "native") == "workerd" and _is_python_workerd(m):
-        w = dict(m.get("workerd") or {})
-        w["compatibility_flags"] = _ensure_python_flags(w.get("compatibility_flags"))
-        m = {**m, "workerd": w}
 
+    Raises:
+        ValueError: When ``[queues]`` contains a nested table or a datetime.
+    """
     lines: list[str] = []
     lines.append(f"api_version = {m['api_version']}")
     lines.append(f"id = {_esc(m['id'])}")
@@ -638,7 +1027,9 @@ def format_manifest(m: dict[str, Any]) -> str:
         lines.append("")
         lines.append("[[modules]]")
         lines.append(f"name = {_esc(str(mod['name']))}")
-        lines.append(f"path = {_esc(str(mod['path']))}")
+        path = str(mod.get("path") or "")
+        if path:
+            lines.append(f"path = {_esc(path)}")
         lines.append(f"type = {_esc(str(mod.get('type') or 'js'))}")
 
     jobs = list((m.get("triggers") or {}).get("jobs") or [])
@@ -681,6 +1072,7 @@ def format_manifest(m: dict[str, Any]) -> str:
     _named_binding(lines, f"[{_SEALED_TABLE}]", m.get(_SEALED_TABLE))
     for kv in m.get("kv_namespaces") or []:
         _named_binding(lines, "[[kv_namespaces]]", kv)
+    _emit_queues(lines, m.get("queues"))
     _named_binding(lines, "[work_fs]", m.get("work_fs"))
     _named_binding(lines, f"[{_LOOPBACK_TABLE}]", m.get(_LOOPBACK_TABLE))
 
@@ -851,7 +1243,6 @@ def package_plugin(plugin_dir: Path, out_dir: Path) -> Path:
                 encoding="utf-8",
             )
             shutil.copy2(_sdk_workerd_embed_src(), resolve_under(pkg, "workerd.py"))
-            toml_text = _ensure_python_flags_in_toml_text(toml_text, m)
         resolve_under(staging, "plugin.toml").write_text(toml_text, encoding="utf-8")
         stem = f"bookclerk-plugin-{plugin_id}-{version}-workerd"
 
@@ -976,7 +1367,13 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
     if isinstance(work_fs, dict):
         props.append((str(work_fs.get("binding") or "WORK_FS"), "Any", "`[work_fs]` host-granted object storage."))
     for kv in m.get("kv_namespaces") or []:
-        props.append((str(kv.get("binding") or "KV"), "Any", "`[[kv_namespaces]]` store (surface reserved)."))
+        props.append(
+            (
+                str(kv.get("binding") or "KV"),
+                "Any",
+                "`[[kv_namespaces]]` durable KV binding. Not implemented yet.",
+            )
+        )
     loopback = m.get(_LOOPBACK_TABLE)
     if isinstance(loopback, dict):
         props.append(
@@ -990,13 +1387,13 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
         name = str(db.get("binding"))
         if name in _RESERVED_BINDINGS:
             raise ValueError(
-                f"plugin.toml: [[databases]] binding `{name}` collides with a Bookclerk binding"
+                "plugin.toml: [[databases]] binding collides with a Bookclerk binding"
             )
         props.append((name, "DatabaseBinding", "`[[databases]]` plugin-owned database (D1-shaped prepare/batch/exec)."))
     seen: set[str] = set()
     for name, _, _ in props:
         if name in seen:
-            raise ValueError(f"plugin.toml: binding `{name}` is declared twice")
+            raise ValueError("plugin.toml: binding is declared twice")
         seen.add(name)
     return props
 

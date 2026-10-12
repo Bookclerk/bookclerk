@@ -1,0 +1,14 @@
+api_version = 3
+id = "echo_workerd_tools"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.ts"
+modules_dir = "modules"
+entrypoint = "default"
+
+[capabilities.network]
+mode = "deny"

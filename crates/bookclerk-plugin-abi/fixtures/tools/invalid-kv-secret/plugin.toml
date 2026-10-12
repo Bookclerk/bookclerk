@@ -1,0 +1,15 @@
+api_version = 3
+id = "kv_secret_collision"
+version = "0.1.0"
+runtime = "native"
+command = "./echo"
+entrypoints = ["cli"]
+
+[secrets]
+binding = "SHARED"
+
+[[kv_namespaces]]
+binding = "SHARED"
+
+[capabilities.network]
+mode = "deny"

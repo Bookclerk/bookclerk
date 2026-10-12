@@ -21,9 +21,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::address::{address_allowed, is_restricted_hostname, CidrGrant};
-use crate::types::{
-    NetworkCapabilities, NetworkMode, PluginManifest, PluginRuntimeKind, WorkerdRuntimeManifest,
-};
+use crate::types::{NetworkCapabilities, NetworkMode, PluginManifest};
 
 /// Default redirect budget injected when building policy from network caps.
 ///
@@ -429,10 +427,12 @@ impl Default for EgressPolicy {
 
 /// Returns `true` when the manifest declares a Python workerd guest.
 ///
-/// Detection (any of):
-/// - `[workerd].main_module` ends with `.py`
-/// - `compatibility_flags` contains `python_workers`
-/// - any `[[modules]]` entry has `type = "python"` or a `.py` name/path
+/// Detection matches [`PluginManifest::declares_python`]: a `.py` main module
+/// or a `[[modules]]` row with `type = "python"` or a `.py` load-set key
+/// (explicit `path`, otherwise `name`). Compatibility
+/// flags are not evidence, so a JS guest cannot pull Pyodide hosts in by
+/// listing `python_workers`. A `.py` file that exists only on disk does not
+/// widen this list; materialize must use the same set as consent.
 ///
 /// Native runtimes always return `false`.
 ///
@@ -446,25 +446,7 @@ impl Default for EgressPolicy {
 /// for outbound guests.
 #[must_use]
 pub fn manifest_needs_python(manifest: &PluginManifest) -> bool {
-    if manifest.runtime != PluginRuntimeKind::Workerd {
-        return false;
-    }
-    if let Some(w) = manifest.workerd.as_ref() {
-        if workerd_declares_python(w) {
-            return true;
-        }
-    }
-    manifest.modules.iter().any(|m| {
-        m.module_type.eq_ignore_ascii_case("python")
-            || m.name.to_ascii_lowercase().ends_with(".py")
-            || m.path.to_ascii_lowercase().ends_with(".py")
-    })
-}
-
-/// True when the workerd runtime names a `.py` main module or `python_workers` flag.
-fn workerd_declares_python(w: &WorkerdRuntimeManifest) -> bool {
-    w.main_module.to_ascii_lowercase().ends_with(".py")
-        || w.compatibility_flags.iter().any(|f| f == "python_workers")
+    manifest.declares_python()
 }
 
 /// Appends [`PYODIDE_EGRESS_HOSTS`] when `needs_python` and mode is outbound.
@@ -883,7 +865,7 @@ runtime = "workerd"
 entrypoints = ["remoteLibrary"]
 [workerd]
 compatibility_date = "2026-08-01"
-compatibility_flags = ["python_workers"]
+compatibility_flags = ["python_workers", "disable_python_external_sdk"]
 main_module = "plugin.py"
 [[modules]]
 name = "plugin.py"
