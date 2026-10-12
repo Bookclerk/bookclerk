@@ -260,9 +260,11 @@ async fn open_world(secrets: bool) -> World {
     let config =
         Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
     let store = file_store(&files.join("library.db")).await;
+    let scratch = files.join("cache");
     let session = bookclerk_library::control_plane::bootstrap_control_plane(
         &store,
         &files,
+        &scratch,
         None,
         &EventsConfig::default(),
     )
@@ -857,9 +859,11 @@ async fn plugin_without_an_instance_keeps_transitional_settings() {
     .unwrap();
     let config = Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).unwrap();
     let store = file_store(&files.join("library.db")).await;
+    let scratch = files.join("cache");
     bookclerk_library::control_plane::bootstrap_control_plane(
         &store,
         files,
+        &scratch,
         None,
         &EventsConfig::default(),
     )
@@ -1078,9 +1082,11 @@ async fn key_lookup_uses_the_document_when_a_deployment_exists() {
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     let store = file_store(&files.join("library.db")).await;
+    let scratch = files.join("cache");
     let session = bookclerk_library::control_plane::bootstrap_control_plane(
         &store,
         files,
+        &scratch,
         None,
         &EventsConfig::default(),
     )
@@ -1140,9 +1146,11 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
         Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).unwrap();
     config.plugins.isolation = Isolation::Off;
     let store = file_store(&files.join("library.db")).await;
+    let scratch = files.join("cache");
     let session = bookclerk_library::control_plane::bootstrap_control_plane(
         &store,
         files,
+        &scratch,
         None,
         &EventsConfig::default(),
     )
@@ -1258,9 +1266,11 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).unwrap();
     config.plugins.isolation = Isolation::Off;
     let store = file_store(&files.join("library.db")).await;
+    let scratch = files.join("cache");
     let session = bookclerk_library::control_plane::bootstrap_control_plane(
         &store,
         files,
+        &scratch,
         None,
         &EventsConfig::default(),
     )

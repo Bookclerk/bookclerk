@@ -37,7 +37,8 @@ fn mode_device() -> PluginInstanceConfigV1 {
 }
 
 async fn bootstrap(store: &LibraryStore, files: &std::path::Path) -> ControlPlaneSession {
-    bootstrap_control_plane(store, files, None, &EventsConfig::default())
+    let scratch = files.join("cache");
+    bootstrap_control_plane(store, files, &scratch, None, &EventsConfig::default())
         .await
         .expect("bootstrap")
 }

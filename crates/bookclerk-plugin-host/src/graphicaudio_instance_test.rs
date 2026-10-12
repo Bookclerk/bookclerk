@@ -177,9 +177,11 @@ async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
     config.plugins.isolation = Isolation::Off;
     let store = file_store(&files.join("library.db")).await;
     bookclerk_library::configure_master_key(files).expect("dek");
+    let scratch = files.join("cache");
     bookclerk_library::control_plane::bootstrap_control_plane(
         &store,
         files,
+        &scratch,
         None,
         &EventsConfig::default(),
     )

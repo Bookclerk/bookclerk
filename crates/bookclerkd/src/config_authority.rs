@@ -922,9 +922,11 @@ mod tests {
             .await
             .expect("schema");
         let store = bookclerk_library::LibraryStore::from_connection(db);
-        let session = bootstrap_control_plane(&store, files_path, None, &EventsConfig::default())
-            .await
-            .expect("bootstrap");
+        let scratch = files_path.join("cache");
+        let session =
+            bootstrap_control_plane(&store, files_path, &scratch, None, &EventsConfig::default())
+                .await
+                .expect("bootstrap");
         let actor = ConfigActor::Bootstrap;
         let instance = create_plugin_instance(&store, &actor, &plugin_key)
             .await
@@ -1066,9 +1068,11 @@ mod tests {
             .await
             .expect("schema");
         let store = bookclerk_library::LibraryStore::from_connection(db);
-        let session = bootstrap_control_plane(&store, files_path, None, &EventsConfig::default())
-            .await
-            .expect("bootstrap");
+        let scratch = files_path.join("cache");
+        let session =
+            bootstrap_control_plane(&store, files_path, &scratch, None, &EventsConfig::default())
+                .await
+                .expect("bootstrap");
         let actor = ConfigActor::Bootstrap;
         let first = create_plugin_instance(&store, &actor, &plugin_key)
             .await
@@ -1377,9 +1381,11 @@ mod tests {
             .await
             .expect("schema");
         let store = bookclerk_library::LibraryStore::from_connection(db);
+        let scratch = files_path.join("cache");
         let session = bootstrap_control_plane(
             &store,
             files_path,
+            &scratch,
             None,
             &bookclerk_config::EventsConfig::default(),
         )
@@ -1819,9 +1825,11 @@ mod tests {
             .await
             .expect("schema");
         let store = bookclerk_library::LibraryStore::from_connection(db);
+        let scratch = files_path.join("cache");
         let session = bootstrap_control_plane(
             &store,
             files_path,
+            &scratch,
             None,
             &bookclerk_config::EventsConfig::default(),
         )
