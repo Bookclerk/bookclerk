@@ -1,6 +1,6 @@
 //! `bookclerk plugins` — discover, manage, and invoke dynamic plugin CLI.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, PluginRegistryEntry};
 use bookclerk_library::control_plane::{
@@ -828,8 +828,9 @@ async fn run_install(
     // Post-install health when not dry-run.
     // Historical note: `skip_health: true` (install default) means "run health
     // here"; `false` leaves health + commit/rollback to the caller (update).
+    // Health probes the staged tree; commit activates onto `plugin_root`.
     if !outcome.dry_run && opts.skip_health {
-        if let Err(err) = health_check_installed(config, &outcome.receipt.plugin_key).await {
+        if let Err(err) = health_check_staged(config, &outcome.health_root).await {
             return Err(health_failure_after_rollback(
                 err,
                 Installer::rollback(&outcome),
@@ -934,8 +935,7 @@ async fn run_update(
             &opts,
         )?;
         if !outcome.dry_run {
-            if let Err(err) = health_check_installed(config, plugin.plugin_key().canonical()).await
-            {
+            if let Err(err) = health_check_staged(config, &outcome.health_root).await {
                 return Err(health_failure_after_rollback(
                     err,
                     Installer::rollback(&outcome),
@@ -1324,7 +1324,34 @@ async fn spawn_cli_session(
 /// Spawns the guest, calls `describe()`, and calls `health` when advertised.
 async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<String> {
     let plugin = find_plugin(config, id)?;
-    let session = spawn_cli_session(config, &plugin).await?;
+    health_check_plugin(config, &plugin).await
+}
+
+/// Health-checks a staged (pre-commit) install tree that is not yet in the ledger.
+async fn health_check_staged(config: &Config, root: &Path) -> anyhow::Result<String> {
+    let text = std::fs::read_to_string(root.join("plugin.toml"))
+        .map_err(|err| anyhow::anyhow!("read staged plugin.toml: {err}"))?;
+    let manifest = bookclerk_plugin_manifest::parse(&text)
+        .map_err(|err| anyhow::anyhow!("staged plugin.toml: {err}"))?;
+    let command = manifest
+        .command
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("staged plugin.toml missing command"))?;
+    let command = if command.is_absolute() {
+        command
+    } else {
+        root.join(command)
+    };
+    if !command.is_file() {
+        anyhow::bail!("staged guest is missing {}", command.display());
+    }
+    let plugin = DiscoveredPlugin::for_test(manifest, root.to_path_buf(), command);
+    health_check_plugin(config, &plugin).await
+}
+
+/// Runs describe + optional health RPCs against an already-resolved plugin.
+async fn health_check_plugin(config: &Config, plugin: &DiscoveredPlugin) -> anyhow::Result<String> {
+    let session = spawn_cli_session(config, plugin).await?;
     let api = session.describe_snapshot().api_version;
     let entrypoints = session
         .describe_snapshot()
@@ -1350,7 +1377,7 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
         probed = true;
     }
     if session.has_entrypoint(Entrypoint::DatabaseAdapter) {
-        probe_database(&session, config, &plugin).await?;
+        probe_database(&session, config, plugin).await?;
         probed = true;
     }
     if probed {
@@ -2273,9 +2300,9 @@ fn health_failure_after_rollback(
 fn commit_install_cleanup(outcome: &InstallOutcome) -> anyhow::Result<()> {
     Installer::commit(outcome).map_err(|err| {
         anyhow::anyhow!(
-            "plugin installation succeeded but commit cleanup failed: {err:#}; \
-             the new plugin is active, but a previous-version backup may remain under \
-             plugins/.staging"
+            "plugin health succeeded but install activate/commit failed: {err:#}; \
+             the live plugins/ tree was not updated; a staged tree may remain under \
+             plugins/.staging until the next install recovers it"
         )
     })
 }

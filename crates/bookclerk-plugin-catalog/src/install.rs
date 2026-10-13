@@ -80,21 +80,32 @@ impl Default for InstallOptions {
 }
 
 /// Result of a successful (or dry-run) install.
+///
+/// Non-dry-run installs **stage** the new tree under `plugins/.staging` and
+/// leave the live `plugins/<fs-id>` directory untouched until
+/// [`Installer::commit`]. Pre-commit health must probe [`Self::health_root`].
+/// A crash before commit leaves only a pending marker + staged tree; the next
+/// installer entry under the mutation lock rolls that pending work back.
 #[derive(Debug, Clone)]
 pub struct InstallOutcome {
-    /// Filesystem path of the installed plugin directory.
+    /// Final install directory under `plugins/` (live only after [`Installer::commit`]).
     pub plugin_root: PathBuf,
-    /// Install receipt written under the plugin root after activation.
+    /// Tree for pre-commit health. Before commit this is the staged root; after
+    /// a successful commit it matches [`Self::plugin_root`].
+    pub health_root: PathBuf,
+    /// Install receipt written under [`Self::health_root`] while pending.
     pub receipt: InstallReceipt,
     /// When true, resolve and verify without writing an install.
     pub dry_run: bool,
-    /// Previous install kept aside until [`Installer::commit`] (or restored by
-    /// [`Installer::rollback`]). Present only for replace installs.
+    /// Live install that commit will replace, when this is a replace/update.
+    /// The live tree stays in place until commit; it is not a backup path.
     pub previous: Option<PathBuf>,
-    /// Ledger row that existed for this PluginKey before activation, if any.
+    /// Ledger row that existed for this PluginKey before commit, if any.
     pub previous_ledger: Option<InstallLedgerEntry>,
     /// Files directory that owns `install-ledger.json` (`plugins_root` parent).
     pub files_dir: Option<PathBuf>,
+    /// Durable pending-marker path under `plugins/.staging`, when staged.
+    pub pending_marker: Option<PathBuf>,
 }
 
 /// Installer: resolve → download → verify → extract → activate.
@@ -295,17 +306,21 @@ impl Installer {
                 true,
             )?;
             return Ok(InstallOutcome {
-                plugin_root: dest,
+                plugin_root: dest.clone(),
+                health_root: dest,
                 receipt,
                 dry_run: true,
                 previous: None,
                 previous_ledger: None,
                 files_dir,
+                pending_marker: None,
             });
         }
 
+        // Roll back any crash-orphaned staged install before mutating again.
+        recover_pending_installs(&opts.plugins_root)?;
+
         // Trusted root is plugins_root — create it before canonicalize-based checks.
-        // (Previously create_dir_all(.staging) created this as a side effect.)
         fs::create_dir_all(&opts.plugins_root)?;
         let staging_parent_path = opts.plugins_root.join(".staging");
         // Never treat a pre-existing `.staging` symlink as the trusted root.
@@ -387,32 +402,18 @@ impl Installer {
             fs::set_permissions(&exe, perms)?;
         }
 
-        let backup = if dest.exists() {
-            let bak_path = staging_parent.join(format!("{}.backup", incoming_key.fs_id()));
-            let bak = require_mutable_child(&opts.plugins_root, &bak_path)?;
-            if bak.exists() {
-                fs::remove_dir_all(&bak)?;
-            }
-            fs::rename(&dest, &bak)?;
-            Some(bak)
-        } else {
-            None
-        };
-
-        let restore_tree = |backup: &Option<PathBuf>| {
-            let _ = fs::remove_dir_all(&dest);
-            if let Some(bak) = backup {
-                let _ = fs::rename(bak, &dest);
-            }
-        };
-
-        // Move extracted plugin tree into place (contents of plugin_src → dest).
-        if let Err(e) = copy_dir_all(&plugin_src, &dest) {
-            restore_tree(&backup);
+        // Stage the guest under `.staging/<fs-id>.pending-root` — do not touch
+        // the live `dest` or install ledger until commit after health.
+        let staged_root_path =
+            staging_parent.join(format!("{}.pending-root", incoming_key.fs_id()));
+        let staged_root = require_mutable_child(&opts.plugins_root, &staged_root_path)?;
+        if staged_root.exists() {
+            fs::remove_dir_all(&staged_root)?;
+        }
+        if let Err(e) = copy_dir_all(&plugin_src, &staged_root) {
             let _ = fs::remove_dir_all(&staging);
-            return Err(CatalogError::message(format!(
-                "activate install failed: {e}"
-            )));
+            let _ = fs::remove_dir_all(&staged_root);
+            return Err(CatalogError::message(format!("stage install failed: {e}")));
         }
 
         let receipt = match build_receipt(
@@ -421,94 +422,122 @@ impl Installer {
             artifact,
             &target,
             Some(exe_digest),
-            &dest,
+            &staged_root,
             &incoming_key,
             PluginProvenance::VerifiedInstalled,
             false,
         ) {
             Ok(receipt) => receipt,
             Err(e) => {
-                restore_tree(&backup);
                 let _ = fs::remove_dir_all(&staging);
+                let _ = fs::remove_dir_all(&staged_root);
                 return Err(e);
             }
         };
-        if let Err(e) = receipt.store(&dest) {
-            restore_tree(&backup);
+        if let Err(e) = receipt.store(&staged_root) {
             let _ = fs::remove_dir_all(&staging);
+            let _ = fs::remove_dir_all(&staged_root);
             return Err(e);
         }
-        if let Some(dir) = files_dir.as_ref() {
-            if let Err(e) = record_install(
-                dir,
-                &incoming_key,
-                &coordinate.name,
-                &runtime.id,
-                &receipt.manifest_sha256,
-                &receipt.payload_root_sha256,
-                PluginProvenance::VerifiedInstalled,
-            ) {
-                restore_tree(&backup);
-                let _ = restore_ledger_entry(dir, &incoming_key, previous_ledger.clone());
+
+        let previous = dest.exists().then(|| dest.clone());
+        let pending_marker = match write_pending_marker(
+            &opts.plugins_root,
+            &staging_parent,
+            &incoming_key,
+            &staged_root,
+            &dest,
+            files_dir.as_deref(),
+        ) {
+            Ok(marker) => marker,
+            Err(e) => {
                 let _ = fs::remove_dir_all(&staging);
+                let _ = fs::remove_dir_all(&staged_root);
                 return Err(e);
             }
-        }
+        };
 
-        // Drop staging (download/extract). Leave `previous` backup for
-        // commit/rollback after the caller's health check.
+        // Drop download/extract scratch; keep staged_root + pending marker.
         let _ = fs::remove_dir_all(&staging);
 
         Ok(InstallOutcome {
             plugin_root: dest,
+            health_root: staged_root,
             receipt,
             dry_run: false,
-            previous: backup,
+            previous,
             previous_ledger,
             files_dir,
+            pending_marker: Some(pending_marker),
         })
     }
 
-    /// Discard a replace backup after a successful health check (or when none).
+    /// Activate a staged install after a successful health check.
     ///
-    /// The new plugin tree and ledger row are already active before this runs.
-    /// Failure here is an operational cleanup error: the installation succeeded,
-    /// but a previous-version backup may remain under `plugins/.staging`. Callers
-    /// must surface that and must not claim a fully clean success.
-    ///
-    /// Retry-safe: a missing backup is treated as already cleaned up.
+    /// Promotes the staged tree onto [`InstallOutcome::plugin_root`], writes the
+    /// install ledger, clears the pending marker, and deletes any replace
+    /// backup created during the swap. Retry-safe when the marker is already
+    /// gone and the destination already holds the new receipt.
     ///
     /// # Errors
     ///
-    /// Returns when the leftover backup directory cannot be deleted.
+    /// Returns when the staged tree cannot be promoted, the ledger cannot be
+    /// written, or leftover backup cleanup fails after a successful activate.
     pub fn commit(outcome: &InstallOutcome) -> Result<()> {
-        if let Some(bak) = &outcome.previous {
-            if bak.exists() {
-                remove_dir_retry(bak)?;
-            }
+        if outcome.dry_run {
+            return Ok(());
         }
+        if outcome.pending_marker.is_none()
+            && outcome.health_root == outcome.plugin_root
+            && outcome.plugin_root.exists()
+        {
+            // Already activated (or dry-run-shaped outcome).
+            return Ok(());
+        }
+        activate_staged_install(outcome)?;
         Ok(())
     }
 
-    /// Restore the previous install (or delete a failed first install) after a
-    /// failed health check.
+    /// Discard a staged install after a failed health check (or caller abort).
     ///
-    /// Rollback is **monotonic and retry-safe**:
-    ///
-    /// * Never delete `plugin_root` unless a usable previous-version backup
-    ///   exists that can replace it.
-    /// * If the backup was already consumed and the destination contains the old
-    ///   tree, treat the tree phase as done and retry remaining ledger repair.
-    /// * First-install rollback may delete the new tree; a missing destination
-    ///   on retry is success for the tree phase.
+    /// The live [`InstallOutcome::plugin_root`] is never modified: first installs
+    /// never created it, and replaces left the previous tree in place. Rollback
+    /// deletes the staged tree and pending marker only. Retry-safe when the
+    /// staged tree is already gone.
     ///
     /// # Errors
     ///
-    /// Returns when the tree cannot be restored/removed or the ledger cannot
-    /// be repaired. A failed call must not destroy an already-restored tree.
+    /// Returns when the staged tree or pending marker cannot be removed.
     pub fn rollback(outcome: &InstallOutcome) -> Result<()> {
-        restore_tree_for_rollback(outcome)?;
-        restore_ledger_for_rollback(outcome)
+        if outcome.dry_run {
+            return Ok(());
+        }
+        discard_staged_install(outcome)
+    }
+
+    /// Roll back crash-orphaned staged installs under `plugins/.staging`.
+    ///
+    /// Callers that already hold [`PluginMutationLock`] should prefer
+    /// [`Self::recover_pending_with_lock`]. Fail-closed: pending stages are
+    /// discarded, never auto-committed without a fresh health check.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the plugins lock cannot be taken or a pending tree cannot
+    /// be discarded.
+    pub fn recover_pending(plugins_root: &Path) -> Result<()> {
+        let _lock = acquire_plugins_lock(plugins_root)?;
+        recover_pending_installs(plugins_root)
+    }
+
+    /// [`Self::recover_pending`] while already holding the host mutation lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns when `lock` does not cover `plugins_root` or recovery fails.
+    pub fn recover_pending_with_lock(lock: &PluginMutationLock, plugins_root: &Path) -> Result<()> {
+        lock.require_plugins_root(plugins_root)?;
+        recover_pending_installs(plugins_root)
     }
 
     /// Install from a local archive path using an explicit manifest.
@@ -1057,107 +1086,235 @@ fn alias_from_install_dir(dest: &Path) -> Option<String> {
         })
 }
 
-/// Restores (or confirms) the install tree for [`Installer::rollback`].
-///
-/// Mutation operands are validated with [`require_mutable_child`] so a
-/// destination leaf symlink cannot redirect delete/rename onto a sibling or
-/// the plugins root. Missing destinations remain a no-op for first-install
-/// rollback.
-fn restore_tree_for_rollback(outcome: &InstallOutcome) -> Result<()> {
+/// Schema version for pending-install marker JSON.
+const PENDING_INSTALL_MARKER_VERSION: u32 = 1;
+
+/// Durable record of a staged install awaiting health + commit.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PendingInstallMarker {
+    version: u32,
+    plugin_key: String,
+    staged_root: String,
+    dest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    files_dir: Option<String>,
+}
+
+/// Writes `<fs-id>.pending.json` describing a staged install.
+fn write_pending_marker(
+    plugins_root: &Path,
+    staging_parent: &Path,
+    plugin_key: &PluginKey,
+    staged_root: &Path,
+    dest: &Path,
+    files_dir: Option<&Path>,
+) -> Result<PathBuf> {
+    let marker_path = staging_parent.join(format!("{}.pending.json", plugin_key.fs_id()));
+    let marker_path = require_mutable_child(plugins_root, &marker_path)?;
+    let marker = PendingInstallMarker {
+        version: PENDING_INSTALL_MARKER_VERSION,
+        plugin_key: plugin_key.canonical().to_string(),
+        staged_root: staged_root.display().to_string(),
+        dest: dest.display().to_string(),
+        files_dir: files_dir.map(|p| p.display().to_string()),
+    };
+    let json = serde_json::to_vec_pretty(&marker)
+        .map_err(|err| CatalogError::message(format!("encode pending install marker: {err}")))?;
+    write_file(&marker_path, &json)?;
+    Ok(marker_path)
+}
+
+/// Promotes a staged tree onto the live install path and records the ledger.
+fn activate_staged_install(outcome: &InstallOutcome) -> Result<()> {
+    let plugins_root = outcome.plugin_root.parent().ok_or_else(|| {
+        CatalogError::message(format!(
+            "cannot commit {}: install path has no parent",
+            outcome.plugin_root.display()
+        ))
+    })?;
+    let dest = require_mutable_child(plugins_root, &outcome.plugin_root)?;
+    let staged = require_mutable_child(plugins_root, &outcome.health_root)?;
+    if !staged.exists() {
+        // Retry: already promoted when the marker is gone and dest has a receipt.
+        if outcome.pending_marker.as_ref().is_none_or(|m| !m.exists()) && dest.exists() {
+            return Ok(());
+        }
+        return Err(CatalogError::message(format!(
+            "cannot commit {}: staged install is missing",
+            staged.display()
+        )));
+    }
+
+    let staging_parent_path = plugins_root.join(".staging");
+    let staging_parent = require_mutable_child(plugins_root, &staging_parent_path)?;
+    fs::create_dir_all(&staging_parent)?;
+    let staging_parent = require_mutable_child(plugins_root, &staging_parent_path)?;
+
+    let backup = if dest.exists() {
+        let key_fs = outcome
+            .receipt
+            .plugin_key()
+            .map(|k| k.fs_id().to_string())
+            .unwrap_or_else(|_| {
+                dest.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "plugin".into())
+            });
+        let bak_path = staging_parent.join(format!("{key_fs}.backup"));
+        let bak = require_mutable_child(plugins_root, &bak_path)?;
+        if bak.exists() {
+            remove_dir_retry(&bak)?;
+        }
+        rename_retry(&dest, &bak)?;
+        Some(bak)
+    } else {
+        None
+    };
+
+    if let Err(err) = rename_retry(&staged, &dest) {
+        // Put the previous live tree back when the promote fails.
+        if let Some(bak) = &backup {
+            let _ = rename_retry(bak, &dest);
+        }
+        return Err(CatalogError::message(format!(
+            "cannot activate staged install onto {}: {err}",
+            dest.display()
+        )));
+    }
+
+    if let Some(dir) = outcome.files_dir.as_ref() {
+        let key = outcome.receipt.plugin_key()?;
+        if let Err(e) = record_install(
+            dir,
+            &key,
+            outcome.receipt.coordinate.name.as_str(),
+            &outcome.receipt.runtime.id,
+            &outcome.receipt.manifest_sha256,
+            &outcome.receipt.payload_root_sha256,
+            PluginProvenance::VerifiedInstalled,
+        ) {
+            // Best-effort: put staged tree back under health_root and restore live.
+            let _ = rename_retry(&dest, &staged);
+            if let Some(bak) = &backup {
+                let _ = rename_retry(bak, &dest);
+            }
+            let _ = restore_ledger_entry(dir, &key, outcome.previous_ledger.clone());
+            return Err(e);
+        }
+    }
+
+    if let Some(marker) = &outcome.pending_marker {
+        if marker.exists() {
+            fs::remove_file(marker).map_err(|err| {
+                CatalogError::message(format!(
+                    "plugin installation activated but pending marker cleanup failed: {err}"
+                ))
+            })?;
+        }
+    }
+
+    if let Some(bak) = &backup {
+        if bak.exists() {
+            remove_dir_retry(bak).map_err(|err| {
+                CatalogError::message(format!(
+                    "plugin installation activated but failed to remove previous-version backup: {err}"
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Deletes a staged install and its pending marker without touching the live tree.
+fn discard_staged_install(outcome: &InstallOutcome) -> Result<()> {
     let plugins_root = outcome.plugin_root.parent().ok_or_else(|| {
         CatalogError::message(format!(
             "cannot rollback {}: install path has no parent",
             outcome.plugin_root.display()
         ))
     })?;
-    // Preserve the intended directory entry; do not follow a leaf symlink.
-    let dest = require_mutable_child(plugins_root, &outcome.plugin_root)?;
-    match &outcome.previous {
-        Some(bak) if bak.exists() => {
-            let bak = require_mutable_child(plugins_root, bak)?;
-            restore_update_tree_from_backup(plugins_root, &dest, &bak)
-        }
-        Some(_) => {
-            if dest.exists() {
-                Ok(())
-            } else {
-                Err(CatalogError::message(format!(
-                    "cannot rollback {}: previous-version backup is gone and the destination \
-                     is missing",
-                    dest.display()
-                )))
-            }
-        }
-        None => {
-            if dest.exists() {
-                remove_dir_retry(&dest)?;
-            }
-            Ok(())
+    if outcome.health_root != outcome.plugin_root {
+        let staged = require_mutable_child(plugins_root, &outcome.health_root)?;
+        if staged.exists() {
+            remove_dir_retry(&staged)?;
         }
     }
+    if let Some(marker) = &outcome.pending_marker {
+        let marker = require_mutable_child(plugins_root, marker)?;
+        if marker.exists() {
+            fs::remove_file(&marker).map_err(|err| {
+                CatalogError::message(format!(
+                    "failed to remove pending install marker {}: {err}",
+                    marker.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
 }
 
-/// Moves the failed new tree aside and puts the backup back without deleting
-/// `dest` unless a usable backup is in place.
-///
-/// `dest` and `backup` must already be lexical mutable children of
-/// `plugins_root` (see [`require_mutable_child`]).
-fn restore_update_tree_from_backup(plugins_root: &Path, dest: &Path, backup: &Path) -> Result<()> {
-    // Re-validate against the trusted plugins root before any rename/delete.
-    let dest = require_mutable_child(plugins_root, dest)?;
-    let backup = require_mutable_child(plugins_root, backup)?;
-    if dest.exists() {
-        fs::create_dir_all(plugins_root)?;
-        let staging_parent_path = plugins_root.join(".staging");
-        let staging_parent = require_mutable_child(plugins_root, &staging_parent_path)?;
-        fs::create_dir_all(&staging_parent)?;
-        let staging_parent = require_mutable_child(plugins_root, &staging_parent_path)?;
-        let dest_name = dest
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "plugin".into());
-        let aside = unique_hold_path(&staging_parent, &format!("{dest_name}.rollback-new"));
-        let aside = require_mutable_child(plugins_root, &aside)?;
-        rename_retry(&dest, &aside)?;
-        match fs::rename(&backup, &dest) {
-            Ok(()) => {
-                let _ = remove_dir_retry(&aside);
-                Ok(())
-            }
+/// Scans `plugins/.staging` for `*.pending.json` and discards each staged tree.
+fn recover_pending_installs(plugins_root: &Path) -> Result<()> {
+    if !plugins_root.is_dir() {
+        return Ok(());
+    }
+    let staging_parent_path = plugins_root.join(".staging");
+    if !staging_parent_path.exists() {
+        return Ok(());
+    }
+    let staging_parent = require_mutable_child(plugins_root, &staging_parent_path)?;
+    if !staging_parent.is_dir() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(&staging_parent).map_err(|err| {
+        CatalogError::message(format!("cannot read {}: {err}", staging_parent.display()))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            CatalogError::message(format!("cannot read {}: {err}", staging_parent.display()))
+        })?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(".pending.json") {
+            continue;
+        }
+        let marker_path = require_mutable_child(plugins_root, &path)?;
+        let text = match fs::read_to_string(&marker_path) {
+            Ok(text) => text,
             Err(err) => {
-                let restore = restore_held_tree(&aside, &dest);
-                Err(CatalogError::message(format!(
-                    "failed to restore previous plugin tree from {}: {err}{}",
-                    backup.display(),
-                    match restore {
-                        Ok(()) => String::new(),
-                        Err(restore_err) =>
-                            format!("; also failed to put the new tree back: {restore_err}"),
-                    }
-                )))
+                return Err(CatalogError::message(format!(
+                    "cannot read pending install marker {}: {err}",
+                    marker_path.display()
+                )));
+            }
+        };
+        let marker: PendingInstallMarker = serde_json::from_str(&text).map_err(|err| {
+            CatalogError::message(format!(
+                "cannot parse pending install marker {}: {err}",
+                marker_path.display()
+            ))
+        })?;
+        if marker.version != PENDING_INSTALL_MARKER_VERSION {
+            return Err(CatalogError::message(format!(
+                "unsupported pending install marker version {} in {}",
+                marker.version,
+                marker_path.display()
+            )));
+        }
+        let staged = PathBuf::from(&marker.staged_root);
+        if !staged.as_os_str().is_empty() {
+            let staged = require_mutable_child(plugins_root, &staged)?;
+            if staged.exists() {
+                remove_dir_retry(&staged)?;
             }
         }
-    } else {
-        fs::rename(&backup, &dest).map_err(|err| {
+        fs::remove_file(&marker_path).map_err(|err| {
             CatalogError::message(format!(
-                "failed to restore previous plugin tree from {} to {}: {err}",
-                backup.display(),
-                dest.display()
+                "failed to remove pending install marker {}: {err}",
+                marker_path.display()
             ))
-        })
-    }
-}
-
-/// Repairs the host install ledger as the last rollback phase.
-fn restore_ledger_for_rollback(outcome: &InstallOutcome) -> Result<()> {
-    let key = outcome.receipt.plugin_key().ok().or_else(|| {
-        outcome
-            .previous_ledger
-            .as_ref()
-            .and_then(|row| PluginKey::parse(&row.plugin_key).ok())
-    });
-    if let (Some(dir), Some(key)) = (outcome.files_dir.as_ref(), key.as_ref()) {
-        restore_ledger_entry(dir, key, outcome.previous_ledger.clone())?;
+        })?;
     }
     Ok(())
 }
@@ -1762,8 +1919,9 @@ mod tests {
             version: "1.0.0".into(),
         };
         let out = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
-        assert!(under_tmp(&out.plugin_root, "plugin.toml").is_file());
+        assert!(under_tmp(&out.health_root, "plugin.toml").is_file());
         Installer::commit(&out).unwrap();
+        assert!(under_tmp(&out.plugin_root, "plugin.toml").is_file());
         let receipt = InstallReceipt::load(&out.plugin_root).unwrap();
         assert_eq!(receipt.runtime.id, "echo");
 
@@ -1831,7 +1989,8 @@ mod tests {
             name: archive.display().to_string(),
             version: "1.0.0".into(),
         };
-        Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
+        let first = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
+        Installer::commit(&first).unwrap();
         manifest.kind = PluginKind::Source;
         let err = Installer::install_from_manifest(&manifest, &coord, &opts)
             .unwrap_err()
@@ -2015,12 +2174,16 @@ mod tests {
         let out = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
         let files_dir = tmp.path();
         let key = out.receipt.plugin_key().unwrap();
-        assert!(under_tmp(&out.plugin_root, "plugin.toml").is_file());
-        assert!(InstallLedger::load(files_dir).unwrap().get(&key).is_some());
-        assert!(out.previous.is_none());
-        Installer::rollback(&out).unwrap();
+        assert!(under_tmp(&out.health_root, "plugin.toml").is_file());
         assert!(!path_under(tmp.path(), &out.plugin_root).exists());
         assert!(InstallLedger::load(files_dir).unwrap().get(&key).is_none());
+        assert!(out.previous.is_none());
+        assert!(out.pending_marker.as_ref().is_some_and(|p| p.is_file()));
+        Installer::rollback(&out).unwrap();
+        assert!(!path_under(tmp.path(), &out.health_root).exists());
+        assert!(!path_under(tmp.path(), &out.plugin_root).exists());
+        assert!(InstallLedger::load(files_dir).unwrap().get(&key).is_none());
+        assert!(out.pending_marker.as_ref().is_none_or(|p| !p.exists()));
     }
 
     #[test]
@@ -2073,9 +2236,12 @@ mod tests {
         let old_payload = first.receipt.payload_root_sha256.clone();
         let second = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
         assert!(second.previous.is_some());
-        assert!(!under_tmp(&second.plugin_root, "marker.txt").is_file());
+        // Live tree stays put until commit; only the staged health root is new.
+        assert!(under_tmp(&second.plugin_root, "marker.txt").is_file());
+        assert!(!under_tmp(&second.health_root, "marker.txt").is_file());
         Installer::rollback(&second).unwrap();
         assert!(under_tmp(&first.plugin_root, "marker.txt").is_file());
+        assert!(!path_under(tmp.path(), &second.health_root).exists());
         let restored = InstallLedger::load(files_dir).unwrap();
         let row = restored.get(&key).expect("ledger row");
         assert_eq!(row.payload_root_sha256, old_payload);
@@ -2770,7 +2936,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_retries_ledger_without_deleting_restored_tree() {
+    fn rollback_discards_stage_and_keeps_live_tree() {
         let tmp = tempfile::tempdir().unwrap();
         let (plugins, dest, key, manifest, coord, mut opts) = installed_echo(tmp.path());
         fs::write(under_tmp(&dest, "old-marker"), b"v1").unwrap();
@@ -2780,43 +2946,16 @@ mod tests {
             .previous
             .as_ref()
             .is_some_and(|p| path_under(tmp.path(), p).exists()));
-        assert!(!under_tmp(&second.plugin_root, "old-marker").is_file());
-        fs::create_dir_all(under_tmp(tmp.path(), "install-ledger.json.tmp")).unwrap();
+        assert!(under_tmp(&second.plugin_root, "old-marker").is_file());
+        assert!(under_tmp(&second.health_root, "plugin.toml").is_file());
 
-        let err = Installer::rollback(&second).unwrap_err().to_string();
-        assert!(
-            err.contains("install-ledger")
-                || err.contains("Is a directory")
-                || err.contains("directory"),
-            "{err}"
-        );
-        assert!(
-            path_under(tmp.path(), &second.plugin_root).is_dir(),
-            "restored tree must survive a ledger restore failure"
-        );
-        assert_eq!(
-            fs::read(under_tmp(&second.plugin_root, "old-marker")).unwrap(),
-            b"v1"
-        );
-
-        let err = Installer::rollback(&second).unwrap_err().to_string();
-        assert!(
-            path_under(tmp.path(), &second.plugin_root).is_dir(),
-            "retry must not delete the restored destination when the backup is gone"
-        );
-        assert_eq!(
-            fs::read(under_tmp(&second.plugin_root, "old-marker")).unwrap(),
-            b"v1"
-        );
-        assert!(
-            err.contains("directory") || err.contains("install-ledger"),
-            "{err}"
-        );
-
-        fs::remove_dir_all(under_tmp(tmp.path(), "install-ledger.json.tmp")).unwrap();
         Installer::rollback(&second).unwrap();
         assert!(under_tmp(&second.plugin_root, "old-marker").is_file());
+        assert!(!path_under(tmp.path(), &second.health_root).exists());
+        assert!(second.pending_marker.as_ref().is_none_or(|p| !p.exists()));
         assert!(InstallLedger::load(tmp.path()).unwrap().get(&key).is_some());
+        // Retry is a no-op success.
+        Installer::rollback(&second).unwrap();
         assert_eq!(
             dir_names(&plugins)
                 .iter()
@@ -2824,6 +2963,21 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn recover_pending_discards_orphaned_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugins, dest, key, manifest, coord, opts) = installed_echo(tmp.path());
+        let _ = (dest, key);
+        let staged = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
+        assert!(staged.pending_marker.as_ref().is_some_and(|p| p.is_file()));
+        assert!(path_under(tmp.path(), &staged.health_root).is_dir());
+        // Simulate a crash: drop the in-memory outcome and recover from disk.
+        Installer::recover_pending(&plugins).unwrap();
+        assert!(!path_under(tmp.path(), &staged.health_root).exists());
+        assert!(staged.pending_marker.as_ref().is_none_or(|p| !p.exists()));
+        assert!(path_under(tmp.path(), &staged.plugin_root).is_dir());
     }
 
     #[test]
@@ -2849,8 +3003,10 @@ mod tests {
         )
         .unwrap();
         assert!(out.previous.is_none());
+        assert!(path_under(tmp.path(), &out.health_root).is_dir());
         Installer::rollback(&out).unwrap();
         assert!(!path_under(tmp.path(), &out.plugin_root).exists());
+        assert!(!path_under(tmp.path(), &out.health_root).exists());
         Installer::rollback(&out).unwrap();
         assert!(!path_under(tmp.path(), &out.plugin_root).exists());
         assert!(InstallLedger::load(tmp.path())
@@ -2861,7 +3017,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn first_install_rollback_refuses_dest_symlink_to_sibling() {
+    fn first_install_rollback_refuses_staged_symlink_to_sibling() {
         let tmp = tempfile::tempdir().unwrap();
         let (archive, digest) = make_echo_archive(tmp.path());
         let plugins = under_tmp(tmp.path(), "plugins");
@@ -2883,14 +3039,14 @@ mod tests {
         )
         .unwrap();
         assert!(out.previous.is_none());
-        let dest = out.plugin_root.clone();
+        let staged = out.health_root.clone();
         let sibling = under_tmp(&plugins, "sibling-keep");
         fs::create_dir_all(&sibling).unwrap();
         let sentinel = under_tmp(&sibling, "sentinel.txt");
         fs::write(&sentinel, b"keep-sibling").unwrap();
-        // Replace the install entry with a leaf symlink to the sibling.
-        fs::remove_dir_all(&dest).unwrap();
-        std::os::unix::fs::symlink(&sibling, &dest).unwrap();
+        // Replace the staged tree with a leaf symlink to the sibling.
+        fs::remove_dir_all(&staged).unwrap();
+        std::os::unix::fs::symlink(&sibling, &staged).unwrap();
 
         let err = Installer::rollback(&out).unwrap_err().to_string();
         assert!(
@@ -2898,13 +3054,13 @@ mod tests {
             "expected symlink refusal, got {err}"
         );
         assert_eq!(fs::read(&sentinel).unwrap(), b"keep-sibling");
-        assert!(dest.is_symlink());
+        assert!(staged.is_symlink());
         assert!(sibling.is_dir());
     }
 
     #[cfg(unix)]
     #[test]
-    fn first_install_rollback_refuses_dest_symlink_to_plugins_root() {
+    fn first_install_rollback_refuses_staged_symlink_to_plugins_root() {
         let tmp = tempfile::tempdir().unwrap();
         let (archive, digest) = make_echo_archive(tmp.path());
         let plugins = under_tmp(tmp.path(), "plugins");
@@ -2925,11 +3081,11 @@ mod tests {
             &opts,
         )
         .unwrap();
-        let dest = out.plugin_root.clone();
+        let staged = out.health_root.clone();
         let root_sentinel = under_tmp(&plugins, "root-sentinel.txt");
         fs::write(&root_sentinel, b"keep-root").unwrap();
-        fs::remove_dir_all(&dest).unwrap();
-        std::os::unix::fs::symlink(&plugins, &dest).unwrap();
+        fs::remove_dir_all(&staged).unwrap();
+        std::os::unix::fs::symlink(&plugins, &staged).unwrap();
 
         let err = Installer::rollback(&out).unwrap_err().to_string();
         assert!(
@@ -2938,28 +3094,28 @@ mod tests {
         );
         assert_eq!(fs::read(&root_sentinel).unwrap(), b"keep-root");
         assert!(plugins.is_dir());
-        assert!(dest.is_symlink());
+        assert!(staged.is_symlink());
     }
 
     #[cfg(unix)]
     #[test]
-    fn update_rollback_refuses_symlinked_dest_preserving_backup() {
+    fn update_rollback_refuses_symlinked_stage_preserving_live() {
         let tmp = tempfile::tempdir().unwrap();
         let (plugins, dest, _key, manifest, coord, mut opts) = installed_echo(tmp.path());
         fs::write(under_tmp(&dest, "old-marker"), b"v1").unwrap();
         opts.replace = true;
         let second = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
-        let bak = second.previous.clone().expect("backup from replace");
-        assert!(path_under(tmp.path(), &bak).exists());
-        assert!(fs::read(under_tmp(&bak, "old-marker")).unwrap() == b"v1");
+        let live = second.previous.clone().expect("live tree being replaced");
+        assert!(path_under(tmp.path(), &live).exists());
+        assert!(fs::read(under_tmp(&live, "old-marker")).unwrap() == b"v1");
 
         let sibling = under_tmp(&plugins, "peer-keep");
         fs::create_dir_all(&sibling).unwrap();
         let sentinel = under_tmp(&sibling, "peer.txt");
         fs::write(&sentinel, b"peer-ok").unwrap();
-        // Swap the new install tree for a symlink to the peer.
-        fs::remove_dir_all(&second.plugin_root).unwrap();
-        std::os::unix::fs::symlink(&sibling, &second.plugin_root).unwrap();
+        // Swap the staged tree for a symlink to the peer.
+        fs::remove_dir_all(&second.health_root).unwrap();
+        std::os::unix::fs::symlink(&sibling, &second.health_root).unwrap();
 
         let err = Installer::rollback(&second).unwrap_err().to_string();
         assert!(
@@ -2967,9 +3123,9 @@ mod tests {
             "expected symlink refusal, got {err}"
         );
         assert_eq!(fs::read(&sentinel).unwrap(), b"peer-ok");
-        assert!(path_under(tmp.path(), &bak).is_dir());
-        assert_eq!(fs::read(under_tmp(&bak, "old-marker")).unwrap(), b"v1");
-        assert!(second.plugin_root.is_symlink());
+        assert!(path_under(tmp.path(), &live).is_dir());
+        assert_eq!(fs::read(under_tmp(&live, "old-marker")).unwrap(), b"v1");
+        assert!(second.health_root.is_symlink());
     }
 
     #[cfg(unix)]
@@ -3002,29 +3158,24 @@ mod tests {
     }
 
     #[test]
-    fn commit_cleanup_failure_is_surfaced() {
+    fn commit_fails_when_staged_tree_is_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let bak = under_tmp(tmp.path(), "not-a-dir-backup");
-        fs::write(&bak, b"file").unwrap();
+        let (dest, _, _) = installed_named(tmp.path(), "echo.tar.gz", "echo");
+        let receipt = InstallReceipt::load(&dest).unwrap();
+        let missing = under_tmp(tmp.path(), "missing-stage");
         let outcome = InstallOutcome {
-            plugin_root: under_tmp(tmp.path(), "dest"),
-            receipt: InstallReceipt::load(&{
-                let (dest, _, _) = installed_named(tmp.path(), "echo.tar.gz", "echo");
-                dest
-            })
-            .unwrap(),
+            plugin_root: under_tmp(tmp.path(), "commit-dest"),
+            health_root: missing,
+            receipt,
             dry_run: false,
-            previous: Some(bak),
+            previous: None,
             previous_ledger: None,
             files_dir: Some(tmp.path().to_path_buf()),
+            pending_marker: Some(under_tmp(tmp.path(), "marker.pending.json")),
         };
+        fs::write(outcome.pending_marker.as_ref().unwrap(), b"{}").unwrap();
         let err = Installer::commit(&outcome).unwrap_err().to_string();
-        assert!(
-            err.contains("failed to remove")
-                || err.contains("Not a directory")
-                || err.contains("not a directory"),
-            "{err}"
-        );
+        assert!(err.contains("staged install is missing"), "{err}");
     }
 
     /// Minimal v3 `plugin.toml` for an integration guest.

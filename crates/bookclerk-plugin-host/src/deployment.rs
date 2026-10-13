@@ -443,7 +443,7 @@ async fn reconcile_one(
         };
         // The staged tree's manifest supplies the schema for the pre-commit
         // health probe; the committed tree is read again below.
-        let request = match installed_settings_schema(&outcome.plugin_root) {
+        let request = match installed_settings_schema(&outcome.health_root) {
             Ok(schema) => resolve_spawn(store, &instance, &grant, &schema).await,
             Err(err) => Err(err),
         };
@@ -460,7 +460,7 @@ async fn reconcile_one(
             }
         };
         if let Err(err) = runtime
-            .health_before_commit(&outcome.plugin_root, &request)
+            .health_before_commit(&outcome.health_root, &request)
             .await
         {
             let mut detail = err;
@@ -1026,7 +1026,8 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
         request: &DeploymentSpawn,
     ) -> std::result::Result<(), String> {
         let config = self.config.read().await.clone();
-        let plugin = open_installed_plugin(plugin_root, &config.paths().files_dir)?;
+        // Staged trees carry a receipt but no ledger row until commit.
+        let plugin = open_staged_plugin_for_health(plugin_root)?;
         let prepared = crate::instance_bindings::prepared_open_from_resolved(
             request.config.clone(),
             request.secrets.clone(),
@@ -1114,6 +1115,31 @@ fn open_installed_plugin(
     plugin_root: &Path,
     files_dir: &Path,
 ) -> std::result::Result<crate::DiscoveredPlugin, String> {
+    let (manifest, command) = read_plugin_command(plugin_root)?;
+    crate::DiscoveredPlugin::try_new(
+        manifest,
+        plugin_root.to_path_buf(),
+        command,
+        Some(files_dir),
+    )
+    .map_err(|err| err.to_string())
+}
+
+/// Opens a staged (pre-commit) guest for health without requiring a ledger row.
+fn open_staged_plugin_for_health(
+    plugin_root: &Path,
+) -> std::result::Result<crate::DiscoveredPlugin, String> {
+    let (manifest, command) = read_plugin_command(plugin_root)?;
+    Ok(crate::DiscoveredPlugin::for_test(
+        manifest,
+        plugin_root.to_path_buf(),
+        command,
+    ))
+}
+
+fn read_plugin_command(
+    plugin_root: &Path,
+) -> std::result::Result<(bookclerk_plugin_manifest::PluginManifest, PathBuf), String> {
     let text = std::fs::read_to_string(plugin_root.join("plugin.toml"))
         .map_err(|err| format!("read plugin.toml: {err}"))?;
     let manifest =
@@ -1130,13 +1156,7 @@ fn open_installed_plugin(
     if !command.is_file() {
         return Err(format!("staged guest is missing {}", command.display()));
     }
-    crate::DiscoveredPlugin::try_new(
-        manifest,
-        plugin_root.to_path_buf(),
-        command,
-        Some(files_dir),
-    )
-    .map_err(|err| err.to_string())
+    Ok((manifest, command))
 }
 
 /// Starts the staged guest, calls health, and drops the temporary session.

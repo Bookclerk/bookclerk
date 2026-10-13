@@ -1213,8 +1213,11 @@ The local reconciler installs from `$BOOKCLERK_FILES_DIR/plugin-packages/<name>/
 when the ledger and discovery both miss the key. That directory is the
 operator's authorized local source: `package.json` plus `archive.tar.gz`,
 with artifact URLs limited to files inside the package directory. The
-reconciler does not download plugins. It starts the staged guest and calls
-health before commit, and it respawns a guest that has exited even when the
+reconciler does not download plugins. It stages the guest under
+`plugins/.staging`, probes health on that staged tree, and only then activates
+onto `plugins/<fs-id>` and the install ledger. A crash before activate leaves
+a pending marker that the next installer entry discards (never auto-commits).
+It respawns a guest that has exited even when the
 last observation was healthy. The daemon keeps one guest map for the process.
 Config reload re-enrols the host and leaves running guests in place unless
 the database connection changed, in which case every guest is retired and
