@@ -1,57 +1,42 @@
+//! Plugin host access for CLI commands.
+//!
+//! The CLI opens the control plane the same way `bookclerkd` does
+//! ([`bookclerk_plugin_host::open_host_control_plane`]): every local plugin
+//! is enrolled, and guests come only from the deployments the database wants
+//! present on this host, with `CONFIG` / `SECRETS` resolved from their
+//! instance documents. The CLI spawns guests for the lifetime of one command
+//! and writes no deployment observations; those stay with the daemon's
+//! reconciler.
+
+use std::sync::Arc;
+
 use bookclerk_config::Config;
+use bookclerk_integrations::IntegrationRegistry;
 use bookclerk_library::LibraryStore;
-use bookclerk_plugin_host::SessionServices;
-use bookclerk_source::SourceRegistry;
+use bookclerk_plugin_host::{DestinationRegistry, HostControlPlane, SessionServices};
+use bookclerk_source::{ContentSource, SourceRegistry};
 
-/// Content sources via the plugin host (in-process builtins + externals).
-///
-/// Host binaries do not name store crates — [`bookclerk_plugin_host::load_sources`]
-/// registers first-party adapters in-process and loads discovered guests.
-/// `outbox` backs the guests' `EVENTS` binding.
-pub async fn default_registry_with_plugins(
-    config: &Config,
-    outbox: &LibraryStore,
-) -> anyhow::Result<SourceRegistry> {
-    registry_with_instance(config, outbox, None).await
-}
-
-/// [`default_registry_with_plugins`] that selects one plugin instance.
-///
-/// `instance_id` applies to the plugin key that owns that id. A migrated
-/// instance uses its document. Several documents for one key require this id.
+/// Opens the library and enrolls local plugins. Loads no guest.
 ///
 /// # Errors
 ///
-/// Returns an error when discovery or guest spawn fails, or when instance
-/// selection is ambiguous or unknown.
-pub async fn registry_with_instance(
-    config: &Config,
-    outbox: &LibraryStore,
-    instance_id: Option<&str>,
-) -> anyhow::Result<SourceRegistry> {
-    let mut services = SessionServices::from_outbox(Some(outbox));
-    services.selected_instance_id = instance_id.map(str::to_string);
-    Ok(bookclerk_plugin_host::load_sources(config, &services).await?)
+/// Returns an error when the database cannot be opened or the control plane
+/// cannot be bootstrapped.
+pub async fn open_host(config: &Config) -> anyhow::Result<HostControlPlane> {
+    Ok(bookclerk_plugin_host::open_host_control_plane(config).await?)
 }
 
-/// Integrations via the plugin host (in-process builtins + externals);
-/// `outbox` backs the guests' `EVENTS` binding.
-pub async fn integrations_with_plugins(
-    config: &Config,
-    outbox: &LibraryStore,
-) -> anyhow::Result<bookclerk_integrations::IntegrationRegistry> {
-    Ok(bookclerk_plugin_host::load_integrations(
-        config,
-        &SessionServices::from_outbox(Some(outbox)),
-    )
-    .await?)
-}
-
-/// Open the library and align the cluster secret root before returning it.
+/// Opens the library and aligns the cluster secret root, without enrolling
+/// plugins. For commands that never load a guest.
 ///
 /// Alignment runs before the caller can cache a data-encryption key or seal a
 /// secret. An enrolled database with a missing or different `master.key` fails
 /// here, and this function does not leave a replacement key behind.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be opened or the secret root
+/// does not align.
 pub async fn open_library(config: &Config) -> anyhow::Result<LibraryStore> {
     let registry = bookclerk_plugin_host::load_external_database(config).await?;
     let store = bookclerk_plugin_host::open_library_store(config, &registry).await?;
@@ -69,32 +54,69 @@ pub async fn open_library(config: &Config) -> anyhow::Result<LibraryStore> {
     Ok(store)
 }
 
-/// Resolve `--source` against registered plugin ids / aliases.
+/// Spawns every storefront deployment present on this host.
 ///
-/// Two instances that share a key or alias fail closed with the candidate
-/// instance ids. They are not reported as an unknown source.
-pub fn resolve_source_id(registry: &SourceRegistry, s: &str) -> anyhow::Result<String> {
-    match registry.require(s) {
-        Ok(source) => Ok(source.id().to_string()),
+/// # Errors
+///
+/// Returns an error when the files directory is unavailable.
+pub async fn sources(host: &HostControlPlane) -> anyhow::Result<SourceRegistry> {
+    Ok(host
+        .load_sources(&SessionServices::from_outbox(Some(&host.store)))
+        .await?)
+}
+
+/// Spawns every integration deployment present on this host.
+///
+/// # Errors
+///
+/// Returns an error when the files directory is unavailable.
+pub async fn integrations(host: &HostControlPlane) -> anyhow::Result<IntegrationRegistry> {
+    Ok(host
+        .load_integrations(&SessionServices::from_outbox(Some(&host.store)))
+        .await?)
+}
+
+/// Spawns every storage deployment present on this host.
+///
+/// # Errors
+///
+/// Returns an error when a present destination guest cannot start.
+pub async fn destinations(host: &HostControlPlane) -> anyhow::Result<DestinationRegistry> {
+    Ok(host.load_destinations().await?)
+}
+
+/// Resolves `--source` (plugin instance id, PluginKey, or alias) and an
+/// optional `--instance` pin to one registered source.
+///
+/// A bare key or alias routes to the plugin's default instance. An unknown
+/// needle lists what is registered; a pin that is not an instance of that
+/// plugin fails rather than falling back.
+///
+/// # Errors
+///
+/// Returns an error when nothing matches.
+pub fn resolve_source(
+    registry: &SourceRegistry,
+    needle: &str,
+    instance: Option<&str>,
+) -> anyhow::Result<Arc<dyn ContentSource>> {
+    match registry.require_routed(needle, instance) {
+        Ok(source) => Ok(source),
         Err(err) => {
-            let text = err.to_string();
-            if text.contains("ambiguous") {
-                return Err(anyhow::anyhow!(text));
-            }
-            let known: Vec<_> = registry
+            let known: Vec<String> = registry
                 .all()
                 .into_iter()
-                .map(|src| src.id().to_string())
+                .map(|src| match src.plugin_instance_id() {
+                    Some(id) if !id.is_empty() => format!("{} ({id})", src.id()),
+                    _ => src.id().to_string(),
+                })
                 .collect();
             if known.is_empty() {
                 Err(anyhow::anyhow!(
-                    "unknown source `{s}` (no content sources registered — check `[sources.*] enabled` and plugins/)"
+                    "{err} (no storefront is deployed on this host — `bookclerk plugins enable <plugin>`)"
                 ))
             } else {
-                Err(anyhow::anyhow!(
-                    "unknown source `{s}` (registered: {})",
-                    known.join(", ")
-                ))
+                Err(anyhow::anyhow!("{err} (registered: {})", known.join(", ")))
             }
         }
     }

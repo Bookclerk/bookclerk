@@ -61,8 +61,9 @@ pub enum TicketsCommand {
 pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths().clone();
     paths.ensure_dirs()?;
-    let library = crate::registry::open_library(config).await?;
-    let registry = crate::registry::integrations_with_plugins(config, &library).await?;
+    let host = crate::registry::open_host(config).await?;
+    let library = host.store.clone();
+    let registry = crate::registry::integrations(&host).await?;
 
     match command {
         IntegrationsCommand::Status => {

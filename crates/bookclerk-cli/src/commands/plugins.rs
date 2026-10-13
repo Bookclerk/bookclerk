@@ -3,6 +3,17 @@
 use std::path::PathBuf;
 
 use bookclerk_config::{Config, PluginRegistryEntry};
+use bookclerk_library::control_plane::{
+    create_plugin_instance, default_instance_for_key, delete_plugin_instance,
+    ensure_plugin_deployment, import_instance_config_if_absent, list_all_plugin_instances,
+    list_deployments_for_instance, list_host_ids, list_plugin_schemas, load_deployment_for_host,
+    load_instance_config, load_observation, load_plugin_instance, parse_setting_text,
+    replace_instance_config, replace_plugin_deployment, require_plugin_schema,
+    seal_instance_secret, set_secret_ref, set_setting, ConfigActor, DeploymentReplace,
+    InstanceConfigReplace, PluginInstance, PluginInstanceConfigV1, PluginInstanceId, SettingValue,
+    DESIRED_ABSENT, DESIRED_PRESENT,
+};
+use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
     federated_search, host_bookclerk_target, CargoAdapter, InstallOptions, InstallOutcome,
     InstallReceipt, Installer, NpmAdapter, PackageCoordinate, PluginMutationLock, PypiAdapter,
@@ -11,7 +22,7 @@ use bookclerk_plugin_catalog::{
 use bookclerk_plugin_host::{
     consent_request, consent_summary, host_target_triple,
     install_from_manifest_with_configured_aliases, install_local_archive_with_configured_aliases,
-    occupancy_spec, plugin_matches_occupancy, require_grant, search_crates_io, CliInvokeParams,
+    is_bootstrap_only, plugin_matches_occupancy, require_grant, search_crates_io, CliInvokeParams,
     CliInvokeResult, CliSchema, DiscoveredPlugin, Entrypoint, PluginFamily, PluginGrantStore,
     PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
@@ -111,15 +122,38 @@ pub enum PluginsCommand {
         /// Plugin id (default: all discovered).
         id: Option<String>,
     },
-    /// Enable a plugin in `config.toml`.
+    /// Enable a plugin: mark its instance's deployment `present` on a host.
+    ///
+    /// Database adapters are the bootstrap exception and still select
+    /// `[database].plugin` in `config.toml`.
     Enable {
-        /// Plugin id.
+        /// Plugin alias, PluginKey, or plugin instance id (an alias or key
+        /// names the plugin's default instance).
         id: String,
+        /// Host id to deploy on (default: this host).
+        #[arg(long)]
+        host: Option<String>,
     },
-    /// Disable a plugin in `config.toml`.
+    /// Disable a plugin: mark its instance's deployment `absent` on a host.
     Disable {
-        /// Plugin id.
+        /// Plugin alias, PluginKey, or plugin instance id.
         id: String,
+        /// Host id (default: this host).
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Plugin instances: one per plugin by default, more when an operator
+    /// wants several configurations of one plugin.
+    Instances {
+        #[command(subcommand)]
+        /// Instance action.
+        command: InstancesCommand,
+    },
+    /// Instance settings, validated against the plugin's declared schema.
+    Config {
+        #[command(subcommand)]
+        /// Settings action.
+        command: PluginConfigCommand,
     },
     /// Approve network domains and host bindings for a plugin.
     ///
@@ -144,6 +178,61 @@ pub enum PluginsCommand {
         #[command(subcommand)]
         /// Nested db list/drop action.
         command: PluginDbCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// `plugins instances` subcommands.
+pub enum InstancesCommand {
+    /// List instances with their deployments on every host.
+    List {
+        /// Only instances of this plugin (alias or PluginKey).
+        #[arg(long)]
+        plugin: Option<String>,
+    },
+    /// Create another instance of a plugin that has a pinned schema.
+    Create {
+        /// Plugin alias or PluginKey.
+        plugin: String,
+        /// Operator-facing name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Delete an instance that has no deployment on any host.
+    Delete {
+        /// Plugin instance id.
+        instance: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// `plugins config` subcommands.
+pub enum PluginConfigCommand {
+    /// Show an instance's effective settings: schema defaults under the
+    /// operator's document. Secrets show as set or unset, never their value.
+    Get {
+        /// Plugin alias, PluginKey, or plugin instance id.
+        instance: String,
+    },
+    /// Set one setting. A `secret` setting takes `--secret` and reads the
+    /// value from stdin so it never appears on a command line.
+    Set {
+        /// Plugin alias, PluginKey, or plugin instance id.
+        instance: String,
+        /// Setting key from the plugin's `[[settings]]`.
+        key: String,
+        /// Value text (`true`/`false`, a number, or a string).
+        value: Option<String>,
+        /// Seal a secret read from stdin.
+        #[arg(long)]
+        secret: bool,
+    },
+    /// Unset one setting so the schema default applies, or drop a secret.
+    Unset {
+        /// Plugin alias, PluginKey, or plugin instance id.
+        instance: String,
+        /// Setting key.
+        key: String,
     },
 }
 
@@ -226,7 +315,8 @@ struct PluginListItem {
     family: String,
     /// Exported entrypoints declared in `plugin.toml` (`storefront`, `cli`, …).
     entrypoints: Vec<String>,
-    /// Whether this plugin is enabled in `config.toml`.
+    /// True when a deployment of the plugin's default instance is desired
+    /// present on this host (database adapters: selected in `[database]`).
     enabled: bool,
     /// Guest executable path used for describe and CLI invoke.
     command: String,
@@ -234,6 +324,42 @@ struct PluginListItem {
     name: Option<String>,
     /// True when the manifest advertises at least one CLI command.
     has_cli: bool,
+    /// Instances of this plugin with their deployments.
+    instances: Vec<InstanceListItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+/// One plugin instance row for `plugins list` / `plugins instances list`.
+struct InstanceListItem {
+    /// Instance id.
+    plugin_instance_id: String,
+    /// Canonical PluginKey.
+    plugin_key: String,
+    /// Manifest id recorded with the pinned schema.
+    alias: String,
+    /// Operator-facing name; empty for the default instance.
+    display_name: String,
+    /// True when a bare key or alias routes to this instance.
+    is_default: bool,
+    /// Deployment rows across hosts.
+    deployments: Vec<DeploymentListItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+/// One deployment row with that host's latest observation.
+struct DeploymentListItem {
+    /// Host the row targets.
+    host_id: String,
+    /// `present` or `absent`.
+    desired: String,
+    /// Compare-and-swap revision.
+    revision: i64,
+    /// Latest observation status, when the host reported one.
+    status: Option<String>,
+    /// Observation detail (redacted error text).
+    detail: Option<String>,
+    /// True when `host_id` is this host.
+    this_host: bool,
 }
 
 /// Dispatches a `plugins` subcommand against the loaded config.
@@ -245,10 +371,21 @@ pub async fn run(
     match command {
         PluginsCommand::List => {
             let dirs = bookclerk_plugin_host::plugin_search_dirs(config);
+            let host = crate::registry::open_host(config).await?;
             let plugins = bookclerk_plugin_host::discover_plugins(config)?;
-            let items: Vec<PluginListItem> = plugins
-                .iter()
-                .map(|p| PluginListItem {
+            let mut items = Vec::with_capacity(plugins.len());
+            for p in &plugins {
+                let instances = if is_bootstrap_only(p) {
+                    Vec::new()
+                } else {
+                    instance_items(
+                        &host.store,
+                        host.host_id(),
+                        Some(p.plugin_key().canonical()),
+                    )
+                    .await?
+                };
+                items.push(PluginListItem {
                     id: p.manifest.id.clone(),
                     plugin_key: p.plugin_key().canonical().to_string(),
                     provenance: p.identity.provenance.to_string(),
@@ -259,7 +396,7 @@ pub async fn run(
                         .iter()
                         .map(|e| e.wire_name().to_string())
                         .collect(),
-                    enabled: is_enabled(config, p),
+                    enabled: enabled_here(config, p, &instances),
                     command: p.command.display().to_string(),
                     name: p.manifest.name.clone(),
                     has_cli: p
@@ -267,12 +404,14 @@ pub async fn run(
                         .cli
                         .as_ref()
                         .is_some_and(|c| !c.commands.is_empty()),
-                })
-                .collect();
+                    instances,
+                });
+            }
             emit(
                 format,
-                &json!({ "search_dirs": dirs, "plugins": items }),
+                &json!({ "host_id": host.host_id(), "search_dirs": dirs, "plugins": items }),
                 || {
+                    println!("host: {}", host.host_id());
                     println!("search dirs:");
                     for d in &dirs {
                         println!("  {}", d.display());
@@ -293,6 +432,9 @@ pub async fn run(
                             p.has_cli,
                             p.command
                         );
+                        for instance in &p.instances {
+                            print_instance_line(instance);
+                        }
                     }
                 },
             )
@@ -350,7 +492,18 @@ pub async fn run(
         PluginsCommand::Info { id } => {
             let plugin = find_plugin(config, &id)?;
             let schema = plugin.manifest.cli.clone().unwrap_or_default();
-            let enabled = is_enabled(config, &plugin);
+            let host = crate::registry::open_host(config).await?;
+            let instances = if is_bootstrap_only(&plugin) {
+                Vec::new()
+            } else {
+                instance_items(
+                    &host.store,
+                    host.host_id(),
+                    Some(plugin.plugin_key().canonical()),
+                )
+                .await?
+            };
+            let enabled = enabled_here(config, &plugin, &instances);
             let receipt = InstallReceipt::load(&plugin.root).ok();
             let requested = consent_request(&plugin.manifest, plugin.plugin_key());
             let stored = PluginGrantStore::load(&config.paths().files_dir)
@@ -380,6 +533,8 @@ pub async fn run(
                 "runtime": plugin.manifest.runtime,
                 "plugin_key": plugin.plugin_key().canonical(),
                 "pending_structural": pending.as_ref().map(|p| p.summary_lines()),
+                "settings": plugin.manifest.settings,
+                "instances": instances,
             });
             emit(format, &payload, || {
                 println!("id={}", plugin.manifest.id);
@@ -409,6 +564,9 @@ pub async fn run(
                         println!("{line}");
                     }
                 }
+                for instance in &instances {
+                    print_instance_line(instance);
+                }
                 if schema.commands.is_empty() {
                     println!(
                         "cli commands: (none in plugin.toml; may still advertise via describe)"
@@ -428,10 +586,24 @@ pub async fn run(
                     .map_err(|err| anyhow::anyhow!("{err}"))?
                     .clone()]
             } else {
-                plugins
-                    .into_iter()
-                    .filter(|p| is_enabled(config, p))
-                    .collect()
+                let host = crate::registry::open_host(config).await?;
+                let mut enabled = Vec::new();
+                for p in plugins {
+                    let instances = if is_bootstrap_only(&p) {
+                        Vec::new()
+                    } else {
+                        instance_items(
+                            &host.store,
+                            host.host_id(),
+                            Some(p.plugin_key().canonical()),
+                        )
+                        .await?
+                    };
+                    if enabled_here(config, &p, &instances) {
+                        enabled.push(p);
+                    }
+                }
+                enabled
             };
             if targets.is_empty() {
                 println!("no plugins to diagnose");
@@ -460,8 +632,14 @@ pub async fn run(
             })
         }
         PluginsCommand::Doctor { id } => run_doctor(config, id, format).await,
-        PluginsCommand::Enable { id } => set_plugin_enabled(config, &id, true, format),
-        PluginsCommand::Disable { id } => set_plugin_enabled(config, &id, false, format),
+        PluginsCommand::Enable { id, host } => {
+            set_plugin_enabled(config, &id, host, true, format).await
+        }
+        PluginsCommand::Disable { id, host } => {
+            set_plugin_enabled(config, &id, host, false, format).await
+        }
+        PluginsCommand::Instances { command } => run_instances(config, command, format).await,
+        PluginsCommand::Config { command } => run_plugin_config(config, command, format).await,
         PluginsCommand::Approve { id, yes } => run_approve(config, &id, yes, format),
         PluginsCommand::Registry { command } => run_registry(config, command, format),
         PluginsCommand::Db { command } => run_plugin_db(config, command, format).await,
@@ -1202,9 +1380,20 @@ pub async fn run_plugin_cli(
     let (schema, session) = if help_only {
         (plugin.manifest.cli.clone().unwrap_or_default(), None)
     } else {
-        if !is_enabled(config, &plugin) {
+        let host = crate::registry::open_host(config).await?;
+        let instances = if is_bootstrap_only(&plugin) {
+            Vec::new()
+        } else {
+            instance_items(
+                &host.store,
+                host.host_id(),
+                Some(plugin.plugin_key().canonical()),
+            )
+            .await?
+        };
+        if !enabled_here(config, &plugin, &instances) {
             anyhow::bail!(
-                "plugin `{}` is disabled; run `bookclerk plugins enable {}`",
+                "plugin `{}` is not enabled on this host; run `bookclerk plugins enable {}`",
                 plugin.manifest.id,
                 plugin.manifest.id
             );
@@ -1444,94 +1633,581 @@ fn run_approve(config: &Config, id: &str, yes: bool, format: OutputFormat) -> an
     })
 }
 
-/// Enables or disables a plugin in `config.toml` after grant checks; refuses disabling the active database backend.
-fn set_plugin_enabled(
+/// Operator actor recorded on control-plane writes from the CLI.
+fn cli_actor() -> ConfigActor {
+    ConfigActor::Operator { id: "cli".into() }
+}
+
+/// Unique operation id for a CLI control-plane write.
+fn operation_id(kind: &str) -> String {
+    format!(
+        "cli-{kind}-{}",
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_micros())
+    )
+}
+
+/// Enables or disables a plugin.
+///
+/// Non-database plugins: the resolved instance's deployment on `host` is set
+/// `present` (after a grant check when the plugin is installed here) or
+/// `absent`; the daemon's reconciler spawns or retires the guest. Database
+/// adapters keep selecting `[database].plugin` in `config.toml`.
+async fn set_plugin_enabled(
     config: &Config,
-    id: &str,
+    needle: &str,
+    host: Option<String>,
     enabled: bool,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let plugin = find_plugin(config, id)?;
-    if enabled {
-        require_grant(&config.paths().files_dir, &plugin).map_err(|err| {
-            anyhow::anyhow!(
-                "{err}\nRun `bookclerk plugins approve {}` first.",
-                plugin.manifest.id
-            )
-        })?;
+    let local = find_plugin(config, needle).ok();
+    if let Some(plugin) = local.as_ref().filter(|p| is_bootstrap_only(p)) {
+        return set_database_plugin_enabled(config, plugin, enabled, format);
     }
-    let mut cfg = config.clone();
-    // A multi-family plugin flips every family prefix it belongs to.
-    let families: Vec<_> = plugin.manifest.families().into_iter().collect();
-    let multi_family = families.len() > 1;
-    for family in families {
-        match family {
-            PluginFamily::Source => {
-                cfg.sources.set_enabled(&plugin.manifest.id, enabled);
-            }
-            PluginFamily::Integration => {
-                cfg.integrations.set_enabled(&plugin.manifest.id, enabled);
-            }
-            PluginFamily::Output if bookclerk_plugin_host::is_first_party_s3_output(&plugin) => {
-                cfg.output.s3.enabled = enabled;
-            }
-            PluginFamily::Output if bookclerk_plugin_host::is_first_party_local_output(&plugin) => {
-                cfg.output.local.enabled = enabled;
-            }
-            PluginFamily::Output => {
-                // Third-party destinations have no config.toml enable knob yet.
-                // Skip so multi-family guests (e.g. storage + events) can still
-                // toggle their other families.
-                if multi_family {
-                    continue;
-                }
-                anyhow::bail!(
-                    "output plugin `{}` enable/disable is not mapped to config.toml yet",
+    let plane = crate::registry::open_host(config).await?;
+    let store = &plane.store;
+    let instance = resolve_instance(store, needle).await?;
+    let installed = plane
+        .enrolled
+        .iter()
+        .find(|e| e.plugin.plugin_key().canonical() == instance.plugin_key)
+        .map(|e| e.plugin.clone());
+    let host_id = host.unwrap_or_else(|| plane.host_id().to_string());
+    if enabled {
+        if host_id == plane.host_id() {
+            let plugin = installed.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "plugin `{}` is not installed on this host; install it or pass --host",
+                    instance.plugin_key
+                )
+            })?;
+            require_grant(&config.paths().files_dir, &plugin).map_err(|err| {
+                anyhow::anyhow!(
+                    "{err}\nRun `bookclerk plugins approve {}` first.",
                     plugin.manifest.id
-                );
-            }
-            PluginFamily::Database => {
-                if enabled {
-                    // Occupancy PluginKey is stamped below via
-                    // `stamp_occupancy_plugin_key`.
-                } else if occupies_database_slot(&plugin, &config.database.plugin) {
-                    anyhow::bail!(
-                        "cannot disable the active database plugin `{}`; \
-                         enable another backend first with `bookclerk plugins enable <id>`",
-                        plugin.manifest.id
-                    );
-                } else if multi_family {
-                    // Not the active backend; other families still need flipping.
-                    continue;
-                } else {
-                    anyhow::bail!(
-                        "database plugin `{}` is not active ([database].plugin = `{}`)",
-                        plugin.manifest.id,
-                        config.database.plugin
-                    );
-                }
-            }
+                )
+            })?;
+        } else if !list_host_ids(store).await?.contains(&host_id) {
+            anyhow::bail!("host `{host_id}` is not registered with this cluster");
         }
     }
-    if enabled {
-        bookclerk_plugin_host::stamp_occupancy_plugin_key(&mut cfg, &plugin)
-            .map_err(|err| anyhow::anyhow!("{err}"))?;
+    let desired = if enabled {
+        DESIRED_PRESENT
+    } else {
+        DESIRED_ABSENT
+    };
+    let row = match load_deployment_for_host(store, &instance.id, &host_id).await? {
+        None => {
+            ensure_plugin_deployment(store, &cli_actor(), &instance.id, &host_id, desired).await?
+        }
+        Some(current) if current.desired == desired => current,
+        Some(current) => match replace_plugin_deployment(
+            store,
+            &cli_actor(),
+            &current.deployment_id,
+            current.revision,
+            desired,
+            &operation_id("deployment"),
+        )
+        .await?
+        {
+            DeploymentReplace::Applied(row) => row,
+            DeploymentReplace::Replayed { .. } => current,
+            DeploymentReplace::Conflict { current_revision } => anyhow::bail!(
+                "deployment changed concurrently (revision {current_revision}); retry"
+            ),
+        },
+    };
+    let payload = json!({
+        "plugin_key": instance.plugin_key,
+        "plugin_instance_id": instance.id.to_string(),
+        "host_id": row.host_id,
+        "desired": row.desired,
+        "revision": row.revision,
+        "enabled": enabled,
+    });
+    emit(format, &payload, || {
+        println!(
+            "{} {} instance {} on host {} (deployment {})",
+            if enabled { "enabled" } else { "disabled" },
+            instance.plugin_key,
+            instance.id,
+            row.host_id,
+            row.desired
+        );
+        if host_id == plane.host_id() {
+            println!("a running bookclerkd applies the change on its next reconcile pass");
+        }
+    })
+}
+
+/// Selects or refuses to drop the bootstrap database adapter in `config.toml`.
+fn set_database_plugin_enabled(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+    enabled: bool,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    if !enabled {
+        if occupies_database_slot(plugin, &config.database.plugin) {
+            anyhow::bail!(
+                "cannot disable the active database plugin `{}`; \
+                 enable another backend first with `bookclerk plugins enable <id>`",
+                plugin.manifest.id
+            );
+        }
+        anyhow::bail!(
+            "database plugin `{}` is not active ([database].plugin = `{}`)",
+            plugin.manifest.id,
+            config.database.plugin
+        );
     }
+    require_grant(&config.paths().files_dir, plugin).map_err(|err| {
+        anyhow::anyhow!(
+            "{err}\nRun `bookclerk plugins approve {}` first.",
+            plugin.manifest.id
+        )
+    })?;
+    let mut cfg = config.clone();
+    bookclerk_plugin_host::stamp_occupancy_plugin_key(&mut cfg, plugin)
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
     let path = cfg.paths().config_file.clone();
     cfg.write_toml_file(&path)?;
     let payload = json!({
         "id": plugin.manifest.id,
-        "enabled": enabled,
+        "enabled": true,
         "config": path.display().to_string(),
     });
     emit(format, &payload, || {
         println!(
-            "{} plugin {} (wrote {})",
-            if enabled { "enabled" } else { "disabled" },
+            "enabled database plugin {} (wrote {})",
             plugin.manifest.id,
             path.display()
         );
     })
+}
+
+/// Resolves an instance id, PluginKey, or alias to one instance.
+///
+/// An id matches exactly. A key or alias (matched against the pinned
+/// schemas, so a plugin need not be installed here) names the plugin's
+/// default instance.
+async fn resolve_instance(store: &LibraryStore, needle: &str) -> anyhow::Result<PluginInstance> {
+    if let Ok(id) = PluginInstanceId::parse(needle) {
+        if let Some(instance) = load_plugin_instance(store, &id).await? {
+            return Ok(instance);
+        }
+        anyhow::bail!("plugin instance `{needle}` does not exist");
+    }
+    let key = resolve_plugin_key(store, needle).await?;
+    default_instance_for_key(store, &key).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "plugin `{key}` has no instance yet; run a host that has it installed \
+                 (enrollment creates the default instance)"
+        )
+    })
+}
+
+/// Resolves a PluginKey or alias against the pinned schemas.
+async fn resolve_plugin_key(store: &LibraryStore, needle: &str) -> anyhow::Result<String> {
+    let schemas = list_plugin_schemas(store).await?;
+    if let Some(exact) = schemas.iter().find(|s| s.plugin_key == needle) {
+        return Ok(exact.plugin_key.clone());
+    }
+    let by_alias: Vec<_> = schemas
+        .iter()
+        .filter(|s| s.manifest_id.eq_ignore_ascii_case(needle))
+        .collect();
+    match by_alias.as_slice() {
+        [one] => Ok(one.plugin_key.clone()),
+        [] => {
+            anyhow::bail!("no plugin named `{needle}` is enrolled (see `bookclerk plugins list`)")
+        }
+        many => anyhow::bail!(
+            "alias `{needle}` names {} plugins; pass a PluginKey: {}",
+            many.len(),
+            many.iter()
+                .map(|s| s.plugin_key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Instances (optionally of one plugin key) with their deployments.
+async fn instance_items(
+    store: &LibraryStore,
+    this_host: &str,
+    plugin_key: Option<&str>,
+) -> anyhow::Result<Vec<InstanceListItem>> {
+    let aliases: std::collections::HashMap<String, String> = list_plugin_schemas(store)
+        .await?
+        .into_iter()
+        .map(|s| (s.plugin_key, s.manifest_id))
+        .collect();
+    let mut defaults: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut items = Vec::new();
+    for instance in list_all_plugin_instances(store).await? {
+        if plugin_key.is_some_and(|key| key != instance.plugin_key) {
+            continue;
+        }
+        if !defaults.contains_key(&instance.plugin_key) {
+            if let Some(default) = default_instance_for_key(store, &instance.plugin_key).await? {
+                defaults.insert(instance.plugin_key.clone(), default.id.to_string());
+            }
+        }
+        let mut deployments = Vec::new();
+        for deployment in list_deployments_for_instance(store, &instance.id).await? {
+            let observation =
+                load_observation(store, &deployment.deployment_id, &deployment.host_id).await?;
+            deployments.push(DeploymentListItem {
+                this_host: deployment.host_id == this_host,
+                host_id: deployment.host_id,
+                desired: deployment.desired,
+                revision: deployment.revision,
+                status: observation.as_ref().map(|o| o.status.as_str().to_string()),
+                detail: observation
+                    .map(|o| o.detail)
+                    .filter(|detail| !detail.is_empty()),
+            });
+        }
+        items.push(InstanceListItem {
+            plugin_instance_id: instance.id.to_string(),
+            alias: aliases
+                .get(&instance.plugin_key)
+                .cloned()
+                .unwrap_or_default(),
+            is_default: defaults
+                .get(&instance.plugin_key)
+                .is_some_and(|id| *id == instance.id.as_str()),
+            plugin_key: instance.plugin_key,
+            display_name: instance.display_name,
+            deployments,
+        });
+    }
+    Ok(items)
+}
+
+/// True when the plugin is enabled on this host: a bootstrap database
+/// adapter occupies `[database].plugin`; any other plugin has its default
+/// instance's deployment desired present here.
+fn enabled_here(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+    instances: &[InstanceListItem],
+) -> bool {
+    if is_bootstrap_only(plugin) {
+        return occupies_database_slot(plugin, &config.database.plugin);
+    }
+    instances.iter().any(|instance| {
+        instance.is_default
+            && instance
+                .deployments
+                .iter()
+                .any(|d| d.this_host && d.desired == DESIRED_PRESENT)
+    })
+}
+
+/// Prints one instance and its deployments as indented text lines.
+fn print_instance_line(instance: &InstanceListItem) {
+    println!(
+        "  instance {}{}{}",
+        instance.plugin_instance_id,
+        if instance.is_default {
+            " (default)"
+        } else {
+            ""
+        },
+        if instance.display_name.is_empty() {
+            String::new()
+        } else {
+            format!(" name={}", instance.display_name)
+        }
+    );
+    if instance.deployments.is_empty() {
+        println!("    no deployments");
+    }
+    for d in &instance.deployments {
+        println!(
+            "    host {}{} desired={} status={}{}",
+            d.host_id,
+            if d.this_host { " (this host)" } else { "" },
+            d.desired,
+            d.status.as_deref().unwrap_or("-"),
+            d.detail
+                .as_deref()
+                .map(|detail| format!(" detail={detail}"))
+                .unwrap_or_default()
+        );
+    }
+}
+
+/// `plugins instances` actions.
+async fn run_instances(
+    config: &Config,
+    command: InstancesCommand,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let plane = crate::registry::open_host(config).await?;
+    let store = &plane.store;
+    match command {
+        InstancesCommand::List { plugin } => {
+            let key = match plugin.as_deref() {
+                Some(needle) => Some(resolve_plugin_key(store, needle).await?),
+                None => None,
+            };
+            let items = instance_items(store, plane.host_id(), key.as_deref()).await?;
+            emit(
+                format,
+                &json!({ "host_id": plane.host_id(), "instances": items }),
+                || {
+                    if items.is_empty() {
+                        println!("no plugin instances");
+                    }
+                    for item in &items {
+                        println!("{} ({})", item.plugin_key, item.alias);
+                        print_instance_line(item);
+                    }
+                },
+            )
+        }
+        InstancesCommand::Create { plugin, name } => {
+            let key = resolve_plugin_key(store, &plugin).await?;
+            let pinned = require_plugin_schema(store, &key).await?;
+            let instance = create_plugin_instance(
+                store,
+                &cli_actor(),
+                &key,
+                name.as_deref().unwrap_or("").trim(),
+            )
+            .await?;
+            import_instance_config_if_absent(
+                store,
+                &cli_actor(),
+                &instance.id,
+                &pinned.schema,
+                &PluginInstanceConfigV1::empty(),
+                &format!("seed-instance-config-{}", instance.id),
+            )
+            .await?;
+            let payload = json!({
+                "plugin_instance_id": instance.id.to_string(),
+                "plugin_key": instance.plugin_key,
+                "display_name": instance.display_name,
+            });
+            emit(format, &payload, || {
+                println!(
+                    "created instance {} of {} (enable it with `bookclerk plugins enable {}`)",
+                    instance.id, instance.plugin_key, instance.id
+                );
+            })
+        }
+        InstancesCommand::Delete { instance } => {
+            let id = PluginInstanceId::parse(&instance)?;
+            delete_plugin_instance(store, &cli_actor(), &id).await?;
+            emit(
+                format,
+                &json!({ "plugin_instance_id": id.to_string(), "deleted": true }),
+                || {
+                    println!("deleted instance {id}");
+                },
+            )
+        }
+    }
+}
+
+/// `plugins config` actions.
+async fn run_plugin_config(
+    config: &Config,
+    command: PluginConfigCommand,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let plane = crate::registry::open_host(config).await?;
+    let store = &plane.store;
+    match command {
+        PluginConfigCommand::Get { instance } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let pinned = require_plugin_schema(store, &instance.plugin_key).await?;
+            let document = load_instance_config(store, &instance.id).await?;
+            let stored: std::collections::BTreeMap<String, serde_json::Value> = document
+                .body
+                .settings
+                .iter()
+                .map(|(key, value)| (key.clone(), setting_value_json(value)))
+                .collect();
+            let effective = pinned.schema.effective_config(&stored);
+            let secrets: std::collections::BTreeMap<String, bool> = pinned
+                .schema
+                .secret_entries()
+                .map(|spec| {
+                    let set = document.body.secret_refs.iter().any(|r| r.key == spec.key);
+                    (spec.key.clone(), set)
+                })
+                .collect();
+            let payload = json!({
+                "plugin_instance_id": instance.id.to_string(),
+                "plugin_key": instance.plugin_key,
+                "revision": document.revision,
+                "settings": effective.config,
+                "secrets": secrets,
+                "missing_required": effective.missing,
+                "schema": pinned.schema.settings,
+            });
+            emit(format, &payload, || {
+                println!("instance {} ({})", instance.id, instance.plugin_key);
+                println!("revision {}", document.revision);
+                for (key, value) in &effective.config {
+                    let shown = match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    let origin = if stored.contains_key(key) {
+                        ""
+                    } else {
+                        "  (default)"
+                    };
+                    println!("{key} = {shown}{origin}");
+                }
+                for (key, set) in &secrets {
+                    println!("{key} = <secret {}>", if *set { "set" } else { "unset" });
+                }
+                for key in &effective.missing {
+                    println!("{key} = <missing, required>");
+                }
+            })
+        }
+        PluginConfigCommand::Set {
+            instance,
+            key,
+            value,
+            secret,
+        } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let pinned = require_plugin_schema(store, &instance.plugin_key).await?;
+            let document = load_instance_config(store, &instance.id).await?;
+            let mut body = document.body.clone();
+            let is_secret = pinned.schema.get(&key).is_some_and(|spec| spec.is_secret());
+            if secret || is_secret {
+                if value.is_some() {
+                    anyhow::bail!(
+                        "secret values are not accepted on the command line; \
+                         pass --secret and provide the value on stdin"
+                    );
+                }
+                if !is_secret {
+                    anyhow::bail!("setting `{key}` is not declared as a secret by the plugin");
+                }
+                let plaintext = read_secret_from_stdin()?;
+                seal_instance_secret(store, &instance.id, &instance.plugin_key, &key, &plaintext)
+                    .await?;
+                set_secret_ref(&mut body, &key);
+            } else {
+                let text = value.ok_or_else(|| anyhow::anyhow!("a value is required"))?;
+                let parsed = parse_setting_text(&pinned.schema, &key, &text)?;
+                set_setting(&mut body, &key, Some(parsed));
+            }
+            let revision =
+                replace_document(store, &instance, &pinned.schema, document.revision, &body)
+                    .await?;
+            emit(
+                format,
+                &json!({
+                    "plugin_instance_id": instance.id.to_string(),
+                    "key": key,
+                    "revision": revision,
+                }),
+                || {
+                    println!(
+                        "set {key} on instance {} (revision {revision})",
+                        instance.id
+                    )
+                },
+            )
+        }
+        PluginConfigCommand::Unset { instance, key } => {
+            let instance = resolve_instance(store, &instance).await?;
+            let pinned = require_plugin_schema(store, &instance.plugin_key).await?;
+            let document = load_instance_config(store, &instance.id).await?;
+            let mut body = document.body.clone();
+            set_setting(&mut body, &key, None);
+            body.secret_refs.retain(|r| r.key != key);
+            let revision =
+                replace_document(store, &instance, &pinned.schema, document.revision, &body)
+                    .await?;
+            emit(
+                format,
+                &json!({
+                    "plugin_instance_id": instance.id.to_string(),
+                    "key": key,
+                    "revision": revision,
+                }),
+                || {
+                    println!(
+                        "unset {key} on instance {} (revision {revision})",
+                        instance.id
+                    )
+                },
+            )
+        }
+    }
+}
+
+/// Compare-and-swap replace of an instance document; returns the new revision.
+async fn replace_document(
+    store: &LibraryStore,
+    instance: &PluginInstance,
+    schema: &bookclerk_plugin_abi::SettingsSchema,
+    expected_revision: i64,
+    body: &PluginInstanceConfigV1,
+) -> anyhow::Result<i64> {
+    match replace_instance_config(
+        store,
+        &cli_actor(),
+        &instance.id,
+        schema,
+        expected_revision,
+        body,
+        &operation_id("instance-config"),
+    )
+    .await?
+    {
+        InstanceConfigReplace::Applied(doc) => Ok(doc.revision),
+        InstanceConfigReplace::Replayed { revision } => Ok(revision),
+        InstanceConfigReplace::Conflict { current_revision } => anyhow::bail!(
+            "instance document changed concurrently (revision {current_revision}); retry"
+        ),
+    }
+}
+
+/// JSON form of a stored setting value.
+fn setting_value_json(value: &SettingValue) -> serde_json::Value {
+    match value {
+        SettingValue::Bool(flag) => serde_json::Value::Bool(*flag),
+        SettingValue::Number(number) => serde_json::Value::Number(number.clone()),
+        SettingValue::String(text) => serde_json::Value::String(text.clone()),
+    }
+}
+
+/// Reads one secret from stdin (first line, trailing newline removed).
+fn read_secret_from_stdin() -> anyhow::Result<String> {
+    use std::io::{IsTerminal, Read};
+    let mut text = String::new();
+    if std::io::stdin().is_terminal() {
+        eprint!("secret value: ");
+        std::io::stdin().read_line(&mut text)?;
+    } else {
+        std::io::stdin().read_to_string(&mut text)?;
+    }
+    let value = text
+        .split_once('\n')
+        .map_or(text.as_str(), |(first, _)| first)
+        .trim_end_matches('\r')
+        .to_string();
+    if value.is_empty() {
+        anyhow::bail!("no secret value on stdin");
+    }
+    Ok(value)
 }
 
 /// True when `plugin` occupies `[database].plugin`.
@@ -1552,49 +2228,6 @@ fn find_plugin(config: &Config, id: &str) -> anyhow::Result<DiscoveredPlugin> {
     bookclerk_plugin_host::resolve_plugin_ref(&plugins, id)
         .cloned()
         .map_err(|err| anyhow::anyhow!("{err}"))
-}
-
-/// Whether `config.toml` currently enables this discovered plugin.
-fn is_enabled(config: &Config, plugin: &DiscoveredPlugin) -> bool {
-    plugin
-        .manifest
-        .families()
-        .into_iter()
-        .any(|family| match family {
-            PluginFamily::Source => {
-                config.sources.is_enabled(plugin.alias())
-                    && plugin_matches_occupancy(
-                        plugin,
-                        occupancy_spec(config.sources.occupancy(plugin.alias()), plugin.alias()),
-                    )
-            }
-            PluginFamily::Integration => {
-                config.integrations.is_enabled(plugin.alias())
-                    && plugin_matches_occupancy(
-                        plugin,
-                        occupancy_spec(
-                            config.integrations.occupancy(plugin.alias()),
-                            plugin.alias(),
-                        ),
-                    )
-            }
-            PluginFamily::Output if bookclerk_plugin_host::is_first_party_s3_output(plugin) => {
-                config.output.s3.enabled
-                    && plugin_matches_occupancy(
-                        plugin,
-                        occupancy_spec(&config.output.s3.plugin, "s3"),
-                    )
-            }
-            PluginFamily::Output if bookclerk_plugin_host::is_first_party_local_output(plugin) => {
-                config.output.local.enabled
-                    && plugin_matches_occupancy(
-                        plugin,
-                        occupancy_spec(&config.output.local.plugin, "local"),
-                    )
-            }
-            PluginFamily::Output => false,
-            PluginFamily::Database => occupies_database_slot(plugin, &config.database.plugin),
-        })
 }
 
 /// Converts a plugin settings TOML table to JSON, substituting `{}` if serialization fails.

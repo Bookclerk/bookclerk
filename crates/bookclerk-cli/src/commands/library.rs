@@ -4,17 +4,18 @@ use bookclerk_acquire::{
     acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library, AcquireRequest,
     ConvertRequest, MatchStorageOptions,
 };
-use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
+use bookclerk_config::{apply_setting_overrides, BadBookAction, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
+use bookclerk_plugin_host::HostControlPlane;
 use bookclerk_search::SearchEngine;
-use bookclerk_source::{DownloadOptions, FetchOptions, ScanOptions};
+use bookclerk_source::{source_scope, DownloadOptions, FetchOptions, ScanOptions};
 use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
 
 use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
 use crate::format_out;
 use crate::progress::BatchProgress;
-use crate::registry::{default_registry_with_plugins, registry_with_instance, resolve_source_id};
+use crate::registry::{open_host, resolve_source, sources};
 
 #[derive(Debug, Subcommand)]
 /// `bookclerk library` subcommands for scan, acquire, accounts, and export.
@@ -32,6 +33,9 @@ pub enum LibraryCommand {
     SetScan {
         /// Account id, auth-file stem, or nickname.
         account: String,
+        /// Content source, when the same account id exists on several plugins.
+        #[arg(long)]
+        source: Option<String>,
         /// Include this account when scanning (default: true).
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         scan: bool,
@@ -46,6 +50,9 @@ pub enum LibraryCommand {
     RevokeAccount {
         /// Account id, auth-file stem, or nickname.
         account: String,
+        /// Content source, when the same account id exists on several plugins.
+        #[arg(long)]
+        source: Option<String>,
     },
     /// Sync library into the local DB from configured content sources.
     Scan {
@@ -58,7 +65,8 @@ pub enum LibraryCommand {
         /// Limit to one content source (`audible`, `libro`, `graphicaudio`, or `chirp`). Default: all.
         #[arg(long)]
         source: Option<String>,
-        /// Plugin instance id when more than one instance shares a plugin key.
+        /// Pin the scan to one deployed plugin instance (default: each
+        /// plugin's default instance).
         #[arg(long)]
         instance: Option<String>,
         /// After scan, match existing files in storage to library rows.
@@ -86,7 +94,8 @@ pub enum LibraryCommand {
         /// Account id (required with `--asin` when multiple accounts exist).
         #[arg(long)]
         account: Option<String>,
-        /// Plugin instance id when more than one instance shares a plugin key.
+        /// Fetch through this deployed plugin instance (default: the book's
+        /// plugin default instance).
         #[arg(long)]
         instance: Option<String>,
         /// Dry-run: print planned storage keys only.
@@ -236,7 +245,8 @@ pub(crate) enum FilterCommand {
 /// Dispatches a `library` subcommand against the opened library store.
 pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()> {
     let paths = config.paths();
-    let store = crate::registry::open_library(config).await?;
+    let host = open_host(config).await?;
+    let store = host.store.clone();
 
     match command {
         LibraryCommand::Scan {
@@ -251,7 +261,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             if let Some(one) = account {
                 scan_accounts.push(one);
             }
-            let registry = registry_with_instance(config, &store, instance.as_deref()).await?;
+            let registry = sources(&host).await?;
             let opts = ScanOptions {
                 accounts: scan_accounts.clone(),
                 page_size: 50,
@@ -260,8 +270,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 cancel: None,
             };
             let summary = if let Some(needle) = source {
-                let id = resolve_source_id(&registry, &needle)?;
-                registry.require(&id)?.scan(&store.scope(id), opts).await?
+                let src = resolve_source(&registry, &needle, instance.as_deref())?;
+                registry.scan_one(&store, src, opts).await?
+            } else if let Some(pin) = instance.as_deref() {
+                let src = resolve_source(&registry, pin, Some(pin))?;
+                registry.scan_one(&store, src, opts).await?
             } else {
                 registry.scan_all(&store, opts).await?
             };
@@ -287,7 +300,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 }
             }
             if match_storage {
-                let storage = storage_for_config(config, &store).await?;
+                let storage = storage_for_host(&host).await?;
                 let recon = match_storage_to_library(
                     &store,
                     storage.as_ref(),
@@ -333,16 +346,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .map(|(k, v)| (k.trim(), v.trim()))
                 .collect();
             apply_setting_overrides(&mut cfg, &pairs);
+            let destinations = crate::registry::destinations(&host).await?;
             let destinations =
-                bookclerk_plugin_host::load_external_destinations(&cfg, Some(store.db())).await?;
-            let destinations = bookclerk_plugin_host::build_acquire_destinations(
-                &cfg,
-                Some(&store),
-                &destinations,
-            )
-            .await?;
+                bookclerk_plugin_host::build_acquire_destinations(&cfg, &destinations)?;
             let storage = destinations.listing_backend()?;
-            let registry = registry_with_instance(&cfg, &store, instance.as_deref()).await?;
+            let registry = sources(&host).await?;
 
             // Match existing media first (same as bookclerkd) so we do not
             // re-download titles already on disk.
@@ -412,7 +420,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             for (idx, book) in targets.into_iter().enumerate() {
                 batch.set(idx + 1, book.asin_or_isbn());
                 let content_source = registry
-                    .require(&book.source)
+                    .require_routed(&book.plugin_key, instance.as_deref())
                     .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
                 let req = AcquireRequest {
                     asin: book.download_product_id().to_string(),
@@ -529,7 +537,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 println!("force-updated {n} book(s) to {}", status.as_str());
                 return Ok(());
             }
-            let storage = storage_for_config(config, &store).await?;
+            let storage = storage_for_host(&host).await?;
             let summary = match_storage_to_library(
                 &store,
                 storage.as_ref(),
@@ -556,25 +564,14 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             json,
             full,
         } => {
-            let registry = default_registry_with_plugins(config, &store).await?;
-            let source = registry.require("audible")?;
+            let registry = sources(&host).await?;
+            let source = resolve_source(&registry, "audible", None)?;
             let (account_key, license_asin) =
                 resolve_license_target(&store, &asin, account.as_deref()).await?;
-            let quality = match config
-                .sources
-                .get_string("audible", "bitrate")
-                .unwrap_or("high")
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "normal" => AudioQuality::Normal,
-                _ => AudioQuality::High,
-            };
-            let mut download = DownloadOptions::from(config);
-            download.quality = quality;
+            let download = DownloadOptions::from(config);
             let inspected = source
                 .inspect_title(
-                    &store.scope(source.id()),
+                    &source_scope(&store, source.as_ref()),
                     &account_key,
                     &license_asin,
                     &FetchOptions {
@@ -731,7 +728,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             force,
             asins,
         } => {
-            let storage = storage_for_config(config, &store).await?;
+            let storage = storage_for_host(&host).await?;
             let filter: Vec<String> = asins.into_iter().map(|a| a.to_ascii_uppercase()).collect();
             let targets: Vec<_> = store
                 .list_books(account.as_deref())
@@ -814,61 +811,71 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             Ok(())
         }
         LibraryCommand::Accounts { source, bare } => {
-            list_all_accounts(config, source.as_deref(), bare).await
+            list_all_accounts(&host, source.as_deref(), bare).await
         }
-        LibraryCommand::SetScan { account, scan } => {
-            let account_id = if let Some(acct) = store.find_account(&account).await? {
-                acct.account_id
-            } else {
-                let registry = default_registry_with_plugins(config, &store).await?;
-                let mut found = None;
-                for src in registry.all() {
-                    if let Ok(accounts) = src.list_accounts(&store.scope(src.id())).await {
-                        if let Some(a) = accounts.into_iter().find(|a| {
-                            a.account_id.eq_ignore_ascii_case(&account)
-                                || a.label
-                                    .as_deref()
-                                    .is_some_and(|l| l.eq_ignore_ascii_case(&account))
-                        }) {
-                            found = Some(a);
-                            break;
-                        }
-                    }
-                }
-                found.map(|a| a.account_id).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "account `{account}` not found — run `bookclerk library accounts`"
-                    )
-                })?
+        LibraryCommand::SetScan {
+            account,
+            source,
+            scan,
+        } => {
+            let registry = sources(&host).await?;
+            let plugin_key = match source.as_deref() {
+                Some(needle) => Some(
+                    resolve_source(&registry, needle, None)?
+                        .plugin_key()
+                        .to_string(),
+                ),
+                None => None,
             };
-            if store.get_account(&account_id).await?.is_some() {
-                store.set_scan_enabled(&account_id, scan).await?;
-            } else {
-                let registry = default_registry_with_plugins(config, &store).await?;
-                let mut info = None;
-                for src in registry.all() {
-                    if let Ok(accounts) = src.list_accounts(&store.scope(src.id())).await {
-                        if let Some(a) = accounts.into_iter().find(|a| a.account_id == account_id) {
-                            info = Some(a);
-                            break;
+            let (plugin_key, account_id) =
+                match store.find_account(&account, plugin_key.as_deref()).await? {
+                    Some(acct) => (acct.plugin_key, acct.account_id),
+                    None => {
+                        // Not in the library yet (connected, never scanned):
+                        // ask the deployed storefronts and record the row.
+                        let mut found = None;
+                        for src in registry.routed() {
+                            if plugin_key
+                                .as_deref()
+                                .is_some_and(|key| key != src.plugin_key())
+                            {
+                                continue;
+                            }
+                            let Ok(accounts) =
+                                src.list_accounts(&source_scope(&store, src.as_ref())).await
+                            else {
+                                continue;
+                            };
+                            if let Some(a) = accounts.into_iter().find(|a| {
+                                a.account_id.eq_ignore_ascii_case(&account)
+                                    || a.label
+                                        .as_deref()
+                                        .is_some_and(|l| l.eq_ignore_ascii_case(&account))
+                            }) {
+                                store
+                                    .upsert_account(
+                                        src.plugin_key(),
+                                        &a.account_id,
+                                        &a.marketplace,
+                                        a.label.as_deref(),
+                                        scan,
+                                        src.id(),
+                                    )
+                                    .await?;
+                                found = Some((src.plugin_key().to_string(), a.account_id));
+                                break;
+                            }
                         }
+                        found.ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "account `{account}` not found — run `bookclerk library accounts`"
+                            )
+                        })?
                     }
-                }
-                let info = info.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "account {account_id} not in library DB — run `bookclerk library scan` first"
-                    )
-                })?;
-                store
-                    .upsert_account(
-                        &account_id,
-                        &info.marketplace,
-                        info.label.as_deref(),
-                        scan,
-                        info.source.as_str(),
-                    )
-                    .await?;
-            }
+                };
+            store
+                .set_scan_enabled(&plugin_key, &account_id, scan)
+                .await?;
             format_out::line(format!(
                 "account {} scan_enabled={}",
                 account_id,
@@ -877,17 +884,16 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             Ok(())
         }
         LibraryCommand::Status { source } => {
-            let registry = default_registry_with_plugins(config, &store).await?;
+            let registry = sources(&host).await?;
             let sources: Vec<_> = match source.as_deref() {
-                Some(needle) => {
-                    let id = resolve_source_id(&registry, needle)?;
-                    vec![registry.require(&id)?]
-                }
-                None => registry.all(),
+                Some(needle) => vec![resolve_source(&registry, needle, None)?],
+                None => registry.routed(),
             };
             let mut any = false;
             for src in sources {
-                let accounts = src.list_accounts(&store.scope(src.id())).await?;
+                let accounts = src
+                    .list_accounts(&source_scope(&store, src.as_ref()))
+                    .await?;
                 for acct in accounts {
                     any = true;
                     format_out::line(format!(
@@ -901,14 +907,22 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             }
             Ok(())
         }
-        LibraryCommand::RevokeAccount { account } => {
+        LibraryCommand::RevokeAccount { account, source } => {
+            let registry = sources(&host).await?;
+            let plugin_key = match source.as_deref() {
+                Some(needle) => Some(
+                    resolve_source(&registry, needle, None)?
+                        .plugin_key()
+                        .to_string(),
+                ),
+                None => None,
+            };
             let acct = store
-                .find_account(&account)
+                .find_account(&account, plugin_key.as_deref())
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("account `{account}` not found in library DB"))?;
-            let registry = default_registry_with_plugins(config, &store).await?;
-            let scope = store.scope(acct.source.as_str());
-            if let Ok(content) = registry.require(acct.source.as_str()) {
+            let scope = store.scope(acct.plugin_key.as_str(), acct.source.as_str());
+            if let Ok(content) = registry.require_routed(&acct.plugin_key, None) {
                 if let Err(e) = content.revoke_credentials(&scope, &acct.account_id).await {
                     tracing::warn!(
                         error = %e,
@@ -918,10 +932,12 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     );
                 }
             } else {
-                // Unknown / disabled source — still clear common secret patterns.
+                // Plugin not deployed here — still clear common secret patterns.
                 bookclerk_source::revoke_credentials_default(&scope, &acct.account_id).await?;
             }
-            store.revoke_credentials(&acct.account_id).await?;
+            store
+                .revoke_credentials(&acct.plugin_key, &acct.account_id)
+                .await?;
             format_out::line(format!(
                 "revoked credentials for {} (books retained, scan_enabled=false)",
                 acct.account_id
@@ -931,43 +947,51 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
     }
 }
 
-/// Prints storefront plus DB-only accounts, optionally filtered by source id.
+/// Prints storefront plus DB-only accounts, optionally filtered by source.
+///
+/// Accounts belong to a plugin, so the storefront list and the database rows
+/// are matched on `(plugin_key, account_id)`: a third-party plugin that
+/// reuses an alias never claims another plugin's accounts.
 async fn list_all_accounts(
-    config: &Config,
+    host: &HostControlPlane,
     source_filter: Option<&str>,
     bare: bool,
 ) -> anyhow::Result<()> {
-    let store = crate::registry::open_library(config).await?;
-    let registry = default_registry_with_plugins(config, &store).await?;
+    let store = &host.store;
+    let registry = sources(host).await?;
     let db_accounts = store.list_accounts().await?;
 
-    let filter_id = match source_filter {
-        Some(needle) => Some(resolve_source_id(&registry, needle)?),
-        None => None,
+    let sources: Vec<_> = match source_filter {
+        Some(needle) => vec![resolve_source(&registry, needle, None)?],
+        None => registry.routed(),
     };
+    let filter_key = source_filter
+        .is_some()
+        .then(|| sources[0].plugin_key().to_string());
 
-    let sources: Vec<_> = match filter_id.as_deref() {
-        Some(id) => vec![registry.require(id)?],
-        None => registry.all(),
-    };
-
-    let mut listed_ids = std::collections::HashSet::new();
+    let mut listed = std::collections::HashSet::new();
     let mut any = false;
 
-    let scan_by_id: std::collections::HashMap<String, bool> = db_accounts
+    let scan_by_key: std::collections::HashMap<(String, String), bool> = db_accounts
         .iter()
-        .map(|a| (a.account_id.clone(), a.scan_enabled))
+        .map(|a| ((a.plugin_key.clone(), a.account_id.clone()), a.scan_enabled))
         .collect();
-    let scan_enabled =
-        |account_id: &str| -> bool { scan_by_id.get(account_id).copied().unwrap_or(true) };
 
     for src in sources {
-        let accounts = src.list_accounts(&store.scope(src.id())).await?;
+        let key = src.plugin_key().to_string();
+        let accounts = src
+            .list_accounts(&source_scope(store, src.as_ref()))
+            .await?;
         for acct in accounts {
             any = true;
-            listed_ids.insert(acct.account_id.clone());
+            listed.insert((key.clone(), acct.account_id.clone()));
             let name = acct.label.as_deref().unwrap_or(&acct.account_id);
-            let scan = yes_no(scan_enabled(&acct.account_id));
+            let scan = yes_no(
+                scan_by_key
+                    .get(&(key.clone(), acct.account_id.clone()))
+                    .copied()
+                    .unwrap_or(true),
+            );
             let auth_ok = true;
             let status = String::from("ok");
             if bare {
@@ -987,13 +1011,13 @@ async fn list_all_accounts(
         }
     }
 
-    // DB-only rows (e.g. after migrate) not covered by source credentials.
+    // DB-only rows (e.g. after migrate, or a plugin not deployed on this host).
     for db in db_accounts {
-        if listed_ids.contains(db.account_id.as_str()) {
+        if listed.contains(&(db.plugin_key.clone(), db.account_id.clone())) {
             continue;
         }
-        if let Some(filter) = filter_id.as_deref() {
-            if !db.source.eq_ignore_ascii_case(filter) {
+        if let Some(key) = &filter_key {
+            if db.plugin_key != *key {
                 continue;
             }
         }
@@ -1118,12 +1142,8 @@ fn title_id_matches(book: &bookclerk_library::BookRecord, id: &str) -> bool {
             .is_some_and(|a| id.eq_ignore_ascii_case(a))
 }
 
-/// Builds the destination storage backend from config and loaded destination plugins.
-async fn storage_for_config(
-    config: &Config,
-    store: &LibraryStore,
-) -> anyhow::Result<Box<dyn StorageBackend>> {
-    let destinations =
-        bookclerk_plugin_host::load_external_destinations(config, Some(store.db())).await?;
-    Ok(bookclerk_plugin_host::build_storage_backend(config, Some(store), &destinations).await?)
+/// Storage backend over the destination deployments present on this host.
+async fn storage_for_host(host: &HostControlPlane) -> anyhow::Result<Box<dyn StorageBackend>> {
+    let destinations = crate::registry::destinations(host).await?;
+    Ok(bookclerk_plugin_host::build_storage_backend(&destinations)?)
 }
