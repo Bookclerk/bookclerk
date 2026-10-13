@@ -65,8 +65,8 @@ checks), or **minor headless polish** listed under
 
 | Classic key | Status | bookclerk key |
 | --- | --- | --- |
-| `Books` | ✅ | `output.local.root` |
-| `FileDownloadQuality` | ✅ | `sources.audible.bitrate` |
+| `Books` | ✅ | `local` plugin setting `root` (`bookclerk plugins config set local root …`) |
+| `FileDownloadQuality` | ✅ | `audible` plugin setting `bitrate` |
 | `DecryptToLossy` | ✅ | `output.format = "single_mp3"` or `"enriched_m4b"` |
 | `UseWidevine` | ✅ | `output.widevine` |
 | `Request_xHE_AAC` | ✅ | `output.xhe_aac` |

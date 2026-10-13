@@ -1,65 +1,61 @@
 # Destinations (output)
 
 Acquire writes finished audio (and sidecars) through **destination plugins**.
-Each destination under `[output.<name>]` has an `enabled` flag. **Multiple may
-be enabled at once** — Bookclerk writes to every enabled destination.
+Each destination is a plugin instance with a deployment per host; **several
+may be enabled at once** and Bookclerk writes to every destination deployed on
+the host running the job. Per-destination settings are the plugin's
+`[[settings]]`, stored in the instance document
+(`bookclerk plugins config …` or **Settings → Plugins**); see
+[plugins.md](plugins.md#enabling-and-settings-database).
 
-Built-in destinations today:
-
-| Id | Config table | Credentials | Default load |
+| Id | Package | Credentials | Default load |
 | --- | --- | --- | --- |
-| Local filesystem | `[output.local]` | none | Platform guest under `plugins/<plugin-key-fs-id>/` (sandboxed) |
-| S3 / MinIO | `[output.s3]` | `AWS_*` env override → `encrypted_secrets` → SDK chain | Platform guest `plugins/s3/` when staged |
+| Local filesystem | `local` (platform) | none | Enabled on every host at enrollment (platform grant) |
+| S3 / MinIO | `s3` (optional) | `access_key_id` / `secret_access_key` secrets → AWS SDK chain | `absent` until `bookclerk plugins enable s3` |
 
-External `storage` entrypoint plugins are loaded when discovered. First-party
-guests replace the in-process backend when staged and enabled
-([plugins.md](plugins.md)). The local guest is granted write access only to
-`[output.local].root` (plus its private `plugin-state/<plugin-key-fs-id>/data` and `tmp`).
+External `storage` entrypoint plugins are loaded the same way. The local guest
+is granted write access only to its `root` (plus its private
+`plugin-state/<plugin-key-fs-id>/data` and `tmp`).
 
 ## Local filesystem
 
-```toml
-[output.local]
-enabled = true
-root = "/data/Audiobooks"
-# prefix = "library/"
-```
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `root` | `Audiobooks` | Relative paths resolve under `BOOKCLERK_FILES_DIR` |
+| `prefix` | `""` | Key prefix inside the root |
+| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | inherit `[output]` | Per-destination naming overrides |
 
-Relative `root` values resolve under `BOOKCLERK_FILES_DIR`. Override with
-`BOOKCLERK_OUTPUT_LOCAL_ROOT`.
+```bash
+bookclerk plugins config set local root /data/Audiobooks
+bookclerk plugins config get local
+```
 
 ## S3 / MinIO
 
-```toml
-[output.s3]
-enabled = true
-bucket = "my-audiobooks"
-prefix = "library/"
-region = "us-east-1"
-# endpoint = "http://minio:9000"
-# force_path_style = true
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `bucket` | — | required |
+| `region` | `us-east-1` | |
+| `endpoint` | — | MinIO or other S3-compatible host; a bare hostname gets `https://` |
+| `force_path_style` | `false` | |
+| `prefix` | `library/` | |
+| `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | inherit `[output]` | |
+| `access_key_id`, `secret_access_key`, `session_token` | — | `secret`; sealed in the database |
+
+```bash
+bookclerk plugins config set s3 bucket my-audiobooks
+bookclerk plugins config set s3 endpoint http://minio:9000
+bookclerk plugins config set s3 force_path_style true
+bookclerk plugins config set s3 access_key_id --secret       # value on stdin
+bookclerk plugins config set s3 secret_access_key --secret
+bookclerk plugins enable s3
 ```
 
-Credentials resolve in this order:
-
-1. `BOOKCLERK_AWS_ACCESS_KEY_ID` + `BOOKCLERK_AWS_SECRET_ACCESS_KEY`
-   (optional `BOOKCLERK_AWS_SESSION_TOKEN`) — process env override. Empty string
-   counts as set (intentional override). These are not written to the DB unless
-   you run `bookclerk config s3-credentials set`.
-2. `encrypted_secrets` row `kind=s3`, `account_type=operator`, `account_id=default`, `name=default`
-   (save with `bookclerk config s3-credentials set`; secrets are never accepted
-   on argv). **Fail closed** if the row is present but cannot be unsealed —
-   Bookclerk does not fall through to the SDK chain in that case.
-3. AWS SDK **default provider chain** — shared config files (`~/.aws/credentials`,
-   `~/.aws/config`), AWS SSO, and cloud identity (EC2/ECS/EKS roles, …).
-   Installing the AWS CLI is not required.
-
-`bookclerk config s3-credentials show|clear` inspects or removes the DB row.
-
-Bucket/region/endpoint also accept `BOOKCLERK_OUTPUT_S3_*`
-(or familiar `BOOKCLERK_S3_*`) env vars. Host-only endpoints are accepted;
-`https://` is prepended when the value looks like a bare hostname. Whitespace-
-only endpoint values are ignored.
+Credentials come from the instance secrets when both keys are set. When they
+are not, the guest falls back to the AWS SDK **default provider chain**
+(shared config files, SSO, EC2/ECS/EKS roles) inside its jail. The
+`endpoint` the document names is granted to the guest as a deployed network
+endpoint; nothing is read from `BOOKCLERK_S3_*` or `BOOKCLERK_AWS_*`.
 
 Object user-metadata and local `.bookclerk-meta.json` support
 `--match-storage` without downloading bodies. S3 timestamp metadata follows
@@ -98,9 +94,9 @@ naming_profile = "audiobookshelf"   # or "classic"
 | `audiobookshelf` (default) | Author / series / year-oriented layout friendly to ABS |
 | `classic` | Libation desktop defaults (`<title short> [<id>]`, …) |
 
-Per-destination overrides are allowed on `[output.local]` / `[output.s3]`
-(`naming_profile`, `folder_template`, `file_template`,
-`chapter_file_template`) so object keys can differ from the local tree.
+Per-destination overrides are the `naming_profile`, `folder_template`,
+`file_template`, and `chapter_file_template` settings of the `local` / `s3`
+instance, so object keys can differ from the local tree.
 
 CLI helpers:
 
@@ -126,6 +122,9 @@ save_chapter_json = true
 cover_size = "500"        # 500 | 1215 | native
 chapter_layout = "tree"   # tree | flat
 ```
+
+The shared `[output]` table above is still `config.toml`; moving it to a
+cluster document is tracked in [ADR: Control plane](adr/control-plane.md).
 
 Artifact (sidecar) failures are logged and do not fail the audio acquire.
 

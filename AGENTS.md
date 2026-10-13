@@ -212,17 +212,24 @@ When exercising real store credentials in this cloud environment:
   Libation AudibleCdm (Accounts connect registers as Android); optional BYO
   `.wvd` still works. Spatial/Atmos (L1) is not available. Neither a CDM nor
   ffmpeg is required to build, test, or run non-acquire commands.
-- S3/MinIO credentials: `BOOKCLERK_AWS_ACCESS_KEY_ID` /
-  `BOOKCLERK_AWS_SECRET_ACCESS_KEY` (optional `BOOKCLERK_AWS_SESSION_TOKEN`)
-  override when both are set; otherwise `encrypted_secrets` (`kind=s3`,
-  `account_id=operator`, `name=default` — save with
-  `bookclerk config s3-credentials set`). DB rows fail closed if the master key
-  cannot unseal them (no silent SDK fall-through). When no DB row is present,
-  the AWS SDK default provider chain applies (`~/.aws/credentials`, SSO,
-  EC2/ECS/EKS roles — CLI install not required). Bucket/region/endpoint/
-  path-style from `BOOKCLERK_OUTPUT_S3_*` (or familiar `BOOKCLERK_S3_*`) env
-  vars or `[output.s3]` in config.toml. Local output uses `[output.local]` /
-  `BOOKCLERK_OUTPUT_LOCAL_ROOT`. Multiple destination plugins may be
-  `enabled` at once — acquire writes to every enabled destination.
-- `BOOKCLERK_S3_ENDPOINT` may be host-only (no scheme); Bookclerk prepends
-  `https://` when the value looks like a bare hostname.
+- Plugin configuration is **database only**. A plugin declares its settings in
+  `plugin.toml` `[[settings]]`; enrollment pins that schema and creates the
+  default instance; `bookclerk plugins config get|set|unset <plugin> <key>`
+  edits the instance document (`--secret` reads the value from stdin and
+  seals it); `bookclerk plugins enable|disable <plugin> [--host]` sets the
+  deployment (`present` = enabled on that host). There are no `[sources.*]`,
+  `[output.local]`, `[output.s3]`, or `[integrations.<id>]` tables and no
+  `BOOKCLERK_SOURCE_*` / `BOOKCLERK_OUTPUT_*` / `BOOKCLERK_S3_*` /
+  `BOOKCLERK_AWS_*` / `BOOKCLERK_ABS_*` env overrides. Only `[database]`,
+  `master.key`, `host-identity.json`, and `daemon.listen` stay bootstrap.
+- S3/MinIO: `bucket`, `region`, `endpoint`, `force_path_style`, `prefix` and
+  the `access_key_id` / `secret_access_key` / `session_token` secrets are the
+  `s3` plugin's settings. With no sealed keys the guest uses the AWS SDK
+  default provider chain. `endpoint` may be host-only; `https://` is
+  prepended for a bare hostname. Local output root is the `local` plugin's
+  `root` setting. Every destination deployed on the host receives each
+  acquire.
+- Accounts are keyed `(plugin_key, account_id)` and are not tied to a plugin
+  instance or host. `library set-scan` / `revoke-account` take `--source`
+  when an id exists on two plugins; `library scan|acquire --instance` pins a
+  non-default instance.

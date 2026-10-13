@@ -3,22 +3,28 @@
 Sources implement the shared `ContentSource` / storefront entrypoint: login,
 list accounts, scan library, fetch title. There is no plugin `kind = "source"`
 — storefront guests export `storefront` under `entrypoints` (see
-[plugins.md](plugins.md)). Enable or disable each store under `[sources.<id>]`,
-or via `BOOKCLERK_SOURCE_<ID>_ENABLED` for any source/plugin id (`<ID>` is the
-uppercased plugin id — e.g. `BOOKCLERK_SOURCE_ECHO_ENABLED=0`).
+[plugins.md](plugins.md)). A store is enabled on a host by deploying its plugin
+instance there (`bookclerk plugins enable <id>` or **Settings → Plugins**);
+its knobs are the plugin's `[[settings]]`, stored in the instance document.
+Nothing about a store lives in `config.toml` or the environment.
 
 | Id | Auth | Media path | Notes |
 | --- | --- | --- | --- |
-| `audible` | Amazon OAuth (QR / callback / external) | Adrm / Widevine; guest decrypt → Plain | Dual load; [audible-rs](https://github.com/mkb79/audible-rs) |
-| `libro` | Email + password | DRM-free M4B/ZIP | Dual load; password entered in Accounts |
-| `chirp` | Email + password (GraphQL) | Plain MP3 after URL decrypt | Dual load; password entered in Accounts |
-| `graphicaudio` | Email + password | Plain web / ZIP / device stream | Dual load; password entered in Accounts |
+| `audible` | Amazon OAuth (QR / callback / external) | Adrm / Widevine; guest decrypt → Plain | [audible-rs](https://github.com/mkb79/audible-rs) |
+| `libro` | Email + password | DRM-free M4B/ZIP | Password entered in Accounts |
+| `chirp` | Email + password (GraphQL) | Plain MP3 after URL decrypt | Password entered in Accounts |
+| `graphicaudio` | Email + password | Plain web / ZIP / device stream | Password entered in Accounts |
 
-First-party source binaries live under `crates/bookclerk-plugins/`. Workspace
-builds also `register()` them in-process; distributed installs use the plugin
-search path (`$BOOKCLERK_FILES_DIR/plugins` or `BOOKCLERK_PLUGIN_DIRS`). See
-[plugins.md](plugins.md). External third-party storefront plugins use the same
-config table shape.
+First-party source guests live under `crates/bookclerk-plugins/optional/`;
+installs are discovered on the plugin search path (`$BOOKCLERK_FILES_DIR/plugins`
+or `BOOKCLERK_PLUGIN_DIRS`). Third-party storefront plugins use the same
+manifest and instance model.
+
+Accounts belong to the **plugin key**, not to an instance or a host: once a
+store account is connected, every deployed instance of that plugin on every
+host can scan and acquire for it. An account id is unique per plugin; when
+the same id exists on two stores, CLI commands that act on one row take
+`--source`.
 
 ## Connecting stores
 
@@ -29,9 +35,10 @@ stores. There is no `bookclerk auth` CLI group.
 ```bash
 bookclerk library accounts
 bookclerk library status
-bookclerk library set-scan <account> --scan false
-bookclerk library scan --source <id>
-bookclerk library acquire <title-id>
+bookclerk library set-scan <account> --scan false [--source <id>]
+bookclerk library revoke-account <account> [--source <id>]
+bookclerk library scan --source <id> [--instance <plugin-instance-id>]
+bookclerk library acquire <title-id> [--instance <plugin-instance-id>]
 ```
 
 After scan, non-Audible rows can be enriched with an Audible ASIN via public
@@ -73,14 +80,18 @@ IdentityTokens are not converted. Re-connect Audible from the Accounts UI, or se
 
 Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audible/README.md`](../crates/bookclerk-plugins/optional/source-audible/README.md).
 
-### Example
+### Settings
+
+| Setting | Default | Values |
+| --- | --- | --- |
+| `bitrate` | `high` | `high` / `normal` |
+
+```bash
+bookclerk plugins config set audible bitrate normal
+```
 
 ```toml
-[sources.audible]
-enabled = true
-bitrate = "high"          # high | normal
-
-[output]
+[output]            # shared, still config.toml
 widevine = false
 xhe_aac = false
 format = "enriched_m4b"
@@ -95,11 +106,10 @@ bookclerk library scan --source libro
 bookclerk library acquire --isbn 978…
 ```
 
-```toml
-[sources.libro]
-enabled = true
-container = "m4b"         # m4b | zip
-```
+| Setting | Default | Values |
+| --- | --- | --- |
+| `container` | `m4b` | `m4b` / `zip` |
+| `base_url` | store default | API origin override (testing) |
 
 Credentials are stored in `encrypted_secrets` (DB-backed).
 
@@ -111,10 +121,9 @@ Connect from the Accounts UI (email + password). Then:
 bookclerk library scan --source chirp
 ```
 
-```toml
-[sources.chirp]
-enabled = true
-```
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `graphql_url` | store default | GraphQL endpoint override (testing) |
 
 Headless login uses GraphQL password `signIn` (not browser cookie sessions).
 Some egress paths see Cloudflare challenges — use a normal browser User-Agent
@@ -132,19 +141,15 @@ default `web`):
 | `device` | Access App API Hi/Lo streams (uses a device slot / `client_id`) |
 
 ```bash
+bookclerk plugins config set graphicaudio access web      # web | zip | device
+bookclerk plugins config set graphicaudio bitrate hi      # hi | lo (device)
+bookclerk plugins config set graphicaudio container auto  # auto | m4b | mp3 | flac (zip)
 bookclerk library scan --source graphicaudio
 ```
 
-```toml
-[sources.graphicaudio]
-enabled = true
-access = "web"            # web | zip | device
-# bitrate = "hi"          # hi | lo (device)
-# container = "auto"      # auto | m4b | mp3 | flac (zip)
-```
-
-Env override: `BOOKCLERK_GA_ACCESS` (legacy alias `BOOKCLERK_GA_FETCH`).
-Disable with `enabled = false` or `BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED=0`.
+`base_url` and `store_url` override the Access App and Magento origins for
+testing. The Magento paths use the password stored when the account was
+connected.
 
 ZIP SKUs unlock App + Browser as well; App Access–only does **not** include a
 computer ZIP. Prefer purchasing an M4B/MP3/FLAC ZIP SKU when validating all
@@ -152,12 +157,13 @@ paths. Full Magento/device notes: [source-candidates.md](source-candidates.md).
 
 ## Disabling a store
 
-```toml
-[sources.chirp]
-enabled = false
+```bash
+bookclerk plugins disable chirp              # this host
+bookclerk plugins disable chirp --host <id>  # another cluster host
 ```
 
-Or `BOOKCLERK_SOURCE_CHIRP_ENABLED=0` (pattern: `BOOKCLERK_SOURCE_<ID>_ENABLED`).
+The deployment row flips to `absent`, the reconciler retires the running
+guest, and the store's accounts and books stay in the library.
 
 ## Future stores
 

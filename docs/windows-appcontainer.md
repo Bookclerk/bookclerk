@@ -180,7 +180,7 @@ native-behind-workerd plan of that plugin retries again. A journal is accepted
 only when every path is a local absolute path and it names at most two
 AppContainer package SIDs with exactly seven RIDs after `S-1-15-2-`. That
 excludes `S-1-15-2-1` and `S-1-15-2-2`. A UNC share or a device path, including
-a UNC `[output.local].root`, fails that check and the error names the path;
+a UNC `local` destination `root`, fails that check and the error names the path;
 map a drive letter or use the S3 destination. A record that cannot be parsed
 or fails that check is renamed to `session-*.json.rejected` and logged once.
 Nothing revokes the grants in that file. The session directory stays. Sweeps

@@ -131,8 +131,8 @@ are **not** globally unique across an HA cluster.
 
 An installed PluginKey's alias is immutable across ordinary
 install/update/replace — a package cannot keep the same PluginKey while
-changing `id = "foo"` to `id = "foo2"`, because `[sources.<id>]` /
-`[integrations.<id>]` and related settings stay keyed by alias. Aliases are
+changing `id = "foo"` to `id = "foo2"`, because accounts keep `source` as the
+display alias and CLI targeting resolves it. Aliases are
 for humans and CLI ergonomics (`bookclerk plugins info postgres`). They are
 **not** trust: a third-party package that is the sole installed `sqlite`
 still receives no platform secrets, SQLite library path, or first-party jail
@@ -192,12 +192,12 @@ contract. Host binaries (`bookclerk`, `bookclerkd`) depend on
 builds and local `cargo dev` both load staged guests from `plugins/`.
 Discovered copies of the same **PluginKey** are skipped. Duplicate display
 aliases from different PluginKeys on the **same host** are invalid
-installation state (discovery fails closed). Enablement occupancy
-(`[database].plugin`, `[output.s3].plugin`, `[output.local].plugin`,
-`[sources.<id>].plugin`, `[integrations.<id>].plugin`) is a PluginKey when
-set by `bookclerk plugins enable` or Settings enable; a settings save also
-upgrades a unique alias occupant to its PluginKey. A bare alias is accepted
-only when exactly one install on this host uses it.
+installation state (discovery fails closed). Instances, deployments, schemas,
+and accounts are keyed by PluginKey in the database; only the database
+adapter (`[database].plugin`) still occupies a `config.toml` key, and it
+upgrades a unique alias to its PluginKey when `bookclerk plugins enable`
+or a settings save touches it. A bare alias is accepted only when exactly
+one install on this host uses it.
 After registration, hosts talk **only**
 through `ContentSource` /
 `Integration` (login, scan, fetch, import, revoke, inspect, plus catalog
@@ -800,12 +800,14 @@ covers the current manifest).
 | File | Role |
 | --- | --- |
 | `plugin.toml` (next to the binary or `modules/`) | **Install / discovery** — id, runtime, command or `[workerd]`, capabilities / entrypoints |
-| `config.toml` (`[sources.<id>]` / `[integrations.<id>]`) | **User settings** — `enabled`, occupancy `plugin` (PluginKey or unambiguous alias), opaque knobs |
+| Plugin instance document (database) | **Operator settings** — values for the manifest's `[[settings]]`, sealed secrets, and a deployment per host (`present` = enabled) |
 
 The plugin (or its installer) drops a directory under a search root. Bookclerk
-scans for `plugin.toml`, spawns `bookclerk-workerd` (fronting the native
-`command` or loading the isolate), and passes the matching main-config table in
-the spawn config. Users never put `command` in `config.toml`.
+scans for `plugin.toml`, enrols it (pins the schema, creates the default
+instance), and when this host's deployment is present spawns
+`bookclerk-workerd` (fronting the native `command` or loading the isolate)
+with the instance document as `CONFIG`. Nothing about a plugin is written to
+`config.toml`.
 
 ## Layout
 
@@ -863,7 +865,13 @@ entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databas
 [capabilities.network]
 mode = "deny"
 
-[vars]                          # `env.CONFIG` (operator knobs merge over these)
+[vars]                          # `env.CONFIG`: [[settings]] defaults under the instance document
+
+[[settings]]                    # operator settings schema (see below)
+key = "greeting"
+label = "Greeting"
+type = "string"
+default = "hi"
 
 [[databases]]                   # plugin-owned isolated database → `env.DB`
 binding = "DB"
@@ -990,6 +998,39 @@ error** (CLI/daemon exit). The same id across different kinds (e.g. a source and
 an integration both named `echo`) is allowed. An external id that collides with
 a first-party plugin of the same kind is also rejected.
 
+### `[[settings]]`
+
+Operator settings are declared in the manifest. The host renders Settings,
+validates writes, and seeds defaults from this list; it hard-codes nothing
+per plugin.
+
+```toml
+[[settings]]
+key = "bitrate"              # ^[a-z][a-z0-9_]{0,63}$, unique within the plugin
+label = "Bitrate"
+type = "enum"                # string | bool | integer | enum | secret
+values = [{ id = "high", label = "High" }, { id = "normal", label = "Normal" }]
+default = "high"
+required = false
+description = "Audible download quality."
+
+[[settings]]
+key = "api_key"
+label = "API key"
+type = "secret"              # sealed in the database, delivered in SECRETS; no default
+```
+
+Non-secret entries need `[vars]` (that is how `CONFIG` reaches the guest);
+`secret` entries need `[secrets]`. `required = true` makes a spawn fail with
+an `error` observation when neither the document nor a default supplies the
+key. The guest sees the schema defaults with the instance document on top
+as `env.CONFIG`, and sealed values as `env.SECRETS`.
+
+`describe().configOptions` is derived from this list: the SDK fills it in,
+and a guest that returns its own non-empty list must return the same keys,
+labels, and values or the spawn is refused. The schema is pinned in the
+database at enrollment (`plugin_schemas`) so writes validate on any host.
+
 ## Consent before enable (and every spawn)
 
 Third-party (and newly installed) plugins require an explicit permission grant
@@ -1096,16 +1137,62 @@ structural capabilities stay pending until the operator consents
 (`grant_covers` is identity-only). A different provenance (even with the
 same manifest alias) does not inherit grants.
 
-## Enabling and settings in `config.toml`
+## Enabling and settings (database)
 
-A plugin instance document, when one exists, is the `CONFIG` and `SECRETS`
-binding for that instance. Two instances may share a plugin key. A deployment
-spawn uses that instance's already resolved bindings. It does not select the
-guest by plugin key. A plugin with no instance document still reads the
-tables below.
-GraphicAudio's imported keys (`access`, `base_url`, `store_url`, `bitrate`,
-`container`) are not written back to `[sources.graphicaudio]` after the first
-import.
+Plugin configuration has one home: the **plugin instance document** in the
+library database. There is no `[sources.<id>]`, `[output.<id>]`, or
+`[integrations.<id>]` table and no `BOOKCLERK_SOURCE_<ID>_ENABLED` override.
+Only `[database]` (which database to open) stays in `config.toml`.
+
+Every discovered plugin (except database adapters) gets a **default
+instance** at enrollment, with a document seeded from the manifest's
+`[[settings]]` defaults. Operators may create more instances of one plugin
+(`bookclerk plugins instances create <plugin> --name …`); a bare plugin key or
+alias routes to the default instance, and jobs may pin another with
+`--instance`.
+
+**Enabled on a host** means a `present` deployment row for that instance and
+that host. The reconciler spawns present deployments, retires the guest when
+the row flips to `absent`, and records observations (`installed`, `running`,
+`healthy`, `error`, `retired`). Third-party plugins enrol `absent` until an
+operator approves their grant and enables them; platform guests (`local`,
+`sqlite`) auto-grant and come up enabled.
+
+```bash
+bookclerk plugins list                                  # instances + deployments
+bookclerk plugins approve echo --yes                    # consent (third-party)
+bookclerk plugins enable echo                           # desired = present on this host
+bookclerk plugins enable echo --host <host-id>          # … on another cluster host
+bookclerk plugins disable echo
+bookclerk plugins instances list --plugin s3
+bookclerk plugins instances create s3 --name "Backup bucket"
+bookclerk plugins config get s3                         # defaults under the document
+bookclerk plugins config set s3 bucket my-audiobooks
+bookclerk plugins config set s3 secret_access_key --secret   # value read from stdin
+bookclerk plugins config unset s3 prefix                # back to the schema default
+```
+
+The daemon exposes the same operations (operator session):
+
+| Method | Path |
+| --- | --- |
+| `GET` / `POST` | `/api/config/plugin-instances` (list; create `{plugin_key, display_name}`) |
+| `DELETE` | `/api/config/plugin-instances/{id}` (no deployments left) |
+| `GET` / `PUT` | `/api/config/plugin-instances/{id}/config` (`{expected_revision, settings, secret_refs, secrets}`; `secrets` are sealed server-side) |
+| `PUT` | `/api/config/plugin-instances/{id}/deployments/{host_id}` (`{desired, expected_revision}`) |
+| `GET` | `/api/config/hosts`, `/api/config/plugin-schemas` |
+
+**Settings → Plugins** renders each instance from its pinned schema: the
+Enabled switch writes this host's deployment (after consent when needed),
+secret fields are write-only, and Save writes the document with
+compare-and-swap. `PATCH /api/settings` only edits daemon, jail, and
+`[database]` keys now.
+
+Writes validate against the schema pinned in `plugin_schemas` at enrollment,
+so a plugin can be configured from any host in the cluster, including hosts
+where it is not installed. A spawn validates the document against the host's
+local manifest: unknown keys are dropped with a warning, and a missing
+`required` key is an `error` observation.
 
 The local reconciler installs from `$BOOKCLERK_FILES_DIR/plugin-packages/<name>/`
 when the ledger and discovery both miss the key. That directory is the
@@ -1114,34 +1201,15 @@ with artifact URLs limited to files inside the package directory. The
 reconciler does not download plugins. It starts the staged guest and calls
 health before commit, and it respawns a guest that has exited even when the
 last observation was healthy. The daemon keeps one guest map for the process.
-Config reload builds registries that omit deployed keys, then copies live
-sources, integrations, and storage sessions that are bound to a present plugin
-instance id. A transitional guest for the same key is not copied. Reload stops
-that integration and drops the source or storage session. Copied guests are
-not stopped, so API and job lookup still reach the same process.
-A deployed storefront is registered under its plugin instance id. Job lookup
-resolves that id. A plugin key or alias resolves only when exactly one
-registered source matches, so two instances of one key stay distinct.
-`sources.graphicaudio.enabled = false` retires a running GraphicAudio guest on
-the next reconcile and on reload. The deployment row can remain.
-`bookclerk library scan` and `bookclerk library acquire` use that instance
-document. When several instances share the plugin key, pass `--instance`.
+Config reload re-enrols the host and leaves running guests in place unless
+the database connection changed, in which case every guest is retired and
+the reconciler brings the present deployments back.
 
-Plugin `id` must match a config table. **External integrations default to
-disabled**; sources follow the usual `[sources.<id>]` rules (missing → enabled).
-`plugins enable` still refuses until a grant exists.
-
-```toml
-[integrations.echo]
-enabled = true
-# plugin = "path:file:///opt/plugins/echo#echo"  # required when the alias is ambiguous
-# greeting = "hi"   # opaque knobs → spawn config
-
-[sources.my_store]
-enabled = true
-# plugin = "cargo:crates.io/bookclerk-plugin-source-my-store#my_store"
-# … opaque knobs …
-```
+A deployed guest is registered under its plugin instance id. `bookclerk
+library scan` and `bookclerk library acquire` route a plugin key to its
+default instance on this host; pass `--instance` to pin another. Accounts
+are keyed by plugin key, not instance: every instance of a plugin, on every
+host, serves the same connected accounts.
 
 ## ABI (api_version = 3, object-capability Workers RPC)
 
@@ -1351,9 +1419,8 @@ grant token.
 | `cliInvoke` | Run a declared command (`CliInvokeParams` → `CliInvokeResult`) |
 | `oidcClients` | Bookclerk-as-IdP relying-party templates (`OidcClientTemplate[]`; empty when unused) |
 
-Role contexts carry the plugin’s `[sources.<id>]` / `[integrations.<id>]` table
-from **main** `config.toml` as opaque JSON (empty object if the table is
-missing).
+Role contexts carry the instance's effective settings (schema defaults under
+the document) as JSON — the same object the guest sees as `env.CONFIG`.
 
 The optional `metadataJson` field `cli` may embed the same schema as
 `cliDescribe`. Prefer advertising capability `cli` and implementing both
@@ -1511,11 +1578,10 @@ Oversized scalar `put`/`get` fail closed. There is no public `handleId` /
 issue #120 builds on this contract without another public ABI redesign.
 
 First-party S3 ships as `bookclerk-plugin-destination-s3` (`api_version = 3`).
-When the guest is discovered under `plugins/s3/` and `[output.s3].enabled = true`,
-the host loads the unique occupant (`[output.s3].plugin`, or the `s3` alias when
-only one install exists) at startup via external destination loading instead of
-an in-process S3 backend. A second install that reuses `id = "s3"` does not
-overwrite the destination.
+Its bucket, region, endpoint, prefix, naming overrides, and credentials are
+`[[settings]]`; the host runs it wherever its instance has a present
+deployment and has no in-process S3 backend. A second install that reuses
+`id = "s3"` is a distinct PluginKey with its own instances.
 
 ### Database adapter entrypoints
 
@@ -1686,16 +1752,11 @@ Workerd Echo — install `plugin.toml` + `modules/` from any of
 (outbound `*.example.com` + embedded logo; host spawns `bookclerk-workerd`,
 not a SEA binary).
 
-```toml
-# config.toml
-[integrations.echo]
-enabled = true
-```
-
 ```bash
 bookclerk plugins approve echo --yes
 bookclerk plugins list
-bookclerk plugins enable echo
+bookclerk plugins enable echo          # deployment desired = present on this host
+bookclerk plugins config set echo greeting hello
 bookclerk integrations status
 # echo enabled=true ok=true echo plugin ready
 bookclerk plugins echo ping --message hello

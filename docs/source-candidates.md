@@ -21,13 +21,12 @@ community tooling ([audiobook-dl](https://github.com/jo1gi/audiobook-dl),
 | Plain path | Matches Libro.fm today (no `bookclerk-media`) |
 | DRM | Owned by the source plugin (Audible: Adrm/Widevine); host never sees keys |
 | Auth storage | Per-account tokens in `encrypted_secrets` (DB), keyed by account id |
-| Config plugins | `[sources.<id>]` enable + source knobs; `[integrations.*]` reserved for third-party hooks |
+| Config plugins | Plugin instance document (`[[settings]]` schema); enablement is a deployment per host |
 | Diagnostics | Top-level `[diagnostics]` only (not an integration plugin) |
 
-Sources are registered from config like a small plugin table: set
-`[sources.chirp] enabled = false` (or `BOOKCLERK_SOURCE_CHIRP_ENABLED=0`) to
-keep the binary from loading that store. Store-specific knobs live on the
-same table (`bitrate`, `container`, `access` as applicable). Crash/error-burst
+Sources are plugin instances: `bookclerk plugins disable chirp` keeps this
+host from loading that store. Store-specific knobs (`bitrate`, `container`,
+`access` as applicable) are the plugin's declared settings. Crash/error-burst
 reporting stays under `[diagnostics]` — distinct from `[integrations.*]`.
 
 ---
@@ -339,7 +338,7 @@ activations (`client_id`); Browser Player is a separate website feature (no
 device-slot language in FAQ). Magento ZIP links live under
 [My Downloadable Products](https://www.graphicaudio.net/downloadable/customer/products/).
 
-### Expected Bookclerk functionality (`[sources.graphicaudio] access`)
+### Expected Bookclerk functionality (`access` setting)
 
 1. **Browser Player (default: `access = "web"`)** — **implemented**  
    Magento login → `library/index/content_library` →
@@ -354,7 +353,7 @@ device-slot language in FAQ). Magento ZIP links live under
    link (307 → signed CloudFront ZIP) → extract M4B/MP3/FLAC →
    `PlainFetch` (`m4b_path` when M4B). No Access App device slot.
    Each Magento link hit consumes one of ≤3 download attempts — transfer
-   must complete after resolve. Same password env as Browser Player.
+   must complete after resolve. Same stored password as Browser Player.
 
 3. **Access App API (opt-in: `access = "device"`)** — **implemented** (streaming)  
    `POST /access/activation/login` + `api/products` + `api/links` → Hi/Lo
@@ -365,17 +364,13 @@ device-slot language in FAQ). Magento ZIP links live under
 
 **Config:**
 
-```toml
-[sources.graphicaudio]
-enabled = true
-access = "web"       # web | zip | device
-# bitrate = "hi"     # hi | lo (device)
-# container = "auto" # auto | m4b | mp3 | flac (zip)
+```bash
+bookclerk plugins config set graphicaudio access web       # web | zip | device
+bookclerk plugins config set graphicaudio bitrate hi       # hi | lo (device)
+bookclerk plugins config set graphicaudio container auto   # auto | m4b | mp3 | flac (zip)
 ```
 
-Env override: `BOOKCLERK_GA_ACCESS` (legacy alias `BOOKCLERK_GA_FETCH`).
-Disable registration with `enabled = false` or
-`BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED=0`. There is no ZIP→Browser→App cascade —
+Disable with `bookclerk plugins disable graphicaudio`. There is no ZIP→Browser→App cascade —
 pick one path explicitly (default web).
 
 ### Live purchase probe (Sons of Ares Vol. 1, product `5273`)

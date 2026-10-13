@@ -13,7 +13,7 @@ Start here if you are new:
 5. [Database](database.md) — SQLite default, Cloudflare D1, SeaORM
 6. [Integrations](integrations.md) — Audiobookshelf and SPA claim / Accounts
 7. [Discovery](discovery.md) — recommendations, embeddings, wishlist / global queue
-8. [Configuration](configuration.md) — `config.toml` and environment variables
+8. [Configuration](configuration.md) — `config.toml`, environment variables, and database-backed plugin instances
 9. [Durable job queue](jobs.md) — bounded admission, leases, crash recovery
 10. [Bounded storage](storage-bounds.md) — scalar caps, streams, paged scans, checkpoints
 11. [Media worker pool](media.md) — confined codecs, concurrency, isolation modes
