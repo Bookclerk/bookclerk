@@ -21,7 +21,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | Table | Purpose |
 | --- | --- |
 | `[library]` | Auto-acquire, scan interval, enrichment, storage layout fix |
-| `[database]` / `[database.sqlite]` / `[database.d1]` | Library DB plugin (`sqlite` default, Cloudflare D1) |
+| `[database]` / `[database.*.enabled]` | Active library DB plugin selection (`sqlite` default). First-party connect knobs (`path`, postgres URL, D1 ids) are **not** TOML authority — use PluginInstance CONFIG (see [database.md](database.md)) |
 | `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`); optional `[auth.oidc]` identity broker |
 | `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
 | `[plugins]` | How external plugin guests are jailed (see [plugins.md](plugins.md)) |

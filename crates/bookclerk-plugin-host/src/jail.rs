@@ -1210,7 +1210,7 @@ fn is_platform_local_storage(plugin: &DiscoveredPlugin) -> bool {
 /// constraint on Windows). `-wal`/`-shm` are included for completeness if a
 /// connection ever switches to WAL.
 fn sqlite_library_paths(config: &Config) -> Vec<PathBuf> {
-    let db = config.database.sqlite_path(&config.paths().files_dir);
+    let db = bookclerk_config::resolve_sqlite_library_path(&config.paths().files_dir);
     let wal = {
         let mut s = db.as_os_str().to_os_string();
         s.push("-wal");

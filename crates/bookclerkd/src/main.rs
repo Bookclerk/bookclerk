@@ -149,6 +149,18 @@ async fn main() -> anyhow::Result<()> {
             "GraphicAudio instance import did not complete; file-backed settings stay in use"
         );
     }
+    if let Err(err) = bookclerk_plugin_host::enroll_database_instances(
+        &library_store,
+        &config,
+        &control_plane.host.host_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %err,
+            "database instance enrollment did not complete; bootstrap connect stays code-default/env"
+        );
+    }
     let owned = deployment_skip_keys(&library_store, &control_plane.host.host_id).await?;
     let session_services =
         bookclerk_plugin_host::SessionServices::with_event_outbox(library_store.clone());

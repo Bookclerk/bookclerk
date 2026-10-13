@@ -178,7 +178,8 @@ impl ExternalDatabase {
             Some(DatabasePluginKind::Sqlite) => {
                 // Host-selected first-party sqlite adapter: tell the guest
                 // (and the nested native jail) where `library.db` lives.
-                let path = config.database.sqlite_path(&config.paths().files_dir);
+                // Bootstrap uses env + code default — not `[database.sqlite].path`.
+                let path = bookclerk_config::resolve_sqlite_library_path(&config.paths().files_dir);
                 vec![(
                     "BOOKCLERK_SQLITE_PATH",
                     std::ffi::OsString::from(path.as_os_str()),
@@ -2792,8 +2793,11 @@ fn apply_bootstrap_metadata(bootstrap: &mut DbBootstrap, plugin_id: &str) {
 }
 
 /// SQLite connect params for a verified first-party sqlite adapter.
+///
+/// Bootstrap path is env + code default (`library.db`). Live
+/// `[database.sqlite].path` is not authority.
 fn sqlite_connect_params(config: &Config, plugin_data_dir: &Path) -> DbConnectParams {
-    let path = config.database.sqlite_path(&config.paths().files_dir);
+    let path = bookclerk_config::resolve_sqlite_library_path(&config.paths().files_dir);
     DbConnectParams::Sqlite {
         plugin_data_dir: plugin_data_dir.display().to_string(),
         sqlite_path: Some(path.display().to_string()),

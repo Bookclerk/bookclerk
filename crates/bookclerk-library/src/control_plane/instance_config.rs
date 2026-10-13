@@ -1,10 +1,12 @@
 //! Typed plugin-instance configuration and CONFIG / SECRETS resolution.
 //!
 //! The document address is [`DocumentKey::plugin_instance`]. Validation does
-//! not take a plugin family, entrypoint, alias, or host id. GraphicAudio's
-//! extra allowlist is selected by the installed manifest id `graphicaudio`.
+//! not take a plugin family, entrypoint, alias, or host id. First-party
+//! allowlists are selected by installed manifest id (`graphicaudio`, `sqlite`,
+//! `postgres`, `d1`).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use bookclerk_plugin_abi::ExtensibleConfig;
 use serde::{Deserialize, Serialize};
@@ -37,6 +39,20 @@ pub const MAX_INSTANCE_SETTING_BYTES: usize = 1024;
 /// Manifest id that selects the GraphicAudio setting allowlist.
 pub const GRAPHICAUDIO_MANIFEST_ID: &str = "graphicaudio";
 
+/// Manifest id that selects the first-party sqlite database allowlist.
+pub const SQLITE_MANIFEST_ID: &str = "sqlite";
+
+/// Manifest id that selects the first-party postgres database allowlist.
+pub const POSTGRES_MANIFEST_ID: &str = "postgres";
+
+/// Manifest id that selects the first-party D1 database allowlist.
+pub const D1_MANIFEST_ID: &str = "d1";
+
+/// Code-default sqlite library path when no instance document exists yet.
+///
+/// Not read from `[database.sqlite]`. Relative paths join the files directory.
+pub const SQLITE_DEFAULT_PATH: &str = "library.db";
+
 /// How strictly schema 1 is checked for one package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstancePackagePolicy {
@@ -44,14 +60,26 @@ pub enum InstancePackagePolicy {
     Generic,
     /// GraphicAudio allowlist, selected by manifest id `graphicaudio`.
     GraphicAudio,
+    /// First-party sqlite database allowlist (`path`).
+    DatabaseSqlite,
+    /// First-party postgres database allowlist (`url_file` only; URL is a secret).
+    DatabasePostgres,
+    /// First-party D1 database allowlist (`account_id`, `database_id`, `api_base`).
+    DatabaseD1,
 }
 
 impl InstancePackagePolicy {
-    /// GraphicAudio when `manifest_id` is the product package id.
+    /// First-party allowlist when `manifest_id` matches a product package id.
     #[must_use]
     pub fn from_manifest_id(manifest_id: &str) -> Self {
         if manifest_id.eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID) {
             Self::GraphicAudio
+        } else if manifest_id.eq_ignore_ascii_case(SQLITE_MANIFEST_ID) {
+            Self::DatabaseSqlite
+        } else if manifest_id.eq_ignore_ascii_case(POSTGRES_MANIFEST_ID) {
+            Self::DatabasePostgres
+        } else if manifest_id.eq_ignore_ascii_case(D1_MANIFEST_ID) {
+            Self::DatabaseD1
         } else {
             Self::Generic
         }
@@ -123,8 +151,12 @@ impl PluginInstanceConfigV1 {
                 return Err(invalid("duplicate secret ref key"));
             }
         }
-        if policy == InstancePackagePolicy::GraphicAudio {
-            validate_graphicaudio(self)?;
+        match policy {
+            InstancePackagePolicy::Generic => {}
+            InstancePackagePolicy::GraphicAudio => validate_graphicaudio(self)?,
+            InstancePackagePolicy::DatabaseSqlite => validate_database_sqlite(self)?,
+            InstancePackagePolicy::DatabasePostgres => validate_database_postgres(self)?,
+            InstancePackagePolicy::DatabaseD1 => validate_database_d1(self)?,
         }
         let json = self.to_json()?;
         if json.len() > super::documents::MAX_CONFIGURATION_DOCUMENT_BYTES {
@@ -152,6 +184,19 @@ impl PluginInstanceConfigV1 {
 /// GraphicAudio keys copied once from `[sources.graphicaudio]`.
 pub const GRAPHICAUDIO_IMPORT_KEYS: &[&str] =
     &["access", "base_url", "store_url", "bitrate", "container"];
+
+/// Sqlite database keys allowed on the instance document.
+pub const SQLITE_SETTING_KEYS: &[&str] = &["path"];
+
+/// Postgres database keys allowed on the instance document.
+///
+/// The connection URL is a secret (`secret_refs`), never a plaintext setting.
+pub const POSTGRES_SETTING_KEYS: &[&str] = &["url_file"];
+
+/// D1 database keys allowed on the instance document.
+///
+/// The API token stays outside the document (env / `secret_refs`).
+pub const D1_SETTING_KEYS: &[&str] = &["account_id", "database_id", "api_base"];
 
 /// Builds a GraphicAudio document from string pairs.
 ///
@@ -182,6 +227,91 @@ where
         secret_refs: Vec::new(),
     };
     body.validate(InstancePackagePolicy::GraphicAudio)?;
+    Ok(body)
+}
+
+/// Builds a sqlite database document from a library path.
+///
+/// Callers must not pass live `[database.sqlite].path` as authority; prefer the
+/// code default [`SQLITE_DEFAULT_PATH`] or an operator PUT.
+///
+/// # Errors
+///
+/// Returns an error when `path` is empty or fails the sqlite allowlist.
+pub fn sqlite_config_from_path(path: &Path) -> Result<PluginInstanceConfigV1> {
+    let text = path.to_string_lossy();
+    if text.trim().is_empty() {
+        return Err(invalid("sqlite setting `path` must be non-empty"));
+    }
+    let mut settings = BTreeMap::new();
+    settings.insert("path".to_string(), SettingValue::String(text.into_owned()));
+    let body = PluginInstanceConfigV1 {
+        settings,
+        secret_refs: Vec::new(),
+    };
+    body.validate(InstancePackagePolicy::DatabaseSqlite)?;
+    Ok(body)
+}
+
+/// Builds a D1 database document from non-secret fields.
+///
+/// The API token is never stored here. Callers must not copy `[database.d1]`.
+///
+/// # Errors
+///
+/// Returns an error when required fields are empty or fail the allowlist.
+pub fn d1_config_from_parts(
+    account_id: &str,
+    database_id: &str,
+    api_base: &str,
+) -> Result<PluginInstanceConfigV1> {
+    let mut settings = BTreeMap::new();
+    settings.insert(
+        "account_id".to_string(),
+        SettingValue::String(account_id.to_string()),
+    );
+    settings.insert(
+        "database_id".to_string(),
+        SettingValue::String(database_id.to_string()),
+    );
+    if !api_base.trim().is_empty() {
+        settings.insert(
+            "api_base".to_string(),
+            SettingValue::String(api_base.to_string()),
+        );
+    }
+    let body = PluginInstanceConfigV1 {
+        settings,
+        secret_refs: Vec::new(),
+    };
+    body.validate(InstancePackagePolicy::DatabaseD1)?;
+    Ok(body)
+}
+
+/// Builds a postgres database document with an optional `url_file` setting.
+///
+/// The connection URL itself must be a `secret_ref` or bootstrap env — never a
+/// plaintext setting. Callers must not copy `[database.postgres]`.
+///
+/// # Errors
+///
+/// Returns an error when the body fails the postgres allowlist.
+pub fn postgres_config_from_url_file(url_file: Option<&Path>) -> Result<PluginInstanceConfigV1> {
+    let mut settings = BTreeMap::new();
+    if let Some(path) = url_file {
+        let text = path.to_string_lossy();
+        if !text.trim().is_empty() {
+            settings.insert(
+                "url_file".to_string(),
+                SettingValue::String(text.into_owned()),
+            );
+        }
+    }
+    let body = PluginInstanceConfigV1 {
+        settings,
+        secret_refs: Vec::new(),
+    };
+    body.validate(InstancePackagePolicy::DatabasePostgres)?;
     Ok(body)
 }
 
@@ -489,6 +619,61 @@ fn validate_graphicaudio(body: &PluginInstanceConfigV1) -> Result<()> {
         };
         if key == "access" && !matches!(text.as_str(), "web" | "zip" | "device") {
             return Err(invalid("GraphicAudio access must be web, zip, or device"));
+        }
+    }
+    Ok(())
+}
+
+/// Sqlite database allowlist.
+fn validate_database_sqlite(body: &PluginInstanceConfigV1) -> Result<()> {
+    for key in body.settings.keys() {
+        if !SQLITE_SETTING_KEYS.contains(&key.as_str()) {
+            return Err(invalid(&format!("sqlite setting `{key}` is not allowed")));
+        }
+    }
+    for (key, value) in &body.settings {
+        let SettingValue::String(text) = value else {
+            return Err(invalid(&format!("sqlite setting `{key}` must be a string")));
+        };
+        if key == "path" && text.trim().is_empty() {
+            return Err(invalid("sqlite setting `path` must be non-empty"));
+        }
+    }
+    Ok(())
+}
+
+/// Postgres database allowlist. Connection URLs are never plaintext settings.
+fn validate_database_postgres(body: &PluginInstanceConfigV1) -> Result<()> {
+    for key in body.settings.keys() {
+        if !POSTGRES_SETTING_KEYS.contains(&key.as_str()) {
+            return Err(invalid(&format!(
+                "postgres setting `{key}` is not allowed (connection URLs use secret_refs)"
+            )));
+        }
+    }
+    for (key, value) in &body.settings {
+        let SettingValue::String(_) = value else {
+            return Err(invalid(&format!(
+                "postgres setting `{key}` must be a string"
+            )));
+        };
+    }
+    Ok(())
+}
+
+/// D1 database allowlist. API tokens are never plaintext settings.
+fn validate_database_d1(body: &PluginInstanceConfigV1) -> Result<()> {
+    for key in body.settings.keys() {
+        if !D1_SETTING_KEYS.contains(&key.as_str()) {
+            return Err(invalid(&format!("d1 setting `{key}` is not allowed")));
+        }
+    }
+    for (key, value) in &body.settings {
+        let SettingValue::String(text) = value else {
+            return Err(invalid(&format!("d1 setting `{key}` must be a string")));
+        };
+        if matches!(key.as_str(), "account_id" | "database_id") && text.trim().is_empty() {
+            return Err(invalid(&format!("d1 setting `{key}` must be non-empty")));
         }
     }
     Ok(())

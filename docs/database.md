@@ -71,31 +71,36 @@ Bookclerk therefore:
 
 ## Configuration
 
+**Authority split (Phase 2):** `[database].plugin` and per-backend `enabled`
+remain bootstrap **selection**. First-party connect knobs
+(`database.sqlite.path`, `database.postgres.url` / `url_file`,
+`database.d1.account_id` / `database_id` / `api_base`) are **not** TOML
+authority. After the library is open, those values live on the plugin instance
+document (`PUT /api/config/plugin-instances/{id}/config`). `PATCH /api/settings`
+rejects the retired keys. There is no import-once path from TOML.
+
+Bootstrap (before instance documents exist in the library being opened):
+
+| Backend | First open |
+| --- | --- |
+| sqlite | Code-default path `library.db` under `$BOOKCLERK_FILES_DIR`, or `BOOKCLERK_DATABASE_SQLITE_PATH` |
+| postgres | `BOOKCLERK_DATABASE_POSTGRES_URL` or `BOOKCLERK_DATABASE_POSTGRES_URL_FILE` |
+| d1 | `BOOKCLERK_D1_ACCOUNT_ID` / `BOOKCLERK_D1_DATABASE_ID` / `BOOKCLERK_D1_API_BASE` + token env |
+
 ```toml
 [database]
 # Active plugin: "sqlite" (default) | "d1" | "postgres"
 plugin = "sqlite"
 
-[database.sqlite]
-# Relative to BOOKCLERK_FILES_DIR, or absolute. Default: library.db
-# path = "library.db"
-
-[database.d1]
-account_id = "your-cloudflare-account-id"
-database_id = "your-d1-database-uuid"
-# Token is read from BOOKCLERK_D1_API_TOKEN or CLOUDFLARE_API_TOKEN (env-only).
-# api_base = "https://api.cloudflare.com/client/v4"
-
-[database.postgres]
-# Standard postgres:// connection URL. The URL contains credentials —
-# prefer url_file or BOOKCLERK_DATABASE_POSTGRES_URL (registered for redaction).
-# url = "postgres://user:password@localhost:5432/bookclerk"
-# url_file = "/run/secrets/postgres_url"   # path to a file containing the URL
+# Per-backend enabled flags may remain for Settings toggles.
+# [database.sqlite] path / [database.postgres] url / [database.d1] ids are
+# retired from TOML authority — do not rely on them.
 ```
 
 The Cloudflare API token is supplied via the environment only
 (`BOOKCLERK_D1_API_TOKEN`, falling back to `CLOUDFLARE_API_TOKEN`); there is no
-credentials file.
+credentials file. Postgres connection URLs are env / `secret_refs`, never
+plaintext instance settings.
 
 Environment overrides:
 
@@ -199,21 +204,9 @@ Unix-only. When `BOOKCLERK_SOCKET_PROXY` is set on Windows the guest
 fail-closes rather than dialing ambient TCP (sqlx has no Unix-socket
 rewrite there).
 
-Configuration (at least one of `url` or `url_file` is required):
-
-```toml
-[database]
-plugin = "postgres"
-
-[database.postgres]
-# Option A: inline URL (registered as secret for log redaction)
-url = "postgres://bookclerk:secret@db.example.com/bookclerk"
-
-# Option B: file containing the URL (preferred for production)
-url_file = "/run/secrets/postgres_url"
-```
-
-Or via environment:
+Bootstrap requires a URL from the environment (TOML `[database.postgres]` is
+not authority). After open, write PluginInstance CONFIG (optional `url_file`
+setting + `secret_refs` for the URL):
 
 ```
 BOOKCLERK_DATABASE_PLUGIN=postgres

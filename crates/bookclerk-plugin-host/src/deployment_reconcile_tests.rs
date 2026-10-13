@@ -14,9 +14,10 @@ use crate::consent::{consent_request, PluginGrant, PluginGrantStore};
 use crate::discover::{settings_table_for, DiscoveredPlugin};
 use crate::instance_bindings::prepare_open_bindings;
 use crate::{
-    discover_plugins, load_authorized_local_packages, reconcile_local_deployments,
-    AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
-    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
+    discover_plugins, enroll_d1_instance, enroll_postgres_instance, enroll_sqlite_instance,
+    load_authorized_local_packages, reconcile_local_deployments, AuthorizedLocalPackages,
+    DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime, LocalPackage, SpawnHealth,
+    AUTHORIZED_PACKAGE_DIR,
 };
 use async_trait::async_trait;
 use bookclerk_config::{Config, EventsConfig, Isolation};
@@ -1437,4 +1438,196 @@ fn duplicate_authorized_packages_reject_both() {
     assert!(loaded.get("path:same").is_none());
     assert!(loaded.is_conflicted("path:same"));
     assert!(loaded.keys().next().is_none());
+}
+
+fn stage_database_tree(files: &Path, id: &str) {
+    let install = files.join("plugins").join(id);
+    std::fs::create_dir_all(&install).unwrap();
+    let bin = install.join("bin");
+    std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).unwrap();
+    }
+    std::fs::write(
+        install.join("plugin.toml"),
+        format!(
+            r#"
+api_version = 3
+id = "{id}"
+runtime = "native"
+command = "./bin"
+entrypoints = ["databaseAdapter"]
+
+[capabilities.network]
+mode = "deny"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn enroll_sqlite_uses_code_default_not_toml() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path().to_path_buf();
+    stage_database_tree(&files, "sqlite");
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
+    config.database.plugin = "sqlite".into();
+    config.database.sqlite.enabled = true;
+    config.database.sqlite.path = Some(PathBuf::from("secret-from-toml.db"));
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        &files,
+        &files.join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .expect("bootstrap");
+    enroll_sqlite_instance(&store, &config, &session.host.host_id)
+        .await
+        .expect("enroll");
+    let key = crate::sqlite_plugin_key(&config)
+        .unwrap()
+        .expect("sqlite key");
+    let first =
+        bookclerk_library::control_plane::list_plugin_instances_for_key(&store, key.as_str())
+            .await
+            .unwrap();
+    assert_eq!(first.len(), 1);
+    let doc = load_instance_config(&store, &first[0].id)
+        .await
+        .expect("doc");
+    assert_eq!(
+        doc.body.settings.get("path"),
+        Some(&SettingValue::String(
+            bookclerk_library::control_plane::SQLITE_DEFAULT_PATH.into()
+        ))
+    );
+    config.database.sqlite.path = Some(PathBuf::from("still-ignored.db"));
+    enroll_sqlite_instance(&store, &config, &session.host.host_id)
+        .await
+        .expect("reenroll");
+    let again = load_instance_config(&store, &first[0].id)
+        .await
+        .expect("doc after");
+    assert_eq!(again.revision, doc.revision);
+    assert_eq!(
+        again.body.settings.get("path"),
+        Some(&SettingValue::String(
+            bookclerk_library::control_plane::SQLITE_DEFAULT_PATH.into()
+        ))
+    );
+    let deployments = bookclerk_library::control_plane::list_present_deployments_for_host(
+        &store,
+        &session.host.host_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(deployments.len(), 1);
+}
+
+#[tokio::test]
+async fn enroll_postgres_never_imports_toml_and_needs_document_for_deploy() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path().to_path_buf();
+    stage_database_tree(&files, "postgres");
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
+    config.database.plugin = "postgres".into();
+    config.database.postgres.enabled = true;
+    config.database.postgres.url = Some("postgres://from-toml@db/library".into());
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        &files,
+        &files.join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .expect("bootstrap");
+    enroll_postgres_instance(&store, &config, &session.host.host_id)
+        .await
+        .expect("enroll");
+    let key = crate::postgres_plugin_key(&config)
+        .unwrap()
+        .expect("postgres key");
+    let instances = bookclerk_library::control_plane::list_plugin_instances_for_key(&store, &key)
+        .await
+        .unwrap();
+    assert_eq!(instances.len(), 1);
+    assert!(load_instance_config(&store, &instances[0].id)
+        .await
+        .expect_err("no toml seed")
+        .to_string()
+        .contains("not initialized"));
+    let deployments = bookclerk_library::control_plane::list_present_deployments_for_host(
+        &store,
+        &session.host.host_id,
+    )
+    .await
+    .unwrap();
+    assert!(
+        deployments.is_empty(),
+        "postgres deployment requires an operator-written document"
+    );
+}
+
+#[tokio::test]
+async fn enroll_d1_never_imports_toml_and_needs_document_for_deploy() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path().to_path_buf();
+    stage_database_tree(&files, "d1");
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
+    config.database.plugin = "d1".into();
+    config.database.d1.enabled = true;
+    config.database.d1.account_id = "acct-from-toml".into();
+    config.database.d1.database_id = "db-from-toml".into();
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        &files,
+        &files.join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .expect("bootstrap");
+    enroll_d1_instance(&store, &config, &session.host.host_id)
+        .await
+        .expect("enroll");
+    let key = crate::d1_plugin_key(&config).unwrap().expect("d1 key");
+    let instances = bookclerk_library::control_plane::list_plugin_instances_for_key(&store, &key)
+        .await
+        .unwrap();
+    assert_eq!(instances.len(), 1);
+    assert!(load_instance_config(&store, &instances[0].id)
+        .await
+        .expect_err("no toml seed")
+        .to_string()
+        .contains("not initialized"));
+    let deployments = bookclerk_library::control_plane::list_present_deployments_for_host(
+        &store,
+        &session.host.host_id,
+    )
+    .await
+    .unwrap();
+    assert!(
+        deployments.is_empty(),
+        "d1 deployment requires an operator-written document"
+    );
 }

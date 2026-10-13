@@ -16,9 +16,9 @@ use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, ensure_plugin_deployment,
     ensure_plugin_instance, graphicaudio_config_from_pairs, import_instance_config_if_absent,
     list_present_deployments_for_host, load_instance_config, load_observation,
-    load_plugin_instance, resolve_instance_bindings, upsert_observation, ConfigActor,
-    DeploymentObservation, DeploymentStatus, InstanceBindingGrant, InstancePackagePolicy,
-    GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
+    load_plugin_instance, resolve_instance_bindings, sqlite_config_from_path, upsert_observation,
+    ConfigActor, DeploymentObservation, DeploymentStatus, InstanceBindingGrant,
+    InstancePackagePolicy, GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID, SQLITE_DEFAULT_PATH,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{
@@ -28,7 +28,9 @@ use bookclerk_plugin_sdk::ExtensibleConfig;
 use chrono::Utc;
 
 use crate::consent::PluginGrantStore;
-use crate::instance_bindings::graphicaudio_plugin_key;
+use crate::instance_bindings::{
+    d1_plugin_key, graphicaudio_plugin_key, postgres_plugin_key, sqlite_plugin_key,
+};
 use crate::Result;
 
 /// Local archive the reconciler may install when the ledger has no row.
@@ -277,6 +279,176 @@ fn graphicaudio_pairs(config: &Config) -> Vec<(String, String)> {
         pairs.push(((*key).to_string(), value.to_string()));
     }
     pairs
+}
+
+/// Ensures the sqlite database instance, code-default document, and deployment.
+///
+/// When the package is present and `[database].plugin` selects sqlite, seeds a
+/// **code-default** document if absent (`path = library.db`). Never copies
+/// `[database.sqlite].path`. `database.sqlite.enabled = false` skips creating a
+/// new deployment; an existing deployment stays.
+///
+/// # Errors
+///
+/// Returns an error when the ledger cannot be read, the default document is
+/// invalid, or the deployment row cannot be written.
+pub async fn enroll_sqlite_instance(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    let Some(plugin_key) = sqlite_plugin_key(config)? else {
+        return Ok(());
+    };
+    let actor = ConfigActor::Bootstrap;
+    let instance = ensure_plugin_instance(store, &actor, &plugin_key)
+        .await
+        .map_err(library_err)?;
+    match load_instance_config(store, &instance.id).await {
+        Ok(_) => {}
+        Err(LibraryError::NotFound(_)) => {
+            let body = sqlite_config_from_path(std::path::Path::new(SQLITE_DEFAULT_PATH))
+                .map_err(library_err)?;
+            import_instance_config_if_absent(
+                store,
+                &actor,
+                &instance.id,
+                InstancePackagePolicy::DatabaseSqlite,
+                &body,
+                &format!("seed-sqlite-{}", instance.id),
+            )
+            .await
+            .map_err(library_err)?;
+        }
+        Err(err) => return Err(library_err(err)),
+    }
+    if !config.database.sqlite.enabled {
+        return Ok(());
+    }
+    if !database_plugin_selected(config, &plugin_key, "sqlite") {
+        return Ok(());
+    }
+    ensure_plugin_deployment(store, &actor, &instance.id, host_id)
+        .await
+        .map_err(library_err)?;
+    Ok(())
+}
+
+/// Ensures the postgres database instance and, when configured, a deployment.
+///
+/// Never copies `[database.postgres]` into the document. A deployment is written
+/// only when an instance document already exists (operator PUT) and postgres is
+/// the selected backend.
+///
+/// # Errors
+///
+/// Returns an error when the ledger cannot be read or the deployment row
+/// cannot be written.
+pub async fn enroll_postgres_instance(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    let Some(plugin_key) = postgres_plugin_key(config)? else {
+        return Ok(());
+    };
+    let actor = ConfigActor::Bootstrap;
+    let instance = ensure_plugin_instance(store, &actor, &plugin_key)
+        .await
+        .map_err(library_err)?;
+    match load_instance_config(store, &instance.id).await {
+        Ok(_) => {}
+        Err(LibraryError::NotFound(_)) => {
+            // No TOML seed. Operator writes the document, then the next enroll
+            // attaches the local deployment.
+            return Ok(());
+        }
+        Err(err) => return Err(library_err(err)),
+    }
+    if !config.database.postgres.enabled {
+        return Ok(());
+    }
+    if !database_plugin_selected(config, &plugin_key, "postgres") {
+        return Ok(());
+    }
+    ensure_plugin_deployment(store, &actor, &instance.id, host_id)
+        .await
+        .map_err(library_err)?;
+    Ok(())
+}
+
+/// Ensures the D1 database instance and, when configured, a deployment.
+///
+/// Never copies `[database.d1]` into the document. A deployment is written only
+/// when an instance document already exists (operator PUT) and D1 is selected.
+///
+/// # Errors
+///
+/// Returns an error when the ledger cannot be read or the deployment row
+/// cannot be written.
+pub async fn enroll_d1_instance(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    let Some(plugin_key) = d1_plugin_key(config)? else {
+        return Ok(());
+    };
+    let actor = ConfigActor::Bootstrap;
+    let instance = ensure_plugin_instance(store, &actor, &plugin_key)
+        .await
+        .map_err(library_err)?;
+    match load_instance_config(store, &instance.id).await {
+        Ok(_) => {}
+        Err(LibraryError::NotFound(_)) => return Ok(()),
+        Err(err) => return Err(library_err(err)),
+    }
+    if !config.database.d1.enabled {
+        return Ok(());
+    }
+    if !database_plugin_selected(config, &plugin_key, "d1") {
+        return Ok(());
+    }
+    ensure_plugin_deployment(store, &actor, &instance.id, host_id)
+        .await
+        .map_err(library_err)?;
+    Ok(())
+}
+
+/// Enrolls first-party database instances that are installed.
+///
+/// # Errors
+///
+/// Returns the first enrollment error. Callers typically warn and continue.
+pub async fn enroll_database_instances(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    enroll_sqlite_instance(store, config, host_id).await?;
+    enroll_postgres_instance(store, config, host_id).await?;
+    enroll_d1_instance(store, config, host_id).await?;
+    Ok(())
+}
+
+/// True when `[database].plugin` names this package (kind token or PluginKey).
+///
+/// Empty occupancy defaults to sqlite (same as [`bookclerk_config::DatabaseConfig`]
+/// serde default), so a fresh files dir still enrolls the platform adapter.
+fn database_plugin_selected(config: &Config, plugin_key: &str, kind: &str) -> bool {
+    let active = config.database.plugin.trim();
+    if active.is_empty() {
+        return kind.eq_ignore_ascii_case("sqlite");
+    }
+    if active.eq_ignore_ascii_case(kind) {
+        return true;
+    }
+    if active == plugin_key {
+        return true;
+    }
+    bookclerk_config::DatabasePluginKind::parse(active)
+        .map(|parsed| parsed.as_str() == kind)
+        .unwrap_or(false)
 }
 
 /// Reconciles every present deployment for `host_id`.

@@ -259,13 +259,52 @@ pub fn graphicaudio_imported_setting_keys() -> &'static [&'static str] {
     KEYS
 }
 
+/// Dotted settings keys retired from file-backed `[database.sqlite]` authority.
+///
+/// `database.sqlite.enabled` and `database.plugin` stay file-backed for now.
+pub fn sqlite_retired_setting_keys() -> &'static [&'static str] {
+    const KEYS: &[&str] = &["database.sqlite.path"];
+    let _ = bookclerk_library::control_plane::SQLITE_SETTING_KEYS;
+    KEYS
+}
+
+/// Dotted settings keys retired from file-backed `[database.postgres]` authority.
+///
+/// `database.postgres.enabled` stays file-backed for now.
+pub fn postgres_retired_setting_keys() -> &'static [&'static str] {
+    const KEYS: &[&str] = &["database.postgres.url", "database.postgres.url_file"];
+    let _ = bookclerk_library::control_plane::POSTGRES_SETTING_KEYS;
+    KEYS
+}
+
+/// Dotted settings keys retired from file-backed `[database.d1]` authority.
+///
+/// `database.d1.enabled` stays file-backed for now. The API token was never TOML.
+pub fn d1_retired_setting_keys() -> &'static [&'static str] {
+    const KEYS: &[&str] = &[
+        "database.d1.account_id",
+        "database.d1.database_id",
+        "database.d1.api_base",
+    ];
+    let _ = bookclerk_library::control_plane::D1_SETTING_KEYS;
+    KEYS
+}
+
 /// True when `key` is a GraphicAudio setting owned by the instance document.
 #[must_use]
 pub fn is_graphicaudio_imported_setting(key: &str) -> bool {
     graphicaudio_imported_setting_keys().contains(&key)
 }
 
-/// Canonical plugin key for the installed GraphicAudio manifest, if any.
+/// True when `key` is a first-party database knob retired from TOML authority.
+#[must_use]
+pub fn is_database_retired_setting(key: &str) -> bool {
+    sqlite_retired_setting_keys().contains(&key)
+        || postgres_retired_setting_keys().contains(&key)
+        || d1_retired_setting_keys().contains(&key)
+}
+
+/// Canonical plugin key for an installed first-party manifest id, if any.
 ///
 /// Discovery wins. The install ledger is the fallback when the tree is recorded
 /// but not currently discovered. A config that was not loaded from a files
@@ -275,29 +314,75 @@ pub fn is_graphicaudio_imported_setting(key: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error when the install ledger cannot be read.
-pub fn graphicaudio_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+pub fn first_party_manifest_plugin_key(
+    config: &bookclerk_config::Config,
+    manifest_id: &str,
+) -> Result<Option<String>> {
     if config.paths.is_none() {
         return Ok(None);
     }
     if let Ok(plugins) = crate::discover_plugins(config) {
-        if let Some(key) = graphicaudio_key_from_discovered(&plugins) {
+        if let Some(key) = manifest_key_from_discovered(&plugins, manifest_id) {
             return Ok(Some(key));
         }
     }
-    graphicaudio_key_from_ledger(config)
+    manifest_key_from_ledger(config, manifest_id)
+}
+
+/// Canonical plugin key for the installed GraphicAudio manifest, if any.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+pub fn graphicaudio_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    first_party_manifest_plugin_key(config, GRAPHICAUDIO_MANIFEST_ID)
+}
+
+/// Canonical plugin key for the installed sqlite database manifest, if any.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+pub fn sqlite_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    first_party_manifest_plugin_key(config, bookclerk_library::control_plane::SQLITE_MANIFEST_ID)
+}
+
+/// Canonical plugin key for the installed postgres database manifest, if any.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+pub fn postgres_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    first_party_manifest_plugin_key(
+        config,
+        bookclerk_library::control_plane::POSTGRES_MANIFEST_ID,
+    )
+}
+
+/// Canonical plugin key for the installed D1 database manifest, if any.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+pub fn d1_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    first_party_manifest_plugin_key(config, bookclerk_library::control_plane::D1_MANIFEST_ID)
 }
 
 /// Plugin key for a discovered GraphicAudio manifest, without reading the disk again.
 #[must_use]
 pub fn graphicaudio_key_from_discovered(plugins: &[crate::DiscoveredPlugin]) -> Option<String> {
+    manifest_key_from_discovered(plugins, GRAPHICAUDIO_MANIFEST_ID)
+}
+
+/// Plugin key for a discovered manifest id, without reading the disk again.
+#[must_use]
+pub fn manifest_key_from_discovered(
+    plugins: &[crate::DiscoveredPlugin],
+    manifest_id: &str,
+) -> Option<String> {
     plugins
         .iter()
-        .find(|plugin| {
-            plugin
-                .manifest
-                .id
-                .eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID)
-        })
+        .find(|plugin| plugin.manifest.id.eq_ignore_ascii_case(manifest_id))
         .map(|plugin| plugin.plugin_key().canonical().to_string())
 }
 
@@ -308,6 +393,19 @@ pub fn graphicaudio_key_from_discovered(plugins: &[crate::DiscoveredPlugin]) -> 
 /// Returns an error when the install ledger cannot be read. A config with no
 /// files directory returns `None`.
 pub fn graphicaudio_key_from_ledger(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    manifest_key_from_ledger(config, GRAPHICAUDIO_MANIFEST_ID)
+}
+
+/// Install-ledger plugin key for `manifest_id` when discovery did not see it.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read. A config with no
+/// files directory returns `None`.
+pub fn manifest_key_from_ledger(
+    config: &bookclerk_config::Config,
+    manifest_id: &str,
+) -> Result<Option<String>> {
     if config.paths.is_none() {
         return Ok(None);
     }
@@ -316,10 +414,7 @@ pub fn graphicaudio_key_from_ledger(config: &bookclerk_config::Config) -> Result
     Ok(ledger
         .artifacts
         .iter()
-        .find(|row| {
-            row.manifest_id
-                .eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID)
-        })
+        .find(|row| row.manifest_id.eq_ignore_ascii_case(manifest_id))
         .map(|row| row.plugin_key.clone()))
 }
 

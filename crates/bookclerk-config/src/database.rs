@@ -122,13 +122,18 @@ impl DatabaseConfig {
     }
 
     /// Resolve the SQLite file path (relative paths join `files_dir`).
+    ///
+    /// Prefer [`resolve_sqlite_library_path`] for live authority: that helper
+    /// ignores `[database.sqlite].path` and uses the code default plus env.
+    /// This method remains for callers that still hold a typed path overlay
+    /// (tests / migrate helpers) and falls back to the code default when unset.
     #[must_use]
     pub fn sqlite_path(&self, files_dir: &std::path::Path) -> PathBuf {
         let raw = self
             .sqlite
             .path
             .clone()
-            .unwrap_or_else(|| PathBuf::from("library.db"));
+            .unwrap_or_else(|| PathBuf::from(SQLITE_DEFAULT_PATH));
         if raw.is_absolute() {
             raw
         } else {
@@ -272,6 +277,32 @@ impl Default for DatabasePostgresConfig {
     }
 }
 
+/// Code-default sqlite library filename (under the files directory).
+///
+/// Not read from `[database.sqlite].path`. Operators change the live value with
+/// `PUT /api/config/plugin-instances/{id}/config` after enrollment.
+pub const SQLITE_DEFAULT_PATH: &str = "library.db";
+
+/// Resolve the sqlite library path for bootstrap / host-private connect.
+///
+/// Authority order: `BOOKCLERK_DATABASE_SQLITE_PATH` env, then the code default
+/// [`SQLITE_DEFAULT_PATH`]. Live `[database.sqlite].path` is not consulted.
+#[must_use]
+pub fn resolve_sqlite_library_path(files_dir: &std::path::Path) -> PathBuf {
+    if let Ok(v) = std::env::var("BOOKCLERK_DATABASE_SQLITE_PATH") {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            let raw = PathBuf::from(trimmed);
+            return if raw.is_absolute() {
+                raw
+            } else {
+                files_dir.join(raw)
+            };
+        }
+    }
+    files_dir.join(SQLITE_DEFAULT_PATH)
+}
+
 /// Resolve the D1 API token from the environment (host-mediated secret).
 ///
 /// Uses `BOOKCLERK_D1_API_TOKEN`, falling back to `CLOUDFLARE_API_TOKEN`.
@@ -299,14 +330,47 @@ pub fn resolve_d1_api_token() -> Result<String> {
     ))
 }
 
-/// Resolve the Postgres connection URL from config (env already applied).
+/// Resolve the Postgres connection URL for bootstrap / host-private connect.
 ///
-/// `url_file` takes precedence over `url`.
+/// Authority order: `BOOKCLERK_DATABASE_POSTGRES_URL_FILE`, then
+/// `BOOKCLERK_DATABASE_POSTGRES_URL`. Live `[database.postgres].url` /
+/// `url_file` are not consulted (aggressive PluginInstance cutover). In-process
+/// tests may still set those fields; prefer env for new code.
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// Returns an error when neither env source yields a non-empty URL and the
+/// transitional typed fields are also empty.
 pub fn resolve_postgres_url(config: &crate::Config) -> Result<String> {
+    if let Ok(path) = std::env::var("BOOKCLERK_DATABASE_POSTGRES_URL_FILE") {
+        let trimmed_path = path.trim();
+        if !trimmed_path.is_empty() {
+            let path = PathBuf::from(trimmed_path);
+            let raw = std::fs::read_to_string(&path).map_err(|e| {
+                ConfigError::Invalid(format!(
+                    "reading BOOKCLERK_DATABASE_POSTGRES_URL_FILE {}: {e}",
+                    path.display()
+                ))
+            })?;
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+            return Err(ConfigError::Invalid(format!(
+                "BOOKCLERK_DATABASE_POSTGRES_URL_FILE {} is empty",
+                path.display()
+            )));
+        }
+    }
+    if let Ok(url) = std::env::var("BOOKCLERK_DATABASE_POSTGRES_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    // Transitional in-process overlay (unit tests / migrate helpers). Not TOML
+    // Settings authority — Settings rejects these keys and settings_table_for
+    // returns empty for first-party postgres.
     if let Some(path) = &config.database.postgres.url_file {
         let raw = std::fs::read_to_string(path).map_err(|e| {
             ConfigError::Invalid(format!("reading postgres url_file {}: {e}", path.display()))
@@ -327,9 +391,9 @@ pub fn resolve_postgres_url(config: &crate::Config) -> Result<String> {
         }
     }
     Err(ConfigError::Invalid(
-        "Postgres URL not configured — set [database.postgres].url, \
-         [database.postgres].url_file, BOOKCLERK_DATABASE_POSTGRES_URL, \
-         or BOOKCLERK_DATABASE_POSTGRES_URL_FILE (see docs/database.md)"
+        "Postgres URL not configured — set BOOKCLERK_DATABASE_POSTGRES_URL or \
+         BOOKCLERK_DATABASE_POSTGRES_URL_FILE, or write PluginInstance CONFIG \
+         (see docs/database.md). [database.postgres] TOML knobs are not authority."
             .into(),
     ))
 }

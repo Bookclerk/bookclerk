@@ -306,7 +306,22 @@ local deployment, and, if the document is absent, imports `access`,
 those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
 TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
 derived from `describe()`, and that schema debt stays until a later phase.
-Other plugins with no instance document keep `settings_table_for`.
+
+First-party **database** adapters cut over aggressively (no TOML import path).
+When `sqlite` is installed and selected, startup ensures one instance, seeds a
+**code-default** document if absent (`path = library.db`), and a local
+deployment. When `postgres` or `d1` is installed, startup ensures the instance
+only; a deployment is attached once an operator-written instance document
+exists and that backend is selected. Live `[database.sqlite]` /
+`[database.postgres]` / `[database.d1]` knobs are not authority and are not
+copied into the document. First-party `settings_table_for` returns empty.
+Bootstrap open (chicken-and-egg before the library holds documents) uses the
+sqlite code default or postgres/D1 **env** vars — never those TOML knobs as
+Settings authority. `[database].plugin` and per-backend `enabled` stay
+file-backed selection for now. Credentials (Postgres URL, D1 API token) never
+appear as plaintext settings. `PATCH /api/settings` rejects the retired
+database keys. Other plugins with no instance document keep
+`settings_table_for`.
 
 Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
 not by `PluginInstanceId`. Two instances of one key share credentials and scan

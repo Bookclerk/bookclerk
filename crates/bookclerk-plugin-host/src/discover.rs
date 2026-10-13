@@ -807,38 +807,30 @@ pub fn settings_table_for(
         crate::PluginFamily::Output if is_first_party_local_output(plugin) => {
             output_local_settings_table(&config.output.local)
         }
+        // First-party databases use PluginInstance CONFIG only. Returning an
+        // empty table keeps transitional callers from applying live TOML knobs.
+        crate::PluginFamily::Database if first_party_database_kind(plugin).is_some() => {
+            toml::Table::new()
+        }
         crate::PluginFamily::Database => database_settings_table(config, plugin),
         crate::PluginFamily::Output => toml::Table::new(),
     }
 }
 
-/// Serializes `[database.<id>]` for the matching database plugin id.
+/// Serializes `[database.<id>]` for a third-party database plugin id.
 ///
-/// First-party verified adapters use their typed config sections; third-party
-/// adapters (including trees that reuse the `sqlite` / `postgres` / `d1`
-/// alias) get the opaque `[database.<id>]` table.
+/// First-party verified adapters no longer receive typed TOML sections here.
 fn database_settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table {
-    let value = match first_party_database_kind(plugin) {
-        Some(DatabasePluginKind::Sqlite) => toml::Value::try_from(&config.database.sqlite),
-        Some(DatabasePluginKind::D1) => toml::Value::try_from(&config.database.d1),
-        Some(DatabasePluginKind::Postgres) => toml::Value::try_from(&config.database.postgres),
-        None => {
-            return config
+    config
+        .database
+        .plugin_table(&plugin.manifest.id)
+        .or_else(|| {
+            config
                 .database
-                .plugin_table(&plugin.manifest.id)
-                .or_else(|| {
-                    config
-                        .database
-                        .plugin_table(&plugin.manifest.id.to_ascii_lowercase())
-                })
-                .cloned()
-                .unwrap_or_default();
-        }
-    };
-    match value {
-        Ok(toml::Value::Table(table)) => table,
-        _ => toml::Table::new(),
-    }
+                .plugin_table(&plugin.manifest.id.to_ascii_lowercase())
+        })
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Serializes `[output.s3]` into the spawn settings table.
@@ -1291,6 +1283,46 @@ binding = "DB"
         assert_eq!(
             found[0].identity.provenance,
             bookclerk_plugin_catalog::PluginProvenance::LocalDevelopment
+        );
+    }
+
+    #[test]
+    fn first_party_database_settings_table_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = tmp.path();
+        let key = bookclerk_plugin_catalog::PluginKey::platform(
+            "bookclerk-plugin-database-sqlite",
+            "sqlite",
+        )
+        .unwrap();
+        let root = files.join("plugins").join(key.fs_id());
+        write_plugin(&root, "sqlite", "databaseAdapter");
+        let manifest = crate::PluginManifest::parse(
+            &std::fs::read_to_string(root.join("plugin.toml")).unwrap(),
+        )
+        .expect("manifest");
+        bookclerk_plugin_catalog::stamp_platform_receipt(
+            &root,
+            files,
+            "bookclerk-plugin-database-sqlite",
+            &manifest,
+            "0.0.0",
+        )
+        .expect("stamp");
+        let mut cfg = Config {
+            paths: Some(bookclerk_config::Paths::from_files_dir(files.to_path_buf())),
+            ..Config::default()
+        };
+        cfg.database.sqlite.path = Some(std::path::PathBuf::from("secret-library.db"));
+        let found = discover_plugins(&cfg).unwrap();
+        let plugin = found
+            .iter()
+            .find(|p| first_party_database_kind(p) == Some(DatabasePluginKind::Sqlite))
+            .expect("stamped sqlite");
+        let table = settings_table(&cfg, plugin);
+        assert!(
+            table.is_empty(),
+            "first-party sqlite must not receive TOML knobs: {table:?}"
         );
     }
 

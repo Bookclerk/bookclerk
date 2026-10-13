@@ -404,6 +404,37 @@ pub(crate) struct PutPluginInstanceConfig {
     secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
 }
 
+/// Selects the schema-1 package policy for an installed plugin key.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+fn instance_package_policy_for(
+    cfg: &bookclerk_config::Config,
+    plugin_key: &str,
+) -> Result<bookclerk_library::control_plane::InstancePackagePolicy, bookclerk_library::LibraryError>
+{
+    use bookclerk_library::control_plane::InstancePackagePolicy;
+    let matches = |manifest_id: &str| {
+        bookclerk_plugin_host::first_party_manifest_plugin_key(cfg, manifest_id)
+            .map(|key| key.as_deref() == Some(plugin_key))
+            .map_err(|err| bookclerk_library::LibraryError::Other(anyhow::anyhow!(err)))
+    };
+    if matches(bookclerk_library::control_plane::GRAPHICAUDIO_MANIFEST_ID)? {
+        return Ok(InstancePackagePolicy::GraphicAudio);
+    }
+    if matches(bookclerk_library::control_plane::SQLITE_MANIFEST_ID)? {
+        return Ok(InstancePackagePolicy::DatabaseSqlite);
+    }
+    if matches(bookclerk_library::control_plane::POSTGRES_MANIFEST_ID)? {
+        return Ok(InstancePackagePolicy::DatabasePostgres);
+    }
+    if matches(bookclerk_library::control_plane::D1_MANIFEST_ID)? {
+        return Ok(InstancePackagePolicy::DatabaseD1);
+    }
+    Ok(InstancePackagePolicy::Generic)
+}
+
 /// `PUT /api/config/plugin-instances/{id}/config`.
 ///
 /// Operator principal only. The route is mounted on the operator router.
@@ -414,7 +445,7 @@ pub async fn put_plugin_instance_config(
 ) -> Result<Json<serde_json::Value>, Response> {
     use bookclerk_library::control_plane::{
         load_plugin_instance, replace_instance_config, InstanceConfigReplace,
-        InstancePackagePolicy, PluginInstanceConfigV1, PluginInstanceId,
+        PluginInstanceConfigV1, PluginInstanceId,
     };
     let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
     let library = state.library_snapshot().await;
@@ -427,12 +458,7 @@ pub async fn put_plugin_instance_config(
             )))
         })?;
     let cfg = state.config.read().await.clone();
-    let policy = match bookclerk_plugin_host::graphicaudio_plugin_key(&cfg)
-        .map_err(|err| events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(err))))?
-    {
-        Some(key) if key == instance.plugin_key => InstancePackagePolicy::GraphicAudio,
-        _ => InstancePackagePolicy::Generic,
-    };
+    let policy = instance_package_policy_for(&cfg, &instance.plugin_key).map_err(events_error)?;
     let document = PluginInstanceConfigV1 {
         settings: body.settings,
         secret_refs: body.secret_refs,

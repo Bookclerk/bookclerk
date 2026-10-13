@@ -467,7 +467,8 @@ impl Config {
         let mut paths = paths;
         paths.config_file = path;
         // Honour `[database.sqlite].path` (and env override) for library.db.
-        paths.library_db = cfg.database.sqlite_path(&paths.files_dir);
+        // Bootstrap authority: env + code default — not `[database.sqlite].path`.
+        paths.library_db = crate::resolve_sqlite_library_path(&paths.files_dir);
         cfg.paths = Some(paths);
         cfg.resolve_relative_paths();
         cfg.register_known_secrets();

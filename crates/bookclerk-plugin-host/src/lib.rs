@@ -104,9 +104,10 @@ pub use consent::{
 };
 pub use crates_io::search_crates_io;
 pub use deployment::{
-    enroll_graphicaudio_instance, load_authorized_local_packages, reconcile_local_deployments,
-    AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
-    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
+    enroll_d1_instance, enroll_database_instances, enroll_graphicaudio_instance,
+    enroll_postgres_instance, enroll_sqlite_instance, load_authorized_local_packages,
+    reconcile_local_deployments, AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn,
+    LiveDeploymentRuntime, LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
 };
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
@@ -131,9 +132,12 @@ pub use install_preflight::{
     install_local_archive_with_configured_aliases, reject_configured_alias_collision,
 };
 pub use instance_bindings::{
+    d1_plugin_key, d1_retired_setting_keys, first_party_manifest_plugin_key,
     graphicaudio_document_exists, graphicaudio_document_exists_for_key,
     graphicaudio_key_from_discovered, graphicaudio_key_from_ledger, graphicaudio_plugin_key,
-    is_graphicaudio_imported_setting, prepare_open_bindings, PreparedOpen,
+    is_database_retired_setting, is_graphicaudio_imported_setting, manifest_key_from_discovered,
+    manifest_key_from_ledger, postgres_plugin_key, postgres_retired_setting_keys,
+    prepare_open_bindings, sqlite_plugin_key, sqlite_retired_setting_keys, PreparedOpen,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{

@@ -1380,6 +1380,18 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
             "GraphicAudio instance import did not complete during reload"
         );
     }
+    if let Err(err) = bookclerk_plugin_host::enroll_database_instances(
+        &library_for_auth,
+        &new_cfg,
+        &control_plane.host.host_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %err,
+            "database instance enrollment did not complete during reload"
+        );
+    }
     let owned =
         crate::registry::deployment_skip_keys(&library_for_auth, &control_plane.host.host_id)
             .await?;
@@ -2324,61 +2336,12 @@ fn built_in_plugin_settings(
                 ),
             ]
         }
-        (bookclerk_plugin_host::PluginFamily::Database, "sqlite") => {
-            let cfg = &config.database.sqlite;
-            vec![plugin_setting_option(
-                format!("{prefix}.path"),
-                "Path",
-                cfg.path
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                "string",
-            )]
-        }
-        (bookclerk_plugin_host::PluginFamily::Database, "d1") => {
-            let cfg = &config.database.d1;
-            vec![
-                plugin_setting_option(
-                    format!("{prefix}.account_id"),
-                    "Account ID",
-                    cfg.account_id.clone(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.database_id"),
-                    "Database ID",
-                    cfg.database_id.clone(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.api_base"),
-                    "API Base",
-                    cfg.api_base.clone(),
-                    "string",
-                ),
-            ]
-        }
-        (bookclerk_plugin_host::PluginFamily::Database, "postgres") => {
-            let cfg = &config.database.postgres;
-            vec![
-                plugin_setting_option(
-                    format!("{prefix}.url"),
-                    "URL",
-                    cfg.url.clone().unwrap_or_default(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.url_file"),
-                    "URL File",
-                    cfg.url_file
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    "string",
-                ),
-            ]
-        }
+        // First-party database knobs live on PluginInstance CONFIG. `enabled`
+        // and `database.plugin` stay file-backed; path/url/d1 ids are not
+        // shown here.
+        (bookclerk_plugin_host::PluginFamily::Database, "sqlite")
+        | (bookclerk_plugin_host::PluginFamily::Database, "d1")
+        | (bookclerk_plugin_host::PluginFamily::Database, "postgres") => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -3477,6 +3440,21 @@ async fn patch_settings(
                 return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
             }
         }
+    }
+    // First-party database knobs are never file-backed (aggressive cutover).
+    if updates
+        .iter()
+        .any(|(key, _)| bookclerk_plugin_host::is_database_retired_setting(key))
+    {
+        tracing::warn!("rejected settings update for database keys retired from TOML authority");
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "plugin_instance_configuration",
+                "message": "database.sqlite.path, database.postgres.url/url_file, and database.d1.account_id/database_id/api_base are stored on the plugin instance; use PUT /api/config/plugin-instances/{id}/config",
+            })),
+        )
+            .into_response());
     }
 
     let _reload_guard = state.reload_lock.lock().await;
@@ -5750,18 +5728,16 @@ mod tests {
             "d1",
             toml::Table::new(),
         );
+        assert!(
+            !d1.settings
+                .iter()
+                .any(|option| bookclerk_plugin_host::is_database_retired_setting(&option.key)),
+            "first-party D1 knobs must not appear in Settings"
+        );
         assert!(d1
             .settings
             .iter()
-            .any(|option| option.key == "database.d1.account_id"));
-        assert!(d1
-            .settings
-            .iter()
-            .any(|option| option.key == "database.d1.database_id"));
-        assert!(d1
-            .settings
-            .iter()
-            .any(|option| option.key == "database.d1.api_base"));
+            .any(|option| option.key == "database.d1.enabled"));
 
         let postgres = build_plugin_settings_group(
             &cfg,
@@ -5769,14 +5745,17 @@ mod tests {
             "postgres",
             toml::Table::new(),
         );
+        assert!(
+            !postgres
+                .settings
+                .iter()
+                .any(|option| bookclerk_plugin_host::is_database_retired_setting(&option.key)),
+            "first-party postgres knobs must not appear in Settings"
+        );
         assert!(postgres
             .settings
             .iter()
-            .any(|option| option.key == "database.postgres.url"));
-        assert!(postgres
-            .settings
-            .iter()
-            .any(|option| option.key == "database.postgres.url_file"));
+            .any(|option| option.key == "database.postgres.enabled"));
     }
 
     #[test]
