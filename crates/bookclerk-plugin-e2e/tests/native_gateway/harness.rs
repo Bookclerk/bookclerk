@@ -295,25 +295,108 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
+/// Pid captured at hold time with enough identity to survive PID reuse.
+///
+/// On Windows the harness holds a process handle opened at capture. Exit waits
+/// poll that handle, so a recycled pid number cannot look "still running".
+/// Unix waits still use [`process_alive`] on the recorded pid (zombies are not
+/// live; recycled pids are rare within the short hold window).
+pub struct TrackedPid {
+    pub pid: u32,
+    #[cfg(windows)]
+    handle: Option<isize>,
+}
+
+impl TrackedPid {
+    /// Record `pid`, opening a Windows process handle when possible.
+    pub fn capture(pid: u32) -> Self {
+        #[cfg(windows)]
+        {
+            Self {
+                pid,
+                handle: windows_open_query_handle(pid),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Self { pid }
+        }
+    }
+
+    /// True while the process identity captured in [`Self::capture`] is live.
+    pub fn alive(&self) -> bool {
+        #[cfg(windows)]
+        {
+            let Some(raw) = self.handle else {
+                // Could not open at capture; do not wait on a bare recycled pid.
+                return false;
+            };
+            windows_handle_still_active(raw)
+        }
+        #[cfg(not(windows))]
+        {
+            process_alive(self.pid)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TrackedPid {
+    fn drop(&mut self) {
+        if let Some(raw) = self.handle.take() {
+            windows_close_handle(raw);
+        }
+    }
+}
+
 /// Live when `OpenProcess` can read `STILL_ACTIVE` (259).
 ///
 /// A missing process, or one that has already exited, is not alive. This does
-/// not parse `tasklist` text, so a nearby pid cannot impersonate `pid`.
+/// not parse `tasklist` text, so a nearby pid cannot impersonate `pid`. Identity
+/// across reuse requires [`TrackedPid`].
 #[cfg(windows)]
 #[allow(unsafe_code)] // OpenProcess / GetExitCodeProcess, same check as the jail tests.
 fn windows_process_alive(pid: u32) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    let Some(raw) = windows_open_query_handle(pid) else {
+        return false;
     };
+    let alive = windows_handle_still_active(raw);
+    windows_close_handle(raw);
+    alive
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_open_query_handle(pid: u32) -> Option<isize> {
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     unsafe {
-        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return false;
-        };
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+            .ok()
+            .map(|handle| handle.0 as isize)
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_handle_still_active(raw: isize) -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Threading::GetExitCodeProcess;
+    unsafe {
+        let handle = HANDLE(raw as *mut std::ffi::c_void);
         let mut code = 0u32;
-        let ok = GetExitCodeProcess(handle, &mut code).is_ok();
-        let _ = CloseHandle(handle);
-        ok && code == 259
+        GetExitCodeProcess(handle, &mut code).is_ok() && code == 259
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_close_handle(raw: isize) {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    if raw == 0 {
+        return;
+    }
+    unsafe {
+        let _ = CloseHandle(HANDLE(raw as *mut std::ffi::c_void));
     }
 }
 
@@ -325,6 +408,19 @@ pub async fn wait_for_exit(pid: u32) {
             "pid {pid} still running {EXIT_TIMEOUT:?} after the session dropped"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Wait until each tracked process identity has exited.
+pub async fn wait_for_tracked_exit(pids: &[TrackedPid], label: &str) {
+    for tracked in pids {
+        let deadline = Instant::now() + EXIT_TIMEOUT;
+        while tracked.alive() {
+            if Instant::now() >= deadline {
+                fail_deadline(&format!("{label}: pid {} still running", tracked.pid));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }
 

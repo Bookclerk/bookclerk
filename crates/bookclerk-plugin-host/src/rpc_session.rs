@@ -2350,6 +2350,9 @@ fn abandoned_revoke_failed(
 /// On Windows the session directory is removed only after the ACL journal
 /// revokes. A failed revoke leaves `acl-journals/<session>.json` beside that
 /// directory, where the gateway cannot delete it.
+///
+/// After signalling, this waits briefly for the Child handles (same budget as
+/// [`reap_siblings`]) so Drop does not race a still-running jail leader.
 fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
     spawned.identities.kill_matching();
     let _ = spawned.child.start_kill();
@@ -2361,6 +2364,18 @@ fn abandon_spawned(mut spawned: crate::spawn_stdio::SpawnedStdio) {
     drop(spawned.session_job.take());
     #[cfg(target_os = "linux")]
     drop(spawned.session_cgroup.take());
+    let wait_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < wait_deadline {
+        let gateway_done = matches!(spawned.child.try_wait(), Ok(Some(_)));
+        let guest_done = match spawned.guest.as_mut() {
+            None => true,
+            Some(guest) => matches!(guest.try_wait(), Ok(Some(_))),
+        };
+        if gateway_done && guest_done {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
     let dir = spawned.session_dir.take();
     #[cfg(windows)]
     let keep_dir = {

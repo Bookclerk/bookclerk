@@ -15,8 +15,8 @@ use bookclerk_plugin_host::{
 use bookclerk_plugin_sdk::CliInvokeParams;
 use ng_harness::{
     kill_pid, linux_fd_count, linux_session_cgroup, open_session, probe, process_alive,
-    session_dirs_under, step, wait_for_exit, Install, Listener, ProcessTree, SETTLE_TIMEOUT,
-    SPAWN_TIMEOUT,
+    session_dirs_under, step, wait_for_exit, wait_for_tracked_exit, Install, Listener, ProcessTree,
+    TrackedPid, SETTLE_TIMEOUT, SPAWN_TIMEOUT,
 };
 
 /// Serializes tests in this binary. `missing_workerd_fails_closed` replaces
@@ -677,17 +677,20 @@ fn hold_pid(dir: &std::path::Path, name: &str) -> Option<u32> {
         .and_then(|text| text.trim().parse().ok())
 }
 
-fn held_pids(dir: &std::path::Path) -> Vec<u32> {
+fn held_pids(dir: &std::path::Path) -> Vec<TrackedPid> {
     let mut pids = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for name in ["gateway_pid", "guest_pid"] {
         let Some(pid) = hold_pid(dir, name) else {
             continue;
         };
-        pids.push(pid);
-        pids.extend(ProcessTree::capture().descendants(pid));
+        for candidate in std::iter::once(pid).chain(ProcessTree::capture().descendants(pid)) {
+            if !seen.insert(candidate) {
+                continue;
+            }
+            pids.push(TrackedPid::capture(candidate));
+        }
     }
-    pids.sort_unstable();
-    pids.dedup();
     pids
 }
 
@@ -705,21 +708,15 @@ async fn wait_until_holding(dir: &std::path::Path) {
 async fn assert_hold_cleaned(
     files: &std::path::Path,
     hold: &std::path::Path,
-    pids: &[u32],
+    pids: &[TrackedPid],
     cgroup: Option<std::path::PathBuf>,
     regs_before: usize,
     mux_before: usize,
     label: &str,
 ) {
-    for pid in pids {
-        let deadline = Instant::now() + ng_harness::EXIT_TIMEOUT;
-        while process_alive(*pid) {
-            if Instant::now() >= deadline {
-                ng_harness::fail_deadline(&format!("{label}: pid {pid} still running"));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
+    // Windows polls the handles opened at hold capture so a recycled pid number
+    // cannot look "still running" after the session Job already tore down.
+    wait_for_tracked_exit(pids, label).await;
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         if session_dirs_under(files).is_empty() {
