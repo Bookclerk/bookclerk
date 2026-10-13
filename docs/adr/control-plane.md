@@ -304,9 +304,10 @@ local deployment, and, if the document is absent, imports `access`,
 `base_url`, `store_url`, `bitrate`, and `container` from
 `[sources.graphicaudio]`. After that document exists it is the authority for
 those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
-TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
-derived from `describe()`, and that schema debt stays until a later phase.
-Other plugins with no instance document keep `settings_table_for`.
+TOML. Writable GraphicAudio settings are validated from a
+`describe().config_options` schema (empty `values` = free-form string). The
+host library has no GraphicAudio key allowlist. Other plugins with no instance
+document keep `settings_table_for`.
 
 Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
 not by `PluginInstanceId`. Two instances of one key share credentials and scan
@@ -363,8 +364,6 @@ Not in this spike, and not claimed as production HA:
   and the health check. Extract runs on a blocking thread. The lock is still
   held across the health await so a second installer cannot commit the same
   tree.
-- GraphicAudio writable settings remain a hard-coded allowlist. They are not
-  derived from `describe()`.
 - Accounts and `SourceScope` stay storefront-keyed. Moving those rows onto
   the plugin instance id is a later phase.
 - D1 multi-host execution. The executing D1 tests in this repository are an

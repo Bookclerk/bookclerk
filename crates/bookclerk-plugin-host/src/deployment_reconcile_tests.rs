@@ -278,7 +278,7 @@ async fn open_world(secrets: bool) -> World {
         &store,
         &actor,
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         &mode_body("device"),
         "import-fxdep",
     )
@@ -609,7 +609,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
             &world.store,
             &actor,
             &instance.id,
-            InstancePackagePolicy::Generic,
+            &InstancePackagePolicy::Generic,
             &mode_body("device"),
             operation,
         )
@@ -702,7 +702,7 @@ async fn newer_config_revision_respawns_with_the_new_value() {
             id: "operator".into(),
         },
         &world.instance_id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         current.revision,
         &mode_body("zip"),
         "bump-mode",
@@ -774,7 +774,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
             id: "operator".into(),
         },
         &world.instance_id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         current.revision,
         &body,
         "add-secret-ref",
@@ -812,7 +812,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
             id: "operator".into(),
         },
         &dangling.instance_id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         current.revision,
         &body,
         "dangling-ref",
@@ -908,7 +908,7 @@ async fn plugin_without_an_instance_keeps_transitional_settings() {
         &store,
         &actor,
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         &mode_body("device"),
         "import-fixture",
     )
@@ -941,7 +941,7 @@ async fn plugin_without_an_instance_keeps_transitional_settings() {
         &store,
         &actor,
         &second.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         &mode_body("zip"),
         "import-fixture-2",
     )
@@ -1119,7 +1119,7 @@ async fn key_lookup_uses_the_document_when_a_deployment_exists() {
         &store,
         &actor,
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         &mode_body("device"),
         "import-lookup",
     )
@@ -1185,7 +1185,7 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
         &store,
         &actor,
         &first.id,
-        InstancePackagePolicy::GraphicAudio,
+        &crate::graphicaudio_package_policy(),
         &ga_body("http://alpha.example", "alpha"),
         "import-alpha",
     )
@@ -1195,7 +1195,7 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
         &store,
         &actor,
         &second.id,
-        InstancePackagePolicy::GraphicAudio,
+        &crate::graphicaudio_package_policy(),
         &ga_body("http://beta.example", "beta"),
         "import-beta",
     )
@@ -1298,7 +1298,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         &store,
         &actor,
         &instance.id,
-        InstancePackagePolicy::GraphicAudio,
+        &crate::graphicaudio_package_policy(),
         &ga_settings("http://live.example"),
         "import-live",
     )

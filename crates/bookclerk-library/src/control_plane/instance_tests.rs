@@ -43,6 +43,83 @@ async fn bootstrap(store: &LibraryStore, files: &std::path::Path) -> ControlPlan
         .expect("bootstrap")
 }
 
+fn ga_policy_schema() -> InstanceSettingsSchema {
+    match ga_policy() {
+        InstancePackagePolicy::Schema(schema) => schema,
+        InstancePackagePolicy::Generic => InstanceSettingsSchema::default(),
+    }
+}
+
+fn ga_policy() -> InstancePackagePolicy {
+    use bookclerk_plugin_abi::{ConfigOption, ConfigOptionValue};
+    InstancePackagePolicy::Schema(InstanceSettingsSchema::from_config_options(&[
+        ConfigOption {
+            key: "access".into(),
+            label: "Access".into(),
+            values: vec![
+                ConfigOptionValue {
+                    id: "web".into(),
+                    label: "Browser Player".into(),
+                },
+                ConfigOptionValue {
+                    id: "zip".into(),
+                    label: "Magento ZIP".into(),
+                },
+                ConfigOptionValue {
+                    id: "device".into(),
+                    label: "Access App".into(),
+                },
+            ],
+        },
+        ConfigOption {
+            key: "base_url".into(),
+            label: "Access API base URL".into(),
+            values: vec![],
+        },
+        ConfigOption {
+            key: "store_url".into(),
+            label: "Store base URL".into(),
+            values: vec![],
+        },
+        ConfigOption {
+            key: "bitrate".into(),
+            label: "Bitrate".into(),
+            values: vec![
+                ConfigOptionValue {
+                    id: "hi".into(),
+                    label: "Hi".into(),
+                },
+                ConfigOptionValue {
+                    id: "lo".into(),
+                    label: "Lo".into(),
+                },
+            ],
+        },
+        ConfigOption {
+            key: "container".into(),
+            label: "Container".into(),
+            values: vec![
+                ConfigOptionValue {
+                    id: "auto".into(),
+                    label: "Auto".into(),
+                },
+                ConfigOptionValue {
+                    id: "m4b".into(),
+                    label: "M4B".into(),
+                },
+                ConfigOptionValue {
+                    id: "mp3".into(),
+                    label: "MP3".into(),
+                },
+                ConfigOptionValue {
+                    id: "flac".into(),
+                    label: "FLAC".into(),
+                },
+            ],
+        },
+    ]))
+}
+
 #[tokio::test]
 async fn plugin_instance_ids_are_stable_uuids_independent_of_key() {
     let _guard = master_key_test_lock_async().await;
@@ -243,7 +320,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &ConfigActor::Bootstrap,
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         &body,
         "import-instance-config",
     )
@@ -275,7 +352,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         imported.revision + 5,
         &body,
         "stale-instance-config",
@@ -301,7 +378,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         imported.revision,
         &bumped,
         "replace-instance-config",
@@ -316,7 +393,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         imported.revision,
         &bumped,
         "replace-instance-config",
@@ -340,7 +417,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         imported.revision,
         &other,
         "replace-instance-config",
@@ -402,7 +479,7 @@ async fn capability_fixtures_share_one_config_address() {
             &store,
             &ConfigActor::Bootstrap,
             &instance.id,
-            InstancePackagePolicy::Generic,
+            &InstancePackagePolicy::Generic,
             &mode_device(),
             &format!("import-fixture-{index}"),
         )
@@ -446,7 +523,7 @@ async fn unknown_instance_schema_fails_read_and_write() {
         &store,
         &ConfigActor::Bootstrap,
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         &mode_device(),
         "import-schema",
     )
@@ -474,7 +551,7 @@ async fn unknown_instance_schema_fails_read_and_write() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &InstancePackagePolicy::Generic,
         1,
         &mode_device(),
         "replace-unknown-schema",
@@ -495,16 +572,14 @@ async fn graphicaudio_allowlist_rejects_unknown_keys() {
         settings,
         secret_refs: Vec::new(),
     };
-    assert!(body.validate(InstancePackagePolicy::GraphicAudio).is_err());
-    let imported = graphicaudio_config_from_pairs([
-        ("access", "device"),
-        ("base_url", "https://example.test"),
-    ])
+    assert!(body.validate(&ga_policy()).is_err());
+    let imported = instance_config_from_pairs(
+        [("access", "device"), ("base_url", "https://example.test")],
+        &ga_policy_schema(),
+    )
     .expect("pairs");
-    imported
-        .validate(InstancePackagePolicy::GraphicAudio)
-        .unwrap();
-    assert!(graphicaudio_config_from_pairs([("access", "nope")]).is_err());
+    imported.validate(&ga_policy()).unwrap();
+    assert!(instance_config_from_pairs([("access", "nope")], &ga_policy_schema()).is_err());
 }
 
 #[tokio::test]

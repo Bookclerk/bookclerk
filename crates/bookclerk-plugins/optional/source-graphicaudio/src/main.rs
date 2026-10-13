@@ -5,11 +5,11 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogHit, ContentSource as ContentSourceRole, Entrypoints,
-    ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams,
-    LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker, PortalAuthMode,
-    PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
-    FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Bindings, Brand, CatalogHit, ConfigOption, ConfigOptionValue,
+    ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
+    HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe,
+    PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
+    ScanParams, ScanSummary, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_source::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
 use bookclerk_source::{CatalogSearchOpts, ContentSource, PurchaseHintOpts};
@@ -47,6 +47,75 @@ impl PluginWorker for GraphicAudioRoot {
                     "https://www.google.com/s2/favicons?domain=graphicaudio.com&sz=128".into(),
                 ),
             }),
+            // Writable instance CONFIG schema (host validates documents from this).
+            // Free-string keys use empty `values`. Keep in lockstep with
+            // `bookclerk_plugin_host::graphicaudio_config_options`.
+            config_options: vec![
+                ConfigOption {
+                    key: "access".into(),
+                    label: "Access".into(),
+                    values: vec![
+                        ConfigOptionValue {
+                            id: "web".into(),
+                            label: "Browser Player".into(),
+                        },
+                        ConfigOptionValue {
+                            id: "zip".into(),
+                            label: "Magento ZIP".into(),
+                        },
+                        ConfigOptionValue {
+                            id: "device".into(),
+                            label: "Access App".into(),
+                        },
+                    ],
+                },
+                ConfigOption {
+                    key: "base_url".into(),
+                    label: "Access API base URL".into(),
+                    values: Vec::new(),
+                },
+                ConfigOption {
+                    key: "store_url".into(),
+                    label: "Store base URL".into(),
+                    values: Vec::new(),
+                },
+                ConfigOption {
+                    key: "bitrate".into(),
+                    label: "Bitrate".into(),
+                    values: vec![
+                        ConfigOptionValue {
+                            id: "hi".into(),
+                            label: "Hi".into(),
+                        },
+                        ConfigOptionValue {
+                            id: "lo".into(),
+                            label: "Lo".into(),
+                        },
+                    ],
+                },
+                ConfigOption {
+                    key: "container".into(),
+                    label: "Container".into(),
+                    values: vec![
+                        ConfigOptionValue {
+                            id: "auto".into(),
+                            label: "Auto".into(),
+                        },
+                        ConfigOptionValue {
+                            id: "m4b".into(),
+                            label: "M4B".into(),
+                        },
+                        ConfigOptionValue {
+                            id: "mp3".into(),
+                            label: "MP3".into(),
+                        },
+                        ConfigOptionValue {
+                            id: "flac".into(),
+                            label: "FLAC".into(),
+                        },
+                    ],
+                },
+            ],
             ..PluginDescribe::default()
         })
     }

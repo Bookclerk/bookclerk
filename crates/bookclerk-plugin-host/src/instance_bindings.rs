@@ -8,7 +8,7 @@ use std::path::Path;
 use bookclerk_library::control_plane::{
     list_plugin_instances_for_key, load_instance_config, load_plugin_instance,
     resolve_instance_bindings, InstanceBindingGrant, PluginInstance, PluginInstanceId,
-    ResolvedInstanceBindings, GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
+    ResolvedInstanceBindings, GRAPHICAUDIO_MANIFEST_ID,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_sdk::{BindingValues, ExtensibleConfig};
@@ -255,7 +255,6 @@ pub fn graphicaudio_imported_setting_keys() -> &'static [&'static str] {
         "sources.graphicaudio.bitrate",
         "sources.graphicaudio.container",
     ];
-    let _ = GRAPHICAUDIO_IMPORT_KEYS;
     KEYS
 }
 

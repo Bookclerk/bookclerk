@@ -14,11 +14,11 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, ensure_plugin_deployment,
-    ensure_plugin_instance, graphicaudio_config_from_pairs, import_instance_config_if_absent,
+    ensure_plugin_instance, import_instance_config_if_absent, instance_config_from_pairs,
     list_present_deployments_for_host, load_instance_config, load_observation,
     load_plugin_instance, resolve_instance_bindings, upsert_observation, ConfigActor,
-    DeploymentObservation, DeploymentStatus, InstanceBindingGrant, InstancePackagePolicy,
-    GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
+    DeploymentObservation, DeploymentStatus, InstanceBindingGrant, InstanceSettingsSchema,
+    GRAPHICAUDIO_MANIFEST_ID,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{
@@ -29,6 +29,7 @@ use chrono::Utc;
 
 use crate::consent::PluginGrantStore;
 use crate::instance_bindings::graphicaudio_plugin_key;
+use crate::instance_schema::{graphicaudio_config_options, graphicaudio_package_policy};
 use crate::Result;
 
 /// Local archive the reconciler may install when the ledger has no row.
@@ -241,13 +242,15 @@ pub async fn enroll_graphicaudio_instance(
     match load_instance_config(store, &instance.id).await {
         Ok(_) => {}
         Err(LibraryError::NotFound(_)) => {
-            let body =
-                graphicaudio_config_from_pairs(graphicaudio_pairs(config)).map_err(library_err)?;
+            let schema =
+                InstanceSettingsSchema::from_config_options(&graphicaudio_config_options());
+            let body = instance_config_from_pairs(graphicaudio_pairs(config, &schema), &schema)
+                .map_err(library_err)?;
             import_instance_config_if_absent(
                 store,
                 &actor,
                 &instance.id,
-                InstancePackagePolicy::GraphicAudio,
+                &graphicaudio_package_policy(),
                 &body,
                 &format!("import-ga-{}", instance.id),
             )
@@ -264,17 +267,18 @@ pub async fn enroll_graphicaudio_instance(
 
 /// Copies non-secret GraphicAudio keys that are present in TOML.
 ///
-/// Absent keys are omitted. `BOOKCLERK_GA_ACCESS` is not consulted.
-fn graphicaudio_pairs(config: &Config) -> Vec<(String, String)> {
+/// Only keys advertised by the describe()-derived schema are imported. Absent
+/// keys are omitted. `BOOKCLERK_GA_ACCESS` is not consulted.
+fn graphicaudio_pairs(config: &Config, schema: &InstanceSettingsSchema) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
-    for key in GRAPHICAUDIO_IMPORT_KEYS {
+    for key in schema.keys() {
         let Some(value) = config.sources.get_string(GRAPHICAUDIO_MANIFEST_ID, key) else {
             continue;
         };
         if value.is_empty() {
             continue;
         }
-        pairs.push(((*key).to_string(), value.to_string()));
+        pairs.push((key.to_string(), value.to_string()));
     }
     pairs
 }

@@ -36,11 +36,11 @@ pub use identity::{
     HostRecord, HOST_IDENTITY_FILE,
 };
 pub use instance_config::{
-    graphicaudio_config_from_pairs, import_instance_config_if_absent, load_instance_config,
+    import_instance_config_if_absent, instance_config_from_pairs, load_instance_config,
     replace_instance_config, resolve_instance_bindings, seal_instance_secret, InstanceBindingGrant,
     InstanceConfigDocument, InstanceConfigReplace, InstancePackagePolicy, InstanceSecretRefV1,
-    PluginInstanceConfigV1, ResolvedInstanceBindings, SettingValue, GRAPHICAUDIO_IMPORT_KEYS,
-    GRAPHICAUDIO_MANIFEST_ID, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
+    InstanceSettingRule, InstanceSettingsSchema, PluginInstanceConfigV1, ResolvedInstanceBindings,
+    SettingValue, GRAPHICAUDIO_MANIFEST_ID, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
     MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{

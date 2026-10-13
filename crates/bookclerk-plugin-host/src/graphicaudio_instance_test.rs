@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use bookclerk_config::{Config, EventsConfig, Isolation};
 use bookclerk_library::control_plane::{
-    create_plugin_instance, import_instance_config_if_absent, ConfigActor, InstancePackagePolicy,
-    PluginInstanceConfigV1, SettingValue,
+    create_plugin_instance, import_instance_config_if_absent, ConfigActor, PluginInstanceConfigV1,
+    SettingValue,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_source::{ContentSource, ScanOptions};
@@ -195,7 +195,7 @@ async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
         &store,
         &actor,
         &instance.id,
-        InstancePackagePolicy::GraphicAudio,
+        &crate::graphicaudio_package_policy(),
         &device_document(&server.uri()),
         "import-ga-test",
     )

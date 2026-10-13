@@ -49,6 +49,7 @@ mod event_publisher;
 mod host;
 mod install_preflight;
 mod instance_bindings;
+mod instance_schema;
 mod jail;
 mod manifest;
 mod registry;
@@ -134,6 +135,10 @@ pub use instance_bindings::{
     graphicaudio_document_exists, graphicaudio_document_exists_for_key,
     graphicaudio_key_from_discovered, graphicaudio_key_from_ledger, graphicaudio_plugin_key,
     is_graphicaudio_imported_setting, prepare_open_bindings, PreparedOpen,
+};
+pub use instance_schema::{
+    graphicaudio_config_options, graphicaudio_package_policy, is_graphicaudio_package,
+    package_policy_from_config_options, package_policy_from_describe,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{

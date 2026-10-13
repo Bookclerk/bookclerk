@@ -430,7 +430,9 @@ pub async fn put_plugin_instance_config(
     let policy = match bookclerk_plugin_host::graphicaudio_plugin_key(&cfg)
         .map_err(|err| events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(err))))?
     {
-        Some(key) if key == instance.plugin_key => InstancePackagePolicy::GraphicAudio,
+        Some(key) if key == instance.plugin_key => {
+            bookclerk_plugin_host::graphicaudio_package_policy()
+        }
         _ => InstancePackagePolicy::Generic,
     };
     let document = PluginInstanceConfigV1 {
@@ -441,7 +443,7 @@ pub async fn put_plugin_instance_config(
         &library,
         &operator_actor(),
         &instance_id,
-        policy,
+        &policy,
         body.expected_revision,
         &document,
         &uuid::Uuid::new_v4().to_string(),
@@ -937,7 +939,7 @@ mod tests {
             &store,
             &actor,
             &instance.id,
-            InstancePackagePolicy::GraphicAudio,
+            &bookclerk_plugin_host::graphicaudio_package_policy(),
             &PluginInstanceConfigV1 {
                 settings,
                 secret_refs: Vec::new(),
@@ -1093,7 +1095,7 @@ mod tests {
                 &store,
                 &actor,
                 &instance.id,
-                InstancePackagePolicy::GraphicAudio,
+                &bookclerk_plugin_host::graphicaudio_package_policy(),
                 &PluginInstanceConfigV1 {
                     settings,
                     secret_refs: Vec::new(),
@@ -1404,7 +1406,7 @@ mod tests {
             &store,
             &actor,
             &source_instance.id,
-            InstancePackagePolicy::GraphicAudio,
+            &bookclerk_plugin_host::graphicaudio_package_policy(),
             &PluginInstanceConfigV1 {
                 settings: source_settings,
                 secret_refs: Vec::new(),
@@ -1433,7 +1435,7 @@ mod tests {
             &store,
             &actor,
             &local_instance.id,
-            InstancePackagePolicy::Generic,
+            &InstancePackagePolicy::Generic,
             &PluginInstanceConfigV1 {
                 settings: local_settings,
                 secret_refs: Vec::new(),
@@ -1707,7 +1709,7 @@ mod tests {
             &store,
             &actor,
             &second_local.id,
-            InstancePackagePolicy::Generic,
+            &InstancePackagePolicy::Generic,
             &PluginInstanceConfigV1 {
                 settings: second_settings,
                 secret_refs: Vec::new(),
@@ -1892,7 +1894,7 @@ mod tests {
             &store,
             &actor,
             &instance.id,
-            InstancePackagePolicy::GraphicAudio,
+            &bookclerk_plugin_host::graphicaudio_package_policy(),
             &PluginInstanceConfigV1 {
                 settings,
                 secret_refs: Vec::new(),

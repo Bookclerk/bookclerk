@@ -1,12 +1,14 @@
 //! Typed plugin-instance configuration and CONFIG / SECRETS resolution.
 //!
 //! The document address is [`DocumentKey::plugin_instance`]. Validation does
-//! not take a plugin family, entrypoint, alias, or host id. GraphicAudio's
-//! extra allowlist is selected by the installed manifest id `graphicaudio`.
+//! not take a plugin family, entrypoint, alias, or host id. Package-specific
+//! writable settings come from a [`InstanceSettingsSchema`] derived from the
+//! guest's `describe().config_options` (or an equivalent package-declared
+//! schema), not from a host hard-coded allowlist.
 
 use std::collections::BTreeMap;
 
-use bookclerk_plugin_abi::ExtensibleConfig;
+use bookclerk_plugin_abi::{ConfigOption, ExtensibleConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,28 +36,69 @@ pub const MAX_INSTANCE_SECRET_REFS: usize = 16;
 /// Maximum UTF-8 size of one string setting.
 pub const MAX_INSTANCE_SETTING_BYTES: usize = 1024;
 
-/// Manifest id that selects the GraphicAudio setting allowlist.
+/// Product GraphicAudio package / manifest id (enrollment and discovery only).
 pub const GRAPHICAUDIO_MANIFEST_ID: &str = "graphicaudio";
 
+/// One writable setting rule from `describe().config_options`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceSettingRule {
+    /// Any string [`SettingValue`] (empty `values` on the wire option).
+    FreeString,
+    /// Closed set of string ids.
+    Enum(Vec<String>),
+}
+
+/// Writable settings schema for one package instance document.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstanceSettingsSchema {
+    /// Allowed setting keys and their value rules.
+    pub settings: BTreeMap<String, InstanceSettingRule>,
+}
+
+impl InstanceSettingsSchema {
+    /// Builds a schema from Cap'n Proto / ABI [`ConfigOption`] rows.
+    ///
+    /// Non-empty `values` ⇒ closed enum. Empty `values` ⇒ free-form string.
+    /// Empty keys are skipped.
+    #[must_use]
+    pub fn from_config_options(options: &[ConfigOption]) -> Self {
+        let mut settings = BTreeMap::new();
+        for option in options {
+            let key = option.key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            let rule = if option.values.is_empty() {
+                InstanceSettingRule::FreeString
+            } else {
+                InstanceSettingRule::Enum(
+                    option
+                        .values
+                        .iter()
+                        .map(|value| value.id.trim().to_string())
+                        .filter(|id| !id.is_empty())
+                        .collect(),
+                )
+            };
+            settings.insert(key.to_string(), rule);
+        }
+        Self { settings }
+    }
+
+    /// Setting keys in sorted order (importable keys when seeding a document).
+    #[must_use]
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.settings.keys().map(String::as_str)
+    }
+}
+
 /// How strictly schema 1 is checked for one package.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstancePackagePolicy {
     /// Scalar settings and secret-ref names only.
     Generic,
-    /// GraphicAudio allowlist, selected by manifest id `graphicaudio`.
-    GraphicAudio,
-}
-
-impl InstancePackagePolicy {
-    /// GraphicAudio when `manifest_id` is the product package id.
-    #[must_use]
-    pub fn from_manifest_id(manifest_id: &str) -> Self {
-        if manifest_id.eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID) {
-            Self::GraphicAudio
-        } else {
-            Self::Generic
-        }
-    }
+    /// Settings must match a describe()-derived (or package-declared) schema.
+    Schema(InstanceSettingsSchema),
 }
 
 /// One scalar setting. Nested objects and arrays are not representable.
@@ -103,8 +146,8 @@ impl PluginInstanceConfigV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error when a key, value, count, or GraphicAudio allowlist fails.
-    pub fn validate(&self, policy: InstancePackagePolicy) -> Result<()> {
+    /// Returns an error when a key, value, count, or package settings schema fails.
+    pub fn validate(&self, policy: &InstancePackagePolicy) -> Result<()> {
         if self.settings.len() > MAX_INSTANCE_SETTINGS {
             return Err(invalid("at most 32 settings are allowed"));
         }
@@ -123,8 +166,8 @@ impl PluginInstanceConfigV1 {
                 return Err(invalid("duplicate secret ref key"));
             }
         }
-        if policy == InstancePackagePolicy::GraphicAudio {
-            validate_graphicaudio(self)?;
+        if let InstancePackagePolicy::Schema(schema) = policy {
+            validate_against_schema(self, schema)?;
         }
         let json = self.to_json()?;
         if json.len() > super::documents::MAX_CONFIGURATION_DOCUMENT_BYTES {
@@ -149,19 +192,17 @@ impl PluginInstanceConfigV1 {
     }
 }
 
-/// GraphicAudio keys copied once from `[sources.graphicaudio]`.
-pub const GRAPHICAUDIO_IMPORT_KEYS: &[&str] =
-    &["access", "base_url", "store_url", "bitrate", "container"];
-
-/// Builds a GraphicAudio document from string pairs.
+/// Builds an instance document from string pairs under a settings schema.
 ///
-/// Unknown keys and an `access` value other than `web`, `zip`, or `device`
-/// fail before any write.
+/// Unknown keys and enum violations fail before any write.
 ///
 /// # Errors
 ///
-/// Returns an error when the pairs fail the GraphicAudio allowlist.
-pub fn graphicaudio_config_from_pairs<I, K, V>(pairs: I) -> Result<PluginInstanceConfigV1>
+/// Returns an error when the pairs fail the schema.
+pub fn instance_config_from_pairs<I, K, V>(
+    pairs: I,
+    schema: &InstanceSettingsSchema,
+) -> Result<PluginInstanceConfigV1>
 where
     I: IntoIterator<Item = (K, V)>,
     K: AsRef<str>,
@@ -170,10 +211,8 @@ where
     let mut settings = BTreeMap::new();
     for (key, value) in pairs {
         let key = key.as_ref().to_string();
-        if !GRAPHICAUDIO_IMPORT_KEYS.contains(&key.as_str()) {
-            return Err(invalid(&format!(
-                "GraphicAudio setting `{key}` is not importable"
-            )));
+        if !schema.settings.contains_key(&key) {
+            return Err(invalid(&format!("setting `{key}` is not importable")));
         }
         settings.insert(key, SettingValue::String(value.as_ref().to_string()));
     }
@@ -181,7 +220,7 @@ where
         settings,
         secret_refs: Vec::new(),
     };
-    body.validate(InstancePackagePolicy::GraphicAudio)?;
+    body.validate(&InstancePackagePolicy::Schema(schema.clone()))?;
     Ok(body)
 }
 
@@ -228,7 +267,7 @@ pub async fn import_instance_config_if_absent(
     store: &LibraryStore,
     actor: &ConfigActor,
     instance_id: &PluginInstanceId,
-    policy: InstancePackagePolicy,
+    policy: &InstancePackagePolicy,
     body: &PluginInstanceConfigV1,
     operation_id: &str,
 ) -> Result<InstanceConfigDocument> {
@@ -276,7 +315,7 @@ pub async fn replace_instance_config(
     store: &LibraryStore,
     actor: &ConfigActor,
     instance_id: &PluginInstanceId,
-    policy: InstancePackagePolicy,
+    policy: &InstancePackagePolicy,
     expected_revision: i64,
     body: &PluginInstanceConfigV1,
     operation_id: &str,
@@ -463,7 +502,7 @@ fn parse_instance_config(stored: StoredDocument) -> Result<InstanceConfigDocumen
     }
     let body: PluginInstanceConfigV1 = serde_json::from_str(&stored.document_json)
         .map_err(|err| invalid(&format!("decode failed: {err}")))?;
-    body.validate(InstancePackagePolicy::Generic)?;
+    body.validate(&InstancePackagePolicy::Generic)?;
     Ok(InstanceConfigDocument {
         body,
         revision: stored.revision,
@@ -472,23 +511,37 @@ fn parse_instance_config(stored: StoredDocument) -> Result<InstanceConfigDocumen
     })
 }
 
-/// GraphicAudio allowlist. `access` is `web`, `zip`, or `device` when present.
-fn validate_graphicaudio(body: &PluginInstanceConfigV1) -> Result<()> {
+/// Enforces a describe()-derived settings schema.
+fn validate_against_schema(
+    body: &PluginInstanceConfigV1,
+    schema: &InstanceSettingsSchema,
+) -> Result<()> {
     for key in body.settings.keys() {
-        if !GRAPHICAUDIO_IMPORT_KEYS.contains(&key.as_str()) {
-            return Err(invalid(&format!(
-                "GraphicAudio setting `{key}` is not allowed"
-            )));
+        if !schema.settings.contains_key(key) {
+            return Err(invalid(&format!("setting `{key}` is not allowed")));
         }
     }
     for (key, value) in &body.settings {
-        let SettingValue::String(text) = value else {
-            return Err(invalid(&format!(
-                "GraphicAudio setting `{key}` must be a string"
-            )));
+        let Some(rule) = schema.settings.get(key) else {
+            continue;
         };
-        if key == "access" && !matches!(text.as_str(), "web" | "zip" | "device") {
-            return Err(invalid("GraphicAudio access must be web, zip, or device"));
+        match rule {
+            InstanceSettingRule::FreeString => {
+                let SettingValue::String(_) = value else {
+                    return Err(invalid(&format!("setting `{key}` must be a string")));
+                };
+            }
+            InstanceSettingRule::Enum(allowed) => {
+                let SettingValue::String(text) = value else {
+                    return Err(invalid(&format!("setting `{key}` must be a string")));
+                };
+                if !allowed.iter().any(|id| id == text) {
+                    return Err(invalid(&format!(
+                        "setting `{key}` must be one of {}",
+                        allowed.join(", ")
+                    )));
+                }
+            }
         }
     }
     Ok(())
