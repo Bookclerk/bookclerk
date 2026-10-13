@@ -117,9 +117,12 @@ pub fn content_kind_from_classic(content_type: i64) -> String {
 pub struct AccountRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
-    /// Store or operator account id this row belongs to.
+    /// Provenance-qualified PluginKey that owns this account. Any instance
+    /// of that plugin, on any host, may act for it.
+    pub plugin_key: String,
+    /// Store or operator account id, unique within one plugin key.
     pub account_id: String,
-    /// Content-source plugin id (`audible`, `libro`, …).
+    /// Display alias of the owning plugin (`audible`, `libro`, …).
     pub source: String,
     /// Store marketplace / locale code (for example `us`, `uk`).
     pub marketplace: String,
@@ -491,9 +494,11 @@ pub struct AccountLinkRecord {
     pub id: i64,
     /// Foreign key to `portal_identities.id`.
     pub identity_id: i64,
+    /// Provenance-qualified PluginKey that owns the account.
+    pub plugin_key: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
-    /// Content-source plugin id (`audible`, `libro`, …).
+    /// Display alias of the owning plugin (`audible`, `libro`, …).
     pub source: String,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: DateTime<Utc>,
@@ -506,7 +511,9 @@ pub struct BookRecord {
     pub id: i64,
     /// Stable UUID for this row (API / foreign-key identity).
     pub uuid: String,
-    /// Content-source plugin id (`audible`, `libro`, …).
+    /// Provenance-qualified PluginKey that owns the account.
+    pub plugin_key: String,
+    /// Display alias of the owning plugin (`audible`, `libro`, …).
     pub source: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
@@ -1401,6 +1408,10 @@ pub struct JobPayload {
     /// Optional title filter (uuid / ASIN / ISBN / product id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Pins the plugin instance that serves the job. `None` routes to the
+    /// plugin's default instance on the claiming host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_instance_id: Option<String>,
     /// Admission source (`api` or `scheduler`).
     #[serde(default)]
     pub trigger: JobTrigger,
@@ -1444,6 +1455,7 @@ impl Default for JobPayload {
             v: JOB_PAYLOAD_VERSION,
             account: None,
             title: None,
+            plugin_instance_id: None,
             trigger: JobTrigger::Api,
             integration_id: None,
             force: false,

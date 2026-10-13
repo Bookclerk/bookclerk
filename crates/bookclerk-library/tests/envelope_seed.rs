@@ -77,11 +77,11 @@ root = "objects"
 /// Inserts 10,000 deterministic books. A second upsert of the first id stays one row.
 async fn seed_books(store: &LibraryStore) {
     store
-        .upsert_account("envelope-a", "us", Some("envelope"), false, "audible")
+        .upsert_account("audible", "envelope-a", "us", Some("envelope"), false, "audible")
         .await
         .unwrap();
     store
-        .upsert_account("envelope-b", "us", Some("envelope"), false, "audible")
+        .upsert_account("audible", "envelope-b", "us", Some("envelope"), false, "audible")
         .await
         .unwrap();
     let started = Instant::now();

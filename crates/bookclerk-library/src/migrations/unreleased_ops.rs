@@ -7,20 +7,24 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_id TEXT NOT NULL UNIQUE,
+        plugin_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         label TEXT,
         scan_enabled INTEGER NOT NULL DEFAULT 1,
-        source TEXT NOT NULL DEFAULT 'audible',
+        source TEXT NOT NULL,
         connection_status TEXT NOT NULL DEFAULT 'active',
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        UNIQUE(plugin_key, account_id)
     )",
     ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_accounts_account_id ON accounts(account_id)"),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS books (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         uuid TEXT NOT NULL UNIQUE,
+        plugin_key TEXT NOT NULL,
         source TEXT NOT NULL,
         account_id TEXT NOT NULL,
         product_id TEXT NOT NULL,
@@ -60,8 +64,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         enrich_updated_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        UNIQUE(source, account_id, product_id),
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+        UNIQUE(plugin_key, account_id, product_id),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid ON books(uuid)"),
@@ -72,7 +76,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // leaves an index created from the older expression in place.
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid_lower ON books(lower(uuid))"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_status ON books(acquire_status)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_account ON books(account_id)"),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_books_account ON books(plugin_key, account_id)",
+    ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)"),
     // Title order for library pages is ASCII case-fold, then code points, then
     // `uuid` in code-point order. SQLite serves the fold with `COLLATE NOCASE`
@@ -86,10 +92,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_books_page_status ON books(acquire_status, title COLLATE NOCASE, uuid)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_page_account ON books(account_id, title COLLATE NOCASE, uuid)",
+        r"CREATE INDEX IF NOT EXISTS idx_books_page_account ON books(plugin_key, account_id, title COLLATE NOCASE, uuid)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_page_account_status ON books(account_id, acquire_status, title COLLATE NOCASE, uuid)",
+        r"CREATE INDEX IF NOT EXISTS idx_books_page_account_status ON books(plugin_key, account_id, acquire_status, title COLLATE NOCASE, uuid)",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_pdf_status ON books(pdf_status)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_tags ON books(tags)"),
@@ -103,13 +109,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_product_id ON books(product_id)"),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS ignored_titles (
-        source TEXT NOT NULL,
+        plugin_key TEXT NOT NULL,
         account_id TEXT NOT NULL,
         product_id TEXT NOT NULL,
         reason TEXT,
         created_at TEXT NOT NULL,
-        PRIMARY KEY (source, account_id, product_id),
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+        PRIMARY KEY (plugin_key, account_id, product_id),
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
     MigrationOp::Schema(
@@ -227,19 +233,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS account_links (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         identity_id INTEGER NOT NULL,
+        plugin_key TEXT NOT NULL,
         account_id TEXT NOT NULL,
         source TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        UNIQUE(identity_id, account_id),
+        UNIQUE(identity_id, plugin_key, account_id),
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE,
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+        FOREIGN KEY(plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_account_links_account ON account_links(account_id)",
+        r"CREATE INDEX IF NOT EXISTS idx_account_links_account ON account_links(plugin_key, account_id)",
     ),
     MigrationOp::Schema(
-        r"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(account_id)",
+        r"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(plugin_key, account_id)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS works (
@@ -855,8 +862,24 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS plugin_instances (
         plugin_instance_id TEXT PRIMARY KEY NOT NULL,
         plugin_key TEXT NOT NULL,
+        display_name TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         created_by TEXT NOT NULL
+    )",
+    ),
+    // Settings schema a host pinned from the installed manifest. Writes from
+    // any API host validate against this row; the installing host refreshes
+    // it when the manifest hash changes.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_schemas (
+        plugin_key TEXT PRIMARY KEY NOT NULL,
+        manifest_id TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        package_version TEXT NOT NULL DEFAULT '',
+        schema_version INTEGER NOT NULL,
+        settings_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        recorded_by_host TEXT NOT NULL
     )",
     ),
     MigrationOp::Schema(
@@ -877,7 +900,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         deployment_id TEXT PRIMARY KEY NOT NULL,
         plugin_instance_id TEXT NOT NULL,
         host_id TEXT NOT NULL,
-        desired TEXT NOT NULL CHECK (desired IN ('present')),
+        desired TEXT NOT NULL CHECK (desired IN ('present', 'absent')),
         revision INTEGER NOT NULL,
         updated_at TEXT NOT NULL,
         updated_by TEXT NOT NULL,
@@ -894,7 +917,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         deployment_id TEXT NOT NULL,
         host_id TEXT NOT NULL,
         incarnation TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('installed', 'running', 'healthy', 'error')),
+        status TEXT NOT NULL CHECK (status IN ('installed', 'running', 'healthy', 'error', 'retired')),
         detail TEXT NOT NULL,
         applied_config_revision INTEGER,
         observed_at TEXT NOT NULL,

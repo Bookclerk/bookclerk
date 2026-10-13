@@ -316,46 +316,58 @@ impl LibraryStore {
 
     /// Upsert an account (updates `scan_enabled` on conflict).
     ///
-    /// `source` is required — there is no audible default. Content sources should
-    /// prefer [`crate::SourceScope::upsert_account`], which forces the plugin id.
+    /// Accounts are keyed by `(plugin_key, account_id)`: the same store id may
+    /// exist under two plugins. `source` is the owning plugin's display alias.
+    /// Content sources should prefer [`crate::SourceScope::upsert_account`],
+    /// which forces both.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn upsert_account(
         &self,
+        plugin_key: &str,
         account_id: &str,
         marketplace: &str,
         label: Option<&str>,
         scan_enabled: bool,
         source: &str,
     ) -> Result<AccountRecord> {
-        self.upsert_account_inner(account_id, marketplace, label, scan_enabled, source, true)
-            .await
+        self.upsert_account_inner(
+            plugin_key,
+            account_id,
+            marketplace,
+            label,
+            scan_enabled,
+            source,
+            true,
+        )
+        .await
     }
 
     /// Ensure an account row exists without overwriting `scan_enabled`.
     ///
-    /// `source` is required — there is no audible default. Content sources should
-    /// prefer [`crate::SourceScope::ensure_account`].
+    /// Content sources should prefer [`crate::SourceScope::ensure_account`].
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn ensure_account(
         &self,
+        plugin_key: &str,
         account_id: &str,
         marketplace: &str,
         label: Option<&str>,
         source: &str,
     ) -> Result<AccountRecord> {
-        self.upsert_account_inner(account_id, marketplace, label, true, source, false)
+        self.upsert_account_inner(plugin_key, account_id, marketplace, label, true, source, false)
             .await
     }
 
     /// Inserts or updates a store account; optionally overwrites `scan_enabled`.
     async fn upsert_account_inner(
         &self,
+        plugin_key: &str,
         account_id: &str,
         marketplace: &str,
         label: Option<&str>,
@@ -363,22 +375,23 @@ impl LibraryStore {
         source: &str,
         update_scan_enabled: bool,
     ) -> Result<AccountRecord> {
+        if plugin_key.is_empty() {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "account `{account_id}` needs an owning plugin key"
+            )));
+        }
         let now = now_str();
         let existing = accounts::Entity::find()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
 
         if let Some(model) = existing {
-            if model.source != source {
-                return Err(LibraryError::Other(anyhow::anyhow!(
-                    "account_id `{account_id}` already exists for source `{}`; \
-                     cannot claim it for source `{source}`",
-                    model.source
-                )));
-            }
             let mut am: accounts::ActiveModel = model.into();
+            // The alias is display only; a renamed plugin keeps its rows.
+            am.source = Set(source.to_string());
             am.marketplace = Set(marketplace.to_string());
             if let Some(label) = label {
                 am.label = Set(Some(label.to_string()));
@@ -393,6 +406,7 @@ impl LibraryStore {
 
         let am = accounts::ActiveModel {
             id: NotSet,
+            plugin_key: Set(plugin_key.to_string()),
             account_id: Set(account_id.to_string()),
             marketplace: Set(marketplace.to_string()),
             label: Set(label.map(str::to_string)),
@@ -406,7 +420,7 @@ impl LibraryStore {
         Ok(map_account(model))
     }
 
-    /// Remap `from` → `to` account ids (books + account row).
+    /// Remap `from` → `to` account ids within one plugin (books + account row).
     ///
     /// Used when classic Libation stored an email `AccountId` and a later
     /// login/scan discovers Audible `customer_id`.
@@ -414,11 +428,12 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn remap_account_id(&self, from: &str, to: &str) -> Result<()> {
+    pub async fn remap_account_id(&self, plugin_key: &str, from: &str, to: &str) -> Result<()> {
         if from == to {
             return Ok(());
         }
         let Some(from_acct) = accounts::Entity::find()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(from))
             .one(&self.db)
             .await
@@ -428,6 +443,7 @@ impl LibraryStore {
         };
 
         let to_acct = accounts::Entity::find()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(to))
             .one(&self.db)
             .await
@@ -439,6 +455,7 @@ impl LibraryStore {
                 // Copy the account row under the new id.
                 let am = accounts::ActiveModel {
                     id: NotSet,
+                    plugin_key: Set(plugin_key.to_string()),
                     account_id: Set(to.to_string()),
                     marketplace: Set(from_acct.marketplace.clone()),
                     label: Set(from_acct.label.clone()),
@@ -461,23 +478,25 @@ impl LibraryStore {
             }
         }
 
-        // Move books that do not already exist under `to` (same source + product_id).
-        let existing_keys: std::collections::HashSet<(String, String)> = books::Entity::find()
+        // Move books that do not already exist under `to` (same product_id).
+        let existing_keys: std::collections::HashSet<String> = books::Entity::find()
+            .filter(books::Column::PluginKey.eq(plugin_key))
             .filter(books::Column::AccountId.eq(to))
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?
             .into_iter()
-            .map(|b| (b.source, b.product_id))
+            .map(|b| b.product_id)
             .collect();
 
         let from_books = books::Entity::find()
+            .filter(books::Column::PluginKey.eq(plugin_key))
             .filter(books::Column::AccountId.eq(from))
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
         for book in from_books {
-            if existing_keys.contains(&(book.source.clone(), book.product_id.clone())) {
+            if existing_keys.contains(&book.product_id) {
                 continue;
             }
             let mut am: books::ActiveModel = book.into();
@@ -488,11 +507,13 @@ impl LibraryStore {
 
         // Drop duplicate product rows left on the old id, then the account.
         books::Entity::delete_many()
+            .filter(books::Column::PluginKey.eq(plugin_key))
             .filter(books::Column::AccountId.eq(from))
             .exec(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
         accounts::Entity::delete_many()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(from))
             .exec(&self.db)
             .await
@@ -507,6 +528,7 @@ impl LibraryStore {
     /// Returns an error when the operation fails.
     pub async fn reconcile_account_id(
         &self,
+        plugin_key: &str,
         canonical_id: &str,
         aliases: &[&str],
         marketplace: &str,
@@ -516,33 +538,70 @@ impl LibraryStore {
     ) -> Result<AccountRecord> {
         for alias in aliases {
             if *alias != canonical_id {
-                self.remap_account_id(alias, canonical_id).await?;
+                self.remap_account_id(plugin_key, alias, canonical_id)
+                    .await?;
             }
         }
-        self.upsert_account(canonical_id, marketplace, label, scan_enabled, source)
-            .await
+        self.upsert_account(
+            plugin_key,
+            canonical_id,
+            marketplace,
+            label,
+            scan_enabled,
+            source,
+        )
+        .await
     }
 
-    /// Loads one account by `account_id`, if present.
-    ///
-    /// # Arguments
-    ///
-    /// * `account_id` - Store account id.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Option<AccountRecord>>` — `Ok` on success.
+    /// Loads one account by `(plugin_key, account_id)`, if present.
     ///
     /// # Errors
     ///
     /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn get_account(&self, account_id: &str) -> Result<Option<AccountRecord>> {
+    pub async fn get_account(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+    ) -> Result<Option<AccountRecord>> {
         Ok(accounts::Entity::find()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
             .map(map_account))
+    }
+
+    /// Every account row with this store id, across plugins.
+    ///
+    /// # Errors
+    ///
+    /// Returns a crate error when the database operation fails.
+    pub async fn find_accounts_by_id(&self, account_id: &str) -> Result<Vec<AccountRecord>> {
+        Ok(accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(account_id))
+            .order_by_asc(accounts::Column::PluginKey)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_account)
+            .collect())
+    }
+
+    /// Resolves one account by store id, failing closed when two plugins own
+    /// that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Conflict`] when the id is ambiguous.
+    pub async fn get_account_unique(&self, account_id: &str) -> Result<Option<AccountRecord>> {
+        let mut rows = self.find_accounts_by_id(account_id).await?;
+        match rows.len() {
+            0 => Ok(None),
+            1 => Ok(rows.pop()),
+            _ => Err(ambiguous_account(account_id, &rows)),
+        }
     }
 
     /// Lists all store accounts in the library database.
@@ -604,20 +663,48 @@ impl LibraryStore {
         self.count_identities().await
     }
 
-    /// Resolve an account row by id or nickname (`label`), case-insensitive.
+    /// Every account whose id or nickname (`label`) matches, case-insensitive.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn find_account(&self, identifier: &str) -> Result<Option<AccountRecord>> {
-        let needle = identifier.to_ascii_lowercase();
-        Ok(self.list_accounts().await?.into_iter().find(|a| {
-            a.account_id.eq_ignore_ascii_case(identifier)
-                || a.label
-                    .as_ref()
-                    .is_some_and(|l| l.eq_ignore_ascii_case(identifier))
-                || a.account_id.to_ascii_lowercase() == needle
-        }))
+    pub async fn find_accounts(&self, identifier: &str) -> Result<Vec<AccountRecord>> {
+        Ok(self
+            .list_accounts()
+            .await?
+            .into_iter()
+            .filter(|a| {
+                a.account_id.eq_ignore_ascii_case(identifier)
+                    || a
+                        .label
+                        .as_ref()
+                        .is_some_and(|l| l.eq_ignore_ascii_case(identifier))
+            })
+            .collect())
+    }
+
+    /// Resolve one account by id or nickname (`label`), case-insensitive.
+    ///
+    /// `plugin_key` narrows the match to one plugin. Without it, a needle that
+    /// matches accounts of two plugins fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Conflict`] when the needle is ambiguous.
+    pub async fn find_account(
+        &self,
+        identifier: &str,
+        plugin_key: Option<&str>,
+    ) -> Result<Option<AccountRecord>> {
+        let mut rows = self.find_accounts(identifier).await?;
+        if let Some(key) = plugin_key {
+            rows.retain(|a| a.plugin_key == key);
+        }
+        match rows.len() {
+            0 => Ok(None),
+            1 => Ok(rows.pop()),
+            _ => Err(ambiguous_account(identifier, &rows)),
+        }
     }
 
     /// Toggle whether an account is included in automatic library scans.
@@ -625,8 +712,14 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn set_scan_enabled(&self, account_id: &str, scan_enabled: bool) -> Result<()> {
+    pub async fn set_scan_enabled(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+        scan_enabled: bool,
+    ) -> Result<()> {
         let model = accounts::Entity::find()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -644,8 +737,9 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn mark_connection_active(&self, account_id: &str) -> Result<()> {
+    pub async fn mark_connection_active(&self, plugin_key: &str, account_id: &str) -> Result<()> {
         let model = accounts::Entity::find()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -664,8 +758,8 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn delete_account_secrets(&self, account_id: &str) -> Result<()> {
-        crate::secrets::delete_secrets_for_account(&self.db, account_id).await
+    pub async fn delete_account_secrets(&self, plugin_key: &str, account_id: &str) -> Result<()> {
+        crate::secrets::delete_secrets_for_account(&self.db, plugin_key, account_id).await
     }
 
     /// Mark bookstore credentials revoked without deleting the account or books.
@@ -673,8 +767,9 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn revoke_credentials(&self, account_id: &str) -> Result<()> {
+    pub async fn revoke_credentials(&self, plugin_key: &str, account_id: &str) -> Result<()> {
         let model = accounts::Entity::find()
+            .filter(accounts::Column::PluginKey.eq(plugin_key))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -972,9 +1067,9 @@ impl LibraryStore {
                     .await
                     .map_err(LibraryError::Orm)?
             };
-            let label_by_account: HashMap<String, Option<String>> = accounts
+            let label_by_account: HashMap<(String, String), Option<String>> = accounts
                 .into_iter()
-                .map(|a| (a.account_id, a.label))
+                .map(|a| ((a.plugin_key, a.account_id), a.label))
                 .collect();
             for link in links {
                 let Some(user_id) = identity_to_user.get(&link.identity_id).copied() else {
@@ -989,7 +1084,10 @@ impl LibraryStore {
                 let hint = UserIntegrationHint {
                     source: link.source,
                     account_id: link.account_id.clone(),
-                    label: label_by_account.get(&link.account_id).cloned().flatten(),
+                    label: label_by_account
+                        .get(&(link.plugin_key.clone(), link.account_id.clone()))
+                        .cloned()
+                        .flatten(),
                 };
                 if !extras
                     .integrations
@@ -2223,8 +2321,13 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn count_account_links_for_account(&self, account_id: &str) -> Result<u64> {
+    pub async fn count_account_links_for_account(
+        &self,
+        plugin_key: &str,
+        account_id: &str,
+    ) -> Result<u64> {
         account_links::Entity::find()
+            .filter(account_links::Column::PluginKey.eq(plugin_key))
             .filter(account_links::Column::AccountId.eq(account_id))
             .count(&self.db)
             .await
@@ -3685,8 +3788,8 @@ impl LibraryStore {
 
     /// Link a bookstore account to a portal identity.
     ///
-    /// Account links are exclusive: an `account_id` may belong to only one
-    /// identity (`idx_account_links_account_exclusive`).
+    /// Account links are exclusive: one `(plugin_key, account_id)` may belong
+    /// to only one identity (`idx_account_links_account_exclusive`).
     ///
     /// # Errors
     ///
@@ -3694,11 +3797,13 @@ impl LibraryStore {
     pub async fn link_account(
         &self,
         identity_id: i64,
+        plugin_key: &str,
         account_id: &str,
         source: &str,
     ) -> Result<crate::models::AccountLinkRecord> {
         let existing = account_links::Entity::find()
             .filter(account_links::Column::IdentityId.eq(identity_id))
+            .filter(account_links::Column::PluginKey.eq(plugin_key))
             .filter(account_links::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -3707,6 +3812,7 @@ impl LibraryStore {
             return Ok(map_account_link(model));
         }
         if let Some(other) = account_links::Entity::find()
+            .filter(account_links::Column::PluginKey.eq(plugin_key))
             .filter(account_links::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -3721,6 +3827,7 @@ impl LibraryStore {
         let am = account_links::ActiveModel {
             id: NotSet,
             identity_id: Set(identity_id),
+            plugin_key: Set(plugin_key.to_string()),
             account_id: Set(account_id.to_string()),
             source: Set(source.to_string()),
             created_at: Set(now_str()),
@@ -3762,9 +3869,15 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn unlink_account(&self, identity_id: i64, account_id: &str) -> Result<()> {
+    pub async fn unlink_account(
+        &self,
+        identity_id: i64,
+        plugin_key: &str,
+        account_id: &str,
+    ) -> Result<()> {
         let res = account_links::Entity::delete_many()
             .filter(account_links::Column::IdentityId.eq(identity_id))
+            .filter(account_links::Column::PluginKey.eq(plugin_key))
             .filter(account_links::Column::AccountId.eq(account_id))
             .exec(&self.db)
             .await
@@ -3799,8 +3912,14 @@ impl LibraryStore {
             book
         };
         let now = now_str();
+        if book.plugin_key.is_empty() {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "book `{}` needs an owning plugin key",
+                book.product_id
+            )));
+        }
         let existing = books::Entity::find()
-            .filter(books::Column::Source.eq(book.source.as_str()))
+            .filter(books::Column::PluginKey.eq(book.plugin_key.as_str()))
             .filter(books::Column::AccountId.eq(book.account_id.as_str()))
             .filter(books::Column::ProductId.eq(book.product_id.as_str()))
             .one(&self.db)
@@ -3822,6 +3941,7 @@ impl LibraryStore {
             };
 
             let mut am: books::ActiveModel = existing.clone().into();
+            am.source = Set(book.source.clone());
             am.asin = Set(book.asin.clone().or(existing.asin.clone()));
             am.isbn = Set(book.isbn.clone().or(existing.isbn.clone()));
             am.marketplace = Set(book.marketplace.clone());
@@ -3878,6 +3998,7 @@ impl LibraryStore {
             let am = books::ActiveModel {
                 id: NotSet,
                 uuid: Set(uuid),
+                plugin_key: Set(book.plugin_key.clone()),
                 source: Set(book.source.clone()),
                 account_id: Set(book.account_id.clone()),
                 product_id: Set(book.product_id.clone()),
@@ -3940,31 +4061,33 @@ impl LibraryStore {
 
     /// Look up a book by uuid, product_id, asin, or isbn for the given account.
     ///
-    /// Prefer exact uuid / product_id matches, then asin, then isbn; ties break
-    /// by `source` ascending.
+    /// Prefer exact uuid / product_id matches, then asin, then isbn. When two
+    /// plugins own the same account id and both match at the same priority,
+    /// the lookup fails closed; pass the plugin key through
+    /// [`Self::get_book_in`] instead.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// Returns [`LibraryError::Conflict`] when the match is ambiguous.
     pub async fn get_book(&self, title_id: &str, account_id: &str) -> Result<Option<BookRecord>> {
-        let mut matches = books::Entity::find()
-            .filter(books::Column::AccountId.eq(account_id))
-            .filter(
-                Condition::any()
-                    .add(books::Column::Uuid.eq(title_id))
-                    .add(books::Column::ProductId.eq(title_id))
-                    .add(books::Column::Asin.eq(title_id))
-                    .add(books::Column::Isbn.eq(title_id)),
-            )
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        matches.sort_by(|a, b| {
-            match_priority(a, title_id)
-                .cmp(&match_priority(b, title_id))
-                .then_with(|| a.source.cmp(&b.source))
-        });
-        matches.into_iter().next().map(map_book).transpose()
+        self.get_book_in(None, title_id, account_id).await
+    }
+
+    /// [`Self::get_book`] narrowed to one plugin key when `plugin_key` is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Conflict`] when the match is ambiguous.
+    pub async fn get_book_in(
+        &self,
+        plugin_key: Option<&str>,
+        title_id: &str,
+        account_id: &str,
+    ) -> Result<Option<BookRecord>> {
+        self.resolve_book_in(plugin_key, title_id, account_id)
+            .await?
+            .map(map_book)
+            .transpose()
     }
 
     /// All ownership rows sharing an ISBN (cross-account / cross-store enrichment).
@@ -4040,7 +4163,22 @@ impl LibraryStore {
 
     /// Resolve `title_id` to the stored public book model, or error if missing.
     async fn resolve_book(&self, title_id: &str, account_id: &str) -> Result<books::Model> {
-        let mut matches = books::Entity::find()
+        self.resolve_book_in(None, title_id, account_id)
+            .await?
+            .ok_or_else(|| LibraryError::NotFound(title_id.into()))
+    }
+
+    /// Best match for `title_id` on `account_id`, optionally within one plugin.
+    ///
+    /// Two rows at the same match priority under different plugin keys are
+    /// ambiguous and fail closed rather than picking one.
+    async fn resolve_book_in(
+        &self,
+        plugin_key: Option<&str>,
+        title_id: &str,
+        account_id: &str,
+    ) -> Result<Option<books::Model>> {
+        let mut query = books::Entity::find()
             .filter(books::Column::AccountId.eq(account_id))
             .filter(
                 Condition::any()
@@ -4048,19 +4186,31 @@ impl LibraryStore {
                     .add(books::Column::ProductId.eq(title_id))
                     .add(books::Column::Asin.eq(title_id))
                     .add(books::Column::Isbn.eq(title_id)),
-            )
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+            );
+        if let Some(key) = plugin_key {
+            query = query.filter(books::Column::PluginKey.eq(key));
+        }
+        let mut matches = query.all(&self.db).await.map_err(LibraryError::Orm)?;
         matches.sort_by(|a, b| {
             match_priority(a, title_id)
                 .cmp(&match_priority(b, title_id))
-                .then_with(|| a.source.cmp(&b.source))
+                .then_with(|| a.plugin_key.cmp(&b.plugin_key))
         });
-        matches
-            .into_iter()
-            .next()
-            .ok_or_else(|| LibraryError::NotFound(title_id.into()))
+        let mut iter = matches.into_iter();
+        let Some(best) = iter.next() else {
+            return Ok(None);
+        };
+        if let Some(next) = iter.next() {
+            if match_priority(&next, title_id) == match_priority(&best, title_id)
+                && next.plugin_key != best.plugin_key
+            {
+                return Err(LibraryError::Conflict(format!(
+                    "title `{title_id}` on account `{account_id}` is owned by both `{}` and `{}`; pass the plugin key",
+                    best.plugin_key, next.plugin_key
+                )));
+            }
+        }
+        Ok(Some(best))
     }
 
     /// Update user-defined fields (tags, ratings, finished) without touching scan metadata.
@@ -4143,9 +4293,11 @@ impl LibraryStore {
     ///
     /// Returns a crate error when the database operation fails or inputs are invalid.
     pub async fn is_ignored(&self, title_id: &str, account_id: &str) -> Result<bool> {
-        let (source, product_id) = self.ignore_key(title_id, account_id).await?;
+        let Some((plugin_key, product_id)) = self.ignore_key(title_id, account_id).await? else {
+            return Ok(false);
+        };
         Ok(ignored_titles::Entity::find()
-            .filter(ignored_titles::Column::Source.eq(source))
+            .filter(ignored_titles::Column::PluginKey.eq(plugin_key))
             .filter(ignored_titles::Column::AccountId.eq(account_id))
             .filter(ignored_titles::Column::ProductId.eq(product_id))
             .one(&self.db)
@@ -4177,10 +4329,14 @@ impl LibraryStore {
         ignored: bool,
         reason: Option<&str>,
     ) -> Result<()> {
-        let (source, product_id) = self.ignore_key(title_id, account_id).await?;
+        let Some((plugin_key, product_id)) = self.ignore_key(title_id, account_id).await? else {
+            return Err(LibraryError::NotFound(format!(
+                "title `{title_id}` is not in the library for account `{account_id}`"
+            )));
+        };
         if ignored {
             let existing = ignored_titles::Entity::find()
-                .filter(ignored_titles::Column::Source.eq(source.as_str()))
+                .filter(ignored_titles::Column::PluginKey.eq(plugin_key.as_str()))
                 .filter(ignored_titles::Column::AccountId.eq(account_id))
                 .filter(ignored_titles::Column::ProductId.eq(product_id.as_str()))
                 .one(&self.db)
@@ -4192,7 +4348,7 @@ impl LibraryStore {
                 am.update(&self.db).await.map_err(LibraryError::Orm)?;
             } else {
                 let am = ignored_titles::ActiveModel {
-                    source: Set(source),
+                    plugin_key: Set(plugin_key),
                     account_id: Set(account_id.to_string()),
                     product_id: Set(product_id),
                     reason: Set(reason.map(str::to_string)),
@@ -4202,7 +4358,7 @@ impl LibraryStore {
             }
         } else {
             ignored_titles::Entity::delete_many()
-                .filter(ignored_titles::Column::Source.eq(source))
+                .filter(ignored_titles::Column::PluginKey.eq(plugin_key))
                 .filter(ignored_titles::Column::AccountId.eq(account_id))
                 .filter(ignored_titles::Column::ProductId.eq(product_id))
                 .exec(&self.db)
@@ -4212,13 +4368,17 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Resolve the `(source, product_id)` ignore key for a title, defaulting to
-    /// Audible + the raw id when the book is unknown.
-    async fn ignore_key(&self, title_id: &str, account_id: &str) -> Result<(String, String)> {
-        Ok(match self.get_book(title_id, account_id).await? {
-            Some(b) => (b.source, b.product_id),
-            None => (String::from("audible"), title_id.to_string()),
-        })
+    /// Resolve the `(plugin_key, product_id)` ignore key for a title. An
+    /// unknown title has no owning plugin and cannot be ignored.
+    async fn ignore_key(
+        &self,
+        title_id: &str,
+        account_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        Ok(self
+            .get_book(title_id, account_id)
+            .await?
+            .map(|b| (b.plugin_key, b.product_id)))
     }
 
     /// Updates acquire status, storage key, and optional error message.
@@ -5873,7 +6033,10 @@ pub struct NewBook {
     pub uuid: Option<String>,
     /// Storefront product id (ASIN, ISBN, UUID, …).
     pub product_id: String,
-    /// Content-source plugin id (`audible`, `libro`, …).
+    /// Provenance-qualified PluginKey that owns the account. Forced by the
+    /// scope on write.
+    pub plugin_key: String,
+    /// Display alias of the owning plugin (`audible`, `libro`, …).
     pub source: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
@@ -5958,7 +6121,8 @@ impl NewBook {
     /// Minimal Audible book row with scan metadata defaults.
     ///
     /// Sets `product_id` from the first argument, `asin = Some(product_id)`,
-    /// `isbn = None`, `uuid = None` (auto), and `source = "audible"`.
+    /// `isbn = None`, `uuid = None` (auto), and `plugin_key = source =
+    /// "audible"` (a [`crate::SourceScope`] replaces both on write).
     #[must_use]
     pub fn minimal(
         product_id: impl Into<String>,
@@ -5972,6 +6136,7 @@ impl NewBook {
             asin: Some(product_id.clone()),
             isbn: None,
             product_id,
+            plugin_key: String::from("audible"),
             source: String::from("audible"),
             account_id: account_id.into(),
             marketplace: marketplace.into(),
@@ -6542,10 +6707,23 @@ fn parse_dt_opt(value: Option<&str>) -> Option<chrono::DateTime<Utc>> {
     value.map(parse_dt)
 }
 
+/// Conflict error naming every plugin that owns a matching account.
+fn ambiguous_account(needle: &str, rows: &[AccountRecord]) -> LibraryError {
+    let owners: Vec<String> = rows
+        .iter()
+        .map(|a| format!("{} ({})", a.source, a.plugin_key))
+        .collect();
+    LibraryError::Conflict(format!(
+        "account `{needle}` matches more than one plugin ({}); pass --source",
+        owners.join(", ")
+    ))
+}
+
 /// Maps an `accounts` row to [`AccountRecord`] (`scan_enabled` is stored as 0/1).
 fn map_account(m: accounts::Model) -> AccountRecord {
     AccountRecord {
         id: m.id,
+        plugin_key: m.plugin_key,
         account_id: m.account_id,
         source: m.source,
         marketplace: m.marketplace,
@@ -6675,6 +6853,7 @@ fn map_account_link(m: account_links::Model) -> crate::models::AccountLinkRecord
     crate::models::AccountLinkRecord {
         id: m.id,
         identity_id: m.identity_id,
+        plugin_key: m.plugin_key,
         account_id: m.account_id,
         source: m.source,
         created_at: parse_dt(&m.created_at),
@@ -6925,6 +7104,7 @@ fn map_book(m: books::Model) -> Result<BookRecord> {
     Ok(BookRecord {
         id: m.id,
         uuid: m.uuid,
+        plugin_key: m.plugin_key,
         source: m.source,
         account_id: m.account_id,
         product_id: m.product_id,

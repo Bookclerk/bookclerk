@@ -746,7 +746,8 @@ pub async fn list_secrets(
     Ok(rows.into_iter().map(model_to_record).collect())
 }
 
-/// Delete integration-account secrets for `account_id`.
+/// Delete integration-account secrets for `account_id` under `provider`
+/// (the owning plugin key).
 ///
 /// Operator-typed secrets (e.g. S3 destination credentials) are never
 /// matched — they have `account_type = "operator"` and survive account
@@ -755,9 +756,14 @@ pub async fn list_secrets(
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn delete_secrets_for_account(db: &DatabaseConnection, account_id: &str) -> Result<()> {
+pub async fn delete_secrets_for_account(
+    db: &DatabaseConnection,
+    provider: &str,
+    account_id: &str,
+) -> Result<()> {
     encrypted_secrets::Entity::delete_many()
         .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
+        .filter(encrypted_secrets::Column::Provider.eq(provider))
         .filter(encrypted_secrets::Column::AccountId.eq(account_id))
         .exec(db)
         .await
@@ -1162,7 +1168,7 @@ mod tests {
         upsert_secret(&db, &s3_rec).await.unwrap();
 
         // Deleting integration secrets for "alice" must not touch the operator S3 row.
-        delete_secrets_for_account(&db, "alice").await.unwrap();
+        delete_secrets_for_account(&db, "audible", "alice").await.unwrap();
 
         let auth = get_secret(
             &db,
@@ -1189,7 +1195,7 @@ mod tests {
         assert!(s3.is_some(), "operator S3 row must survive");
 
         // Also: deleting integration "default" must not delete the operator S3 row.
-        delete_secrets_for_account(&db, "default").await.unwrap();
+        delete_secrets_for_account(&db, "s3", "default").await.unwrap();
         let s3_still = get_secret(
             &db,
             secret_kind::S3,

@@ -1,12 +1,15 @@
 //! Typed plugin-instance configuration and CONFIG / SECRETS resolution.
 //!
-//! The document address is [`DocumentKey::plugin_instance`]. Validation does
-//! not take a plugin family, entrypoint, alias, or host id. GraphicAudio's
-//! extra allowlist is selected by the installed manifest id `graphicaudio`.
+//! The document address is [`DocumentKey::plugin_instance`]. A document holds
+//! only the operator's overrides and secret ref names; the plugin's pinned
+//! `[[settings]]` schema (see [`super::schemas`]) supplies types, enum values,
+//! and defaults. Validation takes that schema and nothing else: no plugin
+//! family, entrypoint, alias, or host id, and no per-plugin allowlist in the
+//! host.
 
 use std::collections::BTreeMap;
 
-use bookclerk_plugin_abi::ExtensibleConfig;
+use bookclerk_plugin_abi::{is_valid_setting_key, ExtensibleConfig, SettingsSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -33,30 +36,6 @@ pub const MAX_INSTANCE_SECRET_REFS: usize = 16;
 
 /// Maximum UTF-8 size of one string setting.
 pub const MAX_INSTANCE_SETTING_BYTES: usize = 1024;
-
-/// Manifest id that selects the GraphicAudio setting allowlist.
-pub const GRAPHICAUDIO_MANIFEST_ID: &str = "graphicaudio";
-
-/// How strictly schema 1 is checked for one package.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstancePackagePolicy {
-    /// Scalar settings and secret-ref names only.
-    Generic,
-    /// GraphicAudio allowlist, selected by manifest id `graphicaudio`.
-    GraphicAudio,
-}
-
-impl InstancePackagePolicy {
-    /// GraphicAudio when `manifest_id` is the product package id.
-    #[must_use]
-    pub fn from_manifest_id(manifest_id: &str) -> Self {
-        if manifest_id.eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID) {
-            Self::GraphicAudio
-        } else {
-            Self::Generic
-        }
-    }
-}
 
 /// One scalar setting. Nested objects and arrays are not representable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -99,12 +78,37 @@ impl PluginInstanceConfigV1 {
         }
     }
 
-    /// Rejects schema-1 documents this binary will not store.
+    /// Rejects documents whose settings or secret refs the plugin does not
+    /// declare, or whose values do not fit the declared types.
     ///
     /// # Errors
     ///
-    /// Returns an error when a key, value, count, or GraphicAudio allowlist fails.
-    pub fn validate(&self, policy: InstancePackagePolicy) -> Result<()> {
+    /// Returns an error naming the first offending key.
+    pub fn validate(&self, schema: &SettingsSchema) -> Result<()> {
+        self.validate_shape()?;
+        for (key, value) in &self.settings {
+            let json = serde_json::to_value(value)
+                .map_err(|err| invalid(&format!("encode failed: {err}")))?;
+            schema.check_setting(key, &json).map_err(|msg| invalid(&msg))?;
+        }
+        for secret_ref in &self.secret_refs {
+            schema
+                .check_secret_key(&secret_ref.key)
+                .map_err(|msg| invalid(&msg))?;
+        }
+        Ok(())
+    }
+
+    /// Rejects documents this binary will not store regardless of schema:
+    /// key grammar, scalar kinds, counts, and size.
+    ///
+    /// Reads use this so a document written under an older manifest still
+    /// loads; spawn drops the keys the current schema no longer declares.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a key, value, or count fails.
+    pub fn validate_shape(&self) -> Result<()> {
         if self.settings.len() > MAX_INSTANCE_SETTINGS {
             return Err(invalid("at most 32 settings are allowed"));
         }
@@ -122,9 +126,6 @@ impl PluginInstanceConfigV1 {
             if seen_keys.insert(secret_ref.key.as_str(), ()).is_some() {
                 return Err(invalid("duplicate secret ref key"));
             }
-        }
-        if policy == InstancePackagePolicy::GraphicAudio {
-            validate_graphicaudio(self)?;
         }
         let json = self.to_json()?;
         if json.len() > super::documents::MAX_CONFIGURATION_DOCUMENT_BYTES {
@@ -149,40 +150,68 @@ impl PluginInstanceConfigV1 {
     }
 }
 
-/// GraphicAudio keys copied once from `[sources.graphicaudio]`.
-pub const GRAPHICAUDIO_IMPORT_KEYS: &[&str] =
-    &["access", "base_url", "store_url", "bitrate", "container"];
-
-/// Builds a GraphicAudio document from string pairs.
+/// Sets `key` to `value` in `settings`, or removes it when `value` is `None`.
 ///
-/// Unknown keys and an `access` value other than `web`, `zip`, or `device`
-/// fail before any write.
+/// The CLI and API use this for one-key edits; the full document still goes
+/// through [`replace_instance_config`] with the pinned schema.
+pub fn set_setting(body: &mut PluginInstanceConfigV1, key: &str, value: Option<SettingValue>) {
+    match value {
+        Some(value) => {
+            body.settings.insert(key.to_string(), value);
+        }
+        None => {
+            body.settings.remove(key);
+        }
+    }
+}
+
+/// Adds a secret ref for `key` whose sealed row is named `key`, replacing an
+/// existing ref for the same key.
+pub fn set_secret_ref(body: &mut PluginInstanceConfigV1, key: &str) {
+    body.secret_refs.retain(|r| r.key != key);
+    body.secret_refs.push(InstanceSecretRefV1 {
+        key: key.to_string(),
+        name: key.to_string(),
+    });
+    body.secret_refs.sort_by(|a, b| a.key.cmp(&b.key));
+}
+
+/// Parses an operator-typed value for `key` according to the schema.
+///
+/// Enum and string settings take the text as given; `bool` accepts
+/// `true`/`false`; `integer` a signed decimal. Secrets are rejected here:
+/// seal them with [`seal_instance_secret`] and add a ref.
 ///
 /// # Errors
 ///
-/// Returns an error when the pairs fail the GraphicAudio allowlist.
-pub fn graphicaudio_config_from_pairs<I, K, V>(pairs: I) -> Result<PluginInstanceConfigV1>
-where
-    I: IntoIterator<Item = (K, V)>,
-    K: AsRef<str>,
-    V: AsRef<str>,
-{
-    let mut settings = BTreeMap::new();
-    for (key, value) in pairs {
-        let key = key.as_ref().to_string();
-        if !GRAPHICAUDIO_IMPORT_KEYS.contains(&key.as_str()) {
+/// Returns an error when `key` is unknown or `text` does not fit its kind.
+pub fn parse_setting_text(schema: &SettingsSchema, key: &str, text: &str) -> Result<SettingValue> {
+    use bookclerk_plugin_abi::SettingKind;
+    let spec = schema
+        .get(key)
+        .ok_or_else(|| invalid(&format!("setting `{key}` is not declared by the plugin")))?;
+    let value = match spec.kind {
+        SettingKind::Secret => {
             return Err(invalid(&format!(
-                "GraphicAudio setting `{key}` is not importable"
-            )));
+                "setting `{key}` is a secret; use the secret write path"
+            )))
         }
-        settings.insert(key, SettingValue::String(value.as_ref().to_string()));
-    }
-    let body = PluginInstanceConfigV1 {
-        settings,
-        secret_refs: Vec::new(),
+        SettingKind::Bool => match text.trim() {
+            "true" | "1" | "yes" | "on" => SettingValue::Bool(true),
+            "false" | "0" | "no" | "off" => SettingValue::Bool(false),
+            _ => return Err(invalid(&format!("setting `{key}` must be true or false"))),
+        },
+        SettingKind::Integer => SettingValue::Number(
+            text.trim()
+                .parse::<i64>()
+                .map_err(|_| invalid(&format!("setting `{key}` must be an integer")))?
+                .into(),
+        ),
+        SettingKind::String | SettingKind::Enum => SettingValue::String(text.to_string()),
     };
-    body.validate(InstancePackagePolicy::GraphicAudio)?;
-    Ok(body)
+    let json = serde_json::to_value(&value).map_err(|err| invalid(&format!("encode failed: {err}")))?;
+    spec.check_value(&json).map_err(|msg| invalid(&msg))?;
+    Ok(value)
 }
 
 /// A parsed instance document plus its revision.
@@ -228,7 +257,7 @@ pub async fn import_instance_config_if_absent(
     store: &LibraryStore,
     actor: &ConfigActor,
     instance_id: &PluginInstanceId,
-    policy: InstancePackagePolicy,
+    schema: &SettingsSchema,
     body: &PluginInstanceConfigV1,
     operation_id: &str,
 ) -> Result<InstanceConfigDocument> {
@@ -236,7 +265,7 @@ pub async fn import_instance_config_if_absent(
     if let Some(existing) = load_document(store, &key).await? {
         return parse_instance_config(existing);
     }
-    body.validate(policy)?;
+    body.validate(schema)?;
     let json = body.to_json()?;
     let stored = import_if_absent(
         store,
@@ -276,12 +305,12 @@ pub async fn replace_instance_config(
     store: &LibraryStore,
     actor: &ConfigActor,
     instance_id: &PluginInstanceId,
-    policy: InstancePackagePolicy,
+    schema: &SettingsSchema,
     expected_revision: i64,
     body: &PluginInstanceConfigV1,
     operation_id: &str,
 ) -> Result<InstanceConfigReplace> {
-    body.validate(policy)?;
+    body.validate(schema)?;
     let json = body.to_json()?;
     match replace_document(
         store,
@@ -318,21 +347,24 @@ pub struct InstanceBindingGrant {
 /// `CONFIG` and `SECRETS` payloads for one instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedInstanceBindings {
-    /// Granted settings as `application/json`.
+    /// Schema defaults merged with the document, as `application/json`.
     pub config: ExtensibleConfig,
     /// Granted secret values as `application/json`, or an empty payload.
     pub secrets: ExtensibleConfig,
     /// Document revision applied by this resolution.
     pub config_revision: i64,
+    /// Document keys the schema no longer declares; dropped from `config`.
+    pub dropped_keys: Vec<String>,
 }
 
-/// Resolves `CONFIG` and `SECRETS` for `instance_id`.
+/// Resolves `CONFIG` and `SECRETS` for `instance_id` against `schema`.
 ///
-/// The only inputs are the instance id and the grant already resolved for its
-/// plugin key. A missing document, a dangling secret ref, a secret that fails
-/// to unseal, a missing `config` grant, or secret refs without a `secrets`
-/// grant fails resolution. An empty ref list with no `secrets` grant yields
-/// the empty secrets payload.
+/// `CONFIG` is the schema's defaults overlaid with the document's settings.
+/// Keys the schema does not declare are dropped and reported; a required key
+/// with neither a value nor a default fails. A missing document, a dangling
+/// secret ref, a secret that fails to unseal, a missing `config` grant, or
+/// secret refs without a `secrets` grant fails resolution. An empty ref list
+/// with no `secrets` grant yields the empty secrets payload.
 ///
 /// # Errors
 ///
@@ -341,6 +373,7 @@ pub async fn resolve_instance_bindings(
     store: &LibraryStore,
     instance_id: &PluginInstanceId,
     grant: &InstanceBindingGrant,
+    schema: &SettingsSchema,
 ) -> Result<ResolvedInstanceBindings> {
     let instance = load_plugin_instance(store, instance_id)
         .await?
@@ -351,12 +384,27 @@ pub async fn resolve_instance_bindings(
             "plugin grant lacks config; instance deployment cannot spawn",
         ));
     }
-    let secrets = resolve_secrets(store, &instance, &document.body, grant.secrets).await?;
-    let config = ExtensibleConfig::json(&document.body.settings_json());
+    let settings: BTreeMap<String, Value> = document
+        .body
+        .settings
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
+        .collect();
+    let effective = schema.effective_config(&settings);
+    if !effective.missing.is_empty() {
+        return Err(invalid(&format!(
+            "required settings are not set: {}",
+            effective.missing.join(", ")
+        )));
+    }
+    let secrets = resolve_secrets(store, &instance, &document.body, grant.secrets, schema).await?;
+    let object: serde_json::Map<String, Value> = effective.config.into_iter().collect();
+    let config = ExtensibleConfig::json(&Value::Object(object));
     Ok(ResolvedInstanceBindings {
         config,
         secrets,
         config_revision: document.revision,
+        dropped_keys: effective.dropped,
     })
 }
 
@@ -401,8 +449,14 @@ async fn resolve_secrets(
     instance: &super::instances::PluginInstance,
     body: &PluginInstanceConfigV1,
     grant_secrets: bool,
+    schema: &SettingsSchema,
 ) -> Result<ExtensibleConfig> {
-    if body.secret_refs.is_empty() {
+    let refs: Vec<&InstanceSecretRefV1> = body
+        .secret_refs
+        .iter()
+        .filter(|r| schema.check_secret_key(&r.key).is_ok())
+        .collect();
+    if refs.is_empty() {
         return Ok(ExtensibleConfig::default());
     }
     if !grant_secrets {
@@ -411,7 +465,7 @@ async fn resolve_secrets(
         ));
     }
     let mut object = serde_json::Map::new();
-    for secret_ref in &body.secret_refs {
+    for secret_ref in refs {
         let row = get_secret(
             store.db(),
             secret_kind::PLUGIN_INSTANCE,
@@ -463,7 +517,7 @@ fn parse_instance_config(stored: StoredDocument) -> Result<InstanceConfigDocumen
     }
     let body: PluginInstanceConfigV1 = serde_json::from_str(&stored.document_json)
         .map_err(|err| invalid(&format!("decode failed: {err}")))?;
-    body.validate(InstancePackagePolicy::Generic)?;
+    body.validate_shape()?;
     Ok(InstanceConfigDocument {
         body,
         revision: stored.revision,
@@ -472,40 +526,9 @@ fn parse_instance_config(stored: StoredDocument) -> Result<InstanceConfigDocumen
     })
 }
 
-/// GraphicAudio allowlist. `access` is `web`, `zip`, or `device` when present.
-fn validate_graphicaudio(body: &PluginInstanceConfigV1) -> Result<()> {
-    for key in body.settings.keys() {
-        if !GRAPHICAUDIO_IMPORT_KEYS.contains(&key.as_str()) {
-            return Err(invalid(&format!(
-                "GraphicAudio setting `{key}` is not allowed"
-            )));
-        }
-    }
-    for (key, value) in &body.settings {
-        let SettingValue::String(text) = value else {
-            return Err(invalid(&format!(
-                "GraphicAudio setting `{key}` must be a string"
-            )));
-        };
-        if key == "access" && !matches!(text.as_str(), "web" | "zip" | "device") {
-            return Err(invalid("GraphicAudio access must be web, zip, or device"));
-        }
-    }
-    Ok(())
-}
-
 /// Setting and secret-ref keys use the schema-1 grammar.
 fn validate_key(key: &str, label: &str) -> Result<()> {
-    let mut chars = key.chars();
-    let Some(first) = chars.next() else {
-        return Err(invalid(&format!(
-            "{label} key must match ^[a-z][a-z0-9_]{{0,63}}$"
-        )));
-    };
-    let ok = first.is_ascii_lowercase()
-        && key.len() <= 64
-        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
-    if !ok {
+    if !is_valid_setting_key(key) {
         return Err(invalid(&format!(
             "{label} key must match ^[a-z][a-z0-9_]{{0,63}}$"
         )));

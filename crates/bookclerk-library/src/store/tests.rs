@@ -16,7 +16,7 @@ async fn account_and_book_roundtrip() {
             .unwrap(),
     );
     let acct = store
-        .upsert_account("user-1", "us", Some("Main"), true, "audible")
+        .upsert_account("audible", "user-1", "us", Some("Main"), true, "audible")
         .await
         .unwrap();
     assert_eq!(acct.account_id, "user-1");
@@ -80,15 +80,15 @@ async fn same_isbn_multi_account_and_source() {
             .unwrap(),
     );
     store
-        .upsert_account("user-1", "us", None, true, "audible")
+        .upsert_account("audible", "user-1", "us", None, true, "audible")
         .await
         .unwrap();
     store
-        .upsert_account("user-2", "us", None, true, "audible")
+        .upsert_account("audible", "user-2", "us", None, true, "audible")
         .await
         .unwrap();
     store
-        .upsert_account("libro-1", "us", None, true, "libro")
+        .upsert_account("libro", "libro-1", "us", None, true, "libro")
         .await
         .unwrap();
 
@@ -103,6 +103,7 @@ async fn same_isbn_multi_account_and_source() {
     let libro = NewBook {
         uuid: None,
         product_id: "9781234567890".into(),
+        plugin_key: "libro".into(),
         source: "libro".into(),
         account_id: "libro-1".into(),
         asin: None,
@@ -142,7 +143,7 @@ async fn libro_rescan_preserves_audible_enrichment() {
             .unwrap(),
     );
     store
-        .upsert_account("libro-1", "us", None, true, "libro")
+        .upsert_account("libro", "libro-1", "us", None, true, "libro")
         .await
         .unwrap();
 
@@ -150,6 +151,7 @@ async fn libro_rescan_preserves_audible_enrichment() {
     let initial = NewBook {
         uuid: None,
         product_id: isbn.into(),
+        plugin_key: "libro".into(),
         source: "libro".into(),
         account_id: "libro-1".into(),
         asin: None,
@@ -223,13 +225,14 @@ async fn download_product_id_is_source_native() {
             .unwrap(),
     );
     store
-        .upsert_account("libro-1", "us", None, true, "libro")
+        .upsert_account("libro", "libro-1", "us", None, true, "libro")
         .await
         .unwrap();
     let book = store
         .upsert_book(&NewBook {
             uuid: None,
             product_id: "9789999999999".into(),
+            plugin_key: "libro".into(),
             source: "libro".into(),
             account_id: "libro-1".into(),
             asin: Some("B00FROMAD".into()),
@@ -264,14 +267,14 @@ async fn ensure_account_preserves_scan_enabled() {
             .unwrap(),
     );
     store
-        .upsert_account("user-1", "us", Some("Main"), false, "audible")
+        .upsert_account("audible", "user-1", "us", Some("Main"), false, "audible")
         .await
         .unwrap();
     store
-        .ensure_account("user-1", "us", Some("Main"), "audible")
+        .ensure_account("audible", "user-1", "us", Some("Main"), "audible")
         .await
         .unwrap();
-    let acct = store.get_account("user-1").await.unwrap().unwrap();
+    let acct = store.get_account("audible", "user-1").await.unwrap().unwrap();
     assert!(!acct.scan_enabled);
 }
 
@@ -283,11 +286,11 @@ async fn upsert_account_source_persists() {
             .unwrap(),
     );
     let acct = store
-        .upsert_account("libro-1", "us", Some("Libro"), true, "libro")
+        .upsert_account("libro", "libro-1", "us", Some("Libro"), true, "libro")
         .await
         .unwrap();
     assert_eq!(acct.source, "libro");
-    let again = store.get_account("libro-1").await.unwrap().unwrap();
+    let again = store.get_account("libro", "libro-1").await.unwrap().unwrap();
     assert_eq!(again.source, "libro");
 }
 
@@ -299,7 +302,7 @@ async fn remap_account_moves_books() {
             .unwrap(),
     );
     store
-        .upsert_account("email@example.com", "us", Some("Main"), true, "audible")
+        .upsert_account("audible", "email@example.com", "us", Some("Main"), true, "audible")
         .await
         .unwrap();
     store
@@ -313,17 +316,17 @@ async fn remap_account_moves_books() {
         .unwrap();
 
     store
-        .remap_account_id("email@example.com", "amzn1.account.CID")
+        .remap_account_id("audible", "email@example.com", "amzn1.account.CID")
         .await
         .unwrap();
 
     assert!(store
-        .get_account("email@example.com")
+        .get_account("audible", "email@example.com")
         .await
         .unwrap()
         .is_none());
     assert!(store
-        .get_account("amzn1.account.CID")
+        .get_account("audible", "amzn1.account.CID")
         .await
         .unwrap()
         .is_some());
@@ -342,7 +345,7 @@ async fn ignored_titles_roundtrip() {
             .unwrap(),
     );
     store
-        .upsert_account("user-1", "us", None, true, "audible")
+        .upsert_account("audible", "user-1", "us", None, true, "audible")
         .await
         .unwrap();
     store
@@ -370,15 +373,15 @@ async fn revoke_keeps_books_and_portal_tickets_work() {
             .unwrap(),
     );
     store
-        .upsert_account("user-1", "us", Some("Main"), true, "audible")
+        .upsert_account("audible", "user-1", "us", Some("Main"), true, "audible")
         .await
         .unwrap();
     store
         .upsert_book(&NewBook::minimal("B00TEST", "user-1", "us", "Test"))
         .await
         .unwrap();
-    store.revoke_credentials("user-1").await.unwrap();
-    let acct = store.get_account("user-1").await.unwrap().unwrap();
+    store.revoke_credentials("audible", "user-1").await.unwrap();
+    let acct = store.get_account("audible", "user-1").await.unwrap().unwrap();
     assert!(!acct.scan_enabled);
     assert_eq!(acct.connection_status, "revoked");
     assert!(store.get_book("B00TEST", "user-1").await.unwrap().is_some());
@@ -408,15 +411,15 @@ async fn revoke_keeps_books_and_portal_tickets_work() {
     assert!(store.redeem_claim_ticket("abc123hash").await.is_err());
 
     store
-        .link_account(identity.id, "user-1", "audible")
+        .link_account(identity.id, "audible", "user-1", "audible")
         .await
         .unwrap();
     let links = store.list_account_links(identity.id).await.unwrap();
     assert_eq!(links.len(), 1);
-    store.mark_connection_active("user-1").await.unwrap();
+    store.mark_connection_active("audible", "user-1").await.unwrap();
     assert_eq!(
         store
-            .get_account("user-1")
+            .get_account("audible", "user-1")
             .await
             .unwrap()
             .unwrap()
@@ -433,7 +436,7 @@ async fn account_links_are_exclusive_per_account_id() {
             .unwrap(),
     );
     store
-        .upsert_account("acct-x", "us", Some("X"), true, "audible")
+        .upsert_account("audible", "acct-x", "us", Some("X"), true, "audible")
         .await
         .unwrap();
     let a = store
@@ -444,12 +447,12 @@ async fn account_links_are_exclusive_per_account_id() {
         .upsert_portal_identity("p", "b", Some("B"))
         .await
         .unwrap();
-    store.link_account(a.id, "acct-x", "audible").await.unwrap();
-    assert!(store.link_account(b.id, "acct-x", "audible").await.is_err());
-    store.unlink_account(a.id, "acct-x").await.unwrap();
+    store.link_account(a.id, "audible", "acct-x", "audible").await.unwrap();
+    assert!(store.link_account(b.id, "audible", "acct-x", "audible").await.is_err());
+    store.unlink_account(a.id, "audible", "acct-x").await.unwrap();
     assert_eq!(
         store
-            .count_account_links_for_account("acct-x")
+            .count_account_links_for_account("audible", "acct-x")
             .await
             .unwrap(),
         0
@@ -2056,7 +2059,7 @@ async fn count_books_waits_out_a_peer_sqlite_lock() {
         .expect("schema");
     let store = LibraryStore::from_connection(db);
     store
-        .upsert_account("user-1", "us", None, true, "audible")
+        .upsert_account("audible", "user-1", "us", None, true, "audible")
         .await
         .expect("account");
     store
@@ -2091,7 +2094,7 @@ async fn count_books_waits_out_a_peer_sqlite_lock() {
 async fn completed_acquire_is_not_repeated_unsafely() {
     let store = test_store().await;
     store
-        .upsert_account("user-1", "us", None, true, "audible")
+        .upsert_account("audible", "user-1", "us", None, true, "audible")
         .await
         .unwrap();
     let book = store
@@ -2135,7 +2138,7 @@ async fn completed_acquire_is_not_repeated_unsafely() {
 async fn orphaned_downloading_book_is_reconciled() {
     let store = test_store().await;
     store
-        .upsert_account("user-1", "us", None, true, "audible")
+        .upsert_account("audible", "user-1", "us", None, true, "audible")
         .await
         .unwrap();
     let book = store
@@ -4317,7 +4320,7 @@ async fn postgres_concurrent_event_claims_respect_in_flight_cap() {
 async fn acquire_status_and_outbox_commit_together() {
     let store = test_store().await;
     store
-        .upsert_account("user-1", "us", None, true, "audible")
+        .upsert_account("audible", "user-1", "us", None, true, "audible")
         .await
         .unwrap();
     let book = store
@@ -6477,7 +6480,7 @@ async fn execute_guest_atomic_allow_tables_selects_books() {
     )
     .with_db_capabilities(bookclerk_plugin_abi::DbCapabilities::advertised_sqlite());
     store
-        .upsert_account("user-1", "us", Some("Main"), true, "audible")
+        .upsert_account("audible", "user-1", "us", Some("Main"), true, "audible")
         .await
         .unwrap();
     let mut book = NewBook::minimal("B00GUEST", "user-1", "us", "Guest Book");

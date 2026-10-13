@@ -9,8 +9,9 @@ pub struct Model {
     /// Surrogate primary key assigned by the database.
     #[sea_orm(primary_key)]
     pub id: i64,
-    /// Store or operator account id this row belongs to.
-    #[sea_orm(unique)]
+    /// Provenance-qualified PluginKey that owns this account.
+    pub plugin_key: String,
+    /// Store or operator account id, unique within one plugin key.
     pub account_id: String,
     /// Store marketplace / locale code (for example `us`, `uk`).
     pub marketplace: String,
@@ -18,7 +19,7 @@ pub struct Model {
     pub label: Option<String>,
     /// When nonzero/true, scheduled scans include this account.
     pub scan_enabled: i64,
-    /// Content-source plugin id (`audible`, `libro`, …).
+    /// Display alias of the owning plugin (`audible`, `libro`, …).
     pub source: String,
     /// Credential health: `active` or `revoked` (books retained).
     pub connection_status: String,
