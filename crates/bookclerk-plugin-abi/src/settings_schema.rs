@@ -393,6 +393,8 @@ pub struct EffectiveConfig {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_panics_doc)]
+
     use super::*;
 
     fn spec(key: &str, kind: SettingKind) -> SettingSpec {

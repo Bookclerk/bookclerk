@@ -40,6 +40,8 @@ pub fn package_version_order(local: &str, pinned: &str) -> Result<Ordering, Stri
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::missing_panics_doc)]
+
     use super::*;
 
     #[test]
