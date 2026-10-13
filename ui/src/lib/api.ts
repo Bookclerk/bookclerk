@@ -2049,6 +2049,14 @@ export async function putPluginDeployment(
   return parseJson<PluginDeploymentView>(res);
 }
 
+/**
+ * Writes bootstrap settings (`daemon`, `jail`, `[database]` keys) through
+ * `PATCH /api/settings`. Plugin settings are not accepted here: they are
+ * instance documents, written with {@link putPluginInstanceConfig}.
+ *
+ * @param body - Settings updates to apply.
+ * @returns The settings view after the write.
+ */
 export async function patchSettings(body: { settings: SettingsUpdate[] }): Promise<SettingsResponse> {
   const res = await fetch("/api/settings", {
     method: "PATCH",

@@ -22,8 +22,8 @@ pub const ID: &str = "chirp";
 
 /// Chirp storefront adapter implementing [`ContentSource`].
 ///
-/// Prefer [`ChirpSource::from_config`] when registering with the host; use
-/// [`ChirpSource::with_graphql_url`] for wiremock / staging.
+/// Construct with [`ChirpSource::new`]; use [`ChirpSource::with_graphql_url`]
+/// for wiremock / staging.
 #[derive(Debug, Clone)]
 pub struct ChirpSource {
     /// Chirp GraphQL origin; production default or a wiremock/staging override.

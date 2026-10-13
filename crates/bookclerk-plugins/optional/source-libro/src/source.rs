@@ -27,8 +27,8 @@ const ALIASES: &[&str] = &["libro.fm", "librofm"];
 
 /// Libro.fm storefront adapter implementing [`ContentSource`].
 ///
-/// Prefer [`LibroSource::from_config`] when registering with the host; use
-/// [`LibroSource::with_base_url`] for wiremock / staging.
+/// Construct with [`LibroSource::new`]; use [`LibroSource::with_base_url`]
+/// for wiremock / staging.
 #[derive(Debug, Clone)]
 pub struct LibroSource {
     /// Libro.fm API origin (production default, or a wiremock / staging URL).

@@ -37,11 +37,12 @@ pub const ID: &str = "audible";
 
 /// Audible storefront adapter implementing [`ContentSource`].
 ///
-/// Construct with [`AudibleSource::from_config`] for host registration, or
-/// [`AudibleSource::new`] / [`AudibleSource::with_bitrate`] in tests.
+/// Construct with [`AudibleSource::new`]; the host delivers the instance's
+/// `bitrate` setting through `CONFIG` at open, and tests use
+/// [`AudibleSource::with_bitrate`] directly.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AudibleSource {
-    /// License bitrate tier (`[sources.audible] bitrate`).
+    /// License bitrate tier (the instance's `bitrate` setting).
     pub bitrate: AudioQuality,
 }
 
