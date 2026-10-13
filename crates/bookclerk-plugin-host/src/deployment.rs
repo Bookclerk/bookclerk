@@ -464,14 +464,14 @@ async fn reconcile_one(
             .await
         {
             let mut detail = err;
-            if let Err(rollback) = Installer::rollback(&outcome) {
+            if let Err(rollback) = Installer::rollback_with_lock(&lock, &outcome) {
                 detail = format!("{detail}; rollback: {rollback}");
             }
             drop(lock);
             note(DeploymentStatus::Error, detail, None).await;
             return Ok(());
         }
-        if let Err(err) = Installer::commit(&outcome) {
+        if let Err(err) = Installer::commit_with_lock(&lock, &outcome) {
             drop(lock);
             note(DeploymentStatus::Error, err.to_string(), None).await;
             return Ok(());

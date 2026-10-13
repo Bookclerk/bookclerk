@@ -86,6 +86,9 @@ fn run_child(op: &str) -> Result<(), String> {
 }
 
 /// Installs one archive into the child files dir (acquires the host lock).
+///
+/// Holds [`PluginMutationLock`] across stage + commit so a peer child's
+/// `recover_pending` cannot discard this staged tree mid-flight.
 fn child_install() -> Result<(), String> {
     let files_dir = env_path(FILES_DIR_ENV)?;
     let archive = env_path(ARCHIVE_ENV)?;
@@ -111,9 +114,10 @@ fn child_install() -> Result<(), String> {
         name: archive.display().to_string(),
         version: "1.0.0".into(),
     };
-    let out = Installer::install_from_manifest(&manifest, &coord, &opts)
+    let lock = PluginMutationLock::acquire(&files_dir).map_err(|err| err.to_string())?;
+    let out = Installer::install_from_manifest_with_lock(&lock, &manifest, &coord, &opts)
         .map_err(|err| err.to_string())?;
-    Installer::commit(&out).map_err(|err| err.to_string())?;
+    Installer::commit_with_lock(&lock, &out).map_err(|err| err.to_string())?;
     Ok(())
 }
 

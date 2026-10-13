@@ -479,11 +479,42 @@ impl Installer {
     /// backup created during the swap. Retry-safe when the marker is already
     /// gone and the destination already holds the new receipt.
     ///
+    /// Acquires the host mutation lock for `plugin_root`'s files dir. Callers
+    /// that already hold [`PluginMutationLock`] across stage → health → commit
+    /// must use [`Self::commit_with_lock`] instead (a second lock deadlocks).
+    ///
     /// # Errors
     ///
-    /// Returns when the staged tree cannot be promoted, the ledger cannot be
-    /// written, or leftover backup cleanup fails after a successful activate.
+    /// Returns when the lock cannot be taken, the staged tree cannot be
+    /// promoted, the ledger cannot be written, or leftover backup cleanup
+    /// fails after a successful activate.
     pub fn commit(outcome: &InstallOutcome) -> Result<()> {
+        let _lock = acquire_plugins_lock(
+            outcome
+                .plugin_root
+                .parent()
+                .ok_or_else(|| CatalogError::message("install path has no parent"))?,
+        )?;
+        Self::commit_locked(outcome)
+    }
+
+    /// [`Self::commit`] while already holding the host-local mutation lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns when `lock` does not cover this install's plugins root, or when
+    /// activate fails (same as [`Self::commit`]).
+    pub fn commit_with_lock(lock: &PluginMutationLock, outcome: &InstallOutcome) -> Result<()> {
+        let plugins_root = outcome
+            .plugin_root
+            .parent()
+            .ok_or_else(|| CatalogError::message("install path has no parent"))?;
+        lock.require_plugins_root(plugins_root)?;
+        Self::commit_locked(outcome)
+    }
+
+    /// Activate body. Caller already holds the host mutation lock (or none).
+    fn commit_locked(outcome: &InstallOutcome) -> Result<()> {
         if outcome.dry_run {
             return Ok(());
         }
@@ -505,10 +536,40 @@ impl Installer {
     /// deletes the staged tree and pending marker only. Retry-safe when the
     /// staged tree is already gone.
     ///
+    /// Acquires the host mutation lock. Callers that already hold
+    /// [`PluginMutationLock`] must use [`Self::rollback_with_lock`].
+    ///
     /// # Errors
     ///
-    /// Returns when the staged tree or pending marker cannot be removed.
+    /// Returns when the lock cannot be taken, or the staged tree or pending
+    /// marker cannot be removed.
     pub fn rollback(outcome: &InstallOutcome) -> Result<()> {
+        let _lock = acquire_plugins_lock(
+            outcome
+                .plugin_root
+                .parent()
+                .ok_or_else(|| CatalogError::message("install path has no parent"))?,
+        )?;
+        Self::rollback_locked(outcome)
+    }
+
+    /// [`Self::rollback`] while already holding the host-local mutation lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns when `lock` does not cover this install's plugins root, or when
+    /// discard fails (same as [`Self::rollback`]).
+    pub fn rollback_with_lock(lock: &PluginMutationLock, outcome: &InstallOutcome) -> Result<()> {
+        let plugins_root = outcome
+            .plugin_root
+            .parent()
+            .ok_or_else(|| CatalogError::message("install path has no parent"))?;
+        lock.require_plugins_root(plugins_root)?;
+        Self::rollback_locked(outcome)
+    }
+
+    /// Discard body. Caller already holds the host mutation lock (or none).
+    fn rollback_locked(outcome: &InstallOutcome) -> Result<()> {
         if outcome.dry_run {
             return Ok(());
         }
@@ -1209,12 +1270,14 @@ fn activate_staged_install(outcome: &InstallOutcome) -> Result<()> {
     }
 
     if let Some(marker) = &outcome.pending_marker {
-        if marker.exists() {
-            fs::remove_file(marker).map_err(|err| {
-                CatalogError::message(format!(
+        match fs::remove_file(marker) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(CatalogError::message(format!(
                     "plugin installation activated but pending marker cleanup failed: {err}"
-                ))
-            })?;
+                )));
+            }
         }
     }
 
@@ -1246,13 +1309,15 @@ fn discard_staged_install(outcome: &InstallOutcome) -> Result<()> {
     }
     if let Some(marker) = &outcome.pending_marker {
         let marker = require_mutable_child(plugins_root, marker)?;
-        if marker.exists() {
-            fs::remove_file(&marker).map_err(|err| {
-                CatalogError::message(format!(
+        match fs::remove_file(&marker) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(CatalogError::message(format!(
                     "failed to remove pending install marker {}: {err}",
                     marker.display()
-                ))
-            })?;
+                )));
+            }
         }
     }
     Ok(())
@@ -1314,12 +1379,16 @@ fn recover_pending_installs(plugins_root: &Path) -> Result<()> {
                 remove_dir_retry(&staged)?;
             }
         }
-        fs::remove_file(&marker_path).map_err(|err| {
-            CatalogError::message(format!(
-                "failed to remove pending install marker {}: {err}",
-                marker_path.display()
-            ))
-        })?;
+        match fs::remove_file(&marker_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(CatalogError::message(format!(
+                    "failed to remove pending install marker {}: {err}",
+                    marker_path.display()
+                )));
+            }
+        }
     }
     Ok(())
 }

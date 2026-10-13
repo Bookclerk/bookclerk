@@ -833,11 +833,11 @@ async fn run_install(
         if let Err(err) = health_check_staged(config, &outcome.health_root).await {
             return Err(health_failure_after_rollback(
                 err,
-                Installer::rollback(&outcome),
+                Installer::rollback_with_lock(&mutation_lock, &outcome),
                 "install rolled back",
             ));
         }
-        commit_install_cleanup(&outcome)?;
+        commit_install_cleanup(&mutation_lock, &outcome)?;
     }
 
     let payload = json!({
@@ -938,11 +938,11 @@ async fn run_update(
             if let Err(err) = health_check_staged(config, &outcome.health_root).await {
                 return Err(health_failure_after_rollback(
                     err,
-                    Installer::rollback(&outcome),
+                    Installer::rollback_with_lock(&mutation_lock, &outcome),
                     "previous version restored",
                 ));
             }
-            commit_install_cleanup(&outcome)?;
+            commit_install_cleanup(&mutation_lock, &outcome)?;
         }
         results.push(json!({
             "id": plugin.manifest.id,
@@ -2297,8 +2297,11 @@ fn health_failure_after_rollback(
 }
 
 /// Surfaces commit cleanup failure without implying the install itself rolled back.
-fn commit_install_cleanup(outcome: &InstallOutcome) -> anyhow::Result<()> {
-    Installer::commit(outcome).map_err(|err| {
+fn commit_install_cleanup(
+    lock: &PluginMutationLock,
+    outcome: &InstallOutcome,
+) -> anyhow::Result<()> {
+    Installer::commit_with_lock(lock, outcome).map_err(|err| {
         anyhow::anyhow!(
             "plugin health succeeded but install activate/commit failed: {err:#}; \
              the live plugins/ tree was not updated; a staged tree may remain under \
