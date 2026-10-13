@@ -86,7 +86,6 @@ impl InstanceSettingsSchema {
     }
 
     /// Setting keys in sorted order (importable keys when seeding a document).
-    #[must_use]
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.settings.keys().map(String::as_str)
     }
