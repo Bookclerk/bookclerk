@@ -89,7 +89,9 @@ impl PluginInstanceConfigV1 {
         for (key, value) in &self.settings {
             let json = serde_json::to_value(value)
                 .map_err(|err| invalid(&format!("encode failed: {err}")))?;
-            schema.check_setting(key, &json).map_err(|msg| invalid(&msg))?;
+            schema
+                .check_setting(key, &json)
+                .map_err(|msg| invalid(&msg))?;
         }
         for secret_ref in &self.secret_refs {
             schema
@@ -209,7 +211,8 @@ pub fn parse_setting_text(schema: &SettingsSchema, key: &str, text: &str) -> Res
         ),
         SettingKind::String | SettingKind::Enum => SettingValue::String(text.to_string()),
     };
-    let json = serde_json::to_value(&value).map_err(|err| invalid(&format!("encode failed: {err}")))?;
+    let json =
+        serde_json::to_value(&value).map_err(|err| invalid(&format!("encode failed: {err}")))?;
     spec.check_value(&json).map_err(|msg| invalid(&msg))?;
     Ok(value)
 }

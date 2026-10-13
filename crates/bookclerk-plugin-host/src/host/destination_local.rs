@@ -8,65 +8,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bookclerk_config::{normalize_storage_prefix, Config};
-use bookclerk_plugin_sdk::{BindingValues, PRODUCT_API_VERSION};
+use bookclerk_config::Config;
+use bookclerk_plugin_sdk::PRODUCT_API_VERSION;
 use serde_json::Value;
 
 use crate::discover::DiscoveredPlugin;
-use crate::protocol::OutputLocalContextDto;
 use crate::rpc_session::{PluginSession, PluginStorage};
 use crate::Result as PluginResult;
-
-/// Manifest id of the platform local-filesystem destination guest.
-const LOCAL_PLUGIN_ID: &str = "local";
-
-/// Absolute local output root: `output.local.root`, or that path joined to `files_dir` when relative.
-fn resolved_local_output_root(config: &Config) -> PathBuf {
-    let root = &config.output.local.root;
-    if root.is_absolute() {
-        root.clone()
-    } else {
-        config.paths().files_dir.join(root)
-    }
-}
-
-/// Spawns the local output guest when enabled and records it in `registry`.
-///
-/// # Errors
-///
-/// Returns the spawn / `open` error when the guest cannot start; the caller
-/// decides whether the host may run without local output.
-pub(crate) async fn try_load_local(
-    plugin: &DiscoveredPlugin,
-    config: &Config,
-    store: Option<&bookclerk_library::LibraryStore>,
-    registry: &mut super::destination::DestinationRegistry,
-) -> PluginResult<()> {
-    if plugin.manifest.id != LOCAL_PLUGIN_ID {
-        return Ok(());
-    }
-    if !config.output.local.enabled {
-        tracing::debug!(id = %plugin.manifest.id, "local output disabled in config; skipping external plugin");
-        return Ok(());
-    }
-    if plugin.manifest.api_version != PRODUCT_API_VERSION {
-        tracing::warn!(
-            id = %plugin.manifest.id,
-            api_version = plugin.manifest.api_version,
-            "local output plugin is not api_version 2; skipping"
-        );
-        return Ok(());
-    }
-    let (storage, session) = spawn_local_guest(plugin, config, store, None).await?;
-    tracing::info!(
-        id = %plugin.manifest.id,
-        path = %plugin.command.display(),
-        "loaded external local output plugin (api_version 2)"
-    );
-    registry.set_local(Arc::new(storage));
-    registry.set_plugin_session(session);
-    Ok(())
-}
 
 /// Spawns the local destination with bindings the deployment already resolved.
 ///
@@ -78,51 +26,18 @@ pub(crate) async fn spawn_local_prepared(
     config: &Config,
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
-    spawn_local_guest(plugin, config, None, Some(prepared)).await
-}
-
-/// Spawns the local destination as an external Cap'n Proto guest.
-async fn spawn_local_guest(
-    plugin: &DiscoveredPlugin,
-    config: &Config,
-    store: Option<&bookclerk_library::LibraryStore>,
-    prepared_override: Option<crate::instance_bindings::PreparedOpen>,
-) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
-    let prepared = match prepared_override {
-        Some(prepared) => prepared,
-        None => {
-            let table = crate::settings_table(config, plugin);
-            let transitional = toml_to_json(&toml::Value::Table(table));
-            crate::instance_bindings::prepare_open_bindings(
-                store,
-                &config.paths().files_dir,
-                plugin,
-                transitional,
-            )
-            .await?
-        }
-    };
+    if plugin.manifest.api_version != PRODUCT_API_VERSION {
+        return Err(crate::PluginError::message(format!(
+            "local output plugin `{}` is not api_version 3",
+            plugin.manifest.id
+        )));
+    }
     let config_json = prepared.spawn_config_table.clone();
     let mut services = crate::SessionServices::default();
-    let root = if prepared.from_instance {
-        let root = instance_local_root(config, &prepared.granted_config)?;
-        services.local_output_root = Some(root.clone());
-        root
-    } else {
-        resolved_local_output_root(config)
-    };
-    let prefix = if prepared.from_instance {
-        normalize_storage_prefix(
-            prepared
-                .granted_config
-                .get("prefix")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .trim(),
-        )
-    } else {
-        normalize_storage_prefix(config.output.local.prefix.trim())
-    };
+    // The guest reads `root` / `prefix` from its `CONFIG`; the host only needs
+    // the root for the jail write grant and the transport env.
+    let root = instance_local_root(config, &prepared.granted_config)?;
+    services.local_output_root = Some(root.clone());
     let extra_env: Vec<(&str, std::ffi::OsString)> = if crate::is_first_party_local_output(plugin) {
         vec![(
             "BOOKCLERK_OUTPUT_LOCAL_ROOT",
@@ -142,24 +57,11 @@ async fn spawn_local_guest(
         )
         .await?,
     );
-    let ctx = OutputLocalContextDto {
-        plugin_data_dir: String::new(),
-        root: String::new(),
-        prefix,
-    };
-    let open_bindings = if prepared.from_instance {
-        prepared.bindings
-    } else {
-        BindingValues::config(
-            bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
-                .map_err(|err| crate::PluginError::message(err.to_string()))?,
-        )
-    };
-    session.open(open_bindings).await?;
+    session.open(prepared.bindings).await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))
 }
 
-/// Root from the instance document. `[output.local]` is not a fallback.
+/// Root from the instance document (`root` setting; relative paths resolve under the files directory).
 pub(crate) fn instance_local_root(config: &Config, granted: &Value) -> PluginResult<PathBuf> {
     let text = granted
         .get("root")
@@ -168,7 +70,7 @@ pub(crate) fn instance_local_root(config: &Config, granted: &Value) -> PluginRes
         .filter(|text| !text.is_empty())
         .ok_or_else(|| {
             crate::PluginError::message(
-                "deployed local destination config is missing root; [output.local] and BOOKCLERK_OUTPUT_LOCAL_ROOT are not the authority",
+                "local destination instance config is missing root; set it on the plugin instance",
             )
         })?;
     let root = PathBuf::from(text);
@@ -179,14 +81,9 @@ pub(crate) fn instance_local_root(config: &Config, granted: &Value) -> PluginRes
     }
 }
 
-/// Converts a plugin settings TOML table to JSON for the guest spawn config; `Null` on failure.
-fn toml_to_json(value: &toml::Value) -> Value {
-    serde_json::to_value(value).unwrap_or(Value::Null)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::protocol::OutputLocalContextDto;
 
     #[test]
     fn local_destination_json_omits_filesystem_paths() {

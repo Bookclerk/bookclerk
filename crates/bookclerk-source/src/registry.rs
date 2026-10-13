@@ -544,7 +544,10 @@ mod tests {
         );
         // No default recorded: the lowest instance id wins, deterministically.
         assert_eq!(
-            registry.get("local/graphicaudio").unwrap().plugin_instance_id(),
+            registry
+                .get("local/graphicaudio")
+                .unwrap()
+                .plugin_instance_id(),
             Some("instance-a")
         );
         registry.set_default_instance("local/graphicaudio", "instance-b");

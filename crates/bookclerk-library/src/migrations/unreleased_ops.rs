@@ -19,7 +19,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         UNIQUE(plugin_key, account_id)
     )",
     ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_accounts_account_id ON accounts(account_id)"),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_accounts_account_id ON accounts(account_id)",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS books (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

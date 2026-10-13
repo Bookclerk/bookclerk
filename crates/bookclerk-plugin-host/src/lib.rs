@@ -33,20 +33,19 @@
 
 #[cfg(test)]
 mod deployment_reconcile_tests;
-#[cfg(test)]
-mod graphicaudio_instance_test;
 
 mod authority;
-mod builtins;
 mod callback_proxy;
 mod consent;
 mod crates_io;
 mod deployment;
 mod destinations;
 mod discover;
+mod enrollment;
 mod error;
 mod event_publisher;
 mod host;
+mod host_control_plane;
 mod install_preflight;
 mod instance_bindings;
 mod jail;
@@ -77,9 +76,6 @@ pub use authority::{
 pub use bookclerk_plugin_catalog::host_bookclerk_target;
 pub use bookclerk_plugin_manifest::TcpGrant;
 pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
-pub use builtins::{
-    load_integrations, load_integrations_skipping, load_sources, load_sources_skipping,
-};
 pub use callback_proxy::CallbackProxy;
 pub use consent::{
     active_processes_for, canonical_event_filter, consent_request, consent_request_alias,
@@ -93,20 +89,20 @@ pub use consent::{
     overlay_host_implied_network, pending_structural, percent_to_cores,
     reconcile_host_overlay_authority, require_binding, require_grant, spawn_config_for_grant,
     spawn_grant, validate_approved_grant, validate_described_capabilities,
-    validate_described_config_options, windows_session_active_processes, GrantedEventConsumer, PendingStructural, PluginGrant,
-    PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION, KNOWN_HOST_BINDINGS,
-    PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT,
-    PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
-    PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
-    PLUGIN_STATE_BUDGET_MIB_MAX, WINDOWS_SESSION_PROCESS_BASELINE, WORKERD_GRANT_CPU_MS_ENV,
-    WORKERD_GRANT_DOMAINS_ENV, WORKERD_GRANT_NETWORK_MODE_ENV, WORKERD_GRANT_POLICY_ENV,
-    WORKERD_GRANT_SUBREQUESTS_ENV,
+    validate_described_config_options, windows_session_active_processes, GrantedEventConsumer,
+    PendingStructural, PluginGrant, PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION,
+    KNOWN_HOST_BINDINGS, PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT,
+    PLUGIN_JAIL_CPU_RATE_DEFAULT, PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT,
+    PLUGIN_JAIL_EXTRA_PROCESSES_MAX, PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX,
+    PLUGIN_STATE_BUDGET_MIB_DEFAULT, PLUGIN_STATE_BUDGET_MIB_MAX, WINDOWS_SESSION_PROCESS_BASELINE,
+    WORKERD_GRANT_CPU_MS_ENV, WORKERD_GRANT_DOMAINS_ENV, WORKERD_GRANT_NETWORK_MODE_ENV,
+    WORKERD_GRANT_POLICY_ENV, WORKERD_GRANT_SUBREQUESTS_ENV,
 };
 pub use crates_io::search_crates_io;
 pub use deployment::{
-    enroll_graphicaudio_instance, load_authorized_local_packages, reconcile_local_deployments,
-    AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
-    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
+    load_authorized_local_packages, reconcile_local_deployments, AuthorizedLocalPackages,
+    DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime, LocalPackage, SpawnHealth,
+    AUTHORIZED_PACKAGE_DIR,
 };
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
@@ -116,24 +112,27 @@ pub use discover::{
     resolve_plugin_ref, resolve_plugin_slot, settings_table, settings_table_for,
     stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy, DiscoveredPlugin,
 };
+pub use enrollment::{
+    enroll_local_plugins, enroll_one, has_covering_grant, is_bootstrap_only, EnrolledPlugin,
+};
 pub use error::{PluginError, Result};
 pub use event_publisher::{EventOutbox, OutboxEventPublisher};
 pub use host::{
     backup_adapter_id, database_connect_bindings, export_registered_plugin_units,
-    load_external_database, load_external_destinations, load_external_destinations_with_store,
-    load_external_integrations, load_external_integrations_skipping, load_external_sources,
-    load_external_sources_skipping, migrate_database_plugin, migrate_library_schema,
-    open_library_store, open_library_store_for_plugin, restore_plugin_backup_units,
-    DatabaseRegistry, DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
+    load_external_database, migrate_database_plugin, migrate_library_schema, open_library_store,
+    open_library_store_for_plugin, restore_plugin_backup_units, DatabaseRegistry,
+    DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
+};
+pub use host_control_plane::{
+    allow_credential_login, open_host_control_plane, open_host_control_plane_with_store,
+    refresh_present, HostControlPlane, PresentDeployment,
 };
 pub use install_preflight::{
     configured_alias_occupants, install_from_manifest_with_configured_aliases,
     install_local_archive_with_configured_aliases, reject_configured_alias_collision,
 };
 pub use instance_bindings::{
-    graphicaudio_document_exists, graphicaudio_document_exists_for_key,
-    graphicaudio_key_from_discovered, graphicaudio_key_from_ledger, graphicaudio_plugin_key,
-    is_graphicaudio_imported_setting, prepare_open_bindings, PreparedOpen,
+    binding_grant_flags, prepare_open_for_instance, prepared_open_from_resolved, PreparedOpen,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{
@@ -161,157 +160,3 @@ pub use spawn_stdio::{
     revoke_plugin_state_before_purge, TEST_CHANNEL_IDENT_ENV, TEST_CHANNEL_TAG_FILE,
     TEST_INJECT_EXTRA_ENDPOINT_ENV, TEST_OBSERVE_EXTRA_ENDPOINT_ENV,
 };
-
-/// Register discovered external plugins into the in-process registries.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn register_discovered(
-    config: &bookclerk_config::Config,
-    sources: &mut bookclerk_source::SourceRegistry,
-    integrations: &mut bookclerk_integrations::IntegrationRegistry,
-) -> Result<()> {
-    let plugins = discover_plugins(config)?;
-    let storefronts: Vec<_> = plugins
-        .iter()
-        .filter(|plugin| plugin.manifest.has_entrypoint(Entrypoint::Storefront))
-        .cloned()
-        .collect();
-    let source_aliases: std::collections::BTreeSet<String> = storefronts
-        .iter()
-        .map(|plugin| plugin.alias().to_ascii_lowercase())
-        .collect();
-    for alias in source_aliases {
-        if !config.sources.is_enabled(&alias) {
-            tracing::debug!(id = %alias, "external source plugin disabled in config; skipping");
-            continue;
-        }
-        let spec = occupancy_spec(config.sources.occupancy(&alias), &alias);
-        let Some(plugin) = resolve_plugin_slot(&storefronts, spec)? else {
-            continue;
-        };
-        if sources.get(plugin.plugin_key().canonical()).is_some() {
-            tracing::debug!(
-                plugin_key = %plugin.plugin_key().canonical(),
-                alias = %plugin.manifest.id,
-                path = %plugin.root.join("plugin.toml").display(),
-                "skipping external source — PluginKey already registered"
-            );
-            continue;
-        }
-        match ExternalSource::spawn(plugin, config).await {
-            Ok(source) => {
-                tracing::info!(
-                    id = %plugin.manifest.id,
-                    plugin_key = %plugin.plugin_key().canonical(),
-                    path = %plugin.command.display(),
-                    "registered external source plugin"
-                );
-                sources.register(std::sync::Arc::new(source));
-            }
-            Err(err) => {
-                tracing::warn!(
-                    id = %plugin.manifest.id,
-                    %err,
-                    "failed to start external source plugin; skipping"
-                );
-            }
-        }
-    }
-
-    let integration_plugins: Vec<_> = plugins
-        .iter()
-        .filter(|plugin| {
-            plugin
-                .manifest
-                .families()
-                .contains(&PluginFamily::Integration)
-        })
-        .cloned()
-        .collect();
-    let integration_aliases: std::collections::BTreeSet<String> = integration_plugins
-        .iter()
-        .map(|plugin| plugin.alias().to_ascii_lowercase())
-        .collect();
-    for alias in integration_aliases {
-        if !config.integrations.is_enabled(&alias) {
-            tracing::debug!(
-                id = %alias,
-                "external integration plugin disabled in config; skipping"
-            );
-            continue;
-        }
-        let spec = occupancy_spec(config.integrations.occupancy(&alias), &alias);
-        let Some(plugin) = resolve_plugin_slot(&integration_plugins, spec)? else {
-            continue;
-        };
-        if integrations.get(plugin.plugin_key().canonical()).is_some() {
-            tracing::debug!(
-                plugin_key = %plugin.plugin_key().canonical(),
-                alias = %plugin.manifest.id,
-                path = %plugin.root.join("plugin.toml").display(),
-                "skipping external integration — PluginKey already registered"
-            );
-            continue;
-        }
-        match ExternalIntegration::spawn(plugin, config).await {
-            Ok(integration) => {
-                tracing::info!(
-                    id = %plugin.manifest.id,
-                    plugin_key = %plugin.plugin_key().canonical(),
-                    path = %plugin.command.display(),
-                    "registered external integration plugin"
-                );
-                integrations.register(std::sync::Arc::new(integration));
-            }
-            Err(err) => {
-                tracing::warn!(
-                    id = %plugin.manifest.id,
-                    %err,
-                    "failed to start external integration plugin; skipping"
-                );
-            }
-        }
-    }
-
-    for plugin in &plugins {
-        for family in plugin.manifest.families() {
-            match family {
-                PluginFamily::Output => {
-                    let spec = occupancy_spec(&config.output.s3.plugin, "s3");
-                    if config.output.s3.enabled && plugin_matches_occupancy(plugin, spec) {
-                        tracing::info!(
-                            id = %plugin.manifest.id,
-                            plugin_key = %plugin.plugin_key().canonical(),
-                            "discovered output plugin (loaded via load_external_destinations at startup)"
-                        );
-                    } else {
-                        tracing::debug!(
-                            id = %plugin.manifest.id,
-                            "external output plugin skipped (enable [output.s3] for id=s3)"
-                        );
-                    }
-                }
-                PluginFamily::Database => {
-                    let spec = occupancy_spec(&config.database.plugin, plugin.alias());
-                    if plugin_matches_occupancy(plugin, spec) {
-                        tracing::info!(
-                            id = %plugin.manifest.id,
-                            plugin_key = %plugin.plugin_key().canonical(),
-                            "discovered database plugin (loaded via load_external_database at startup)"
-                        );
-                    } else {
-                        tracing::debug!(
-                            id = %plugin.manifest.id,
-                            active = %config.database.plugin,
-                            "external database plugin skipped (not [database].plugin)"
-                        );
-                    }
-                }
-                PluginFamily::Source | PluginFamily::Integration => {}
-            }
-        }
-    }
-    Ok(())
-}

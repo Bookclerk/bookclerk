@@ -1168,7 +1168,9 @@ mod tests {
         upsert_secret(&db, &s3_rec).await.unwrap();
 
         // Deleting integration secrets for "alice" must not touch the operator S3 row.
-        delete_secrets_for_account(&db, "audible", "alice").await.unwrap();
+        delete_secrets_for_account(&db, "audible", "alice")
+            .await
+            .unwrap();
 
         let auth = get_secret(
             &db,
@@ -1195,7 +1197,9 @@ mod tests {
         assert!(s3.is_some(), "operator S3 row must survive");
 
         // Also: deleting integration "default" must not delete the operator S3 row.
-        delete_secrets_for_account(&db, "s3", "default").await.unwrap();
+        delete_secrets_for_account(&db, "s3", "default")
+            .await
+            .unwrap();
         let s3_still = get_secret(
             &db,
             secret_kind::S3,

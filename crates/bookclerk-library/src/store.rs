@@ -360,8 +360,16 @@ impl LibraryStore {
         label: Option<&str>,
         source: &str,
     ) -> Result<AccountRecord> {
-        self.upsert_account_inner(plugin_key, account_id, marketplace, label, true, source, false)
-            .await
+        self.upsert_account_inner(
+            plugin_key,
+            account_id,
+            marketplace,
+            label,
+            true,
+            source,
+            false,
+        )
+        .await
     }
 
     /// Inserts or updates a store account; optionally overwrites `scan_enabled`.
@@ -675,8 +683,7 @@ impl LibraryStore {
             .into_iter()
             .filter(|a| {
                 a.account_id.eq_ignore_ascii_case(identifier)
-                    || a
-                        .label
+                    || a.label
                         .as_ref()
                         .is_some_and(|l| l.eq_ignore_ascii_case(identifier))
             })

@@ -420,7 +420,10 @@ mod tests {
         let schema: SettingsSchema = toml::from_str(text).unwrap();
         schema.validate(true, true).unwrap();
         assert_eq!(schema.settings.len(), 2);
-        assert_eq!(schema.defaults().get("bitrate"), Some(&Value::String("high".into())));
+        assert_eq!(
+            schema.defaults().get("bitrate"),
+            Some(&Value::String("high".into()))
+        );
         let options = schema.config_options();
         assert_eq!(options.len(), 1);
         assert_eq!(options[0].values[1].label, "normal");
@@ -463,10 +466,18 @@ mod tests {
             spec("token", SettingKind::Secret),
         ]);
         schema.validate(true, true).unwrap();
-        assert!(schema.check_setting("bitrate", &Value::String("low".into())).is_err());
-        assert!(schema.check_setting("path_style", &Value::Bool(true)).is_ok());
-        assert!(schema.check_setting("path_style", &Value::String("yes".into())).is_err());
-        assert!(schema.check_setting("token", &Value::String("x".into())).is_err());
+        assert!(schema
+            .check_setting("bitrate", &Value::String("low".into()))
+            .is_err());
+        assert!(schema
+            .check_setting("path_style", &Value::Bool(true))
+            .is_ok());
+        assert!(schema
+            .check_setting("path_style", &Value::String("yes".into()))
+            .is_err());
+        assert!(schema
+            .check_setting("token", &Value::String("x".into()))
+            .is_err());
         assert!(schema.check_setting("nope", &Value::Bool(true)).is_err());
         assert!(schema.check_secret_key("token").is_ok());
         assert!(schema.check_secret_key("bucket").is_err());
@@ -475,7 +486,10 @@ mod tests {
         doc.insert("path_style".to_string(), Value::Bool(true));
         doc.insert("stale".to_string(), Value::Bool(true));
         let effective = schema.effective_config(&doc);
-        assert_eq!(effective.config.get("bitrate"), Some(&Value::String("high".into())));
+        assert_eq!(
+            effective.config.get("bitrate"),
+            Some(&Value::String("high".into()))
+        );
         assert_eq!(effective.config.get("path_style"), Some(&Value::Bool(true)));
         assert_eq!(effective.dropped, vec!["stale".to_string()]);
         assert_eq!(effective.missing, vec!["bucket".to_string()]);

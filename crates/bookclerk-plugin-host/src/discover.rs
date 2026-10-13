@@ -766,49 +766,31 @@ fn resolve_command(root: &Path, command: &Path) -> Result<PathBuf> {
     Ok(root.join(command))
 }
 
-/// Opaque knobs from main `config.toml` for this plugin id (by primary family).
+/// Bootstrap connection settings for a database adapter from `config.toml`.
+///
+/// Database adapters are the one plugin family whose configuration stays in
+/// the bootstrap file: the process needs it to open the library before the
+/// database-backed control plane exists. Every other family receives its
+/// settings from the plugin instance document.
 #[must_use]
 pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table {
     settings_table_for(config, plugin, plugin.manifest.primary_family())
 }
 
-/// Resolves the `config.toml` table for `plugin` under one specific handler
-/// `family`.
+/// [`settings_table`] for one explicit handler `family`.
 ///
-/// A plugin exporting several entrypoints (for example `storefront` + an
-/// event consumer) owns one settings table per family (`[sources.<id>]` and
-/// `[integrations.<id>]`); callers rendering per-family settings groups pick
-/// the family explicitly instead of relying on [`PluginManifest::primary_family`].
-///
-/// [`PluginManifest::primary_family`]: crate::PluginManifest::primary_family
+/// Only [`PluginFamily::Database`](crate::PluginFamily::Database) has a
+/// `config.toml` table; every other family returns an empty table.
 pub fn settings_table_for(
     config: &Config,
     plugin: &DiscoveredPlugin,
     family: crate::PluginFamily,
 ) -> toml::Table {
     match family {
-        crate::PluginFamily::Source => config
-            .sources
-            .table(&plugin.manifest.id)
-            .cloned()
-            .unwrap_or_default(),
-        crate::PluginFamily::Integration => {
-            let mut table = config
-                .integrations
-                .plugin_table(&plugin.manifest.id)
-                .cloned()
-                .unwrap_or_default();
-            inject_abs_api_key_from_env(&plugin.manifest.id, &mut table);
-            table
-        }
-        crate::PluginFamily::Output if is_first_party_s3_output(plugin) => {
-            output_s3_settings_table(&config.output.s3)
-        }
-        crate::PluginFamily::Output if is_first_party_local_output(plugin) => {
-            output_local_settings_table(&config.output.local)
-        }
         crate::PluginFamily::Database => database_settings_table(config, plugin),
-        crate::PluginFamily::Output => toml::Table::new(),
+        crate::PluginFamily::Source
+        | crate::PluginFamily::Integration
+        | crate::PluginFamily::Output => toml::Table::new(),
     }
 }
 
@@ -838,45 +820,6 @@ fn database_settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::
     match value {
         Ok(toml::Value::Table(table)) => table,
         _ => toml::Table::new(),
-    }
-}
-
-/// Serializes `[output.s3]` into the spawn settings table.
-fn output_s3_settings_table(cfg: &bookclerk_config::OutputS3Config) -> toml::Table {
-    match toml::Value::try_from(cfg) {
-        Ok(toml::Value::Table(table)) => table,
-        _ => toml::Table::new(),
-    }
-}
-
-/// Serializes `[output.local]` into the spawn settings table.
-fn output_local_settings_table(cfg: &bookclerk_config::OutputLocalConfig) -> toml::Table {
-    match toml::Value::try_from(cfg) {
-        Ok(toml::Value::Table(table)) => table,
-        _ => toml::Table::new(),
-    }
-}
-
-/// When ABS config lacks `api_key`, inject `BOOKCLERK_ABS_API_KEY` into the
-/// spawn config table (plugin processes do not inherit Bookclerk env secrets).
-fn inject_abs_api_key_from_env(plugin_id: &str, table: &mut toml::Table) {
-    match plugin_id.trim().to_ascii_lowercase().as_str() {
-        "audiobookshelf" | "abs" => {}
-        _ => return,
-    }
-    let missing = table
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().is_empty())
-        .unwrap_or(true);
-    if !missing {
-        return;
-    }
-    if let Ok(v) = std::env::var("BOOKCLERK_ABS_API_KEY") {
-        let trimmed = v.trim();
-        if !trimmed.is_empty() {
-            table.insert("api_key".into(), toml::Value::String(trimmed.to_string()));
-        }
     }
 }
 
@@ -936,16 +879,10 @@ mode = "deny"
         assert_eq!(found[0].manifest.id, "echo");
         assert_eq!(found[0].command, bin);
 
-        // Settings come from main config, not the manifest.
-        let mut cfg2 = cfg;
-        cfg2.integrations
-            .plugin_table_mut("echo")
-            .insert("greeting".into(), toml::Value::String("hi".into()));
-        let settings = settings_table(&cfg2, &found[0]);
-        assert_eq!(
-            settings.get("greeting").and_then(|v| v.as_str()),
-            Some("hi")
-        );
+        // Non-database plugins have no `config.toml` table: their settings
+        // live in the instance document.
+        let settings = settings_table(&cfg, &found[0]);
+        assert!(settings.is_empty(), "{settings:?}");
     }
 
     fn write_plugin(dir: &Path, id: &str, entrypoint: &str) {

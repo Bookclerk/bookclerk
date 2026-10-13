@@ -27,7 +27,7 @@ use bookclerk_source::abi::{
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
     OAuthProgress, PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
-    SourceBrand, SourceFetch, SourcePurchaseHint, SourceRegistry,
+    SourceBrand, SourceFetch, SourcePurchaseHint,
 };
 use serde_json::Value;
 
@@ -63,60 +63,22 @@ pub struct ExternalSource {
     sort_key: u32,
     /// Scoped data directory for this plugin only.
     plugin_data_dir: PathBuf,
-    /// `[sources.<id>]` table from main config (also delivered in the spawn config).
+    /// `CONFIG` object delivered to the guest (also the spawn config table).
     source_config: Value,
     /// Deployment instance id. Unset for transitional, non-deployed spawns.
     plugin_instance_id: Option<String>,
 }
 
 impl ExternalSource {
-    /// Spawn and describe a source plugin.
+    /// Spawn with bindings already resolved for one plugin instance.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
-        Self::spawn_with(plugin, config, SessionServices::default()).await
-    }
-
-    /// [`Self::spawn`] with the host services the guest may receive as
-    /// bindings (`EVENTS` outbox, …).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn spawn_with(
-        plugin: &DiscoveredPlugin,
-        config: &Config,
-        services: SessionServices,
-    ) -> Result<Self> {
-        if plugin.manifest.api_version != PRODUCT_API_VERSION {
-            return Err(crate::PluginError::message(format!(
-                "plugin `{}` api_version {} is not supported",
-                plugin.manifest.id, plugin.manifest.api_version
-            )));
-        }
-        let table = crate::settings_table(config, plugin);
-        let transitional = toml_to_json(&toml::Value::Table(table));
-        let prepared = crate::instance_bindings::prepare_open_bindings_selecting(
-            services.event_outbox.as_ref(),
-            &config.paths().files_dir,
-            plugin,
-            transitional,
-            services.selected_instance_id.as_deref(),
-        )
-        .await?;
-        Self::spawn_prepared(plugin, config, services, prepared).await
-    }
-
-    /// Spawn with bindings the deployment reconciler already resolved.
-    ///
-    /// Does not look up an instance by plugin key.
+    /// Does not look up an instance by plugin key. See
+    /// [`crate::prepare_open_for_instance`] for how the bindings are built.
     ///
     /// # Errors
     ///
     /// Returns an error when the guest cannot start or `open` fails.
-    pub(crate) async fn spawn_prepared(
+    pub async fn spawn_prepared(
         plugin: &DiscoveredPlugin,
         config: &Config,
         services: SessionServices,
@@ -189,8 +151,8 @@ impl ExternalSource {
         })
     }
 
-    /// Records the deployment instance id used as this source's registry address.
-    pub(crate) fn bind_plugin_instance(&mut self, plugin_instance_id: &str) {
+    /// Records the plugin instance id used as this source's registry address.
+    pub fn bind_plugin_instance(&mut self, plugin_instance_id: &str) {
         self.plugin_instance_id = Some(plugin_instance_id.to_string());
     }
 
@@ -330,99 +292,6 @@ impl ExternalSource {
         });
         Ok(account)
     }
-}
-
-/// Discover and register external source plugins.
-///
-/// Duplicate `(kind, id)` claims among discovered manifests are a hard error
-/// (from [`crate::discover_plugins`]). When an external id is already registered
-/// in-process (dual-load `register()` path), the external copy is skipped so
-/// `cargo run` keeps the linked adapter.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn load_external_sources(
-    config: &Config,
-    registry: &mut SourceRegistry,
-    services: &SessionServices,
-) -> Result<()> {
-    load_external_sources_skipping(
-        config,
-        registry,
-        services,
-        &std::collections::BTreeSet::new(),
-    )
-    .await
-}
-
-/// [`load_external_sources`] that leaves `skip` plugin keys to the deployment reconciler.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn load_external_sources_skipping(
-    config: &Config,
-    registry: &mut SourceRegistry,
-    services: &SessionServices,
-    skip: &std::collections::BTreeSet<String>,
-) -> Result<()> {
-    let plugins = crate::discover_plugins(config)?;
-    let storefronts: Vec<_> = plugins
-        .into_iter()
-        .filter(|plugin| {
-            plugin
-                .manifest
-                .has_entrypoint(crate::Entrypoint::Storefront)
-        })
-        .collect();
-    let aliases: std::collections::BTreeSet<String> = storefronts
-        .iter()
-        .map(|plugin| plugin.alias().to_ascii_lowercase())
-        .collect();
-    for alias in aliases {
-        if !config.sources.is_enabled(&alias) {
-            continue;
-        }
-        let spec = crate::occupancy_spec(config.sources.occupancy(&alias), &alias);
-        let Some(plugin) = crate::resolve_plugin_slot(&storefronts, spec)? else {
-            continue;
-        };
-        if skip.contains(plugin.plugin_key().canonical()) {
-            tracing::info!(
-                plugin_key = %plugin.plugin_key().canonical(),
-                alias = %plugin.manifest.id,
-                "skipping external source owned by a local deployment"
-            );
-            continue;
-        }
-        if registry.get(plugin.plugin_key().canonical()).is_some() {
-            tracing::debug!(
-                plugin_key = %plugin.plugin_key().canonical(),
-                alias = %plugin.manifest.id,
-                path = %plugin.root.join("plugin.toml").display(),
-                "skipping external source — PluginKey already registered"
-            );
-            continue;
-        }
-        match ExternalSource::spawn_with(plugin, config, services.clone()).await {
-            Ok(s) => {
-                tracing::info!(
-                    id = %plugin.manifest.id,
-                    plugin_key = %plugin.plugin_key().canonical(),
-                    "loaded external source plugin"
-                );
-                registry.register(Arc::new(s));
-            }
-            Err(err) => {
-                if err.is_instance_selection() {
-                    return Err(err);
-                }
-                tracing::warn!(id = %plugin.manifest.id, %err, "skipping external source plugin");
-            }
-        }
-    }
-    Ok(())
 }
 
 #[async_trait]
@@ -808,25 +677,6 @@ fn brand_from_abi(
     }
 }
 
-/// Converts a TOML value tree into JSON for spawn `config` delivery.
-fn toml_to_json(value: &toml::Value) -> Value {
-    match value {
-        toml::Value::String(s) => Value::String(s.clone()),
-        toml::Value::Integer(i) => Value::Number((*i).into()),
-        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        toml::Value::Boolean(b) => Value::Bool(*b),
-        toml::Value::Datetime(d) => Value::String(d.to_string()),
-        toml::Value::Array(a) => Value::Array(a.iter().map(toml_to_json).collect()),
-        toml::Value::Table(t) => Value::Object(
-            t.iter()
-                .map(|(k, v)| (k.clone(), toml_to_json(v)))
-                .collect(),
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,8 +703,8 @@ mod tests {
         let store = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
-        let echo = store.scope("echo");
-        let other = store.scope("other");
+        let echo = store.scope("path:file:///plugins/echo", "echo");
+        let other = store.scope("path:file:///plugins/other", "other");
 
         echo.upsert_account("a1", "us", Some("Echo"), true)
             .await
@@ -885,7 +735,7 @@ mod tests {
         let store = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
             .unwrap();
-        let echo = store.scope("echo");
+        let echo = store.scope("path:file:///plugins/echo", "echo");
         echo.upsert_account("a1", "us", None, false).await.unwrap();
         echo.save_credentials_json("a1", &serde_json::json!({"t": 1}))
             .await

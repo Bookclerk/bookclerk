@@ -4933,10 +4933,12 @@ mode = "deny"
         validate_described_config_options(&manifest, &same).unwrap();
         // Widening a value set, adding a key, or omitting a key is rejected.
         let mut widened = manifest.config_options();
-        widened[0].values.push(bookclerk_plugin_abi::ConfigOptionValue {
-            id: "ultra".into(),
-            label: String::new(),
-        });
+        widened[0]
+            .values
+            .push(bookclerk_plugin_abi::ConfigOptionValue {
+                id: "ultra".into(),
+                label: String::new(),
+            });
         assert!(validate_described_config_options(&manifest, &widened).is_err());
         let mut extra = manifest.config_options();
         extra.push(bookclerk_plugin_abi::ConfigOption {

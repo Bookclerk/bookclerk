@@ -237,15 +237,15 @@ pub use rpc::{
     OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer, RemoteLibraryClient,
     SourceClient, SourceServer,
 };
-pub use settings_schema::{
-    is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,
-    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, SETTINGS_SCHEMA_VERSION,
-};
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,
     JobInvocationLease, JobOutcome, ListOptions, ListPage, ObjectInfo, ObjectMetadata,
     OidcClientTemplate, PluginDescribe, PutResult, QueryPage, ScalarLimitsDto, WriteOptions,
     JSON_MEDIA_TYPE, MAX_CHECKPOINT_BYTES,
+};
+pub use settings_schema::{
+    is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,
+    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, SETTINGS_SCHEMA_VERSION,
 };
 
 /// Embedded JSON Schema for install `plugin.toml` files (shared with language

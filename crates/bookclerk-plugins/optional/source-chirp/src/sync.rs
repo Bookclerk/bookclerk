@@ -190,6 +190,7 @@ pub fn audiobook_to_new_book(book: &Audiobook, account_id: &str, marketplace: &s
     let published_at = book.released_on.as_deref().and_then(parse_chirp_date);
 
     NewBook {
+        plugin_key: String::new(),
         uuid: None,
         product_id: book.id.clone(),
         source: String::from("chirp"),

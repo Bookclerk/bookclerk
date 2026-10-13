@@ -32,7 +32,8 @@ const BOOK_PAGE_CHUNK: usize = 64;
 ///
 /// Named so a later column added at the end of the table cannot shift this
 /// positional map. The list matches the catalog row the handler returns.
-const BOOK_PAGE_COLUMNS: &str = "id, uuid, plugin_key, source, account_id, product_id, asin, isbn, \
+const BOOK_PAGE_COLUMNS: &str =
+    "id, uuid, plugin_key, source, account_id, product_id, asin, isbn, \
 marketplace, title, authors, narrators, series, series_index, series_asin, acquire_status, \
 storage_key, error_message, purchased_at, tags, rating_overall, rating_performance, \
 rating_story, is_finished, pdf_status, pdf_storage_key, publisher, length_minutes, \

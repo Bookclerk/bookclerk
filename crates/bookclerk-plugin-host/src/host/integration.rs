@@ -8,12 +8,11 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_integrations::{
     Brand, EventSubscription, ExternalUser, Integration, IntegrationContext, IntegrationHealth,
-    IntegrationRegistry, ProvidedOidcClient,
+    ProvidedOidcClient,
 };
 use bookclerk_plugin_sdk::{
     AuthenticateUserParams, DomainEvent, EventResult, ScanLibraryParams, PRODUCT_API_VERSION,
 };
-use serde_json::Value;
 use tracing::warn;
 
 use crate::discover::DiscoveredPlugin;
@@ -48,62 +47,14 @@ pub struct ExternalIntegration {
 }
 
 impl ExternalIntegration {
-    /// Spawn and describe an integration plugin.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn spawn(plugin: &DiscoveredPlugin, config: &Config) -> Result<Self> {
-        Self::spawn_with(plugin, config, SessionServices::default()).await
-    }
-
-    /// [`Self::spawn`] with the host services the guest may receive as
-    /// bindings (`EVENTS` outbox, …).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn spawn_with(
-        plugin: &DiscoveredPlugin,
-        config: &Config,
-        services: SessionServices,
-    ) -> Result<Self> {
-        if plugin.manifest.api_version != PRODUCT_API_VERSION {
-            return Err(crate::PluginError::message(format!(
-                "plugin `{}` api_version {} is not supported",
-                plugin.manifest.id, plugin.manifest.api_version
-            )));
-        }
-        let table = crate::settings_table(config, plugin);
-        let config_json = Value::Object(
-            table
-                .iter()
-                .map(|(k, v)| (k.clone(), toml_to_json(v)))
-                .collect(),
-        );
-        let allow_credential_login = table
-            .get("allow_credential_login")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let prepared = crate::instance_bindings::prepare_open_bindings_selecting(
-            services.event_outbox.as_ref(),
-            &config.paths().files_dir,
-            plugin,
-            config_json,
-            services.selected_instance_id.as_deref(),
-        )
-        .await?;
-        Self::spawn_prepared(plugin, config, services, prepared, allow_credential_login).await
-    }
-
-    /// Spawn with bindings the deployment reconciler already resolved.
+    /// Spawn with bindings already resolved for one plugin instance.
     ///
     /// Does not look up an instance by plugin key.
     ///
     /// # Errors
     ///
     /// Returns an error when the guest cannot start or `open` fails.
-    pub(crate) async fn spawn_prepared(
+    pub async fn spawn_prepared(
         plugin: &DiscoveredPlugin,
         config: &Config,
         services: SessionServices,
@@ -169,8 +120,8 @@ impl ExternalIntegration {
         })
     }
 
-    /// Records the deployment instance id used to recognize this guest on reload.
-    pub(crate) fn bind_plugin_instance(&mut self, plugin_instance_id: &str) {
+    /// Records the plugin instance id used to recognize this guest on reload.
+    pub fn bind_plugin_instance(&mut self, plugin_instance_id: &str) {
         self.plugin_instance_id = Some(plugin_instance_id.to_string());
     }
 
@@ -238,100 +189,6 @@ impl ExternalIntegration {
     {
         Ok(self.session.remote_library(call).await?)
     }
-}
-
-/// Discover and register external integration plugins.
-///
-/// Duplicate `(kind, id)` claims among discovered manifests are a hard error
-/// (from [`crate::discover_plugins`]). When an external id is already registered
-/// in-process (dual-load `register()` path), the external copy is skipped.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn load_external_integrations(
-    config: &Config,
-    registry: &mut IntegrationRegistry,
-    services: &SessionServices,
-) -> Result<()> {
-    load_external_integrations_skipping(
-        config,
-        registry,
-        services,
-        &std::collections::BTreeSet::new(),
-    )
-    .await
-}
-
-/// [`load_external_integrations`] that leaves `skip` plugin keys to the deployment reconciler.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn load_external_integrations_skipping(
-    config: &Config,
-    registry: &mut IntegrationRegistry,
-    services: &SessionServices,
-    skip: &std::collections::BTreeSet<String>,
-) -> Result<()> {
-    let plugins = crate::discover_plugins(config)?;
-    let integrations: Vec<_> = plugins
-        .into_iter()
-        .filter(|plugin| {
-            plugin
-                .manifest
-                .families()
-                .contains(&crate::PluginFamily::Integration)
-        })
-        .collect();
-    let aliases: std::collections::BTreeSet<String> = integrations
-        .iter()
-        .map(|plugin| plugin.alias().to_ascii_lowercase())
-        .collect();
-    for alias in aliases {
-        if !config.integrations.is_enabled(&alias) {
-            continue;
-        }
-        let spec = crate::occupancy_spec(config.integrations.occupancy(&alias), &alias);
-        let Some(plugin) = crate::resolve_plugin_slot(&integrations, spec)? else {
-            continue;
-        };
-        if skip.contains(plugin.plugin_key().canonical()) {
-            tracing::info!(
-                plugin_key = %plugin.plugin_key().canonical(),
-                alias = %plugin.manifest.id,
-                "skipping external integration owned by a local deployment"
-            );
-            continue;
-        }
-        if registry.get(plugin.plugin_key().canonical()).is_some() {
-            tracing::debug!(
-                plugin_key = %plugin.plugin_key().canonical(),
-                alias = %plugin.manifest.id,
-                path = %plugin.root.join("plugin.toml").display(),
-                "skipping external integration — PluginKey already registered"
-            );
-            continue;
-        }
-        match ExternalIntegration::spawn_with(plugin, config, services.clone()).await {
-            Ok(i) => {
-                tracing::info!(
-                    id = %plugin.manifest.id,
-                    plugin_key = %plugin.plugin_key().canonical(),
-                    "loaded external integration plugin"
-                );
-                registry.register(Arc::new(i));
-            }
-            Err(err) => {
-                tracing::warn!(
-                    id = %plugin.manifest.id,
-                    %err,
-                    "skipping external integration plugin"
-                );
-            }
-        }
-    }
-    Ok(())
 }
 
 #[async_trait]
@@ -626,23 +483,4 @@ fn brand_from_abi(brand: Option<&bookclerk_plugin_sdk::Brand>) -> Option<Brand> 
         accent: Box::leak(b.accent.clone().into_boxed_str()),
         icon_url: Box::leak(b.icon_url.clone().unwrap_or_default().into_boxed_str()),
     })
-}
-
-/// Converts plugin settings TOML to JSON for guest spawn (tables, arrays, and datetimes).
-fn toml_to_json(value: &toml::Value) -> Value {
-    match value {
-        toml::Value::String(s) => Value::String(s.clone()),
-        toml::Value::Integer(i) => Value::Number((*i).into()),
-        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        toml::Value::Boolean(b) => Value::Bool(*b),
-        toml::Value::Datetime(d) => Value::String(d.to_string()),
-        toml::Value::Array(a) => Value::Array(a.iter().map(toml_to_json).collect()),
-        toml::Value::Table(t) => Value::Object(
-            t.iter()
-                .map(|(k, v)| (k.clone(), toml_to_json(v)))
-                .collect(),
-        ),
-    }
 }

@@ -536,7 +536,10 @@ async fn documents_validate_against_the_pinned_schema_not_the_host() {
         settings: settings.clone(),
         secret_refs: Vec::new(),
     };
-    assert!(plain_secret.validate(&schema).is_err(), "secret as plain value");
+    assert!(
+        plain_secret.validate(&schema).is_err(),
+        "secret as plain value"
+    );
     settings.remove("token");
     settings.insert("mode".into(), SettingValue::String("tape".into()));
     let bad_enum = PluginInstanceConfigV1 {
@@ -559,7 +562,8 @@ async fn documents_validate_against_the_pinned_schema_not_the_host() {
             name: "device_token".into(),
         }],
     };
-    ok.validate(&schema).expect("declared keys with fitting values");
+    ok.validate(&schema)
+        .expect("declared keys with fitting values");
     assert_eq!(
         parse_setting_text(&schema, "retries", "7").unwrap(),
         SettingValue::Number(7.into())
@@ -637,16 +641,15 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
     .await
     .unwrap();
     let foreign_host = Uuid::new_v4().hyphenated().to_string();
-    let foreign =
-        ensure_plugin_deployment(
-            &store,
-            &ConfigActor::Bootstrap,
-            &instance.id,
-            &foreign_host,
-            DESIRED_PRESENT,
-        )
-            .await
-            .unwrap();
+    let foreign = ensure_plugin_deployment(
+        &store,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &foreign_host,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
     let visible = list_present_deployments_for_host(&store, &session.host.host_id)
         .await
         .unwrap();
@@ -680,16 +683,15 @@ async fn deployment_replace_conflicts_without_touching_observations() {
     let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
         .await
         .unwrap();
-    let deployment =
-        ensure_plugin_deployment(
-            &store,
-            &operator(),
-            &instance.id,
-            &session.host.host_id,
-            DESIRED_PRESENT,
-        )
-            .await
-            .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &operator(),
+        &instance.id,
+        &session.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
     upsert_observation(
         &store,
         &DeploymentObservation {

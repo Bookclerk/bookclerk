@@ -1,5 +1,6 @@
 //! Current-host deployment reconcile: installer transaction, ledger hit,
-//! revision apply, foreign host, secrets, and the transitional settings path.
+//! revision apply, foreign host, secrets, desired `absent`, and instance
+//! document resolution against the installed `[[settings]]` schema.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -11,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::Arc;
 
 use crate::consent::{consent_request, PluginGrant, PluginGrantStore};
-use crate::discover::{settings_table_for, DiscoveredPlugin};
-use crate::instance_bindings::prepare_open_bindings;
+use crate::discover::DiscoveredPlugin;
+use crate::instance_bindings::prepare_open_for_instance;
 use crate::{
     discover_plugins, load_authorized_local_packages, reconcile_local_deployments,
     AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
@@ -23,9 +24,9 @@ use bookclerk_config::{Config, EventsConfig, Isolation};
 use bookclerk_library::control_plane::{
     create_plugin_instance, ensure_plugin_deployment, import_instance_config_if_absent,
     load_deployment, load_instance_config, load_observation, replace_instance_config,
-    seal_instance_secret, ConfigActor, DeploymentStatus, InstanceConfigReplace,
-    InstancePackagePolicy, InstanceSecretRefV1, PluginInstanceConfigV1, SettingValue,
-    DESIRED_PRESENT,
+    replace_plugin_deployment, seal_instance_secret, ConfigActor, DeploymentReplace,
+    DeploymentStatus, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
+    SettingValue, DESIRED_ABSENT, DESIRED_PRESENT,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
@@ -176,15 +177,38 @@ fn mode_body(mode: &str) -> PluginInstanceConfigV1 {
     }
 }
 
-fn write_archive(dir: &Path, id: &str) -> PathBuf {
+/// `plugin.toml` for the fixture storefront: a `mode` enum setting and,
+/// with `secrets`, a `token` secret setting behind the `[secrets]` binding.
+fn fixture_manifest(id: &str, network_mode: &str, secrets: bool) -> String {
+    let mut text = format!(
+        "api_version = 3\nid = \"{id}\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+         entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"{network_mode}\"\n\n\
+         [vars]\n\n[[settings]]\nkey = \"mode\"\nlabel = \"Mode\"\ntype = \"enum\"\n\
+         values = [{{ id = \"device\", label = \"Device\" }}, {{ id = \"zip\", label = \"ZIP\" }}, \
+         {{ id = \"web\", label = \"Web\" }}]\ndefault = \"web\"\n"
+    );
+    if secrets {
+        text.push_str(
+            "\n[secrets]\n\n[[settings]]\nkey = \"token\"\nlabel = \"Token\"\ntype = \"secret\"\n",
+        );
+    }
+    text
+}
+
+/// Settings schema of the fixture manifest with secrets declared (a superset
+/// of the secret-less variant, so documents validate either way).
+fn fixture_schema() -> bookclerk_plugin_abi::SettingsSchema {
+    bookclerk_plugin_manifest::parse(&fixture_manifest("fxdep", "deny", true))
+        .expect("fixture manifest")
+        .settings_schema()
+}
+
+fn write_archive(dir: &Path, id: &str, secrets: bool) -> PathBuf {
     let staging = dir.join(format!("{id}-stage"));
     std::fs::create_dir_all(&staging).unwrap();
     std::fs::write(
         staging.join("plugin.toml"),
-        format!(
-            "api_version = 3\nid = \"{id}\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
-             entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"outbound\"\n"
-        ),
+        fixture_manifest(id, "outbound", secrets),
     )
     .unwrap();
     std::fs::write(staging.join("echo"), b"#!/bin/sh\necho ok\n").unwrap();
@@ -249,7 +273,7 @@ fn save_grant(files: &Path, plugin_key: &str, secrets: bool) {
 async fn open_world(secrets: bool) -> World {
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path().to_path_buf();
-    let archive = write_archive(&files, "fxdep");
+    let archive = write_archive(&files, "fxdep", secrets);
     let manifest = package_manifest("fxdep");
     let plugins = files.join("plugins");
     std::fs::create_dir_all(&plugins).unwrap();
@@ -271,22 +295,28 @@ async fn open_world(secrets: bool) -> World {
     .await
     .expect("bootstrap");
     let actor = ConfigActor::Bootstrap;
-    let instance = create_plugin_instance(&store, &actor, &key)
+    let instance = create_plugin_instance(&store, &actor, &key, "")
         .await
         .expect("instance");
     import_instance_config_if_absent(
         &store,
         &actor,
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         &mode_body("device"),
         "import-fxdep",
     )
     .await
     .expect("import");
-    let deployment = ensure_plugin_deployment(&store, &actor, &instance.id, &session.host.host_id)
-        .await
-        .expect("deployment");
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &actor,
+        &instance.id,
+        &session.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .expect("deployment");
     save_grant(&files, &key, secrets);
     let world = World {
         files,
@@ -354,6 +384,7 @@ async fn foreign_host_deployment_does_not_install_or_observe() {
         &ConfigActor::Bootstrap,
         &world.instance_id,
         foreign,
+        DESIRED_PRESENT,
     )
     .await
     .expect("foreign deployment");
@@ -447,9 +478,9 @@ async fn installer_commit_reaches_healthy_and_rollback_clears_ledger() {
 }
 
 #[tokio::test]
-async fn disabled_graphicaudio_retires_without_another_spawn() {
+async fn absent_retires_running_guest_and_present_brings_it_back() {
     let _guard = TEST_LOCK.lock().await;
-    let mut world = open_world(false).await;
+    let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
         &world.store,
@@ -459,47 +490,51 @@ async fn disabled_graphicaudio_retires_without_another_spawn() {
         &probe,
     )
     .await
-    .expect("enabled reconcile");
+    .expect("present reconcile");
     assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
     assert!(probe.retired.lock().expect("retired").is_empty());
 
-    world.manifest.id = "graphicaudio".into();
-    world.config.sources.set_enabled("graphicaudio", false);
-    let (disabled, discover_calls) = with_discover_count(reconcile_local_deployments(
+    let operator = ConfigActor::Operator {
+        id: "operator".into(),
+    };
+    let current = load_deployment(&world.store, &world.deployment_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let replaced = replace_plugin_deployment(
+        &world.store,
+        &operator,
+        &world.deployment_id,
+        current.revision,
+        DESIRED_ABSENT,
+        "disable-fxdep",
+    )
+    .await
+    .expect("set absent");
+    let DeploymentReplace::Applied(_) = replaced else {
+        panic!("expected apply, got {replaced:?}");
+    };
+    let (absent, discover_calls) = with_discover_count(reconcile_local_deployments(
         &world.store,
         &world.config,
         &world.host_id,
-        &packages(&world),
+        &AuthorizedLocalPackages::default(),
         &probe,
     ))
     .await;
-    disabled.expect("disabled reconcile");
+    absent.expect("absent reconcile");
     assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
     assert_eq!(
         probe.retired.lock().expect("retired").as_slice(),
         &[world.instance_id.as_str().to_string()]
     );
-    assert_eq!(discover_calls, 0);
-}
+    assert_eq!(
+        discover_calls, 0,
+        "an absent row never discovers or installs"
+    );
+    let obs = observation(&world).await;
+    assert_eq!(obs.status, DeploymentStatus::Retired, "{}", obs.detail);
 
-#[tokio::test]
-async fn disabled_storefront_without_package_dir_retires() {
-    let _guard = TEST_LOCK.lock().await;
-    let mut world = open_world(false).await;
-    let probe = Probe::new(world.files.clone(), false);
-    reconcile_local_deployments(
-        &world.store,
-        &world.config,
-        &world.host_id,
-        &packages(&world),
-        &probe,
-    )
-    .await
-    .expect("enabled reconcile");
-    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
-    assert!(probe.retired.lock().expect("retired").is_empty());
-
-    world.config.sources.set_enabled("fxdep", false);
     reconcile_local_deployments(
         &world.store,
         &world.config,
@@ -508,15 +543,38 @@ async fn disabled_storefront_without_package_dir_retires() {
         &probe,
     )
     .await
-    .expect("disabled reconcile");
-    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+    .expect("idle absent reconcile");
     assert_eq!(
-        probe.retired.lock().expect("retired").as_slice(),
-        &[world.instance_id.as_str().to_string()]
+        probe.retired.lock().expect("retired").len(),
+        1,
+        "a retired guest is not retired again"
     );
-    let obs = observation(&world).await;
-    assert_eq!(obs.status, DeploymentStatus::Error, "{}", obs.detail);
-    assert!(obs.detail.contains("source is disabled"), "{}", obs.detail);
+
+    let current = load_deployment(&world.store, &world.deployment_id)
+        .await
+        .unwrap()
+        .unwrap();
+    replace_plugin_deployment(
+        &world.store,
+        &operator,
+        &world.deployment_id,
+        current.revision,
+        DESIRED_PRESENT,
+        "enable-fxdep",
+    )
+    .await
+    .expect("set present");
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("present again");
+    assert_eq!(probe.spawns.lock().expect("spawns").len(), 2);
+    assert_eq!(observation(&world).await.status, DeploymentStatus::Healthy);
 }
 
 #[tokio::test]
@@ -593,7 +651,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
     let mut grants = PluginGrantStore::load(&world.files).expect("grants");
     let mut both = packages(&world);
     for (alias, operation) in [("fxleft", "import-left"), ("fxright", "import-right")] {
-        let archive = write_archive(&world.files, alias);
+        let archive = write_archive(&world.files, alias, false);
         let manifest = package_manifest(alias);
         let plugins = world.files.join("plugins");
         let coordinate = Installer::local_archive_coordinate(&archive, &manifest);
@@ -602,22 +660,28 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
             .canonical()
             .to_string();
         let actor = ConfigActor::Bootstrap;
-        let instance = create_plugin_instance(&world.store, &actor, &key)
+        let instance = create_plugin_instance(&world.store, &actor, &key, "")
             .await
             .expect("instance");
         import_instance_config_if_absent(
             &world.store,
             &actor,
             &instance.id,
-            InstancePackagePolicy::Generic,
+            &fixture_schema(),
             &mode_body("device"),
             operation,
         )
         .await
         .expect("import");
-        ensure_plugin_deployment(&world.store, &actor, &instance.id, &world.host_id)
-            .await
-            .expect("deployment");
+        ensure_plugin_deployment(
+            &world.store,
+            &actor,
+            &instance.id,
+            &world.host_id,
+            DESIRED_PRESENT,
+        )
+        .await
+        .expect("deployment");
         let mut grant = PluginGrant::empty();
         grant.schema_version = crate::GRANT_SCHEMA_VERSION;
         grant.plugin_key = key.clone();
@@ -702,7 +766,7 @@ async fn newer_config_revision_respawns_with_the_new_value() {
             id: "operator".into(),
         },
         &world.instance_id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         current.revision,
         &mode_body("zip"),
         "bump-mode",
@@ -774,7 +838,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
             id: "operator".into(),
         },
         &world.instance_id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         current.revision,
         &body,
         "add-secret-ref",
@@ -812,7 +876,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
             id: "operator".into(),
         },
         &dangling.instance_id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         current.revision,
         &body,
         "dangling-ref",
@@ -856,16 +920,10 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
 }
 
 #[tokio::test]
-async fn plugin_without_an_instance_keeps_transitional_settings() {
+async fn prepare_open_for_instance_resolves_each_document() {
     let _guard = TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
-    std::fs::write(
-        files.join("config.toml"),
-        "[sources.fixture]\nmode = \"from-toml\"\n",
-    )
-    .unwrap();
-    let config = Config::load(Some(files.to_path_buf()), Some(files.join("config.toml"))).unwrap();
     let store = file_store(&files.join("library.db")).await;
     let scratch = files.join("cache");
     bookclerk_library::control_plane::bootstrap_control_plane(
@@ -877,101 +935,79 @@ async fn plugin_without_an_instance_keeps_transitional_settings() {
     )
     .await
     .unwrap();
-    let manifest = bookclerk_plugin_manifest::parse(
-        "api_version = 3\nid = \"fixture\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
-         entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"deny\"\n\n[vars]\n",
-    )
-    .unwrap();
+    let manifest =
+        bookclerk_plugin_manifest::parse(&fixture_manifest("fixture", "deny", true)).unwrap();
     let root = files.join("plugin-src");
     std::fs::create_dir_all(&root).unwrap();
     let plugin = DiscoveredPlugin::for_test(manifest, root.clone(), root.join("echo"));
     let mut grants = PluginGrantStore::default();
     grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
     grants.save(files).unwrap();
-    let table = settings_table_for(&config, &plugin, plugin.manifest.primary_family());
-    assert_eq!(
-        table.get("mode").and_then(|value| value.as_str()),
-        Some("from-toml")
-    );
-    let transitional = serde_json::json!({"mode": "from-toml"});
-    let prepared = prepare_open_bindings(Some(&store), files, &plugin, transitional.clone())
-        .await
-        .unwrap();
-    assert!(!prepared.from_instance);
-    assert_eq!(prepared.granted_config, transitional);
-
     let actor = ConfigActor::Bootstrap;
-    let instance = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical())
+    let schema = plugin.manifest.settings_schema();
+    let key = plugin.plugin_key().canonical();
+
+    let first = create_plugin_instance(&store, &actor, key, "")
         .await
         .unwrap();
     import_instance_config_if_absent(
         &store,
         &actor,
-        &instance.id,
-        InstancePackagePolicy::Generic,
+        &first.id,
+        &schema,
         &mode_body("device"),
-        "import-fixture",
+        "import-first",
     )
     .await
     .unwrap();
-    let prepared = prepare_open_bindings(Some(&store), files, &plugin, transitional.clone())
+    let prepared = prepare_open_for_instance(&store, files, &plugin, &first.id)
         .await
         .unwrap();
-    assert!(prepared.from_instance);
     assert_eq!(prepared.granted_config["mode"], "device");
-    let bindings = prepared.bindings.config.json_value().unwrap();
-    assert_eq!(bindings["mode"], "device");
-
-    ensure_plugin_deployment(&store, &actor, &instance.id, "host-1")
-        .await
-        .unwrap();
-    let prepared = prepare_open_bindings(Some(&store), files, &plugin, transitional.clone())
-        .await
-        .unwrap();
-    assert!(
-        prepared.from_instance,
-        "a deployment must not restore transitional settings"
+    assert_eq!(
+        prepared.bindings.config.json_value().unwrap()["mode"],
+        "device"
     );
-    assert_eq!(prepared.granted_config["mode"], "device");
+    assert_eq!(prepared.config_revision, 1);
 
-    let second = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical())
+    let second = create_plugin_instance(&store, &actor, key, "second")
         .await
         .unwrap();
     import_instance_config_if_absent(
         &store,
         &actor,
         &second.id,
-        InstancePackagePolicy::Generic,
-        &mode_body("zip"),
-        "import-fixture-2",
+        &schema,
+        &PluginInstanceConfigV1::empty(),
+        "import-second",
     )
     .await
     .unwrap();
-    let ambiguous = prepare_open_bindings(Some(&store), files, &plugin, transitional.clone())
+    let prepared = prepare_open_for_instance(&store, files, &plugin, &second.id)
         .await
-        .expect_err("two documents need an instance id");
-    assert!(
-        ambiguous.to_string().contains("pass a plugin instance id"),
-        "{ambiguous}"
+        .unwrap();
+    assert_eq!(
+        prepared.granted_config["mode"], "web",
+        "an empty document resolves to the schema default"
     );
-    let selected = crate::instance_bindings::prepare_open_bindings_selecting(
-        Some(&store),
-        files,
-        &plugin,
-        transitional,
-        Some(second.id.as_str()),
-    )
-    .await
-    .unwrap();
-    assert!(selected.from_instance);
-    assert_eq!(selected.granted_config["mode"], "zip");
+
+    let other_manifest =
+        bookclerk_plugin_manifest::parse(&fixture_manifest("other", "deny", true)).unwrap();
+    let other_root = files.join("other-src");
+    std::fs::create_dir_all(&other_root).unwrap();
+    let other =
+        DiscoveredPlugin::for_test(other_manifest, other_root.clone(), other_root.join("echo"));
+    let err = prepare_open_for_instance(&store, files, &other, &first.id)
+        .await
+        .expect_err("an instance of another plugin must not open");
+    assert!(err.to_string().contains("belongs to"), "{err}");
 }
 
 #[test]
 fn resolver_source_does_not_consult_family_settings() {
     let source = include_str!("instance_bindings.rs");
     let resolve = source
-        .split("pub async fn prepare_open_bindings")
+        .split("pub async fn prepare_open_for_instance")
         .nth(1)
         .unwrap();
     assert!(!resolve.contains("settings_table_for"));
@@ -1065,19 +1101,6 @@ fn ga_settings(base_url: &str) -> PluginInstanceConfigV1 {
     }
 }
 
-fn ga_body(base_url: &str, secret_name: &str) -> PluginInstanceConfigV1 {
-    let mut settings = BTreeMap::new();
-    settings.insert("access".into(), SettingValue::String("device".into()));
-    settings.insert("base_url".into(), SettingValue::String(base_url.into()));
-    PluginInstanceConfigV1 {
-        settings,
-        secret_refs: vec![InstanceSecretRefV1 {
-            key: "token".into(),
-            name: secret_name.into(),
-        }],
-    }
-}
-
 async fn save_manifest_grant(files: &Path, plugin: &DiscoveredPlugin) {
     let mut grants = PluginGrantStore::default();
     grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
@@ -1085,66 +1108,7 @@ async fn save_manifest_grant(files: &Path, plugin: &DiscoveredPlugin) {
 }
 
 #[tokio::test]
-async fn key_lookup_uses_the_document_when_a_deployment_exists() {
-    let _guard = TEST_LOCK.lock().await;
-    let dir = tempfile::tempdir().unwrap();
-    let files = dir.path();
-    let store = file_store(&files.join("library.db")).await;
-    let scratch = files.join("cache");
-    let session = bookclerk_library::control_plane::bootstrap_control_plane(
-        &store,
-        files,
-        &scratch,
-        None,
-        &EventsConfig::default(),
-    )
-    .await
-    .unwrap();
-    let manifest = bookclerk_plugin_manifest::parse(
-        "api_version = 3\nid = \"fixture\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
-         entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"deny\"\n\n[vars]\n",
-    )
-    .unwrap();
-    let root = files.join("plugin-src");
-    std::fs::create_dir_all(&root).unwrap();
-    let plugin = DiscoveredPlugin::for_test(manifest, root.clone(), root.join("echo"));
-    let mut grants = PluginGrantStore::default();
-    grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
-    grants.save(files).unwrap();
-    let actor = ConfigActor::Bootstrap;
-    let instance = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical())
-        .await
-        .unwrap();
-    import_instance_config_if_absent(
-        &store,
-        &actor,
-        &instance.id,
-        InstancePackagePolicy::Generic,
-        &mode_body("device"),
-        "import-lookup",
-    )
-    .await
-    .unwrap();
-    ensure_plugin_deployment(&store, &actor, &instance.id, &session.host.host_id)
-        .await
-        .unwrap();
-    let prepared = prepare_open_bindings(
-        Some(&store),
-        files,
-        &plugin,
-        serde_json::json!({"mode": "toml"}),
-    )
-    .await
-    .unwrap();
-    assert!(
-        prepared.from_instance,
-        "a deployed instance document stays the authority"
-    );
-    assert_eq!(prepared.granted_config["mode"], "device");
-}
-
-#[tokio::test]
-async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
+async fn live_two_instances_same_key_route_to_the_default() {
     let _guard = TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
@@ -1172,21 +1136,19 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
     save_manifest_grant(files, &plugin).await;
     let actor = ConfigActor::Bootstrap;
     let key = plugin.plugin_key().canonical();
-    let first = create_plugin_instance(&store, &actor, key).await.unwrap();
-    let second = create_plugin_instance(&store, &actor, key).await.unwrap();
+    let first = create_plugin_instance(&store, &actor, key, "")
+        .await
+        .unwrap();
+    let second = create_plugin_instance(&store, &actor, key, "")
+        .await
+        .unwrap();
     assert_ne!(first.id, second.id);
-    seal_instance_secret(&store, &first.id, key, "alpha", "secret-alpha")
-        .await
-        .unwrap();
-    seal_instance_secret(&store, &second.id, key, "beta", "secret-beta")
-        .await
-        .unwrap();
     import_instance_config_if_absent(
         &store,
         &actor,
         &first.id,
-        InstancePackagePolicy::GraphicAudio,
-        &ga_body("http://alpha.example", "alpha"),
+        &plugin.manifest.settings_schema(),
+        &ga_settings("http://alpha.example"),
         "import-alpha",
     )
     .await
@@ -1195,18 +1157,30 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
         &store,
         &actor,
         &second.id,
-        InstancePackagePolicy::GraphicAudio,
-        &ga_body("http://beta.example", "beta"),
+        &plugin.manifest.settings_schema(),
+        &ga_settings("http://beta.example"),
         "import-beta",
     )
     .await
     .unwrap();
-    let deploy_a = ensure_plugin_deployment(&store, &actor, &first.id, &session.host.host_id)
-        .await
-        .unwrap();
-    let deploy_b = ensure_plugin_deployment(&store, &actor, &second.id, &session.host.host_id)
-        .await
-        .unwrap();
+    let deploy_a = ensure_plugin_deployment(
+        &store,
+        &actor,
+        &first.id,
+        &session.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
+    let deploy_b = ensure_plugin_deployment(
+        &store,
+        &actor,
+        &second.id,
+        &session.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
     let runtime = live_runtime(&store, &config);
     reconcile_local_deployments(
         &store,
@@ -1232,14 +1206,11 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
         .expect("second open");
     assert_eq!(config_a["base_url"], "http://alpha.example");
     assert_eq!(config_b["base_url"], "http://beta.example");
-    let secrets_a = runtime
-        .opened_secrets_json(first.id.as_str())
-        .expect("first secrets");
-    let secrets_b = runtime
-        .opened_secrets_json(second.id.as_str())
-        .expect("second secrets");
-    assert_eq!(secrets_a["token"], "secret-alpha");
-    assert_eq!(secrets_b["token"], "secret-beta");
+    assert_eq!(config_a["access"], "device");
+    assert_eq!(
+        config_a["bitrate"], "hi",
+        "schema defaults reach CONFIG beside the document's values"
+    );
     let sources = runtime.sources.read().await;
     let registered_a = sources
         .get(first.id.as_str())
@@ -1257,9 +1228,28 @@ async fn live_two_instances_same_key_open_with_distinct_config_and_secrets() {
         registered_b.guest_pid(),
         runtime.tracked_guest_pid(second.id.as_str())
     );
+    let routed = sources
+        .get(key)
+        .expect("a bare plugin key routes to the default instance");
+    assert_eq!(
+        routed.plugin_instance_id(),
+        Some(first.id.as_str()),
+        "the oldest instance is the default until one is enrolled"
+    );
+    assert_eq!(
+        sources
+            .get("graphicaudio")
+            .expect("alias routes")
+            .plugin_instance_id(),
+        Some(first.id.as_str())
+    );
+    let pinned = sources
+        .route(key, Some(second.id.as_str()))
+        .expect("a job pin selects the other instance");
+    assert_eq!(pinned.plugin_instance_id(), Some(second.id.as_str()));
     assert!(
-        sources.get(key).is_none(),
-        "plugin key is not a unique source address"
+        sources.route(key, Some("not-an-instance")).is_none(),
+        "an unknown pin does not fall back silently"
     );
 }
 
@@ -1291,22 +1281,28 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         .expect("staged graphicaudio");
     save_manifest_grant(files, &plugin).await;
     let actor = ConfigActor::Bootstrap;
-    let instance = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical())
+    let instance = create_plugin_instance(&store, &actor, plugin.plugin_key().canonical(), "")
         .await
         .unwrap();
     import_instance_config_if_absent(
         &store,
         &actor,
         &instance.id,
-        InstancePackagePolicy::GraphicAudio,
+        &plugin.manifest.settings_schema(),
         &ga_settings("http://live.example"),
         "import-live",
     )
     .await
     .unwrap();
-    let deployment = ensure_plugin_deployment(&store, &actor, &instance.id, &session.host.host_id)
-        .await
-        .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &actor,
+        &instance.id,
+        &session.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
     let runtime = live_runtime(&store, &config);
     reconcile_local_deployments(
         &store,

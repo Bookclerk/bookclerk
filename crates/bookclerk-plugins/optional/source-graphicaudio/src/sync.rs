@@ -251,6 +251,7 @@ pub fn product_to_new_book(product: &Product, account_id: &str, marketplace: &st
     let published_at = product.release_date.as_deref().and_then(parse_ga_date);
 
     NewBook {
+        plugin_key: String::new(),
         uuid: None,
         product_id: product.id.clone(),
         source: String::from("graphicaudio"),
@@ -283,6 +284,7 @@ fn library_item_to_new_book(item: &LibraryItem, account_id: &str, marketplace: &
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| format!("GraphicAudio {}", item.product_id));
     NewBook {
+        plugin_key: String::new(),
         uuid: None,
         product_id: item.product_id.clone(),
         source: String::from("graphicaudio"),

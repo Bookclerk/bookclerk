@@ -43,7 +43,7 @@ default = true
 key = "allow_credential_login"
 label = "Allow credential login"
 type = "bool"
-default = false
+default = true
 
 [[settings]]
 key = "api_key"

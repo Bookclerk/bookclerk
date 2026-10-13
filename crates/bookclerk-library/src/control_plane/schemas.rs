@@ -145,13 +145,11 @@ pub async fn require_plugin_schema(
     store: &LibraryStore,
     plugin_key: &str,
 ) -> Result<PinnedPluginSchema> {
-    load_plugin_schema(store, plugin_key)
-        .await?
-        .ok_or_else(|| {
-            LibraryError::NotFound(format!(
-                "plugin `{plugin_key}` has no pinned settings schema; install it on a host first"
-            ))
-        })
+    load_plugin_schema(store, plugin_key).await?.ok_or_else(|| {
+        LibraryError::NotFound(format!(
+            "plugin `{plugin_key}` has no pinned settings schema; install it on a host first"
+        ))
+    })
 }
 
 fn schema_from_model(row: plugin_schemas::Model) -> Result<PinnedPluginSchema> {
