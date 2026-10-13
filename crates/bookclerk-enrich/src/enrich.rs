@@ -628,6 +628,7 @@ mod tests {
             .unwrap();
         let mut seed = NewBook::minimal("9781234567890", "user@example.com", "us", "Libro Title");
         seed.source = "libro".into();
+        seed.plugin_key = "libro".into();
         seed.asin = None;
         seed.isbn = Some("9781234567890".into());
         seed.length_minutes = Some(900);
@@ -680,6 +681,7 @@ mod tests {
             .unwrap();
         let mut seed = NewBook::minimal("9781234567890", "user@example.com", "us", "Libro Title");
         seed.source = "libro".into();
+        seed.plugin_key = "libro".into();
         seed.asin = Some("B00EXIST01".into());
         seed.length_minutes = Some(900);
         let row = store.upsert_book(&seed).await.unwrap();
