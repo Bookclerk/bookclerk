@@ -297,17 +297,14 @@ Test accounts (empty owned libraries except Chirp auto-entitlement):
 | GraphicAudio | Login OK; scan upserts **0** owned titles (5 promotional samples skipped) |
 | Chirp | Login OK (`user_id=5330622`); scan found **Firefly: Big Damn Hero** (`product_id=444622`) |
 
-Configure passwords via env (never argv):
+Connect each store in the Accounts UI (email + password; the password is
+sealed in the database, never read from env or argv), then:
 
 ```bash
-export BOOKCLERK_GA_PASSWORD='…'
-export BOOKCLERK_CHIRP_PASSWORD='…'
-bookclerk auth login --source graphicaudio --email you+ga@example.com
-bookclerk auth login --source chirp --email you+chirp@example.com
 bookclerk library scan --source graphicaudio
 bookclerk library scan --source chirp
 # After verification, disable scan inclusion:
-bookclerk auth set-scan <account> --scan false
+bookclerk library set-scan <account> --source graphicaudio --scan false
 ```
 
 Probe harness still uses `TEST_GA_*` / `TEST_CHIRP_*` for Python smoke tests.
@@ -349,8 +346,8 @@ device-slot language in FAQ). Magento ZIP links live under
    `/library/player/listen/title/{slug}/` → `<audio src>` on
    `media.graphicaudio.net` → download with **CloudFront signed cookies**
    set by the player page (bare URL without cookies returns 403). No
-   device slot. Requires `BOOKCLERK_GA_PASSWORD` (same as login). Login does
-   **not** register an Access App device.
+   device slot. Requires the account password stored at connect time. Login
+   does **not** register an Access App device.
 
 2. **Magento ZIP (opt-in: `access = "zip"`)** — **implemented**  
    Magento customer session → My Downloadable Products → follow download

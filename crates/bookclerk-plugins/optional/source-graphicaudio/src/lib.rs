@@ -31,8 +31,7 @@ pub use client::{
 };
 pub use db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
 pub use download::{
-    fetch_title_materials, fetch_title_with_mode, password_from_env, TitleFetchRequest,
-    GA_ACCESS_ENV, GA_FETCH_ENV, GA_PASSWORD_ENV,
+    fetch_title_materials, fetch_title_with_mode, TitleFetchRequest, GA_ACCESS_ENV, GA_FETCH_ENV,
 };
 pub use error::{GraphicAudioError, Result};
 pub use guest::{

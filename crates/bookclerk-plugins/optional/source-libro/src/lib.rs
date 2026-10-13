@@ -35,7 +35,7 @@ pub use guest::{
     guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan,
     guest_scan_rpc, resolve_base_url, resolve_container,
 };
-pub use source::{LibroSource, ID as LIBRO_SOURCE_ID, PASSWORD_ENV};
+pub use source::{LibroSource, ID as LIBRO_SOURCE_ID};
 pub use sync::{
     audiobook_to_new_book, collect_account_books, scan_account_into_library, scan_library,
     ScanOptions,

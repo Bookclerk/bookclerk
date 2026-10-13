@@ -35,8 +35,8 @@ pub struct PluginDescribe {
     /// Portal Accounts connect mode for storefronts.
     #[serde(default)]
     pub portal_auth_mode: PortalAuthMode,
-    /// Env var operators may set for password helpers (never required for
-    /// Accounts UI connect).
+    /// Reserved wire field: hosts ignore it. Passwords reach a guest only as
+    /// sealed secrets from Accounts, never from the environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_env_var: Option<String>,
     /// Alternate ids accepted for config / CLI targeting.

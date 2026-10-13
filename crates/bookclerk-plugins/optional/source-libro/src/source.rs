@@ -22,9 +22,6 @@ use crate::sync::{scan_library, ScanOptions as LibroScanOptions};
 /// Describe / config id for this store (`libro` in `[sources.libro]`).
 pub const ID: &str = "libro";
 
-/// Env var read for non-interactive password login when Accounts UI is unavailable.
-pub const PASSWORD_ENV: &str = "BOOKCLERK_LIBRO_PASSWORD";
-
 /// Extra ids accepted by the source registry (`libro.fm`, `librofm`).
 const ALIASES: &[&str] = &["libro.fm", "librofm"];
 
@@ -185,10 +182,6 @@ impl ContentSource for LibroSource {
             accent: "#2F6B53",
             icon_url: "https://www.google.com/s2/favicons?domain=libro.fm&sz=128",
         }
-    }
-
-    fn password_env_var(&self) -> Option<&'static str> {
-        Some(PASSWORD_ENV)
     }
 
     fn sort_key(&self) -> u32 {

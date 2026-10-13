@@ -29,7 +29,6 @@ impl PluginWorker for LibroRoot {
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             portal_auth_mode: PortalAuthMode::Password,
-            password_env_var: Some(bookclerk_plugin_source_libro::PASSWORD_ENV.into()),
             aliases: vec!["libro.fm".into(), "librofm".into()],
             sort_key: 1,
             brand: Some(Brand {

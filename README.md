@@ -58,16 +58,11 @@ export BOOKCLERK_FILES_DIR=./BookclerkFiles
 mkdir -p "$BOOKCLERK_FILES_DIR"
 cp config/config.example.toml "$BOOKCLERK_FILES_DIR/config.toml"
 
-# Audible (browser / QR OAuth — OTP/2FA completed in the browser)
-bookclerk auth login -m us
-
-# Other stores (password via env — never on argv)
-# export BOOKCLERK_LIBRO_PASSWORD='…'
-# bookclerk auth login --source libro --email you@example.com
-# export BOOKCLERK_CHIRP_PASSWORD='…'
-# bookclerk auth login --source chirp --email you@example.com
-# export BOOKCLERK_GA_PASSWORD='…'
-# bookclerk auth login --source graphicaudio --email you@example.com
+# Connect stores in the web UI (Accounts): Audible via browser / QR OAuth
+# (OTP/2FA completed in the browser); Libro.fm, Chirp and GraphicAudio via
+# email + password, sealed into the database. Passwords are never read from
+# the environment or argv.
+bookclerk login   # prints a loopback sign-in URL for a running bookclerkd
 
 bookclerk library scan
 bookclerk library acquire --asin B0EXAMPLE   # or --isbn / UUID / product id

@@ -49,9 +49,6 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_LOG` / `RUST_LOG` | Log filter |
 | `BOOKCLERK_AUTH_PASSWORD` | Wraps `master.key` at rest (preferred over `[auth].password`); required for legacy `json-encrypted` rows |
 | `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` | Upstream OIDC/OAuth client secret for provider id `<ID>` (hyphens become underscores) |
-| `BOOKCLERK_LIBRO_PASSWORD` | Libro.fm login |
-| `BOOKCLERK_CHIRP_PASSWORD` | Chirp login |
-| `BOOKCLERK_GA_PASSWORD` | GraphicAudio login |
 | `BOOKCLERK_GA_ACCESS` | GraphicAudio access mode (`web`/`zip`/`device`) |
 | `BOOKCLERK_ABS_API_KEY` | Audiobookshelf API key |
 | `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on/off |

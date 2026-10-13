@@ -57,8 +57,6 @@ pub struct ExternalSource {
     auth_mode: PortalAuthMode,
     /// Leaked `describe()` aliases used as extra storefront ids.
     aliases: &'static [&'static str],
-    /// Optional env var the guest accepts for a password (never put on argv).
-    password_env: Option<&'static str>,
     /// Registry sort order from `describe()` (`200` when the guest omits it).
     sort_key: u32,
     /// Scoped data directory for this plugin only.
@@ -124,10 +122,6 @@ impl ExternalSource {
             alias_list.push(plugin.manifest.id.clone());
         }
         let aliases = leak_str_slice(&alias_list, &[]);
-        let password_env = describe
-            .password_env_var
-            .as_deref()
-            .map(|s| Box::leak(s.to_string().into_boxed_str()) as &'static str);
         let sort_key = if describe.sort_key == 0 {
             DEFAULT_EXTERNAL_SORT_KEY
         } else {
@@ -143,7 +137,6 @@ impl ExternalSource {
             brand,
             auth_mode,
             aliases,
-            password_env,
             sort_key,
             plugin_data_dir,
             source_config,
@@ -326,10 +319,6 @@ impl ContentSource for ExternalSource {
 
     fn portal_brand(&self) -> SourceBrand {
         self.brand
-    }
-
-    fn password_env_var(&self) -> Option<&'static str> {
-        self.password_env
     }
 
     fn sort_key(&self) -> u32 {

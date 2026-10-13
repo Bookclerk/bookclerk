@@ -177,8 +177,8 @@ When exercising real store credentials in this cloud environment:
   (audible-rs has no password CLI). Use a TOTP seed or complete the challenge
   in the Desktop pane; see README / `crates/bookclerk-plugins/optional/source-audible/README.md`.
 - Password stores: enter credentials in Accounts (never put passwords on argv).
-  Env vars such as `BOOKCLERK_LIBRO_PASSWORD` / `BOOKCLERK_CHIRP_PASSWORD` /
-  `BOOKCLERK_GA_PASSWORD` may still apply to plugin helpers where documented.
+  Guests receive the stored password as a sealed secret; no
+  `BOOKCLERK_*_PASSWORD` env var is read by Bookclerk or forwarded to a guest.
 - Keep `library.auto_acquire = false` in `$BOOKCLERK_FILES_DIR/config.toml`.
 - After login, **disable the account for scans**:
   `bookclerk library set-scan <account> --scan false`.

@@ -16,9 +16,7 @@ use crate::catalog::{
 };
 use crate::client::{GraphicAudioClient, DEFAULT_BASE_URL};
 use crate::db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
-use crate::download::{
-    fetch_title_with_mode, password_from_env, product_title_for, TitleFetchRequest, GA_PASSWORD_ENV,
-};
+use crate::download::{fetch_title_with_mode, product_title_for, TitleFetchRequest};
 use crate::error::{GraphicAudioError, Result};
 use crate::magento::{MagentoClient, DEFAULT_STORE_URL};
 use crate::options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
@@ -47,7 +45,7 @@ pub struct GraphicAudioSource {
     pub container: GraphicAudioContainer,
     /// Optional fetch-mode override (tests / embedding).
     fetch_mode: Option<GraphicAudioAccess>,
-    /// Optional Magento password override; else [`password_from_env`].
+    /// Magento password for web / ZIP access (the account's stored secret).
     magento_password: Option<String>,
 }
 
@@ -121,7 +119,7 @@ impl GraphicAudioSource {
         self
     }
 
-    /// Magento password for ZIP / Browser Player (bypasses `BOOKCLERK_GA_PASSWORD`).
+    /// Magento password for ZIP / Browser Player.
     #[must_use]
     pub fn with_magento_password(mut self, password: impl Into<String>) -> Self {
         self.magento_password = Some(password.into());
@@ -272,10 +270,6 @@ impl ContentSource for GraphicAudioSource {
         }
     }
 
-    fn password_env_var(&self) -> Option<&'static str> {
-        Some(GA_PASSWORD_ENV)
-    }
-
     fn sort_key(&self) -> u32 {
         2
     }
@@ -306,7 +300,7 @@ impl ContentSource for GraphicAudioSource {
         library: &SourceScope,
         opts: ScanOptions,
     ) -> bookclerk_source::Result<ScanSummary> {
-        let password = self.magento_password.clone().or_else(password_from_env);
+        let password = self.magento_password.clone();
         scan_library(
             library,
             GaScanOptions::from(&opts),
@@ -353,7 +347,7 @@ impl ContentSource for GraphicAudioSource {
             None
         };
 
-        let password = self.magento_password.clone().or_else(password_from_env);
+        let password = self.magento_password.clone();
 
         let plain = fetch_title_with_mode(
             &client,

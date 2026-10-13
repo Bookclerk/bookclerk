@@ -20,9 +20,6 @@ use crate::sync::{scan_library, ScanOptions as ChirpScanOptions};
 /// Describe / config id for this store (`chirp` in `[sources.chirp]`).
 pub const ID: &str = "chirp";
 
-/// Env var read for non-interactive password login when Accounts UI is unavailable.
-pub const PASSWORD_ENV: &str = "BOOKCLERK_CHIRP_PASSWORD";
-
 /// Chirp storefront adapter implementing [`ContentSource`].
 ///
 /// Prefer [`ChirpSource::from_config`] when registering with the host; use
@@ -153,10 +150,6 @@ impl ContentSource for ChirpSource {
             accent: "#14B8A6",
             icon_url: "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128",
         }
-    }
-
-    fn password_env_var(&self) -> Option<&'static str> {
-        Some(PASSWORD_ENV)
     }
 
     fn sort_key(&self) -> u32 {

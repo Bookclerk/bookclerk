@@ -52,22 +52,19 @@ Scheduled GitHub Actions (staggered weekly) keep reverse-engineered surfaces hon
 
 ## Credentials checklist
 
-| Source | Probe env | CLI password env |
+| Source | Probe env | Bookclerk connect |
 | --- | --- | --- |
-| GraphicAudio | `TEST_GA_EMAIL` / `TEST_GA_PASSWORD` | `BOOKCLERK_GA_PASSWORD` |
-| Chirp | `TEST_CHIRP_EMAIL` / `TEST_CHIRP_PASSWORD` | `BOOKCLERK_CHIRP_PASSWORD` |
+| GraphicAudio | `TEST_GA_EMAIL` / `TEST_GA_PASSWORD` | Accounts (email + password) |
+| Chirp | `TEST_CHIRP_EMAIL` / `TEST_CHIRP_PASSWORD` | Accounts (email + password) |
 | Storytel | `TEST_STORYTEL_EMAIL` / `TEST_STORYTEL_PASSWORD` | *(not wired yet)* |
 | Audiobooks.com | `TEST_ABC_EMAIL` / `TEST_ABC_PASSWORD` | *(not wired yet)* |
 | Kobo | — | Browser ActivateOnWeb |
 | Downpour / Podimo | `TEST_DOWNPOUR_*` / `TEST_PODIMO_*` | Deferred |
 | LibriVox | — | — |
 
-```bash
-export BOOKCLERK_GA_PASSWORD=…
-bookclerk auth login --source graphicaudio --email you@example.com
-export BOOKCLERK_CHIRP_PASSWORD=…
-bookclerk auth login --source chirp --email you@example.com
-```
+The probe env vars feed the probe scripts only. Bookclerk itself takes store
+passwords from the Accounts UI and seals them in the database; it never reads
+them from the environment.
 
 Do **not** put passwords on argv. Prefer cheap/owned libraries for GA/Chirp;
 Storytel/ABC are subscription models — use throwaway accounts and do not

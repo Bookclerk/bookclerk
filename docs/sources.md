@@ -10,9 +10,9 @@ uppercased plugin id — e.g. `BOOKCLERK_SOURCE_ECHO_ENABLED=0`).
 | Id | Auth | Media path | Notes |
 | --- | --- | --- | --- |
 | `audible` | Amazon OAuth (QR / callback / external) | Adrm / Widevine; guest decrypt → Plain | Dual load; [audible-rs](https://github.com/mkb79/audible-rs) |
-| `libro` | Email + password | DRM-free M4B/ZIP | Dual load; password: `BOOKCLERK_LIBRO_PASSWORD` |
-| `chirp` | Email + password (GraphQL) | Plain MP3 after URL decrypt | Dual load; password: `BOOKCLERK_CHIRP_PASSWORD` |
-| `graphicaudio` | Email + password | Plain web / ZIP / device stream | Dual load; password: `BOOKCLERK_GA_PASSWORD` |
+| `libro` | Email + password | DRM-free M4B/ZIP | Dual load; password entered in Accounts |
+| `chirp` | Email + password (GraphQL) | Plain MP3 after URL decrypt | Dual load; password entered in Accounts |
+| `graphicaudio` | Email + password | Plain web / ZIP / device stream | Dual load; password entered in Accounts |
 
 First-party source binaries live under `crates/bookclerk-plugins/`. Workspace
 builds also `register()` them in-process; distributed installs use the plugin

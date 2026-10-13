@@ -90,11 +90,6 @@ pub trait ContentSource: Send + Sync {
     /// Portal button brand (colors + favicon).
     fn portal_brand(&self) -> SourceBrand;
 
-    /// Optional env var for non-interactive password login.
-    fn password_env_var(&self) -> Option<&'static str> {
-        None
-    }
-
     /// Stable sort key for registry listing (lower first).
     fn sort_key(&self) -> u32 {
         100

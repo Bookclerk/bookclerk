@@ -205,7 +205,7 @@ pub async fn collect_account_books(
 
     let password = magento_password.ok_or_else(|| {
         GraphicAudioError::auth(
-            "GraphicAudio Magento library scan requires BOOKCLERK_GA_PASSWORD (or access=device with a saved token)",
+            "GraphicAudio Magento library scan requires the account password (connect in Accounts) or access=device with a saved token",
         )
     })?;
     let store = MagentoClient::new(store_base)?;

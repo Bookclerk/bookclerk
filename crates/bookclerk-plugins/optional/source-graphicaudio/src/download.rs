@@ -25,17 +25,6 @@ pub const GA_FETCH_ENV: &str = "BOOKCLERK_GA_FETCH";
 pub const GA_ACCESS_ENV: &str = "BOOKCLERK_GA_ACCESS";
 
 /// Password env (same as CLI login) for Magento ZIP / Browser Player.
-pub const GA_PASSWORD_ENV: &str = "BOOKCLERK_GA_PASSWORD";
-
-/// Read Magento password from [`GA_PASSWORD_ENV`] when set.
-#[must_use]
-pub fn password_from_env() -> Option<String> {
-    std::env::var(GA_PASSWORD_ENV)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Fetch one product id into `cache_dir` via `api/links` Hi/Lo URLs.
 ///
 /// # Errors
@@ -98,9 +87,9 @@ pub async fn fetch_title_with_mode(
     match req.mode {
         GraphicAudioAccess::Zip => {
             let password = req.password.ok_or_else(|| {
-                GraphicAudioError::auth(format!(
-                    "GraphicAudio access=zip requires {GA_PASSWORD_ENV} for Magento storefront access"
-                ))
+                GraphicAudioError::auth(
+                    "GraphicAudio access=zip requires the account password (connect in Accounts) for Magento storefront access",
+                )
             })?;
             fetch_magento_zip(
                 req.store_base_url,
@@ -115,9 +104,9 @@ pub async fn fetch_title_with_mode(
         }
         GraphicAudioAccess::Web => {
             let password = req.password.ok_or_else(|| {
-                GraphicAudioError::auth(format!(
-                    "GraphicAudio access=web requires {GA_PASSWORD_ENV} for Magento storefront access"
-                ))
+                GraphicAudioError::auth(
+                    "GraphicAudio access=web requires the account password (connect in Accounts) for Magento storefront access",
+                )
             })?;
             fetch_browser(
                 req.store_base_url,

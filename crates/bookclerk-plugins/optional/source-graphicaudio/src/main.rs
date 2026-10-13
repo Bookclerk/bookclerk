@@ -15,7 +15,7 @@ use bookclerk_source::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
 use bookclerk_source::{CatalogSearchOpts, ContentSource, PurchaseHintOpts};
 use serde_json::Value;
 
-/// GraphicAudio source guest; password login via `BOOKCLERK_GA_PASSWORD` or Accounts.
+/// GraphicAudio source guest; password login through Accounts.
 struct GraphicAudioRoot;
 
 /// Granted `CONFIG` captured at `open` for login and scan.
@@ -34,7 +34,6 @@ impl PluginWorker for GraphicAudioRoot {
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             portal_auth_mode: PortalAuthMode::Password,
-            password_env_var: Some(bookclerk_plugin_source_graphicaudio::GA_PASSWORD_ENV.into()),
             aliases: vec!["ga".into(), "graphic-audio".into()],
             sort_key: 2,
             brand: Some(Brand {
