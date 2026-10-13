@@ -33,6 +33,8 @@
 
 #[cfg(test)]
 mod deployment_reconcile_tests;
+#[cfg(test)]
+mod enrollment_tests;
 
 mod authority;
 mod callback_proxy;

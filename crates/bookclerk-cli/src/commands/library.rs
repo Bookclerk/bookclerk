@@ -820,11 +820,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
         } => {
             let registry = sources(&host).await?;
             let plugin_key = match source.as_deref() {
-                Some(needle) => Some(
-                    resolve_source(&registry, needle, None)?
-                        .plugin_key()
-                        .to_string(),
-                ),
+                Some(needle) => Some(account_plugin_key(&store, &registry, needle).await?),
                 None => None,
             };
             let (plugin_key, account_id) =
@@ -910,11 +906,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
         LibraryCommand::RevokeAccount { account, source } => {
             let registry = sources(&host).await?;
             let plugin_key = match source.as_deref() {
-                Some(needle) => Some(
-                    resolve_source(&registry, needle, None)?
-                        .plugin_key()
-                        .to_string(),
-                ),
+                Some(needle) => Some(account_plugin_key(&store, &registry, needle).await?),
                 None => None,
             };
             let acct = store
@@ -1043,6 +1035,39 @@ async fn list_all_accounts(
         eprintln!("no accounts configured — connect a store in the Bookclerk Accounts UI");
     }
     Ok(())
+}
+
+/// Resolves `--source` to the plugin key that owns an account.
+///
+/// A storefront deployed on this host wins (alias, PluginKey, or instance
+/// id). Otherwise the needle may name a PluginKey or display alias already
+/// recorded on an account row: the plugin can be deployed on another cluster
+/// host, and account rows belong to the plugin key, not to a host.
+async fn account_plugin_key(
+    store: &LibraryStore,
+    registry: &bookclerk_source::SourceRegistry,
+    needle: &str,
+) -> anyhow::Result<String> {
+    if let Ok(source) = registry.require_routed(needle, None) {
+        return Ok(source.plugin_key().to_string());
+    }
+    let mut keys: Vec<String> = store
+        .list_accounts()
+        .await?
+        .into_iter()
+        .filter(|a| a.plugin_key == needle || a.source.eq_ignore_ascii_case(needle))
+        .map(|a| a.plugin_key)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    match keys.len() {
+        0 => resolve_source(registry, needle, None).map(|src| src.plugin_key().to_string()),
+        1 => Ok(keys.pop().unwrap_or_default()),
+        _ => Err(anyhow::anyhow!(
+            "`{needle}` names more than one plugin on this library ({}); pass the PluginKey",
+            keys.join(", ")
+        )),
+    }
 }
 
 /// Formats a boolean as `yes` / `no` for tabular CLI output.

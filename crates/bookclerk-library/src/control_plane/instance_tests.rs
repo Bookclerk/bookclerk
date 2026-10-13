@@ -755,3 +755,140 @@ async fn deployment_replace_conflicts_without_touching_observations() {
     assert_eq!(observed.status, DeploymentStatus::Healthy);
     assert_eq!(observed.applied_config_revision, Some(1));
 }
+
+#[tokio::test]
+async fn two_connections_observe_one_instance_document() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let files_a = tempfile::tempdir().unwrap();
+    let files_b = tempfile::tempdir().unwrap();
+    let store_a = file_store(&path).await;
+    let session_a = bootstrap(&store_a, files_a.path()).await;
+    std::fs::copy(
+        crate::master_key::master_key_path(files_a.path()),
+        crate::master_key::master_key_path(files_b.path()),
+    )
+    .unwrap();
+    let store_b = file_store(&path).await;
+    let session_b = bootstrap(&store_b, files_b.path()).await;
+    assert_eq!(session_a.cluster_id, session_b.cluster_id);
+    assert_ne!(session_a.host.host_id, session_b.host.host_id);
+
+    // Host A enrols the plugin: one default instance, seeded from defaults.
+    let key = "platform:bookclerk/shared-fixture";
+    let instance = ensure_plugin_instance(&store_a, &ConfigActor::Bootstrap, key)
+        .await
+        .unwrap();
+    let seeded = import_instance_config_if_absent(
+        &store_a,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &fixture_schema(),
+        &PluginInstanceConfigV1::empty(),
+        "seed-shared-fixture",
+    )
+    .await
+    .unwrap();
+
+    // Host B enrols the same plugin key and lands on the same instance.
+    let from_b = ensure_plugin_instance(&store_b, &ConfigActor::Bootstrap, key)
+        .await
+        .unwrap();
+    assert_eq!(from_b.id, instance.id);
+    let doc_b = load_instance_config(&store_b, &instance.id).await.unwrap();
+    assert_eq!(doc_b.revision, seeded.revision);
+
+    // An operator on host B writes; host A observes the new revision.
+    let mut body = PluginInstanceConfigV1::empty();
+    body.settings
+        .insert("mode".into(), SettingValue::String("zip".into()));
+    let applied = replace_instance_config(
+        &store_b,
+        &operator(),
+        &instance.id,
+        &fixture_schema(),
+        seeded.revision,
+        &body,
+        "host-b-writes",
+    )
+    .await
+    .unwrap();
+    let InstanceConfigReplace::Applied(doc) = applied else {
+        panic!("expected apply, got {applied:?}");
+    };
+    let seen_by_a = load_instance_config(&store_a, &instance.id).await.unwrap();
+    assert_eq!(seen_by_a.revision, doc.revision);
+    assert_eq!(seen_by_a.body.settings_json()["mode"], "zip");
+
+    // Host A's write against the revision it last saw is rejected.
+    let stale = replace_instance_config(
+        &store_a,
+        &operator(),
+        &instance.id,
+        &fixture_schema(),
+        seeded.revision,
+        &mode_device(),
+        "host-a-stale",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stale,
+        InstanceConfigReplace::Conflict {
+            current_revision: doc.revision,
+        }
+    );
+
+    // A spawn on either host resolves the same CONFIG at the same revision.
+    let grant = InstanceBindingGrant {
+        config: true,
+        secrets: false,
+    };
+    let on_a = resolve_instance_bindings(&store_a, &instance.id, &grant, &fixture_schema())
+        .await
+        .unwrap();
+    let on_b = resolve_instance_bindings(&store_b, &instance.id, &grant, &fixture_schema())
+        .await
+        .unwrap();
+    assert_eq!(on_a.config, on_b.config);
+    assert_eq!(on_a.config_revision, doc.revision);
+    assert_eq!(on_a.config.json_value().unwrap()["retries"], 2);
+
+    // Deployments are host-scoped: the same instance is present on A and
+    // absent on B, and each host reads the other's row without owning it.
+    ensure_plugin_deployment(
+        &store_a,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &session_a.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
+    ensure_plugin_deployment(
+        &store_b,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &session_b.host.host_id,
+        DESIRED_ABSENT,
+    )
+    .await
+    .unwrap();
+    let present_on_a = list_present_deployments_for_host(&store_b, &session_a.host.host_id)
+        .await
+        .unwrap();
+    assert_eq!(present_on_a.len(), 1);
+    assert_eq!(present_on_a[0].plugin_instance_id, instance.id);
+    assert!(
+        list_present_deployments_for_host(&store_a, &session_b.host.host_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let b_row = load_deployment_for_host(&store_a, &instance.id, &session_b.host.host_id)
+        .await
+        .unwrap()
+        .expect("host B's row is visible from host A");
+    assert_eq!(b_row.desired, DESIRED_ABSENT);
+}
