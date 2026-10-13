@@ -82,7 +82,10 @@ pub fn portal_spa_router(state: PortalState) -> Router {
         .route("/libro/login", post(libro_login_legacy))
         .route("/audible/start", post(audible_start))
         .route("/connections", get(connections))
-        .route("/connections/{account_id}/revoke", post(revoke_connection))
+        .route(
+            "/sources/{source}/connections/{account_id}/revoke",
+            post(revoke_connection),
+        )
         .with_state(state)
 }
 
@@ -440,8 +443,9 @@ async fn source_password_login(
     }
 
     let source_id = source.id();
+    let plugin_key = source.plugin_key().to_string();
     let library = state.library_snapshot().await;
-    let scope = library.scope(source_id);
+    let scope = bookclerk_source::source_scope(&library, source.as_ref());
     let account = source
         .login(
             &scope,
@@ -465,14 +469,17 @@ async fn source_password_login(
             true,
         )
         .await?;
-    library.mark_connection_active(&account.account_id).await?;
     library
-        .link_account(identity.id, &account.account_id, source_id)
+        .mark_connection_active(&plugin_key, &account.account_id)
+        .await?;
+    library
+        .link_account(identity.id, &plugin_key, &account.account_id, source_id)
         .await?;
     Ok(Json(serde_json::json!({
         "ok": true,
         "account_id": account.account_id,
         "source": source_id,
+        "plugin_key": plugin_key,
     })))
 }
 
@@ -528,10 +535,11 @@ async fn start_source_oauth_session(
 
     let library = state.library_snapshot().await;
     let source_id = source.id().to_string();
+    let plugin_key = source.plugin_key().to_string();
     let (url_tx, mut url_rx) = mpsc::channel::<String>(1);
 
     tokio::spawn(async move {
-        let scope = library.scope(&source_id);
+        let scope = bookclerk_source::source_scope(&library, source.as_ref());
         let opts = LoginOptions {
             force: true,
             callback_bind: Some("0.0.0.0:0".into()),
@@ -547,9 +555,11 @@ async fn start_source_oauth_session(
             .await;
         match result {
             Ok(account) => {
-                let _ = library.mark_connection_active(&account.account_id).await;
                 let _ = library
-                    .link_account(identity_id, &account.account_id, &source_id)
+                    .mark_connection_active(&plugin_key, &account.account_id)
+                    .await;
+                let _ = library
+                    .link_account(identity_id, &plugin_key, &account.account_id, &source_id)
                     .await;
                 info!(
                     account = %account.account_id,
@@ -579,7 +589,9 @@ async fn connections(
     let links = library.list_account_links(identity.id).await?;
     let mut connections = Vec::new();
     for link in links {
-        let acct = library.get_account(&link.account_id).await?;
+        let acct = library
+            .get_account(&link.plugin_key, &link.account_id)
+            .await?;
         let brand = if let Some(s) = find_source(&state, &link.source).await {
             Some(Brand::from(s.portal_brand()))
         } else {
@@ -595,6 +607,7 @@ async fn connections(
         // plugin is disabled — only new connect/login is gated by enabled.
         let source_enabled = cfg.sources.is_enabled(&link.source);
         connections.push(ConnectionInfo {
+            plugin_key: link.plugin_key,
             account_id: link.account_id,
             source: link.source,
             label: acct.as_ref().and_then(|a| a.label.clone()),
@@ -627,6 +640,8 @@ struct ConnectionInfo {
     account_id: String,
     /// Source plugin id that owns this account.
     source: String,
+    /// Provenance-qualified PluginKey that owns the account.
+    plugin_key: String,
     /// Operator-facing account label when the store provided one.
     label: Option<String>,
     /// Connection state (`active`, revoked, …); defaults to `active` if the account row is missing.
@@ -639,28 +654,42 @@ struct ConnectionInfo {
 }
 
 /// Unlinks a store account from this identity and deletes secrets when no other identity remains.
+///
+/// The account is addressed by `(source, account_id)`: the same store id may
+/// exist under two plugins. `source` is the alias or plugin key of the link.
 async fn revoke_connection(
     State(state): State<PortalState>,
     headers: HeaderMap,
-    Path(account_id): Path<String>,
+    Path((source, account_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let links = library.list_account_links(identity.id).await?;
-    if !links.iter().any(|l| l.account_id == account_id) {
+    let Some(link) = links.iter().find(|l| {
+        l.account_id == account_id
+            && (l.plugin_key == source || l.source.eq_ignore_ascii_case(&source))
+    }) else {
         return Err(PortalError::bad("account not linked to this identity"));
-    }
-    library.unlink_account(identity.id, &account_id).await?;
+    };
+    let plugin_key = link.plugin_key.clone();
+    library
+        .unlink_account(identity.id, &plugin_key, &account_id)
+        .await?;
     // Exclusive-link invariant: only delete secrets when no other identity
-    // still references this account_id. Propagate count failures — do not
+    // still references this account. Propagate count failures — do not
     // treat them as "still linked" (that would skip secret cleanup).
     // Revoking credentials keeps already-acquired library rows (product policy).
-    let remaining = library.count_account_links_for_account(&account_id).await?;
+    let remaining = library
+        .count_account_links_for_account(&plugin_key, &account_id)
+        .await?;
     if remaining == 0 {
-        if let Err(err) = library.delete_account_secrets(&account_id).await {
+        if let Err(err) = library
+            .delete_account_secrets(&plugin_key, &account_id)
+            .await
+        {
             warn!(%account_id, %err, "failed to delete encrypted_secrets on revoke");
         }
-        library.revoke_credentials(&account_id).await?;
+        library.revoke_credentials(&plugin_key, &account_id).await?;
     }
     Ok(Json(serde_json::json!({ "ok": true })))
 }

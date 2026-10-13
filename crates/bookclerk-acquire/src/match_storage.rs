@@ -543,7 +543,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         let book = NewBook::minimal("B00EXAMPLE1", "acct", "us", "Cool Book");
@@ -605,7 +605,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         let mut book = NewBook::minimal("B00EXAMPLE1", "acct", "us", "Cool Book");
@@ -667,7 +667,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         library
@@ -719,7 +719,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         let mut book = NewBook::minimal("B00EXAMPLE1", "acct", "us", "Cool Book");
@@ -815,7 +815,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         let mut book = NewBook::minimal("B00EXAMPLE1", "acct", "us", "Cool Book");
@@ -868,7 +868,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         library
@@ -913,7 +913,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         library
@@ -982,7 +982,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         let mut book = NewBook::minimal("B00EXAMPLE1", "acct", "us", "Cool Book");

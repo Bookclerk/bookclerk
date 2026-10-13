@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use bookclerk_library::{secret_kind, SourceScope};
+use bookclerk_library::{secret_kind, LibraryStore, SourceScope};
 
 use crate::brand::SourceBrand;
 use crate::error::{Result, SourceError};
@@ -223,6 +223,16 @@ pub trait ContentSource: Send + Sync {
         let _ = limit;
         Ok(Vec::new())
     }
+}
+
+/// Opens the [`SourceScope`] for `source`: rows are isolated by its
+/// [`ContentSource::plugin_key`] and labelled with its [`ContentSource::id`].
+///
+/// Every instance of one plugin shares this scope; accounts are not tied
+/// to a plugin instance.
+#[must_use]
+pub fn source_scope(library: &LibraryStore, source: &dyn ContentSource) -> SourceScope {
+    library.scope(source.plugin_key(), source.id())
 }
 
 /// Shared revoke path for plugins that seal as `.plugin.auth` (and legacy names).

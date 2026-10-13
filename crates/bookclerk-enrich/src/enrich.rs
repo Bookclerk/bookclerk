@@ -239,6 +239,7 @@ pub async fn apply_enrichment_to_book(
     let book = NewBook {
         uuid: Some(existing.uuid.clone()),
         product_id: existing.product_id.clone(),
+        plugin_key: existing.plugin_key.clone(),
         source: existing.source.clone(),
         account_id: existing.account_id.clone(),
         asin: existing
@@ -622,7 +623,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_account("user@example.com", "us", None, true, "libro")
+            .upsert_account("libro", "user@example.com", "us", None, true, "libro")
             .await
             .unwrap();
         let mut seed = NewBook::minimal("9781234567890", "user@example.com", "us", "Libro Title");
@@ -674,7 +675,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .upsert_account("user@example.com", "us", None, true, "libro")
+            .upsert_account("libro", "user@example.com", "us", None, true, "libro")
             .await
             .unwrap();
         let mut seed = NewBook::minimal("9781234567890", "user@example.com", "us", "Libro Title");

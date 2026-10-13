@@ -27,7 +27,7 @@ pub use media::{
 };
 pub use options::DownloadOptions;
 pub use registry::SourceRegistry;
-pub use traits::{revoke_credentials_default, ContentSource, PortalAuthMode};
+pub use traits::{revoke_credentials_default, source_scope, ContentSource, PortalAuthMode};
 pub use types::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, CatalogSortDir,
     ConfigOptionValue, ExpandSeed, FetchOptions, ImportCredentialsOptions, LoginOptions,
