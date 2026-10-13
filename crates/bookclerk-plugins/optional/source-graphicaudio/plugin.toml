@@ -17,6 +17,39 @@ tcp = [
 
 [vars]
 
+[[settings]]
+key = "access"
+label = "Access mode"
+type = "enum"
+values = [{ id = "web", label = "Web player" }, { id = "zip", label = "ZIP download" }, { id = "device", label = "Device stream" }]
+default = "web"
+
+[[settings]]
+key = "bitrate"
+label = "Bitrate (device)"
+type = "enum"
+values = [{ id = "hi", label = "High" }, { id = "lo", label = "Low" }]
+default = "hi"
+
+[[settings]]
+key = "container"
+label = "Container (zip)"
+type = "enum"
+values = [{ id = "auto", label = "Auto" }, { id = "m4b", label = "M4B" }, { id = "mp3", label = "MP3" }, { id = "flac", label = "FLAC" }]
+default = "auto"
+
+[[settings]]
+key = "base_url"
+label = "Base URL"
+type = "string"
+description = "Override the GraphicAudio site origin (testing only)."
+
+[[settings]]
+key = "store_url"
+label = "Store URL"
+type = "string"
+description = "Override the GraphicAudio store origin (testing only)."
+
 [secrets]
 
 [work_fs]

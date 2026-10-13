@@ -27,6 +27,7 @@ tokio-util.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+toml.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std", "macros", "rt", "sync", "time", "rt-multi-thread"] }
 
 [build-dependencies]

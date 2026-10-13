@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogHit, ConfigOption, ConfigOptionValue,
+    serve, Bindings, Brand, CatalogHit,
     ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
     HealthOk, Invocation, ListDealsParams, LoginCompleteParams, LoginParams, LoginResult,
     LoginStartResult, PlainFetch, PluginDescribe, PluginError, PluginWorker, PortalAuthMode,
@@ -44,20 +44,6 @@ impl PluginWorker for AudibleRoot {
                     "https://www.google.com/s2/favicons?domain=audible.com&sz=128".into(),
                 ),
             }),
-            config_options: vec![ConfigOption {
-                key: "bitrate".into(),
-                label: "Bitrate".into(),
-                values: vec![
-                    ConfigOptionValue {
-                        id: "high".into(),
-                        label: "High".into(),
-                    },
-                    ConfigOptionValue {
-                        id: "normal".into(),
-                        label: "Normal".into(),
-                    },
-                ],
-            }],
             ..PluginDescribe::default()
         })
     }

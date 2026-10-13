@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use bookclerk_plugin_abi::CliSchema;
+use bookclerk_plugin_abi::{CliSchema, ConfigOption, SettingSpec, SettingsSchema};
 pub use bookclerk_plugin_abi::{Entrypoint, EventConsumerSpec, PluginCapabilities};
 use serde::{Deserialize, Serialize};
 
@@ -613,10 +613,16 @@ pub struct PluginManifest {
     /// Isolated plugin-owned database bindings (`[[databases]]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub databases: Vec<DatabaseBindingManifest>,
-    /// Operator config binding (`[vars]`). Keys are defaults the host may
-    /// override from `config.toml`; an empty table still declares the binding.
+    /// Operator config binding (`[vars]`). Declares that the guest receives
+    /// `CONFIG`; an empty table is the usual form. Values come from
+    /// `[[settings]]` defaults and the plugin instance document.
     #[serde(default, skip_serializing_if = "vars_is_none")]
     pub vars: Option<std::collections::BTreeMap<String, toml::Value>>,
+    /// Operator settings schema (`[[settings]]`): the keys an instance
+    /// document may set, their types, enum values, and defaults. Non-secret
+    /// entries need `[vars]`; `type = "secret"` entries need `[secrets]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings: Vec<SettingSpec>,
     /// Sealed secrets binding (`[secrets]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<NamedBinding>,
@@ -758,6 +764,26 @@ impl PluginManifest {
             return Some("[queues] is not implemented yet".to_string());
         }
         None
+    }
+
+    /// Operator settings schema declared by `[[settings]]`.
+    ///
+    /// # Returns
+    ///
+    /// The declared entries in order; empty when the plugin takes no
+    /// operator settings.
+    #[must_use]
+    pub fn settings_schema(&self) -> SettingsSchema {
+        SettingsSchema::new(self.settings.clone())
+    }
+
+    /// `describe().configOptions` derived from `[[settings]]`.
+    ///
+    /// A guest whose `describe()` returns a non-empty list must return this
+    /// list; an empty list means "use the manifest".
+    #[must_use]
+    pub fn config_options(&self) -> Vec<ConfigOption> {
+        self.settings_schema().config_options()
     }
 
     /// Resolves the declared host bindings into one flat view.
@@ -1160,6 +1186,9 @@ impl PluginManifest {
                 "plugin.toml: `[cli]` requires `\"cli\"` in `entrypoints`",
             ));
         }
+        self.settings_schema()
+            .validate(self.vars.is_some(), self.secrets.is_some())
+            .map_err(|err| Error::message(format!("plugin.toml: [[settings]] {err}")))?;
         if !self.oidc.is_empty() && !self.has_entrypoint(Entrypoint::Oidc) {
             return Err(Error::message(
                 "plugin.toml: `[[oidc.clients]]` requires `\"oidc\"` in `entrypoints`",

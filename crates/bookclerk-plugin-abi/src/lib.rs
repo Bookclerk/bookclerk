@@ -49,6 +49,7 @@
 //! | [`methods`] | Capability / consent method name constants (`login`, `event`, …) |
 //! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
+//! | [`settings_schema`] | `[[settings]]` operator settings schema shared by manifest and host |
 //! | [`db`] | Host-private database connect params (feature `host`) |
 //! | [`error`] | [`PluginError`] / [`PluginErrorCode`] |
 //! | [`guest_sql`] | SQL-v1 grammar / guest admission |
@@ -79,6 +80,7 @@ mod roles;
 mod rpc;
 mod rpc_types;
 mod sdk_wire;
+pub mod settings_schema;
 pub mod sql_desugar;
 mod sql_overflow;
 mod sql_proof;
@@ -234,6 +236,10 @@ pub use rpc::{
     EventConsumerClient, EventPublisherClient, HostBindings, JobRunnerClient, OidcClient,
     OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer, RemoteLibraryClient,
     SourceClient, SourceServer,
+};
+pub use settings_schema::{
+    is_valid_setting_key, EffectiveConfig, SettingKind, SettingSpec, SettingValueSpec,
+    SettingsSchema, MAX_SETTINGS, MAX_SETTING_STRING_BYTES, SETTINGS_SCHEMA_VERSION,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

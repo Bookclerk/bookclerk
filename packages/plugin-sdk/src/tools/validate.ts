@@ -67,8 +67,10 @@ export type Manifest = {
   };
   /** `[[databases]]` — plugin-owned database bindings on `env`. */
   databases?: Array<{ binding: string }>;
-  /** `[vars]` — plain config values exposed as the `CONFIG` binding. */
+  /** `[vars]` — declares the `CONFIG` binding (values come from `[[settings]]`). */
   vars?: Record<string, unknown>;
+  /** `[[settings]]` — operator settings schema validated and rendered by the host. */
+  settings?: SettingToml[];
   /** `[secrets]` — sealed operator secrets binding (default name `SECRETS`). */
   secrets?: { binding?: string };
   /**
@@ -110,6 +112,99 @@ export type EventConsumerToml = {
   /** Redelivery attempts before dead-lettering. */
   max_retries?: number;
 };
+
+/** Value types accepted in `[[settings]] type`. */
+export const SETTING_TYPES = ["string", "bool", "integer", "enum", "secret"] as const;
+
+/** One `[[settings]]` row: an operator setting the host validates and renders. */
+export type SettingToml = {
+  /** Setting key (`^[a-z][a-z0-9_]{0,63}$`), unique within the plugin. */
+  key: string;
+  /** Operator-facing label; defaults to the key. */
+  label?: string;
+  /** Value type; `secret` values arrive in `SECRETS`, never in `CONFIG`. */
+  type: (typeof SETTING_TYPES)[number];
+  /** Allowed values for `type = "enum"`. */
+  values?: Array<{ id: string; label?: string }>;
+  /** Default applied when the instance document omits the key (not for secrets). */
+  default?: string | number | boolean;
+  /** When true, a spawn without a value fails. */
+  required?: boolean;
+  /** Optional help text. */
+  description?: string;
+};
+
+/**
+ * Validates `[[settings]]` the way `bookclerk-plugin-manifest` does.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a key, type, enum value list, or default is invalid.
+ */
+function validateSettings(m: Manifest): void {
+  const settings = m.settings ?? [];
+  if (settings.length > 32) {
+    throw new Error("plugin.toml: [[settings]] at most 32 settings may be declared");
+  }
+  const seen = new Set<string>();
+  for (const spec of settings) {
+    const key = String(spec.key ?? "");
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(key)) {
+      throw new Error(
+        `plugin.toml: [[settings]] settings key \`${key}\` must match ^[a-z][a-z0-9_]{0,63}$`,
+      );
+    }
+    if (seen.has(key)) {
+      throw new Error(`plugin.toml: [[settings]] settings key \`${key}\` is duplicated`);
+    }
+    seen.add(key);
+    if (!(SETTING_TYPES as readonly string[]).includes(String(spec.type))) {
+      throw new Error(
+        `plugin.toml: [[settings]] setting \`${key}\` type must be one of ${SETTING_TYPES.join(", ")}`,
+      );
+    }
+    const values = spec.values ?? [];
+    if (spec.type === "enum") {
+      if (values.length === 0) {
+        throw new Error(`plugin.toml: [[settings]] enum setting \`${key}\` must declare \`values\``);
+      }
+      const ids = new Set<string>();
+      for (const value of values) {
+        const id = String(value.id ?? "");
+        if (!id || ids.has(id)) {
+          throw new Error(`plugin.toml: [[settings]] enum setting \`${key}\` has an invalid or duplicated value id`);
+        }
+        ids.add(id);
+      }
+    } else if (values.length > 0) {
+      throw new Error(`plugin.toml: [[settings]] setting \`${key}\` declares \`values\` but is not an enum`);
+    }
+    if (spec.type === "secret") {
+      if (spec.default !== undefined) {
+        throw new Error(`plugin.toml: [[settings]] secret setting \`${key}\` may not declare a default`);
+      }
+      if (!m.secrets) {
+        throw new Error(`plugin.toml: [[settings]] secret setting \`${key}\` requires the \`[secrets]\` binding`);
+      }
+      continue;
+    }
+    if (m.vars === undefined) {
+      throw new Error(`plugin.toml: [[settings]] setting \`${key}\` requires the \`[vars]\` binding`);
+    }
+    const def = spec.default;
+    if (def === undefined) continue;
+    const ok =
+      spec.type === "bool"
+        ? typeof def === "boolean"
+        : spec.type === "integer"
+          ? typeof def === "number" && Number.isInteger(def)
+          : spec.type === "enum"
+            ? typeof def === "string" && values.some((v) => v.id === def)
+            : typeof def === "string";
+    if (!ok) {
+      throw new Error(`plugin.toml: [[settings]] default for setting \`${key}\` does not match its type`);
+    }
+  }
+}
 
 /** Entrypoint wire names accepted in `entrypoints`. */
 export const ENTRYPOINT_NAMES = [
@@ -291,6 +386,7 @@ export function validateManifest(m: Manifest): void {
     validateLogo(String(m.logo));
   }
   validateSurface(m);
+  validateSettings(m);
   const runtime = m.runtime ?? "native";
   if (runtime === "native") {
     if (!m.command || !String(m.command).trim()) {

@@ -2539,6 +2539,57 @@ pub fn validate_described_capabilities(
     Ok(())
 }
 
+/// Validates `describe().configOptions` against the manifest `[[settings]]`.
+///
+/// The manifest is the authority for the settings a plugin takes. An empty
+/// list means the guest defers to the manifest. A non-empty list must name
+/// the same keys with the same enum value ids (labels may differ), so a guest
+/// cannot widen or narrow its own writable keys at runtime.
+///
+/// # Arguments
+///
+/// * `manifest` - Installed manifest for the plugin.
+/// * `described` - `configOptions` the guest returned from `describe()`.
+///
+/// # Errors
+///
+/// Returns an error naming the first key or value that differs.
+pub fn validate_described_config_options(
+    manifest: &PluginManifest,
+    described: &[bookclerk_plugin_abi::ConfigOption],
+) -> Result<()> {
+    if described.is_empty() {
+        return Ok(());
+    }
+    let id = &manifest.id;
+    let expected = manifest.config_options();
+    for option in described {
+        let Some(declared) = expected.iter().find(|e| e.key == option.key) else {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() advertises setting `{}` not declared in plugin.toml [[settings]]",
+                option.key
+            )));
+        };
+        let declared_ids: BTreeSet<&str> = declared.values.iter().map(|v| v.id.as_str()).collect();
+        let described_ids: BTreeSet<&str> = option.values.iter().map(|v| v.id.as_str()).collect();
+        if declared_ids != described_ids {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() values for setting `{}` differ from plugin.toml [[settings]]",
+                option.key
+            )));
+        }
+    }
+    for declared in &expected {
+        if !described.iter().any(|o| o.key == declared.key) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() omits setting `{}` declared in plugin.toml [[settings]]",
+                declared.key
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4845,5 +4896,56 @@ mode = "deny"
             ),
             4
         );
+    }
+
+    #[test]
+    fn described_config_options_follow_manifest_settings() {
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "demo"
+runtime = "native"
+command = "./demo"
+entrypoints = ["storefront"]
+
+[vars]
+
+[[settings]]
+key = "bitrate"
+type = "enum"
+values = [{ id = "high" }, { id = "normal" }]
+default = "high"
+
+[[settings]]
+key = "base_url"
+type = "string"
+
+[capabilities.network]
+mode = "deny"
+"#,
+        )
+        .unwrap();
+        // Empty defers to the manifest.
+        validate_described_config_options(&manifest, &[]).unwrap();
+        // The manifest projection itself is accepted, labels aside.
+        let mut same = manifest.config_options();
+        same[0].label = "Quality".into();
+        validate_described_config_options(&manifest, &same).unwrap();
+        // Widening a value set, adding a key, or omitting a key is rejected.
+        let mut widened = manifest.config_options();
+        widened[0].values.push(bookclerk_plugin_abi::ConfigOptionValue {
+            id: "ultra".into(),
+            label: String::new(),
+        });
+        assert!(validate_described_config_options(&manifest, &widened).is_err());
+        let mut extra = manifest.config_options();
+        extra.push(bookclerk_plugin_abi::ConfigOption {
+            key: "password".into(),
+            label: String::new(),
+            values: Vec::new(),
+        });
+        assert!(validate_described_config_options(&manifest, &extra).is_err());
+        let narrowed = vec![manifest.config_options().remove(0)];
+        assert!(validate_described_config_options(&manifest, &narrowed).is_err());
     }
 }

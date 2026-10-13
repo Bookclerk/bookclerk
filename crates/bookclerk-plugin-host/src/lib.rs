@@ -93,7 +93,7 @@ pub use consent::{
     overlay_host_implied_network, pending_structural, percent_to_cores,
     reconcile_host_overlay_authority, require_binding, require_grant, spawn_config_for_grant,
     spawn_grant, validate_approved_grant, validate_described_capabilities,
-    windows_session_active_processes, GrantedEventConsumer, PendingStructural, PluginGrant,
+    validate_described_config_options, windows_session_active_processes, GrantedEventConsumer, PendingStructural, PluginGrant,
     PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION, KNOWN_HOST_BINDINGS,
     PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT,
     PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,

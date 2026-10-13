@@ -18,6 +18,19 @@ tcp = [
 
 [vars]
 
+[[settings]]
+key = "container"
+label = "Container"
+type = "enum"
+values = [{ id = "m4b", label = "M4B" }, { id = "zip", label = "ZIP (MP3 parts)" }]
+default = "m4b"
+
+[[settings]]
+key = "base_url"
+label = "Base URL"
+type = "string"
+description = "Override the Libro.fm API origin (testing only)."
+
 [secrets]
 
 [work_fs]

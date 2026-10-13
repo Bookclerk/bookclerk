@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogDetailParams, CatalogHit, ConfigOption, ConfigOptionValue,
+    serve, Bindings, Brand, CatalogDetailParams, CatalogHit,
     ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
     HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe,
     PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
@@ -40,20 +40,6 @@ impl PluginWorker for LibroRoot {
                 accent: "#2F6B53".into(),
                 icon_url: Some("https://www.google.com/s2/favicons?domain=libro.fm&sz=128".into()),
             }),
-            config_options: vec![ConfigOption {
-                key: "container".into(),
-                label: "Container".into(),
-                values: vec![
-                    ConfigOptionValue {
-                        id: "m4b".into(),
-                        label: "M4B".into(),
-                    },
-                    ConfigOptionValue {
-                        id: "zip".into(),
-                        label: "ZIP (MP3 parts)".into(),
-                    },
-                ],
-            }],
             ..PluginDescribe::default()
         })
     }

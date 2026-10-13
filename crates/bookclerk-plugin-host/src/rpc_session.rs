@@ -1925,6 +1925,7 @@ fn negotiate_describe(
         &desc.capabilities,
         desc.portal_auth_mode,
     )?;
+    crate::validate_described_config_options(manifest, &desc.config_options)?;
     let features = negotiate_rpc_features(
         &[FEATURE_SCALAR_LIMITS, FEATURE_STREAMS, FEATURE_STORAGE_COPY],
         &desc.rpc_features,

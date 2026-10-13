@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { validateManifest, type Manifest } from "./validate.js";
+import { validateManifest, type Manifest, type SettingToml } from "./validate.js";
 
 /** Default output filename next to `plugin.toml`. */
 export const TYPES_OUTPUT_FILE = "bookclerk-configuration.d.ts";
@@ -61,6 +61,25 @@ function varType(value: unknown): string {
 }
 
 /**
+ * Renders the TypeScript type of one non-secret `[[settings]]` entry.
+ *
+ * @param spec - Setting declaration.
+ * @returns Literal union for enums, otherwise the scalar type; optional
+ *   unless a default or `required` guarantees a value.
+ */
+function settingType(spec: SettingToml): string {
+  const base =
+    spec.type === "bool"
+      ? "boolean"
+      : spec.type === "integer"
+        ? "number"
+        : spec.type === "enum"
+          ? (spec.values ?? []).map((v) => JSON.stringify(v.id)).join(" | ") || "string"
+          : "string";
+  return spec.default !== undefined || spec.required ? base : `${base} | undefined`;
+}
+
+/**
  * Validates and quotes an object key for the emitted interface.
  *
  * @param name - Property name.
@@ -80,17 +99,23 @@ function propertyKey(name: string): string {
 export function envPropertiesFor(m: Manifest): EnvProperty[] {
   const props: EnvProperty[] = [];
   const vars = m.vars ?? {};
-  const varKeys = Object.keys(vars).sort();
+  const configEntries: Array<[string, string]> = Object.keys(vars)
+    .sort()
+    .map((k) => [k, varType(vars[k])]);
+  for (const spec of m.settings ?? []) {
+    if (spec.type === "secret") continue;
+    configEntries.push([spec.key, settingType(spec)]);
+  }
   const configType =
-    varKeys.length === 0
+    configEntries.length === 0
       ? "Record<string, unknown>"
-      : `{\n${varKeys
-          .map((k) => `    ${propertyKey(k)}: ${varType(vars[k])};`)
+      : `{\n${configEntries
+          .map(([k, t]) => `    ${propertyKey(k)}: ${t};`)
           .join("\n")}\n    [key: string]: unknown;\n  }`;
   props.push({
     name: "CONFIG",
     type: configType,
-    doc: "`[vars]` plus operator settings decoded from the granted config payload.",
+    doc: "`[[settings]]` values (defaults merged with the instance document) decoded from the granted config payload.",
   });
   if (m.secrets) {
     props.push({

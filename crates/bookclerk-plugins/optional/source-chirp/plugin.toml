@@ -18,6 +18,12 @@ tcp = [
 
 [vars]
 
+[[settings]]
+key = "graphql_url"
+label = "GraphQL URL"
+type = "string"
+description = "Override the Chirp GraphQL endpoint (testing only)."
+
 [secrets]
 
 [work_fs]
