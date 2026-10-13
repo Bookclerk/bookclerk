@@ -287,20 +287,31 @@ runtime.
 Every plugin declares a semver `version` in `plugin.toml`; a manifest
 without one is not enrolled and `bookclerk plugin check` rejects it.
 Enrollment pins a copy of the schema in `plugin_schemas(plugin_key,
-manifest_sha256, package_version, settings_json, recorded_at,
+schema_sha256, package_version, settings_json, recorded_at,
 recorded_by_host)` and the version orders the pin:
 
-- a newer local package re-pins the row and prunes every instance document
-  of that plugin to the new schema (settings the schema no longer declares,
-  or now declares as secrets, and secret refs for keys that are gone or now
-  plain), so documents validate on every host again;
-- the same version with a changed manifest re-pins in place with a warning
-  (an unreleased edit) and prunes the same way;
+- a newer local package re-pins the row;
+- the same version with a different schema re-pins in place with a warning
+  (an unreleased edit). Equality is a fingerprint of the normalized schema,
+  not of the manifest bytes, so line endings or comments never move the pin;
 - an older local package is **stale**: the row is untouched, enrollment
   skips the plugin, and the reconciler retires a running guest and records
   an `error` observation naming the pinned version and the host that pinned
   it. The operator upgrades that host's package or rolls the other host
   back.
+
+Every write to the row is a compare-and-swap on the row that was read, so
+two hosts pinning at once cannot leave an older version on top of a newer
+one. Every enrollment pass, not only the one that moved the pin, reconciles
+the plugin's instance documents against the pinned schema: settings the
+schema no longer declares, declares as secrets, or whose value no longer
+fits the entry's kind (a type or enum change), and secret refs for keys that
+are gone or now plain, are dropped, so a document that lost a race or was
+written under an earlier manifest is repaired on the next restart instead of
+staying invalid. `CONFIG` resolution applies the same rules at spawn and
+enforces `required` on secrets as well as settings. A plugin that declares
+no non-secret settings needs no `[vars]` binding and spawns with an empty
+`CONFIG`.
 
 `PluginKey` stays versionless, so instances, deployments, and accounts
 survive an upgrade. Writes through the API or CLI validate against the pinned

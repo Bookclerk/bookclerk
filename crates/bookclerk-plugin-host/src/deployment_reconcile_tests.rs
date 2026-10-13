@@ -1459,7 +1459,6 @@ async fn a_package_older_than_the_pinned_schema_is_retired_and_not_spawned() {
         &SchemaPin {
             plugin_key: &world.key,
             manifest_id: "fxdep",
-            manifest_sha256: "ff",
             package_version: "0.9.0",
             schema: &fixture_schema(),
             host_id: "host-b",

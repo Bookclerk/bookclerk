@@ -115,7 +115,7 @@ pub async fn ensure_plugin_instance(
     authorize_create(actor)?;
     validate_plugin_key(plugin_key)?;
     for _ in 0..4 {
-        match enrolled_or_oldest(store.db(), plugin_key).await {
+        match enrolled_or_oldest(store, plugin_key).await {
             Ok(Some(existing)) => return Ok(existing),
             Ok(None) => {}
             Err(err) if enrollment_contention(&err) => continue,
@@ -187,13 +187,11 @@ pub async fn ensure_plugin_instance(
             Err(err) => return Err(err),
         }
     }
-    enrolled_or_oldest(store.db(), plugin_key)
-        .await?
-        .ok_or_else(|| {
-            LibraryError::Other(anyhow::anyhow!(
-                "plugin instance enrollment for `{plugin_key}` lost the insert race"
-            ))
-        })
+    enrolled_or_oldest(store, plugin_key).await?.ok_or_else(|| {
+        LibraryError::Other(anyhow::anyhow!(
+            "plugin instance enrollment for `{plugin_key}` lost the insert race"
+        ))
+    })
 }
 
 /// Loads one instance by id.
@@ -256,7 +254,7 @@ pub async fn default_instance_for_key(
     store: &LibraryStore,
     plugin_key: &str,
 ) -> Result<Option<PluginInstance>> {
-    enrolled_or_oldest(store.db(), plugin_key).await
+    enrolled_or_oldest(store, plugin_key).await
 }
 
 /// Every instance row, ordered by plugin key then creation time.
@@ -337,30 +335,39 @@ async fn insert_instance(
 
 /// The enrolled default, or the oldest row when enrollment has not run.
 async fn enrolled_or_oldest(
-    conn: &impl ConnectionTrait,
+    store: &LibraryStore,
     plugin_key: &str,
 ) -> Result<Option<PluginInstance>> {
-    if let Some(id) = default_instance_id(conn, plugin_key).await? {
+    if let Some(id) = default_instance_id(store, plugin_key).await? {
         let parsed = PluginInstanceId::parse(&id)?;
-        if let Some(instance) = load_plugin_instance_conn(conn, &parsed).await? {
+        if let Some(instance) = load_plugin_instance_conn(store.db(), &parsed).await? {
             return Ok(Some(instance));
         }
     }
-    find_by_plugin_key_conn(conn, plugin_key).await
+    find_by_plugin_key_conn(store.db(), plugin_key).await
 }
 
 /// Enrolled default instance id for `plugin_key`, when one was claimed.
-async fn default_instance_id(
-    conn: &impl ConnectionTrait,
-    plugin_key: &str,
-) -> Result<Option<String>> {
-    let rows = bookclerk_db_exec::query_canonical(
-        conn,
-        "SELECT plugin_instance_id FROM plugin_instance_defaults WHERE plugin_key = ?",
-        [plugin_key.into()],
-    )
-    .await
-    .map_err(LibraryError::Orm)?;
+///
+/// Canonical `?` SQL: lowered for the engine when the store runs on a
+/// physical in-process connection (SQLite or a Postgres pool), sent as-is
+/// over the canonical transport otherwise.
+async fn default_instance_id(store: &LibraryStore, plugin_key: &str) -> Result<Option<String>> {
+    const SQL: &str =
+        "SELECT plugin_instance_id FROM plugin_instance_defaults WHERE plugin_key = ?";
+    let values = [sea_orm::Value::from(plugin_key)];
+    let type_env = crate::migrations::host_sql_type_env();
+    if store.leftover_in_process() {
+        let rows =
+            crate::sql_plan::query_sql_on(true, store.db(), SQL, values, &type_env, 1).await?;
+        return rows
+            .first()
+            .map(|row| super::batch::text_cell(row, 0))
+            .transpose();
+    }
+    let rows = bookclerk_db_exec::query_canonical_stamped(store.db(), SQL, values, &type_env)
+        .await
+        .map_err(LibraryError::Orm)?;
     match rows.first() {
         Some(row) => Ok(Some(
             row.try_get("", "plugin_instance_id")

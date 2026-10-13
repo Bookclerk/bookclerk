@@ -15,11 +15,6 @@ use crate::protocol::OutputS3ContextDto;
 use crate::rpc_session::{PluginSession, PluginStorage};
 use crate::Result as PluginResult;
 
-/// Manifest id of the platform S3 output plugin (`s3`).
-const S3_PLUGIN_ID: &str = "s3";
-/// Manifest id of the platform local-filesystem destination guest.
-const LOCAL_PLUGIN_ID: &str = "local";
-
 /// Which single-slot backend a deployed destination owns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeployedKind {
@@ -345,7 +340,10 @@ pub(crate) async fn spawn_deployed_storage(
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<SpawnedDestination> {
     let settings = DestinationSettings::from_granted_config(&prepared.granted_config);
-    if plugin.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
+    // First-party identity is the PluginKey plus verified provenance, never
+    // the manifest alias: an `s3` or `local` alias twin spawns as a generic
+    // storage guest with no host-side backend and no implied endpoint grant.
+    if crate::is_first_party_s3_output(plugin) {
         let (storage_backend, session) = spawn_s3_from_instance(plugin, config, prepared).await?;
         return Ok(SpawnedDestination {
             session,
@@ -354,7 +352,7 @@ pub(crate) async fn spawn_deployed_storage(
             settings,
         });
     }
-    if plugin.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
+    if crate::is_first_party_local_output(plugin) {
         let (storage, session) =
             super::destination_local::spawn_local_prepared(plugin, config, prepared).await?;
         return Ok(SpawnedDestination {
@@ -399,14 +397,8 @@ async fn spawn_s3_from_instance(
 ) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
     let context = instance_s3_context(&prepared)?;
     let secrets = s3_open_secrets(&prepared);
-    let endpoint = context
-        .get("endpoint")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(str::to_string);
     let services = crate::SessionServices {
-        deployed_endpoint: Some(endpoint),
+        deployed_endpoint: s3_deployed_endpoint(plugin, &context),
         ..crate::SessionServices::default()
     };
     let session = Arc::new(
@@ -428,6 +420,26 @@ async fn spawn_s3_from_instance(
         })
         .await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))
+}
+
+/// The host-implied endpoint grant for an S3 spawn: the document's
+/// `endpoint` for the verified first-party S3 package only
+/// ([`crate::is_first_party_s3_output`]). An alias twin gets `None`.
+pub(crate) fn s3_deployed_endpoint(
+    plugin: &DiscoveredPlugin,
+    context: &serde_json::Value,
+) -> Option<Option<String>> {
+    if !crate::is_first_party_s3_output(plugin) {
+        return None;
+    }
+    Some(
+        context
+            .get("endpoint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|endpoint| !endpoint.is_empty())
+            .map(str::to_string),
+    )
 }
 
 /// Bucket and region from the instance document, with no credentials.
@@ -527,7 +539,68 @@ fn json_text(value: &serde_json::Value, keys: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::s3_deployed_endpoint;
+    use crate::discover::DiscoveredPlugin;
     use crate::protocol::{OutputS3ContextDto, S3CredentialsDto};
+    use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
+    use bookclerk_plugin_manifest::PluginManifest;
+
+    const S3_TOML: &str = r#"
+api_version = 3
+id = "s3"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "outbound"
+
+[vars]
+"#;
+
+    fn discovered(root: &std::path::Path) -> DiscoveredPlugin {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join("plugin.toml"), S3_TOML).unwrap();
+        let command = root.join("guest");
+        std::fs::write(&command, b"#!/bin/sh\n").unwrap();
+        let manifest = PluginManifest::parse(S3_TOML).unwrap();
+        DiscoveredPlugin::try_new(manifest, root.to_path_buf(), command, None)
+            .expect("test plugin tree must evaluate")
+    }
+
+    /// Defense in depth: the document endpoint is a host-implied TCP grant,
+    /// so only the verified first-party S3 PluginKey may carry it. An alias
+    /// twin (same manifest id, different key) gets nothing from the document.
+    #[test]
+    fn document_endpoint_is_granted_by_plugin_key_not_alias() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let mut real = discovered(a.path());
+        let key = PluginKey::platform("bookclerk-plugin-destination-s3", "s3").unwrap();
+        real.identity.plugin_key = key.clone();
+        real.identity.artifact.plugin_key = key;
+        real.identity.provenance = PluginProvenance::VerifiedInstalled;
+        let twin = discovered(b.path());
+        assert_eq!(real.alias(), twin.alias());
+        assert_ne!(real.plugin_key(), twin.plugin_key());
+        let context = serde_json::json!({ "endpoint": "http://127.0.0.1:9000" });
+
+        assert_eq!(
+            s3_deployed_endpoint(&real, &context),
+            Some(Some("http://127.0.0.1:9000".to_string()))
+        );
+        assert_eq!(
+            s3_deployed_endpoint(&real, &serde_json::json!({})),
+            Some(None),
+            "a first-party instance with no endpoint grants nothing"
+        );
+        assert_eq!(
+            s3_deployed_endpoint(&twin, &context),
+            None,
+            "an alias twin must not inherit the document endpoint grant"
+        );
+    }
 
     #[test]
     fn s3_destination_json_omits_paths_and_secrets() {

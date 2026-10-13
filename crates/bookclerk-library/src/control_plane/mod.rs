@@ -40,7 +40,7 @@ pub use identity::{
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,
-    prune_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
+    reconcile_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
     seal_instance_secret, set_secret_ref, set_setting, InstanceBindingGrant,
     InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
     PrunedInstanceConfig, ResolvedInstanceBindings, SettingValue, MAX_INSTANCE_SECRET_REFS,
@@ -53,7 +53,8 @@ pub use instances::{
 };
 pub use schemas::{
     list_plugin_schemas, load_plugin_schema, pin_plugin_schema, require_plugin_schema,
-    stale_against_pin, PinnedPluginSchema, SchemaPin, SchemaPinChange, SchemaPinOutcome,
+    schema_fingerprint, stale_against_pin, PinnedPluginSchema, SchemaPin, SchemaPinChange,
+    SchemaPinOutcome,
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
 

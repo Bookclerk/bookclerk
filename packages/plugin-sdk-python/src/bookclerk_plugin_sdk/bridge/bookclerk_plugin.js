@@ -8497,13 +8497,16 @@ function allowedEntrypointFamilies(capabilities, requested) {
 function mergeDescribe(base, guest) {
   const guestCli = guest.cli;
   const cli = guestCli && Array.isArray(guestCli.commands) && guestCli.commands.length > 0 ? guestCli : base.cli ?? guestCli;
+  const guestOptions = guest.configOptions;
+  const configOptions = Array.isArray(guestOptions) && guestOptions.length > 0 ? guestOptions : base.configOptions ?? guestOptions;
   return {
     ...base,
     ...guest,
     apiVersion: base.apiVersion ?? guest.apiVersion ?? 3,
     id: base.id ?? guest.id,
     capabilities: base.capabilities ?? guest.capabilities,
-    ...cli === void 0 ? {} : { cli }
+    ...cli === void 0 ? {} : { cli },
+    ...configOptions === void 0 ? {} : { configOptions }
   };
 }
 function createInvocationAdapter() {

@@ -717,8 +717,9 @@ pub async fn put_plugin_instance_config(
     Json(body): Json<PutPluginInstanceConfig>,
 ) -> Result<Json<serde_json::Value>, Response> {
     use bookclerk_library::control_plane::{
-        load_plugin_instance, replace_instance_config, require_plugin_schema, seal_instance_secret,
-        set_secret_ref, InstanceConfigReplace, PluginInstanceConfigV1, PluginInstanceId,
+        load_instance_config, load_plugin_instance, replace_instance_config, require_plugin_schema,
+        seal_instance_secret, set_secret_ref, InstanceConfigReplace, PluginInstanceConfigV1,
+        PluginInstanceId,
     };
     let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
     let library = state.library_snapshot().await;
@@ -737,17 +738,23 @@ pub async fn put_plugin_instance_config(
         settings: body.settings,
         secret_refs: body.secret_refs,
     };
+    // Validate and commit the document first; a rejected write (stale
+    // revision, invalid value) must leave the live secrets untouched. The
+    // ciphertext is sealed only after the compare-and-swap succeeds.
     for (key, plaintext) in &body.secrets {
         pinned.schema.check_secret_key(key).map_err(|err| {
             events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
                 "invalid configuration: {err}"
             )))
         })?;
-        seal_instance_secret(&library, &instance_id, &instance.plugin_key, key, plaintext)
-            .await
-            .map_err(events_error)?;
+        if plaintext.is_empty() {
+            return Err(events_error(bookclerk_library::LibraryError::Other(
+                anyhow::anyhow!("invalid configuration: secret `{key}` is empty"),
+            )));
+        }
         set_secret_ref(&mut document, key);
     }
+    document.validate(&pinned.schema).map_err(events_error)?;
     let outcome = replace_instance_config(
         &library,
         &operator_actor(),
@@ -759,20 +766,32 @@ pub async fn put_plugin_instance_config(
     )
     .await
     .map_err(events_error)?;
-    match outcome {
-        InstanceConfigReplace::Applied(doc) => Ok(Json(json!({
-            "plugin_instance_id": instance_id.to_string(),
-            "revision": doc.revision,
-            "settings": doc.body.settings,
-            "secret_refs": doc.body.secret_refs,
-        }))),
-        InstanceConfigReplace::Replayed { revision } => Ok(Json(json!({
-            "plugin_instance_id": instance_id.to_string(),
-            "replayed": true,
-            "revision": revision,
-        }))),
-        InstanceConfigReplace::Conflict { current_revision } => Err(conflict(current_revision)),
+    let revision = match outcome {
+        InstanceConfigReplace::Applied(doc) => doc.revision,
+        InstanceConfigReplace::Replayed { revision } => revision,
+        InstanceConfigReplace::Conflict { current_revision } => {
+            return Err(conflict(current_revision))
+        }
+    };
+    for (key, plaintext) in &body.secrets {
+        seal_instance_secret(&library, &instance_id, &instance.plugin_key, key, plaintext)
+            .await
+            .map_err(|err| {
+                events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                    "document revision {revision} was saved but secret `{key}` was not stored \
+                     ({err}); submit the secret again"
+                )))
+            })?;
     }
+    let doc = load_instance_config(&library, &instance_id)
+        .await
+        .map_err(events_error)?;
+    Ok(Json(json!({
+        "plugin_instance_id": instance_id.to_string(),
+        "revision": doc.revision,
+        "settings": doc.body.settings,
+        "secret_refs": doc.body.secret_refs,
+    })))
 }
 
 /// `PUT /api/config/plugin-instances/{id}/deployments/{host_id}` body.
@@ -903,7 +922,7 @@ pub async fn get_plugin_schemas(
             json!({
                 "plugin_key": pinned.plugin_key,
                 "manifest_id": pinned.manifest_id,
-                "manifest_sha256": pinned.manifest_sha256,
+                "schema_sha256": pinned.schema_sha256,
                 "package_version": pinned.package_version,
                 "recorded_at": pinned.recorded_at,
                 "recorded_by_host": pinned.recorded_by_host,

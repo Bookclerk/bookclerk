@@ -115,7 +115,7 @@ async fn enrollment_is_idempotent_across_restarts() {
     assert_eq!(two.instance.id, one.instance.id);
     assert_eq!(two.deployment.deployment_id, one.deployment.deployment_id);
     assert_eq!(two.deployment.revision, one.deployment.revision);
-    assert_eq!(two.schema.manifest_sha256, one.schema.manifest_sha256);
+    assert_eq!(two.schema.schema_sha256, one.schema.schema_sha256);
     let pinned = list_plugin_schemas(&store).await.unwrap();
     assert_eq!(pinned.len(), 1);
     assert_eq!(pinned[0].plugin_key, one.plugin.plugin_key().canonical());

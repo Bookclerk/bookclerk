@@ -60,6 +60,12 @@ pub struct MigrateOptions {
     /// The classic `Books` directory is written to its default instance as
     /// `root`, so acquired files keep landing where Libation put them.
     pub local_plugin_key: Option<String>,
+    /// Host configuration used to enrol the installed plugins into the
+    /// destination database before instance settings are seeded. A fresh
+    /// files directory has no pinned schema and no default instance until a
+    /// host enrols, so without this the `root` and `bitrate` seeds have
+    /// nowhere to go. `None` skips enrollment (tests, dry runs).
+    pub host_config: Option<bookclerk_config::Config>,
 }
 
 /// Summary of a migration run.
@@ -143,6 +149,21 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
     // --- plugin instance settings (Books → local root, quality → bitrate) ---
     if let Some(dest_store) = dest.as_ref() {
         if !opts.dry_run {
+            // Enrol first: pins the `local` / Audible schemas and creates
+            // their default instances in this database, the way the first
+            // host start would, so the seeds below validate and land.
+            if let Some(host) = opts.host_config.as_ref() {
+                let mut cfg = host.clone();
+                cfg.paths = Some(bookclerk_config::Paths::from_files_dir(
+                    opts.dest_files_dir.clone(),
+                ));
+                if let Err(err) = bookclerk_plugin_host::enroll_host(&cfg, &dest_store.store).await
+                {
+                    summary.warnings.push(format!(
+                        "plugin enrollment failed; instance settings may not be written: {err}"
+                    ));
+                }
+            }
             if let Some(local_key) = opts.local_plugin_key.as_deref() {
                 match seed_instance_setting(
                     &dest_store.store,

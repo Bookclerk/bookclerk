@@ -2057,10 +2057,12 @@ async fn run_plugin_config(
             emit(format, &payload, || {
                 println!("instance {} ({})", instance.id, instance.plugin_key);
                 println!("revision {}", document.revision);
+                // `effective.config` holds non-secret entries only (secrets
+                // never enter the document); redaction is belt and braces.
                 for (key, value) in &effective.config {
                     let shown = match value {
-                        serde_json::Value::String(text) => text.clone(),
-                        other => other.to_string(),
+                        serde_json::Value::String(text) => bookclerk_config::redact_str(text),
+                        other => bookclerk_config::redact_str(&other.to_string()),
                     };
                     let origin = if stored.contains_key(key) {
                         ""
@@ -2088,6 +2090,7 @@ async fn run_plugin_config(
             let document = load_instance_config(store, &instance.id).await?;
             let mut body = document.body.clone();
             let is_secret = pinned.schema.get(&key).is_some_and(|spec| spec.is_secret());
+            let mut pending_secret = None;
             if secret || is_secret {
                 if value.is_some() {
                     anyhow::bail!(
@@ -2099,17 +2102,31 @@ async fn run_plugin_config(
                     anyhow::bail!("setting `{key}` is not declared as a secret by the plugin");
                 }
                 let plaintext = read_secret_from_stdin()?;
-                seal_instance_secret(store, &instance.id, &instance.plugin_key, &key, &plaintext)
-                    .await?;
+                if plaintext.is_empty() {
+                    anyhow::bail!("secret value on stdin is empty");
+                }
+                pending_secret = Some(plaintext);
                 set_secret_ref(&mut body, &key);
             } else {
                 let text = value.ok_or_else(|| anyhow::anyhow!("a value is required"))?;
                 let parsed = parse_setting_text(&pinned.schema, &key, &text)?;
                 set_setting(&mut body, &key, Some(parsed));
             }
+            // Commit the document first so a conflict or a validation error
+            // leaves the live secret untouched; seal only after it lands.
             let revision =
                 replace_document(store, &instance, &pinned.schema, document.revision, &body)
                     .await?;
+            if let Some(plaintext) = pending_secret {
+                seal_instance_secret(store, &instance.id, &instance.plugin_key, &key, &plaintext)
+                    .await
+                    .map_err(|err| {
+                        anyhow::anyhow!(
+                            "document revision {revision} was saved but secret `{key}` was not \
+                             stored ({err}); run the command again"
+                        )
+                    })?;
+            }
             emit(
                 format,
                 &json!({

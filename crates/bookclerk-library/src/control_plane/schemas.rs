@@ -5,17 +5,22 @@
 //! produced it. Instance documents are validated against the pinned row, so
 //! an API host that does not have the guest installed can still validate a
 //! write. Versions order the pin: a newer local package re-pins (and the
-//! caller prunes documents to the new schema), an equal version with a
-//! changed manifest re-pins in place, and an older local package is
-//! [`SchemaPinChange::Stale`] and must not spawn. The row records which host
-//! wrote it.
+//! caller reconciles documents to the new schema), an equal version with a
+//! different schema re-pins in place, and an older local package is
+//! [`SchemaPinChange::Stale`] and must not spawn. Equality is the
+//! fingerprint of the normalized schema, not the manifest bytes, so line
+//! endings or comments never flip the pin. Every write is a compare-and-swap
+//! on the row that was read, so two hosts pinning at once cannot leave an
+//! older version on top of a newer one. The row records which host wrote it.
 
 use std::cmp::Ordering;
 
 use bookclerk_plugin_abi::package_version::{package_version_order, parse_package_version};
 use bookclerk_plugin_abi::{SettingsSchema, SETTINGS_SCHEMA_VERSION};
 use chrono::Utc;
-use sea_orm::{ActiveValue::Set, EntityTrait, QueryOrder};
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sha2::{Digest, Sha256};
 
 use crate::entities::plugin_schemas;
 use crate::error::{LibraryError, Result};
@@ -28,8 +33,8 @@ pub struct PinnedPluginSchema {
     pub plugin_key: String,
     /// Manifest id (display alias) at pin time.
     pub manifest_id: String,
-    /// SHA-256 of the manifest the schema came from.
-    pub manifest_sha256: String,
+    /// Fingerprint of the normalized schema ([`schema_fingerprint`]).
+    pub schema_sha256: String,
     /// Semver package version that produced the pinned schema.
     pub package_version: String,
     /// Declared settings.
@@ -47,8 +52,6 @@ pub struct SchemaPin<'a> {
     pub plugin_key: &'a str,
     /// Manifest id (display alias).
     pub manifest_id: &'a str,
-    /// SHA-256 of the manifest file.
-    pub manifest_sha256: &'a str,
     /// Semver package version of the local manifest.
     pub package_version: &'a str,
     /// Declared settings.
@@ -92,14 +95,32 @@ pub struct SchemaPinOutcome {
     pub change: SchemaPinChange,
 }
 
+/// Compare-and-swap attempts before giving up on a contended row.
+const PIN_ATTEMPTS: usize = 4;
+
+/// Hex SHA-256 of the schema's canonical JSON. Two manifests that declare
+/// the same settings fingerprint the same, whatever their bytes.
+///
+/// # Errors
+///
+/// Returns an error when the schema fails to serialize.
+pub fn schema_fingerprint(schema: &SettingsSchema) -> Result<String> {
+    let json = serde_json::to_string(schema)
+        .map_err(|err| LibraryError::Other(anyhow::anyhow!("encode settings schema: {err}")))?;
+    Ok(hex::encode(Sha256::digest(json.as_bytes())))
+}
+
 /// Pins `pin` according to the version rule in the module docs.
 ///
-/// An unchanged row is left alone, including `recorded_at`.
+/// An unchanged row is left alone, including `recorded_at`. The insert and
+/// the update are both conditional on the row read just before, and a lost
+/// race re-reads and decides again, so a concurrent newer pin is never
+/// overwritten by an older one.
 ///
 /// # Errors
 ///
 /// Returns an error when `package_version` is not semver, the schema fails
-/// to serialize, or the write fails.
+/// to serialize, the write fails, or the row keeps changing underneath.
 pub async fn pin_plugin_schema(
     store: &LibraryStore,
     pin: &SchemaPin<'_>,
@@ -107,72 +128,98 @@ pub async fn pin_plugin_schema(
     let local_version = parse_package_version(pin.package_version)
         .map_err(|detail| LibraryError::Schema(format!("plugin `{}`: {detail}", pin.plugin_key)))?
         .to_string();
-    let change = match load_plugin_schema(store, pin.plugin_key).await? {
-        None => SchemaPinChange::Pinned,
-        Some(existing) => {
-            let order = package_version_order(&local_version, &existing.package_version).map_err(
-                |detail| LibraryError::Schema(format!("plugin `{}`: {detail}", pin.plugin_key)),
-            )?;
-            match order {
-                Ordering::Less => {
-                    return Ok(SchemaPinOutcome {
-                        schema: existing,
-                        change: SchemaPinChange::Stale { local_version },
-                    });
-                }
-                Ordering::Greater => SchemaPinChange::Upgraded {
-                    previous_version: existing.package_version.clone(),
-                },
-                Ordering::Equal => {
-                    if existing.manifest_sha256 == pin.manifest_sha256
-                        && existing.schema == *pin.schema
-                        && existing.manifest_id == pin.manifest_id
-                        && existing.package_version == local_version
-                    {
-                        return Ok(SchemaPinOutcome {
-                            schema: existing,
-                            change: SchemaPinChange::Unchanged,
-                        });
-                    }
-                    SchemaPinChange::Repinned
-                }
-            }
-        }
-    };
+    let fingerprint = schema_fingerprint(pin.schema)?;
     let settings_json = serde_json::to_string(pin.schema)
         .map_err(|err| LibraryError::Other(anyhow::anyhow!("encode settings schema: {err}")))?;
-    let now = Utc::now().to_rfc3339();
-    let model = plugin_schemas::ActiveModel {
-        plugin_key: Set(pin.plugin_key.to_string()),
-        manifest_id: Set(pin.manifest_id.to_string()),
-        manifest_sha256: Set(pin.manifest_sha256.to_string()),
-        package_version: Set(local_version),
-        schema_version: Set(i64::from(SETTINGS_SCHEMA_VERSION)),
-        settings_json: Set(settings_json),
-        recorded_at: Set(now),
-        recorded_by_host: Set(pin.host_id.to_string()),
-    };
-    plugin_schemas::Entity::insert(model)
-        .on_conflict(
-            sea_orm::sea_query::OnConflict::column(plugin_schemas::Column::PluginKey)
-                .update_columns([
-                    plugin_schemas::Column::ManifestId,
-                    plugin_schemas::Column::ManifestSha256,
-                    plugin_schemas::Column::PackageVersion,
-                    plugin_schemas::Column::SchemaVersion,
-                    plugin_schemas::Column::SettingsJson,
-                    plugin_schemas::Column::RecordedAt,
-                    plugin_schemas::Column::RecordedByHost,
-                ])
-                .to_owned(),
-        )
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let schema = load_plugin_schema(store, pin.plugin_key)
-        .await?
-        .ok_or_else(|| LibraryError::NotFound(format!("plugin schema {}", pin.plugin_key)))?;
-    Ok(SchemaPinOutcome { schema, change })
+    for _ in 0..PIN_ATTEMPTS {
+        let existing = load_plugin_schema(store, pin.plugin_key).await?;
+        let Some(existing) = existing else {
+            let model = plugin_schemas::ActiveModel {
+                plugin_key: Set(pin.plugin_key.to_string()),
+                manifest_id: Set(pin.manifest_id.to_string()),
+                schema_sha256: Set(fingerprint.clone()),
+                package_version: Set(local_version.clone()),
+                schema_version: Set(i64::from(SETTINGS_SCHEMA_VERSION)),
+                settings_json: Set(settings_json.clone()),
+                recorded_at: Set(Utc::now().to_rfc3339()),
+                recorded_by_host: Set(pin.host_id.to_string()),
+            };
+            let inserted = plugin_schemas::Entity::insert(model)
+                .on_conflict(
+                    OnConflict::column(plugin_schemas::Column::PluginKey)
+                        .do_nothing()
+                        .to_owned(),
+                )
+                .exec_without_returning(store.db())
+                .await
+                .map_err(LibraryError::Orm)?;
+            if inserted == 0 {
+                continue; // another host pinned first; decide against its row
+            }
+            let schema = require_plugin_schema(store, pin.plugin_key).await?;
+            return Ok(SchemaPinOutcome {
+                schema,
+                change: SchemaPinChange::Pinned,
+            });
+        };
+        let order =
+            package_version_order(&local_version, &existing.package_version).map_err(|detail| {
+                LibraryError::Schema(format!("plugin `{}`: {detail}", pin.plugin_key))
+            })?;
+        let change = match order {
+            Ordering::Less => {
+                return Ok(SchemaPinOutcome {
+                    schema: existing,
+                    change: SchemaPinChange::Stale { local_version },
+                });
+            }
+            Ordering::Greater => SchemaPinChange::Upgraded {
+                previous_version: existing.package_version.clone(),
+            },
+            Ordering::Equal => {
+                if existing.schema_sha256 == fingerprint
+                    && existing.manifest_id == pin.manifest_id
+                    && existing.package_version == local_version
+                {
+                    return Ok(SchemaPinOutcome {
+                        schema: existing,
+                        change: SchemaPinChange::Unchanged,
+                    });
+                }
+                SchemaPinChange::Repinned
+            }
+        };
+        let update = plugin_schemas::ActiveModel {
+            plugin_key: sea_orm::ActiveValue::NotSet,
+            manifest_id: Set(pin.manifest_id.to_string()),
+            schema_sha256: Set(fingerprint.clone()),
+            package_version: Set(local_version.clone()),
+            schema_version: Set(i64::from(SETTINGS_SCHEMA_VERSION)),
+            settings_json: Set(settings_json.clone()),
+            recorded_at: Set(Utc::now().to_rfc3339()),
+            recorded_by_host: Set(pin.host_id.to_string()),
+        };
+        // Compare-and-swap on what was read: a row another host moved in the
+        // meantime is not touched, and the loop decides against it instead.
+        let updated = plugin_schemas::Entity::update_many()
+            .set(update)
+            .filter(plugin_schemas::Column::PluginKey.eq(pin.plugin_key))
+            .filter(plugin_schemas::Column::PackageVersion.eq(existing.package_version.as_str()))
+            .filter(plugin_schemas::Column::SchemaSha256.eq(existing.schema_sha256.as_str()))
+            .filter(plugin_schemas::Column::RecordedAt.eq(existing.recorded_at.as_str()))
+            .exec(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        if updated.rows_affected == 0 {
+            continue;
+        }
+        let schema = require_plugin_schema(store, pin.plugin_key).await?;
+        return Ok(SchemaPinOutcome { schema, change });
+    }
+    Err(LibraryError::Conflict(format!(
+        "plugin schema for `{}` kept changing while pinning; retry",
+        pin.plugin_key
+    )))
 }
 
 /// Whether the pinned row for `plugin_key` is newer than `local_version`.
@@ -261,7 +308,7 @@ fn schema_from_model(row: plugin_schemas::Model) -> Result<PinnedPluginSchema> {
     Ok(PinnedPluginSchema {
         plugin_key: row.plugin_key,
         manifest_id: row.manifest_id,
-        manifest_sha256: row.manifest_sha256,
+        schema_sha256: row.schema_sha256,
         package_version: row.package_version,
         schema,
         recorded_at: row.recorded_at,

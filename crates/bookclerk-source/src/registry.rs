@@ -72,9 +72,11 @@ impl SourceRegistry {
     /// Look up a source by plugin instance id, PluginKey, or display alias.
     ///
     /// An instance id matches that deployed source. A plugin key or alias
-    /// shared by several instances routes to the default instance, else the
-    /// lowest instance id, so a bare key always resolves while any instance
-    /// is registered.
+    /// shared by several instances of **one** plugin routes to the default
+    /// instance, else the lowest instance id, so a bare key always resolves
+    /// while any instance is registered. An alias that two different plugins
+    /// claim is ambiguous and resolves to nothing: the caller names the
+    /// PluginKey or an instance id instead.
     #[must_use]
     pub fn get(&self, id_or_alias: &str) -> Option<Arc<dyn ContentSource>> {
         self.route(id_or_alias, None)
@@ -102,6 +104,9 @@ impl SourceRegistry {
             1 => Some(matches.remove(0)),
             _ => {
                 let key = matches[0].plugin_key().to_string();
+                if matches.iter().any(|s| s.plugin_key() != key) {
+                    return None;
+                }
                 if let Some(default) = self.default_instances.get(&key) {
                     if let Some(found) = matches
                         .iter()
@@ -169,14 +174,23 @@ impl SourceRegistry {
         if let Some(found) = self.route(id_or_alias, preferred_instance) {
             return Ok(found);
         }
-        if self.matches(id_or_alias).is_empty() {
+        let matches = self.matches(id_or_alias);
+        if matches.is_empty() {
             return Err(SourceError::api(format!(
                 "content source `{id_or_alias}` is not registered"
             )));
         }
+        if let Some(pin) = preferred_instance.filter(|p| !p.trim().is_empty()) {
+            return Err(SourceError::api(format!(
+                "plugin instance `{pin}` is not a registered instance of `{id_or_alias}`"
+            )));
+        }
+        let mut keys: Vec<&str> = matches.iter().map(|s| s.plugin_key()).collect();
+        keys.sort_unstable();
+        keys.dedup();
         Err(SourceError::api(format!(
-            "plugin instance `{}` is not a registered instance of `{id_or_alias}`",
-            preferred_instance.unwrap_or("")
+            "plugin alias `{id_or_alias}` is ambiguous; use a plugin instance id or a PluginKey. candidates: {}",
+            keys.join(", ")
         )))
     }
 
@@ -612,6 +626,53 @@ mod tests {
             registry.get("instance-b").unwrap().plugin_instance_id(),
             Some("instance-b")
         );
+    }
+
+    #[test]
+    fn an_alias_claimed_by_two_plugins_fails_closed() {
+        let mut registry = SourceRegistry::new();
+        registry.register(stub(
+            "audible",
+            "platform:bookclerk/audible",
+            Some("instance-real"),
+            &[],
+        ));
+        registry.register(stub(
+            "audible",
+            "path:/tmp/lookalike#audible",
+            Some("instance-twin"),
+            &[],
+        ));
+        registry.set_default_instance("platform:bookclerk/audible", "instance-real");
+        assert!(registry.get("audible").is_none(), "alias spans two keys");
+        let err = match registry.require("audible") {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("ambiguous alias must not resolve"),
+        };
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(err.contains("platform:bookclerk/audible"), "{err}");
+        assert!(err.contains("path:/tmp/lookalike#audible"), "{err}");
+        // The key and the instance id still resolve each plugin exactly.
+        assert_eq!(
+            registry
+                .get("platform:bookclerk/audible")
+                .unwrap()
+                .plugin_instance_id(),
+            Some("instance-real")
+        );
+        assert_eq!(
+            registry.get("instance-twin").unwrap().plugin_key(),
+            "path:/tmp/lookalike#audible"
+        );
+        assert_eq!(
+            registry
+                .route("audible", Some("instance-twin"))
+                .unwrap()
+                .plugin_key(),
+            "path:/tmp/lookalike#audible",
+            "a pin names one instance unambiguously"
+        );
+        assert_eq!(registry.routed().len(), 2, "scan_all still visits both");
     }
 
     #[tokio::test]

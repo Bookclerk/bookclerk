@@ -94,10 +94,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_books_page_status ON books(acquire_status, title COLLATE NOCASE, uuid)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_page_account ON books(plugin_key, account_id, title COLLATE NOCASE, uuid)",
+        r"CREATE INDEX IF NOT EXISTS idx_books_page_account ON books(account_id, title COLLATE NOCASE, uuid)",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_books_page_account_status ON books(plugin_key, account_id, acquire_status, title COLLATE NOCASE, uuid)",
+        r"CREATE INDEX IF NOT EXISTS idx_books_page_account_status ON books(account_id, acquire_status, title COLLATE NOCASE, uuid)",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_pdf_status ON books(pdf_status)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_tags ON books(tags)"),
@@ -870,14 +870,15 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     // Settings schema a host pinned from the installed manifest. Writes from
-    // any API host validate against this row; the installing host refreshes
-    // it when the manifest hash changes.
+    // any API host validate against this row; a host with a newer package
+    // version (or a different schema at the same version) replaces it by
+    // compare-and-swap, and an older package refuses to spawn against it.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_schemas (
         plugin_key TEXT PRIMARY KEY NOT NULL,
         manifest_id TEXT NOT NULL,
-        manifest_sha256 TEXT NOT NULL,
-        package_version TEXT NOT NULL DEFAULT '',
+        schema_sha256 TEXT NOT NULL,
+        package_version TEXT NOT NULL,
         schema_version INTEGER NOT NULL,
         settings_json TEXT NOT NULL,
         recorded_at TEXT NOT NULL,

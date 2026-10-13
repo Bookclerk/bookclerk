@@ -1032,11 +1032,15 @@ labels, and values or the spawn is refused. The schema is pinned in the
 database at enrollment (`plugin_schemas`) together with the manifest's
 semver `version`, so writes validate on any host. `version` is required: a
 manifest without one is not enrolled, and `bookclerk plugin check` rejects
-it. A newer version re-pins the schema and prunes every instance document to
-it (values for keys the new schema no longer declares are dropped); a host
-whose installed package is older than the pin does not enrol or spawn that
-plugin and records an `error` observation naming the pinned version and the
-host that pinned it.
+it. A newer version re-pins the schema (by compare-and-swap, so two hosts
+upgrading at once cannot leave the older version on top); every enrollment
+pass then reconciles the plugin's instance documents against the pinned
+schema, dropping values for keys it no longer declares and values that no
+longer fit their declared type. A host whose installed package is older than
+the pin does not enrol or spawn that plugin and records an `error`
+observation naming the pinned version and the host that pinned it. A plugin
+that declares no non-secret settings needs no `[vars]` binding and spawns
+with an empty `CONFIG`.
 
 ## Consent before enable (and every spawn)
 
@@ -1198,7 +1202,7 @@ compare-and-swap. `PATCH /api/settings` only edits daemon, jail, and
 Writes validate against the schema pinned in `plugin_schemas` at enrollment,
 so a plugin can be configured from any host in the cluster, including hosts
 where it is not installed. The pin carries the package version: the newest
-installed version wins, its enrollment prunes documents to its schema, and a
+installed version wins, every enrollment pass reconciles documents to its schema, and a
 host still running an older package refuses to spawn the plugin until it is
 upgraded (see [`[[settings]]`](#settings)). A spawn
 validates the document against the host's local manifest: unknown keys are

@@ -9,7 +9,7 @@ use bookclerk_library::{
     is_downloadable, AcquireStatus, BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind,
     JobPayload, JobTrigger,
 };
-use bookclerk_source::{DownloadOptions, ScanOptions};
+use bookclerk_source::ScanOptions;
 use tracing::{error, info, warn};
 
 use crate::api::AppState;
@@ -500,7 +500,9 @@ pub async fn run_acquire(
     let destinations =
         bookclerk_plugin_host::build_acquire_destinations(&cfg, &*state.destinations.read().await)?;
     let storage = destinations.listing_backend()?;
-    let options = DownloadOptions::from(&cfg);
+    // The primary destination's options carry its naming overrides and
+    // prefix, so match, layout, and acquire agree on keys.
+    let options = destinations.primary_destination().options.clone();
     let registry = registry_for_job(state).await;
 
     let mut index = bookclerk_acquire::scan_storage(
@@ -540,6 +542,18 @@ pub async fn run_acquire(
             acquire_job_includes_book(b, options.download_pdf, cfg.library.download_episodes)
         })
         .collect();
+    // A pinned instance serves its own plugin's books only; the rest are
+    // skipped, not failed.
+    let (targets, foreign): (Vec<_>, Vec<_>) = targets.into_iter().partition(|b| {
+        plugin_instance_id.is_none_or(|pin| registry.route(&b.plugin_key, Some(pin)).is_some())
+    });
+    if !foreign.is_empty() {
+        info!(
+            plugin_instance_id = plugin_instance_id.unwrap_or(""),
+            skipped = foreign.len(),
+            "run_acquire: titles owned by other plugins are skipped for a pinned instance"
+        );
+    }
 
     if targets.is_empty() {
         info!(

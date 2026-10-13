@@ -128,6 +128,18 @@ pub fn is_first_party_s3_output(plugin: &DiscoveredPlugin) -> bool {
         && plugin.plugin_key().package() == "bookclerk-plugin-destination-s3"
 }
 
+/// True when this install is the verified Bookclerk Audiobookshelf integration.
+///
+/// Only this plugin receives the host-implied network grant for the server
+/// its instance document names (`base_url`). The live manifest alias is not
+/// consulted: an alias twin is a different PluginKey with its own consent.
+#[must_use]
+pub fn is_first_party_audiobookshelf(plugin: &DiscoveredPlugin) -> bool {
+    plugin.identity.provenance.is_verified_artifact()
+        && bookclerk_plugin_catalog::is_first_party_integration(plugin.plugin_key())
+        && plugin.plugin_key().package() == "bookclerk-plugin-integration-audiobookshelf"
+}
+
 /// Path-only identity used when an install tree cannot be hashed (test fixtures).
 fn local_identity(root: &Path, manifest: &PluginManifest) -> PluginInstallIdentity {
     let plugin_key = PluginKey::from_install_path(root, &manifest.id)

@@ -103,6 +103,7 @@ pub async fn run(
                 dry_run,
                 audible_plugin_key: audible.plugin_key().canonical().to_string(),
                 local_plugin_key,
+                host_config: Some(config.clone()),
             })
             .await?;
             emit(format, &summary, || {

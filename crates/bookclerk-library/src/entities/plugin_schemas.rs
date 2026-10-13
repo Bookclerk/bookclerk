@@ -11,9 +11,9 @@ pub struct Model {
     pub plugin_key: String,
     /// Manifest id (display alias) at pin time.
     pub manifest_id: String,
-    /// SHA-256 of the manifest the schema was read from.
-    pub manifest_sha256: String,
-    /// Package version string at pin time; empty when the manifest has none.
+    /// SHA-256 of the normalized settings schema (not of the manifest bytes).
+    pub schema_sha256: String,
+    /// Semver package version that produced the pinned schema.
     pub package_version: String,
     /// `SettingsSchema` revision stored in `settings_json`.
     pub schema_version: i64,

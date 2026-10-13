@@ -4,7 +4,7 @@ use bookclerk_acquire::{
     acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library, AcquireRequest,
     ConvertRequest, MatchStorageOptions,
 };
-use bookclerk_config::{apply_setting_overrides, BadBookAction, Config};
+use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_plugin_host::HostControlPlane;
 use bookclerk_search::SearchEngine;
@@ -300,7 +300,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 }
             }
             if match_storage {
-                let storage = storage_for_host(&host).await?;
+                let (storage, download) = storage_and_options_for_host(&host, config).await?;
                 let recon = match_storage_to_library(
                     &store,
                     storage.as_ref(),
@@ -308,7 +308,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                         account: scan_accounts.first().cloned(),
                         clear_missing: true,
                         fix_layout: fix_layout || config.library.fix_storage_layout,
-                        download: DownloadOptions::from(config),
+                        download,
                         ..Default::default()
                     },
                 )
@@ -350,6 +350,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let destinations =
                 bookclerk_plugin_host::build_acquire_destinations(&cfg, &destinations)?;
             let storage = destinations.listing_backend()?;
+            // The primary destination's options carry its naming overrides
+            // and prefix, so match, layout, and acquire agree on keys.
+            let options = destinations.primary_destination().options.clone();
             let registry = sources(&host).await?;
 
             // Match existing media first (same as bookclerkd) so we do not
@@ -362,7 +365,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                         account: account.clone(),
                         clear_missing: true,
                         fix_layout: cfg.library.fix_storage_layout,
-                        download: DownloadOptions::from(&cfg),
+                        download: options.clone(),
                         ..Default::default()
                     },
                 )
@@ -371,7 +374,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
 
             let books = store.list_books(account.as_deref()).await?;
             let filter_ids: Vec<String> = asin.into_iter().chain(isbn).chain(asins).collect();
-            let targets: Vec<_> = books
+            let (targets, foreign): (Vec<_>, Vec<_>) = books
                 .into_iter()
                 .filter(|b| {
                     filter_ids.is_empty() || filter_ids.iter().any(|a| title_id_matches(b, a))
@@ -385,7 +388,19 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                             && (cfg.library.download_episodes || b.content_kind != "episode")
                     }
                 })
-                .collect();
+                .partition(|b| {
+                    // A pinned instance serves its own plugin's books only;
+                    // the rest are skipped, not failed.
+                    instance
+                        .as_deref()
+                        .is_none_or(|pin| registry.route(&b.plugin_key, Some(pin)).is_some())
+                });
+            if !foreign.is_empty() {
+                eprintln!(
+                    "skipping {} title(s) owned by other plugins (--instance pins one plugin)",
+                    foreign.len()
+                );
+            }
 
             if targets.is_empty() {
                 eprintln!("nothing to acquire");
@@ -399,7 +414,6 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             }
 
             paths.ensure_dirs()?;
-            let options = DownloadOptions::from(&cfg);
             let mut index = if dry_run {
                 None
             } else {
@@ -537,7 +551,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 println!("force-updated {n} book(s) to {}", status.as_str());
                 return Ok(());
             }
-            let storage = storage_for_host(&host).await?;
+            let (storage, download) = storage_and_options_for_host(&host, config).await?;
             let summary = match_storage_to_library(
                 &store,
                 storage.as_ref(),
@@ -548,7 +562,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     only_mark_found: downloaded,
                     only_clear_missing: not_downloaded,
                     fix_layout: fix_layout || config.library.fix_storage_layout,
-                    download: DownloadOptions::from(config),
+                    download,
                 },
             )
             .await?;
@@ -568,7 +582,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             let source = resolve_source(&registry, "audible", None)?;
             let (account_key, license_asin) =
                 resolve_license_target(&store, &asin, account.as_deref()).await?;
-            let download = DownloadOptions::from(config);
+            let mut download = DownloadOptions::from(config);
+            download.quality = instance_audio_quality(&store, source.as_ref()).await;
             let inspected = source
                 .inspect_title(
                     &source_scope(&store, source.as_ref()),
@@ -1171,4 +1186,46 @@ fn title_id_matches(book: &bookclerk_library::BookRecord, id: &str) -> bool {
 async fn storage_for_host(host: &HostControlPlane) -> anyhow::Result<Box<dyn StorageBackend>> {
     let destinations = crate::registry::destinations(host).await?;
     Ok(bookclerk_plugin_host::build_storage_backend(&destinations)?)
+}
+
+/// Listing backend plus the primary destination's download options, so a
+/// match or layout pass computes the same keys acquire wrote (destination
+/// naming overrides, S3 prefix, and S3 path limits included).
+async fn storage_and_options_for_host(
+    host: &HostControlPlane,
+    config: &Config,
+) -> anyhow::Result<(Box<dyn StorageBackend>, DownloadOptions)> {
+    let destinations = crate::registry::destinations(host).await?;
+    let acquire = bookclerk_plugin_host::build_acquire_destinations(config, &destinations)?;
+    let options = acquire.primary_destination().options.clone();
+    let storage = acquire.into_listing_backend()?;
+    Ok((storage, options))
+}
+
+/// The routed source's `bitrate` setting as an [`AudioQuality`]: `normal`
+/// lowers the license request, anything else (or no instance document)
+/// keeps the default high quality.
+async fn instance_audio_quality(
+    store: &LibraryStore,
+    source: &dyn bookclerk_source::ContentSource,
+) -> AudioQuality {
+    use bookclerk_library::control_plane::{load_instance_config, PluginInstanceId, SettingValue};
+    let Some(instance_id) = source
+        .plugin_instance_id()
+        .and_then(|id| PluginInstanceId::parse(id).ok())
+    else {
+        return AudioQuality::High;
+    };
+    match load_instance_config(store, &instance_id).await {
+        Ok(document) => match document.body.settings.get("bitrate") {
+            Some(SettingValue::String(text)) if text.eq_ignore_ascii_case("normal") => {
+                AudioQuality::Normal
+            }
+            _ => AudioQuality::High,
+        },
+        Err(err) => {
+            tracing::warn!(error = %err, "instance document unreadable; using high quality");
+            AudioQuality::High
+        }
+    }
 }

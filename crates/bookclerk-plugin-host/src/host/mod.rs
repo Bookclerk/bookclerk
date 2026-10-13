@@ -14,7 +14,9 @@ pub use database::{
     ExternalDatabase,
 };
 pub use destination::DestinationRegistry;
-pub(crate) use destination::{instance_s3_context, s3_open_secrets, spawn_deployed_storage};
+pub(crate) use destination::{
+    instance_s3_context, s3_deployed_endpoint, s3_open_secrets, spawn_deployed_storage,
+};
 pub(crate) use destination_local::instance_local_root;
 pub use integration::ExternalIntegration;
 pub use plugin_backups::{export_registered_plugin_units, restore_plugin_backup_units};

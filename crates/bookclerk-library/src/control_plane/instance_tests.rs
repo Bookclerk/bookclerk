@@ -901,15 +901,10 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
     let store = file_store(dir.path().join("library.db").as_path()).await;
     let _session = bootstrap(&store, dir.path()).await;
     const KEY: &str = "platform:bookclerk/fxver";
-    fn pin<'a>(
-        version: &'a str,
-        sha: &'a str,
-        host: &'a str,
-    ) -> impl Fn(&'a SettingsSchema) -> SchemaPin<'a> {
+    fn pin<'a>(version: &'a str, host: &'a str) -> impl Fn(&'a SettingsSchema) -> SchemaPin<'a> {
         move |schema| SchemaPin {
             plugin_key: KEY,
             manifest_id: "fxver",
-            manifest_sha256: sha,
             package_version: version,
             schema,
             host_id: host,
@@ -918,22 +913,22 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
 
     // A version is required.
     let v1 = fixture_schema();
-    let err = pin_plugin_schema(&store, &pin("", "aa", "host-a")(&v1))
+    let err = pin_plugin_schema(&store, &pin("", "host-a")(&v1))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("`version` is required"), "{err}");
-    let err = pin_plugin_schema(&store, &pin("v1", "aa", "host-a")(&v1))
+    let err = pin_plugin_schema(&store, &pin("v1", "host-a")(&v1))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("not a semantic version"), "{err}");
 
     // First pin, then an unchanged re-run.
-    let first = pin_plugin_schema(&store, &pin("0.1.0", "aa", "host-a")(&v1))
+    let first = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
         .await
         .unwrap();
     assert_eq!(first.change, SchemaPinChange::Pinned);
     assert_eq!(first.schema.package_version, "0.1.0");
-    let again = pin_plugin_schema(&store, &pin("0.1.0", "aa", "host-a")(&v1))
+    let again = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
         .await
         .unwrap();
     assert_eq!(again.change, SchemaPinChange::Unchanged);
@@ -977,7 +972,7 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
             description: None,
         },
     ]);
-    let upgraded = pin_plugin_schema(&store, &pin("0.2.0", "bb", "host-b")(&v2))
+    let upgraded = pin_plugin_schema(&store, &pin("0.2.0", "host-b")(&v2))
         .await
         .unwrap();
     assert_eq!(
@@ -987,13 +982,17 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
         }
     );
     assert_eq!(upgraded.schema.recorded_by_host, "host-b");
-    let pruned = prune_instance_configs_to_schema(&store, KEY, &v2)
+    let pruned = reconcile_instance_configs_to_schema(&store, KEY, &v2)
         .await
         .unwrap();
     assert_eq!(pruned.len(), 1);
     assert_eq!(pruned[0].instance_id, instance.id.as_str());
     assert_eq!(pruned[0].removed_keys, vec!["retries", "token"]);
     assert_eq!(pruned[0].revision, seeded.revision + 1);
+    assert_eq!(
+        upgraded.schema.schema_sha256,
+        schema_fingerprint(&v2).unwrap()
+    );
     let doc = load_instance_config(&store, &instance.id).await.unwrap();
     assert_eq!(doc.revision, seeded.revision + 1);
     assert_eq!(doc.body.settings.len(), 1);
@@ -1004,16 +1003,39 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
     assert!(doc.body.secret_refs.is_empty());
     doc.body.validate(&v2).expect("pruned document fits 0.2.0");
     assert!(
-        prune_instance_configs_to_schema(&store, KEY, &v2)
+        reconcile_instance_configs_to_schema(&store, KEY, &v2)
             .await
             .unwrap()
             .is_empty(),
         "a fitting document is not rewritten"
     );
+    // A value whose type no longer fits is dropped too (`mode` became an
+    // integer), and the rewrite happens on any later pass, not only the one
+    // that moved the pin.
+    let v2_int = SettingsSchema::new(vec![
+        SettingSpec {
+            key: "mode".into(),
+            label: String::new(),
+            kind: SettingKind::Integer,
+            values: Vec::new(),
+            default: Some(serde_json::json!(1)),
+            required: false,
+            description: None,
+        },
+        v2.get("token").cloned().unwrap(),
+    ]);
+    let retyped = reconcile_instance_configs_to_schema(&store, KEY, &v2_int)
+        .await
+        .unwrap();
+    assert_eq!(retyped.len(), 1);
+    assert_eq!(retyped[0].removed_keys, vec!["mode"]);
+    let doc = load_instance_config(&store, &instance.id).await.unwrap();
+    assert!(doc.body.settings.is_empty());
+    doc.body.validate(&v2_int).expect("retyped document fits");
 
     // The host still on 0.1.0 is stale: the row is untouched and the
     // reconciler-side check agrees.
-    let stale = pin_plugin_schema(&store, &pin("0.1.0", "aa", "host-a")(&v1))
+    let stale = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
         .await
         .unwrap();
     assert_eq!(
@@ -1047,11 +1069,97 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
             .is_none()
     );
 
-    // Same version, different manifest: re-pinned in place.
-    let repinned = pin_plugin_schema(&store, &pin("0.2.0", "cc", "host-a")(&v2))
+    // Same version, different schema: re-pinned in place. The same schema
+    // from a differently formatted manifest is unchanged.
+    let repinned = pin_plugin_schema(&store, &pin("0.2.0", "host-a")(&v2_int))
         .await
         .unwrap();
     assert_eq!(repinned.change, SchemaPinChange::Repinned);
-    assert_eq!(repinned.schema.manifest_sha256, "cc");
+    assert_eq!(
+        repinned.schema.schema_sha256,
+        schema_fingerprint(&v2_int).unwrap()
+    );
     assert_eq!(repinned.schema.recorded_by_host, "host-a");
+    let same = pin_plugin_schema(&store, &pin("0.2.0", "host-b")(&v2_int))
+        .await
+        .unwrap();
+    assert_eq!(same.change, SchemaPinChange::Unchanged);
+    assert_eq!(same.schema.recorded_by_host, "host-a");
+}
+
+#[tokio::test]
+async fn concurrent_pins_never_leave_an_older_version_on_top() {
+    use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingsSchema};
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let _session = bootstrap(&store, dir.path()).await;
+    const KEY: &str = "platform:bookclerk/fxrace";
+    let schema_for = |key: &str| {
+        SettingsSchema::new(vec![SettingSpec {
+            key: key.into(),
+            label: String::new(),
+            kind: SettingKind::String,
+            values: Vec::new(),
+            default: None,
+            required: false,
+            description: None,
+        }])
+    };
+    let (v1, v2, v3) = (schema_for("one"), schema_for("two"), schema_for("three"));
+    let first = pin_plugin_schema(
+        &store,
+        &SchemaPin {
+            plugin_key: KEY,
+            manifest_id: "fxrace",
+            package_version: "0.1.0",
+            schema: &v1,
+            host_id: "host-0",
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.change, SchemaPinChange::Pinned);
+    // Two hosts race from the same 0.1.0 read: whichever order the writes
+    // land in, 0.3.0 ends on top and 0.2.0 reports itself stale or upgraded
+    // from 0.1.0 (never over 0.3.0).
+    let newer = SchemaPin {
+        plugin_key: KEY,
+        manifest_id: "fxrace",
+        package_version: "0.3.0",
+        schema: &v3,
+        host_id: "host-a",
+    };
+    let older = SchemaPin {
+        plugin_key: KEY,
+        manifest_id: "fxrace",
+        package_version: "0.2.0",
+        schema: &v2,
+        host_id: "host-b",
+    };
+    let (a, b) = tokio::join!(
+        pin_plugin_schema(&store, &newer),
+        pin_plugin_schema(&store, &older),
+    );
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(
+        a.change,
+        SchemaPinChange::Upgraded {
+            previous_version: "0.1.0".into()
+        }
+    );
+    let older_outcome_ok = match &b.change {
+        SchemaPinChange::Stale { .. } => true,
+        SchemaPinChange::Upgraded { previous_version } => previous_version == "0.1.0",
+        _ => false,
+    };
+    assert!(older_outcome_ok, "{:?}", b.change);
+    let pinned = load_plugin_schema(&store, KEY).await.unwrap().unwrap();
+    assert_eq!(pinned.package_version, "0.3.0");
+    assert_eq!(pinned.recorded_by_host, "host-a");
+    assert_eq!(pinned.schema, v3);
+    assert!(stale_against_pin(&store, KEY, "0.2.0")
+        .await
+        .unwrap()
+        .is_some());
 }

@@ -150,6 +150,20 @@ pub const FIRST_PARTY_DESTINATIONS: &[PlatformArtifact] = &[
     },
 ];
 
+/// Host-controlled first-party integration identities (`audiobookshelf`).
+///
+/// The host-implied network grant for the server named in the instance
+/// document (`base_url`) requires this exact package on `platform:` or the
+/// canonical crates.io `cargo:` index **and** a verified artifact. A
+/// third-party tree that merely reuses the `audiobookshelf` alias declares
+/// its own `[capabilities.network]` domains and goes through consent.
+pub const FIRST_PARTY_INTEGRATIONS: &[PlatformArtifact] = &[PlatformArtifact {
+    package_name: "bookclerk-plugin-integration-audiobookshelf",
+    manifest_id: "audiobookshelf",
+    allowed_entrypoints: &["remoteLibrary"],
+    allowed_bindings: &["config", "secrets"],
+}];
+
 /// True when `key` is a host-controlled first-party package on `platform:` or
 /// the canonical crates.io `cargo:` index.
 fn first_party_scheme_ok(key: &PluginKey) -> bool {
@@ -167,6 +181,16 @@ fn first_party_scheme_ok(key: &PluginKey) -> bool {
 /// host-private behavior from an alias.
 fn first_party_named(key: &PluginKey, table: &[PlatformArtifact]) -> bool {
     table.iter().any(|a| a.package_name == key.package()) && first_party_scheme_ok(key)
+}
+
+/// True when `key` names a host-controlled first-party integration.
+///
+/// Matches exact package name on `platform:` or the canonical crates.io
+/// `cargo:` index. Callers that grant host-implied network access must also
+/// require verified provenance on the discovered plugin.
+#[must_use]
+pub fn is_first_party_integration(key: &PluginKey) -> bool {
+    first_party_named(key, FIRST_PARTY_INTEGRATIONS)
 }
 
 /// True when `key` names a host-controlled first-party database adapter.

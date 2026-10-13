@@ -16,9 +16,9 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, default_instance_for_key,
-    list_deployments_for_host, load_observation, load_plugin_instance, resolve_instance_bindings,
-    stale_against_pin, upsert_observation, DeploymentObservation, DeploymentStatus,
-    DESIRED_PRESENT,
+    list_deployments_for_host, load_instance_config, load_observation, load_plugin_instance,
+    resolve_instance_bindings, stale_against_pin, upsert_observation, DeploymentObservation,
+    DeploymentStatus, DESIRED_PRESENT,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{
@@ -182,6 +182,8 @@ struct SharedPlugins<'a> {
     config: &'a Config,
     /// `None` until the first deployment on this tick needs a root.
     cached: std::sync::Mutex<Option<Vec<crate::DiscoveredPlugin>>>,
+    /// Package version per installed root, parsed at most once per tick.
+    versions: std::sync::Mutex<HashMap<PathBuf, String>>,
 }
 
 impl<'a> SharedPlugins<'a> {
@@ -190,7 +192,32 @@ impl<'a> SharedPlugins<'a> {
         Self {
             config,
             cached: std::sync::Mutex::new(None),
+            versions: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Semver `version` of the manifest installed at `root`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the version cache lock is poisoned.
+    fn installed_version(&self, root: &Path) -> std::result::Result<String, String> {
+        if let Some(version) = self
+            .versions
+            .lock()
+            .expect("installed version cache")
+            .get(root)
+        {
+            return Ok(version.clone());
+        }
+        let version = installed_manifest(root)?
+            .package_version()
+            .map_err(|err| err.to_string())?;
+        self.versions
+            .lock()
+            .expect("installed version cache")
+            .insert(root.to_path_buf(), version.clone());
+        Ok(version)
     }
 
     /// Install directory for `canonical`, hashing plugin trees only on the first call.
@@ -236,13 +263,10 @@ pub async fn reconcile_local_deployments(
         .map(|deployment| deployment.plugin_instance_id.as_str().to_string())
         .collect();
     let incarnation = current_process_incarnation().to_string();
+    let tracked = runtime.tracked_instance_ids().await;
     for deployment in absent {
         let instance_id = deployment.plugin_instance_id.as_str();
-        let was_tracked = runtime
-            .tracked_instance_ids()
-            .await
-            .iter()
-            .any(|id| id == instance_id);
+        let was_tracked = tracked.iter().any(|id| id == instance_id);
         if was_tracked {
             runtime.retire_instance(instance_id).await;
         }
@@ -460,22 +484,14 @@ async fn reconcile_one(
         note(DeploymentStatus::Error, "not installed".into(), None).await;
         return Ok(());
     };
-    // The installed manifest's `[[settings]]` is the schema this spawn
-    // validates against; keys the operator wrote under an older manifest
-    // are dropped and logged by the resolver. A package older than the
-    // pinned schema version is not spawned: its documents may already carry
-    // the newer shape.
-    let manifest = match installed_manifest(&root) {
-        Ok(manifest) => manifest,
-        Err(err) => {
-            note(DeploymentStatus::Error, err, None).await;
-            return Ok(());
-        }
-    };
-    let local_version = match manifest.package_version() {
+    // Cheap checks first. A package older than the pinned schema version is
+    // not spawned (its documents may already carry the newer shape), and a
+    // healthy guest on the current document revision is left alone before
+    // anything parses the manifest or unseals a secret.
+    let local_version = match discovered.installed_version(&root) {
         Ok(version) => version,
         Err(err) => {
-            note(DeploymentStatus::Error, err.to_string(), None).await;
+            note(DeploymentStatus::Error, err, None).await;
             return Ok(());
         }
     };
@@ -507,18 +523,17 @@ async fn reconcile_one(
             return Ok(());
         }
     }
-    let schema = manifest.settings_schema();
-    let mut request = match resolve_spawn(store, &instance, &grant, &schema).await {
-        Ok(request) => request,
+    let document_revision = match load_instance_config(store, &instance.id).await {
+        Ok(document) => document.revision,
         Err(err) => {
-            note(DeploymentStatus::Error, err, None).await;
+            note(DeploymentStatus::Error, err.to_string(), None).await;
             return Ok(());
         }
     };
     if let Some(existing) = &existing {
         if existing.status == DeploymentStatus::Healthy
             && existing.incarnation == incarnation
-            && existing.applied_config_revision == Some(request.config_revision)
+            && existing.applied_config_revision == Some(document_revision)
             && runtime
                 .guest_still_running(deployment.plugin_instance_id.as_str())
                 .await
@@ -526,6 +541,23 @@ async fn reconcile_one(
             return Ok(());
         }
     }
+    // The installed manifest's `[[settings]]` is the schema this spawn
+    // validates against; keys the operator wrote under an older manifest
+    // are dropped and logged by the resolver.
+    let schema = match installed_settings_schema(&root) {
+        Ok(schema) => schema,
+        Err(err) => {
+            note(DeploymentStatus::Error, err, None).await;
+            return Ok(());
+        }
+    };
+    let mut request = match resolve_spawn(store, &instance, &grant, &schema).await {
+        Ok(request) => request,
+        Err(err) => {
+            note(DeploymentStatus::Error, err, None).await;
+            return Ok(());
+        }
+    };
     note(DeploymentStatus::Installed, String::new(), None).await;
     request.plugin_root = Some(root);
     note(
@@ -1107,16 +1139,6 @@ fn open_installed_plugin(
     .map_err(|err| err.to_string())
 }
 
-/// Document `endpoint` when the S3 context includes one.
-fn json_endpoint(context: &serde_json::Value) -> Option<String> {
-    context
-        .get("endpoint")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(str::to_string)
-}
-
 /// Starts the staged guest, calls health, and drops the temporary session.
 ///
 /// The install lock is still held. This function does not acquire it.
@@ -1174,7 +1196,7 @@ async fn probe_guest_health(
             let context =
                 crate::host::instance_s3_context(&prepared).map_err(|err| err.to_string())?;
             let secrets = crate::host::s3_open_secrets(&prepared);
-            services.deployed_endpoint = Some(json_endpoint(&context));
+            services.deployed_endpoint = crate::host::s3_deployed_endpoint(plugin, &context);
             spawn_config = context.clone();
             open_bindings.config = bookclerk_plugin_sdk::ExtensibleConfig::json(&context);
             open_bindings.secrets = secrets;

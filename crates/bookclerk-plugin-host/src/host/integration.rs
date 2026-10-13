@@ -72,16 +72,8 @@ impl ExternalIntegration {
         // The Audiobookshelf server lives in the instance document; the jail
         // network grant for it rides the deployed-endpoint channel.
         let mut services = services;
-        if plugin.alias().eq_ignore_ascii_case("audiobookshelf") {
-            services.deployed_endpoint = Some(
-                prepared
-                    .granted_config
-                    .get("base_url")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::trim)
-                    .filter(|url| !url.is_empty())
-                    .map(str::to_string),
-            );
+        if let Some(endpoint) = deployed_endpoint_for(plugin, &prepared.granted_config) {
+            services.deployed_endpoint = Some(endpoint);
         }
         let session = Arc::new(
             PluginSession::spawn_with(
@@ -497,4 +489,109 @@ fn brand_from_abi(brand: Option<&bookclerk_plugin_sdk::Brand>) -> Option<Brand> 
         accent: Box::leak(b.accent.clone().into_boxed_str()),
         icon_url: Box::leak(b.icon_url.clone().unwrap_or_default().into_boxed_str()),
     })
+}
+
+/// The host-implied endpoint grant for an integration spawn.
+///
+/// `Some(endpoint)` only for the verified first-party Audiobookshelf package
+/// ([`crate::is_first_party_audiobookshelf`]): its `base_url` becomes the
+/// jail's outbound TCP grant. Any other plugin, an alias twin included,
+/// gets `None` and reaches the network only through its own
+/// `[capabilities.network]` consent.
+fn deployed_endpoint_for(
+    plugin: &DiscoveredPlugin,
+    granted_config: &serde_json::Value,
+) -> Option<Option<String>> {
+    if !crate::is_first_party_audiobookshelf(plugin) {
+        return None;
+    }
+    Some(
+        granted_config
+            .get("base_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(str::to_string),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
+    use bookclerk_plugin_manifest::PluginManifest;
+
+    const ABS_TOML: &str = r#"
+api_version = 3
+id = "audiobookshelf"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["remoteLibrary"]
+
+[capabilities.network]
+mode = "outbound"
+
+[vars]
+"#;
+
+    fn discovered(root: &std::path::Path) -> DiscoveredPlugin {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join("plugin.toml"), ABS_TOML).unwrap();
+        let command = root.join("guest");
+        std::fs::write(&command, b"#!/bin/sh\n").unwrap();
+        let manifest = PluginManifest::parse(ABS_TOML).unwrap();
+        DiscoveredPlugin::try_new(manifest, root.to_path_buf(), command, None)
+            .expect("test plugin tree must evaluate")
+    }
+
+    fn verified_first_party(root: &std::path::Path) -> DiscoveredPlugin {
+        let mut plugin = discovered(root);
+        let key = PluginKey::platform(
+            "bookclerk-plugin-integration-audiobookshelf",
+            "audiobookshelf",
+        )
+        .unwrap();
+        plugin.identity.plugin_key = key.clone();
+        plugin.identity.artifact.plugin_key = key;
+        plugin.identity.provenance = PluginProvenance::VerifiedInstalled;
+        plugin
+    }
+
+    /// Defense in depth: the document endpoint is a host-implied TCP grant,
+    /// so only the verified first-party PluginKey may carry it. An alias twin
+    /// (same manifest id, different key) gets nothing from the document.
+    #[test]
+    fn document_endpoint_is_granted_by_plugin_key_not_alias() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let real = verified_first_party(a.path());
+        let twin = discovered(b.path());
+        assert_eq!(real.alias(), twin.alias());
+        assert_ne!(real.plugin_key(), twin.plugin_key());
+        let document = serde_json::json!({ "base_url": " http://127.0.0.1:13378 " });
+
+        assert_eq!(
+            deployed_endpoint_for(&real, &document),
+            Some(Some("http://127.0.0.1:13378".to_string()))
+        );
+        assert_eq!(
+            deployed_endpoint_for(&real, &serde_json::json!({ "base_url": "" })),
+            Some(None),
+            "a first-party instance with no server grants nothing"
+        );
+        assert_eq!(
+            deployed_endpoint_for(&twin, &document),
+            None,
+            "an alias twin must not inherit the document endpoint grant"
+        );
+
+        let mut modified = verified_first_party(b.path());
+        modified.identity.provenance = PluginProvenance::Modified;
+        assert_eq!(
+            deployed_endpoint_for(&modified, &document),
+            None,
+            "a tampered first-party tree is not verified"
+        );
+    }
 }

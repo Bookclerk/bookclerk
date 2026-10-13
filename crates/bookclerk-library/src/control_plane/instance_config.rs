@@ -336,61 +336,65 @@ pub async fn replace_instance_config(
     }
 }
 
-/// One instance document rewritten to fit a newer pinned schema.
+/// One instance document rewritten to fit the pinned schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrunedInstanceConfig {
     /// Instance whose document changed.
     pub instance_id: String,
-    /// Setting keys and secret-ref keys the schema no longer declares (or
-    /// declares with the other secrecy), dropped from the document.
+    /// Keys dropped from the document: settings the schema no longer
+    /// declares, declares as secrets, or whose value no longer fits the
+    /// entry's kind; secret refs whose key is gone or now plain.
     pub removed_keys: Vec<String>,
     /// Revision after the rewrite.
     pub revision: i64,
 }
 
-/// Drops what `schema` no longer declares from every instance document of
-/// `plugin_key`: settings whose key is gone or became a secret, and secret
-/// refs whose key is gone or became plain.
+/// Rewrites every instance document of `plugin_key` to what `schema` still
+/// accepts: settings whose key is gone, became a secret, or whose value no
+/// longer fits (a type or enum change), and secret refs whose key is gone or
+/// became plain, are dropped.
 ///
-/// Enrollment calls this after it upgrades or re-pins the schema, so a
-/// document written under the previous manifest validates on every host
-/// again. A document that already fits is not rewritten. Defaults for new
-/// keys are not written: `CONFIG` resolution applies them at spawn. A
-/// compare-and-swap conflict (another host wrote the document meanwhile) is
-/// skipped; the next enrollment pass sees the new revision.
+/// Enrollment runs this on every pass, so a document that lost a race or
+/// was written under an earlier schema is repaired on the next restart
+/// rather than staying invalid. A document that already fits is not
+/// rewritten; defaults for new keys are not written (`CONFIG` resolution
+/// applies them at spawn). One instance's failure (a compare-and-swap
+/// conflict because another host wrote the document meanwhile, or an
+/// unreadable row) is logged and skipped so the others are still handled.
 ///
 /// # Errors
 ///
-/// Returns an error when a read or a non-conflicting write fails.
-pub async fn prune_instance_configs_to_schema(
+/// Returns an error when the instance list cannot be read.
+pub async fn reconcile_instance_configs_to_schema(
     store: &LibraryStore,
     plugin_key: &str,
     schema: &SettingsSchema,
 ) -> Result<Vec<PrunedInstanceConfig>> {
     let mut pruned = Vec::new();
     for instance in list_plugin_instances_for_key(store, plugin_key).await? {
-        let Some(stored) = load_stored(store, &instance.id).await? else {
-            continue;
+        let doc = match load_stored(store, &instance.id).await {
+            Ok(Some(stored)) => match parse_instance_config(stored) {
+                Ok(doc) => doc,
+                Err(err) => {
+                    tracing::warn!(
+                        plugin_instance_id = %instance.id,
+                        error = %err,
+                        "instance document is unreadable; not reconciled"
+                    );
+                    continue;
+                }
+            },
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(
+                    plugin_instance_id = %instance.id,
+                    error = %err,
+                    "instance document read failed; not reconciled"
+                );
+                continue;
+            }
         };
-        let doc = parse_instance_config(stored)?;
-        let mut body = doc.body.clone();
-        let mut removed: Vec<String> = Vec::new();
-        body.settings.retain(|key, _| {
-            let keep = schema.get(key).is_some_and(|spec| !spec.is_secret());
-            if !keep {
-                removed.push(key.clone());
-            }
-            keep
-        });
-        body.secret_refs.retain(|secret_ref| {
-            let keep = schema
-                .get(&secret_ref.key)
-                .is_some_and(|spec| spec.is_secret());
-            if !keep {
-                removed.push(secret_ref.key.clone());
-            }
-            keep
-        });
+        let (body, removed) = prune_body(&doc.body, schema);
         if removed.is_empty() {
             continue;
         }
@@ -404,22 +408,65 @@ pub async fn prune_instance_configs_to_schema(
             &body,
             &operation_id,
         )
-        .await?
+        .await
         {
-            InstanceConfigReplace::Applied(applied) => pruned.push(PrunedInstanceConfig {
+            Ok(InstanceConfigReplace::Applied(applied)) => pruned.push(PrunedInstanceConfig {
                 instance_id: instance.id.as_str().to_string(),
                 removed_keys: removed,
                 revision: applied.revision,
             }),
-            InstanceConfigReplace::Replayed { revision } => pruned.push(PrunedInstanceConfig {
-                instance_id: instance.id.as_str().to_string(),
-                removed_keys: removed,
-                revision,
-            }),
-            InstanceConfigReplace::Conflict { .. } => {}
+            Ok(InstanceConfigReplace::Replayed { revision }) => {
+                pruned.push(PrunedInstanceConfig {
+                    instance_id: instance.id.as_str().to_string(),
+                    removed_keys: removed,
+                    revision,
+                });
+            }
+            Ok(InstanceConfigReplace::Conflict { current_revision }) => tracing::info!(
+                plugin_instance_id = %instance.id,
+                current_revision,
+                "instance document changed concurrently; reconciled on the next pass"
+            ),
+            Err(err) => tracing::warn!(
+                plugin_instance_id = %instance.id,
+                error = %err,
+                "instance document reconcile failed; retried on the next pass"
+            ),
         }
     }
     Ok(pruned)
+}
+
+/// The document with everything `schema` rejects removed, and the keys
+/// that were removed.
+fn prune_body(
+    body: &PluginInstanceConfigV1,
+    schema: &SettingsSchema,
+) -> (PluginInstanceConfigV1, Vec<String>) {
+    let mut body = body.clone();
+    let mut removed = Vec::new();
+    body.settings.retain(|key, value| {
+        let keep = schema.get(key).is_some_and(|spec| {
+            !spec.is_secret()
+                && serde_json::to_value(&*value)
+                    .map(|json| spec.check_value(&json).is_ok())
+                    .unwrap_or(false)
+        });
+        if !keep {
+            removed.push(key.clone());
+        }
+        keep
+    });
+    body.secret_refs.retain(|secret_ref| {
+        let keep = schema
+            .get(&secret_ref.key)
+            .is_some_and(|spec| spec.is_secret());
+        if !keep {
+            removed.push(secret_ref.key.clone());
+        }
+        keep
+    });
+    (body, removed)
 }
 
 /// Whether the plugin-instance config grant includes `config` or `secrets`.
@@ -442,18 +489,22 @@ pub struct ResolvedInstanceBindings {
     pub secrets: ExtensibleConfig,
     /// Document revision applied by this resolution.
     pub config_revision: i64,
-    /// Document keys the schema no longer declares; dropped from `config`.
+    /// Document keys left out of `config`: ones the schema no longer
+    /// declares, and ones whose stored value no longer fits the entry's kind
+    /// (the default applied instead).
     pub dropped_keys: Vec<String>,
 }
 
 /// Resolves `CONFIG` and `SECRETS` for `instance_id` against `schema`.
 ///
 /// `CONFIG` is the schema's defaults overlaid with the document's settings.
-/// Keys the schema does not declare are dropped and reported; a required key
-/// with neither a value nor a default fails. A missing document, a dangling
-/// secret ref, a secret that fails to unseal, a missing `config` grant, or
-/// secret refs without a `secrets` grant fails resolution. An empty ref list
-/// with no `secrets` grant yields the empty secrets payload.
+/// Keys the schema does not declare, and values that no longer fit their
+/// entry, are dropped and reported; a required key with neither a usable
+/// value nor a default fails, as does a required secret with no ref. A
+/// missing document, a dangling secret ref, a secret that fails to unseal, a
+/// missing `config` grant for a plugin that declares settings, or secret refs
+/// without a `secrets` grant fails resolution. An empty ref list with no
+/// `secrets` grant yields the empty secrets payload.
 ///
 /// # Errors
 ///
@@ -468,7 +519,11 @@ pub async fn resolve_instance_bindings(
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {instance_id}")))?;
     let document = load_instance_config(store, instance_id).await?;
-    if !grant.config {
+    // A plugin that declares no non-secret settings needs no `[vars]`
+    // binding: it spawns with an empty `CONFIG`. One that declares some
+    // cannot receive them without the grant.
+    let declares_config = schema.config_entries().next().is_some();
+    if !grant.config && declares_config {
         return Err(invalid(
             "plugin grant lacks config; instance deployment cannot spawn",
         ));
@@ -487,13 +542,19 @@ pub async fn resolve_instance_bindings(
         )));
     }
     let secrets = resolve_secrets(store, &instance, &document.body, grant.secrets, schema).await?;
-    let object: serde_json::Map<String, Value> = effective.config.into_iter().collect();
+    let object: serde_json::Map<String, Value> = if grant.config {
+        effective.config.into_iter().collect()
+    } else {
+        serde_json::Map::new()
+    };
     let config = ExtensibleConfig::json(&Value::Object(object));
+    let mut dropped_keys = effective.dropped;
+    dropped_keys.extend(effective.invalid);
     Ok(ResolvedInstanceBindings {
         config,
         secrets,
         config_revision: document.revision,
-        dropped_keys: effective.dropped,
+        dropped_keys,
     })
 }
 
@@ -545,6 +606,16 @@ async fn resolve_secrets(
         .iter()
         .filter(|r| schema.check_secret_key(&r.key).is_ok())
         .collect();
+    let missing: Vec<&str> = schema
+        .required_secret_keys()
+        .filter(|key| !refs.iter().any(|r| r.key == *key))
+        .collect();
+    if !missing.is_empty() {
+        return Err(invalid(&format!(
+            "required secrets are not set: {}",
+            missing.join(", ")
+        )));
+    }
     if refs.is_empty() {
         return Ok(ExtensibleConfig::default());
     }

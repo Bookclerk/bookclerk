@@ -20,12 +20,11 @@
 use bookclerk_library::control_plane::{
     current_process_incarnation, default_instance_for_key, ensure_plugin_deployment,
     ensure_plugin_instance, import_instance_config_if_absent, load_deployment_for_host,
-    pin_plugin_schema, prune_instance_configs_to_schema, upsert_observation, ConfigActor,
+    pin_plugin_schema, reconcile_instance_configs_to_schema, upsert_observation, ConfigActor,
     DeploymentObservation, DeploymentStatus, PinnedPluginSchema, PluginDeployment, PluginInstance,
     PluginInstanceConfigV1, SchemaPin, SchemaPinChange, DESIRED_ABSENT, DESIRED_PRESENT,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
-use sha2::{Digest, Sha256};
 
 use crate::consent::PluginGrantStore;
 use crate::discover::DiscoveredPlugin;
@@ -109,13 +108,11 @@ pub async fn enroll_one(
         .package_version()
         .map_err(|err| crate::PluginError::message(err.to_string()))?;
     let schema_body = plugin.manifest.settings_schema();
-    let manifest_sha256 = manifest_sha256(plugin)?;
     let pinned = pin_plugin_schema(
         store,
         &SchemaPin {
             plugin_key: &key,
             manifest_id: &plugin.manifest.id,
-            manifest_sha256: &manifest_sha256,
             package_version: &package_version,
             schema: &schema_body,
             host_id,
@@ -134,30 +131,33 @@ pub async fn enroll_one(
                 "plugin `{key}`: {detail}"
             )));
         }
-        SchemaPinChange::Upgraded { previous_version } => {
-            let pruned = prune_instance_configs_to_schema(store, &key, &schema_body)
-                .await
-                .map_err(library_err)?;
-            tracing::info!(
-                plugin_key = %key,
-                from = %previous_version,
-                to = %package_version,
-                pruned_documents = pruned.len(),
-                "plugin schema pin upgraded"
-            );
-        }
-        SchemaPinChange::Repinned => {
-            let pruned = prune_instance_configs_to_schema(store, &key, &schema_body)
-                .await
-                .map_err(library_err)?;
-            tracing::warn!(
-                plugin_key = %key,
-                version = %package_version,
-                pruned_documents = pruned.len(),
-                "plugin manifest changed without a version bump; schema re-pinned"
-            );
-        }
+        SchemaPinChange::Upgraded { previous_version } => tracing::info!(
+            plugin_key = %key,
+            from = %previous_version,
+            to = %package_version,
+            "plugin schema pin upgraded"
+        ),
+        SchemaPinChange::Repinned => tracing::warn!(
+            plugin_key = %key,
+            version = %package_version,
+            "plugin schema changed without a version bump; re-pinned"
+        ),
         SchemaPinChange::Pinned | SchemaPinChange::Unchanged => {}
+    }
+    // Every pass reconciles the documents against the pinned schema, not
+    // only the pass that moved the pin: a write that lost a race, or a value
+    // whose type changed, is picked up on the next restart.
+    let reconciled = reconcile_instance_configs_to_schema(store, &key, &pinned.schema.schema)
+        .await
+        .map_err(library_err)?;
+    for change in &reconciled {
+        tracing::warn!(
+            plugin_key = %key,
+            plugin_instance_id = %change.instance_id,
+            removed = ?change.removed_keys,
+            revision = change.revision,
+            "instance document keys the pinned schema no longer accepts were dropped"
+        );
     }
     let schema = pinned.schema;
     let actor = ConfigActor::Bootstrap;
@@ -244,17 +244,6 @@ async fn record_stale_version(store: &LibraryStore, host_id: &str, plugin_key: &
     if let Err(err) = upsert_observation(store, &observation).await {
         tracing::warn!(plugin_key, error = %err, "stale-version observation write failed");
     }
-}
-
-/// SHA-256 of the installed `plugin.toml`, hex encoded.
-fn manifest_sha256(plugin: &DiscoveredPlugin) -> Result<String> {
-    let text = std::fs::read(plugin.root.join("plugin.toml")).map_err(|err| {
-        crate::PluginError::message(format!(
-            "read {}: {err}",
-            plugin.root.join("plugin.toml").display()
-        ))
-    })?;
-    Ok(hex::encode(Sha256::digest(text)))
 }
 
 /// Maps a library error onto the host error type.

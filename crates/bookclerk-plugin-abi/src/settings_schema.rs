@@ -332,19 +332,34 @@ impl SettingsSchema {
         }
     }
 
+    /// Keys of `secret` entries marked `required`.
+    pub fn required_secret_keys(&self) -> impl Iterator<Item = &str> {
+        self.secret_entries()
+            .filter(|spec| spec.required)
+            .map(|spec| spec.key.as_str())
+    }
+
     /// Merges `settings` over the schema defaults and reports missing
     /// required keys.
     ///
     /// Keys the schema does not declare are dropped and returned in
-    /// `dropped` so the caller can log them.
+    /// `dropped`; declared keys whose value no longer fits the entry's kind
+    /// (a type or enum change after an upgrade) are left out of `config` and
+    /// returned in `invalid`, so the default applies instead. A required key
+    /// with neither a usable value nor a default is `missing`.
     #[must_use]
     pub fn effective_config(&self, settings: &BTreeMap<String, Value>) -> EffectiveConfig {
         let mut config = self.defaults();
         let mut dropped = Vec::new();
+        let mut invalid = Vec::new();
         for (key, value) in settings {
             match self.get(key) {
                 Some(spec) if !spec.is_secret() => {
-                    config.insert(key.clone(), value.clone());
+                    if spec.check_value(value).is_ok() {
+                        config.insert(key.clone(), value.clone());
+                    } else {
+                        invalid.push(key.clone());
+                    }
                 }
                 _ => dropped.push(key.clone()),
             }
@@ -357,6 +372,7 @@ impl SettingsSchema {
         EffectiveConfig {
             config,
             dropped,
+            invalid,
             missing,
         }
     }
@@ -369,7 +385,9 @@ pub struct EffectiveConfig {
     pub config: BTreeMap<String, Value>,
     /// Document keys the schema does not declare.
     pub dropped: Vec<String>,
-    /// Required keys with neither a value nor a default.
+    /// Declared keys whose stored value does not fit the entry's kind.
+    pub invalid: Vec<String>,
+    /// Required keys with neither a usable value nor a default.
     pub missing: Vec<String>,
 }
 
@@ -492,6 +510,31 @@ mod tests {
         );
         assert_eq!(effective.config.get("path_style"), Some(&Value::Bool(true)));
         assert_eq!(effective.dropped, vec!["stale".to_string()]);
+        assert!(effective.invalid.is_empty());
         assert_eq!(effective.missing, vec!["bucket".to_string()]);
+
+        // A value that no longer fits its entry falls back to the default and
+        // is reported; a required one with no default is missing.
+        doc.insert("bitrate".to_string(), Value::String("low".into()));
+        doc.insert("bucket".to_string(), Value::Bool(false));
+        let effective = schema.effective_config(&doc);
+        assert_eq!(
+            effective.config.get("bitrate"),
+            Some(&Value::String("high".into()))
+        );
+        assert!(!effective.config.contains_key("bucket"));
+        assert_eq!(
+            effective.invalid,
+            vec!["bitrate".to_string(), "bucket".to_string()]
+        );
+        assert_eq!(effective.missing, vec!["bucket".to_string()]);
+        let required_secret = SettingsSchema::new(vec![SettingSpec {
+            required: true,
+            ..spec("token", SettingKind::Secret)
+        }]);
+        assert_eq!(
+            required_secret.required_secret_keys().collect::<Vec<_>>(),
+            vec!["token"]
+        );
     }
 }
