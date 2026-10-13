@@ -23,5 +23,8 @@ tracing.workspace = true
 infer.workspace = true
 mime_guess.workspace = true
 
+[dev-dependencies]
+bookclerk-plugin-database-sqlite.workspace = true
+
 [lints]
 workspace = true

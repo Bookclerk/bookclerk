@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use super::brands::{integration_brand, Brand};
+
 use crate::registry::IntegrationRegistry;
 use crate::tickets::{
     identity_from_session, inspect_claim_ticket, mint_claim_ticket,

@@ -333,14 +333,17 @@ pub fn resolve_store_base_url(source_config: &Value) -> String {
         .unwrap_or_else(|| DEFAULT_STORE_URL.to_string())
 }
 
-/// Resolve download access path from `[sources.graphicaudio]` JSON / env.
+/// Resolve download access path from granted `CONFIG`.
+///
+/// A missing `access` key uses the default. `BOOKCLERK_GA_ACCESS` is not read
+/// here: after import, the instance document is the authority, and a document
+/// that omits `access` must not fall back to the process environment.
 #[must_use]
 pub fn resolve_access(source_config: &Value) -> GraphicAudioAccess {
     source_config
         .get("access")
-        .and_then(|v| v.as_str())
+        .and_then(|value| value.as_str())
         .and_then(GraphicAudioAccess::parse)
-        .or_else(GraphicAudioAccess::from_env)
         .unwrap_or_default()
 }
 

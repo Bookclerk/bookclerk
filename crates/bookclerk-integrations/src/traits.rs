@@ -69,6 +69,15 @@ pub trait Integration: Send + Sync {
         self.id()
     }
 
+    /// Plugin instance that owns this deployed integration.
+    ///
+    /// `None` for transitional startup and in-crate adapters. Two deployed
+    /// instances of one key each return their own id. Reload keeps a session
+    /// only when this id is a present deployment.
+    fn plugin_instance_id(&self) -> Option<&str> {
+        None
+    }
+
     /// Human-facing name for portal / CLI (defaults to [`Self::id`]).
     fn display_name(&self) -> &str {
         self.id()

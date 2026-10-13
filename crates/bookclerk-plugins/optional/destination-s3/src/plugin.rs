@@ -54,6 +54,55 @@ impl S3Destination {
         let backend = backend_from_ctx(&parsed).await?;
         Ok(Self { backend })
     }
+
+    /// [`Self::from_config`] plus credentials from `SECRETS` when `CONFIG` omits them.
+    ///
+    /// The host keeps access keys out of `CONFIG` and the spawn config table.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid_params when the payload is not an S3 context, or internal
+    /// when the client cannot be constructed.
+    pub async fn from_bindings(bindings: &Bindings) -> Result<Self> {
+        let mut parsed: OutputS3ContextDto = bindings
+            .config
+            .json_into()
+            .map_err(|err| PluginError::invalid_params(format!("s3 destination context: {err}")))?;
+        if parsed.credentials.is_none() {
+            parsed.credentials = credentials_from_secrets(&bindings.secrets);
+        }
+        let backend = backend_from_ctx(&parsed).await?;
+        Ok(Self { backend })
+    }
+}
+
+/// Access keys from the `SECRETS` binding. `CONFIG` stays free of them.
+fn credentials_from_secrets(secrets: &ExtensibleConfig) -> Option<S3CredentialsDto> {
+    let value = secrets.json_value().ok()?;
+    let access = secret_text(&value, &["accessKeyId", "access_key_id"]);
+    let secret = secret_text(&value, &["secretAccessKey", "secret_access_key"]);
+    if access.is_empty() || secret.is_empty() {
+        return None;
+    }
+    let token = secret_text(&value, &["sessionToken", "session_token"]);
+    Some(S3CredentialsDto {
+        access_key_id: access,
+        secret_access_key: secret,
+        session_token: (!token.is_empty()).then_some(token),
+    })
+}
+
+/// First non-empty string among `keys`.
+fn secret_text(value: &serde_json::Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(text) = value.get(*key).and_then(serde_json::Value::as_str) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 /// Builds an [`S3Backend`] from the host-injected bucket/region/endpoint context.
@@ -290,9 +339,7 @@ impl PluginWorker for S3Root {
 
     async fn open(&self, _invocation: Invocation, bindings: Bindings) -> Result<Entrypoints> {
         Ok(Entrypoints {
-            storage: Some(Box::new(
-                S3Destination::from_config(&bindings.config).await?,
-            )),
+            storage: Some(Box::new(S3Destination::from_bindings(&bindings).await?)),
             job_runner: Some(Box::new(StreamCopyHandler)),
             ..Entrypoints::default()
         })

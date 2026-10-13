@@ -32,7 +32,10 @@ pub async fn build_acquire_destinations(
     for kind in config.output.enabled_backends() {
         let backend: Box<dyn StorageBackend> = match kind {
             OutputBackendKind::Local => {
-                if let Some(ext) = destinations.local() {
+                if let Some(ext) = destinations
+                    .require_local()
+                    .map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?
+                {
                     ext.clone_box()
                 } else {
                     let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
@@ -43,7 +46,10 @@ pub async fn build_acquire_destinations(
                 }
             }
             OutputBackendKind::S3 => {
-                if let Some(ext) = destinations.s3() {
+                if let Some(ext) = destinations
+                    .require_s3()
+                    .map_err(|err| AcquireError::Other(anyhow::anyhow!(err)))?
+                {
                     ext.clone_box()
                 } else {
                     let prefix = normalize_storage_prefix(config.output.s3.prefix.trim());
@@ -86,7 +92,10 @@ pub async fn build_storage_backend(
     for kind in config.output.enabled_backends() {
         match kind {
             OutputBackendKind::Local => {
-                if let Some(ext) = destinations.local() {
+                if let Some(ext) = destinations
+                    .require_local()
+                    .map_err(StorageError::InvalidKey)?
+                {
                     backends.push(ext.clone_box());
                 } else {
                     let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
@@ -97,7 +106,10 @@ pub async fn build_storage_backend(
                 }
             }
             OutputBackendKind::S3 => {
-                if let Some(ext) = destinations.s3() {
+                if let Some(ext) = destinations
+                    .require_s3()
+                    .map_err(StorageError::InvalidKey)?
+                {
                     backends.push(ext.clone_box());
                 } else {
                     let prefix = normalize_storage_prefix(config.output.s3.prefix.trim());

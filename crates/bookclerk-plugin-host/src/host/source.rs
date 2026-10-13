@@ -18,7 +18,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
-use bookclerk_plugin_sdk::{BindingValues, ExtensibleConfig, PRODUCT_API_VERSION};
+use bookclerk_plugin_sdk::{ExtensibleConfig, PRODUCT_API_VERSION};
 use bookclerk_source::abi::{
     self as source_abi, account_credentials, credentials_from_bytes, credentials_to_bytes,
     expand_candidates_params, scan_book_to_new, scan_summary_from_abi, DEFAULT_EXTERNAL_SORT_KEY,
@@ -45,6 +45,10 @@ pub struct ExternalSource {
     /// Cap'n Proto session (never given `library.db`); opened once with the
     /// granted plugin config table as the `CONFIG` binding.
     session: Arc<PluginSession>,
+    /// `CONFIG` payload passed to `PluginWorker.open`.
+    opened_config: ExtensibleConfig,
+    /// `SECRETS` payload passed to `PluginWorker.open`.
+    opened_secrets: ExtensibleConfig,
     /// Operator-facing storefront name from `describe()` or the manifest.
     display_name: String,
     /// UI brand colors and icon from `describe()`, or a slate fallback.
@@ -61,6 +65,8 @@ pub struct ExternalSource {
     plugin_data_dir: PathBuf,
     /// `[sources.<id>]` table from main config (also delivered in the spawn config).
     source_config: Value,
+    /// Deployment instance id. Unset for transitional, non-deployed spawns.
+    plugin_instance_id: Option<String>,
 }
 
 impl ExternalSource {
@@ -91,19 +97,51 @@ impl ExternalSource {
             )));
         }
         let table = crate::settings_table(config, plugin);
-        let config_json = toml_to_json(&toml::Value::Table(table));
+        let transitional = toml_to_json(&toml::Value::Table(table));
+        let prepared = crate::instance_bindings::prepare_open_bindings_selecting(
+            services.event_outbox.as_ref(),
+            &config.paths().files_dir,
+            plugin,
+            transitional,
+            services.selected_instance_id.as_deref(),
+        )
+        .await?;
+        Self::spawn_prepared(plugin, config, services, prepared).await
+    }
+
+    /// Spawn with bindings the deployment reconciler already resolved.
+    ///
+    /// Does not look up an instance by plugin key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest cannot start or `open` fails.
+    pub(crate) async fn spawn_prepared(
+        plugin: &DiscoveredPlugin,
+        config: &Config,
+        services: SessionServices,
+        prepared: crate::instance_bindings::PreparedOpen,
+    ) -> Result<Self> {
+        if plugin.manifest.api_version != PRODUCT_API_VERSION {
+            return Err(crate::PluginError::message(format!(
+                "plugin `{}` api_version {} is not supported",
+                plugin.manifest.id, plugin.manifest.api_version
+            )));
+        }
+        let opened_config = prepared.bindings.config.clone();
+        let opened_secrets = prepared.bindings.secrets.clone();
         let session = Arc::new(
             PluginSession::spawn_with(
                 plugin,
                 config,
-                config_json.clone(),
+                prepared.spawn_config_table.clone(),
                 HOST_SHARED_ACCOUNT,
                 &[],
                 services,
             )
             .await?,
         );
-        let source_config = crate::spawn_config_for_grant(session.grant(), config_json);
+        let source_config = prepared.granted_config;
         let describe = session.describe_snapshot();
         let display_name = describe
             .display_name
@@ -134,13 +172,11 @@ impl ExternalSource {
             describe.sort_key
         };
         let plugin_data_dir = plugin_data_dir(config, plugin)?;
-        session
-            .open(BindingValues::config(ExtensibleConfig::json(
-                &source_config,
-            )))
-            .await?;
+        session.open(prepared.bindings).await?;
         Ok(Self {
             session,
+            opened_config,
+            opened_secrets,
             display_name,
             brand,
             auth_mode,
@@ -149,7 +185,58 @@ impl ExternalSource {
             sort_key,
             plugin_data_dir,
             source_config,
+            plugin_instance_id: None,
         })
+    }
+
+    /// Records the deployment instance id used as this source's registry address.
+    pub(crate) fn bind_plugin_instance(&mut self, plugin_instance_id: &str) {
+        self.plugin_instance_id = Some(plugin_instance_id.to_string());
+    }
+
+    /// Session opened for this storefront.
+    #[must_use]
+    pub(crate) fn session(&self) -> &Arc<PluginSession> {
+        &self.session
+    }
+
+    /// `CONFIG` JSON passed to `open`.
+    #[must_use]
+    pub(crate) fn opened_config(&self) -> &ExtensibleConfig {
+        &self.opened_config
+    }
+
+    /// `SECRETS` JSON passed to `open`.
+    #[must_use]
+    pub(crate) fn opened_secrets(&self) -> &ExtensibleConfig {
+        &self.opened_secrets
+    }
+
+    /// Storefront health RPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the guest has no storefront or health reports not ok.
+    pub async fn check_health(&self) -> Result<()> {
+        let ok = self
+            .session
+            .storefront(|src| async move { src.health().await })
+            .await?;
+        if ok.ok {
+            Ok(())
+        } else {
+            Err(crate::PluginError::message(if ok.detail.is_empty() {
+                "health failed".to_string()
+            } else {
+                ok.detail
+            }))
+        }
+    }
+
+    /// Native guest pid, when the session recorded one.
+    #[must_use]
+    pub fn guest_pid(&self) -> Option<u32> {
+        self.session.guest_pid()
     }
 
     /// Runs one typed content-source method through the plugin session.
@@ -260,6 +347,26 @@ pub async fn load_external_sources(
     registry: &mut SourceRegistry,
     services: &SessionServices,
 ) -> Result<()> {
+    load_external_sources_skipping(
+        config,
+        registry,
+        services,
+        &std::collections::BTreeSet::new(),
+    )
+    .await
+}
+
+/// [`load_external_sources`] that leaves `skip` plugin keys to the deployment reconciler.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn load_external_sources_skipping(
+    config: &Config,
+    registry: &mut SourceRegistry,
+    services: &SessionServices,
+    skip: &std::collections::BTreeSet<String>,
+) -> Result<()> {
     let plugins = crate::discover_plugins(config)?;
     let storefronts: Vec<_> = plugins
         .into_iter()
@@ -281,6 +388,14 @@ pub async fn load_external_sources(
         let Some(plugin) = crate::resolve_plugin_slot(&storefronts, spec)? else {
             continue;
         };
+        if skip.contains(plugin.plugin_key().canonical()) {
+            tracing::info!(
+                plugin_key = %plugin.plugin_key().canonical(),
+                alias = %plugin.manifest.id,
+                "skipping external source owned by a local deployment"
+            );
+            continue;
+        }
         if registry.get(plugin.plugin_key().canonical()).is_some() {
             tracing::debug!(
                 plugin_key = %plugin.plugin_key().canonical(),
@@ -300,6 +415,9 @@ pub async fn load_external_sources(
                 registry.register(Arc::new(s));
             }
             Err(err) => {
+                if err.is_instance_selection() {
+                    return Err(err);
+                }
                 tracing::warn!(id = %plugin.manifest.id, %err, "skipping external source plugin");
             }
         }
@@ -315,6 +433,14 @@ impl ContentSource for ExternalSource {
 
     fn plugin_key(&self) -> &str {
         self.session.id()
+    }
+
+    fn plugin_instance_id(&self) -> Option<&str> {
+        self.plugin_instance_id.as_deref()
+    }
+
+    fn guest_pid(&self) -> Option<u32> {
+        self.session.guest_pid()
     }
 
     fn display_name(&self) -> &str {
