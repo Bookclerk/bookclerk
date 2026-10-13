@@ -83,12 +83,22 @@ pub async fn run(
                 from.display(),
                 dest.display()
             ));
+            // Imported accounts and books belong to the Audible plugin, so it
+            // has to be installed before a Libation library can be imported.
+            let plugins = bookclerk_plugin_host::discover_plugins(config)?;
+            let audible =
+                bookclerk_plugin_host::resolve_plugin_ref(&plugins, "audible").map_err(|err| {
+                    anyhow::anyhow!(
+                        "install the Audible plugin before importing a Libation library: {err}"
+                    )
+                })?;
             let summary = migrate(MigrateOptions {
                 source: from,
                 dest_files_dir: dest,
                 force,
                 skip_auth,
                 dry_run,
+                audible_plugin_key: audible.plugin_key().canonical().to_string(),
             })
             .await?;
             emit(format, &summary, || {

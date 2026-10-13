@@ -758,6 +758,7 @@ fn validate_desired(desired: &str) -> Result<()> {
     }
 }
 
+/// Rejects an empty or oversized host id.
 fn validate_host_id(host_id: &str) -> Result<()> {
     if host_id.is_empty() || host_id.len() > 128 || host_id.contains('\u{0000}') {
         return Err(invalid("host id must be 1..=128 characters"));

@@ -124,8 +124,9 @@ pub use host::{
     DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
 };
 pub use host_control_plane::{
-    allow_credential_login, open_host_control_plane, open_host_control_plane_with_store,
-    refresh_present, HostControlPlane, PresentDeployment,
+    allow_credential_login, enroll_host, open_host_control_plane,
+    open_host_control_plane_with_store, refresh_present, HostControlPlane, HostEnrollment,
+    PresentDeployment,
 };
 pub use install_preflight::{
     configured_alias_occupants, install_from_manifest_with_configured_aliases,

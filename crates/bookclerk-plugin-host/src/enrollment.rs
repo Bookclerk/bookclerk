@@ -180,6 +180,7 @@ fn manifest_sha256(plugin: &DiscoveredPlugin) -> Result<String> {
     Ok(hex::encode(Sha256::digest(text)))
 }
 
+/// Maps a library error onto the host error type.
 fn library_err(err: LibraryError) -> crate::PluginError {
     crate::PluginError::message(err.to_string())
 }

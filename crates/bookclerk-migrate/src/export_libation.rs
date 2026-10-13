@@ -381,7 +381,14 @@ mod tests {
             .unwrap();
         store
             .store
-            .upsert_account("reader@example.com", "us", Some("Reader"), true, "audible")
+            .upsert_account(
+                "audible",
+                "reader@example.com",
+                "us",
+                Some("Reader"),
+                true,
+                "audible",
+            )
             .await
             .unwrap();
         drop(store);
@@ -420,7 +427,7 @@ mod tests {
             .unwrap();
         store
             .store
-            .upsert_account("reader@example.com", "us", None, true, "audible")
+            .upsert_account("audible", "reader@example.com", "us", None, true, "audible")
             .await
             .unwrap();
         drop(store);

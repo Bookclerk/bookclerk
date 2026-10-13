@@ -35,8 +35,8 @@ pub use documents::{
     PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use identity::{
-    current_process_incarnation, host_identity_path, load_or_create_host_identity, HostIdentity,
-    HostRecord, HOST_IDENTITY_FILE,
+    current_process_incarnation, host_identity_path, list_host_ids, list_hosts, load_host,
+    load_or_create_host_identity, HostIdentity, HostRecord, HOST_IDENTITY_FILE,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,

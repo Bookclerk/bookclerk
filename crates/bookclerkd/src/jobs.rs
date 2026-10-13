@@ -47,6 +47,7 @@ fn enqueue_spec(
     kind: JobKind,
     account: Option<String>,
     title: Option<String>,
+    plugin_instance_id: Option<String>,
     trigger: JobTrigger,
     max_pending: i64,
     max_attempts: i64,
@@ -56,6 +57,9 @@ fn enqueue_spec(
         payload: JobPayload {
             account,
             title,
+            plugin_instance_id: plugin_instance_id
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty()),
             trigger,
             ..Default::default()
         },
@@ -107,9 +111,13 @@ async fn queue_limits(state: &AppState) -> (i64, i64) {
 }
 
 /// Admit a library scan. Does not spawn a per-request task.
+///
+/// `plugin_instance_id` pins the scan to one deployed instance; otherwise
+/// every plugin is scanned once through its default instance.
 pub async fn enqueue_scan(
     state: Arc<AppState>,
     account: Option<String>,
+    plugin_instance_id: Option<String>,
     trigger: JobTrigger,
 ) -> anyhow::Result<AdmitJob> {
     let (max_pending, max_attempts) = queue_limits(&state).await;
@@ -119,6 +127,7 @@ pub async fn enqueue_scan(
             JobKind::Scan,
             account,
             None,
+            plugin_instance_id,
             trigger,
             max_pending,
             max_attempts,
@@ -128,10 +137,14 @@ pub async fn enqueue_scan(
 }
 
 /// Admit acquire for pending titles (optional title / account filter).
+///
+/// `plugin_instance_id` pins every fetch to one deployed instance of the
+/// book's plugin; otherwise the plugin's default instance is used.
 pub async fn enqueue_acquire(
     state: Arc<AppState>,
     title: Option<String>,
     account: Option<String>,
+    plugin_instance_id: Option<String>,
     trigger: JobTrigger,
 ) -> anyhow::Result<AdmitJob> {
     let (max_pending, max_attempts) = queue_limits(&state).await;
@@ -141,6 +154,7 @@ pub async fn enqueue_acquire(
             JobKind::Acquire,
             account,
             title,
+            plugin_instance_id,
             trigger,
             max_pending,
             max_attempts,
@@ -159,6 +173,7 @@ pub async fn enqueue_listen_sync(
         &state,
         enqueue_spec(
             JobKind::ListenSync,
+            None,
             None,
             None,
             trigger,
@@ -395,9 +410,13 @@ pub async fn run_plugin_copy(
 ///
 /// Cancel is checked between sources. An in-flight source page fetch finishes
 /// before the next source starts.
+///
+/// `plugin_instance_id` pins the scan to one deployed instance; otherwise
+/// every plugin is scanned once through its default instance.
 pub async fn run_scan(
     state: &AppState,
     account: Option<&str>,
+    plugin_instance_id: Option<&str>,
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
     let started = std::time::Instant::now();
@@ -409,19 +428,21 @@ pub async fn run_scan(
     if job_cancelled(ctx, &library).await {
         anyhow::bail!("cancelled");
     }
-    let registry = registry_for_job(state).await?;
-    let summary = registry
-        .scan_all(
-            &library,
-            ScanOptions {
-                accounts: account.map(|a| vec![a.to_string()]).unwrap_or_default(),
-                page_size: 50,
-                import_episodes: cfg.library.import_episodes,
-                import_plus_titles: cfg.library.import_plus_titles,
-                cancel: ctx.map(|c| c.cancel.clone()),
-            },
-        )
-        .await?;
+    let registry = registry_for_job(state).await;
+    let options = ScanOptions {
+        accounts: account.map(|a| vec![a.to_string()]).unwrap_or_default(),
+        page_size: 50,
+        import_episodes: cfg.library.import_episodes,
+        import_plus_titles: cfg.library.import_plus_titles,
+        cancel: ctx.map(|c| c.cancel.clone()),
+    };
+    let summary = match plugin_instance_id {
+        Some(instance) => {
+            let source = registry.require_routed(instance, Some(instance))?;
+            registry.scan_one(&library, source, options).await?
+        }
+        None => registry.scan_all(&library, options).await?,
+    };
     info!(
         account = account.unwrap_or("*"),
         accounts = summary.accounts,
@@ -460,10 +481,14 @@ pub async fn run_scan(
 /// Acquire pending titles synchronously.
 ///
 /// When `ctx` is set, progress is fenced and cancel is checked between titles.
+///
+/// `plugin_instance_id` pins every fetch to that deployed instance of the
+/// book's plugin; otherwise the plugin's default instance is used.
 pub async fn run_acquire(
     state: &AppState,
     title: Option<&str>,
     account: Option<&str>,
+    plugin_instance_id: Option<&str>,
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
     let started = std::time::Instant::now();
@@ -472,15 +497,11 @@ pub async fn run_acquire(
     let paths = cfg.paths();
     paths.ensure_dirs()?;
     let library = state.library.read().await.clone();
-    let destinations = bookclerk_plugin_host::build_acquire_destinations(
-        &cfg,
-        Some(&library),
-        &*state.destinations.read().await,
-    )
-    .await?;
+    let destinations =
+        bookclerk_plugin_host::build_acquire_destinations(&cfg, &*state.destinations.read().await)?;
     let storage = destinations.listing_backend()?;
     let options = DownloadOptions::from(&cfg);
-    let registry = registry_for_job(state).await?;
+    let registry = registry_for_job(state).await;
 
     let mut index = bookclerk_acquire::scan_storage(
         &library,
@@ -559,7 +580,7 @@ pub async fn run_acquire(
             }
         }
         let content_source = registry
-            .require(&book.source)
+            .require_routed(&book.plugin_key, plugin_instance_id)
             .map_err(|err| anyhow::anyhow!("{err} (title {})", book.asin_or_isbn()))?;
         let req = AcquireRequest {
             asin: book.download_product_id().to_string(),
@@ -794,7 +815,7 @@ mod tests {
         content_kind: &str,
     ) -> BookRecord {
         store
-            .upsert_account("user-1", "us", None, true, "audible")
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
             .await
             .unwrap();
         let mut new_book = NewBook::minimal("B00TEST", "user-1", "us", "Test");

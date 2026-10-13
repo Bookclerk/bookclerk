@@ -4020,7 +4020,14 @@ pub(crate) mod tests {
         // Portal-scoped library: member has no links → empty (not full library).
         // Seed a book on an unlinked account; impersonation should hide it.
         let _ = library
-            .upsert_account("acct-hidden", "us", Some("Hidden"), true, "audible")
+            .upsert_account(
+                "audible",
+                "acct-hidden",
+                "us",
+                Some("Hidden"),
+                true,
+                "audible",
+            )
             .await;
         let books = app
             .clone()

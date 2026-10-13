@@ -644,6 +644,10 @@ pub struct LiveDeploymentRuntime {
     guests: std::sync::Mutex<HashMap<String, TrackedGuest>>,
     /// Lifecycle context for integrations this process starts.
     integration_context: std::sync::Mutex<bookclerk_integrations::IntegrationContext>,
+    /// Serializes reconcile passes: the periodic tick and an on-demand pass
+    /// after a config reload must not install or spawn the same deployment
+    /// twice.
+    reconcile_lock: tokio::sync::Mutex<()>,
 }
 
 impl LiveDeploymentRuntime {
@@ -666,7 +670,14 @@ impl LiveDeploymentRuntime {
             integration_context: std::sync::Mutex::new(
                 bookclerk_integrations::IntegrationContext::default(),
             ),
+            reconcile_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Lock a caller holds for the duration of one reconcile pass.
+    #[must_use]
+    pub fn reconcile_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.reconcile_lock
     }
 
     /// Stores the daemon lifecycle context used when a deployment starts an integration.

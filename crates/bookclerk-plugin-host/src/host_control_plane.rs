@@ -86,20 +86,11 @@ pub async fn open_host_control_plane_with_store(
     database_registry: DatabaseRegistry,
     store: LibraryStore,
 ) -> Result<HostControlPlane> {
-    let mut config = config.clone();
-    let paths = config.paths().clone();
-    let scratch_dir = config.download_cache_dir();
-    let session = bootstrap_control_plane(
-        &store,
-        &paths.files_dir,
-        &scratch_dir,
-        config.auth_password().as_deref(),
-        &config.events,
-    )
-    .await
-    .map_err(|err| crate::PluginError::message(err.to_string()))?;
-    overlay_events(&mut config, &session.events, &session.cluster_id);
-    let enrolled = enroll_local_plugins(&store, &config, &session.host.host_id).await?;
+    let HostEnrollment {
+        config,
+        session,
+        enrolled,
+    } = enroll_host(config, &store).await?;
     let (present, default_instances) =
         present_deployments(&store, &session.host.host_id, &enrolled).await?;
     Ok(HostControlPlane {
@@ -110,6 +101,48 @@ pub async fn open_host_control_plane_with_store(
         enrolled,
         present,
         default_instances,
+    })
+}
+
+/// Result of [`enroll_host`]: the bootstrap half of a host control plane.
+pub struct HostEnrollment {
+    /// Bootstrap config with the database-backed domains overlaid.
+    pub config: Config,
+    /// Host identity, cluster id, and core documents.
+    pub session: ControlPlaneSession,
+    /// Plugins enrolled on this pass.
+    pub enrolled: Vec<EnrolledPlugin>,
+}
+
+/// Bootstraps the control plane on an open library and enrolls every local
+/// plugin, without loading any guest.
+///
+/// The daemon's config reload uses this: guests stay with the deployment
+/// reconciler, which picks up the enrolled deployments on its next pass.
+///
+/// # Errors
+///
+/// Returns an error when the secret root or host identity cannot be
+/// established, or enrollment fails as a whole.
+pub async fn enroll_host(config: &Config, store: &LibraryStore) -> Result<HostEnrollment> {
+    let mut config = config.clone();
+    let paths = config.paths().clone();
+    let scratch_dir = config.download_cache_dir();
+    let session = bootstrap_control_plane(
+        store,
+        &paths.files_dir,
+        &scratch_dir,
+        config.auth_password().as_deref(),
+        &config.events,
+    )
+    .await
+    .map_err(|err| crate::PluginError::message(err.to_string()))?;
+    overlay_events(&mut config, &session.events, &session.cluster_id);
+    let enrolled = enroll_local_plugins(store, &config, &session.host.host_id).await?;
+    Ok(HostEnrollment {
+        config,
+        session,
+        enrolled,
     })
 }
 
@@ -346,6 +379,7 @@ pub async fn refresh_present(
     present_deployments(store, host_id, enrolled).await
 }
 
+/// Maps a library error onto the host error type.
 fn library_err(err: bookclerk_library::LibraryError) -> crate::PluginError {
     crate::PluginError::message(err.to_string())
 }

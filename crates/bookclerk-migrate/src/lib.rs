@@ -50,6 +50,10 @@ pub struct MigrateOptions {
     pub skip_auth: bool,
     /// Report only; do not write.
     pub dry_run: bool,
+    /// Canonical PluginKey of the Audible storefront plugin. Imported
+    /// accounts and books are owned by that plugin; the caller resolves it
+    /// from the installed plugin (`bookclerk plugins list`).
+    pub audible_plugin_key: String,
 }
 
 /// Summary of a migration run.
@@ -132,6 +136,7 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
         let acct = import_accounts(
             accounts_path,
             &dest_store.store,
+            &opts.audible_plugin_key,
             opts.force,
             opts.skip_auth,
             opts.dry_run,
@@ -162,6 +167,7 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
         let lib = import_library_db(
             db_path,
             &dest_store.store,
+            &opts.audible_plugin_key,
             &audio_paths,
             books_root.as_path(),
             &account_id_map,

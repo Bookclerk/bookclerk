@@ -373,6 +373,7 @@ impl LibraryStore {
     }
 
     /// Inserts or updates a store account; optionally overwrites `scan_enabled`.
+    #[allow(clippy::too_many_arguments)]
     async fn upsert_account_inner(
         &self,
         plugin_key: &str,
@@ -534,6 +535,7 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
+    #[allow(clippy::too_many_arguments)]
     pub async fn reconcile_account_id(
         &self,
         plugin_key: &str,

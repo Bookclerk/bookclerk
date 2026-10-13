@@ -118,13 +118,20 @@ impl JobTransport for InProcessJobTransport {
         );
         match cmd.kind {
             JobKind::Scan => {
-                run_scan(&self.state, cmd.payload.account.as_deref(), Some(&ctx)).await
+                run_scan(
+                    &self.state,
+                    cmd.payload.account.as_deref(),
+                    cmd.payload.plugin_instance_id.as_deref(),
+                    Some(&ctx),
+                )
+                .await
             }
             JobKind::Acquire => {
                 run_acquire(
                     &self.state,
                     cmd.payload.title.as_deref(),
                     cmd.payload.account.as_deref(),
+                    cmd.payload.plugin_instance_id.as_deref(),
                     Some(&ctx),
                 )
                 .await

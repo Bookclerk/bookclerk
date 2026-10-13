@@ -152,6 +152,7 @@ pub async fn require_plugin_schema(
     })
 }
 
+/// Decodes one `plugin_schemas` row, rejecting a schema version this binary does not apply.
 fn schema_from_model(row: plugin_schemas::Model) -> Result<PinnedPluginSchema> {
     if row.schema_version != i64::from(SETTINGS_SCHEMA_VERSION) {
         return Err(LibraryError::Schema(format!(

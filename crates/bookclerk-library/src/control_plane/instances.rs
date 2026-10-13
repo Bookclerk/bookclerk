@@ -465,6 +465,7 @@ fn validate_display_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Rejects an empty or oversized plugin key.
 fn validate_plugin_key(plugin_key: &str) -> Result<()> {
     if plugin_key.is_empty() || plugin_key.len() > 512 || plugin_key.contains('\u{0000}') {
         return Err(LibraryError::Other(anyhow::anyhow!(

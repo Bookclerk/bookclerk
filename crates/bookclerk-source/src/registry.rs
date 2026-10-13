@@ -231,9 +231,35 @@ impl SourceRegistry {
     ///
     /// Returns an error when the operation fails.
     pub async fn scan_all(&self, library: &LibraryStore, opts: ScanOptions) -> Result<ScanSummary> {
+        self.scan_sources(library, self.routed(), opts).await
+    }
+
+    /// Scan one registered source (a job pinned to a plugin instance).
+    ///
+    /// Account filters apply as in [`Self::scan_all`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scan fails or no account matches.
+    pub async fn scan_one(
+        &self,
+        library: &LibraryStore,
+        source: Arc<dyn ContentSource>,
+        opts: ScanOptions,
+    ) -> Result<ScanSummary> {
+        self.scan_sources(library, vec![source], opts).await
+    }
+
+    /// Scans `sources` in order, merging their summaries.
+    async fn scan_sources(
+        &self,
+        library: &LibraryStore,
+        sources: Vec<Arc<dyn ContentSource>>,
+        opts: ScanOptions,
+    ) -> Result<ScanSummary> {
         let mut total = ScanSummary::default();
         let mut any = false;
-        for source in self.routed() {
+        for source in sources {
             if opts.is_cancelled() {
                 return Err(crate::error::SourceError::Other(anyhow::anyhow!(
                     "cancelled"

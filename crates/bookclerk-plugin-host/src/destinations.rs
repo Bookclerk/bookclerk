@@ -11,10 +11,13 @@ use bookclerk_storage::StorageBackend;
 
 use crate::host::DestinationRegistry;
 
+/// One deployed destination: its kind and a handle on its storage backend.
+type DeployedBackend = (OutputBackendKind, Box<dyn StorageBackend>);
+
 /// Deployed `(kind, backend)` pairs, local first so it is the primary when present.
 fn deployed_backends(
     destinations: &DestinationRegistry,
-) -> std::result::Result<Vec<(OutputBackendKind, Box<dyn StorageBackend>)>, String> {
+) -> std::result::Result<Vec<DeployedBackend>, String> {
     let mut out = Vec::new();
     if let Some(local) = destinations.require_local()? {
         out.push((OutputBackendKind::Local, local.clone_box()));

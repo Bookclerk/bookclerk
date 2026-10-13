@@ -2204,6 +2204,7 @@ dependencies = [
  "bookclerk-integrations",
  "bookclerk-library",
  "bookclerk-media",
+ "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
