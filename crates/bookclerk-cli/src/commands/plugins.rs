@@ -2037,7 +2037,9 @@ async fn run_plugin_config(
                 .map(|(key, value)| (key.clone(), setting_value_json(value)))
                 .collect();
             let effective = pinned.schema.effective_config(&stored);
-            let secrets: std::collections::BTreeMap<String, bool> = pinned
+            // Which declared `secret` keys have a sealed value. Holds key
+            // names and a presence flag only; no ciphertext or plaintext.
+            let sealed_presence: std::collections::BTreeMap<String, bool> = pinned
                 .schema
                 .secret_entries()
                 .map(|spec| {
@@ -2050,7 +2052,7 @@ async fn run_plugin_config(
                 "plugin_key": instance.plugin_key,
                 "revision": document.revision,
                 "settings": effective.config,
-                "secrets": secrets,
+                "secrets": sealed_presence,
                 "missing_required": effective.missing,
                 "schema": pinned.schema.settings,
             });
@@ -2071,7 +2073,7 @@ async fn run_plugin_config(
                     };
                     println!("{key} = {shown}{origin}");
                 }
-                for (key, set) in &secrets {
+                for (key, set) in &sealed_presence {
                     println!("{key} = <secret {}>", if *set { "set" } else { "unset" });
                 }
                 for key in &effective.missing {
