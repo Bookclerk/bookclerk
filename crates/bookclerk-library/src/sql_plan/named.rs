@@ -4547,14 +4547,14 @@ mod tests {
         migrate(&conn);
         let now = "2024-06-01T00:00:00Z";
         conn.execute(
-            "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-             VALUES ('user-1', 'us', 'audible', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO accounts (plugin_instance_id, account_id, marketplace, source, created_at, updated_at) \
+             VALUES ('audible', 'user-1', 'us', 'audible', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO books (uuid, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('b1', 'audible', 'user-1', 'B00X', 'us', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
+            "INSERT INTO books (uuid, source, plugin_instance_id, account_id, product_id, marketplace, title, created_at, updated_at) \
+             VALUES ('b1', 'audible', 'audible', 'user-1', 'B00X', 'us', 'T', '2024-06-01T00:00:00Z', '2024-06-01T00:00:00Z')",
             [],
         )
         .unwrap();

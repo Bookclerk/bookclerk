@@ -6,9 +6,11 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "ignored_titles")]
 pub struct Model {
-    /// Content-source plugin id (`audible`, `libro`, …).
-    #[sea_orm(primary_key, auto_increment = false)]
+    /// Content-source plugin id (`audible`, `libro`, …) for display.
     pub source: String,
+    /// Plugin instance that owns this row.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub plugin_instance_id: String,
     /// Store or operator account id this row belongs to.
     #[sea_orm(primary_key, auto_increment = false)]
     pub account_id: String,

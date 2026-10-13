@@ -32,7 +32,8 @@ const BOOK_PAGE_CHUNK: usize = 64;
 ///
 /// Named so a later column added at the end of the table cannot shift this
 /// positional map. The list matches the catalog row the handler returns.
-const BOOK_PAGE_COLUMNS: &str = "id, uuid, source, account_id, product_id, asin, isbn, \
+const BOOK_PAGE_COLUMNS: &str =
+    "id, uuid, source, plugin_instance_id, account_id, product_id, asin, isbn, \
 marketplace, title, authors, narrators, series, series_index, series_asin, acquire_status, \
 storage_key, error_message, purchased_at, tags, rating_overall, rating_performance, \
 rating_story, is_finished, pdf_status, pdf_storage_key, publisher, length_minutes, \
@@ -611,6 +612,7 @@ fn book_from_row(row: &DbRow) -> Result<BookRecord> {
         id: cells.int()?,
         uuid: cells.text()?,
         source: cells.text()?,
+        plugin_instance_id: cells.text()?,
         account_id: cells.text()?,
         product_id: cells.text()?,
         asin: cells.text_opt()?,
@@ -1185,7 +1187,7 @@ mod tests {
             let end = (start + chunk).min(count);
             let mut sql = String::from(
                 "INSERT INTO books (
-                    uuid, source, account_id, product_id, asin, marketplace, title,
+                    uuid, source, plugin_instance_id, account_id, product_id, asin, marketplace, title,
                     acquire_status, pdf_status, is_finished, is_abridged, content_kind,
                     created_at, updated_at
                 ) VALUES ",
@@ -1195,7 +1197,7 @@ mod tests {
                 if i != start {
                     sql.push_str(", ");
                 }
-                sql.push_str("(?, 'audible', ?, ?, ?, 'us', ?, ?, 'not_acquired', 0, 0, 'book', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
+                sql.push_str("(?, 'audible', 'audible', ?, ?, ?, 'us', ?, ?, 'not_acquired', 0, 0, 'book', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
                 let account = if i < 8_000 {
                     "envelope-a"
                 } else {
@@ -1452,6 +1454,7 @@ mod tests {
             ("id", bookclerk_plugin_abi::DbType::Int64),
             ("uuid", bookclerk_plugin_abi::DbType::Text),
             ("source", bookclerk_plugin_abi::DbType::Text),
+            ("plugin_instance_id", bookclerk_plugin_abi::DbType::Text),
             ("account_id", bookclerk_plugin_abi::DbType::Text),
             ("product_id", bookclerk_plugin_abi::DbType::Text),
             ("asin", bookclerk_plugin_abi::DbType::Text),
@@ -1503,6 +1506,7 @@ mod tests {
             values: vec![
                 DbValue::Int64(10_000),
                 text("01234567-89ab-cdef-0123-456789abcdef"),
+                text("audible"),
                 text("audible"),
                 text("envelope-a"),
                 text("B09999"),

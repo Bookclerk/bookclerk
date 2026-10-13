@@ -20,6 +20,8 @@ pub struct Model {
     pub account_type: String,
     /// Store or operator account id this row belongs to.
     pub account_id: Option<String>,
+    /// Owning plugin instance for source secrets; empty for non-source secrets.
+    pub plugin_instance_id: String,
     /// Human-readable or logical name for this row.
     pub name: String,
     /// Sealing format tag (`sealed-v1`, legacy `json-encrypted`, …).

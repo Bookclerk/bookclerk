@@ -11,6 +11,8 @@ pub struct Model {
     pub id: i64,
     /// Foreign key to `portal_identities.id`.
     pub identity_id: i64,
+    /// Plugin instance that owns the linked account.
+    pub plugin_instance_id: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
     /// Content-source plugin id (`audible`, `libro`, …).

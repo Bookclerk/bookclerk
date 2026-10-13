@@ -7,14 +7,16 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_id TEXT NOT NULL UNIQUE,
+        plugin_instance_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
         marketplace TEXT NOT NULL,
         label TEXT,
         scan_enabled INTEGER NOT NULL DEFAULT 1,
         source TEXT NOT NULL DEFAULT 'audible',
         connection_status TEXT NOT NULL DEFAULT 'active',
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        UNIQUE(plugin_instance_id, account_id)
     )",
     ),
     MigrationOp::Schema(
@@ -22,6 +24,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         uuid TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
         account_id TEXT NOT NULL,
         product_id TEXT NOT NULL,
         asin TEXT,
@@ -60,8 +63,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         enrich_updated_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        UNIQUE(source, account_id, product_id),
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+        UNIQUE(plugin_instance_id, account_id, product_id),
+        FOREIGN KEY(plugin_instance_id, account_id) REFERENCES accounts(plugin_instance_id, account_id) ON DELETE CASCADE
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_uuid ON books(uuid)"),
@@ -104,12 +107,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS ignored_titles (
         source TEXT NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
         account_id TEXT NOT NULL,
         product_id TEXT NOT NULL,
         reason TEXT,
         created_at TEXT NOT NULL,
-        PRIMARY KEY (source, account_id, product_id),
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+        PRIMARY KEY (plugin_instance_id, account_id, product_id),
+        FOREIGN KEY(plugin_instance_id, account_id) REFERENCES accounts(plugin_instance_id, account_id) ON DELETE CASCADE
     )",
     ),
     MigrationOp::Schema(
@@ -227,19 +231,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS account_links (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         identity_id INTEGER NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
         account_id TEXT NOT NULL,
         source TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        UNIQUE(identity_id, account_id),
+        UNIQUE(identity_id, plugin_instance_id, account_id),
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE CASCADE,
-        FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+        FOREIGN KEY(plugin_instance_id, account_id) REFERENCES accounts(plugin_instance_id, account_id) ON DELETE CASCADE
     )",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_account_links_account ON account_links(account_id)",
     ),
     MigrationOp::Schema(
-        r"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(account_id)",
+        r"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(plugin_instance_id, account_id)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS works (
@@ -423,6 +428,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         provider TEXT,
         account_type TEXT NOT NULL DEFAULT 'integration',
         account_id TEXT,
+        plugin_instance_id TEXT NOT NULL DEFAULT '',
         name TEXT NOT NULL,
         format TEXT NOT NULL DEFAULT 'json',
         ciphertext BLOB NOT NULL,
@@ -435,7 +441,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         cipher_nonce BLOB,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        UNIQUE(kind, provider, account_type, account_id, name)
+        UNIQUE(kind, provider, account_type, account_id, plugin_instance_id, name)
     )",
     ),
     MigrationOp::Schema(

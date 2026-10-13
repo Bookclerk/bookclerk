@@ -9,8 +9,9 @@ pub struct Model {
     /// Surrogate primary key assigned by the database.
     #[sea_orm(primary_key)]
     pub id: i64,
+    /// Plugin instance that owns this account (isolation key with `account_id`).
+    pub plugin_instance_id: String,
     /// Store or operator account id this row belongs to.
-    #[sea_orm(unique)]
     pub account_id: String,
     /// Store marketplace / locale code (for example `us`, `uk`).
     pub marketplace: String,

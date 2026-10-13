@@ -1,8 +1,10 @@
 //! Plugin-scoped library access.
 //!
 //! First-party and third-party content sources share the same boundary:
-//! a [`SourceScope`] can only read/write rows whose `source` / `provider`
-//! matches the plugin id. Host code that needs the full store keeps its own
+//! a [`SourceScope`] can only read/write rows owned by one plugin instance
+//! (`plugin_instance_id`). Two instances of the same storefront key therefore
+//! see disjoint accounts, secrets, and books; `source` / `provider` carry the
+//! plugin key for display only. Host code that needs the full store keeps its own
 //! [`LibraryStore`] handle — this type does not expose one.
 
 use serde_json::Value;
@@ -10,46 +12,61 @@ use serde_json::Value;
 use crate::error::{LibraryError, Result};
 use crate::models::{AccountRecord, BookRecord};
 use crate::secrets::{
-    build_sealed_record, delete_secret, get_secret, list_secrets, secret_account_type, secret_kind,
-    unseal_secret, upsert_secret, EncryptedSecretRecord,
+    build_sealed_record, delete_secret_for_instance, get_secret_for_instance, list_secrets,
+    secret_account_type, secret_kind, unseal_secret, upsert_secret, EncryptedSecretRecord,
 };
 use crate::store::{LibraryStore, NewBook};
 
-/// Host-enforced view of [`LibraryStore`] for one content-source plugin id.
+/// Host-enforced view of [`LibraryStore`] for one deployed content-source plugin instance.
 ///
 /// Both in-repo first-party adapters and external JSON-RPC plugins must use
 /// this type (via a `bookclerk_source::ContentSource` adapter or the external
-/// host adapter). Secrets and books for other plugins are invisible.
+/// host adapter). Secrets, accounts, and books for other instances (even of
+/// the same plugin key) are invisible.
 #[derive(Clone)]
 pub struct SourceScope {
-    /// Full library store; all accessors filter to [`Self::source_id`].
+    /// Full library store; all accessors filter to [`Self::plugin_instance_id`].
     store: LibraryStore,
-    /// Plugin id (`audible`, `libro`, …) that owns rows visible through this scope.
-    source_id: String,
+    /// Plugin instance that owns rows visible through this scope.
+    plugin_instance_id: String,
+    /// Plugin key / storefront id (`audible`, `libro`, …) written to `source` / `provider`.
+    plugin_key: String,
 }
 
 impl std::fmt::Debug for SourceScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SourceScope")
-            .field("source_id", &self.source_id)
+            .field("plugin_instance_id", &self.plugin_instance_id)
+            .field("plugin_key", &self.plugin_key)
             .finish_non_exhaustive()
     }
 }
 
 impl SourceScope {
-    /// Build a scope for `source_id` over `store`.
+    /// Build a scope for one plugin instance over `store`.
     #[must_use]
-    pub fn new(store: LibraryStore, source_id: impl Into<String>) -> Self {
+    pub fn new(
+        store: LibraryStore,
+        plugin_instance_id: impl Into<String>,
+        plugin_key: impl Into<String>,
+    ) -> Self {
         Self {
             store,
-            source_id: source_id.into(),
+            plugin_instance_id: plugin_instance_id.into(),
+            plugin_key: plugin_key.into(),
         }
     }
 
-    /// Stable plugin id (`audible`, `libro`, external `plugin.toml` id, …).
+    /// Plugin key / storefront id for guest-facing labels (`audible`, `libro`, …).
     #[must_use]
     pub fn source_id(&self) -> &str {
-        &self.source_id
+        &self.plugin_key
+    }
+
+    /// Plugin instance whose rows this scope reads and writes.
+    #[must_use]
+    pub fn plugin_instance_id(&self) -> &str {
+        &self.plugin_instance_id
     }
 
     // ── Accounts ─────────────────────────────────────────────────────────────
@@ -67,12 +84,13 @@ impl SourceScope {
         scan_enabled: bool,
     ) -> Result<AccountRecord> {
         self.store
-            .upsert_account(
+            .upsert_account_for_instance(
+                &self.plugin_instance_id,
                 account_id,
                 marketplace,
                 label,
                 scan_enabled,
-                &self.source_id,
+                &self.plugin_key,
             )
             .await
     }
@@ -89,7 +107,13 @@ impl SourceScope {
         label: Option<&str>,
     ) -> Result<AccountRecord> {
         self.store
-            .ensure_account(account_id, marketplace, label, &self.source_id)
+            .ensure_account_for_instance(
+                &self.plugin_instance_id,
+                account_id,
+                marketplace,
+                label,
+                &self.plugin_key,
+            )
             .await
     }
 
@@ -107,7 +131,7 @@ impl SourceScope {
         let all = self.store.list_accounts().await?;
         Ok(all
             .into_iter()
-            .filter(|a| a.source.eq_ignore_ascii_case(&self.source_id))
+            .filter(|a| a.plugin_instance_id == self.plugin_instance_id)
             .collect())
     }
 
@@ -117,14 +141,9 @@ impl SourceScope {
     ///
     /// Returns an error when the operation fails.
     pub async fn get_account(&self, account_id: &str) -> Result<Option<AccountRecord>> {
-        let Some(acct) = self.store.get_account(account_id).await? else {
-            return Ok(None);
-        };
-        if acct.source.eq_ignore_ascii_case(&self.source_id) {
-            Ok(Some(acct))
-        } else {
-            Ok(None)
-        }
+        self.store
+            .get_account_in_instance(&self.plugin_instance_id, account_id)
+            .await
     }
 
     // ── Books ────────────────────────────────────────────────────────────────
@@ -136,7 +155,8 @@ impl SourceScope {
     /// Returns an error when the operation fails.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
         let mut book = book.clone();
-        book.source = self.source_id.clone();
+        book.source = self.plugin_key.clone();
+        book.plugin_instance_id = self.plugin_instance_id.clone();
         self.store.upsert_book(&book).await
     }
 
@@ -153,14 +173,17 @@ impl SourceScope {
         name: &str,
         plaintext: &[u8],
     ) -> Result<()> {
-        let record = build_sealed_record(
+        let mut record = build_sealed_record(
             plaintext,
             secret_kind::SOURCE_AUTH,
-            &self.source_id,
+            &self.plugin_key,
             secret_account_type::INTEGRATION,
             account_id,
             name,
         )?;
+        record
+            .plugin_instance_id
+            .clone_from(&self.plugin_instance_id);
         upsert_secret(self.store.db(), &record).await
     }
 
@@ -179,14 +202,17 @@ impl SourceScope {
         name: &str,
         plaintext: &[u8],
     ) -> Result<()> {
-        let record = build_sealed_record(
+        let mut record = build_sealed_record(
             plaintext,
             kind,
-            &self.source_id,
+            &self.plugin_key,
             secret_account_type::INTEGRATION,
             account_id,
             name,
         )?;
+        record
+            .plugin_instance_id
+            .clone_from(&self.plugin_instance_id);
         upsert_secret(self.store.db(), &record).await
     }
 
@@ -211,12 +237,13 @@ impl SourceScope {
         account_id: &str,
         name: &str,
     ) -> Result<Option<Vec<u8>>> {
-        let record = get_secret(
+        let record = get_secret_for_instance(
             self.store.db(),
             kind,
-            Some(&self.source_id),
+            Some(&self.plugin_key),
             secret_account_type::INTEGRATION,
             Some(account_id),
+            &self.plugin_instance_id,
             name,
         )
         .await?;
@@ -251,12 +278,13 @@ impl SourceScope {
         account_id: &str,
         name: &str,
     ) -> Result<Option<EncryptedSecretRecord>> {
-        get_secret(
+        get_secret_for_instance(
             self.store.db(),
             kind,
-            Some(&self.source_id),
+            Some(&self.plugin_key),
             secret_account_type::INTEGRATION,
             Some(account_id),
+            &self.plugin_instance_id,
             name,
         )
         .await
@@ -272,9 +300,7 @@ impl SourceScope {
         Ok(all
             .into_iter()
             .filter(|r| {
-                r.provider
-                    .as_deref()
-                    .is_some_and(|p| p.eq_ignore_ascii_case(&self.source_id))
+                r.plugin_instance_id == self.plugin_instance_id
                     && r.account_type == secret_account_type::INTEGRATION
             })
             .collect())
@@ -286,12 +312,13 @@ impl SourceScope {
     ///
     /// Returns an error when the operation fails.
     pub async fn delete_source_auth(&self, account_id: &str, name: &str) -> Result<()> {
-        delete_secret(
+        delete_secret_for_instance(
             self.store.db(),
             secret_kind::SOURCE_AUTH,
-            Some(&self.source_id),
+            Some(&self.plugin_key),
             secret_account_type::INTEGRATION,
             Some(account_id),
+            &self.plugin_instance_id,
             name,
         )
         .await
@@ -303,12 +330,13 @@ impl SourceScope {
     ///
     /// Returns an error when the operation fails.
     pub async fn delete_secret(&self, kind: &str, account_id: &str, name: &str) -> Result<()> {
-        delete_secret(
+        delete_secret_for_instance(
             self.store.db(),
             kind,
-            Some(&self.source_id),
+            Some(&self.plugin_key),
             secret_account_type::INTEGRATION,
             Some(account_id),
+            &self.plugin_instance_id,
             name,
         )
         .await
@@ -343,10 +371,24 @@ impl SourceScope {
 }
 
 impl LibraryStore {
-    /// Plugin-scoped view — first-party and third-party sources use this.
+    /// Transitional unscoped view: one implicit instance per storefront key.
+    ///
+    /// The instance id is `plugin_key` itself. Prefer [`Self::scope_instance`]
+    /// whenever a deployed plugin instance id is known.
     #[must_use]
-    pub fn scope(&self, source_id: impl Into<String>) -> SourceScope {
-        SourceScope::new(self.clone(), source_id)
+    pub fn scope(&self, plugin_key: impl Into<String>) -> SourceScope {
+        let plugin_key = plugin_key.into();
+        SourceScope::new(self.clone(), plugin_key.clone(), plugin_key)
+    }
+
+    /// Instance-scoped view — accounts, secrets, and books are keyed by `plugin_instance_id`.
+    #[must_use]
+    pub fn scope_instance(
+        &self,
+        plugin_instance_id: impl Into<String>,
+        plugin_key: impl Into<String>,
+    ) -> SourceScope {
+        SourceScope::new(self.clone(), plugin_instance_id, plugin_key)
     }
 }
 
@@ -406,5 +448,88 @@ mod tests {
         let books = store.list_books(None).await.unwrap();
         let libro_book = books.iter().find(|b| b.product_id == "ISBN1").unwrap();
         assert_eq!(libro_book.source, "libro");
+    }
+
+    #[tokio::test]
+    async fn two_instances_of_one_key_are_isolated() {
+        let _dek = master_key_test_read_lock_async().await;
+        ensure_shared_test_dek();
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let a = store.scope_instance("inst-a", "graphicaudio");
+        let b = store.scope_instance("inst-b", "graphicaudio");
+        assert_eq!(a.source_id(), "graphicaudio");
+        assert_eq!(a.plugin_instance_id(), "inst-a");
+
+        a.save_source_auth("same", "same.auth", b"secret-a")
+            .await
+            .unwrap();
+        b.save_source_auth("same", "same.auth", b"secret-b")
+            .await
+            .unwrap();
+        assert_eq!(
+            a.load_source_auth("same", "same.auth")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(b"secret-a".as_slice())
+        );
+        assert_eq!(
+            b.load_source_auth("same", "same.auth")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(b"secret-b".as_slice())
+        );
+        assert_eq!(a.list_source_auth().await.unwrap().len(), 1);
+        assert_eq!(b.list_source_auth().await.unwrap().len(), 1);
+
+        a.upsert_account("same", "us", Some("A"), true)
+            .await
+            .unwrap();
+        b.upsert_account("same", "us", Some("B"), true)
+            .await
+            .unwrap();
+        assert_eq!(a.list_accounts().await.unwrap().len(), 1);
+        assert_eq!(
+            b.get_account("same")
+                .await
+                .unwrap()
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("B")
+        );
+
+        a.upsert_book(&NewBook::minimal("P1", "same", "us", "From A"))
+            .await
+            .unwrap();
+        b.upsert_book(&NewBook::minimal("P1", "same", "us", "From B"))
+            .await
+            .unwrap();
+        let books = store.list_books(None).await.unwrap();
+        assert_eq!(books.len(), 2);
+        let mut instances: Vec<_> = books
+            .iter()
+            .map(|b| b.plugin_instance_id.as_str())
+            .collect();
+        instances.sort_unstable();
+        assert_eq!(instances, ["inst-a", "inst-b"]);
+        assert!(books.iter().all(|b| b.source == "graphicaudio"));
+
+        a.delete_source_auth("same", "same.auth").await.unwrap();
+        assert!(a
+            .load_source_auth("same", "same.auth")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(b
+            .load_source_auth("same", "same.auth")
+            .await
+            .unwrap()
+            .is_some());
     }
 }

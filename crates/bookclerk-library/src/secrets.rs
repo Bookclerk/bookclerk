@@ -123,6 +123,8 @@ struct SecretCacheKey {
     account_type: String,
     /// Account id, or empty when the row is operator-scoped.
     account_id: String,
+    /// Owning plugin instance, or empty for non-source secrets.
+    plugin_instance_id: String,
     /// Logical secret name within that identity.
     name: String,
 }
@@ -148,6 +150,7 @@ fn cache_key_for(record: &EncryptedSecretRecord) -> SecretCacheKey {
         provider: record.provider.clone().unwrap_or_default(),
         account_type: record.account_type.clone(),
         account_id: record.account_id.clone().unwrap_or_default(),
+        plugin_instance_id: record.plugin_instance_id.clone(),
         name: record.name.clone(),
     }
 }
@@ -158,6 +161,7 @@ fn cache_key_parts(
     provider: Option<&str>,
     account_type: &str,
     account_id: Option<&str>,
+    plugin_instance_id: &str,
     name: &str,
 ) -> SecretCacheKey {
     SecretCacheKey {
@@ -165,6 +169,7 @@ fn cache_key_parts(
         provider: provider.unwrap_or("").to_string(),
         account_type: account_type.to_string(),
         account_id: account_id.unwrap_or("").to_string(),
+        plugin_instance_id: plugin_instance_id.to_string(),
         name: name.to_string(),
     }
 }
@@ -219,9 +224,14 @@ fn cache_invalidate_key(key: &SecretCacheKey) {
 }
 
 /// Drops every cached plaintext belonging to an integration account id.
-fn cache_invalidate_account(account_id: &str) {
+///
+/// `plugin_instance_id` of `None` drops the account across all instances.
+fn cache_invalidate_account(account_id: &str, plugin_instance_id: Option<&str>) {
     if let Ok(mut guard) = plaintext_cache().lock() {
-        guard.retain(|k, _| k.account_id != account_id);
+        guard.retain(|k, _| {
+            k.account_id != account_id
+                || plugin_instance_id.is_some_and(|id| k.plugin_instance_id != id)
+        });
     }
 }
 
@@ -255,6 +265,8 @@ pub struct EncryptedSecretRecord {
     pub account_type: String,
     /// Per-provider account identifier (file stem, email, …) or `None`.
     pub account_id: Option<String>,
+    /// Owning plugin instance for source secrets; empty for non-source secrets.
+    pub plugin_instance_id: String,
     /// Human-readable label / file-stem equivalent (e.g. `"alice.audible"`).
     pub name: String,
     /// Payload format:
@@ -411,6 +423,7 @@ pub fn build_sealed_record(
         provider: Some(provider.to_string()),
         account_type: account_type.to_string(),
         account_id: Some(account_id.to_string()),
+        plugin_instance_id: String::new(),
         name: name.to_string(),
         format: FORMAT_SEALED_V1.to_string(),
         ciphertext,
@@ -655,6 +668,7 @@ pub async fn upsert_secret_on<C: ConnectionTrait>(
         provider: Set(record.provider.clone()),
         account_type: Set(record.account_type.clone()),
         account_id: Set(record.account_id.clone()),
+        plugin_instance_id: Set(record.plugin_instance_id.clone()),
         name: Set(record.name.clone()),
         format: Set(record.format.clone()),
         ciphertext: Set(record.ciphertext.clone()),
@@ -680,6 +694,7 @@ pub async fn upsert_secret_on<C: ConnectionTrait>(
                 encrypted_secrets::Column::Provider,
                 encrypted_secrets::Column::AccountType,
                 encrypted_secrets::Column::AccountId,
+                encrypted_secrets::Column::PluginInstanceId,
                 encrypted_secrets::Column::Name,
             ])
             .update_columns([
@@ -704,6 +719,7 @@ pub async fn upsert_secret_on<C: ConnectionTrait>(
         record.provider.as_deref(),
         &record.account_type,
         record.account_id.as_deref(),
+        &record.plugin_instance_id,
         &record.name,
     ));
     Ok(())
@@ -722,11 +738,34 @@ pub async fn get_secret(
     account_id: Option<&str>,
     name: &str,
 ) -> Result<Option<EncryptedSecretRecord>> {
-    Ok(
-        find_model(db, kind, provider, account_type, account_id, name)
-            .await?
-            .map(model_to_record),
+    get_secret_for_instance(db, kind, provider, account_type, account_id, "", name).await
+}
+
+/// Fetch a secret scoped to one plugin instance (`""` for non-source secrets).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn get_secret_for_instance(
+    db: &DatabaseConnection,
+    kind: &str,
+    provider: Option<&str>,
+    account_type: &str,
+    account_id: Option<&str>,
+    plugin_instance_id: &str,
+    name: &str,
+) -> Result<Option<EncryptedSecretRecord>> {
+    Ok(find_model(
+        db,
+        kind,
+        provider,
+        account_type,
+        account_id,
+        plugin_instance_id,
+        name,
     )
+    .await?
+    .map(model_to_record))
 }
 
 /// List all secrets of a given `kind`.
@@ -762,7 +801,28 @@ pub async fn delete_secrets_for_account(db: &DatabaseConnection, account_id: &st
         .exec(db)
         .await
         .map_err(LibraryError::Orm)?;
-    cache_invalidate_account(account_id);
+    cache_invalidate_account(account_id, None);
+    Ok(())
+}
+
+/// Delete integration-account secrets for `account_id` owned by one plugin instance.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn delete_secrets_for_account_instance(
+    db: &DatabaseConnection,
+    plugin_instance_id: &str,
+    account_id: &str,
+) -> Result<()> {
+    encrypted_secrets::Entity::delete_many()
+        .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
+        .filter(encrypted_secrets::Column::AccountId.eq(account_id))
+        .filter(encrypted_secrets::Column::PluginInstanceId.eq(plugin_instance_id))
+        .exec(db)
+        .await
+        .map_err(LibraryError::Orm)?;
+    cache_invalidate_account(account_id, Some(plugin_instance_id));
     Ok(())
 }
 
@@ -782,6 +842,32 @@ pub async fn delete_secret(
     delete_secret_on(db, kind, provider, account_type, account_id, name).await
 }
 
+/// Delete a secret scoped to one plugin instance (`""` for non-source secrets).
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn delete_secret_for_instance(
+    db: &DatabaseConnection,
+    kind: &str,
+    provider: Option<&str>,
+    account_type: &str,
+    account_id: Option<&str>,
+    plugin_instance_id: &str,
+    name: &str,
+) -> Result<()> {
+    delete_secret_for_instance_on(
+        db,
+        kind,
+        provider,
+        account_type,
+        account_id,
+        plugin_instance_id,
+        name,
+    )
+    .await
+}
+
 /// Delete a secret by composite key on an open connection or transaction.
 ///
 /// # Errors
@@ -795,9 +881,27 @@ pub async fn delete_secret_on<C: ConnectionTrait>(
     account_id: Option<&str>,
     name: &str,
 ) -> Result<()> {
+    delete_secret_for_instance_on(db, kind, provider, account_type, account_id, "", name).await
+}
+
+/// Delete a secret scoped to one plugin instance on an open connection or transaction.
+///
+/// # Errors
+///
+/// Returns an error when the operation fails.
+pub async fn delete_secret_for_instance_on<C: ConnectionTrait>(
+    db: &C,
+    kind: &str,
+    provider: Option<&str>,
+    account_type: &str,
+    account_id: Option<&str>,
+    plugin_instance_id: &str,
+    name: &str,
+) -> Result<()> {
     let mut q = encrypted_secrets::Entity::delete_many()
         .filter(encrypted_secrets::Column::Kind.eq(kind))
         .filter(encrypted_secrets::Column::AccountType.eq(account_type))
+        .filter(encrypted_secrets::Column::PluginInstanceId.eq(plugin_instance_id))
         .filter(encrypted_secrets::Column::Name.eq(name));
     q = match provider {
         Some(p) => q.filter(encrypted_secrets::Column::Provider.eq(p)),
@@ -813,6 +917,7 @@ pub async fn delete_secret_on<C: ConnectionTrait>(
         provider,
         account_type,
         account_id,
+        plugin_instance_id,
         name,
     ));
     Ok(())
@@ -832,11 +937,13 @@ async fn find_model(
     provider: Option<&str>,
     account_type: &str,
     account_id: Option<&str>,
+    plugin_instance_id: &str,
     name: &str,
 ) -> Result<Option<encrypted_secrets::Model>> {
     let mut q = encrypted_secrets::Entity::find()
         .filter(encrypted_secrets::Column::Kind.eq(kind))
         .filter(encrypted_secrets::Column::AccountType.eq(account_type))
+        .filter(encrypted_secrets::Column::PluginInstanceId.eq(plugin_instance_id))
         .filter(encrypted_secrets::Column::Name.eq(name));
     q = match provider {
         Some(p) => q.filter(encrypted_secrets::Column::Provider.eq(p)),
@@ -857,6 +964,7 @@ fn model_to_record(model: encrypted_secrets::Model) -> EncryptedSecretRecord {
         provider: model.provider,
         account_type: model.account_type,
         account_id: model.account_id,
+        plugin_instance_id: model.plugin_instance_id,
         name: model.name,
         format: model.format,
         ciphertext: model.ciphertext,
@@ -1223,6 +1331,7 @@ mod tests {
             provider: Some("libro".into()),
             account_type: secret_account_type::INTEGRATION.into(),
             account_id: Some("alice".into()),
+            plugin_instance_id: String::new(),
             name: "alice.libro.auth".into(),
             format: "json".into(),
             ciphertext: br#"{"token":"test"}"#.to_vec(),

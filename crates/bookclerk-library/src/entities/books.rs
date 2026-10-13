@@ -14,6 +14,8 @@ pub struct Model {
     pub uuid: String,
     /// Content-source plugin id (`audible`, `libro`, …).
     pub source: String,
+    /// Plugin instance that owns this row (isolation key with `account_id`).
+    pub plugin_instance_id: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
     /// Storefront product id (ASIN, ISBN, UUID, …).

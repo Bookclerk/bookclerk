@@ -318,6 +318,9 @@ impl LibraryStore {
     ///
     /// `source` is required — there is no audible default. Content sources should
     /// prefer [`crate::SourceScope::upsert_account`], which forces the plugin id.
+    /// The row is owned by the transitional instance id `source` (one implicit
+    /// instance per storefront key); use [`Self::upsert_account_for_instance`]
+    /// for a deployed plugin instance.
     ///
     /// # Errors
     ///
@@ -330,8 +333,41 @@ impl LibraryStore {
         scan_enabled: bool,
         source: &str,
     ) -> Result<AccountRecord> {
-        self.upsert_account_inner(account_id, marketplace, label, scan_enabled, source, true)
-            .await
+        self.upsert_account_for_instance(
+            source,
+            account_id,
+            marketplace,
+            label,
+            scan_enabled,
+            source,
+        )
+        .await
+    }
+
+    /// Upsert an account owned by `plugin_instance_id` (updates `scan_enabled` on conflict).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn upsert_account_for_instance(
+        &self,
+        plugin_instance_id: &str,
+        account_id: &str,
+        marketplace: &str,
+        label: Option<&str>,
+        scan_enabled: bool,
+        source: &str,
+    ) -> Result<AccountRecord> {
+        self.upsert_account_inner(
+            plugin_instance_id,
+            account_id,
+            marketplace,
+            label,
+            scan_enabled,
+            source,
+            true,
+        )
+        .await
     }
 
     /// Ensure an account row exists without overwriting `scan_enabled`.
@@ -349,13 +385,40 @@ impl LibraryStore {
         label: Option<&str>,
         source: &str,
     ) -> Result<AccountRecord> {
-        self.upsert_account_inner(account_id, marketplace, label, true, source, false)
+        self.ensure_account_for_instance(source, account_id, marketplace, label, source)
             .await
     }
 
+    /// Ensure an account row exists for `plugin_instance_id` without overwriting `scan_enabled`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn ensure_account_for_instance(
+        &self,
+        plugin_instance_id: &str,
+        account_id: &str,
+        marketplace: &str,
+        label: Option<&str>,
+        source: &str,
+    ) -> Result<AccountRecord> {
+        self.upsert_account_inner(
+            plugin_instance_id,
+            account_id,
+            marketplace,
+            label,
+            true,
+            source,
+            false,
+        )
+        .await
+    }
+
     /// Inserts or updates a store account; optionally overwrites `scan_enabled`.
+    #[allow(clippy::too_many_arguments)]
     async fn upsert_account_inner(
         &self,
+        plugin_instance_id: &str,
         account_id: &str,
         marketplace: &str,
         label: Option<&str>,
@@ -365,6 +428,7 @@ impl LibraryStore {
     ) -> Result<AccountRecord> {
         let now = now_str();
         let existing = accounts::Entity::find()
+            .filter(accounts::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -373,8 +437,8 @@ impl LibraryStore {
         if let Some(model) = existing {
             if model.source != source {
                 return Err(LibraryError::Other(anyhow::anyhow!(
-                    "account_id `{account_id}` already exists for source `{}`; \
-                     cannot claim it for source `{source}`",
+                    "account_id `{account_id}` already exists for source `{}` on instance \
+                     `{plugin_instance_id}`; cannot claim it for source `{source}`",
                     model.source
                 )));
             }
@@ -393,6 +457,7 @@ impl LibraryStore {
 
         let am = accounts::ActiveModel {
             id: NotSet,
+            plugin_instance_id: Set(plugin_instance_id.to_string()),
             account_id: Set(account_id.to_string()),
             marketplace: Set(marketplace.to_string()),
             label: Set(label.map(str::to_string)),
@@ -414,11 +479,17 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn remap_account_id(&self, from: &str, to: &str) -> Result<()> {
+    pub async fn remap_account_id(
+        &self,
+        plugin_instance_id: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
         if from == to {
             return Ok(());
         }
         let Some(from_acct) = accounts::Entity::find()
+            .filter(accounts::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(accounts::Column::AccountId.eq(from))
             .one(&self.db)
             .await
@@ -428,6 +499,7 @@ impl LibraryStore {
         };
 
         let to_acct = accounts::Entity::find()
+            .filter(accounts::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(accounts::Column::AccountId.eq(to))
             .one(&self.db)
             .await
@@ -439,6 +511,7 @@ impl LibraryStore {
                 // Copy the account row under the new id.
                 let am = accounts::ActiveModel {
                     id: NotSet,
+                    plugin_instance_id: Set(plugin_instance_id.to_string()),
                     account_id: Set(to.to_string()),
                     marketplace: Set(from_acct.marketplace.clone()),
                     label: Set(from_acct.label.clone()),
@@ -463,6 +536,7 @@ impl LibraryStore {
 
         // Move books that do not already exist under `to` (same source + product_id).
         let existing_keys: std::collections::HashSet<(String, String)> = books::Entity::find()
+            .filter(books::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(books::Column::AccountId.eq(to))
             .all(&self.db)
             .await
@@ -472,6 +546,7 @@ impl LibraryStore {
             .collect();
 
         let from_books = books::Entity::find()
+            .filter(books::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(books::Column::AccountId.eq(from))
             .all(&self.db)
             .await
@@ -488,11 +563,13 @@ impl LibraryStore {
 
         // Drop duplicate product rows left on the old id, then the account.
         books::Entity::delete_many()
+            .filter(books::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(books::Column::AccountId.eq(from))
             .exec(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
         accounts::Entity::delete_many()
+            .filter(accounts::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(accounts::Column::AccountId.eq(from))
             .exec(&self.db)
             .await
@@ -507,6 +584,7 @@ impl LibraryStore {
     /// Returns an error when the operation fails.
     pub async fn reconcile_account_id(
         &self,
+        plugin_instance_id: &str,
         canonical_id: &str,
         aliases: &[&str],
         marketplace: &str,
@@ -516,11 +594,19 @@ impl LibraryStore {
     ) -> Result<AccountRecord> {
         for alias in aliases {
             if *alias != canonical_id {
-                self.remap_account_id(alias, canonical_id).await?;
+                self.remap_account_id(plugin_instance_id, alias, canonical_id)
+                    .await?;
             }
         }
-        self.upsert_account(canonical_id, marketplace, label, scan_enabled, source)
-            .await
+        self.upsert_account_for_instance(
+            plugin_instance_id,
+            canonical_id,
+            marketplace,
+            label,
+            scan_enabled,
+            source,
+        )
+        .await
     }
 
     /// Loads one account by `account_id`, if present.
@@ -538,6 +624,26 @@ impl LibraryStore {
     /// Returns a crate error when the database operation fails or inputs are invalid.
     pub async fn get_account(&self, account_id: &str) -> Result<Option<AccountRecord>> {
         Ok(accounts::Entity::find()
+            .filter(accounts::Column::AccountId.eq(account_id))
+            .order_by_asc(accounts::Column::Id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_account))
+    }
+
+    /// Loads one account owned by `plugin_instance_id`, if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn get_account_in_instance(
+        &self,
+        plugin_instance_id: &str,
+        account_id: &str,
+    ) -> Result<Option<AccountRecord>> {
+        Ok(accounts::Entity::find()
+            .filter(accounts::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -558,6 +664,7 @@ impl LibraryStore {
     pub async fn list_accounts(&self) -> Result<Vec<AccountRecord>> {
         Ok(accounts::Entity::find()
             .order_by_asc(accounts::Column::AccountId)
+            .order_by_asc(accounts::Column::PluginInstanceId)
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?
@@ -625,8 +732,14 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn set_scan_enabled(&self, account_id: &str, scan_enabled: bool) -> Result<()> {
+    pub async fn set_scan_enabled(
+        &self,
+        plugin_instance_id: &str,
+        account_id: &str,
+        scan_enabled: bool,
+    ) -> Result<()> {
         let model = accounts::Entity::find()
+            .filter(accounts::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -644,8 +757,13 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn mark_connection_active(&self, account_id: &str) -> Result<()> {
+    pub async fn mark_connection_active(
+        &self,
+        plugin_instance_id: &str,
+        account_id: &str,
+    ) -> Result<()> {
         let model = accounts::Entity::find()
+            .filter(accounts::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -664,8 +782,17 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn delete_account_secrets(&self, account_id: &str) -> Result<()> {
-        crate::secrets::delete_secrets_for_account(&self.db, account_id).await
+    pub async fn delete_account_secrets(
+        &self,
+        plugin_instance_id: &str,
+        account_id: &str,
+    ) -> Result<()> {
+        crate::secrets::delete_secrets_for_account_instance(
+            &self.db,
+            plugin_instance_id,
+            account_id,
+        )
+        .await
     }
 
     /// Mark bookstore credentials revoked without deleting the account or books.
@@ -673,8 +800,13 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn revoke_credentials(&self, account_id: &str) -> Result<()> {
+    pub async fn revoke_credentials(
+        &self,
+        plugin_instance_id: &str,
+        account_id: &str,
+    ) -> Result<()> {
         let model = accounts::Entity::find()
+            .filter(accounts::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(accounts::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -2223,8 +2355,13 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn count_account_links_for_account(&self, account_id: &str) -> Result<u64> {
+    pub async fn count_account_links_for_account(
+        &self,
+        plugin_instance_id: &str,
+        account_id: &str,
+    ) -> Result<u64> {
         account_links::Entity::find()
+            .filter(account_links::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(account_links::Column::AccountId.eq(account_id))
             .count(&self.db)
             .await
@@ -3694,11 +3831,13 @@ impl LibraryStore {
     pub async fn link_account(
         &self,
         identity_id: i64,
+        plugin_instance_id: &str,
         account_id: &str,
         source: &str,
     ) -> Result<crate::models::AccountLinkRecord> {
         let existing = account_links::Entity::find()
             .filter(account_links::Column::IdentityId.eq(identity_id))
+            .filter(account_links::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(account_links::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -3707,6 +3846,7 @@ impl LibraryStore {
             return Ok(map_account_link(model));
         }
         if let Some(other) = account_links::Entity::find()
+            .filter(account_links::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(account_links::Column::AccountId.eq(account_id))
             .one(&self.db)
             .await
@@ -3721,6 +3861,7 @@ impl LibraryStore {
         let am = account_links::ActiveModel {
             id: NotSet,
             identity_id: Set(identity_id),
+            plugin_instance_id: Set(plugin_instance_id.to_string()),
             account_id: Set(account_id.to_string()),
             source: Set(source.to_string()),
             created_at: Set(now_str()),
@@ -3762,9 +3903,15 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
-    pub async fn unlink_account(&self, identity_id: i64, account_id: &str) -> Result<()> {
+    pub async fn unlink_account(
+        &self,
+        identity_id: i64,
+        plugin_instance_id: &str,
+        account_id: &str,
+    ) -> Result<()> {
         let res = account_links::Entity::delete_many()
             .filter(account_links::Column::IdentityId.eq(identity_id))
+            .filter(account_links::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(account_links::Column::AccountId.eq(account_id))
             .exec(&self.db)
             .await
@@ -3777,7 +3924,7 @@ impl LibraryStore {
 
     /// Upsert a book from a library sync.
     ///
-    /// Insert on first sight; on `(source, account_id, product_id)` conflict,
+    /// Insert on first sight; on `(plugin_instance_id, account_id, product_id)` conflict,
     /// merge fields with Audible-precedence rules (a Libro rescan without an
     /// ASIN must not wipe Audible enrichment). Expressed as load-then-merge over
     /// the `books` entity so the precedence logic is explicit and portable.
@@ -3799,8 +3946,13 @@ impl LibraryStore {
             book
         };
         let now = now_str();
+        let plugin_instance_id = if book.plugin_instance_id.is_empty() {
+            book.source.as_str()
+        } else {
+            book.plugin_instance_id.as_str()
+        };
         let existing = books::Entity::find()
-            .filter(books::Column::Source.eq(book.source.as_str()))
+            .filter(books::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(books::Column::AccountId.eq(book.account_id.as_str()))
             .filter(books::Column::ProductId.eq(book.product_id.as_str()))
             .one(&self.db)
@@ -3879,6 +4031,7 @@ impl LibraryStore {
                 id: NotSet,
                 uuid: Set(uuid),
                 source: Set(book.source.clone()),
+                plugin_instance_id: Set(plugin_instance_id.to_string()),
                 account_id: Set(book.account_id.clone()),
                 product_id: Set(book.product_id.clone()),
                 asin: Set(book.asin.clone()),
@@ -4143,9 +4296,10 @@ impl LibraryStore {
     ///
     /// Returns a crate error when the database operation fails or inputs are invalid.
     pub async fn is_ignored(&self, title_id: &str, account_id: &str) -> Result<bool> {
-        let (source, product_id) = self.ignore_key(title_id, account_id).await?;
+        let (_source, plugin_instance_id, product_id) =
+            self.ignore_key(title_id, account_id).await?;
         Ok(ignored_titles::Entity::find()
-            .filter(ignored_titles::Column::Source.eq(source))
+            .filter(ignored_titles::Column::PluginInstanceId.eq(plugin_instance_id))
             .filter(ignored_titles::Column::AccountId.eq(account_id))
             .filter(ignored_titles::Column::ProductId.eq(product_id))
             .one(&self.db)
@@ -4177,10 +4331,11 @@ impl LibraryStore {
         ignored: bool,
         reason: Option<&str>,
     ) -> Result<()> {
-        let (source, product_id) = self.ignore_key(title_id, account_id).await?;
+        let (source, plugin_instance_id, product_id) =
+            self.ignore_key(title_id, account_id).await?;
         if ignored {
             let existing = ignored_titles::Entity::find()
-                .filter(ignored_titles::Column::Source.eq(source.as_str()))
+                .filter(ignored_titles::Column::PluginInstanceId.eq(plugin_instance_id.as_str()))
                 .filter(ignored_titles::Column::AccountId.eq(account_id))
                 .filter(ignored_titles::Column::ProductId.eq(product_id.as_str()))
                 .one(&self.db)
@@ -4193,6 +4348,7 @@ impl LibraryStore {
             } else {
                 let am = ignored_titles::ActiveModel {
                     source: Set(source),
+                    plugin_instance_id: Set(plugin_instance_id),
                     account_id: Set(account_id.to_string()),
                     product_id: Set(product_id),
                     reason: Set(reason.map(str::to_string)),
@@ -4202,7 +4358,7 @@ impl LibraryStore {
             }
         } else {
             ignored_titles::Entity::delete_many()
-                .filter(ignored_titles::Column::Source.eq(source))
+                .filter(ignored_titles::Column::PluginInstanceId.eq(plugin_instance_id))
                 .filter(ignored_titles::Column::AccountId.eq(account_id))
                 .filter(ignored_titles::Column::ProductId.eq(product_id))
                 .exec(&self.db)
@@ -4212,13 +4368,21 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Resolve the `(source, product_id)` ignore key for a title, defaulting to
-    /// Audible + the raw id when the book is unknown.
-    async fn ignore_key(&self, title_id: &str, account_id: &str) -> Result<(String, String)> {
-        Ok(match self.get_book(title_id, account_id).await? {
-            Some(b) => (b.source, b.product_id),
-            None => (String::from("audible"), title_id.to_string()),
-        })
+    /// Resolve the `(source, plugin_instance_id, product_id)` ignore key for a
+    /// title. An unknown book falls back to its account's instance, then Audible.
+    async fn ignore_key(
+        &self,
+        title_id: &str,
+        account_id: &str,
+    ) -> Result<(String, String, String)> {
+        if let Some(b) = self.get_book(title_id, account_id).await? {
+            return Ok((b.source, b.plugin_instance_id, b.product_id));
+        }
+        let (source, instance) = match self.get_account(account_id).await? {
+            Some(a) => (a.source, a.plugin_instance_id),
+            None => (String::from("audible"), String::from("audible")),
+        };
+        Ok((source, instance, title_id.to_string()))
     }
 
     /// Updates acquire status, storage key, and optional error message.
@@ -5875,6 +6039,8 @@ pub struct NewBook {
     pub product_id: String,
     /// Content-source plugin id (`audible`, `libro`, …).
     pub source: String,
+    /// Plugin instance that owns this row; empty means "use `source`" (unscoped host callers).
+    pub plugin_instance_id: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
     /// Amazon ASIN when known; otherwise null.
@@ -5973,6 +6139,7 @@ impl NewBook {
             isbn: None,
             product_id,
             source: String::from("audible"),
+            plugin_instance_id: String::new(),
             account_id: account_id.into(),
             marketplace: marketplace.into(),
             title: title.into(),
@@ -6546,6 +6713,7 @@ fn parse_dt_opt(value: Option<&str>) -> Option<chrono::DateTime<Utc>> {
 fn map_account(m: accounts::Model) -> AccountRecord {
     AccountRecord {
         id: m.id,
+        plugin_instance_id: m.plugin_instance_id,
         account_id: m.account_id,
         source: m.source,
         marketplace: m.marketplace,
@@ -6675,6 +6843,7 @@ fn map_account_link(m: account_links::Model) -> crate::models::AccountLinkRecord
     crate::models::AccountLinkRecord {
         id: m.id,
         identity_id: m.identity_id,
+        plugin_instance_id: m.plugin_instance_id,
         account_id: m.account_id,
         source: m.source,
         created_at: parse_dt(&m.created_at),
@@ -6926,6 +7095,7 @@ fn map_book(m: books::Model) -> Result<BookRecord> {
         id: m.id,
         uuid: m.uuid,
         source: m.source,
+        plugin_instance_id: m.plugin_instance_id,
         account_id: m.account_id,
         product_id: m.product_id,
         asin: m.asin,

@@ -1631,8 +1631,8 @@ mod tests {
         let err = exec_sql(
             &db,
             DbBackend::Sqlite,
-            "INSERT INTO books (uuid, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('u', 'audible', 'missing', 'p', 'us', 't', 't', 't')",
+            "INSERT INTO books (uuid, source, plugin_instance_id, account_id, product_id, marketplace, title, created_at, updated_at) \
+             VALUES ('u', 'audible', 'audible', 'missing', 'p', 'us', 't', 't', 't')",
         )
         .await
         .expect_err("fk");

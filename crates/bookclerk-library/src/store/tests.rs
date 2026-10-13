@@ -104,6 +104,7 @@ async fn same_isbn_multi_account_and_source() {
         uuid: None,
         product_id: "9781234567890".into(),
         source: "libro".into(),
+        plugin_instance_id: String::new(),
         account_id: "libro-1".into(),
         asin: None,
         isbn: Some("9781234567890".into()),
@@ -151,6 +152,7 @@ async fn libro_rescan_preserves_audible_enrichment() {
         uuid: None,
         product_id: isbn.into(),
         source: "libro".into(),
+        plugin_instance_id: String::new(),
         account_id: "libro-1".into(),
         asin: None,
         isbn: Some(isbn.into()),
@@ -231,6 +233,7 @@ async fn download_product_id_is_source_native() {
             uuid: None,
             product_id: "9789999999999".into(),
             source: "libro".into(),
+            plugin_instance_id: String::new(),
             account_id: "libro-1".into(),
             asin: Some("B00FROMAD".into()),
             isbn: Some("9789999999999".into()),
@@ -313,7 +316,7 @@ async fn remap_account_moves_books() {
         .unwrap();
 
     store
-        .remap_account_id("email@example.com", "amzn1.account.CID")
+        .remap_account_id("audible", "email@example.com", "amzn1.account.CID")
         .await
         .unwrap();
 
@@ -377,7 +380,7 @@ async fn revoke_keeps_books_and_portal_tickets_work() {
         .upsert_book(&NewBook::minimal("B00TEST", "user-1", "us", "Test"))
         .await
         .unwrap();
-    store.revoke_credentials("user-1").await.unwrap();
+    store.revoke_credentials("audible", "user-1").await.unwrap();
     let acct = store.get_account("user-1").await.unwrap().unwrap();
     assert!(!acct.scan_enabled);
     assert_eq!(acct.connection_status, "revoked");
@@ -408,12 +411,15 @@ async fn revoke_keeps_books_and_portal_tickets_work() {
     assert!(store.redeem_claim_ticket("abc123hash").await.is_err());
 
     store
-        .link_account(identity.id, "user-1", "audible")
+        .link_account(identity.id, "audible", "user-1", "audible")
         .await
         .unwrap();
     let links = store.list_account_links(identity.id).await.unwrap();
     assert_eq!(links.len(), 1);
-    store.mark_connection_active("user-1").await.unwrap();
+    store
+        .mark_connection_active("audible", "user-1")
+        .await
+        .unwrap();
     assert_eq!(
         store
             .get_account("user-1")
@@ -444,12 +450,21 @@ async fn account_links_are_exclusive_per_account_id() {
         .upsert_portal_identity("p", "b", Some("B"))
         .await
         .unwrap();
-    store.link_account(a.id, "acct-x", "audible").await.unwrap();
-    assert!(store.link_account(b.id, "acct-x", "audible").await.is_err());
-    store.unlink_account(a.id, "acct-x").await.unwrap();
+    store
+        .link_account(a.id, "audible", "acct-x", "audible")
+        .await
+        .unwrap();
+    assert!(store
+        .link_account(b.id, "audible", "acct-x", "audible")
+        .await
+        .is_err());
+    store
+        .unlink_account(a.id, "audible", "acct-x")
+        .await
+        .unwrap();
     assert_eq!(
         store
-            .count_account_links_for_account("acct-x")
+            .count_account_links_for_account("audible", "acct-x")
             .await
             .unwrap(),
         0

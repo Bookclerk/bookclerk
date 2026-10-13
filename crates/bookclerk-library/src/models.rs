@@ -117,6 +117,8 @@ pub fn content_kind_from_classic(content_type: i64) -> String {
 pub struct AccountRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
+    /// Plugin instance that owns this account (isolation key with `account_id`).
+    pub plugin_instance_id: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
     /// Content-source plugin id (`audible`, `libro`, …).
@@ -491,6 +493,8 @@ pub struct AccountLinkRecord {
     pub id: i64,
     /// Foreign key to `portal_identities.id`.
     pub identity_id: i64,
+    /// Plugin instance that owns the linked account.
+    pub plugin_instance_id: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
     /// Content-source plugin id (`audible`, `libro`, …).
@@ -508,6 +512,8 @@ pub struct BookRecord {
     pub uuid: String,
     /// Content-source plugin id (`audible`, `libro`, …).
     pub source: String,
+    /// Plugin instance that owns this row (isolation key with `account_id`).
+    pub plugin_instance_id: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
     /// Storefront product id (ASIN, ISBN, UUID, …).

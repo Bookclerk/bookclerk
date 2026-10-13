@@ -128,7 +128,8 @@ pub use schema_walk::{plan_schema_walk, plan_schema_walk_from_state, SchemaWalk}
 pub use scope::SourceScope;
 pub use secrets::{
     b64_string_to_bytes, build_sealed_record, bytes_to_b64_string, delete_secret,
-    delete_secrets_for_account, get_secret, list_secrets, secret_account_type, secret_kind,
+    delete_secret_for_instance, delete_secrets_for_account, delete_secrets_for_account_instance,
+    get_secret, get_secret_for_instance, list_secrets, secret_account_type, secret_kind,
     unseal_secret, upsert_secret, EncryptedSecretRecord, SecretStore, FORMAT_SEALED_V1,
 };
 pub use session_client::{classify_session_client, SessionClientInfo};
