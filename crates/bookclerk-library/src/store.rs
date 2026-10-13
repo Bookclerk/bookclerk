@@ -582,6 +582,7 @@ impl LibraryStore {
     /// # Errors
     ///
     /// Returns an error when the operation fails.
+    #[allow(clippy::too_many_arguments)]
     pub async fn reconcile_account_id(
         &self,
         plugin_instance_id: &str,
