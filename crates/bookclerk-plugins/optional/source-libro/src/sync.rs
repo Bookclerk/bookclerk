@@ -220,6 +220,7 @@ pub fn audiobook_to_new_book(book: &Audiobook, account_id: &str, marketplace: &s
         uuid: None,
         product_id: isbn.clone(),
         source: String::from("libro"),
+        plugin_instance_id: String::new(),
         account_id: account_id.to_string(),
         asin: None,
         isbn: Some(isbn),

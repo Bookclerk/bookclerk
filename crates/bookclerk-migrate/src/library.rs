@@ -212,6 +212,7 @@ pub async fn import_library_db(
                 asin: Some(row.asin.clone()),
                 isbn: None,
                 source: String::from("audible"),
+                plugin_instance_id: String::new(),
                 account_id: account_id.clone(),
                 marketplace: row.locale.clone(),
                 title,

@@ -516,6 +516,7 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> NewBook {
         uuid: None,
         product_id: book.product_id,
         source: plugin_id.to_string(),
+        plugin_instance_id: String::new(),
         account_id: book.account_id,
         asin: book.asin,
         isbn: book.isbn,

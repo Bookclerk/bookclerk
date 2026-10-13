@@ -161,10 +161,7 @@ pub struct ScanSummary {
     pub pages: u32,
     /// Accounts skipped because [`crate::SourceAccount::scan_enabled`] was false.
     pub skipped_disabled: usize,
-    /// Plugin keys skipped because more than one instance is registered.
-    ///
-    /// Other sources in the same scan still run. Accounts stay keyed by
-    /// storefront id, so those keys are not scanned twice.
+    /// Non-fatal notes raised while scanning (the scan still completed).
     pub warnings: Vec<String>,
 }
 

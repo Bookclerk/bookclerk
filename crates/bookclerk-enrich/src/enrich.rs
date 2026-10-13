@@ -240,6 +240,7 @@ pub async fn apply_enrichment_to_book(
         uuid: Some(existing.uuid.clone()),
         product_id: existing.product_id.clone(),
         source: existing.source.clone(),
+        plugin_instance_id: existing.plugin_instance_id.clone(),
         account_id: existing.account_id.clone(),
         asin: existing
             .asin

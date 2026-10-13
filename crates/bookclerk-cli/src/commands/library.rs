@@ -7,7 +7,7 @@ use bookclerk_acquire::{
 use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_search::SearchEngine;
-use bookclerk_source::{DownloadOptions, FetchOptions, ScanOptions};
+use bookclerk_source::{source_scope, DownloadOptions, FetchOptions, ScanOptions};
 use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
 
@@ -261,7 +261,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             };
             let summary = if let Some(needle) = source {
                 let id = resolve_source_id(&registry, &needle)?;
-                registry.require(&id)?.scan(&store.scope(id), opts).await?
+                let content = registry.require(&id)?;
+                content
+                    .scan(&source_scope(&store, content.as_ref()), opts)
+                    .await?
             } else {
                 registry.scan_all(&store, opts).await?
             };
@@ -574,7 +577,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             download.quality = quality;
             let inspected = source
                 .inspect_title(
-                    &store.scope(source.id()),
+                    &source_scope(&store, source.as_ref()),
                     &account_key,
                     &license_asin,
                     &FetchOptions {
@@ -817,58 +820,52 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             list_all_accounts(config, source.as_deref(), bare).await
         }
         LibraryCommand::SetScan { account, scan } => {
-            let account_id = if let Some(acct) = store.find_account(&account).await? {
-                acct.account_id
-            } else {
-                let registry = default_registry_with_plugins(config, &store).await?;
-                let mut found = None;
-                for src in registry.all() {
-                    if let Ok(accounts) = src.list_accounts(&store.scope(src.id())).await {
-                        if let Some(a) = accounts.into_iter().find(|a| {
-                            a.account_id.eq_ignore_ascii_case(&account)
-                                || a.label
-                                    .as_deref()
-                                    .is_some_and(|l| l.eq_ignore_ascii_case(&account))
-                        }) {
-                            found = Some(a);
-                            break;
+            let (plugin_instance_id, account_id) =
+                if let Some(acct) = store.find_account(&account).await? {
+                    (acct.plugin_instance_id, acct.account_id)
+                } else {
+                    let registry = default_registry_with_plugins(config, &store).await?;
+                    let mut found = None;
+                    for src in registry.all() {
+                        let scope = source_scope(&store, src.as_ref());
+                        if let Ok(accounts) = src.list_accounts(&scope).await {
+                            if let Some(a) = accounts.into_iter().find(|a| {
+                                a.account_id.eq_ignore_ascii_case(&account)
+                                    || a.label
+                                        .as_deref()
+                                        .is_some_and(|l| l.eq_ignore_ascii_case(&account))
+                            }) {
+                                found = Some((scope.plugin_instance_id().to_string(), a));
+                                break;
+                            }
                         }
                     }
-                }
-                found.map(|a| a.account_id).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "account `{account}` not found — run `bookclerk library accounts`"
-                    )
-                })?
-            };
-            if store.get_account(&account_id).await?.is_some() {
-                store.set_scan_enabled(&account_id, scan).await?;
-            } else {
-                let registry = default_registry_with_plugins(config, &store).await?;
-                let mut info = None;
-                for src in registry.all() {
-                    if let Ok(accounts) = src.list_accounts(&store.scope(src.id())).await {
-                        if let Some(a) = accounts.into_iter().find(|a| a.account_id == account_id) {
-                            info = Some(a);
-                            break;
-                        }
+                    let (instance, a) = found.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "account `{account}` not found — run `bookclerk library accounts`"
+                        )
+                    })?;
+                    if store
+                        .get_account_in_instance(&instance, &a.account_id)
+                        .await?
+                        .is_none()
+                    {
+                        store
+                            .upsert_account_for_instance(
+                                &instance,
+                                &a.account_id,
+                                &a.marketplace,
+                                a.label.as_deref(),
+                                scan,
+                                a.source.as_str(),
+                            )
+                            .await?;
                     }
-                }
-                let info = info.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "account {account_id} not in library DB — run `bookclerk library scan` first"
-                    )
-                })?;
-                store
-                    .upsert_account(
-                        &account_id,
-                        &info.marketplace,
-                        info.label.as_deref(),
-                        scan,
-                        info.source.as_str(),
-                    )
-                    .await?;
-            }
+                    (instance, a.account_id)
+                };
+            store
+                .set_scan_enabled(&plugin_instance_id, &account_id, scan)
+                .await?;
             format_out::line(format!(
                 "account {} scan_enabled={}",
                 account_id,
@@ -887,7 +884,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             };
             let mut any = false;
             for src in sources {
-                let accounts = src.list_accounts(&store.scope(src.id())).await?;
+                let accounts = src
+                    .list_accounts(&source_scope(&store, src.as_ref()))
+                    .await?;
                 for acct in accounts {
                     any = true;
                     format_out::line(format!(
@@ -907,8 +906,12 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("account `{account}` not found in library DB"))?;
             let registry = default_registry_with_plugins(config, &store).await?;
-            let scope = store.scope(acct.source.as_str());
-            if let Ok(content) = registry.require(acct.source.as_str()) {
+            let scope =
+                store.scope_instance(acct.plugin_instance_id.as_str(), acct.source.as_str());
+            if let Ok(content) = registry
+                .require(acct.plugin_instance_id.as_str())
+                .or_else(|_| registry.require(acct.source.as_str()))
+            {
                 if let Err(e) = content.revoke_credentials(&scope, &acct.account_id).await {
                     tracing::warn!(
                         error = %e,
@@ -921,7 +924,9 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 // Unknown / disabled source — still clear common secret patterns.
                 bookclerk_source::revoke_credentials_default(&scope, &acct.account_id).await?;
             }
-            store.revoke_credentials(&acct.account_id).await?;
+            store
+                .revoke_credentials(&acct.plugin_instance_id, &acct.account_id)
+                .await?;
             format_out::line(format!(
                 "revoked credentials for {} (books retained, scan_enabled=false)",
                 acct.account_id
@@ -954,20 +959,30 @@ async fn list_all_accounts(
     let mut listed_ids = std::collections::HashSet::new();
     let mut any = false;
 
-    let scan_by_id: std::collections::HashMap<String, bool> = db_accounts
+    let scan_by_id: std::collections::HashMap<(String, String), bool> = db_accounts
         .iter()
-        .map(|a| (a.account_id.clone(), a.scan_enabled))
+        .map(|a| {
+            (
+                (a.plugin_instance_id.clone(), a.account_id.clone()),
+                a.scan_enabled,
+            )
+        })
         .collect();
-    let scan_enabled =
-        |account_id: &str| -> bool { scan_by_id.get(account_id).copied().unwrap_or(true) };
 
     for src in sources {
-        let accounts = src.list_accounts(&store.scope(src.id())).await?;
+        let scope = source_scope(&store, src.as_ref());
+        let instance = scope.plugin_instance_id().to_string();
+        let accounts = src.list_accounts(&scope).await?;
         for acct in accounts {
             any = true;
-            listed_ids.insert(acct.account_id.clone());
+            listed_ids.insert((instance.clone(), acct.account_id.clone()));
             let name = acct.label.as_deref().unwrap_or(&acct.account_id);
-            let scan = yes_no(scan_enabled(&acct.account_id));
+            let scan = yes_no(
+                scan_by_id
+                    .get(&(instance.clone(), acct.account_id.clone()))
+                    .copied()
+                    .unwrap_or(true),
+            );
             let auth_ok = true;
             let status = String::from("ok");
             if bare {
@@ -989,7 +1004,7 @@ async fn list_all_accounts(
 
     // DB-only rows (e.g. after migrate) not covered by source credentials.
     for db in db_accounts {
-        if listed_ids.contains(db.account_id.as_str()) {
+        if listed_ids.contains(&(db.plugin_instance_id.clone(), db.account_id.clone())) {
             continue;
         }
         if let Some(filter) = filter_id.as_deref() {

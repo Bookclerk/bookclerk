@@ -308,12 +308,15 @@ TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
 derived from `describe()`, and that schema debt stays until a later phase.
 Other plugins with no instance document keep `settings_table_for`.
 
-Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
-not by `PluginInstanceId`. Two instances of one key share credentials and scan
-rows. Acquire fails closed when that key is ambiguous instead of moving those
-rows onto the instance id. Scan records a warning and skips only the ambiguous
-key. When that key is the only store that would have been scanned, the error
-is that warning.
+Accounts, books, source secrets, ignore rows, and portal account links are
+keyed by `PluginInstanceId`. `SourceScope` holds `(plugin_instance_id,
+plugin_key)` and filters on the instance id, so two instances of one key keep
+disjoint credentials and scan rows even when they use the same login id. The
+`source` / `provider` columns keep the storefront key for display only. A
+source with no deployed instance id uses its storefront id as an implicit
+instance id. Scan visits every registered instance. Naming a key or alias that
+matches several instances is still ambiguous: acquire and `get` fail closed
+until the caller passes an instance id.
 
 KV and Queues are unchanged. Named SQL bindings do not replace them.
 
@@ -365,8 +368,10 @@ Not in this spike, and not claimed as production HA:
   tree.
 - GraphicAudio writable settings remain a hard-coded allowlist. They are not
   derived from `describe()`.
-- Accounts and `SourceScope` stay storefront-keyed. Moving those rows onto
-  the plugin instance id is a later phase.
+- Accounts and `SourceScope` are instance-keyed. Host-wide lookups that take
+  only an `account_id` (portal `get_account`, `find_account`, `get_book`)
+  still return the first match across instances; selecting one instance by
+  key or alias stays ambiguous until `--instance` / an instance id is given.
 - D1 multi-host execution. The executing D1 tests in this repository are an
   HTTP mock over one SQLite connection. This spike's shared-database proof is
   two PostgreSQL pools plus two SQLite connections. A live D1 database was

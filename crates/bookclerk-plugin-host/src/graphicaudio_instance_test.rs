@@ -216,11 +216,16 @@ async fn graphicaudio_scan_uses_instance_access_not_toml_or_env() {
     grants.save(files).unwrap();
 
     let email = "reader@example.com";
-    let scope = store.scope("graphicaudio");
+    let scope = store.scope_instance(instance.id.to_string(), "graphicaudio");
     scope
         .upsert_account(email, "us", Some("Reader"), true)
         .await
         .unwrap();
+    let sibling = store.scope_instance("sibling-instance", "graphicaudio");
+    assert!(
+        sibling.get_account(email).await.unwrap().is_none(),
+        "a second instance of the same key must not see this instance's account"
+    );
     let prepared = crate::prepare_open_bindings(
         Some(&store),
         files,

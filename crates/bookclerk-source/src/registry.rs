@@ -11,7 +11,7 @@ use std::sync::Arc;
 use bookclerk_library::{LibraryStore, SourceScope};
 
 use crate::error::{Result, SourceError};
-use crate::traits::ContentSource;
+use crate::traits::{source_scope, ContentSource};
 use crate::types::{ScanOptions, ScanSummary, SourceAccount};
 
 /// Maps a registry address to an installed [`ContentSource`].
@@ -136,29 +136,10 @@ impl SourceRegistry {
         sources
     }
 
-    /// Plugin keys that have more than one registered instance.
-    ///
-    /// Accounts and [`crate::SourceScope`] stay keyed by storefront id, so
-    /// scanning both would read and write the same rows twice. Those keys are
-    /// skipped. Other sources in the same scan still run.
-    fn ambiguous_plugin_keys(&self) -> std::collections::BTreeMap<String, Vec<String>> {
-        let mut by_key: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        for source in self.sources.values() {
-            let label = match source.plugin_instance_id() {
-                Some(id) if !id.is_empty() => id.to_string(),
-                _ => source.id().to_string(),
-            };
-            by_key
-                .entry(source.plugin_key().to_string())
-                .or_default()
-                .push(label);
-        }
-        by_key.retain(|_, ids| ids.len() > 1);
-        by_key
-    }
-
     /// Scan every registered source (honoring per-source account filters).
+    ///
+    /// Each source scans through its own instance-keyed scope, so two instances
+    /// of one plugin key both run and never read each other's accounts.
     ///
     /// When `opts.accounts` is non-empty, each source only receives the subset of
     /// account needles that resolve to an account on that source. Sources with no
@@ -169,27 +150,15 @@ impl SourceRegistry {
     ///
     /// Returns an error when the operation fails.
     pub async fn scan_all(&self, library: &LibraryStore, opts: ScanOptions) -> Result<ScanSummary> {
-        let ambiguous = self.ambiguous_plugin_keys();
         let mut total = ScanSummary::default();
         let mut any = false;
-        for (key, ids) in &ambiguous {
-            let detail = format!(
-                "scan skipped `{key}` ({}); pass a plugin instance id. Accounts stay keyed by storefront id",
-                ids.join(", ")
-            );
-            tracing::warn!("{detail}");
-            total.warnings.push(detail);
-        }
         for source in self.all() {
-            if ambiguous.contains_key(source.plugin_key()) {
-                continue;
-            }
             if opts.is_cancelled() {
                 return Err(crate::error::SourceError::Other(anyhow::anyhow!(
                     "cancelled"
                 )));
             }
-            let scope = library.scope(source.id());
+            let scope = source_scope(library, source.as_ref());
             let source_opts =
                 match filter_scan_opts_for_source(source.as_ref(), &scope, &opts).await {
                     Ok(Some(o)) => o,
@@ -218,9 +187,6 @@ impl SourceRegistry {
             }
         }
         if !any && total.accounts == 0 {
-            if !ambiguous.is_empty() {
-                return Err(SourceError::api(total.warnings.join("; ")));
-            }
             return Err(SourceError::no_accounts(
                 "no accounts configured — connect a store in the Bookclerk Accounts UI",
             ));
@@ -423,10 +389,14 @@ mod tests {
 
         async fn scan(
             &self,
-            _scope: &bookclerk_library::SourceScope,
+            scope: &bookclerk_library::SourceScope,
             _opts: crate::types::ScanOptions,
         ) -> Result<crate::types::ScanSummary> {
             self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            scope
+                .upsert_account("shared-login", "us", None, true)
+                .await
+                .map_err(|err| crate::error::SourceError::api(err.to_string()))?;
             Ok(crate::types::ScanSummary {
                 accounts: 1,
                 ..crate::types::ScanSummary::default()
@@ -519,18 +489,22 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn scan_all_skips_only_the_ambiguous_key() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-
+    async fn memory_library() -> bookclerk_library::LibraryStore {
         let db = bookclerk_plugin_database_sqlite::open_memory()
             .await
             .expect("sqlite");
         bookclerk_library::apply_host_schema(&db)
             .await
             .expect("schema");
-        let store = bookclerk_library::LibraryStore::from_connection(db);
+        bookclerk_library::LibraryStore::from_connection(db)
+    }
+
+    #[tokio::test]
+    async fn scan_all_scans_every_instance_of_one_key() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let store = memory_library().await;
         let audible = Arc::new(AtomicUsize::new(0));
         let graphic = Arc::new(AtomicUsize::new(0));
         let mut registry = SourceRegistry::new();
@@ -555,72 +529,53 @@ mod tests {
         let summary = registry
             .scan_all(&store, crate::types::ScanOptions::default())
             .await
-            .expect("other sources still scan");
+            .expect("every instance scans");
         assert_eq!(audible.load(Ordering::SeqCst), 1);
-        assert_eq!(graphic.load(Ordering::SeqCst), 0);
-        assert!(
-            summary
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("local/graphicaudio")),
-            "{:?}",
-            summary.warnings
+        assert_eq!(graphic.load(Ordering::SeqCst), 2);
+        assert_eq!(summary.accounts, 3);
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+
+        let mut owners: Vec<_> = store
+            .list_accounts()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|a| (a.plugin_instance_id, a.source))
+            .collect();
+        owners.sort();
+        assert_eq!(
+            owners,
+            [
+                ("audible".to_string(), "audible".to_string()),
+                ("instance-a".to_string(), "graphicaudio".to_string()),
+                ("instance-b".to_string(), "graphicaudio".to_string()),
+            ],
+            "one login id on two instances stays two isolated rows"
         );
-        assert_eq!(summary.accounts, 1);
     }
 
     #[tokio::test]
-    async fn scan_all_reports_ambiguity_when_nothing_else_scans() {
-        use std::sync::atomic::AtomicUsize;
+    async fn scan_all_with_only_sibling_instances_scans_both() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
-        let db = bookclerk_plugin_database_sqlite::open_memory()
-            .await
-            .expect("sqlite");
-        bookclerk_library::apply_host_schema(&db)
-            .await
-            .expect("schema");
-        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let store = memory_library().await;
         let graphic = Arc::new(AtomicUsize::new(0));
         let mut registry = SourceRegistry::new();
-        registry.register(counting(
-            "graphicaudio",
-            "local/graphicaudio",
-            Some("instance-a"),
-            Arc::clone(&graphic),
-        ));
-        registry.register(counting(
-            "graphicaudio",
-            "local/graphicaudio",
-            Some("instance-b"),
-            Arc::clone(&graphic),
-        ));
-        let err = registry
+        for instance in ["instance-a", "instance-b"] {
+            registry.register(counting(
+                "graphicaudio",
+                "local/graphicaudio",
+                Some(instance),
+                Arc::clone(&graphic),
+            ));
+        }
+        let summary = registry
             .scan_all(&store, crate::types::ScanOptions::default())
             .await
-            .expect_err("ambiguity is the error when nothing else scans");
-        let text = err.to_string();
-        assert!(text.contains("instance-a"), "{text}");
-        assert!(text.contains("instance-b"), "{text}");
-        assert!(text.contains("plugin instance id"), "{text}");
-        assert!(
-            !text.contains("connect a store"),
-            "a connected ambiguous store must not look unconfigured: {text}"
-        );
-        assert_eq!(graphic.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-        let mut filtered = crate::types::ScanOptions::default();
-        filtered.accounts.push("ga-user".into());
-        let filtered_err = registry
-            .scan_all(&store, filtered)
-            .await
-            .expect_err("an explicit account still reports the skipped key");
-        let filtered_text = filtered_err.to_string();
-        assert!(filtered_text.contains("instance-a"), "{filtered_text}");
-        assert!(
-            !filtered_text.contains("connect a store"),
-            "{filtered_text}"
-        );
+            .expect("sibling instances scan");
+        assert_eq!(graphic.load(Ordering::SeqCst), 2);
+        assert_eq!(summary.accounts, 2);
     }
 
     #[test]
