@@ -293,6 +293,8 @@ export interface PortalSource {
  */
 export interface PortalConnection {
   account_id: string;
+  /** Provenance-qualified PluginKey that owns the account. */
+  plugin_key: string;
   source: string;
   label: string | null;
   connection_status: string;
@@ -1600,17 +1602,41 @@ export interface PluginSettingChoice {
 
 /**
  * Editable plugin setting descriptor from the settings API.
+ *
+ * For a plugin instance group the key is the bare `[[settings]]` key from the
+ * plugin's manifest and `value` is the effective value (document over schema
+ * default). A `secret` option never carries its value.
  */
 export interface PluginSettingOption {
   key: string;
   label: string;
   value: string;
-  value_type: "string" | "boolean" | "number";
+  value_type: "string" | "boolean" | "number" | "secret";
   choices?: PluginSettingChoice[];
+  /** True for a `secret` setting; `value` is always empty. */
+  secret?: boolean;
+  /** For a secret setting, whether a sealed value is stored for the instance. */
+  secret_set?: boolean;
 }
 
 /**
- * Settings group for one installed plugin.
+ * This host's deployment of a plugin instance, with its latest observation.
+ */
+export interface PluginDeploymentView {
+  deployment_id: string;
+  host_id: string;
+  /** `present` (enabled) or `absent` (disabled). */
+  desired: "present" | "absent" | string;
+  revision: number;
+  /** `installed`, `running`, `healthy`, `error`, or `retired` when observed. */
+  status?: string;
+  detail?: string;
+  applied_config_revision?: number;
+  observed_at?: string;
+}
+
+/**
+ * Settings group for one plugin instance, or for a bootstrap database adapter.
  */
 export interface PluginSettingsGroup {
   id: string;
@@ -1623,6 +1649,42 @@ export interface PluginSettingsGroup {
   /** Google favicon (or portal brand) URL for Settings list rows. */
   logo?: string;
   settings: PluginSettingOption[];
+  /** Instance this group edits; absent for a `config.toml`-backed database adapter. */
+  plugin_instance_id?: string;
+  /** Operator-facing instance name, when set. */
+  display_name?: string;
+  /** True when a bare plugin key or alias routes to this instance. */
+  is_default?: boolean;
+  /** Instance document revision for compare-and-swap writes. */
+  config_revision?: number;
+  /** This host's deployment of the instance, when one exists. */
+  deployment?: PluginDeploymentView;
+}
+
+/**
+ * Instance document as `GET /api/config/plugin-instances/{id}/config` returns it.
+ */
+export interface PluginInstanceConfig {
+  plugin_instance_id: string;
+  plugin_key: string;
+  revision: number;
+  /** Stored settings (operator writes only; defaults are not stored). */
+  settings: Record<string, string | number | boolean>;
+  /** Secret refs (names only). */
+  secret_refs: { key: string; name: string }[];
+  /** Schema defaults under the stored settings. */
+  effective: Record<string, unknown>;
+}
+
+/**
+ * Body for `PUT /api/config/plugin-instances/{id}/config`.
+ */
+export interface PluginInstanceConfigWrite {
+  expected_revision: number;
+  settings: Record<string, string | number | boolean>;
+  secret_refs: { key: string; name: string }[];
+  /** Secret values to seal; never echoed back. */
+  secrets?: Record<string, string>;
 }
 
 /**
@@ -1920,6 +1982,73 @@ export async function fetchSettings(): Promise<SettingsResponse> {
  * @param body - List of `{ key, value }` updates (plugin knobs use dotted keys).
  * @returns Refreshed settings payload after the patch.
  */
+/**
+ * Reads a plugin instance's stored document.
+ *
+ * @param instanceId - Plugin instance id.
+ * @returns Stored settings, secret refs, and the document revision.
+ */
+export async function fetchPluginInstanceConfig(instanceId: string): Promise<PluginInstanceConfig> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/config`,
+    { credentials: "include" },
+  );
+  return parseJson<PluginInstanceConfig>(res);
+}
+
+/**
+ * Replaces a plugin instance's document (compare-and-swap on `expected_revision`).
+ *
+ * Secrets in `body.secrets` are sealed server-side and referenced by name;
+ * the response never carries them.
+ *
+ * @param instanceId - Plugin instance id.
+ * @param body - New document plus secrets to seal.
+ * @returns The committed revision.
+ */
+export async function putPluginInstanceConfig(
+  instanceId: string,
+  body: PluginInstanceConfigWrite,
+): Promise<{ plugin_instance_id: string; revision: number }> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/config`,
+    {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * Sets whether a plugin instance should run on a host (the enable switch).
+ *
+ * @param instanceId - Plugin instance id.
+ * @param hostId - Target host id.
+ * @param desired - `present` to run it there, `absent` to retire it.
+ * @param expectedRevision - Deployment revision last observed, for compare-and-swap.
+ * @returns The deployment row after the write.
+ */
+export async function putPluginDeployment(
+  instanceId: string,
+  hostId: string,
+  desired: "present" | "absent",
+  expectedRevision?: number,
+): Promise<PluginDeploymentView> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/deployments/${encodeURIComponent(hostId)}`,
+    {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ desired, expected_revision: expectedRevision }),
+    },
+  );
+  return parseJson<PluginDeploymentView>(res);
+}
+
 export async function patchSettings(body: { settings: SettingsUpdate[] }): Promise<SettingsResponse> {
   const res = await fetch("/api/settings", {
     method: "PATCH",
@@ -2106,13 +2235,16 @@ export async function portalConnections(): Promise<PortalConnection[]> {
  * Disconnects a storefront account from the current portal user.
  *
  * Does not delete library rows; only revokes the sealed credentials / link.
+ * Accounts belong to a plugin, so the source (alias or PluginKey) is part of
+ * the address: the same account id may exist on two stores.
  *
+ * @param source - Source id or PluginKey from {@link portalConnections}.
  * @param accountId - Portal connection account id from {@link portalConnections}.
  * @returns Resolves when the revoke POST succeeds.
  */
-export async function portalRevokeConnection(accountId: string): Promise<void> {
+export async function portalRevokeConnection(source: string, accountId: string): Promise<void> {
   const res = await fetch(
-    `/api/portal/connections/${encodeURIComponent(accountId)}/revoke`,
+    `/api/portal/sources/${encodeURIComponent(source)}/connections/${encodeURIComponent(accountId)}/revoke`,
     {
       method: "POST",
       credentials: "include",
