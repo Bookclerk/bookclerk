@@ -100,6 +100,6 @@ pub use redact::{
 };
 pub use settings::{
     AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig, DiagnosticsConfig,
-    DiscoveryConfig, LibraryConfig, TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX,
-    TRAY_HANDOFF_TTL_SECS_MIN,
+    DiscoveryConfig, LibraryConfig, ProcessEnvGuard, TRAY_HANDOFF_TTL_SECS_DEFAULT,
+    TRAY_HANDOFF_TTL_SECS_MAX, TRAY_HANDOFF_TTL_SECS_MIN,
 };

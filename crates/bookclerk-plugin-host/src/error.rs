@@ -11,6 +11,11 @@ pub enum PluginError {
     /// Operator-facing error text with no structured code.
     #[error("{0}")]
     Message(String),
+    /// Instance selection failed closed: missing, wrong plugin key, or ambiguous.
+    ///
+    /// Callers match this variant instead of the message text.
+    #[error("{0}")]
+    InstanceSelection(String),
     /// Backend or plugin transport is temporarily unreachable; retry the same
     /// idempotency key when the caller still holds consume-once material.
     #[error("unavailable: {0}")]
@@ -59,6 +64,18 @@ impl PluginError {
     #[must_use]
     pub fn unavailable(msg: impl Into<String>) -> Self {
         Self::Unavailable(msg.into())
+    }
+
+    /// Instance id, plugin key, or alias cannot select exactly one instance.
+    #[must_use]
+    pub fn instance_selection(msg: impl Into<String>) -> Self {
+        Self::InstanceSelection(msg.into())
+    }
+
+    /// True when spawn must stop instead of skipping this guest.
+    #[must_use]
+    pub fn is_instance_selection(&self) -> bool {
+        matches!(self, Self::InstanceSelection(_))
     }
 
     /// Maps a guest ABI error, preserving [`unavailable`](Self::unavailable)

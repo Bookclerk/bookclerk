@@ -58,6 +58,22 @@ pub trait ContentSource: Send + Sync {
         self.id()
     }
 
+    /// Plugin instance that owns this deployed source.
+    ///
+    /// `None` for transitional startup and in-crate adapters, which stay
+    /// addressable by [`Self::plugin_key`] and [`Self::id`]. Two deployed
+    /// instances of one key each return their own id.
+    fn plugin_instance_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// Native guest pid when this process spawned the source.
+    ///
+    /// `None` for in-process adapters and sources that have not recorded a pid.
+    fn guest_pid(&self) -> Option<u32> {
+        None
+    }
+
     /// Human-facing store name for UI / logs.
     fn display_name(&self) -> &str {
         self.id()

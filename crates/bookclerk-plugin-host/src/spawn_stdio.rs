@@ -255,6 +255,8 @@ pub(crate) async fn spawn_stdio_guest(
     config: &Config,
     config_table: Value,
     extra_env: &[(&str, OsString)],
+    local_output_root: Option<&std::path::Path>,
+    deployed_s3_endpoint: Option<Option<&str>>,
 ) -> Result<SpawnedStdio> {
     if let Some(message) = plugin.manifest.unimplemented_surface() {
         return Err(PluginError::message(message));
@@ -264,12 +266,12 @@ pub(crate) async fn spawn_stdio_guest(
     tokio::task::yield_now().await;
     let alias = plugin.manifest.id.clone();
     let persisted_grant = spawn_grant(&config.paths().files_dir, plugin)?;
-    let grant = effective_spawn_grant(&persisted_grant, plugin, config);
+    let grant = effective_spawn_grant(&persisted_grant, plugin, config, deployed_s3_endpoint);
     let spawn_config = spawn_config_for_grant(&grant, config_table);
     // Unix takes the cgroup and guest IPC directory out of the jail. Windows
     // only moves fields, so `mut` is unused there.
     #[cfg_attr(windows, allow(unused_mut))]
-    let mut jail = GuestJail::plan(config, plugin, plan)?;
+    let mut jail = GuestJail::plan_with_local_root(config, plugin, plan, local_output_root)?;
     note_spawn_stage(&format!("spawn planned plugin={id}"));
     let mut session_guard = SessionDirGuard(jail.session_dir.clone());
     let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
@@ -927,6 +929,42 @@ pub(crate) fn exited_without_reaping(pid: u32) -> bool {
         return false;
     }
     unsafe { info.assume_init().si_pid() == pid as libc::pid_t }
+}
+
+/// True when `pid` still has a running process.
+///
+/// A zombie child counts as exited. A recycled pid can look alive; callers
+/// that still hold the session use this only to decide whether to respawn.
+#[cfg(unix)]
+pub(crate) fn process_still_running(pid: u32) -> bool {
+    if exited_without_reaping(pid) {
+        return false;
+    }
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// True when `pid` still has a running process.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(crate) fn process_still_running(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        let _ = CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
 }
 
 /// Capture identities for leaders that exist right now.
@@ -2968,17 +3006,22 @@ pub(crate) fn with_spawn_detail(err: PluginError, extra: String) -> PluginError 
 }
 
 /// Applies host-implied network overlays to a persisted spawn grant.
+///
+/// `deployed_s3_endpoint` is `Some` for a deployed S3 instance. That value
+/// replaces `[output.s3].endpoint` on the grant this spawn injects.
 pub(crate) fn effective_spawn_grant(
     persisted: &PluginGrant,
     plugin: &DiscoveredPlugin,
     config: &Config,
+    deployed_s3_endpoint: Option<Option<&str>>,
 ) -> PluginGrant {
     let mut grant = persisted.clone();
-    crate::consent::overlay_host_implied_network(
+    crate::consent::overlay_host_implied_network_with(
         &mut grant,
         plugin,
         config,
         &overlay_discovered_plugins(config, plugin),
+        deployed_s3_endpoint,
     );
     grant
 }

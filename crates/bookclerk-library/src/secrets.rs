@@ -73,6 +73,11 @@ pub mod secret_kind {
     pub const OIDC_CLIENT: &str = "oidc_client";
     /// User TOTP shared secret (`name` = `primary` or `pending`).
     pub const TOTP: &str = "totp";
+    /// Plugin-instance secret referenced by a `plugin_instance` config document.
+    ///
+    /// Ciphertext stays in this table. The configuration document stores the
+    /// ref name only.
+    pub const PLUGIN_INSTANCE: &str = "plugin_instance";
 }
 
 /// Ownership namespace for `encrypted_secrets.account_type`.
@@ -89,6 +94,10 @@ pub mod secret_account_type {
     pub const OPERATOR: &str = "operator";
     /// First-party user secrets (TOTP), purged when that user is deleted.
     pub const USER: &str = "user";
+    /// Secrets owned by one [`crate::control_plane::PluginInstanceId`].
+    ///
+    /// Not purged with store accounts. `account_id` is the instance id.
+    pub const PLUGIN_INSTANCE: &str = "plugin_instance";
 }
 
 // ── Format constants ─────────────────────────────────────────────────────────

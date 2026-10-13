@@ -12,10 +12,26 @@ pub async fn default_registry_with_plugins(
     config: &Config,
     outbox: &LibraryStore,
 ) -> anyhow::Result<SourceRegistry> {
-    Ok(
-        bookclerk_plugin_host::load_sources(config, &SessionServices::from_outbox(Some(outbox)))
-            .await?,
-    )
+    registry_with_instance(config, outbox, None).await
+}
+
+/// [`default_registry_with_plugins`] that selects one plugin instance.
+///
+/// `instance_id` applies to the plugin key that owns that id. A migrated
+/// instance uses its document. Several documents for one key require this id.
+///
+/// # Errors
+///
+/// Returns an error when discovery or guest spawn fails, or when instance
+/// selection is ambiguous or unknown.
+pub async fn registry_with_instance(
+    config: &Config,
+    outbox: &LibraryStore,
+    instance_id: Option<&str>,
+) -> anyhow::Result<SourceRegistry> {
+    let mut services = SessionServices::from_outbox(Some(outbox));
+    services.selected_instance_id = instance_id.map(str::to_string);
+    Ok(bookclerk_plugin_host::load_sources(config, &services).await?)
 }
 
 /// Integrations via the plugin host (in-process builtins + externals);
@@ -54,19 +70,32 @@ pub async fn open_library(config: &Config) -> anyhow::Result<LibraryStore> {
 }
 
 /// Resolve `--source` against registered plugin ids / aliases.
+///
+/// Two instances that share a key or alias fail closed with the candidate
+/// instance ids. They are not reported as an unknown source.
 pub fn resolve_source_id(registry: &SourceRegistry, s: &str) -> anyhow::Result<String> {
-    registry.resolve_id(s).ok_or_else(|| {
-        let known: Vec<_> = registry
-            .all()
-            .into_iter()
-            .map(|src| src.id().to_string())
-            .collect();
-        if known.is_empty() {
-            anyhow::anyhow!(
-                "unknown source `{s}` (no content sources registered — check `[sources.*] enabled` and plugins/)"
-            )
-        } else {
-            anyhow::anyhow!("unknown source `{s}` (registered: {})", known.join(", "))
+    match registry.require(s) {
+        Ok(source) => Ok(source.id().to_string()),
+        Err(err) => {
+            let text = err.to_string();
+            if text.contains("ambiguous") {
+                return Err(anyhow::anyhow!(text));
+            }
+            let known: Vec<_> = registry
+                .all()
+                .into_iter()
+                .map(|src| src.id().to_string())
+                .collect();
+            if known.is_empty() {
+                Err(anyhow::anyhow!(
+                    "unknown source `{s}` (no content sources registered — check `[sources.*] enabled` and plugins/)"
+                ))
+            } else {
+                Err(anyhow::anyhow!(
+                    "unknown source `{s}` (registered: {})",
+                    known.join(", ")
+                ))
+            }
         }
-    })
+    }
 }

@@ -2039,13 +2039,29 @@ pub fn overlay_host_implied_network(
     config: &Config,
     discovered: &[crate::discover::DiscoveredPlugin],
 ) {
+    overlay_host_implied_network_with(grant, plugin, config, discovered, None);
+}
+
+/// [`overlay_host_implied_network`] with a deployed S3 document endpoint.
+///
+/// `deployed_s3_endpoint` of `Some` means this spawn is a deployed S3
+/// instance. The inner value is the document `endpoint` (`None` when the
+/// document has no custom endpoint). That path does not read
+/// `[output.s3].endpoint`.
+pub(crate) fn overlay_host_implied_network_with(
+    grant: &mut PluginGrant,
+    plugin: &crate::discover::DiscoveredPlugin,
+    config: &Config,
+    discovered: &[crate::discover::DiscoveredPlugin],
+    deployed_s3_endpoint: Option<Option<&str>>,
+) {
     if !grant.network_mode.eq_ignore_ascii_case("outbound") {
         return;
     }
     overlay_postgres_url(grant, plugin, config, discovered);
     overlay_d1_api_base(grant, plugin, config, discovered);
     overlay_audiobookshelf_url(grant, plugin, config, discovered);
-    overlay_s3_endpoint(grant, plugin, config, discovered);
+    overlay_s3_endpoint(grant, plugin, config, discovered, deployed_s3_endpoint);
 }
 
 /// SHA-256 of host config that participates in implied network overlays.
@@ -2099,6 +2115,15 @@ pub fn host_overlay_config_digest(config: &Config) -> String {
 ///
 /// Host-config destination changes do not touch `plugin-grants.json`, so the
 /// grant watcher cannot see them. Config reload must call this.
+///
+/// A deployed S3 session is recomputed with the document endpoint recorded at
+/// registration. That path does not read `[output.s3].endpoint`, so a settings
+/// reload cannot cancel an in-flight upload because the TOML endpoint differs
+/// or is unset. Transitional sessions still overlay the TOML endpoint.
+///
+/// A revision mismatch fences that session only. Several vats may share one
+/// PluginKey with different effective revisions, and cancelling the key would
+/// kill a deployed upload when a transitional session's TOML endpoint changes.
 pub fn reconcile_host_overlay_authority(config: &Config) {
     let discovered = match crate::discover_plugins(config) {
         Ok(found) => found,
@@ -2114,22 +2139,33 @@ pub fn reconcile_host_overlay_authority(config: &Config) {
             return;
         }
     };
-    for (key, session_rev) in crate::authority::live_authority_snapshot() {
+    for session in crate::authority::live_overlay_sessions() {
+        let key = session.plugin_key.as_str();
         let Some(plugin) = discovered
             .iter()
             .find(|plugin| plugin.plugin_key().canonical() == key)
         else {
             continue;
         };
-        let Some(persisted) = store.get_by_plugin_key(&key) else {
-            crate::authority::fence_stale_sessions(&key, "");
+        let Some(persisted) = store.get_by_plugin_key(key) else {
+            crate::authority::fence_stale_sessions(key, "");
             continue;
         };
         let mut effective = persisted.clone();
-        overlay_host_implied_network(&mut effective, plugin, config, &discovered);
+        let deployed_s3_endpoint = session
+            .deployed_s3_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.as_deref());
+        overlay_host_implied_network_with(
+            &mut effective,
+            plugin,
+            config,
+            &discovered,
+            deployed_s3_endpoint,
+        );
         let current = crate::authority::authority_revision(&effective);
-        if current != session_rev {
-            crate::authority::fence_stale_sessions(&key, &current);
+        if current != session.revision {
+            crate::authority::fence_session(&session.cancelled);
         }
     }
 }
@@ -2261,8 +2297,15 @@ fn overlay_s3_endpoint(
     plugin: &crate::discover::DiscoveredPlugin,
     config: &Config,
     discovered: &[crate::discover::DiscoveredPlugin],
+    deployed_s3_endpoint: Option<Option<&str>>,
 ) {
     if !plugin.alias().eq_ignore_ascii_case("s3") {
+        return;
+    }
+    if let Some(endpoint) = deployed_s3_endpoint {
+        if let Some(endpoint) = endpoint.filter(|endpoint| !endpoint.trim().is_empty()) {
+            overlay_http_url(grant, endpoint, 443);
+        }
         return;
     }
     let spec = crate::occupancy_spec(&config.output.s3.plugin, "s3");
@@ -3106,6 +3149,241 @@ mode = "outbound"
         overlay_host_implied_network(&mut grant, &plugin, &config, std::slice::from_ref(&plugin));
         assert!(grant.egress_policy().allows_tcp("127.0.0.1", 9000));
         assert!(grant.address_cidrs.contains("127.0.0.1/32"));
+    }
+
+    #[test]
+    fn deployed_s3_document_host_is_the_network_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = discovered(
+            dir.path(),
+            r#"
+api_version = 3
+id = "s3"
+runtime = "native"
+command = "./guest"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "outbound"
+
+[vars]
+"#,
+        );
+        let mut config = Config::default();
+        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
+        let mut grant = consent_request(&plugin.manifest, plugin.plugin_key());
+        overlay_host_implied_network_with(
+            &mut grant,
+            &plugin,
+            &config,
+            std::slice::from_ref(&plugin),
+            Some(Some("http://minio.lan:9000")),
+        );
+        let policy = grant.egress_policy();
+        assert!(
+            policy.allows_tcp("minio.lan", 9000),
+            "document endpoint must be in the spawn network grant: {policy:?}"
+        );
+        assert!(
+            !policy.allows_tcp("127.0.0.1", 9000),
+            "a stale [output.s3].endpoint must not be granted to a deployed instance: {policy:?}"
+        );
+
+        let mut bare = consent_request(&plugin.manifest, plugin.plugin_key());
+        overlay_host_implied_network_with(
+            &mut bare,
+            &plugin,
+            &config,
+            std::slice::from_ref(&plugin),
+            Some(None),
+        );
+        assert!(
+            bare.tcp.is_empty(),
+            "a document with no endpoint must not inherit the TOML endpoint: {bare:?}"
+        );
+    }
+
+    const S3_PLUGIN_TOML: &str = r#"
+api_version = 3
+id = "s3"
+runtime = "native"
+command = "./guest"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "outbound"
+
+[vars]
+"#;
+
+    /// Restores `BOOKCLERK_PLUGIN_DIRS` so discovery stays inside the temp files dir.
+    struct PluginDirsGuard {
+        previous: Option<String>,
+    }
+
+    impl PluginDirsGuard {
+        #[allow(unsafe_code)]
+        fn clear() -> Self {
+            let previous = std::env::var("BOOKCLERK_PLUGIN_DIRS").ok();
+            unsafe {
+                std::env::remove_var("BOOKCLERK_PLUGIN_DIRS");
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for PluginDirsGuard {
+        fn drop(&mut self) {
+            restore_plugin_dirs(&self.previous);
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn restore_plugin_dirs(previous: &Option<String>) {
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("BOOKCLERK_PLUGIN_DIRS", value),
+                None => std::env::remove_var("BOOKCLERK_PLUGIN_DIRS"),
+            }
+        }
+    }
+
+    struct RegisteredSession(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for RegisteredSession {
+        fn drop(&mut self) {
+            crate::authority::unregister_session(&self.0);
+        }
+    }
+
+    fn register_s3(
+        plugin_key: &str,
+        persisted: &PluginGrant,
+        revision: &str,
+        deployed_s3_endpoint: Option<Option<String>>,
+    ) -> RegisteredSession {
+        RegisteredSession(
+            crate::authority::register_session_revisions_on_with_deployed_s3(
+                plugin_key,
+                &grant_revision(persisted),
+                revision,
+                std::sync::Arc::new(|| {}),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                deployed_s3_endpoint,
+            ),
+        )
+    }
+
+    #[test]
+    fn reload_fence_keeps_a_deployed_s3_endpoint() {
+        let _live = crate::authority::test_live_lock();
+        let _env = bookclerk_config::ProcessEnvGuard::enter();
+        let _dirs = PluginDirsGuard::clear();
+
+        let files = tempfile::tempdir().unwrap();
+        let _staged = discovered(&files.path().join("plugins").join("s3"), S3_PLUGIN_TOML);
+        let mut config = Config {
+            paths: Some(bookclerk_config::Paths::from_files_dir(
+                files.path().to_path_buf(),
+            )),
+            ..Config::default()
+        };
+        let found = crate::discover_plugins(&config).expect("s3 install discovers");
+        let plugin = found
+            .iter()
+            .find(|plugin| plugin.alias() == "s3")
+            .expect("staged s3 plugin");
+        let persisted = consent_request(&plugin.manifest, plugin.plugin_key());
+        let mut store = PluginGrantStore::default();
+        store.upsert(persisted.clone());
+        store.save(files.path()).expect("grant store");
+        let key = plugin.plugin_key().canonical();
+
+        let mut deployed = persisted.clone();
+        overlay_host_implied_network_with(
+            &mut deployed,
+            plugin,
+            &config,
+            &found,
+            Some(Some("http://minio.lan:9000")),
+        );
+        let deployed_rev = crate::authority::authority_revision(&deployed);
+        let deployed_flag = register_s3(
+            key,
+            &persisted,
+            &deployed_rev,
+            Some(Some("http://minio.lan:9000".into())),
+        );
+        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
+        config.library.auto_acquire = true;
+        reconcile_host_overlay_authority(&config);
+        assert!(
+            !crate::authority::is_fenced(&deployed_flag.0),
+            "a deployed document endpoint must survive a TOML endpoint and an unrelated reload"
+        );
+
+        let mut bare = persisted.clone();
+        overlay_host_implied_network_with(&mut bare, plugin, &config, &found, Some(None));
+        let bare_rev = crate::authority::authority_revision(&bare);
+        let bare_flag = register_s3(key, &persisted, &bare_rev, Some(None));
+        config.output.s3.endpoint = Some("http://10.0.0.8:9000".into());
+        reconcile_host_overlay_authority(&config);
+        assert!(
+            !crate::authority::is_fenced(&bare_flag.0),
+            "a deployed instance with no document endpoint must not inherit a new TOML endpoint"
+        );
+        assert!(
+            !crate::authority::is_fenced(&deployed_flag.0),
+            "the document-endpoint session must stay live beside the bare deployed session"
+        );
+
+        let stale_sibling = register_s3(
+            key,
+            &persisted,
+            "not-the-document-revision",
+            Some(Some("http://minio.lan:9000".into())),
+        );
+        reconcile_host_overlay_authority(&config);
+        assert!(
+            crate::authority::is_fenced(&stale_sibling.0),
+            "a deployed session whose revision no longer matches must fence"
+        );
+        assert!(
+            !crate::authority::is_fenced(&deployed_flag.0),
+            "fencing one deployed session must not cancel its sibling"
+        );
+        assert!(
+            !crate::authority::is_fenced(&bare_flag.0),
+            "fencing one deployed session must not cancel the other deployed instance"
+        );
+        drop(stale_sibling);
+
+        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
+        let mut transitional = persisted.clone();
+        overlay_host_implied_network(&mut transitional, plugin, &config, &found);
+        let transitional_rev = crate::authority::authority_revision(&transitional);
+        let transitional_flag = register_s3(key, &persisted, &transitional_rev, None);
+        config.library.auto_acquire = false;
+        reconcile_host_overlay_authority(&config);
+        assert!(
+            !crate::authority::is_fenced(&transitional_flag.0),
+            "an unrelated reload must not fence a transitional session whose TOML endpoint is unchanged"
+        );
+        assert!(!crate::authority::is_fenced(&deployed_flag.0));
+        config.output.s3.endpoint = Some("http://10.1.1.1:9000".into());
+        reconcile_host_overlay_authority(&config);
+        assert!(
+            crate::authority::is_fenced(&transitional_flag.0),
+            "a transitional session must still fence when [output.s3].endpoint changes"
+        );
+        assert!(
+            !crate::authority::is_fenced(&deployed_flag.0),
+            "a TOML endpoint change must not cancel a deployed session that shares the plugin key"
+        );
+        assert!(
+            !crate::authority::is_fenced(&bare_flag.0),
+            "a TOML endpoint change must not cancel a deployed instance with no document endpoint"
+        );
     }
 
     #[test]

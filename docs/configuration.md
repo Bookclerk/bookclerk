@@ -140,12 +140,28 @@ batch them with `events.*`. `GET /api/settings` includes `events.revision` in
 Running processes re-read the document about every 5 seconds and on startup.
 A reload reads that document before it replaces live integrations, sources,
 destinations, the library connection, or operator auth. If the read fails, the
-previous runtime stays in place. A newer revision of the same cluster is not
+previous runtime stays in place. Source, integration, and storage sessions
+bound to a present plugin instance id are copied onto the replacement
+registries and are not stopped. A transitional guest for the same plugin key
+is retired. A newer revision of the same cluster is not
 replaced by the older snapshot.
 Retention and the in-flight cap apply on the next dispatcher tick. The number
 of local delivery tasks is chosen at process start. Other `[events]` neighbors
 in this file (`[library]`, `[jobs]`, sources, output, media, plugins,
 diagnostics) are still TOML and environment configuration.
+
+GraphicAudio `access`, `base_url`, `store_url`, `bitrate`, and `container`
+move to the plugin instance document the first time that manifest is
+installed. After the document exists, `PATCH /api/settings` rejects those
+keys. Change them with `PUT /api/config/plugin-instances/{id}/config`
+(`expected_revision`, scalar `settings`, and secret ref names). The device
+token stays on the account credential, not in the document.
+`sources.graphicaudio.enabled` stays in `config.toml`. Setting it to false
+retires the running guest on reconcile and on reload. `bookclerk library scan`
+and `bookclerk library acquire` read the instance document and require
+`--instance` when more than one instance shares the plugin key. Plugins with no
+instance document still read their `[sources.*]` / `[integrations.*]` /
+`[output.*]` tables.
 
 Acked/rejected deliveries use `retention_days`. Parent events with no remaining
 live deliveries are kept until that same cutoff so a late node can still
