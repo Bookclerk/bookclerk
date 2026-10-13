@@ -1449,7 +1449,7 @@ mode = "deny"
 }
 
 #[tokio::test]
-async fn enroll_local_imports_once_and_ignores_later_toml() {
+async fn enroll_local_uses_code_default_not_toml() {
     let _guard = TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path().to_path_buf();
@@ -1458,8 +1458,8 @@ async fn enroll_local_imports_once_and_ignores_later_toml() {
     let mut config =
         Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
     config.output.local.enabled = true;
-    config.output.local.root = PathBuf::from("Audiobooks-v1");
-    config.output.local.prefix = "pref/".into();
+    config.output.local.root = PathBuf::from("Audiobooks-from-toml");
+    config.output.local.prefix = "toml-pref/".into();
     let store = file_store(&files.join("library.db")).await;
     let session = bookclerk_library::control_plane::bootstrap_control_plane(
         &store,
@@ -1488,7 +1488,11 @@ async fn enroll_local_imports_once_and_ignores_later_toml() {
         .expect("doc");
     assert_eq!(
         doc.body.settings.get("root"),
-        Some(&SettingValue::String("Audiobooks-v1".into()))
+        Some(&SettingValue::String(crate::LOCAL_DEFAULT_ROOT.into()))
+    );
+    assert_eq!(
+        doc.body.settings.get("prefix"),
+        Some(&SettingValue::String(String::new()))
     );
     config.output.local.root = PathBuf::from("Audiobooks-v2");
     enroll_local_instance(&store, &config, &session.host.host_id)
@@ -1500,12 +1504,12 @@ async fn enroll_local_imports_once_and_ignores_later_toml() {
     assert_eq!(again.revision, doc.revision);
     assert_eq!(
         again.body.settings.get("root"),
-        Some(&SettingValue::String("Audiobooks-v1".into()))
+        Some(&SettingValue::String(crate::LOCAL_DEFAULT_ROOT.into()))
     );
 }
 
 #[tokio::test]
-async fn enroll_s3_skips_when_disabled() {
+async fn enroll_s3_never_imports_toml_and_needs_document_for_deploy() {
     let _guard = TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path().to_path_buf();
@@ -1513,8 +1517,8 @@ async fn enroll_s3_skips_when_disabled() {
     std::fs::write(files.join("config.toml"), "").unwrap();
     let mut config =
         Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
-    config.output.s3.enabled = false;
-    config.output.s3.bucket = "library".into();
+    config.output.s3.enabled = true;
+    config.output.s3.bucket = "library-from-toml".into();
     config.output.s3.region = "us-east-1".into();
     let store = file_store(&files.join("library.db")).await;
     let session = bookclerk_library::control_plane::bootstrap_control_plane(
@@ -1528,14 +1532,26 @@ async fn enroll_s3_skips_when_disabled() {
     .expect("bootstrap");
     enroll_s3_instance(&store, &config, &session.host.host_id)
         .await
-        .expect("enroll disabled");
-    assert!(crate::s3_plugin_key(&config).unwrap().is_some());
-    let key = crate::s3_plugin_key(&config).unwrap().unwrap();
+        .expect("enroll");
+    let key = crate::s3_plugin_key(&config).unwrap().expect("s3 key");
+    let instances = bookclerk_library::control_plane::list_plugin_instances_for_key(&store, &key)
+        .await
+        .unwrap();
+    assert_eq!(instances.len(), 1);
+    assert!(load_instance_config(&store, &instances[0].id)
+        .await
+        .expect_err("no toml seed")
+        .to_string()
+        .contains("not initialized"));
+    let deployments = bookclerk_library::control_plane::list_present_deployments_for_host(
+        &store,
+        &session.host.host_id,
+    )
+    .await
+    .unwrap();
     assert!(
-        bookclerk_library::control_plane::list_plugin_instances_for_key(&store, &key)
-            .await
-            .unwrap()
-            .is_empty()
+        deployments.is_empty(),
+        "S3 deployment requires an operator-written document"
     );
 }
 

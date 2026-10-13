@@ -2719,33 +2719,9 @@ async fn graphicaudio_settings_owned(
     bookclerk_plugin_host::instance_document_exists_for_key(library, key.as_deref()).await
 }
 
-/// True when the S3 destination instance document already owns imported keys.
-async fn s3_settings_owned(
-    library: &bookclerk_library::LibraryStore,
-    config: &Config,
-    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
-) -> Result<bool, bookclerk_plugin_host::PluginError> {
-    let key = match bookclerk_plugin_host::s3_key_from_discovered(discovered) {
-        Some(key) => Some(key),
-        None => bookclerk_plugin_host::s3_key_from_ledger(config)?,
-    };
-    bookclerk_plugin_host::instance_document_exists_for_key(library, key.as_deref()).await
-}
-
-/// True when the local destination instance document already owns imported keys.
-async fn local_settings_owned(
-    library: &bookclerk_library::LibraryStore,
-    config: &Config,
-    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
-) -> Result<bool, bookclerk_plugin_host::PluginError> {
-    let key = match bookclerk_plugin_host::local_key_from_discovered(discovered) {
-        Some(key) => Some(key),
-        None => bookclerk_plugin_host::local_key_from_ledger(config)?,
-    };
-    bookclerk_plugin_host::instance_document_exists_for_key(library, key.as_deref()).await
-}
-
-/// Which imported settings groups are owned by instance documents.
+/// Which settings groups hide file-backed knobs owned by PluginInstance.
+///
+/// First-party destination knobs are always hidden (TOML is not authority).
 async fn omit_imported_settings(
     library: &bookclerk_library::LibraryStore,
     config: &Config,
@@ -2761,30 +2737,10 @@ async fn omit_imported_settings(
             true
         }
     };
-    let s3 = match s3_settings_owned(library, config, discovered).await {
-        Ok(exists) => exists,
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "hiding S3 settings because the instance document could not be read"
-            );
-            true
-        }
-    };
-    let local = match local_settings_owned(library, config, discovered).await {
-        Ok(exists) => exists,
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "hiding local destination settings because the instance document could not be read"
-            );
-            true
-        }
-    };
     OmitImportedSettings {
         graphicaudio,
-        s3,
-        local,
+        s3: true,
+        local: true,
     }
 }
 
@@ -3553,12 +3509,12 @@ async fn patch_settings(
             )
                 .into_response());
         }
-        if omit.s3
-            && updates
-                .iter()
-                .any(|(key, _)| bookclerk_plugin_host::is_s3_imported_setting(key))
+        // Destination config knobs are never file-backed (aggressive cutover).
+        if updates
+            .iter()
+            .any(|(key, _)| bookclerk_plugin_host::is_s3_imported_setting(key))
         {
-            tracing::warn!("rejected settings update for S3 keys owned by the instance document");
+            tracing::warn!("rejected settings update for S3 keys retired from TOML authority");
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -3568,13 +3524,12 @@ async fn patch_settings(
             )
                 .into_response());
         }
-        if omit.local
-            && updates
-                .iter()
-                .any(|(key, _)| bookclerk_plugin_host::is_local_imported_setting(key))
+        if updates
+            .iter()
+            .any(|(key, _)| bookclerk_plugin_host::is_local_imported_setting(key))
         {
             tracing::warn!(
-                "rejected settings update for local destination keys owned by the instance document"
+                "rejected settings update for local destination keys retired from TOML authority"
             );
             return Err((
                 StatusCode::BAD_REQUEST,

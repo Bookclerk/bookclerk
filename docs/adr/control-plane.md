@@ -307,15 +307,18 @@ those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
 TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
 derived from `describe()`, and that schema debt stays until a later phase.
 
-First-party destinations follow the same enrollment path. When `local` or
-`s3` is installed and `output.<id>.enabled` is true, startup ensures one
-instance, one local deployment, and imports non-secret knobs once:
-`root` / `prefix` from `[output.local]`, and `bucket` / `region` / `prefix` /
-`endpoint` / `force_path_style` from `[output.s3]`. Credentials stay on the
-operator/`BOOKCLERK_AWS_*` path (or instance `secret_refs`). Naming templates
-stay TOML for now. After the document exists, `PATCH /api/settings` rejects
-those imported keys. Other plugins with no instance document keep
-`settings_table_for`.
+First-party destinations cut over aggressively (no TOML import path). When
+`local` is installed, startup ensures one instance, seeds a **code-default**
+document (`root = Audiobooks`, empty `prefix`) if absent, and (when
+`output.local.enabled`) a local deployment. When `s3` is installed, startup
+ensures the instance only; a deployment is attached once an operator-written
+instance document exists and `output.s3.enabled` is true. Live
+`[output.local]` / `[output.s3]` knobs are not authority and are not copied
+into the document. First-party transitional spawn fails closed without
+PluginInstance CONFIG. Credentials stay on the operator/`BOOKCLERK_AWS_*`
+path (or instance `secret_refs`). Naming templates and `enabled` stay TOML
+for now. `PATCH /api/settings` rejects the retired destination keys. Other
+plugins with no instance document keep `settings_table_for`.
 
 Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
 not by `PluginInstanceId`. Two instances of one key share credentials and scan

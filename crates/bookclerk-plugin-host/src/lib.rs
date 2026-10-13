@@ -107,7 +107,7 @@ pub use deployment::{
     enroll_destination_instances, enroll_graphicaudio_instance, enroll_local_instance,
     enroll_s3_instance, load_authorized_local_packages, reconcile_local_deployments,
     AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
-    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
+    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR, LOCAL_DEFAULT_ROOT,
 };
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{

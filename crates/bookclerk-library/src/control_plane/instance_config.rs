@@ -172,12 +172,12 @@ impl PluginInstanceConfigV1 {
 pub const GRAPHICAUDIO_IMPORT_KEYS: &[&str] =
     &["access", "base_url", "store_url", "bitrate", "container"];
 
-/// S3 destination keys copied once from `[output.s3]`.
+/// S3 destination keys allowed on the instance document.
 ///
 /// Credentials stay outside the document. Naming templates stay TOML.
 pub const S3_IMPORT_KEYS: &[&str] = &["bucket", "region", "prefix", "endpoint", "force_path_style"];
 
-/// Local destination keys copied once from `[output.local]`.
+/// Local destination keys allowed on the instance document.
 ///
 /// Naming templates stay TOML.
 pub const LOCAL_IMPORT_KEYS: &[&str] = &["root", "prefix"];
@@ -214,9 +214,10 @@ where
     Ok(body)
 }
 
-/// Builds an S3 destination document from `[output.s3]` fields.
+/// Builds an S3 destination document from scalar fields.
 ///
-/// `bucket` and `region` must be non-empty. Credentials are never imported.
+/// `bucket` and `region` must be non-empty. Credentials are never stored here.
+/// Callers must not pass live `[output.s3]` as authority; prefer operator PUT.
 ///
 /// # Errors
 ///
@@ -260,7 +261,9 @@ pub fn s3_config_from_output(
     Ok(body)
 }
 
-/// Builds a local destination document from `[output.local]` fields.
+/// Builds a local destination document from scalar fields.
+///
+/// Used for code-default seed and operator PUT bodies. Not a TOML import path.
 ///
 /// # Errors
 ///

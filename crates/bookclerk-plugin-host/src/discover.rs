@@ -801,12 +801,10 @@ pub fn settings_table_for(
             inject_abs_api_key_from_env(&plugin.manifest.id, &mut table);
             table
         }
-        crate::PluginFamily::Output if is_first_party_s3_output(plugin) => {
-            output_s3_settings_table(&config.output.s3)
-        }
-        crate::PluginFamily::Output if is_first_party_local_output(plugin) => {
-            output_local_settings_table(&config.output.local)
-        }
+        // First-party destinations use PluginInstance CONFIG only. Returning
+        // an empty table keeps transitional callers from applying live TOML.
+        crate::PluginFamily::Output if is_first_party_s3_output(plugin) => toml::Table::new(),
+        crate::PluginFamily::Output if is_first_party_local_output(plugin) => toml::Table::new(),
         crate::PluginFamily::Database => database_settings_table(config, plugin),
         crate::PluginFamily::Output => toml::Table::new(),
     }
@@ -836,22 +834,6 @@ fn database_settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::
         }
     };
     match value {
-        Ok(toml::Value::Table(table)) => table,
-        _ => toml::Table::new(),
-    }
-}
-
-/// Serializes `[output.s3]` into the spawn settings table.
-fn output_s3_settings_table(cfg: &bookclerk_config::OutputS3Config) -> toml::Table {
-    match toml::Value::try_from(cfg) {
-        Ok(toml::Value::Table(table)) => table,
-        _ => toml::Table::new(),
-    }
-}
-
-/// Serializes `[output.local]` into the spawn settings table.
-fn output_local_settings_table(cfg: &bookclerk_config::OutputLocalConfig) -> toml::Table {
-    match toml::Value::try_from(cfg) {
         Ok(toml::Value::Table(table)) => table,
         _ => toml::Table::new(),
     }

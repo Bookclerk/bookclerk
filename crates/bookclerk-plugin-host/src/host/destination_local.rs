@@ -102,6 +102,11 @@ async fn spawn_local_guest(
             .await?
         }
     };
+    if !prepared.from_instance && crate::is_first_party_local_output(plugin) {
+        return Err(crate::PluginError::message(
+            "first-party local destination requires PluginInstance CONFIG; [output.local] is not the authority",
+        ));
+    }
     let config_json = prepared.spawn_config_table.clone();
     let mut services = crate::SessionServices::default();
     let root = if prepared.from_instance {

@@ -499,6 +499,11 @@ async fn spawn_s3_guest_prepared(
     if prepared.from_instance {
         return spawn_s3_from_instance(plugin, config, db, prepared).await;
     }
+    if crate::is_first_party_s3_output(plugin) {
+        return Err(crate::PluginError::message(
+            "first-party s3 destination requires PluginInstance CONFIG; [output.s3] is not the authority",
+        ));
+    }
     let config_json = prepared.spawn_config_table;
     let s3_config = config.output.s3.clone();
     let prefix = normalize_storage_prefix(s3_config.prefix.trim());
@@ -516,9 +521,7 @@ async fn spawn_s3_guest_prepared(
     };
     let grant = crate::consent::spawn_grant(&config.paths().files_dir, plugin)?;
     let mut extra_env = Vec::new();
-    if crate::is_first_party_s3_output(plugin)
-        && crate::consent::grant_has_binding(&grant, "secrets")
-    {
+    if crate::consent::grant_has_binding(&grant, "secrets") {
         if let Some(creds) = &credentials {
             extra_env.push((
                 bookclerk_storage::ENV_AWS_ACCESS_KEY_ID,
@@ -546,15 +549,12 @@ async fn spawn_s3_guest_prepared(
         )
         .await?,
     );
-    let open_bindings = if prepared.from_instance {
-        prepared.bindings
-    } else {
-        BindingValues::config(
+    session
+        .open(BindingValues::config(
             bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
                 .map_err(|err| crate::PluginError::message(err.to_string()))?,
-        )
-    };
-    session.open(open_bindings).await?;
+        ))
+        .await?;
     Ok((PluginStorage::new(Arc::clone(&session)), session))
 }
 

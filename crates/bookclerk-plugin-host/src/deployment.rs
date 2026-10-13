@@ -16,10 +16,10 @@ use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, ensure_plugin_deployment,
     ensure_plugin_instance, graphicaudio_config_from_pairs, import_instance_config_if_absent,
     list_present_deployments_for_host, load_instance_config, load_observation,
-    load_plugin_instance, local_config_from_output, resolve_instance_bindings,
-    s3_config_from_output, upsert_observation, ConfigActor, DeploymentObservation,
-    DeploymentStatus, InstanceBindingGrant, InstancePackagePolicy, GRAPHICAUDIO_IMPORT_KEYS,
-    GRAPHICAUDIO_MANIFEST_ID, LOCAL_MANIFEST_ID, S3_MANIFEST_ID,
+    load_plugin_instance, local_config_from_output, resolve_instance_bindings, upsert_observation,
+    ConfigActor, DeploymentObservation, DeploymentStatus, InstanceBindingGrant,
+    InstancePackagePolicy, GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID, LOCAL_MANIFEST_ID,
+    S3_MANIFEST_ID,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{
@@ -280,25 +280,28 @@ fn graphicaudio_pairs(config: &Config) -> Vec<(String, String)> {
     pairs
 }
 
-/// Ensures the local destination instance, imported document, and deployment.
+/// Code-default local root when no instance document exists yet.
 ///
-/// A second call returns the same instance id. After the document exists this
-/// function does not read `[output.local]`. `output.local.enabled = false`
-/// returns before creating a deployment. An existing deployment stays so a
-/// later enable can start it.
+/// Not read from `[output.local]`. Operators change the live value with
+/// `PUT /api/config/plugin-instances/{id}/config`.
+pub const LOCAL_DEFAULT_ROOT: &str = "Audiobooks";
+
+/// Ensures the local destination instance, document, and local deployment.
+///
+/// When the package is present, seeds a **code-default** document if absent
+/// (`root = Audiobooks`, empty `prefix`). Never copies `[output.local]`.
+/// `output.local.enabled = false` skips creating a new deployment; an existing
+/// deployment stays so a later enable can start it.
 ///
 /// # Errors
 ///
-/// Returns an error when the ledger cannot be read, the import is invalid, or
-/// the deployment row cannot be written.
+/// Returns an error when the ledger cannot be read, the default document is
+/// invalid, or the deployment row cannot be written.
 pub async fn enroll_local_instance(
     store: &LibraryStore,
     config: &Config,
     host_id: &str,
 ) -> Result<()> {
-    if !config.output.local.enabled {
-        return Ok(());
-    }
     let Some(plugin_key) = local_plugin_key(config)? else {
         return Ok(());
     };
@@ -309,21 +312,23 @@ pub async fn enroll_local_instance(
     match load_instance_config(store, &instance.id).await {
         Ok(_) => {}
         Err(LibraryError::NotFound(_)) => {
-            let body =
-                local_config_from_output(&config.output.local.root, &config.output.local.prefix)
-                    .map_err(library_err)?;
+            let body = local_config_from_output(std::path::Path::new(LOCAL_DEFAULT_ROOT), "")
+                .map_err(library_err)?;
             import_instance_config_if_absent(
                 store,
                 &actor,
                 &instance.id,
                 InstancePackagePolicy::DestinationLocal,
                 &body,
-                &format!("import-local-{}", instance.id),
+                &format!("seed-local-{}", instance.id),
             )
             .await
             .map_err(library_err)?;
         }
         Err(err) => return Err(library_err(err)),
+    }
+    if !config.output.local.enabled {
+        return Ok(());
     }
     ensure_plugin_deployment(store, &actor, &instance.id, host_id)
         .await
@@ -331,24 +336,21 @@ pub async fn enroll_local_instance(
     Ok(())
 }
 
-/// Ensures the S3 destination instance, imported document, and deployment.
+/// Ensures the S3 destination instance and, when configured, a local deployment.
 ///
-/// A second call returns the same instance id. After the document exists this
-/// function does not read `[output.s3]`. Credentials are never imported.
-/// `output.s3.enabled = false` returns before creating a deployment.
+/// Never copies `[output.s3]` into the document. A deployment is written only
+/// when an instance document already exists (operator PUT).
+/// `output.s3.enabled = false` skips creating a new deployment.
 ///
 /// # Errors
 ///
-/// Returns an error when the ledger cannot be read, the import is invalid, or
-/// the deployment row cannot be written.
+/// Returns an error when the ledger cannot be read or the deployment row
+/// cannot be written.
 pub async fn enroll_s3_instance(
     store: &LibraryStore,
     config: &Config,
     host_id: &str,
 ) -> Result<()> {
-    if !config.output.s3.enabled {
-        return Ok(());
-    }
     let Some(plugin_key) = s3_plugin_key(config)? else {
         return Ok(());
     };
@@ -359,26 +361,14 @@ pub async fn enroll_s3_instance(
     match load_instance_config(store, &instance.id).await {
         Ok(_) => {}
         Err(LibraryError::NotFound(_)) => {
-            let body = s3_config_from_output(
-                &config.output.s3.bucket,
-                &config.output.s3.region,
-                &config.output.s3.prefix,
-                config.output.s3.endpoint.as_deref(),
-                config.output.s3.force_path_style,
-            )
-            .map_err(library_err)?;
-            import_instance_config_if_absent(
-                store,
-                &actor,
-                &instance.id,
-                InstancePackagePolicy::DestinationS3,
-                &body,
-                &format!("import-s3-{}", instance.id),
-            )
-            .await
-            .map_err(library_err)?;
+            // No TOML seed. Operator writes the document, then the next enroll
+            // (or an explicit deploy) attaches the local deployment.
+            return Ok(());
         }
         Err(err) => return Err(library_err(err)),
+    }
+    if !config.output.s3.enabled {
+        return Ok(());
     }
     ensure_plugin_deployment(store, &actor, &instance.id, host_id)
         .await
@@ -386,7 +376,7 @@ pub async fn enroll_s3_instance(
     Ok(())
 }
 
-/// Enrolls first-party destination instances that are enabled and installed.
+/// Enrolls first-party destination instances that are installed.
 ///
 /// # Errors
 ///

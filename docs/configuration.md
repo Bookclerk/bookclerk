@@ -161,14 +161,15 @@ retires the running guest on reconcile and on reload. `bookclerk library scan`
 and `bookclerk library acquire` read the instance document and require
 `--instance` when more than one instance shares the plugin key.
 
-First-party destinations enroll the same way when enabled and installed:
-`output.local.root` / `prefix`, and `output.s3.bucket` / `region` / `prefix` /
-`endpoint` / `force_path_style`, import once into the instance document.
-`enabled` and naming templates stay in `config.toml`. After import,
-`PATCH /api/settings` rejects those destination keys; use the plugin-instance
-config PUT. S3 credentials are never stored in the document. Plugins with no
-instance document still read their `[sources.*]` / `[integrations.*]` /
-`[output.*]` tables.
+First-party destinations (`local`, `s3`) take config from the plugin instance
+document only. Local seeds a code default (`root = Audiobooks`) when the
+package is present; S3 requires an operator `PUT` before a deployment is
+attached. Live `[output.local]` / `[output.s3]` knobs are not imported and
+are not a spawn fallback. `enabled` and naming templates stay in
+`config.toml`. `PATCH /api/settings` rejects the retired destination keys;
+use `PUT /api/config/plugin-instances/{id}/config`. S3 credentials are never
+stored in the document. Other plugins with no instance document still read
+their `[sources.*]` / `[integrations.*]` / `[output.*]` tables.
 
 Acked/rejected deliveries use `retention_days`. Parent events with no remaining
 live deliveries are kept until that same cutoff so a late node can still

@@ -259,9 +259,9 @@ pub fn graphicaudio_imported_setting_keys() -> &'static [&'static str] {
     KEYS
 }
 
-/// Dotted settings keys imported from `[output.s3]`.
+/// Dotted settings keys retired from file-backed `[output.s3]` authority.
 ///
-/// `output.s3.enabled` and naming templates stay file-backed.
+/// `output.s3.enabled` and naming templates stay file-backed for now.
 pub fn s3_imported_setting_keys() -> &'static [&'static str] {
     const KEYS: &[&str] = &[
         "output.s3.bucket",
@@ -274,9 +274,9 @@ pub fn s3_imported_setting_keys() -> &'static [&'static str] {
     KEYS
 }
 
-/// Dotted settings keys imported from `[output.local]`.
+/// Dotted settings keys retired from file-backed `[output.local]` authority.
 ///
-/// `output.local.enabled` and naming templates stay file-backed.
+/// `output.local.enabled` and naming templates stay file-backed for now.
 pub fn local_imported_setting_keys() -> &'static [&'static str] {
     const KEYS: &[&str] = &["output.local.root", "output.local.prefix"];
     let _ = bookclerk_library::control_plane::LOCAL_IMPORT_KEYS;
