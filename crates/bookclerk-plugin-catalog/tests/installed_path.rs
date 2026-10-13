@@ -117,6 +117,17 @@ fn install_from_static_fixture_registry() {
         ..Default::default()
     };
     let out = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
+    // Stage leaves live plugins/<fs-id> untouched until commit.
+    assert!(under_tmp(&out.health_root, "plugin.toml").is_file());
+    assert!(under_tmp(&out.health_root, "echo").is_file());
+    assert!(out.pending_marker.as_ref().is_some_and(|p| p.is_file()));
+    assert!(
+        !bookclerk_plugin_catalog::require_under(tmp.path(), &out.plugin_root)
+            .unwrap()
+            .exists()
+    );
+
+    Installer::commit(&out).unwrap();
     assert!(under_tmp(&out.plugin_root, "plugin.toml").is_file());
     assert!(under_tmp(&out.plugin_root, "echo").is_file());
     let receipt = InstallReceipt::load(&out.plugin_root).unwrap();
