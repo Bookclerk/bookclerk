@@ -28,7 +28,9 @@ pub use native::{
     export_native, import_native, NativeExportOptions, NativeExportSummary, NativeImportOptions,
     NativeImportSummary, NATIVE_BACKUP_FORMAT_VERSION,
 };
-pub use settings::{apply_settings_json, config_to_settings_json, load_settings_json};
+pub use settings::{
+    apply_settings_json, config_to_settings_json, load_settings_json, ClassicPluginSettings,
+};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -54,6 +56,10 @@ pub struct MigrateOptions {
     /// accounts and books are owned by that plugin; the caller resolves it
     /// from the installed plugin (`bookclerk plugins list`).
     pub audible_plugin_key: String,
+    /// Canonical PluginKey of the `local` destination plugin, when installed.
+    /// The classic `Books` directory is written to its default instance as
+    /// `root`, so acquired files keep landing where Libation put them.
+    pub local_plugin_key: Option<String>,
 }
 
 /// Summary of a migration run.
@@ -71,6 +77,9 @@ pub struct MigrateSummary {
     pub acquired: usize,
     /// Count of storage-key mappings written.
     pub storage_keys: usize,
+    /// Count of plugin instance settings written (`local` root, Audible bitrate).
+    #[serde(default)]
+    pub plugin_settings: usize,
     /// Non-fatal warnings collected during the run (operator-facing).
     pub warnings: Vec<String>,
 }
@@ -98,9 +107,10 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
 
     // --- Settings.json → config.toml ---
     let mut config = Config::default();
+    let mut plugin_settings = ClassicPluginSettings::default();
     if let Some(settings_path) = &source.settings_json {
         let patch = load_settings_json(settings_path)?;
-        apply_settings_json(&mut config, &patch);
+        plugin_settings = apply_settings_json(&mut config, &patch);
         summary.settings_imported = true;
         if !opts.dry_run {
             let dest = opts.dest_files_dir.join("config.toml");
@@ -119,13 +129,52 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
             .push("Settings.json not found — using defaults".into());
     }
 
-    let books_root = config.output.local.root.clone();
+    let books_root = plugin_settings
+        .books_root
+        .clone()
+        .unwrap_or_else(|| opts.dest_files_dir.join("Audiobooks"));
 
     let dest = if source.accounts_settings.is_some() || source.library_db.is_some() {
         Some(store::DestStore::open(&opts.dest_files_dir, opts.dry_run).await?)
     } else {
         None
     };
+
+    // --- plugin instance settings (Books → local root, quality → bitrate) ---
+    if let Some(dest_store) = dest.as_ref() {
+        if !opts.dry_run {
+            if let Some(local_key) = opts.local_plugin_key.as_deref() {
+                match seed_instance_setting(
+                    &dest_store.store,
+                    local_key,
+                    "root",
+                    &books_root.display().to_string(),
+                )
+                .await
+                {
+                    Ok(()) => summary.plugin_settings += 1,
+                    Err(err) => summary
+                        .warnings
+                        .push(format!("local destination root not written: {err}")),
+                }
+            }
+            if let Some(bitrate) = plugin_settings.audible_bitrate.as_deref() {
+                match seed_instance_setting(
+                    &dest_store.store,
+                    &opts.audible_plugin_key,
+                    "bitrate",
+                    bitrate,
+                )
+                .await
+                {
+                    Ok(()) => summary.plugin_settings += 1,
+                    Err(err) => summary
+                        .warnings
+                        .push(format!("audible bitrate not written: {err}")),
+                }
+            }
+        }
+    }
 
     // --- AccountsSettings.json ---
     let mut account_id_map = HashMap::new();
@@ -207,4 +256,56 @@ pub fn resolve_classic_files_dir(explicit: Option<&Path>) -> Option<std::path::P
         }
     }
     None
+}
+
+/// Writes one setting on the plugin's default instance document.
+///
+/// The plugin must be enrolled (its schema pinned and default instance
+/// created by a host that has it installed); the value is validated against
+/// that schema.
+async fn seed_instance_setting(
+    store: &bookclerk_library::LibraryStore,
+    plugin_key: &str,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    use bookclerk_library::control_plane::{
+        default_instance_for_key, load_instance_config, parse_setting_text,
+        replace_instance_config, require_plugin_schema, set_setting, ConfigActor,
+        InstanceConfigReplace,
+    };
+    let failed = |detail: String| MigrateError::Settings(detail);
+    let pinned = require_plugin_schema(store, plugin_key)
+        .await
+        .map_err(|err| failed(err.to_string()))?;
+    let instance = default_instance_for_key(store, plugin_key)
+        .await
+        .map_err(|err| failed(err.to_string()))?
+        .ok_or_else(|| failed(format!("plugin `{plugin_key}` has no instance yet")))?;
+    let document = load_instance_config(store, &instance.id)
+        .await
+        .map_err(|err| failed(err.to_string()))?;
+    let mut body = document.body.clone();
+    let parsed =
+        parse_setting_text(&pinned.schema, key, value).map_err(|err| failed(err.to_string()))?;
+    set_setting(&mut body, key, Some(parsed));
+    match replace_instance_config(
+        store,
+        &ConfigActor::Operator {
+            id: "migrate".into(),
+        },
+        &instance.id,
+        &pinned.schema,
+        document.revision,
+        &body,
+        &format!("migrate-{}-{key}", instance.id),
+    )
+    .await
+    .map_err(|err| failed(err.to_string()))?
+    {
+        InstanceConfigReplace::Applied(_) | InstanceConfigReplace::Replayed { .. } => Ok(()),
+        InstanceConfigReplace::Conflict { current_revision } => Err(failed(format!(
+            "instance document changed concurrently (revision {current_revision})"
+        ))),
+    }
 }

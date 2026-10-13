@@ -241,12 +241,6 @@ async fn killed_jailed_s3_guest_aborts_its_upload_on_restart() {
         ..Config::default()
     };
     config.plugins.isolation = Isolation::Required;
-    config.output.s3.enabled = true;
-    config.output.s3.bucket = "library".into();
-    config.output.s3.prefix.clear();
-    config.output.s3.endpoint = Some(endpoint.clone());
-    config.output.s3.force_path_style = true;
-    config.output.s3.region = "us-east-1".into();
     let mut grants = PluginGrantStore::default();
     grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
     grants.save(files.path()).expect("grants");
@@ -259,7 +253,10 @@ async fn killed_jailed_s3_guest_aborts_its_upload_on_restart() {
             serde_json::json!({}),
             HOST_SHARED_ACCOUNT,
             &[],
-            SessionServices::default(),
+            SessionServices {
+                deployed_endpoint: Some(Some(endpoint.clone())),
+                ..SessionServices::default()
+            },
         ),
     )
     .await
@@ -322,7 +319,10 @@ async fn killed_jailed_s3_guest_aborts_its_upload_on_restart() {
             serde_json::json!({}),
             HOST_SHARED_ACCOUNT,
             &[],
-            SessionServices::default(),
+            SessionServices {
+                deployed_endpoint: Some(Some(endpoint.clone())),
+                ..SessionServices::default()
+            },
         ),
     )
     .await

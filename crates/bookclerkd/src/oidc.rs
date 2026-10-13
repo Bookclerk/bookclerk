@@ -891,9 +891,8 @@ async fn sync_plugin_oidc_clients_with(
         }
     }
     let library = state.library_snapshot().await;
-    let cfg = state.config.read().await;
     for tmpl in templates {
-        let base_url = origin_from_config_key(&cfg, &tmpl.origin_config_key);
+        let base_url = origin_from_instance_document(&library, &tmpl.origin_config_key).await;
         let redirects = redirect_uris_from_plugin_base(&base_url, &tmpl.callback_path);
         library
             .upsert_plugin_oidc_client(
@@ -909,18 +908,49 @@ async fn sync_plugin_oidc_clients_with(
     Ok(())
 }
 
-/// Resolve a dotted `integrations.<id>.<field>` path to a string setting.
-fn origin_from_config_key(cfg: &bookclerk_config::Config, key: &str) -> String {
-    let Some(rest) = key.strip_prefix("integrations.") else {
+/// Splits a dotted `integrations.<alias>.<field>` origin key into its parts.
+///
+/// The field names a `[[settings]]` entry of the plugin's instance document;
+/// `base_url` is the default field.
+fn integration_origin_field(key: &str) -> Option<(&str, &str)> {
+    let rest = key.strip_prefix("integrations.")?;
+    let (alias, field) = rest.split_once('.').unwrap_or((rest, "base_url"));
+    (!alias.is_empty() && !field.is_empty()).then_some((alias, field))
+}
+
+/// Resolves an origin key against the plugin's default instance document.
+///
+/// Returns an empty string when no plugin with that alias is enrolled or the
+/// document does not set the field.
+async fn origin_from_instance_document(
+    library: &bookclerk_library::LibraryStore,
+    key: &str,
+) -> String {
+    use bookclerk_library::control_plane::{
+        default_instance_for_key, list_plugin_schemas, load_instance_config, SettingValue,
+    };
+    let Some((alias, field)) = integration_origin_field(key) else {
         return String::new();
     };
-    let (id, field) = rest.split_once('.').unwrap_or((rest, "base_url"));
-    cfg.integrations
-        .plugin_table(id)
-        .and_then(|table| table.get(field))
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .to_string()
+    let Ok(schemas) = list_plugin_schemas(library).await else {
+        return String::new();
+    };
+    let Some(pinned) = schemas
+        .iter()
+        .find(|schema| schema.manifest_id.eq_ignore_ascii_case(alias))
+    else {
+        return String::new();
+    };
+    let Ok(Some(instance)) = default_instance_for_key(library, &pinned.plugin_key).await else {
+        return String::new();
+    };
+    let Ok(document) = load_instance_config(library, &instance.id).await else {
+        return String::new();
+    };
+    match document.body.settings.get(field) {
+        Some(SettingValue::String(text)) => text.trim().to_string(),
+        _ => String::new(),
+    }
 }
 
 /// Build `{origin}{callback_path}` from an operator-set plugin server URL.
@@ -1580,16 +1610,17 @@ mod tests {
     }
 
     #[test]
-    fn origin_from_config_key_reads_integration_field() {
-        let mut cfg = bookclerk_config::Config::default();
-        cfg.integrations
-            .set_audiobookshelf_string("base_url", "https://abs.example:13378");
+    fn integration_origin_field_parses_alias_and_field() {
         assert_eq!(
-            origin_from_config_key(&cfg, "integrations.audiobookshelf.base_url"),
-            "https://abs.example:13378"
+            integration_origin_field("integrations.audiobookshelf.base_url"),
+            Some(("audiobookshelf", "base_url"))
         );
-        assert!(origin_from_config_key(&cfg, "daemon.listen").is_empty());
-        assert!(origin_from_config_key(&cfg, "integrations.missing.base_url").is_empty());
+        assert_eq!(
+            integration_origin_field("integrations.audiobookshelf"),
+            Some(("audiobookshelf", "base_url"))
+        );
+        assert_eq!(integration_origin_field("daemon.listen"), None);
+        assert_eq!(integration_origin_field("integrations."), None);
     }
 
     #[test]
@@ -1633,6 +1664,79 @@ mod tests {
         }
     }
 
+    /// Writes `base_url` on the Audiobookshelf plugin's default instance
+    /// document, pinning a minimal schema first: that document is where the
+    /// OIDC sync reads the server origin from.
+    async fn set_abs_base_url(library: &bookclerk_library::LibraryStore, base_url: &str) {
+        use bookclerk_library::control_plane::{
+            ensure_plugin_instance, import_instance_config_if_absent, load_instance_config,
+            pin_plugin_schema, replace_instance_config, set_setting, ConfigActor,
+            PluginInstanceConfigV1, SchemaPin, SettingValue,
+        };
+        use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingsSchema};
+
+        const KEY: &str = "path:file:///opt/plugins/audiobookshelf#audiobookshelf";
+        let schema = SettingsSchema::new(vec![SettingSpec {
+            key: "base_url".into(),
+            label: "Base URL".into(),
+            kind: SettingKind::String,
+            values: Vec::new(),
+            default: None,
+            required: false,
+            description: None,
+        }]);
+        pin_plugin_schema(
+            library,
+            &SchemaPin {
+                plugin_key: KEY,
+                manifest_id: "audiobookshelf",
+                manifest_sha256: "00",
+                package_version: "",
+                schema: &schema,
+                host_id: "host-test",
+            },
+        )
+        .await
+        .expect("pin schema");
+        let actor = ConfigActor::Bootstrap;
+        let instance = ensure_plugin_instance(library, &actor, KEY)
+            .await
+            .expect("instance");
+        let mut body = PluginInstanceConfigV1::empty();
+        set_setting(
+            &mut body,
+            "base_url",
+            Some(SettingValue::String(base_url.into())),
+        );
+        match load_instance_config(library, &instance.id).await {
+            Ok(document) => {
+                replace_instance_config(
+                    library,
+                    &ConfigActor::Operator { id: "test".into() },
+                    &instance.id,
+                    &schema,
+                    document.revision,
+                    &body,
+                    &format!("abs-base-url-{}", document.revision),
+                )
+                .await
+                .expect("replace");
+            }
+            Err(_) => {
+                import_instance_config_if_absent(
+                    library,
+                    &actor,
+                    &instance.id,
+                    &schema,
+                    &body,
+                    "import-abs-base-url",
+                )
+                .await
+                .expect("import");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn plugin_oidc_sync_skips_uninstalled_and_starts_disabled() {
         let (state, library) = oidc_test_state().await;
@@ -1643,11 +1747,7 @@ mod tests {
             .unwrap()
             .is_none());
 
-        {
-            let mut cfg = state.config.write().await;
-            cfg.integrations
-                .set_audiobookshelf_string("base_url", "http://127.0.0.1:13378");
-        }
+        set_abs_base_url(&library, "http://127.0.0.1:13378").await;
         sync_plugin_oidc_clients_with(&state, &[abs_oidc_sync()])
             .await
             .unwrap();
@@ -1679,11 +1779,7 @@ mod tests {
             )
             .await
             .unwrap();
-        {
-            let mut cfg = state.config.write().await;
-            cfg.integrations
-                .set_audiobookshelf_string("base_url", "https://abs.home:13378");
-        }
+        set_abs_base_url(&library, "https://abs.home:13378").await;
         sync_plugin_oidc_clients_with(&state, &[abs_oidc_sync()])
             .await
             .unwrap();

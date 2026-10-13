@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
     PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceBrand,
-    SourceFetch, SourcePurchaseHint, SourceRegistry,
+    SourceFetch, SourcePurchaseHint,
 };
 use chrono::{Duration, TimeZone, Utc};
 
@@ -54,20 +53,6 @@ impl LibroSource {
         Self {
             base_url: DEFAULT_BASE_URL.to_string(),
             container: LibroContainer::M4b,
-        }
-    }
-
-    /// Parse `[sources.libro]` knobs from config.
-    #[must_use]
-    pub fn from_config(config: &Config) -> Self {
-        let container = config
-            .sources
-            .get_string(ID, "container")
-            .and_then(LibroContainer::parse)
-            .unwrap_or_default();
-        Self {
-            base_url: DEFAULT_BASE_URL.to_string(),
-            container,
         }
     }
 
@@ -326,18 +311,5 @@ fn source_account_from_auth(auth: &LibroAuthFile) -> SourceAccount {
         marketplace: auth.marketplace.clone(),
         label: auth.label.clone().or_else(|| Some(auth.email.clone())),
         scan_enabled: true,
-    }
-}
-
-/// Parse `[sources.libro]` into a [`LibroSource`].
-#[must_use]
-pub fn from_config(config: &Config) -> LibroSource {
-    LibroSource::from_config(config)
-}
-
-/// Register Libro.fm when `[sources.libro] enabled` (default true).
-pub fn register(registry: &mut SourceRegistry, config: &Config) {
-    if config.sources.is_enabled(ID) {
-        registry.register(Arc::new(from_config(config)));
     }
 }

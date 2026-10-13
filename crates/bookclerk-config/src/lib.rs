@@ -75,7 +75,7 @@ pub use operator_auth::{
 };
 pub use output::{
     normalize_storage_prefix, BadBookAction, DestinationNaming, MultiDestinationMode,
-    OutputBackendKind, OutputConfig, OutputLocalConfig, OutputS3Config,
+    OutputBackendKind, OutputConfig,
 };
 pub use overrides::{
     apply_config_updates, apply_config_updates_from_path, apply_setting_overrides,
@@ -90,8 +90,8 @@ pub use paths::{
 pub use pipeline_opts::{ChapterJsonMode, OutputFormat};
 pub use platform::detect_distro;
 pub use plugins::{
-    host_cpu_rate_max, host_logical_cpus, AudiobookshelfConfig, IntegrationsConfig,
-    PluginRegistryEntry, PluginsConfig, PluginsJailConfig, SourcesConfig,
+    host_cpu_rate_max, host_logical_cpus, IntegrationsConfig, PluginRegistryEntry, PluginsConfig,
+    PluginsJailConfig,
 };
 pub use redact::{
     contains_registered_secret, is_sensitive_field, is_upload_identifying_field,

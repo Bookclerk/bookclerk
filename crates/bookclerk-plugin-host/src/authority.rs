@@ -65,7 +65,7 @@ struct LiveSession {
     /// `Some(endpoint)` is a deployed instance. `Some(None)` means the document
     /// has no custom endpoint, so a later TOML endpoint must not be granted
     /// and must not change this session's authority revision.
-    deployed_s3_endpoint: Option<Option<String>>,
+    deployed_endpoint: Option<Option<String>>,
     /// Set when a later grant for this key no longer matches `revision`.
     cancelled: Arc<AtomicBool>,
     /// Proactively stop the vat / child / mediated resources.
@@ -169,7 +169,7 @@ pub fn register_session_revisions_on(
     shutdown: SessionShutdown,
     cancelled: Arc<AtomicBool>,
 ) -> Arc<AtomicBool> {
-    register_session_revisions_on_with_deployed_s3(
+    register_session_revisions_on_with_deployed_endpoint(
         plugin_key,
         grant_revision,
         revision,
@@ -181,7 +181,7 @@ pub fn register_session_revisions_on(
 
 /// [`register_session_revisions_on`] that records the deployed S3 endpoint.
 ///
-/// `deployed_s3_endpoint` matches the spawn-time value. `None` overlays
+/// `deployed_endpoint` matches the spawn-time value. `None` overlays
 /// `[output.s3].endpoint` on config reload. `Some` overlays only the document
 /// endpoint (`Some(None)` when the document has none), so a TOML edit cannot
 /// rewrite this session's authority revision.
@@ -193,22 +193,22 @@ pub fn register_session_revisions_on(
 /// * `revision` - Effective [`authority_revision`] at spawn.
 /// * `shutdown` - Hook invoked when this session is fenced.
 /// * `cancelled` - Flag the proxy already holds.
-/// * `deployed_s3_endpoint` - Document endpoint for a deployed S3 instance.
+/// * `deployed_endpoint` - Document endpoint for a deployed S3 instance.
 #[must_use]
-pub(crate) fn register_session_revisions_on_with_deployed_s3(
+pub(crate) fn register_session_revisions_on_with_deployed_endpoint(
     plugin_key: &str,
     grant_revision: &str,
     revision: &str,
     shutdown: SessionShutdown,
     cancelled: Arc<AtomicBool>,
-    deployed_s3_endpoint: Option<Option<String>>,
+    deployed_endpoint: Option<Option<String>>,
 ) -> Arc<AtomicBool> {
     if let Ok(mut guard) = live().lock() {
         guard.push(LiveSession {
             plugin_key: plugin_key.to_string(),
             grant_revision: grant_revision.to_string(),
             revision: revision.to_string(),
-            deployed_s3_endpoint,
+            deployed_endpoint,
             cancelled: Arc::clone(&cancelled),
             shutdown,
         });
@@ -338,7 +338,7 @@ pub(crate) struct LiveOverlaySession {
     /// Effective [`authority_revision`] recorded at spawn.
     pub revision: String,
     /// Deployed S3 document endpoint, or `None` for a transitional session.
-    pub deployed_s3_endpoint: Option<Option<String>>,
+    pub deployed_endpoint: Option<Option<String>>,
     /// Cancel flag for this vat. Overlay fencing uses this, not the PluginKey.
     pub cancelled: Arc<AtomicBool>,
 }
@@ -352,7 +352,7 @@ pub(crate) fn live_overlay_sessions() -> Vec<LiveOverlaySession> {
             .map(|session| LiveOverlaySession {
                 plugin_key: session.plugin_key.clone(),
                 revision: session.revision.clone(),
-                deployed_s3_endpoint: session.deployed_s3_endpoint.clone(),
+                deployed_endpoint: session.deployed_endpoint.clone(),
                 cancelled: Arc::clone(&session.cancelled),
             })
             .collect(),

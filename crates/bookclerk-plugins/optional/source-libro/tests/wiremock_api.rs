@@ -96,7 +96,7 @@ async fn oauth_token_login_saves_auth_to_db() {
     let source = LibroSource::with_base_url(server.uri());
     let account = source
         .login(
-            &store.scope("libro"),
+            &store.scope("libro", "libro"),
             LoginOptions {
                 marketplace: "us".into(),
                 label: Some("Main".into()),
@@ -114,7 +114,7 @@ async fn oauth_token_login_saves_auth_to_db() {
     assert_eq!(account.account_id, "reader@example.com");
 
     // Verify credentials were persisted to the DB.
-    let auth = load_auth_from_db(&store.scope("libro"), "reader@example.com")
+    let auth = load_auth_from_db(&store.scope("libro", "libro"), "reader@example.com")
         .await
         .unwrap()
         .expect("auth must be present in DB");
@@ -151,15 +151,26 @@ async fn library_page_upserts_libro_books() {
         .await
         .unwrap();
     store
-        .upsert_account("reader@example.com", "us", Some("Main"), true, "libro")
+        .upsert_account(
+            "libro",
+            "reader@example.com",
+            "us",
+            Some("Main"),
+            true,
+            "libro",
+        )
         .await
         .unwrap();
 
     let client = LibroClient::new(server.uri()).with_token("tok");
-    let (books, pages) =
-        scan_account_into_library(&store.scope("libro"), &client, "reader@example.com", "us")
-            .await
-            .unwrap();
+    let (books, pages) = scan_account_into_library(
+        &store.scope("libro", "libro"),
+        &client,
+        "reader@example.com",
+        "us",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(pages, 1);
     assert_eq!(books, 2);
@@ -425,16 +436,19 @@ async fn content_source_scan_and_fetch_title() {
         label: None,
     };
     // user_id is None so account_id() returns the email.
-    save_auth_to_db(&auth, &store.scope("libro"), "scan@example.com")
+    save_auth_to_db(&auth, &store.scope("libro", "libro"), "scan@example.com")
         .await
         .unwrap();
 
     let source = LibroSource::with_base_url(server.uri());
-    let accounts = source.list_accounts(&store.scope("libro")).await.unwrap();
+    let accounts = source
+        .list_accounts(&store.scope("libro", "libro"))
+        .await
+        .unwrap();
     assert_eq!(accounts.len(), 1);
 
     let summary = source
-        .scan(&store.scope("libro"), ScanOptions::default())
+        .scan(&store.scope("libro", "libro"), ScanOptions::default())
         .await
         .unwrap();
     assert_eq!(summary.accounts, 1);
@@ -443,7 +457,7 @@ async fn content_source_scan_and_fetch_title() {
     let cache = tempfile::tempdir().unwrap();
     let fetch = source
         .fetch_title(
-            &store.scope("libro"),
+            &store.scope("libro", "libro"),
             "scan@example.com",
             "9783333333333",
             &bookclerk_source::FetchOptions {

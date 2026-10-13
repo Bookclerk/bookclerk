@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions,
     LoginOptions, PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
-    SourceBrand, SourceFetch, SourcePurchaseHint, SourceRegistry,
+    SourceBrand, SourceFetch, SourcePurchaseHint,
 };
 
 use crate::auth::ChirpAuthFile;
@@ -47,12 +46,6 @@ impl ChirpSource {
         Self {
             graphql_url: DEFAULT_GRAPHQL_URL.to_string(),
         }
-    }
-
-    /// Parse `[sources.chirp]` (enable flag only today).
-    #[must_use]
-    pub fn from_config(_config: &Config) -> Self {
-        Self::new()
     }
 
     /// Overrides the GraphQL endpoint (tests / staging).
@@ -731,19 +724,6 @@ fn source_account_from_auth(auth: &ChirpAuthFile) -> SourceAccount {
         marketplace: auth.marketplace.clone(),
         label: auth.label.clone().or_else(|| Some(auth.email.clone())),
         scan_enabled: true,
-    }
-}
-
-/// Parse `[sources.chirp]` into a [`ChirpSource`].
-#[must_use]
-pub fn from_config(config: &Config) -> ChirpSource {
-    ChirpSource::from_config(config)
-}
-
-/// Register Chirp when `[sources.chirp] enabled` (default true).
-pub fn register(registry: &mut SourceRegistry, config: &Config) {
-    if config.sources.is_enabled(ID) {
-        registry.register(Arc::new(from_config(config)));
     }
 }
 

@@ -3290,7 +3290,14 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     let in_progress = queued + downloading;
     let (listen, storage_backend) = {
         let cfg = state.config.read().await;
-        let names = cfg.output.enabled_backend_names();
+        let destinations = state.destinations.read().await;
+        let mut names = Vec::new();
+        if destinations.local().is_some() {
+            names.push("local");
+        }
+        if destinations.s3().is_some() {
+            names.push("s3");
+        }
         (
             cfg.daemon.listen.join_comma(),
             if names.is_empty() {
@@ -3776,7 +3783,8 @@ async fn get_book(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-/// Serves the local JPEG cover sidecar for a title, or 404 when local output is off.
+/// Serves the JPEG cover sidecar from the deployed local destination, or 404
+/// when no local destination runs on this host.
 async fn get_book_cover(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
@@ -3788,40 +3796,23 @@ async fn get_book_cover(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let storage_key = book.storage_key.as_deref().ok_or(StatusCode::NOT_FOUND)?;
-    let cfg = state.config.read().await;
-    if !cfg.output.local.enabled {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let cover_key = sidecar_key(storage_key, "jpg");
-    let path = resolve_local_key(&cfg.output.local.root, &cfg.output.local.prefix, &cover_key);
-    if !path.is_file() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let bytes = tokio::fs::read(&path)
+    let local = state
+        .destinations
+        .read()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .local()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let cover_key = sidecar_key(storage_key, "jpg");
+    let bytes = local
+        .get(&cover_key)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "image/jpeg")],
         bytes,
     )
         .into_response())
-}
-
-/// Joins local output root, prefix, and object key while dropping `.` / `..` segments.
-fn resolve_local_key(root: &Path, prefix: &str, key: &str) -> PathBuf {
-    let mut path = root.to_path_buf();
-    let prefix = prefix.trim_matches('/');
-    if !prefix.is_empty() {
-        path.push(prefix);
-    }
-    for part in key.split('/') {
-        if part.is_empty() || part == "." || part == ".." {
-            continue;
-        }
-        path.push(part);
-    }
-    path
 }
 
 #[derive(Debug, Deserialize, Default)]

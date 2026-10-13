@@ -449,95 +449,36 @@ fn kind_or_alias_match(left: &str, right: &str) -> bool {
     left_kind.is_some() && left_kind == right_kind
 }
 
-/// Writes this install's canonical PluginKey into each family occupancy field.
+/// Records `plugin` as the `[database].plugin` occupant.
 ///
-/// Call after flipping `enabled` (CLI / Settings). Occupancy is how loaders
-/// name a singleton slot; stamping the key means a later install cannot
-/// steal the slot by reusing the alias.
+/// Database adapters are the bootstrap exception: they stay selected in
+/// `config.toml` because the connection is needed before the database can be
+/// read. Every other plugin is enabled by a `plugin_deployments` row.
 ///
 /// # Errors
 ///
-/// Returns when the plugin exports `Storage` but is not `s3` or `local`
-/// (those destinations are not mapped in `config.toml` yet).
+/// Returns an error when `plugin` is not a database adapter.
 pub fn stamp_occupancy_plugin_key(config: &mut Config, plugin: &DiscoveredPlugin) -> Result<()> {
-    let canonical = plugin.plugin_key().canonical().to_string();
-    for family in plugin.manifest.families() {
-        match family {
-            PluginFamily::Source => {
-                config
-                    .sources
-                    .set_string(plugin.alias(), "plugin", canonical.clone());
-            }
-            PluginFamily::Integration => {
-                config
-                    .integrations
-                    .plugin_table_mut(plugin.alias())
-                    .insert("plugin".into(), toml::Value::String(canonical.clone()));
-            }
-            PluginFamily::Output if is_first_party_s3_output(plugin) => {
-                config.output.s3.plugin = canonical.clone();
-            }
-            PluginFamily::Output if is_first_party_local_output(plugin) => {
-                config.output.local.plugin = canonical.clone();
-            }
-            PluginFamily::Output => {
-                // Third-party destinations have no occupancy field. Multi-family
-                // guests still stamp their other families (CLI enable skips here).
-                if plugin.manifest.families().len() > 1 {
-                    continue;
-                }
-                return Err(PluginError::message(format!(
-                    "output plugin `{}` enable/disable is not mapped to config.toml yet",
-                    plugin.alias()
-                )));
-            }
-            PluginFamily::Database => {
-                config.database.plugin = canonical.clone();
-            }
-        }
+    if !plugin.manifest.families().contains(&PluginFamily::Database) {
+        return Err(PluginError::message(format!(
+            "plugin `{}` is enabled per host with `bookclerk plugins enable`, not in config.toml",
+            plugin.alias()
+        )));
     }
+    config.database.plugin = plugin.plugin_key().canonical().to_string();
     Ok(())
 }
 
-/// Rewrites unique alias occupancy strings to canonical PluginKeys.
+/// Rewrites a unique `[database].plugin` alias to the canonical PluginKey.
 ///
-/// Ambiguous aliases and vacant slots are left unchanged so loaders still
-/// fail closed. An empty `discovered` slice is a no-op so a settings
-/// discovery timeout cannot wipe occupancy.
+/// An ambiguous alias or vacant slot is left unchanged so loaders still fail
+/// closed. An empty `discovered` slice is a no-op so a settings discovery
+/// timeout cannot wipe occupancy.
 pub fn upgrade_unique_alias_occupancy(config: &mut Config, discovered: &[DiscoveredPlugin]) {
     if discovered.is_empty() {
         return;
     }
     upgrade_occupancy_field(&mut config.database.plugin, discovered);
-    if !config.output.s3.plugin.trim().is_empty() || config.output.s3.enabled {
-        let spec = occupancy_spec(&config.output.s3.plugin, "s3").to_string();
-        if let Some(key) = unique_canonical_occupancy(&spec, discovered) {
-            config.output.s3.plugin = key;
-        }
-    }
-    if !config.output.local.plugin.trim().is_empty() || config.output.local.enabled {
-        let spec = occupancy_spec(&config.output.local.plugin, "local").to_string();
-        if let Some(key) = unique_canonical_occupancy(&spec, discovered) {
-            config.output.local.plugin = key;
-        }
-    }
-    let source_ids: Vec<String> = config.sources.plugins.keys().cloned().collect();
-    for id in source_ids {
-        let spec = occupancy_spec(config.sources.occupancy(&id), &id).to_string();
-        if let Some(key) = unique_canonical_occupancy(&spec, discovered) {
-            config.sources.set_string(&id, "plugin", key);
-        }
-    }
-    let integration_ids: Vec<String> = config.integrations.plugins.keys().cloned().collect();
-    for id in integration_ids {
-        let spec = occupancy_spec(config.integrations.occupancy(&id), &id).to_string();
-        if let Some(key) = unique_canonical_occupancy(&spec, discovered) {
-            config
-                .integrations
-                .plugin_table_mut(&id)
-                .insert("plugin".into(), toml::Value::String(key));
-        }
-    }
 }
 
 /// Canonical PluginKey when `spec` uniquely resolves and is not already that key.
@@ -986,17 +927,6 @@ mode = "deny"
             "echo",
             found[0].plugin_key().canonical()
         ));
-        let mut cfg_echo = cfg.clone();
-        cfg_echo.integrations.set_enabled("echo", true);
-        cfg_echo
-            .integrations
-            .plugin_table_mut("echo")
-            .insert("plugin".into(), toml::Value::String("echo".into()));
-        upgrade_unique_alias_occupancy(&mut cfg_echo, &found);
-        assert_eq!(
-            cfg_echo.integrations.occupancy("echo"),
-            found[0].plugin_key().canonical()
-        );
     }
 
     #[test]
@@ -1047,35 +977,19 @@ mode = "deny"
         assert_eq!(cfg.database.plugin, sqlite.plugin_key().canonical());
 
         let echo = resolve_plugin_ref(&found, "echo").unwrap();
-        cfg.integrations.set_enabled("echo", true);
-        stamp_occupancy_plugin_key(&mut cfg, echo).unwrap();
-        assert_eq!(
-            cfg.integrations.occupancy("echo"),
-            echo.plugin_key().canonical()
-        );
-
-        let s3 = resolve_plugin_ref(&found, "s3").unwrap();
-        let err = stamp_occupancy_plugin_key(&mut cfg, s3)
+        let err = stamp_occupancy_plugin_key(&mut cfg, echo)
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("not mapped"),
-            "path-install s3 alias must not occupy [output.s3]: {err}"
+            err.contains("plugins enable"),
+            "non-database plugins are deployed, not stamped into config.toml: {err}"
         );
-        cfg.output.s3.enabled = true;
-        cfg.output.s3.plugin = "s3".into();
+        let s3 = resolve_plugin_ref(&found, "s3").unwrap();
+        assert!(stamp_occupancy_plugin_key(&mut cfg, s3).is_err());
 
         cfg.database.plugin = "sqlite".into();
-        cfg.integrations
-            .plugin_table_mut("echo")
-            .insert("plugin".into(), toml::Value::String("echo".into()));
         upgrade_unique_alias_occupancy(&mut cfg, &found);
         assert_eq!(cfg.database.plugin, sqlite.plugin_key().canonical());
-        assert_eq!(
-            cfg.integrations.occupancy("echo"),
-            echo.plugin_key().canonical()
-        );
-        assert_eq!(cfg.output.s3.plugin, s3.plugin_key().canonical());
 
         upgrade_unique_alias_occupancy(&mut cfg, &[]);
         assert_eq!(cfg.database.plugin, sqlite.plugin_key().canonical());
@@ -1248,7 +1162,6 @@ binding = "DB"
         cfg.database.sqlite.path = Some(std::path::PathBuf::from("secret-library.db"));
         cfg.database.postgres.url = Some("postgres://secret@db/library".into());
         cfg.database.d1.account_id = "acct_secret".into();
-        cfg.output.local.root = std::path::PathBuf::from("/secret/output");
         let found = discover_plugins(&cfg).unwrap();
         for id in ["sqlite", "postgres", "d1", "local"] {
             let plugin = found.iter().find(|p| p.alias() == id).expect(id);

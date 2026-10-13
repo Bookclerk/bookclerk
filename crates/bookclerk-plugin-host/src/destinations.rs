@@ -47,10 +47,18 @@ pub fn build_acquire_destinations(
     })?;
     let items = backends
         .into_iter()
-        .map(|(kind, backend)| AcquireDestination {
-            kind,
-            options: DownloadOptions::for_output_backend(config, kind),
-            backend,
+        .map(|(kind, backend)| {
+            let settings = destinations.settings_for(kind).unwrap_or_default();
+            AcquireDestination {
+                kind,
+                options: DownloadOptions::for_destination(
+                    config,
+                    kind,
+                    &settings.naming,
+                    &settings.prefix,
+                ),
+                backend,
+            }
         })
         .collect();
     Ok(AcquireDestinations {

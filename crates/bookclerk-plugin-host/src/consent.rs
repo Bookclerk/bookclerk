@@ -2042,32 +2042,33 @@ pub fn overlay_host_implied_network(
     overlay_host_implied_network_with(grant, plugin, config, discovered, None);
 }
 
-/// [`overlay_host_implied_network`] with a deployed S3 document endpoint.
+/// [`overlay_host_implied_network`] with a deployed instance document
+/// endpoint.
 ///
-/// `deployed_s3_endpoint` of `Some` means this spawn is a deployed S3
-/// instance. The inner value is the document `endpoint` (`None` when the
-/// document has no custom endpoint). That path does not read
-/// `[output.s3].endpoint`.
+/// `deployed_endpoint` of `Some` means this spawn is a deployed instance
+/// whose document names a host to reach (the S3 `endpoint`, the
+/// Audiobookshelf `base_url`); the inner value is `None` when the document
+/// names none. There is no `config.toml` fallback for plugin endpoints.
 pub(crate) fn overlay_host_implied_network_with(
     grant: &mut PluginGrant,
     plugin: &crate::discover::DiscoveredPlugin,
     config: &Config,
     discovered: &[crate::discover::DiscoveredPlugin],
-    deployed_s3_endpoint: Option<Option<&str>>,
+    deployed_endpoint: Option<Option<&str>>,
 ) {
     if !grant.network_mode.eq_ignore_ascii_case("outbound") {
         return;
     }
     overlay_postgres_url(grant, plugin, config, discovered);
     overlay_d1_api_base(grant, plugin, config, discovered);
-    overlay_audiobookshelf_url(grant, plugin, config, discovered);
-    overlay_s3_endpoint(grant, plugin, config, discovered, deployed_s3_endpoint);
+    overlay_deployed_endpoint(grant, deployed_endpoint);
 }
 
 /// SHA-256 of host config that participates in implied network overlays.
 ///
-/// Changing a Postgres URL, D1 API origin, S3 endpoint, or Audiobookshelf URL
-/// must mint a new executor `configuration_revision` and fence live sessions.
+/// Changing a Postgres URL or D1 API origin must mint a new executor
+/// `configuration_revision` and fence live sessions. Plugin endpoints (S3,
+/// Audiobookshelf) come from instance documents, not `config.toml`.
 #[must_use]
 pub fn host_overlay_config_digest(config: &Config) -> String {
     let mut hasher = Sha256::new();
@@ -2092,22 +2093,6 @@ pub fn host_overlay_config_digest(config: &Config) -> String {
     hasher.update(config.database.d1.account_id.as_bytes());
     hasher.update(b"\n");
     hasher.update(config.database.d1.database_id.as_bytes());
-    hasher.update(b"\ns3\n");
-    hasher.update(config.output.s3.plugin.as_bytes());
-    hasher.update(b"\n");
-    hasher.update(
-        config
-            .output
-            .s3
-            .endpoint
-            .as_deref()
-            .unwrap_or("")
-            .as_bytes(),
-    );
-    hasher.update(b"\nabs\n");
-    hasher.update(config.integrations.occupancy("audiobookshelf").as_bytes());
-    hasher.update(b"\n");
-    hasher.update(config.integrations.audiobookshelf().base_url.as_bytes());
     hex::encode(hasher.finalize())
 }
 
@@ -2152,8 +2137,8 @@ pub fn reconcile_host_overlay_authority(config: &Config) {
             continue;
         };
         let mut effective = persisted.clone();
-        let deployed_s3_endpoint = session
-            .deployed_s3_endpoint
+        let deployed_endpoint = session
+            .deployed_endpoint
             .as_ref()
             .map(|endpoint| endpoint.as_deref());
         overlay_host_implied_network_with(
@@ -2161,7 +2146,7 @@ pub fn reconcile_host_overlay_authority(config: &Config) {
             plugin,
             config,
             &discovered,
-            deployed_s3_endpoint,
+            deployed_endpoint,
         );
         let current = crate::authority::authority_revision(&effective);
         if current != session.revision {
@@ -2270,52 +2255,15 @@ fn overlay_database_slot_matches(
     overlay_unique_occupant(plugin, kind_id.unwrap_or(spec), discovered)
 }
 
-/// Overlay TCP for `[integrations.audiobookshelf].base_url`.
-fn overlay_audiobookshelf_url(
-    grant: &mut PluginGrant,
-    plugin: &crate::discover::DiscoveredPlugin,
-    config: &Config,
-    discovered: &[crate::discover::DiscoveredPlugin],
-) {
-    if !plugin.alias().eq_ignore_ascii_case("audiobookshelf") {
-        return;
-    }
-    let spec = crate::occupancy_spec(
-        config.integrations.occupancy("audiobookshelf"),
-        "audiobookshelf",
-    );
-    if !overlay_unique_occupant(plugin, spec, discovered) {
-        return;
-    }
-    overlay_http_url(grant, &config.integrations.audiobookshelf().base_url, 443);
-}
-
-/// Overlay TCP for `[output.s3].endpoint` (MinIO / custom). Default AWS hosts
-/// come from the S3 guest manifest `tcp` list.
-fn overlay_s3_endpoint(
-    grant: &mut PluginGrant,
-    plugin: &crate::discover::DiscoveredPlugin,
-    config: &Config,
-    discovered: &[crate::discover::DiscoveredPlugin],
-    deployed_s3_endpoint: Option<Option<&str>>,
-) {
-    if !plugin.alias().eq_ignore_ascii_case("s3") {
-        return;
-    }
-    if let Some(endpoint) = deployed_s3_endpoint {
-        if let Some(endpoint) = endpoint.filter(|endpoint| !endpoint.trim().is_empty()) {
+/// Grants TCP to the host a deployed instance document names (the S3
+/// `endpoint` or the Audiobookshelf `base_url`). Default AWS hosts come from
+/// the S3 guest manifest `tcp` list.
+fn overlay_deployed_endpoint(grant: &mut PluginGrant, deployed_endpoint: Option<Option<&str>>) {
+    if let Some(Some(endpoint)) = deployed_endpoint {
+        if !endpoint.trim().is_empty() {
             overlay_http_url(grant, endpoint, 443);
         }
-        return;
     }
-    let spec = crate::occupancy_spec(&config.output.s3.plugin, "s3");
-    if !overlay_unique_occupant(plugin, spec, discovered) {
-        return;
-    }
-    let Some(endpoint) = config.output.s3.endpoint.as_deref() else {
-        return;
-    };
-    overlay_http_url(grant, endpoint, 443);
 }
 
 /// Parses an HTTP(S) URL or bare host and grants TCP + implied CIDRs.
@@ -3166,12 +3114,15 @@ mode = "outbound"
 [vars]
 "#,
         );
-        let mut config = Config::default();
-        config
-            .integrations
-            .set_audiobookshelf_string("base_url", "http://127.0.0.1:13378");
+        let config = Config::default();
         let mut grant = consent_request(&plugin.manifest, plugin.plugin_key());
-        overlay_host_implied_network(&mut grant, &plugin, &config, std::slice::from_ref(&plugin));
+        overlay_host_implied_network_with(
+            &mut grant,
+            &plugin,
+            &config,
+            std::slice::from_ref(&plugin),
+            Some(Some("http://127.0.0.1:13378")),
+        );
         assert!(grant.egress_policy().allows_tcp("127.0.0.1", 13378));
         assert!(grant.address_cidrs.contains("127.0.0.1/32"));
     }
@@ -3194,10 +3145,15 @@ mode = "outbound"
 [vars]
 "#,
         );
-        let mut config = Config::default();
-        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
+        let config = Config::default();
         let mut grant = consent_request(&plugin.manifest, plugin.plugin_key());
-        overlay_host_implied_network(&mut grant, &plugin, &config, std::slice::from_ref(&plugin));
+        overlay_host_implied_network_with(
+            &mut grant,
+            &plugin,
+            &config,
+            std::slice::from_ref(&plugin),
+            Some(Some("http://127.0.0.1:9000")),
+        );
         assert!(grant.egress_policy().allows_tcp("127.0.0.1", 9000));
         assert!(grant.address_cidrs.contains("127.0.0.1/32"));
     }
@@ -3220,8 +3176,7 @@ mode = "outbound"
 [vars]
 "#,
         );
-        let mut config = Config::default();
-        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
+        let config = Config::default();
         let mut grant = consent_request(&plugin.manifest, plugin.plugin_key());
         overlay_host_implied_network_with(
             &mut grant,
@@ -3235,10 +3190,6 @@ mode = "outbound"
             policy.allows_tcp("minio.lan", 9000),
             "document endpoint must be in the spawn network grant: {policy:?}"
         );
-        assert!(
-            !policy.allows_tcp("127.0.0.1", 9000),
-            "a stale [output.s3].endpoint must not be granted to a deployed instance: {policy:?}"
-        );
 
         let mut bare = consent_request(&plugin.manifest, plugin.plugin_key());
         overlay_host_implied_network_with(
@@ -3250,7 +3201,7 @@ mode = "outbound"
         );
         assert!(
             bare.tcp.is_empty(),
-            "a document with no endpoint must not inherit the TOML endpoint: {bare:?}"
+            "a document with no endpoint grants no extra host: {bare:?}"
         );
     }
 
@@ -3311,22 +3262,22 @@ mode = "outbound"
         plugin_key: &str,
         persisted: &PluginGrant,
         revision: &str,
-        deployed_s3_endpoint: Option<Option<String>>,
+        deployed_endpoint: Option<Option<String>>,
     ) -> RegisteredSession {
         RegisteredSession(
-            crate::authority::register_session_revisions_on_with_deployed_s3(
+            crate::authority::register_session_revisions_on_with_deployed_endpoint(
                 plugin_key,
                 &grant_revision(persisted),
                 revision,
                 std::sync::Arc::new(|| {}),
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                deployed_s3_endpoint,
+                deployed_endpoint,
             ),
         )
     }
 
     #[test]
-    fn reload_fence_keeps_a_deployed_s3_endpoint() {
+    fn reload_fence_keeps_a_deployed_endpoint() {
         let _live = crate::authority::test_live_lock();
         let _env = bookclerk_config::ProcessEnvGuard::enter();
         let _dirs = PluginDirsGuard::clear();
@@ -3365,23 +3316,21 @@ mode = "outbound"
             &deployed_rev,
             Some(Some("http://minio.lan:9000".into())),
         );
-        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
         config.library.auto_acquire = true;
         reconcile_host_overlay_authority(&config);
         assert!(
             !crate::authority::is_fenced(&deployed_flag.0),
-            "a deployed document endpoint must survive a TOML endpoint and an unrelated reload"
+            "a deployed document endpoint must survive an unrelated reload"
         );
 
         let mut bare = persisted.clone();
         overlay_host_implied_network_with(&mut bare, plugin, &config, &found, Some(None));
         let bare_rev = crate::authority::authority_revision(&bare);
         let bare_flag = register_s3(key, &persisted, &bare_rev, Some(None));
-        config.output.s3.endpoint = Some("http://10.0.0.8:9000".into());
         reconcile_host_overlay_authority(&config);
         assert!(
             !crate::authority::is_fenced(&bare_flag.0),
-            "a deployed instance with no document endpoint must not inherit a new TOML endpoint"
+            "a deployed instance with no document endpoint stays live across a reload"
         );
         assert!(
             !crate::authority::is_fenced(&deployed_flag.0),
@@ -3409,32 +3358,13 @@ mode = "outbound"
         );
         drop(stale_sibling);
 
-        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
-        let mut transitional = persisted.clone();
-        overlay_host_implied_network(&mut transitional, plugin, &config, &found);
-        let transitional_rev = crate::authority::authority_revision(&transitional);
-        let transitional_flag = register_s3(key, &persisted, &transitional_rev, None);
-        config.library.auto_acquire = false;
+        config.database.postgres.url = Some("postgres://u:p@10.0.0.8:5432/db".into());
         reconcile_host_overlay_authority(&config);
-        assert!(
-            !crate::authority::is_fenced(&transitional_flag.0),
-            "an unrelated reload must not fence a transitional session whose TOML endpoint is unchanged"
-        );
-        assert!(!crate::authority::is_fenced(&deployed_flag.0));
-        config.output.s3.endpoint = Some("http://10.1.1.1:9000".into());
-        reconcile_host_overlay_authority(&config);
-        assert!(
-            crate::authority::is_fenced(&transitional_flag.0),
-            "a transitional session must still fence when [output.s3].endpoint changes"
-        );
         assert!(
             !crate::authority::is_fenced(&deployed_flag.0),
-            "a TOML endpoint change must not cancel a deployed session that shares the plugin key"
+            "a database overlay change must not cancel a deployed S3 session"
         );
-        assert!(
-            !crate::authority::is_fenced(&bare_flag.0),
-            "a TOML endpoint change must not cancel a deployed instance with no document endpoint"
-        );
+        assert!(!crate::authority::is_fenced(&bare_flag.0));
     }
 
     #[test]
@@ -3518,89 +3448,6 @@ mode = "outbound"
         assert!(
             grant_real.tcp.is_empty() && grant_twin.tcp.is_empty(),
             "corrupt duplicate alias occupancy must not overlay host TCP onto either install"
-        );
-    }
-
-    #[test]
-    /// Invalid installation state (defense in depth): S3 PluginKey occupancy
-    /// must not overlay host TCP onto an alias twin.
-    fn overlay_s3_plugin_key_spec_does_not_grant_alias_twin() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
-        let toml = r#"
-api_version = 3
-id = "s3"
-runtime = "native"
-command = "./guest"
-entrypoints = ["storage"]
-
-[capabilities.network]
-mode = "outbound"
-
-[vars]
-"#;
-        let real = discovered(a.path(), toml);
-        let twin = discovered(b.path(), toml);
-        assert_eq!(real.alias(), twin.alias());
-        assert_ne!(real.plugin_key(), twin.plugin_key());
-        let mut config = Config::default();
-        config.output.s3.plugin = real.plugin_key().canonical().to_string();
-        config.output.s3.endpoint = Some("http://127.0.0.1:9000".into());
-
-        let among = [real.clone(), twin.clone()];
-        let mut grant_real = consent_request(&real.manifest, real.plugin_key());
-        overlay_host_implied_network(&mut grant_real, &real, &config, &among);
-        assert!(
-            grant_real.egress_policy().allows_tcp("127.0.0.1", 9000),
-            "selected PluginKey must still get the host S3 endpoint overlay"
-        );
-
-        let mut grant_twin = consent_request(&twin.manifest, twin.plugin_key());
-        overlay_host_implied_network(&mut grant_twin, &twin, &config, &among);
-        assert!(
-            grant_twin.tcp.is_empty() && grant_twin.address_cidrs.is_empty(),
-            "corrupt duplicate alias must not inherit the operator S3 endpoint overlay"
-        );
-    }
-
-    #[test]
-    /// Invalid installation state (defense in depth): ABS PluginKey occupancy
-    /// must not overlay host TCP onto an alias twin.
-    fn overlay_audiobookshelf_plugin_key_spec_does_not_grant_alias_twin() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
-        let toml = r#"
-api_version = 3
-id = "audiobookshelf"
-runtime = "native"
-command = "./guest"
-entrypoints = ["remoteLibrary"]
-
-[capabilities.network]
-mode = "outbound"
-
-[vars]
-"#;
-        let real = discovered(a.path(), toml);
-        let twin = discovered(b.path(), toml);
-        let mut config = Config::default();
-        config
-            .integrations
-            .set_audiobookshelf_string("plugin", real.plugin_key().canonical().to_string());
-        config
-            .integrations
-            .set_audiobookshelf_string("base_url", "http://127.0.0.1:13378");
-
-        let among = [real.clone(), twin.clone()];
-        let mut grant_real = consent_request(&real.manifest, real.plugin_key());
-        overlay_host_implied_network(&mut grant_real, &real, &config, &among);
-        assert!(grant_real.egress_policy().allows_tcp("127.0.0.1", 13378));
-
-        let mut grant_twin = consent_request(&twin.manifest, twin.plugin_key());
-        overlay_host_implied_network(&mut grant_twin, &twin, &config, &among);
-        assert!(
-            grant_twin.tcp.is_empty() && grant_twin.address_cidrs.is_empty(),
-            "corrupt duplicate alias must not inherit the operator Audiobookshelf URL overlay"
         );
     }
 

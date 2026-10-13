@@ -1,11 +1,10 @@
 //! Destination-specific storage backends for one acquire operation.
 
-use bookclerk_config::{normalize_storage_prefix, Config, MultiDestinationMode, OutputBackendKind};
-use bookclerk_library::LibraryStore;
+use bookclerk_config::{MultiDestinationMode, OutputBackendKind};
 use bookclerk_source::DownloadOptions;
-use bookclerk_storage::{FanoutBackend, LocalFsBackend, S3Backend, StorageBackend};
+use bookclerk_storage::{FanoutBackend, StorageBackend};
 
-use crate::error::{AcquireError, Result};
+use crate::error::Result;
 
 /// One configured output destination for an acquire run.
 pub struct AcquireDestination {
@@ -17,7 +16,7 @@ pub struct AcquireDestination {
     pub options: DownloadOptions,
 }
 
-/// Ordered set of acquire destinations built from config.
+/// Ordered set of acquire destinations built from the deployed destination plugins.
 pub struct AcquireDestinations {
     /// Configured acquire destinations in evaluation order.
     pub items: Vec<AcquireDestination>,
@@ -28,71 +27,13 @@ pub struct AcquireDestinations {
 }
 
 impl AcquireDestinations {
-    /// Builds destination backends from `[output]` config.
-    ///
-    /// `library` is used when the S3 destination loads credentials from
-    /// `encrypted_secrets` (after `BOOKCLERK_AWS_*` env override, before
-    /// the AWS SDK default chain).
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Host config with enabled `[output.local]` / `[output.s3]`.
-    /// * `library` - Optional library store for sealed S3 credentials.
-    ///
-    /// # Returns
-    ///
-    /// Constructed destinations with a chosen primary backend.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AcquireError`] when destination config is invalid or a backend
-    /// cannot be constructed.
-    pub async fn from_config(config: &Config, library: Option<&LibraryStore>) -> Result<Self> {
-        config.output.validate_destinations().map_err(|err| {
-            AcquireError::Other(anyhow::anyhow!("invalid output destination config: {err}"))
-        })?;
-
-        let primary = config.output.primary_backend().ok_or_else(|| {
-            AcquireError::Other(anyhow::anyhow!(
-                "enable at least one of [output.local] or [output.s3]"
-            ))
-        })?;
-        let db = library.map(|store| store.db());
-        let mut items = Vec::new();
-        for kind in config.output.enabled_backends() {
-            let backend: Box<dyn StorageBackend> = match kind {
-                OutputBackendKind::Local => {
-                    let prefix = normalize_storage_prefix(config.output.local.prefix.trim());
-                    Box::new(LocalFsBackend::with_prefix(
-                        config.output.local.root.clone(),
-                        &prefix,
-                    )?)
-                }
-                OutputBackendKind::S3 => {
-                    let prefix = normalize_storage_prefix(config.output.s3.prefix.trim());
-                    Box::new(S3Backend::from_config(&config.output.s3, &prefix, db).await?)
-                }
-            };
-            items.push(AcquireDestination {
-                kind,
-                backend,
-                options: DownloadOptions::for_output_backend(config, kind),
-            });
-        }
-        Ok(Self {
-            items,
-            primary,
-            multi_destination: config.output.multi_destination,
-        })
-    }
-
-    /// Returns the number of configured destinations.
+    /// Number of destinations.
     #[must_use]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
-    /// Returns true when no destinations are configured.
+    /// Returns true when no destinations are deployed.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
@@ -115,8 +56,8 @@ impl AcquireDestinations {
 
     /// Clone destination backends into a listing/match storage handle.
     ///
-    /// Prefer this over a second [`bookclerk_storage::from_config`] call when
-    /// acquire already built destinations (avoids decrypting S3 secrets twice).
+    /// Reuses the backends acquire already built instead of spawning the
+    /// destination guests a second time.
     ///
     /// # Errors
     ///

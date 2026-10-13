@@ -69,6 +69,20 @@ impl ExternalIntegration {
         }
         let opened_config = prepared.bindings.config.clone();
         let opened_secrets = prepared.bindings.secrets.clone();
+        // The Audiobookshelf server lives in the instance document; the jail
+        // network grant for it rides the deployed-endpoint channel.
+        let mut services = services;
+        if plugin.alias().eq_ignore_ascii_case("audiobookshelf") {
+            services.deployed_endpoint = Some(
+                prepared
+                    .granted_config
+                    .get("base_url")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|url| !url.is_empty())
+                    .map(str::to_string),
+            );
+        }
         let session = Arc::new(
             PluginSession::spawn_with(
                 plugin,

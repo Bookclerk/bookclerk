@@ -156,8 +156,6 @@ async fn run_measured(cgroup: PathBuf) {
         ..Config::default()
     };
     config.plugins.isolation = Isolation::Required;
-    config.output.local.enabled = true;
-    config.output.local.root = root.clone();
     let mut grants = PluginGrantStore::default();
     grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
     grants.save(files.path()).expect("grants");

@@ -138,9 +138,16 @@ async fn redeem(
     // recover the committed receipt; unredeemed expired tickets still fail.
     let inspected = inspect_claim_ticket(&library, raw_ticket).await?;
     let identity = &inspected.identity;
-    if identity.provider != "local" && !cfg.integrations.is_enabled(&identity.provider) {
+    if identity.provider != "local"
+        && state
+            .integrations
+            .read()
+            .await
+            .get(&identity.provider)
+            .is_none()
+    {
         return Err(PortalError::bad(format!(
-            "integration `{}` is disabled",
+            "integration `{}` is not deployed on this host",
             identity.provider
         )));
     }
@@ -229,14 +236,17 @@ async fn login_integration(
     State(state): State<PortalState>,
     Json(body): Json<IntegrationLoginBody>,
 ) -> Result<Response, PortalError> {
+    if state
+        .integrations
+        .read()
+        .await
+        .get(&body.provider)
+        .is_none()
     {
-        let cfg = state.config.read().await;
-        if !cfg.integrations.is_enabled(&body.provider) {
-            return Err(PortalError::bad(format!(
-                "integration `{}` is disabled",
-                body.provider
-            )));
-        }
+        return Err(PortalError::bad(format!(
+            "integration `{}` is not deployed on this host",
+            body.provider
+        )));
     }
     let integration = state
         .integrations
@@ -316,16 +326,12 @@ struct MeResponse {
     label: Option<String>,
 }
 
-/// Lists enabled content sources with portal auth mode, config options, and brand colors.
+/// Lists the deployed content sources (one per plugin, through its default
+/// instance) with portal auth mode, config options, and brand colors.
 async fn sources(State(state): State<PortalState>) -> Json<SourcesResponse> {
-    let cfg = state.config.read().await;
     let sources = state.sources.read().await;
     let mut list = Vec::new();
-    for s in sources.all() {
-        // Appearance follows `[sources.<id>].enabled` even if a stale registry entry remains.
-        if !cfg.sources.is_enabled(s.id()) {
-            continue;
-        }
+    for s in sources.routed() {
         let brand = Brand::from(s.portal_brand());
         let config_options: Vec<SourceConfigOptionInfo> = s
             .config_options()
@@ -584,7 +590,6 @@ async fn connections(
     headers: HeaderMap,
 ) -> Result<Json<ConnectionsResponse>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
-    let cfg = state.config.read().await;
     let library = state.library_snapshot().await;
     let links = library.list_account_links(identity.id).await?;
     let mut connections = Vec::new();
@@ -604,8 +609,8 @@ async fn connections(
                 .or_else(|| integration_brand(&link.source))
         };
         // Still list (and allow revoke of) connections even when the source
-        // plugin is disabled — only new connect/login is gated by enabled.
-        let source_enabled = cfg.sources.is_enabled(&link.source);
+        // plugin is not deployed here — only new connect/login needs it.
+        let source_enabled = find_source(&state, &link.plugin_key).await.is_some();
         connections.push(ConnectionInfo {
             plugin_key: link.plugin_key,
             account_id: link.account_id,
@@ -707,15 +712,12 @@ async fn require_identity(
         .ok_or_else(|| PortalError::unauthorized("session expired"))
 }
 
-/// Rejects connect/login when the source is disabled or not registered.
+/// Rejects connect/login when no deployment of the source runs on this host.
 async fn require_source_enabled(state: &PortalState, id: &str) -> Result<(), PortalError> {
-    let cfg = state.config.read().await;
-    if !cfg.sources.is_enabled(id) {
-        return Err(PortalError::bad(format!("source `{id}` is disabled")));
-    }
-    // Also require registration (registry builders skip disabled sources).
     if find_source(state, id).await.is_none() {
-        return Err(PortalError::bad(format!("source `{id}` is not registered")));
+        return Err(PortalError::bad(format!(
+            "source `{id}` is not deployed on this host"
+        )));
     }
     Ok(())
 }
@@ -776,12 +778,6 @@ pub async fn mint_for_external_user(
     user: &ExternalUser,
     created_by: &str,
 ) -> crate::Result<crate::tickets::MintedClaimTicket> {
-    if !config.integrations.is_enabled(&user.provider) {
-        return Err(crate::error::IntegrationError::message(format!(
-            "integration `{}` is disabled",
-            user.provider
-        )));
-    }
     let minted = mint_claim_ticket(library, &config.integrations, user, created_by).await?;
     if let Some(url) = crate::tickets::ticket_portal_url(&config.integrations, &minted.token) {
         info!(%url, identity = minted.identity.id, "minted claim ticket");

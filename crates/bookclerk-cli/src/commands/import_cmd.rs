@@ -92,6 +92,9 @@ pub async fn run(
                         "install the Audible plugin before importing a Libation library: {err}"
                     )
                 })?;
+            let local_plugin_key = bookclerk_plugin_host::resolve_plugin_ref(&plugins, "local")
+                .ok()
+                .map(|local| local.plugin_key().canonical().to_string());
             let summary = migrate(MigrateOptions {
                 source: from,
                 dest_files_dir: dest,
@@ -99,6 +102,7 @@ pub async fn run(
                 skip_auth,
                 dry_run,
                 audible_plugin_key: audible.plugin_key().canonical().to_string(),
+                local_plugin_key,
             })
             .await?;
             emit(format, &summary, || {

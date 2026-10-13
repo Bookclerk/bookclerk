@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use bookclerk_config::Config;
+use bookclerk_config::{Config, DestinationNaming, NamingProfile, OutputBackendKind};
 use bookclerk_storage::StorageBackend;
 
 use crate::discover::DiscoveredPlugin;
@@ -39,6 +39,45 @@ pub(crate) struct SpawnedDestination {
     backend: Option<Arc<dyn StorageBackend>>,
     /// Which acquire slot this backend fills.
     kind: DeployedKind,
+    /// Key layout from the instance document.
+    settings: DestinationSettings,
+}
+
+/// Key layout settings the host reads from a deployed destination's instance
+/// document: the `local` / `s3` plugins declare `prefix` and the naming
+/// overrides as `[[settings]]`, and acquire needs them to plan storage keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DestinationSettings {
+    /// Key prefix under the destination root or bucket.
+    pub prefix: String,
+    /// Naming overrides; unset values inherit global `[output]`.
+    pub naming: DestinationNaming,
+}
+
+impl DestinationSettings {
+    /// Reads the layout settings from a resolved `CONFIG` object.
+    #[must_use]
+    pub fn from_granted_config(granted: &serde_json::Value) -> Self {
+        let text = |key: &str| {
+            granted
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        Self {
+            prefix: text("prefix").unwrap_or_default(),
+            naming: DestinationNaming {
+                naming_profile: text("naming_profile")
+                    .as_deref()
+                    .and_then(NamingProfile::parse),
+                folder_template: text("folder_template"),
+                file_template: text("file_template"),
+                chapter_file_template: text("chapter_file_template"),
+            },
+        }
+    }
 }
 
 /// One reconciler-spawned destination, addressed by plugin instance id.
@@ -50,6 +89,8 @@ struct DeployedSlot {
     backend: Option<Arc<dyn StorageBackend>>,
     /// Which acquire slot this backend fills.
     kind: DeployedKind,
+    /// Key layout from the instance document.
+    settings: DestinationSettings,
 }
 
 /// Long-lived external output plugins loaded at host startup.
@@ -97,6 +138,22 @@ impl DestinationRegistry {
     /// overwrite one slot.
     pub fn require_local(&self) -> std::result::Result<Option<Arc<dyn StorageBackend>>, String> {
         self.require_kind(DeployedKind::Local, "local")
+    }
+
+    /// Key layout settings of the deployed destination of `kind`, when exactly
+    /// one is deployed.
+    #[must_use]
+    pub fn settings_for(&self, kind: OutputBackendKind) -> Option<DestinationSettings> {
+        let wanted = match kind {
+            OutputBackendKind::Local => DeployedKind::Local,
+            OutputBackendKind::S3 => DeployedKind::S3,
+        };
+        let mut matches = self.deployed.values().filter(|slot| slot.kind == wanted);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first.settings.clone())
     }
 
     /// One deployed backend of `kind`, else the transitional slot.
@@ -185,6 +242,7 @@ impl DestinationRegistry {
         session: Arc<PluginSession>,
         backend: Option<Arc<dyn StorageBackend>>,
         kind: DeployedKind,
+        settings: DestinationSettings,
     ) {
         if plugin_instance_id.is_empty() {
             return;
@@ -195,6 +253,7 @@ impl DestinationRegistry {
                 session,
                 backend,
                 kind,
+                settings,
             },
         );
     }
@@ -223,6 +282,7 @@ impl DestinationRegistry {
             Arc::clone(&spawned.session),
             spawned.backend,
             kind,
+            spawned.settings,
         );
         if matches!(kind, DeployedKind::S3 | DeployedKind::Local) {
             let count = self
@@ -284,12 +344,14 @@ pub(crate) async fn spawn_deployed_storage(
     store: Option<&bookclerk_library::LibraryStore>,
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<SpawnedDestination> {
+    let settings = DestinationSettings::from_granted_config(&prepared.granted_config);
     if plugin.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
         let (storage_backend, session) = spawn_s3_from_instance(plugin, config, prepared).await?;
         return Ok(SpawnedDestination {
             session,
             backend: Some(Arc::new(storage_backend)),
             kind: DeployedKind::S3,
+            settings,
         });
     }
     if plugin.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
@@ -299,6 +361,7 @@ pub(crate) async fn spawn_deployed_storage(
             session,
             backend: Some(Arc::new(storage)),
             kind: DeployedKind::Local,
+            settings,
         });
     }
     let session = Arc::new(
@@ -317,6 +380,7 @@ pub(crate) async fn spawn_deployed_storage(
         session,
         backend: None,
         kind: DeployedKind::Other,
+        settings,
     })
 }
 
@@ -342,7 +406,7 @@ async fn spawn_s3_from_instance(
         .filter(|endpoint| !endpoint.is_empty())
         .map(str::to_string);
     let services = crate::SessionServices {
-        deployed_s3_endpoint: Some(endpoint),
+        deployed_endpoint: Some(endpoint),
         ..crate::SessionServices::default()
     };
     let session = Arc::new(

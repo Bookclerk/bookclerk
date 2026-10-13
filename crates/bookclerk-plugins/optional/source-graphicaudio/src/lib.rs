@@ -42,7 +42,7 @@ pub use guest::{
 };
 pub use magento::{DownloadableProduct, LibraryItem, MagentoClient, DEFAULT_STORE_URL};
 pub use options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
-pub use source::{from_config, register, GraphicAudioSource, ID as GRAPHICAUDIO_SOURCE_ID};
+pub use source::{GraphicAudioSource, ID as GRAPHICAUDIO_SOURCE_ID};
 pub use sync::{
     collect_account_books, product_to_new_book, scan_library, ScanContext, ScanOptions,
 };

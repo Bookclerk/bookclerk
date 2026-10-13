@@ -1130,7 +1130,7 @@ async fn probe_guest_health(
             let context =
                 crate::host::instance_s3_context(&prepared).map_err(|err| err.to_string())?;
             let secrets = crate::host::s3_open_secrets(&prepared);
-            services.deployed_s3_endpoint = Some(json_endpoint(&context));
+            services.deployed_endpoint = Some(json_endpoint(&context));
             spawn_config = context.clone();
             open_bindings.config = bookclerk_plugin_sdk::ExtensibleConfig::json(&context);
             open_bindings.secrets = secrets;

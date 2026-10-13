@@ -118,9 +118,6 @@ fn run_bookclerk(files: &Path, args: &[&str], extra: &[(&str, &str)]) -> std::pr
         .env_remove("BOOKCLERK_EVENTS_DEAD_LETTER_RETENTION_DAYS")
         .env_remove("BOOKCLERK_EVENTS_CONCURRENCY")
         .env_remove("BOOKCLERK_OPERATOR_TOKEN")
-        .env_remove("BOOKCLERK_AWS_ACCESS_KEY_ID")
-        .env_remove("BOOKCLERK_AWS_SECRET_ACCESS_KEY")
-        .env_remove("BOOKCLERK_AWS_SESSION_TOKEN")
         .args(args);
     for (key, value) in extra {
         cmd.env(key, value);
@@ -181,21 +178,19 @@ fn enrolled_database_rejects_missing_and_wrong_keys_and_accepts_the_cluster_key(
     assert!(enrolled_out.contains('7'), "{enrolled_out}");
     let key = fs::read(master_key_path(files)).expect("enrollment mints master.key");
 
-    let aws = [
-        ("BOOKCLERK_AWS_ACCESS_KEY_ID", "AKIAtestkey"),
-        ("BOOKCLERK_AWS_SECRET_ACCESS_KEY", "secretsecretsecret"),
-    ];
-    let saved = run_bookclerk(files, &["config", "s3-credentials", "set"], &aws);
+    // The operator token is a sealed secret row; rotating it exercises the
+    // same seal path a plugin instance secret uses.
+    let saved = run_bookclerk(files, &["daemon", "token", "rotate"], &[]);
     assert!(
         saved.status.success(),
-        "correct key should seal S3 credentials: {}",
+        "correct key should seal the operator token: {}",
         stderr(&saved)
     );
     let secrets = secret_rows(files);
-    assert_eq!(secrets.len(), 1, "s3 set should write one secret row");
+    assert_eq!(secrets.len(), 1, "token rotate should write one secret row");
 
     fs::remove_file(master_key_path(files)).unwrap();
-    let missing = run_bookclerk(files, &["config", "s3-credentials", "set"], &aws);
+    let missing = run_bookclerk(files, &["daemon", "token", "rotate"], &[]);
     let missing_err = stderr(&missing);
     assert!(!missing.status.success(), "missing key should fail");
     assert!(
@@ -239,17 +234,14 @@ fn enrolled_database_rejects_missing_and_wrong_keys_and_accepts_the_cluster_key(
         "{}",
         String::from_utf8_lossy(&again.stdout)
     );
-    let shown = run_bookclerk(files, &["config", "s3-credentials", "show"], &[]);
+    let shown = run_bookclerk(files, &["daemon", "token"], &[]);
     assert!(
         shown.status.success(),
-        "correct key should read S3 credentials: {}",
+        "correct key should unseal the operator token: {}",
         stderr(&shown)
     );
     let shown_out = String::from_utf8_lossy(&shown.stdout);
-    assert!(
-        shown_out.contains("AKIAt") || shown_out.contains("present"),
-        "{shown_out}"
-    );
+    assert!(!shown_out.trim().is_empty(), "token show printed nothing");
     assert_eq!(fs::read(master_key_path(files)).unwrap(), key);
     assert_eq!(secret_rows(files), secrets);
 }

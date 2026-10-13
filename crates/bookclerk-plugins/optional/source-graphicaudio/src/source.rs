@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
     PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceBrand,
-    SourceFetch, SourcePurchaseHint, SourceRegistry,
+    SourceFetch, SourcePurchaseHint,
 };
 
 use crate::auth::GraphicAudioAuthFile;
@@ -68,36 +67,6 @@ impl GraphicAudioSource {
             access: GraphicAudioAccess::Web,
             bitrate: GraphicAudioBitrate::Hi,
             container: GraphicAudioContainer::Auto,
-            fetch_mode: None,
-            magento_password: None,
-        }
-    }
-
-    /// Parse `[sources.graphicaudio]` knobs from config.
-    #[must_use]
-    pub fn from_config(config: &Config) -> Self {
-        let access = config
-            .sources
-            .get_string(ID, "access")
-            .and_then(GraphicAudioAccess::parse)
-            .or_else(GraphicAudioAccess::from_env)
-            .unwrap_or_default();
-        let bitrate = config
-            .sources
-            .get_string(ID, "bitrate")
-            .and_then(GraphicAudioBitrate::parse)
-            .unwrap_or_default();
-        let container = config
-            .sources
-            .get_string(ID, "container")
-            .and_then(GraphicAudioContainer::parse)
-            .unwrap_or_default();
-        Self {
-            base_url: DEFAULT_BASE_URL.to_string(),
-            store_url: DEFAULT_STORE_URL.to_string(),
-            access,
-            bitrate,
-            container,
             fetch_mode: None,
             magento_password: None,
         }
@@ -824,18 +793,5 @@ fn source_account_from_auth(auth: &GraphicAudioAuthFile) -> SourceAccount {
         marketplace: auth.marketplace.clone(),
         label: auth.label.clone().or_else(|| Some(auth.email.clone())),
         scan_enabled: true,
-    }
-}
-
-/// Parse `[sources.graphicaudio]` into a [`GraphicAudioSource`].
-#[must_use]
-pub fn from_config(config: &Config) -> GraphicAudioSource {
-    GraphicAudioSource::from_config(config)
-}
-
-/// Register GraphicAudio when `[sources.graphicaudio] enabled` (default true).
-pub fn register(registry: &mut SourceRegistry, config: &Config) {
-    if config.sources.is_enabled(ID) {
-        registry.register(Arc::new(from_config(config)));
     }
 }

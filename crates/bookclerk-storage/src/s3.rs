@@ -13,14 +13,63 @@ use aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client;
-use bookclerk_config::OutputS3Config;
 use bytes::Bytes;
-use sea_orm::DatabaseConnection;
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 use crate::error::{Result, StorageError};
-use crate::s3_credentials::{load_s3_credentials, S3Credentials};
 use crate::traits::{ObjectInfo, ObjectMeta, ObjectProbe, StorageBackend};
+
+/// Connection settings for one S3 / MinIO destination.
+///
+/// The `s3` destination plugin declares these as `[[settings]]`; the host
+/// resolves them from the plugin instance document and hands them to the
+/// guest as its open context.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct S3Settings {
+    /// Destination bucket name (required).
+    pub bucket: String,
+    /// AWS region id (also used by MinIO path-style clients).
+    pub region: String,
+    /// Optional custom endpoint (MinIO, LocalStack, …).
+    pub endpoint: Option<String>,
+    /// Force path-style addressing (typical for MinIO).
+    pub force_path_style: bool,
+}
+
+/// Static AWS-style credentials for the S3 destination.
+///
+/// These come from the instance's sealed secrets; without them the SDK
+/// default provider chain applies inside the guest.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct S3Credentials {
+    /// AWS access key id.
+    pub access_key_id: String,
+    /// AWS secret access key (redacted in [`Debug`]; never logged).
+    pub secret_access_key: String,
+    /// Optional STS session token when using temporary credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+}
+
+impl std::fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Credentials")
+            .field("access_key_id", &redact_access_key(&self.access_key_id))
+            .field("secret_access_key", &"***")
+            .field("session_token", &self.session_token.as_ref().map(|_| "***"))
+            .finish()
+    }
+}
+
+/// Debug-only access-key redaction (first 4 chars + stars).
+fn redact_access_key(access_key_id: &str) -> String {
+    if access_key_id.len() <= 4 {
+        return "****".into();
+    }
+    let (prefix, rest) = access_key_id.split_at(4);
+    format!("{prefix}{}", "*".repeat(rest.len().min(8)))
+}
 
 /// Below this size a single `PutObject` is enough. Above it, upload in fixed-size
 /// parts so memory stays bounded and objects larger than the single-PUT limit
@@ -74,29 +123,6 @@ impl std::fmt::Debug for S3Backend {
 }
 
 impl S3Backend {
-    /// Build from Bookclerk S3 output config.
-    ///
-    /// Credential resolution order:
-    /// 1. `BOOKCLERK_AWS_ACCESS_KEY_ID` + `BOOKCLERK_AWS_SECRET_ACCESS_KEY` env override
-    ///    (wins when both are set; empty string counts as set — intentional override).
-    ///    Do NOT confuse with bare `AWS_*` which the SDK chain may use independently.
-    /// 2. `encrypted_secrets` (`kind=s3`, `name=default`) when `db` is provided (sealed-v1)
-    /// 3. AWS SDK default provider chain (`~/.aws/credentials`, SSO, EC2/ECS/EKS roles, etc.)
-    ///
-    /// `prefix` should already be the normalized destination prefix for this S3 plugin.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn from_config(
-        cfg: &OutputS3Config,
-        prefix: &str,
-        db: Option<&DatabaseConnection>,
-    ) -> Result<Self> {
-        let creds = resolve_s3_credentials(db).await?;
-        Self::from_parts(cfg, prefix, creds.as_ref()).await
-    }
-
     /// Build with explicit credentials and a granted multipart journal directory.
     ///
     /// The directory must already be a location the process is allowed to
@@ -109,7 +135,7 @@ impl S3Backend {
     /// Returns an error when the client cannot be built, the journal directory
     /// cannot be created, or reading existing records fails.
     pub async fn from_parts_with_journal(
-        cfg: &OutputS3Config,
+        cfg: &S3Settings,
         prefix: &str,
         creds: Option<&S3Credentials>,
         journal_dir: &std::path::Path,
@@ -138,7 +164,7 @@ impl S3Backend {
         self
     }
 
-    /// Build with explicit credentials (external output guests).
+    /// Build with explicit settings and credentials.
     ///
     /// Without [`Self::from_parts_with_journal`], multipart uploads are not
     /// recoverable after process death.
@@ -147,7 +173,7 @@ impl S3Backend {
     ///
     /// Returns an error when the operation fails.
     pub async fn from_parts(
-        cfg: &OutputS3Config,
+        cfg: &S3Settings,
         prefix: &str,
         creds: Option<&S3Credentials>,
     ) -> Result<Self> {
@@ -1534,28 +1560,6 @@ fn meta_get(map: Option<&std::collections::HashMap<String, String>>, key: &str) 
             .cloned()
             .or_else(|| m.get(&key.to_ascii_lowercase()).cloned())
     })
-}
-
-/// Resolve S3 credentials for the in-process backend (env → DB → SDK chain).
-pub(crate) async fn resolve_s3_credentials(
-    db: Option<&DatabaseConnection>,
-) -> Result<Option<S3Credentials>> {
-    if let (Ok(access), Ok(secret)) = (
-        std::env::var(crate::s3_credentials::ENV_AWS_ACCESS_KEY_ID),
-        std::env::var(crate::s3_credentials::ENV_AWS_SECRET_ACCESS_KEY),
-    ) {
-        let session = std::env::var(crate::s3_credentials::ENV_AWS_SESSION_TOKEN).ok();
-        return Ok(Some(S3Credentials {
-            access_key_id: access,
-            secret_access_key: secret,
-            session_token: session,
-            label: None,
-        }));
-    }
-    if let Some(db) = db {
-        return load_s3_credentials(db).await;
-    }
-    Ok(None)
 }
 
 #[cfg(test)]

@@ -498,16 +498,16 @@ pub struct SessionServices {
     pub selected_instance_id: Option<String>,
     /// Writable root for a deployed local destination.
     ///
-    /// `None` uses `[output.local].root` when that output is enabled. A set
-    /// path is the jail write grant and replaces the TOML root.
+    /// Set from the deployed local destination's instance document; it is the
+    /// jail write grant. `None` grants no output directory.
     pub local_output_root: Option<std::path::PathBuf>,
-    /// Deployed S3 network authority.
+    /// Network authority from the deployed instance document: the S3
+    /// `endpoint` or the Audiobookshelf `base_url`.
     ///
-    /// `None` keeps the transitional `[output.s3].endpoint` overlay. `Some`
-    /// replaces that overlay with the instance document endpoint. `Some(None)`
-    /// means the document has no custom endpoint, so the TOML endpoint is not
-    /// granted.
-    pub deployed_s3_endpoint: Option<Option<String>>,
+    /// `Some(Some(url))` grants that host in addition to the manifest's fixed
+    /// TCP list; `Some(None)` records that the document names none; `None`
+    /// means this spawn is not a deployed instance of such a plugin.
+    pub deployed_endpoint: Option<Option<String>>,
 }
 
 impl SessionServices {
@@ -519,7 +519,7 @@ impl SessionServices {
             spawn_transport: SpawnTransport::default(),
             selected_instance_id: None,
             local_output_root: None,
-            deployed_s3_endpoint: None,
+            deployed_endpoint: None,
         }
     }
 
@@ -531,7 +531,7 @@ impl SessionServices {
             spawn_transport: SpawnTransport::default(),
             selected_instance_id: None,
             local_output_root: None,
-            deployed_s3_endpoint: None,
+            deployed_endpoint: None,
         }
     }
 
@@ -546,7 +546,7 @@ impl SessionServices {
             spawn_transport: SpawnTransport::DirectNativeDiagnostic,
             selected_instance_id: None,
             local_output_root: None,
-            deployed_s3_endpoint: None,
+            deployed_endpoint: None,
         }
     }
 }
@@ -681,8 +681,8 @@ impl PluginSession {
             )));
         }
         let plan = SpawnPlan::resolve(plugin, services.spawn_transport)?;
-        let deployed_s3_endpoint = services
-            .deployed_s3_endpoint
+        let deployed_endpoint = services
+            .deployed_endpoint
             .as_ref()
             .map(|endpoint| endpoint.as_deref());
         let spawned = crate::spawn_stdio::spawn_stdio_guest(
@@ -692,7 +692,7 @@ impl PluginSession {
             config_table,
             extra_env,
             services.local_output_root.as_deref(),
-            deployed_s3_endpoint,
+            deployed_endpoint,
         )
         .await?;
         Self::connect_spawned(spawned, plugin, &plan, account_id, services, config).await
@@ -734,8 +734,8 @@ impl PluginSession {
         let gateway_pid = spawned.gateway_pid;
         let session_dir = spawned.session_dir.clone();
         let instance_key = plugin_instance_key(&id, account_id);
-        let deployed_s3_endpoint = services
-            .deployed_s3_endpoint
+        let deployed_endpoint = services
+            .deployed_endpoint
             .as_ref()
             .map(|endpoint| endpoint.as_deref());
         let identity = ExecutorIdentity::from_plugin_with_runtime(plugin, account_id, plan.runtime)
@@ -767,7 +767,7 @@ impl PluginSession {
         wait_test_hold("BOOKCLERK_TEST_STARTUP_HOLD_DIR", None).await;
         {
             let _epoch = crate::authority::lock_grant_epoch();
-            grant_still_current(&files_dir, plugin, config, &identity, deployed_s3_endpoint)?;
+            grant_still_current(&files_dir, plugin, config, &identity, deployed_endpoint)?;
         }
         // The first read matched. Release the epoch lock so a revoke can land,
         // then re-read and register as one critical section. Describe starts
@@ -782,12 +782,12 @@ impl PluginSession {
         let authority_fence = {
             let _epoch = crate::authority::lock_grant_epoch();
             if let Err(err) =
-                grant_still_current(&files_dir, plugin, config, &identity, deployed_s3_endpoint)
+                grant_still_current(&files_dir, plugin, config, &identity, deployed_endpoint)
             {
                 cancel.store(true, Ordering::SeqCst);
                 return Err(err);
             }
-            crate::authority::register_session_revisions_on_with_deployed_s3(
+            crate::authority::register_session_revisions_on_with_deployed_endpoint(
                 plugin.plugin_key().canonical(),
                 &identity.grant_revision,
                 &identity.authority_revision,
@@ -795,7 +795,7 @@ impl PluginSession {
                     let _ = shutdown_tx.send(Work::Shutdown);
                 }),
                 Arc::clone(&cancel),
-                services.deployed_s3_endpoint.clone(),
+                services.deployed_endpoint.clone(),
             )
         };
         let spawned = held
@@ -848,7 +848,7 @@ impl PluginSession {
                 desc.api_version
             )));
         }
-        grant_still_current(&files_dir, plugin, config, &identity, deployed_s3_endpoint)?;
+        grant_still_current(&files_dir, plugin, config, &identity, deployed_endpoint)?;
         let authority_fence = owner.disarm();
         Ok(Self {
             tx,
@@ -2391,11 +2391,11 @@ fn grant_still_current(
     plugin: &DiscoveredPlugin,
     config: &Config,
     identity: &ExecutorIdentity,
-    deployed_s3_endpoint: Option<Option<&str>>,
+    deployed_endpoint: Option<Option<&str>>,
 ) -> Result<()> {
     let persisted = crate::consent::spawn_grant(files_dir, plugin)?;
     let effective =
-        crate::spawn_stdio::effective_spawn_grant(&persisted, plugin, config, deployed_s3_endpoint);
+        crate::spawn_stdio::effective_spawn_grant(&persisted, plugin, config, deployed_endpoint);
     let grant_rev = crate::consent::grant_revision(&persisted);
     let authority_rev = crate::authority::authority_revision(&effective);
     if grant_rev != identity.grant_revision || authority_rev != identity.authority_revision {
