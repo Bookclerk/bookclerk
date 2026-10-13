@@ -1380,6 +1380,18 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
             "GraphicAudio instance import did not complete during reload"
         );
     }
+    if let Err(err) = bookclerk_plugin_host::enroll_destination_instances(
+        &library_for_auth,
+        &new_cfg,
+        &control_plane.host.host_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %err,
+            "destination instance import did not complete during reload"
+        );
+    }
     let owned =
         crate::registry::deployment_skip_keys(&library_for_auth, &control_plane.host.host_id)
             .await?;
@@ -2541,13 +2553,24 @@ fn build_plugin_settings_group(
     }
 }
 
+/// Which imported plugin-instance keys Settings GET should hide.
+#[derive(Debug, Clone, Copy, Default)]
+struct OmitImportedSettings {
+    /// GraphicAudio access / URL knobs.
+    graphicaudio: bool,
+    /// `[output.s3]` bucket/region/endpoint knobs.
+    s3: bool,
+    /// `[output.local]` root/prefix knobs.
+    local: bool,
+}
+
 /// Merges discovered and in-process plugins into Settings groups keyed by kind and id.
 fn plugin_settings_snapshot(
     config: &Config,
     sources: &SourceRegistry,
     integrations: &IntegrationRegistry,
     discovered_plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
-    omit_imported_graphicaudio: bool,
+    omit: OmitImportedSettings,
 ) -> Vec<PluginSettingsGroup> {
     let mut groups_by_key: std::collections::BTreeMap<(String, String), PluginSettingsGroup> =
         std::collections::BTreeMap::new();
@@ -2592,9 +2615,7 @@ fn plugin_settings_snapshot(
                     option.value = enabled.to_string();
                 }
             }
-            if omit_imported_graphicaudio {
-                hide_imported_graphicaudio(&mut group);
-            }
+            hide_imported_instance_settings(&mut group, omit);
             group.plugin_key = Some(plugin.plugin_key().canonical().to_string());
             group.provenance = Some(plugin.identity.provenance.to_string());
             groups_by_key.insert(
@@ -2614,9 +2635,7 @@ fn plugin_settings_snapshot(
         if !groups_by_key.contains_key(&key) {
             let table = config.sources.table(&id).cloned().unwrap_or_default();
             let mut group = build_source_settings_group(config, source.as_ref(), table);
-            if omit_imported_graphicaudio {
-                hide_imported_graphicaudio(&mut group);
-            }
+            hide_imported_instance_settings(&mut group, omit);
             groups_by_key.insert((group.family.clone(), group.id.clone()), group);
         }
     }
@@ -2637,17 +2656,26 @@ fn plugin_settings_snapshot(
     groups_by_key.into_values().collect()
 }
 
-/// Drops GraphicAudio knobs that the instance document owns.
+/// Drops knobs that a plugin-instance document already owns.
 ///
-/// `enabled` stays. Operators edit the rest with
+/// `enabled` and naming templates stay. Operators edit imported keys with
 /// `PUT /api/config/plugin-instances/{id}/config`.
-fn hide_imported_graphicaudio(group: &mut PluginSettingsGroup) {
-    if !group.id.eq_ignore_ascii_case("graphicaudio") {
-        return;
+fn hide_imported_instance_settings(group: &mut PluginSettingsGroup, omit: OmitImportedSettings) {
+    if omit.graphicaudio && group.id.eq_ignore_ascii_case("graphicaudio") {
+        group
+            .settings
+            .retain(|option| !bookclerk_plugin_host::is_graphicaudio_imported_setting(&option.key));
     }
-    group
-        .settings
-        .retain(|option| !bookclerk_plugin_host::is_graphicaudio_imported_setting(&option.key));
+    if omit.s3 && group.id.eq_ignore_ascii_case("s3") {
+        group
+            .settings
+            .retain(|option| !bookclerk_plugin_host::is_s3_imported_setting(&option.key));
+    }
+    if omit.local && group.id.eq_ignore_ascii_case("local") {
+        group
+            .settings
+            .retain(|option| !bookclerk_plugin_host::is_local_imported_setting(&option.key));
+    }
 }
 
 /// Discovers plugins on a blocking thread with a 2s timeout; returns empty on failure.
@@ -2688,7 +2716,76 @@ async fn graphicaudio_settings_owned(
         Some(key) => Some(key),
         None => bookclerk_plugin_host::graphicaudio_key_from_ledger(config)?,
     };
-    bookclerk_plugin_host::graphicaudio_document_exists_for_key(library, key.as_deref()).await
+    bookclerk_plugin_host::instance_document_exists_for_key(library, key.as_deref()).await
+}
+
+/// True when the S3 destination instance document already owns imported keys.
+async fn s3_settings_owned(
+    library: &bookclerk_library::LibraryStore,
+    config: &Config,
+    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
+) -> Result<bool, bookclerk_plugin_host::PluginError> {
+    let key = match bookclerk_plugin_host::s3_key_from_discovered(discovered) {
+        Some(key) => Some(key),
+        None => bookclerk_plugin_host::s3_key_from_ledger(config)?,
+    };
+    bookclerk_plugin_host::instance_document_exists_for_key(library, key.as_deref()).await
+}
+
+/// True when the local destination instance document already owns imported keys.
+async fn local_settings_owned(
+    library: &bookclerk_library::LibraryStore,
+    config: &Config,
+    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
+) -> Result<bool, bookclerk_plugin_host::PluginError> {
+    let key = match bookclerk_plugin_host::local_key_from_discovered(discovered) {
+        Some(key) => Some(key),
+        None => bookclerk_plugin_host::local_key_from_ledger(config)?,
+    };
+    bookclerk_plugin_host::instance_document_exists_for_key(library, key.as_deref()).await
+}
+
+/// Which imported settings groups are owned by instance documents.
+async fn omit_imported_settings(
+    library: &bookclerk_library::LibraryStore,
+    config: &Config,
+    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
+) -> OmitImportedSettings {
+    let graphicaudio = match graphicaudio_settings_owned(library, config, discovered).await {
+        Ok(exists) => exists,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "hiding GraphicAudio settings because the instance document could not be read"
+            );
+            true
+        }
+    };
+    let s3 = match s3_settings_owned(library, config, discovered).await {
+        Ok(exists) => exists,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "hiding S3 settings because the instance document could not be read"
+            );
+            true
+        }
+    };
+    let local = match local_settings_owned(library, config, discovered).await {
+        Ok(exists) => exists,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "hiding local destination settings because the instance document could not be read"
+            );
+            true
+        }
+    };
+    OmitImportedSettings {
+        graphicaudio,
+        s3,
+        local,
+    }
 }
 
 /// Applies `database.<id>.enabled` toggles so at most one backend remains selected.
@@ -3244,17 +3341,7 @@ async fn get_settings(
     let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
     let discovered_plugins = discover_plugins_for_settings(&cfg).await;
-    let omit_imported_graphicaudio =
-        match graphicaudio_settings_owned(&library, &cfg, &discovered_plugins).await {
-            Ok(exists) => exists,
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "hiding GraphicAudio settings because the instance document could not be read"
-                );
-                true
-            }
-        };
+    let omit = omit_imported_settings(&library, &cfg, &discovered_plugins).await;
     let sources = state.sources.read().await;
     let integrations = state.integrations.read().await;
     let auth = state.auth_snapshot().await;
@@ -3288,13 +3375,7 @@ async fn get_settings(
     Ok(Json(SettingsResponse {
         settings,
         effective,
-        plugins: plugin_settings_snapshot(
-            &cfg,
-            &sources,
-            &integrations,
-            &discovered_plugins,
-            omit_imported_graphicaudio,
-        ),
+        plugins: plugin_settings_snapshot(&cfg, &sources, &integrations, &discovered_plugins, omit),
         host_cpu_cores_max: host_cpu_cores_max(),
         jail_cpu_cores: cfg
             .plugins
@@ -3451,31 +3532,58 @@ async fn patch_settings(
         )
             .into_response());
     }
-    if updates
-        .iter()
-        .any(|(key, _)| bookclerk_plugin_host::is_graphicaudio_imported_setting(key))
     {
         let library = state.library_snapshot().await;
         let cfg = state.config.read().await.clone();
-        match graphicaudio_settings_owned(&library, &cfg, &discovered).await {
-            Ok(true) => {
-                tracing::warn!(
-                    "rejected settings update for GraphicAudio keys owned by the instance document"
-                );
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "plugin_instance_configuration",
-                        "message": "GraphicAudio access, base_url, store_url, bitrate, and container are stored on the plugin instance; use PUT /api/config/plugin-instances/{id}/config",
-                    })),
-                )
-                    .into_response());
-            }
-            Ok(false) => {}
-            Err(err) => {
-                tracing::error!(error = %err, "could not read GraphicAudio instance document");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-            }
+        let omit = omit_imported_settings(&library, &cfg, &discovered).await;
+        if omit.graphicaudio
+            && updates
+                .iter()
+                .any(|(key, _)| bookclerk_plugin_host::is_graphicaudio_imported_setting(key))
+        {
+            tracing::warn!(
+                "rejected settings update for GraphicAudio keys owned by the instance document"
+            );
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "plugin_instance_configuration",
+                    "message": "GraphicAudio access, base_url, store_url, bitrate, and container are stored on the plugin instance; use PUT /api/config/plugin-instances/{id}/config",
+                })),
+            )
+                .into_response());
+        }
+        if omit.s3
+            && updates
+                .iter()
+                .any(|(key, _)| bookclerk_plugin_host::is_s3_imported_setting(key))
+        {
+            tracing::warn!("rejected settings update for S3 keys owned by the instance document");
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "plugin_instance_configuration",
+                    "message": "S3 bucket, region, prefix, endpoint, and force_path_style are stored on the plugin instance; use PUT /api/config/plugin-instances/{id}/config",
+                })),
+            )
+                .into_response());
+        }
+        if omit.local
+            && updates
+                .iter()
+                .any(|(key, _)| bookclerk_plugin_host::is_local_imported_setting(key))
+        {
+            tracing::warn!(
+                "rejected settings update for local destination keys owned by the instance document"
+            );
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "plugin_instance_configuration",
+                    "message": "Local destination root and prefix are stored on the plugin instance; use PUT /api/config/plugin-instances/{id}/config",
+                })),
+            )
+                .into_response());
         }
     }
 

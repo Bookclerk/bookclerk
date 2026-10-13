@@ -104,7 +104,8 @@ pub use consent::{
 };
 pub use crates_io::search_crates_io;
 pub use deployment::{
-    enroll_graphicaudio_instance, load_authorized_local_packages, reconcile_local_deployments,
+    enroll_destination_instances, enroll_graphicaudio_instance, enroll_local_instance,
+    enroll_s3_instance, load_authorized_local_packages, reconcile_local_deployments,
     AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
     LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
 };
@@ -131,9 +132,13 @@ pub use install_preflight::{
     install_local_archive_with_configured_aliases, reject_configured_alias_collision,
 };
 pub use instance_bindings::{
-    graphicaudio_document_exists, graphicaudio_document_exists_for_key,
-    graphicaudio_key_from_discovered, graphicaudio_key_from_ledger, graphicaudio_plugin_key,
-    is_graphicaudio_imported_setting, prepare_open_bindings, PreparedOpen,
+    first_party_manifest_plugin_key, graphicaudio_document_exists,
+    graphicaudio_document_exists_for_key, graphicaudio_key_from_discovered,
+    graphicaudio_key_from_ledger, graphicaudio_plugin_key, instance_document_exists_for_key,
+    is_graphicaudio_imported_setting, is_local_imported_setting, is_s3_imported_setting,
+    local_key_from_discovered, local_key_from_ledger, local_plugin_key,
+    manifest_key_from_discovered, manifest_key_from_ledger, prepare_open_bindings,
+    s3_key_from_discovered, s3_key_from_ledger, s3_plugin_key, PreparedOpen,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{

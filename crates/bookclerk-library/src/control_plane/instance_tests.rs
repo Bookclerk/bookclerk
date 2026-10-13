@@ -507,6 +507,44 @@ async fn graphicaudio_allowlist_rejects_unknown_keys() {
     assert!(graphicaudio_config_from_pairs([("access", "nope")]).is_err());
 }
 
+#[test]
+fn destination_import_builders_reject_bad_keys_and_empty_required() {
+    use std::path::Path;
+
+    let s3 = s3_config_from_output(
+        "library",
+        "us-east-1",
+        "library/",
+        Some("http://minio"),
+        true,
+    )
+    .expect("s3");
+    assert_eq!(
+        s3.settings.get("bucket"),
+        Some(&SettingValue::String("library".into()))
+    );
+    assert_eq!(
+        s3.settings.get("force_path_style"),
+        Some(&SettingValue::Bool(true))
+    );
+    assert!(s3_config_from_output("", "us-east-1", "", None, false).is_err());
+    let mut bad = s3.settings.clone();
+    bad.insert("access_key".into(), SettingValue::String("x".into()));
+    assert!(PluginInstanceConfigV1 {
+        settings: bad,
+        secret_refs: Vec::new(),
+    }
+    .validate(InstancePackagePolicy::DestinationS3)
+    .is_err());
+
+    let local = local_config_from_output(Path::new("Audiobooks"), "pref/").expect("local");
+    assert_eq!(
+        local.settings.get("root"),
+        Some(&SettingValue::String("Audiobooks".into()))
+    );
+    assert!(local_config_from_output(Path::new(""), "").is_err());
+}
+
 #[tokio::test]
 async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
     let _guard = master_key_test_lock_async().await;

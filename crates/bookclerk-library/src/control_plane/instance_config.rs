@@ -1,10 +1,12 @@
 //! Typed plugin-instance configuration and CONFIG / SECRETS resolution.
 //!
 //! The document address is [`DocumentKey::plugin_instance`]. Validation does
-//! not take a plugin family, entrypoint, alias, or host id. GraphicAudio's
-//! extra allowlist is selected by the installed manifest id `graphicaudio`.
+//! not take a plugin family, entrypoint, alias, or host id. First-party
+//! allowlists are selected by installed manifest id (`graphicaudio`, `s3`,
+//! `local`).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use bookclerk_plugin_abi::ExtensibleConfig;
 use serde::{Deserialize, Serialize};
@@ -37,6 +39,12 @@ pub const MAX_INSTANCE_SETTING_BYTES: usize = 1024;
 /// Manifest id that selects the GraphicAudio setting allowlist.
 pub const GRAPHICAUDIO_MANIFEST_ID: &str = "graphicaudio";
 
+/// Manifest id that selects the S3 destination setting allowlist.
+pub const S3_MANIFEST_ID: &str = "s3";
+
+/// Manifest id that selects the local destination setting allowlist.
+pub const LOCAL_MANIFEST_ID: &str = "local";
+
 /// How strictly schema 1 is checked for one package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstancePackagePolicy {
@@ -44,14 +52,22 @@ pub enum InstancePackagePolicy {
     Generic,
     /// GraphicAudio allowlist, selected by manifest id `graphicaudio`.
     GraphicAudio,
+    /// First-party S3 destination allowlist (`bucket`, `region`, …).
+    DestinationS3,
+    /// First-party local destination allowlist (`root`, `prefix`).
+    DestinationLocal,
 }
 
 impl InstancePackagePolicy {
-    /// GraphicAudio when `manifest_id` is the product package id.
+    /// First-party allowlist when `manifest_id` matches a product package id.
     #[must_use]
     pub fn from_manifest_id(manifest_id: &str) -> Self {
         if manifest_id.eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID) {
             Self::GraphicAudio
+        } else if manifest_id.eq_ignore_ascii_case(S3_MANIFEST_ID) {
+            Self::DestinationS3
+        } else if manifest_id.eq_ignore_ascii_case(LOCAL_MANIFEST_ID) {
+            Self::DestinationLocal
         } else {
             Self::Generic
         }
@@ -123,8 +139,11 @@ impl PluginInstanceConfigV1 {
                 return Err(invalid("duplicate secret ref key"));
             }
         }
-        if policy == InstancePackagePolicy::GraphicAudio {
-            validate_graphicaudio(self)?;
+        match policy {
+            InstancePackagePolicy::Generic => {}
+            InstancePackagePolicy::GraphicAudio => validate_graphicaudio(self)?,
+            InstancePackagePolicy::DestinationS3 => validate_destination_s3(self)?,
+            InstancePackagePolicy::DestinationLocal => validate_destination_local(self)?,
         }
         let json = self.to_json()?;
         if json.len() > super::documents::MAX_CONFIGURATION_DOCUMENT_BYTES {
@@ -152,6 +171,16 @@ impl PluginInstanceConfigV1 {
 /// GraphicAudio keys copied once from `[sources.graphicaudio]`.
 pub const GRAPHICAUDIO_IMPORT_KEYS: &[&str] =
     &["access", "base_url", "store_url", "bitrate", "container"];
+
+/// S3 destination keys copied once from `[output.s3]`.
+///
+/// Credentials stay outside the document. Naming templates stay TOML.
+pub const S3_IMPORT_KEYS: &[&str] = &["bucket", "region", "prefix", "endpoint", "force_path_style"];
+
+/// Local destination keys copied once from `[output.local]`.
+///
+/// Naming templates stay TOML.
+pub const LOCAL_IMPORT_KEYS: &[&str] = &["root", "prefix"];
 
 /// Builds a GraphicAudio document from string pairs.
 ///
@@ -182,6 +211,77 @@ where
         secret_refs: Vec::new(),
     };
     body.validate(InstancePackagePolicy::GraphicAudio)?;
+    Ok(body)
+}
+
+/// Builds an S3 destination document from `[output.s3]` fields.
+///
+/// `bucket` and `region` must be non-empty. Credentials are never imported.
+///
+/// # Errors
+///
+/// Returns an error when required fields are missing or the body fails validation.
+pub fn s3_config_from_output(
+    bucket: &str,
+    region: &str,
+    prefix: &str,
+    endpoint: Option<&str>,
+    force_path_style: bool,
+) -> Result<PluginInstanceConfigV1> {
+    let bucket = bucket.trim();
+    let region = region.trim();
+    if bucket.is_empty() || region.is_empty() {
+        return Err(invalid(
+            "S3 destination import requires non-empty bucket and region",
+        ));
+    }
+    let mut settings = BTreeMap::new();
+    settings.insert("bucket".into(), SettingValue::String(bucket.to_string()));
+    settings.insert("region".into(), SettingValue::String(region.to_string()));
+    settings.insert(
+        "prefix".into(),
+        SettingValue::String(prefix.trim().to_string()),
+    );
+    if let Some(endpoint) = endpoint.map(str::trim).filter(|text| !text.is_empty()) {
+        settings.insert(
+            "endpoint".into(),
+            SettingValue::String(endpoint.to_string()),
+        );
+    }
+    settings.insert(
+        "force_path_style".into(),
+        SettingValue::Bool(force_path_style),
+    );
+    let body = PluginInstanceConfigV1 {
+        settings,
+        secret_refs: Vec::new(),
+    };
+    body.validate(InstancePackagePolicy::DestinationS3)?;
+    Ok(body)
+}
+
+/// Builds a local destination document from `[output.local]` fields.
+///
+/// # Errors
+///
+/// Returns an error when `root` is empty or the body fails validation.
+pub fn local_config_from_output(root: &Path, prefix: &str) -> Result<PluginInstanceConfigV1> {
+    let root = root
+        .to_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| invalid("local destination import requires a non-empty root"))?;
+    let mut settings = BTreeMap::new();
+    settings.insert("root".into(), SettingValue::String(root.to_string()));
+    settings.insert(
+        "prefix".into(),
+        SettingValue::String(prefix.trim().to_string()),
+    );
+    let body = PluginInstanceConfigV1 {
+        settings,
+        secret_refs: Vec::new(),
+    };
+    body.validate(InstancePackagePolicy::DestinationLocal)?;
     Ok(body)
 }
 
@@ -489,6 +589,51 @@ fn validate_graphicaudio(body: &PluginInstanceConfigV1) -> Result<()> {
         };
         if key == "access" && !matches!(text.as_str(), "web" | "zip" | "device") {
             return Err(invalid("GraphicAudio access must be web, zip, or device"));
+        }
+    }
+    Ok(())
+}
+
+/// S3 destination allowlist. Credentials are never settings.
+fn validate_destination_s3(body: &PluginInstanceConfigV1) -> Result<()> {
+    for key in body.settings.keys() {
+        if !S3_IMPORT_KEYS.contains(&key.as_str()) {
+            return Err(invalid(&format!("S3 setting `{key}` is not allowed")));
+        }
+    }
+    for (key, value) in &body.settings {
+        match (key.as_str(), value) {
+            ("force_path_style", SettingValue::Bool(_)) => {}
+            ("force_path_style", _) => {
+                return Err(invalid("S3 setting `force_path_style` must be a boolean"));
+            }
+            ("bucket" | "region" | "prefix" | "endpoint", SettingValue::String(text)) => {
+                if key != "prefix" && key != "endpoint" && text.trim().is_empty() {
+                    return Err(invalid(&format!("S3 setting `{key}` must be non-empty")));
+                }
+            }
+            ("bucket" | "region" | "prefix" | "endpoint", _) => {
+                return Err(invalid(&format!("S3 setting `{key}` must be a string")));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Local destination allowlist.
+fn validate_destination_local(body: &PluginInstanceConfigV1) -> Result<()> {
+    for key in body.settings.keys() {
+        if !LOCAL_IMPORT_KEYS.contains(&key.as_str()) {
+            return Err(invalid(&format!("local setting `{key}` is not allowed")));
+        }
+    }
+    for (key, value) in &body.settings {
+        let SettingValue::String(text) = value else {
+            return Err(invalid(&format!("local setting `{key}` must be a string")));
+        };
+        if key == "root" && text.trim().is_empty() {
+            return Err(invalid("local setting `root` must be non-empty"));
         }
     }
     Ok(())

@@ -391,6 +391,27 @@ async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Package allowlist for one instance's plugin key.
+fn package_policy_for_instance(
+    config: &bookclerk_config::Config,
+    plugin_key: &str,
+) -> Result<
+    bookclerk_library::control_plane::InstancePackagePolicy,
+    bookclerk_plugin_host::PluginError,
+> {
+    use bookclerk_library::control_plane::InstancePackagePolicy;
+    if bookclerk_plugin_host::graphicaudio_plugin_key(config)?.as_deref() == Some(plugin_key) {
+        return Ok(InstancePackagePolicy::GraphicAudio);
+    }
+    if bookclerk_plugin_host::s3_plugin_key(config)?.as_deref() == Some(plugin_key) {
+        return Ok(InstancePackagePolicy::DestinationS3);
+    }
+    if bookclerk_plugin_host::local_plugin_key(config)?.as_deref() == Some(plugin_key) {
+        return Ok(InstancePackagePolicy::DestinationLocal);
+    }
+    Ok(InstancePackagePolicy::Generic)
+}
+
 /// `PUT /api/config/plugin-instances/{id}/config` body.
 #[derive(Debug, Deserialize)]
 pub(crate) struct PutPluginInstanceConfig {
@@ -414,7 +435,7 @@ pub async fn put_plugin_instance_config(
 ) -> Result<Json<serde_json::Value>, Response> {
     use bookclerk_library::control_plane::{
         load_plugin_instance, replace_instance_config, InstanceConfigReplace,
-        InstancePackagePolicy, PluginInstanceConfigV1, PluginInstanceId,
+        PluginInstanceConfigV1, PluginInstanceId,
     };
     let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
     let library = state.library_snapshot().await;
@@ -427,12 +448,9 @@ pub async fn put_plugin_instance_config(
             )))
         })?;
     let cfg = state.config.read().await.clone();
-    let policy = match bookclerk_plugin_host::graphicaudio_plugin_key(&cfg)
-        .map_err(|err| events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(err))))?
-    {
-        Some(key) if key == instance.plugin_key => InstancePackagePolicy::GraphicAudio,
-        _ => InstancePackagePolicy::Generic,
-    };
+    let policy = package_policy_for_instance(&cfg, &instance.plugin_key).map_err(|err| {
+        events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(err)))
+    })?;
     let document = PluginInstanceConfigV1 {
         settings: body.settings,
         secret_refs: body.secret_refs,

@@ -14,9 +14,9 @@ use crate::consent::{consent_request, PluginGrant, PluginGrantStore};
 use crate::discover::{settings_table_for, DiscoveredPlugin};
 use crate::instance_bindings::prepare_open_bindings;
 use crate::{
-    discover_plugins, load_authorized_local_packages, reconcile_local_deployments,
-    AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
-    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
+    discover_plugins, enroll_local_instance, enroll_s3_instance, load_authorized_local_packages,
+    reconcile_local_deployments, AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn,
+    LiveDeploymentRuntime, LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
 };
 use async_trait::async_trait;
 use bookclerk_config::{Config, EventsConfig, Isolation};
@@ -1415,6 +1415,127 @@ fn authorized_package_loader_skips_a_remote_artifact_url() {
     assert!(
         loaded.is_empty(),
         "a remote artifact must not enter the package map"
+    );
+}
+
+fn stage_destination_tree(files: &Path, id: &str) {
+    let install = files.join("plugins").join(id);
+    std::fs::create_dir_all(&install).unwrap();
+    let bin = install.join("bin");
+    std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).unwrap();
+    }
+    std::fs::write(
+        install.join("plugin.toml"),
+        format!(
+            r#"
+api_version = 3
+id = "{id}"
+runtime = "native"
+command = "./bin"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "deny"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn enroll_local_imports_once_and_ignores_later_toml() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path().to_path_buf();
+    stage_destination_tree(&files, "local");
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
+    config.output.local.enabled = true;
+    config.output.local.root = PathBuf::from("Audiobooks-v1");
+    config.output.local.prefix = "pref/".into();
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        &files,
+        &files.join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .expect("bootstrap");
+    enroll_local_instance(&store, &config, &session.host.host_id)
+        .await
+        .expect("enroll");
+    let first = bookclerk_library::control_plane::list_plugin_instances_for_key(
+        &store,
+        crate::local_plugin_key(&config)
+            .unwrap()
+            .expect("local key")
+            .as_str(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.len(), 1);
+    let doc = load_instance_config(&store, &first[0].id)
+        .await
+        .expect("doc");
+    assert_eq!(
+        doc.body.settings.get("root"),
+        Some(&SettingValue::String("Audiobooks-v1".into()))
+    );
+    config.output.local.root = PathBuf::from("Audiobooks-v2");
+    enroll_local_instance(&store, &config, &session.host.host_id)
+        .await
+        .expect("reenroll");
+    let again = load_instance_config(&store, &first[0].id)
+        .await
+        .expect("doc after");
+    assert_eq!(again.revision, doc.revision);
+    assert_eq!(
+        again.body.settings.get("root"),
+        Some(&SettingValue::String("Audiobooks-v1".into()))
+    );
+}
+
+#[tokio::test]
+async fn enroll_s3_skips_when_disabled() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path().to_path_buf();
+    stage_destination_tree(&files, "s3");
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let mut config =
+        Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
+    config.output.s3.enabled = false;
+    config.output.s3.bucket = "library".into();
+    config.output.s3.region = "us-east-1".into();
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        &files,
+        &files.join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .expect("bootstrap");
+    enroll_s3_instance(&store, &config, &session.host.host_id)
+        .await
+        .expect("enroll disabled");
+    assert!(crate::s3_plugin_key(&config).unwrap().is_some());
+    let key = crate::s3_plugin_key(&config).unwrap().unwrap();
+    assert!(
+        bookclerk_library::control_plane::list_plugin_instances_for_key(&store, &key)
+            .await
+            .unwrap()
+            .is_empty()
     );
 }
 

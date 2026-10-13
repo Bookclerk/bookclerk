@@ -37,11 +37,13 @@ pub use identity::{
 };
 pub use instance_config::{
     graphicaudio_config_from_pairs, import_instance_config_if_absent, load_instance_config,
-    replace_instance_config, resolve_instance_bindings, seal_instance_secret, InstanceBindingGrant,
-    InstanceConfigDocument, InstanceConfigReplace, InstancePackagePolicy, InstanceSecretRefV1,
-    PluginInstanceConfigV1, ResolvedInstanceBindings, SettingValue, GRAPHICAUDIO_IMPORT_KEYS,
-    GRAPHICAUDIO_MANIFEST_ID, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
-    MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
+    local_config_from_output, replace_instance_config, resolve_instance_bindings,
+    s3_config_from_output, seal_instance_secret, InstanceBindingGrant, InstanceConfigDocument,
+    InstanceConfigReplace, InstancePackagePolicy, InstanceSecretRefV1, PluginInstanceConfigV1,
+    ResolvedInstanceBindings, SettingValue, GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
+    LOCAL_IMPORT_KEYS, LOCAL_MANIFEST_ID, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
+    MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION, S3_IMPORT_KEYS,
+    S3_MANIFEST_ID,
 };
 pub use instances::{
     create_plugin_instance, ensure_plugin_instance, find_plugin_instance_by_key,

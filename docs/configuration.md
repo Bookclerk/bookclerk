@@ -159,7 +159,14 @@ token stays on the account credential, not in the document.
 `sources.graphicaudio.enabled` stays in `config.toml`. Setting it to false
 retires the running guest on reconcile and on reload. `bookclerk library scan`
 and `bookclerk library acquire` read the instance document and require
-`--instance` when more than one instance shares the plugin key. Plugins with no
+`--instance` when more than one instance shares the plugin key.
+
+First-party destinations enroll the same way when enabled and installed:
+`output.local.root` / `prefix`, and `output.s3.bucket` / `region` / `prefix` /
+`endpoint` / `force_path_style`, import once into the instance document.
+`enabled` and naming templates stay in `config.toml`. After import,
+`PATCH /api/settings` rejects those destination keys; use the plugin-instance
+config PUT. S3 credentials are never stored in the document. Plugins with no
 instance document still read their `[sources.*]` / `[integrations.*]` /
 `[output.*]` tables.
 

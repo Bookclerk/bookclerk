@@ -298,7 +298,7 @@ other storefronts. `sources.graphicaudio.enabled = false` retires the running
 guest. CLI scan and acquire use the instance document and require `--instance`
 when selection is ambiguous. The key alone does not pick one of them.
 
-GraphicAudio is the first migrated caller. When discovery or the install
+GraphicAudio is the first migrated storefront. When discovery or the install
 ledger contains manifest id `graphicaudio`, startup ensures one instance, one
 local deployment, and, if the document is absent, imports `access`,
 `base_url`, `store_url`, `bitrate`, and `container` from
@@ -306,7 +306,16 @@ local deployment, and, if the document is absent, imports `access`,
 those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
 TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
 derived from `describe()`, and that schema debt stays until a later phase.
-Other plugins with no instance document keep `settings_table_for`.
+
+First-party destinations follow the same enrollment path. When `local` or
+`s3` is installed and `output.<id>.enabled` is true, startup ensures one
+instance, one local deployment, and imports non-secret knobs once:
+`root` / `prefix` from `[output.local]`, and `bucket` / `region` / `prefix` /
+`endpoint` / `force_path_style` from `[output.s3]`. Credentials stay on the
+operator/`BOOKCLERK_AWS_*` path (or instance `secret_refs`). Naming templates
+stay TOML for now. After the document exists, `PATCH /api/settings` rejects
+those imported keys. Other plugins with no instance document keep
+`settings_table_for`.
 
 Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
 not by `PluginInstanceId`. Two instances of one key share credentials and scan
@@ -342,9 +351,11 @@ KV and Queues are unchanged. Named SQL bindings do not replace them.
 
 Not in this spike, and not claimed as production HA:
 
-- One local deployment is reconciled (Phase 2 vertical slice). Placement,
-  multi-host reconciliation, rollouts, and moving the rest of `config.toml`
-  onto instance documents are still open.
+- One local deployment is reconciled (Phase 2 vertical slice). GraphicAudio
+  plus first-party `local` / `s3` destinations enroll onto instance documents.
+  Placement, multi-host reconciliation, rollouts, and moving the rest of
+  `config.toml` (other storefronts, integrations, naming templates) onto
+  instance documents are still open.
 - Moving the rest of `config.toml` (library, jobs, sources, output, media,
   plugins, diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap
   is part of that, not this slice.
