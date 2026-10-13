@@ -213,7 +213,9 @@ When exercising real store credentials in this cloud environment:
   `.wvd` still works. Spatial/Atmos (L1) is not available. Neither a CDM nor
   ffmpeg is required to build, test, or run non-acquire commands.
 - Plugin configuration is **database only**. A plugin declares its settings in
-  `plugin.toml` `[[settings]]`; enrollment pins that schema and creates the
+  `plugin.toml` `[[settings]]` and a semver `version`; enrollment pins that
+  schema under the version (newest wins and prunes instance documents; an
+  older installed package is not enrolled or spawned) and creates the
   default instance; `bookclerk plugins config get|set|unset <plugin> <key>`
   edits the instance document (`--secret` reads the value from stdin and
   seals it); `bookclerk plugins enable|disable <plugin> [--host]` sets the

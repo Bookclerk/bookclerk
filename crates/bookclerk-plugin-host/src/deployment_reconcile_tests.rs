@@ -181,7 +181,7 @@ fn mode_body(mode: &str) -> PluginInstanceConfigV1 {
 /// with `secrets`, a `token` secret setting behind the `[secrets]` binding.
 fn fixture_manifest(id: &str, network_mode: &str, secrets: bool) -> String {
     let mut text = format!(
-        "api_version = 3\nid = \"{id}\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+        "api_version = 3\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
          entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"{network_mode}\"\n\n\
          [vars]\n\n[[settings]]\nkey = \"mode\"\nlabel = \"Mode\"\ntype = \"enum\"\n\
          values = [{{ id = \"device\", label = \"Device\" }}, {{ id = \"zip\", label = \"ZIP\" }}, \
@@ -1433,4 +1433,71 @@ fn duplicate_authorized_packages_reject_both() {
     assert!(loaded.get("path:same").is_none());
     assert!(loaded.is_conflicted("path:same"));
     assert!(loaded.keys().next().is_none());
+}
+
+#[tokio::test]
+async fn a_package_older_than_the_pinned_schema_is_retired_and_not_spawned() {
+    use bookclerk_library::control_plane::{pin_plugin_schema, SchemaPin, SchemaPinChange};
+    let _guard = TEST_LOCK.lock().await;
+    let world = open_world(false).await;
+    let probe = Probe::new(world.files.clone(), false);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("first reconcile");
+    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+    assert_eq!(observation(&world).await.status, DeploymentStatus::Healthy);
+
+    // Another host upgraded the plugin and re-pinned its schema at 0.9.0.
+    let pinned = pin_plugin_schema(
+        &world.store,
+        &SchemaPin {
+            plugin_key: &world.key,
+            manifest_id: "fxdep",
+            manifest_sha256: "ff",
+            package_version: "0.9.0",
+            schema: &fixture_schema(),
+            host_id: "host-b",
+        },
+    )
+    .await
+    .expect("pin 0.9.0");
+    assert!(matches!(
+        pinned.change,
+        SchemaPinChange::Pinned | SchemaPinChange::Upgraded { .. }
+    ));
+
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("second reconcile");
+    assert_eq!(
+        probe.spawns.lock().expect("spawns").len(),
+        1,
+        "the stale package is not respawned"
+    );
+    assert_eq!(
+        probe.retired.lock().expect("retired").as_slice(),
+        [world.instance_id.as_str().to_string()],
+        "the running guest is retired"
+    );
+    let observed = observation(&world).await;
+    assert_eq!(observed.status, DeploymentStatus::Error);
+    assert!(
+        observed
+            .detail
+            .contains("is older than 0.9.0 pinned by host host-b; not spawned"),
+        "{}",
+        observed.detail
+    );
 }

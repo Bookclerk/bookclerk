@@ -17,7 +17,7 @@ use super::documents::{
     import_if_absent, load_document, replace_document, ConfigActor, DocumentKey, ReplaceOutcome,
     StoredDocument,
 };
-use super::instances::{load_plugin_instance, PluginInstanceId};
+use super::instances::{list_plugin_instances_for_key, load_plugin_instance, PluginInstanceId};
 use crate::error::{LibraryError, Result};
 use crate::secrets::{
     build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret,
@@ -334,6 +334,92 @@ pub async fn replace_instance_config(
         }
         ReplaceOutcome::Replayed { revision } => Ok(InstanceConfigReplace::Replayed { revision }),
     }
+}
+
+/// One instance document rewritten to fit a newer pinned schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrunedInstanceConfig {
+    /// Instance whose document changed.
+    pub instance_id: String,
+    /// Setting keys and secret-ref keys the schema no longer declares (or
+    /// declares with the other secrecy), dropped from the document.
+    pub removed_keys: Vec<String>,
+    /// Revision after the rewrite.
+    pub revision: i64,
+}
+
+/// Drops what `schema` no longer declares from every instance document of
+/// `plugin_key`: settings whose key is gone or became a secret, and secret
+/// refs whose key is gone or became plain.
+///
+/// Enrollment calls this after it upgrades or re-pins the schema, so a
+/// document written under the previous manifest validates on every host
+/// again. A document that already fits is not rewritten. Defaults for new
+/// keys are not written: `CONFIG` resolution applies them at spawn. A
+/// compare-and-swap conflict (another host wrote the document meanwhile) is
+/// skipped; the next enrollment pass sees the new revision.
+///
+/// # Errors
+///
+/// Returns an error when a read or a non-conflicting write fails.
+pub async fn prune_instance_configs_to_schema(
+    store: &LibraryStore,
+    plugin_key: &str,
+    schema: &SettingsSchema,
+) -> Result<Vec<PrunedInstanceConfig>> {
+    let mut pruned = Vec::new();
+    for instance in list_plugin_instances_for_key(store, plugin_key).await? {
+        let Some(stored) = load_stored(store, &instance.id).await? else {
+            continue;
+        };
+        let doc = parse_instance_config(stored)?;
+        let mut body = doc.body.clone();
+        let mut removed: Vec<String> = Vec::new();
+        body.settings.retain(|key, _| {
+            let keep = schema.get(key).is_some_and(|spec| !spec.is_secret());
+            if !keep {
+                removed.push(key.clone());
+            }
+            keep
+        });
+        body.secret_refs.retain(|secret_ref| {
+            let keep = schema
+                .get(&secret_ref.key)
+                .is_some_and(|spec| spec.is_secret());
+            if !keep {
+                removed.push(secret_ref.key.clone());
+            }
+            keep
+        });
+        if removed.is_empty() {
+            continue;
+        }
+        let operation_id = format!("schema-prune-{}-r{}", instance.id, doc.revision);
+        match replace_instance_config(
+            store,
+            &ConfigActor::Bootstrap,
+            &instance.id,
+            schema,
+            doc.revision,
+            &body,
+            &operation_id,
+        )
+        .await?
+        {
+            InstanceConfigReplace::Applied(applied) => pruned.push(PrunedInstanceConfig {
+                instance_id: instance.id.as_str().to_string(),
+                removed_keys: removed,
+                revision: applied.revision,
+            }),
+            InstanceConfigReplace::Replayed { revision } => pruned.push(PrunedInstanceConfig {
+                instance_id: instance.id.as_str().to_string(),
+                removed_keys: removed,
+                revision,
+            }),
+            InstanceConfigReplace::Conflict { .. } => {}
+        }
+    }
+    Ok(pruned)
 }
 
 /// Whether the plugin-instance config grant includes `config` or `secrets`.

@@ -1,7 +1,8 @@
 # ADR: Control plane — bootstrap, host identity, and database configuration
 
-- **Status:** Accepted for Phase 0, Phase 1, and Phase 2 (Refs #192)
-- **Date:** 2026-09-29 (Phase 2: 2026-10-13)
+- **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided, not
+  yet implemented (Refs #192)
+- **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13)
 - **Related:** [SQL database contract](sql-database-contract.md),
   [schema versioning](schema-versioning.md),
   [plugin capabilities v3](plugin-capabilities-v3.md),
@@ -283,15 +284,30 @@ list must equal the manifest-derived list or the spawn fails
 (`validate_described_config_options`). A guest cannot widen its schema at
 runtime.
 
-Enrollment pins a copy in `plugin_schemas(plugin_key, manifest_sha256,
-package_version, settings_json, recorded_at, recorded_by_host)` whenever the
-local manifest hash differs. Writes through the API or CLI validate against
-that row, so an administrator on one host can configure a plugin that is only
-installed on another. A spawn validates the document against the host's local
-manifest: unknown keys are dropped with a warning, a missing required key is
-an `error` observation. PluginKey is versionless, so two hosts with different
-package versions pin last-writer-wins; the local check on spawn is what keeps
-a guest from seeing a shape it does not understand.
+Every plugin declares a semver `version` in `plugin.toml`; a manifest
+without one is not enrolled and `bookclerk plugin check` rejects it.
+Enrollment pins a copy of the schema in `plugin_schemas(plugin_key,
+manifest_sha256, package_version, settings_json, recorded_at,
+recorded_by_host)` and the version orders the pin:
+
+- a newer local package re-pins the row and prunes every instance document
+  of that plugin to the new schema (settings the schema no longer declares,
+  or now declares as secrets, and secret refs for keys that are gone or now
+  plain), so documents validate on every host again;
+- the same version with a changed manifest re-pins in place with a warning
+  (an unreleased edit) and prunes the same way;
+- an older local package is **stale**: the row is untouched, enrollment
+  skips the plugin, and the reconciler retires a running guest and records
+  an `error` observation naming the pinned version and the host that pinned
+  it. The operator upgrades that host's package or rolls the other host
+  back.
+
+`PluginKey` stays versionless, so instances, deployments, and accounts
+survive an upgrade. Writes through the API or CLI validate against the pinned
+row, so an administrator on one host can configure a plugin that is only
+installed on another. A spawn still validates the document against the
+host's local manifest: unknown keys are dropped with a warning, a missing
+required key is an `error` observation.
 
 ### Instance document
 
@@ -386,6 +402,91 @@ now; moving it to a `core.output` cluster document is deferred.
 
 KV and Queues are unchanged. Named SQL bindings do not replace them.
 
+## Phase 3 decision: Workers-parity platform services
+
+Decided 2026-10-13 with the owner; implemented in a follow-up stacked on the
+Phase 2 change. The goal is a host that can place any plugin instance on any
+host, or subset of hosts, as many times as needed, with plugins reacting to
+each other only through events the core defines, and plugin development fully
+decentralised.
+
+### What is already in place
+
+The manifest is Wrangler-shaped: tables name bindings on `env`, and the guest
+exports handlers the host invokes (`job(controller)` for `[triggers]`,
+`event(batch)` for `[[events.consumers]]`). `domain_events` is a durable
+outbox with fenced delivery, leases, retries, dead-lettering, and per-node
+subscriber catalogs (`event_deliveries`, `event_subscribers`). The host
+publishes `book_acquired` through the same outbox a plugin's `EVENTS` binding
+uses, and Audiobookshelf consumes it in `event(batch)`; nothing in the host
+names an integration. That is the model Phase 3 extends. It does not add a
+second way to declare interest.
+
+### Decisions
+
+- **No `[[emits]]` / `[[subscribes]]`.** Plugins declare bindings and
+  implement handlers, as Workers do. `[[events.producers]]` and
+  `[[events.consumers]]` remain the bindings of the domain-event bus; the
+  event catalog (types, payload schemas, versions) is core-owned. A plugin
+  that does not export a handler for a binding it declares fails to load.
+- **Queues parity.** `[queues]` with `[[queues.producers]]` and
+  `[[queues.consumers]]` (declared today, "not implemented yet") is
+  implemented on the outbox tables, keyed by queue name:
+  `env.<BINDING>.send()` / `sendBatch()` and a `queue(batch)` handler with
+  per-message `ack` / `retry` mirroring `event(batch)`. The domain-event bus
+  becomes one well-known queue the host publishes to; `event(batch)` stays
+  as its typed alias. Delivery semantics are those `event_deliveries`
+  already implement.
+- **KV parity.** `[[kv_namespaces]]` (declared today, "not implemented yet")
+  is implemented on the library database, scoped per plugin key and
+  namespace, with the Workers surface (`get`, `put`, `delete`, `list`,
+  expiration, metadata). Plugin cursors, tokens, and caches move there from
+  the per-host `plugin-state` directories, which remain scratch only. This is
+  what makes an instance host-independent.
+- **The host runs on the same services.** Deployment changes, configuration
+  change wakeups (the Phase 3 item in *Remaining work*), and retire signals
+  are queue messages host subsystems consume; the reconciler on each host is
+  a consumer. There is no second coordination mechanism beside the database.
+- **Scheduler.** `plugin_deployments` stays the scheduler's output. It gains
+  a replica count and placement constraints (host labels; a `local`
+  destination is bound to a disk, a workerd-only plugin to a host with the
+  pinned runtime). Enrollment stops writing "this host, present" once a
+  scheduler exists; until then it keeps doing so.
+- **Out of scope.** Durable Objects, R2 (destinations are the storage
+  abstraction), and cron triggers (jobs cover them). Database adapters as
+  instances stay Phase 4.
+
+### Implementation plan (stacked PR)
+
+Ordered so each step is testable on its own and the branch builds at every
+commit; the Phase 2 PR carries versioned schema pinning because the rest
+depends on hosts agreeing on a schema.
+
+1. **Queues on the outbox.** Type `[queues]` in the manifest; add
+   `queue_name` to `domain_events` and `event_deliveries` (the domain bus is
+   `core.events`); route `queue(batch)` through the workerd bridge beside
+   `event(batch)`; `env.<Q>.send()` in the SDK; consumer catalog rows per
+   queue; conformance tests in `bookclerk-plugin-e2e`; `bookclerk queues
+   list|inspect` and `GET /api/queues` for operators.
+2. **KV on the library.** `plugin_kv(plugin_key, namespace, key, value,
+   metadata, expires_at)`; the `KV` binding in the workerd bridge and native
+   RPC; SDK surface; size and count limits in `[[kv_namespaces]]`; a
+   two-connection test proving an instance moved to another host reads its
+   own cursor.
+3. **Host subsystems as consumers.** `host.<host_id>` queues; the reconciler
+   and the configuration-change wakeup consume them instead of the 5 s tick;
+   `deployment.changed` published on every deployment write; the CLI stays a
+   producer only.
+4. **Placement.** `replicas` and `constraints` on `plugin_deployments`;
+   `hosts.labels`; `bookclerk plugins deploy <plugin> --replicas N --on
+   <label>`; the Settings page shows placement per instance. The scheduler
+   is a singleton maintenance lease (already listed under Phase 3) that
+   writes deployments; each host's reconciler converges as today.
+5. **Docs and ADR.** `plugins.md` loses "not implemented yet" for KV and
+   Queues; this section records any deviation.
+
+Steps 1 and 2 are independent of each other and of 3; 4 needs 3.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `hosts`,
@@ -425,14 +526,17 @@ Not in this phase, and not claimed as production HA:
   (Phase 3). Heartbeats do not claim jobs. Do not run two daemons against one
   database and expect safe active/active acquire. A notification-driven
   wakeup for configuration changes is also Phase 3; today every process
-  re-reads documents on a 5 s tick.
+  re-reads documents on a 5 s tick. The Phase 3 decision above fixes the
+  shape: Queues and KV on the library database, host subsystems as
+  consumers, a scheduler that writes deployments.
 - Multi-host reconciliation, placement, rollouts, and uninstall: a host only
   reconciles its own deployments. Database-adapter plugins as instances and
   multiple database targets (Phase 4).
 - Dashboard, drain, and rolling upgrades (Phase 5).
-- Schema pinning is versionless (PluginKey has no version). Two hosts with
-  different package versions pin last-writer-wins; the spawn-time check
-  against the local manifest is the guard.
+- Schema pinning compares package versions, not schema contents: a newer
+  package that only renames a key still drops the operator's value for the
+  old name. A declared per-key migration in `[[settings]]` is a possible
+  later refinement.
 - The CLI writes no observations, so its routing prefers the present default
   instance rather than the healthy one.
 - Resizing the local event delivery task count without a process restart.

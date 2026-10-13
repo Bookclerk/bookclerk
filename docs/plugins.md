@@ -856,7 +856,7 @@ Native Echo:
 api_version = 3
 id = "echo"
 name = "Echo Integration"
-version = "0.1.0"
+version = "0.1.0"               # required semver; pins the [[settings]] schema
 # logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
 runtime = "native"
 command = "./bookclerk-plugin-echo-native-rust"
@@ -1029,7 +1029,14 @@ as `env.CONFIG`, and sealed values as `env.SECRETS`.
 `describe().configOptions` is derived from this list: the SDK fills it in,
 and a guest that returns its own non-empty list must return the same keys,
 labels, and values or the spawn is refused. The schema is pinned in the
-database at enrollment (`plugin_schemas`) so writes validate on any host.
+database at enrollment (`plugin_schemas`) together with the manifest's
+semver `version`, so writes validate on any host. `version` is required: a
+manifest without one is not enrolled, and `bookclerk plugin check` rejects
+it. A newer version re-pins the schema and prunes every instance document to
+it (values for keys the new schema no longer declares are dropped); a host
+whose installed package is older than the pin does not enrol or spawn that
+plugin and records an `error` observation naming the pinned version and the
+host that pinned it.
 
 ## Consent before enable (and every spawn)
 
@@ -1190,9 +1197,13 @@ compare-and-swap. `PATCH /api/settings` only edits daemon, jail, and
 
 Writes validate against the schema pinned in `plugin_schemas` at enrollment,
 so a plugin can be configured from any host in the cluster, including hosts
-where it is not installed. A spawn validates the document against the host's
-local manifest: unknown keys are dropped with a warning, and a missing
-`required` key is an `error` observation.
+where it is not installed. The pin carries the package version: the newest
+installed version wins, its enrollment prunes documents to its schema, and a
+host still running an older package refuses to spawn the plugin until it is
+upgraded (see [`[[settings]]`](#settings)). A spawn
+validates the document against the host's local manifest: unknown keys are
+dropped with a warning, and a missing `required` key is an `error`
+observation.
 
 The local reconciler installs from `$BOOKCLERK_FILES_DIR/plugin-packages/<name>/`
 when the ledger and discovery both miss the key. That directory is the

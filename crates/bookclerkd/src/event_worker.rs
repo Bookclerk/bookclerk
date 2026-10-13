@@ -1441,6 +1441,7 @@ mod tests {
         let toml = r#"
 api_version = 3
 id = "echo"
+version = "0.1.0"
 runtime = "native"
 command = "./guest"
 entrypoints = ["cli"]

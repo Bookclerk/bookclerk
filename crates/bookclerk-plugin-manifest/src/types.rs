@@ -577,7 +577,9 @@ pub struct PluginManifest {
     /// Optional human-readable display name for Settings / Accounts UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Optional semver (or free-form) package version string.
+    /// Package version. Required for enrollment and `bookclerk plugin check`
+    /// and must be semver: the host pins the `[[settings]]` schema with it
+    /// (see [`Self::package_version`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// Settings / UI logo: `https://…` URL or relative image path under the
@@ -1038,6 +1040,23 @@ impl PluginManifest {
 
     /// Runs semantic validation after deserialize.
     ///
+    /// The declared `version`, validated as a semantic version.
+    ///
+    /// Enrollment pins the settings schema under this version and refuses a
+    /// plugin whose version is older than the pin, so the field is required
+    /// even though the parser accepts its absence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when `version` is missing or not semver.
+    pub fn package_version(&self) -> Result<String> {
+        bookclerk_plugin_abi::package_version::parse_package_version(
+            self.version.as_deref().unwrap_or(""),
+        )
+        .map(|version| version.to_string())
+        .map_err(|detail| Error::message(format!("plugin.toml: {detail}")))
+    }
+
     /// Checks id grammar, `api_version`, logo, runtime-specific required
     /// fields, and network domain rules (native forbid / workerd outbound
     /// require / IDNA).

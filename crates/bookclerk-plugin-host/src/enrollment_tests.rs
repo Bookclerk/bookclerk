@@ -20,7 +20,7 @@ static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn storefront_manifest(id: &str) -> String {
     format!(
-        "api_version = 3\nid = \"{id}\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+        "api_version = 3\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
          entrypoints = [\"storefront\"]\n\n[capabilities.network]\nmode = \"deny\"\n\n\
          [vars]\n\n[[settings]]\nkey = \"mode\"\nlabel = \"Mode\"\ntype = \"enum\"\n\
          values = [{{ id = \"zip\", label = \"ZIP\" }}, {{ id = \"web\", label = \"Web\" }}]\n\
@@ -30,7 +30,7 @@ fn storefront_manifest(id: &str) -> String {
 
 fn database_manifest(id: &str) -> String {
     format!(
-        "api_version = 3\nid = \"{id}\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+        "api_version = 3\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
          entrypoints = [\"databaseAdapter\"]\n\n[capabilities.network]\nmode = \"deny\"\n\n[vars]\n"
     )
 }
@@ -219,4 +219,125 @@ async fn granted_plugins_enroll_present_and_database_adapters_are_not_enrolled()
             .all(|row| row.plugin_key != db_key),
         "database adapters pin no schema"
     );
+}
+
+/// Storefront manifest at `version` whose `[[settings]]` are `keys`
+/// (plain strings).
+fn versioned_manifest(id: &str, version: &str, keys: &[&str]) -> String {
+    let mut text = format!(
+        "api_version = 3\nid = \"{id}\"\nversion = \"{version}\"\nruntime = \"native\"\n\
+         command = \"./echo\"\nentrypoints = [\"storefront\"]\n\n[capabilities.network]\n\
+         mode = \"deny\"\n\n[vars]\n"
+    );
+    for key in keys {
+        text.push_str(&format!(
+            "\n[[settings]]\nkey = \"{key}\"\nlabel = \"{key}\"\ntype = \"string\"\n"
+        ));
+    }
+    text
+}
+
+#[tokio::test]
+async fn a_newer_package_upgrades_the_pin_and_an_older_one_is_not_enrolled() {
+    use bookclerk_library::control_plane::{
+        load_observation, replace_instance_config, ConfigActor, DeploymentStatus,
+        InstanceConfigReplace, PluginInstanceConfigV1, SettingValue,
+    };
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    stage_tree(
+        files,
+        "fxstale",
+        &versioned_manifest("fxstale", "0.1.0", &["region"]),
+    );
+    let (config, store, host_id) = open_host(files).await;
+
+    let first = enroll_local_plugins(&store, &config, &host_id)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    let one = &first[0];
+    assert_eq!(one.schema.package_version, "0.1.0");
+    let mut body = PluginInstanceConfigV1::empty();
+    body.settings
+        .insert("region".into(), SettingValue::String("eu".into()));
+    let seeded = load_instance_config(&store, &one.instance.id)
+        .await
+        .unwrap();
+    let written = replace_instance_config(
+        &store,
+        &ConfigActor::Operator { id: "test".into() },
+        &one.instance.id,
+        &one.schema.schema,
+        seeded.revision,
+        &body,
+        "write-region",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(written, InstanceConfigReplace::Applied(_)));
+
+    // 0.2.0 renames the setting: the pin upgrades and the document loses
+    // the key the new schema no longer declares.
+    let manifest_path = files.join("plugins").join("fxstale").join("plugin.toml");
+    std::fs::write(
+        &manifest_path,
+        versioned_manifest("fxstale", "0.2.0", &["locale"]),
+    )
+    .unwrap();
+    let second = enroll_local_plugins(&store, &config, &host_id)
+        .await
+        .unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].schema.package_version, "0.2.0");
+    assert_eq!(second[0].schema.schema.settings[0].key, "locale");
+    let doc = load_instance_config(&store, &one.instance.id)
+        .await
+        .unwrap();
+    assert_eq!(doc.revision, seeded.revision + 2);
+    assert!(doc.body.settings.is_empty(), "`region` was pruned");
+
+    // Rolling the install back to 0.1.0 (or another host still on it) does
+    // not enrol: the pin stays at 0.2.0 and the deployment shows why.
+    std::fs::write(
+        &manifest_path,
+        versioned_manifest("fxstale", "0.1.0", &["region"]),
+    )
+    .unwrap();
+    let third = enroll_local_plugins(&store, &config, &host_id)
+        .await
+        .unwrap();
+    assert!(third.is_empty(), "stale package is skipped");
+    let pinned = list_plugin_schemas(&store).await.unwrap();
+    assert_eq!(pinned.len(), 1);
+    assert_eq!(pinned[0].package_version, "0.2.0");
+    let observed = load_observation(&store, &one.deployment.deployment_id, &host_id)
+        .await
+        .unwrap()
+        .expect("error observation on this host's deployment");
+    assert_eq!(observed.status, DeploymentStatus::Error);
+    assert!(
+        observed
+            .detail
+            .contains("installed version 0.1.0 is older than 0.2.0 pinned by host"),
+        "{}",
+        observed.detail
+    );
+
+    // A manifest without a version is not enrolled either.
+    std::fs::write(
+        &manifest_path,
+        versioned_manifest("fxstale", "0.2.0", &["locale"]).replace("version = \"0.2.0\"\n", ""),
+    )
+    .unwrap();
+    let discovered = discover_plugins(&config).unwrap();
+    let plugin = discovered
+        .iter()
+        .find(|plugin| plugin.manifest.id == "fxstale")
+        .unwrap();
+    let err = enroll_one(&store, &host_id, plugin, &PluginGrantStore::default())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("`version` is required"), "{err}");
 }

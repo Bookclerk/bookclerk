@@ -1691,7 +1691,7 @@ mod tests {
                 plugin_key: KEY,
                 manifest_id: "audiobookshelf",
                 manifest_sha256: "00",
-                package_version: "",
+                package_version: "0.1.0",
                 schema: &schema,
                 host_id: "host-test",
             },

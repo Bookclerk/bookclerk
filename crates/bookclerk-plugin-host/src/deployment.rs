@@ -17,7 +17,8 @@ use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, default_instance_for_key,
     list_deployments_for_host, load_observation, load_plugin_instance, resolve_instance_bindings,
-    upsert_observation, DeploymentObservation, DeploymentStatus, DESIRED_PRESENT,
+    stale_against_pin, upsert_observation, DeploymentObservation, DeploymentStatus,
+    DESIRED_PRESENT,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{
@@ -461,14 +462,52 @@ async fn reconcile_one(
     };
     // The installed manifest's `[[settings]]` is the schema this spawn
     // validates against; keys the operator wrote under an older manifest
-    // are dropped and logged by the resolver.
-    let schema = match installed_settings_schema(&root) {
-        Ok(schema) => schema,
+    // are dropped and logged by the resolver. A package older than the
+    // pinned schema version is not spawned: its documents may already carry
+    // the newer shape.
+    let manifest = match installed_manifest(&root) {
+        Ok(manifest) => manifest,
         Err(err) => {
             note(DeploymentStatus::Error, err, None).await;
             return Ok(());
         }
     };
+    let local_version = match manifest.package_version() {
+        Ok(version) => version,
+        Err(err) => {
+            note(DeploymentStatus::Error, err.to_string(), None).await;
+            return Ok(());
+        }
+    };
+    match stale_against_pin(store, plugin_key.canonical(), &local_version).await {
+        Ok(None) => {}
+        Ok(Some(pinned)) => {
+            let instance_id = deployment.plugin_instance_id.as_str();
+            if runtime
+                .tracked_instance_ids()
+                .await
+                .iter()
+                .any(|id| id == instance_id)
+            {
+                runtime.retire_instance(instance_id).await;
+            }
+            note(
+                DeploymentStatus::Error,
+                format!(
+                    "installed version {local_version} is older than {} pinned by host {}; not spawned",
+                    pinned.package_version, pinned.recorded_by_host
+                ),
+                None,
+            )
+            .await;
+            return Ok(());
+        }
+        Err(err) => {
+            note(DeploymentStatus::Error, err.to_string(), None).await;
+            return Ok(());
+        }
+    }
+    let schema = manifest.settings_schema();
     let mut request = match resolve_spawn(store, &instance, &grant, &schema).await {
         Ok(request) => request,
         Err(err) => {
@@ -548,15 +587,20 @@ async fn resolve_spawn(
     })
 }
 
+/// The manifest installed at `root`.
+fn installed_manifest(
+    root: &Path,
+) -> std::result::Result<bookclerk_plugin_manifest::PluginManifest, String> {
+    let text = std::fs::read_to_string(root.join("plugin.toml"))
+        .map_err(|err| format!("read plugin.toml: {err}"))?;
+    bookclerk_plugin_manifest::parse(&text).map_err(|err| format!("plugin.toml: {err}"))
+}
+
 /// `[[settings]]` of the manifest installed at `root`.
 fn installed_settings_schema(
     root: &Path,
 ) -> std::result::Result<bookclerk_plugin_abi::SettingsSchema, String> {
-    let text = std::fs::read_to_string(root.join("plugin.toml"))
-        .map_err(|err| format!("read plugin.toml: {err}"))?;
-    let manifest =
-        bookclerk_plugin_manifest::parse(&text).map_err(|err| format!("plugin.toml: {err}"))?;
-    Ok(manifest.settings_schema())
+    installed_manifest(root).map(|manifest| manifest.settings_schema())
 }
 
 /// Skip respawn while a recent error observation is still inside the backoff.

@@ -18,9 +18,11 @@
 //! two see the same instances and deployments.
 
 use bookclerk_library::control_plane::{
-    ensure_plugin_deployment, ensure_plugin_instance, import_instance_config_if_absent,
-    load_deployment_for_host, pin_plugin_schema, ConfigActor, PinnedPluginSchema, PluginDeployment,
-    PluginInstance, PluginInstanceConfigV1, SchemaPin, DESIRED_ABSENT, DESIRED_PRESENT,
+    current_process_incarnation, default_instance_for_key, ensure_plugin_deployment,
+    ensure_plugin_instance, import_instance_config_if_absent, load_deployment_for_host,
+    pin_plugin_schema, prune_instance_configs_to_schema, upsert_observation, ConfigActor,
+    DeploymentObservation, DeploymentStatus, PinnedPluginSchema, PluginDeployment, PluginInstance,
+    PluginInstanceConfigV1, SchemaPin, SchemaPinChange, DESIRED_ABSENT, DESIRED_PRESENT,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use sha2::{Digest, Sha256};
@@ -102,21 +104,62 @@ pub async fn enroll_one(
     grants: &PluginGrantStore,
 ) -> Result<EnrolledPlugin> {
     let key = plugin.plugin_key().canonical().to_string();
+    let package_version = plugin
+        .manifest
+        .package_version()
+        .map_err(|err| crate::PluginError::message(err.to_string()))?;
     let schema_body = plugin.manifest.settings_schema();
     let manifest_sha256 = manifest_sha256(plugin)?;
-    let schema = pin_plugin_schema(
+    let pinned = pin_plugin_schema(
         store,
         &SchemaPin {
             plugin_key: &key,
             manifest_id: &plugin.manifest.id,
             manifest_sha256: &manifest_sha256,
-            package_version: plugin.manifest.version.as_deref().unwrap_or(""),
+            package_version: &package_version,
             schema: &schema_body,
             host_id,
         },
     )
     .await
     .map_err(library_err)?;
+    match &pinned.change {
+        SchemaPinChange::Stale { local_version } => {
+            let detail = format!(
+                "installed version {local_version} is older than {} pinned by host {}; not loaded",
+                pinned.schema.package_version, pinned.schema.recorded_by_host
+            );
+            record_stale_version(store, host_id, &key, &detail).await;
+            return Err(crate::PluginError::message(format!(
+                "plugin `{key}`: {detail}"
+            )));
+        }
+        SchemaPinChange::Upgraded { previous_version } => {
+            let pruned = prune_instance_configs_to_schema(store, &key, &schema_body)
+                .await
+                .map_err(library_err)?;
+            tracing::info!(
+                plugin_key = %key,
+                from = %previous_version,
+                to = %package_version,
+                pruned_documents = pruned.len(),
+                "plugin schema pin upgraded"
+            );
+        }
+        SchemaPinChange::Repinned => {
+            let pruned = prune_instance_configs_to_schema(store, &key, &schema_body)
+                .await
+                .map_err(library_err)?;
+            tracing::warn!(
+                plugin_key = %key,
+                version = %package_version,
+                pruned_documents = pruned.len(),
+                "plugin manifest changed without a version bump; schema re-pinned"
+            );
+        }
+        SchemaPinChange::Pinned | SchemaPinChange::Unchanged => {}
+    }
+    let schema = pinned.schema;
     let actor = ConfigActor::Bootstrap;
     let instance = ensure_plugin_instance(store, &actor, &key)
         .await
@@ -167,6 +210,40 @@ pub fn has_covering_grant(plugin: &DiscoveredPlugin, grants: &PluginGrantStore) 
     }
     plugin.identity.provenance.grants_platform_defaults()
         && bookclerk_plugin_catalog::is_platform_plugin_key(plugin.plugin_key())
+}
+
+/// Writes an `error` observation on this host's deployment of the default
+/// instance so the stale package is visible in Settings, when such a
+/// deployment exists. Nothing else is written.
+async fn record_stale_version(store: &LibraryStore, host_id: &str, plugin_key: &str, detail: &str) {
+    let instance = match default_instance_for_key(store, plugin_key).await {
+        Ok(Some(instance)) => instance,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(plugin_key, error = %err, "stale-version observation: instance read failed");
+            return;
+        }
+    };
+    let deployment = match load_deployment_for_host(store, &instance.id, host_id).await {
+        Ok(Some(deployment)) => deployment,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(plugin_key, error = %err, "stale-version observation: deployment read failed");
+            return;
+        }
+    };
+    let observation = DeploymentObservation {
+        deployment_id: deployment.deployment_id,
+        host_id: host_id.to_string(),
+        incarnation: current_process_incarnation().to_string(),
+        status: DeploymentStatus::Error,
+        detail: detail.to_string(),
+        applied_config_revision: None,
+        observed_at: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(err) = upsert_observation(store, &observation).await {
+        tracing::warn!(plugin_key, error = %err, "stale-version observation write failed");
+    }
 }
 
 /// SHA-256 of the installed `plugin.toml`, hex encoded.

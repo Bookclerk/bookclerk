@@ -50,6 +50,7 @@
 //! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
 //! | [`settings_schema`] | `[[settings]]` operator settings schema shared by manifest and host |
+//! | [`package_version`] | `plugin.toml` `version` parsing and ordering for schema pinning |
 //! | [`db`] | Host-private database connect params (feature `host`) |
 //! | [`error`] | [`PluginError`] / [`PluginErrorCode`] |
 //! | [`guest_sql`] | SQL-v1 grammar / guest admission |
@@ -75,6 +76,7 @@ pub mod json_bytes;
 pub mod kind;
 mod limits;
 pub mod methods;
+pub mod package_version;
 mod plugin_migration;
 mod roles;
 mod rpc;
