@@ -905,8 +905,7 @@ mod tests {
         use bookclerk_library::control_plane::{
             bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
             import_instance_config_if_absent, load_deployment, load_observation, ConfigActor,
-            DeploymentStatus, InstancePackagePolicy, PluginInstanceConfigV1, SettingValue,
-            DESIRED_PRESENT,
+            DeploymentStatus, PluginInstanceConfigV1, SettingValue, DESIRED_PRESENT,
         };
 
         let files = tempfile::tempdir().expect("files");
@@ -1053,7 +1052,7 @@ mod tests {
         use bookclerk_library::control_plane::{
             bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
             import_instance_config_if_absent, load_observation, ConfigActor, DeploymentStatus,
-            InstancePackagePolicy, PluginInstanceConfigV1, SettingValue,
+            PluginInstanceConfigV1, SettingValue,
         };
 
         let files = tempfile::tempdir().expect("files");
@@ -1785,8 +1784,7 @@ mod tests {
         use bookclerk_config::Isolation;
         use bookclerk_library::control_plane::{
             create_plugin_instance, ensure_plugin_deployment, import_instance_config_if_absent,
-            load_observation, ConfigActor, DeploymentStatus, InstancePackagePolicy,
-            PluginInstanceConfigV1,
+            load_observation, ConfigActor, DeploymentStatus, PluginInstanceConfigV1,
         };
 
         let files = tempfile::tempdir().expect("files");
