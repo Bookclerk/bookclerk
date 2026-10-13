@@ -78,13 +78,28 @@ Low-level auth/download notes: [`crates/bookclerk-plugins/optional/source-audibl
 ```toml
 [sources.audible]
 enabled = true
-bitrate = "high"          # high | normal
 
 [output]
 widevine = false
 xhe_aac = false
 format = "enriched_m4b"
 ```
+
+## Store knobs (PluginInstance CONFIG)
+
+`[sources.<id>]` only turns a first-party store on or off (`enabled`). Its
+other knobs are PluginInstance CONFIG, written with
+`PUT /api/config/plugin-instances/{id}/config`, with no TOML import and no
+TOML fallback:
+
+| Store | Keys | Code default |
+| --- | --- | --- |
+| Audible | `bitrate` (`high` \| `normal`) | `high` |
+| Libro.fm | `container` (`m4b` \| `zip`), `base_url` | `m4b` |
+| Chirp | `graphql_url` | none (guest default) |
+| GraphicAudio | `access`, `base_url`, `store_url`, `bitrate`, `container` | `access = web` |
+
+A first-party storefront with no instance CONFIG does not start.
 
 ## Libro.fm
 
@@ -98,7 +113,6 @@ bookclerk library acquire --isbn 978…
 ```toml
 [sources.libro]
 enabled = true
-container = "m4b"         # m4b | zip
 ```
 
 Credentials are stored in `encrypted_secrets` (DB-backed).
@@ -138,12 +152,10 @@ bookclerk library scan --source graphicaudio
 ```toml
 [sources.graphicaudio]
 enabled = true
-access = "web"            # web | zip | device
-# bitrate = "hi"          # hi | lo (device)
-# container = "auto"      # auto | m4b | mp3 | flac (zip)
 ```
 
-Env override: `BOOKCLERK_GA_ACCESS` (legacy alias `BOOKCLERK_GA_FETCH`).
+Access mode and the other knobs live on the plugin instance, not in TOML; the
+code default is `access = web`.
 Disable with `enabled = false` or `BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED=0`.
 
 ZIP SKUs unlock App + Browser as well; App Access–only does **not** include a

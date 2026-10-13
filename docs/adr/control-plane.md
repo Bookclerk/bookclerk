@@ -298,15 +298,22 @@ other storefronts. `sources.graphicaudio.enabled = false` retires the running
 guest. CLI scan and acquire use the instance document and require `--instance`
 when selection is ambiguous. The key alone does not pick one of them.
 
-GraphicAudio is the first migrated caller. When discovery or the install
-ledger contains manifest id `graphicaudio`, startup ensures one instance, one
-local deployment, and, if the document is absent, imports `access`,
-`base_url`, `store_url`, `bitrate`, and `container` from
-`[sources.graphicaudio]`. After that document exists it is the authority for
-those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
-TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
-derived from `describe()`, and that schema debt stays until a later phase.
-Other plugins with no instance document keep `settings_table_for`.
+First-party storefronts (Audible, Libro.fm, Chirp, GraphicAudio) are a hard
+cutover. When discovery or the install ledger contains one of those manifest
+ids and `sources.<id>.enabled` is not false, startup (and every config reload)
+ensures one instance, one local deployment, and, if the document is absent,
+seeds a **code-default** document: Audible `bitrate = high`, Libro.fm
+`container = m4b`, Chirp empty, GraphicAudio `access = web`. `[sources.<id>]`
+is never read to build or update that document: there is no import-once and no
+TOML fallback. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays
+in TOML. Package allowlists are hard-coded in the host (Audible `bitrate`;
+Libro.fm `container`, `base_url`; Chirp `graphql_url`; GraphicAudio `access`,
+`base_url`, `store_url`, `bitrate`, `container`). They are not derived from
+`describe()`, and that schema debt stays until a later phase.
+`settings_table_for` returns an empty table for a verified first-party
+storefront, and spawning one without instance CONFIG fails closed with
+"requires PluginInstance CONFIG". Other plugins with no instance document keep
+`settings_table_for`.
 
 Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
 not by `PluginInstanceId`. Two instances of one key share credentials and scan
@@ -363,8 +370,9 @@ Not in this spike, and not claimed as production HA:
   and the health check. Extract runs on a blocking thread. The lock is still
   held across the health await so a second installer cannot commit the same
   tree.
-- GraphicAudio writable settings remain a hard-coded allowlist. They are not
-  derived from `describe()`.
+- First-party storefront writable settings (Audible, Libro.fm, Chirp,
+  GraphicAudio) remain hard-coded allowlists. They are not derived from
+  `describe()`.
 - Accounts and `SourceScope` stay storefront-keyed. Moving those rows onto
   the plugin instance id is a later phase.
 - D1 multi-host execution. The executing D1 tests in this repository are an

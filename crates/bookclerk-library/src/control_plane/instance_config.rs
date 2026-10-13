@@ -1,8 +1,9 @@
 //! Typed plugin-instance configuration and CONFIG / SECRETS resolution.
 //!
 //! The document address is [`DocumentKey::plugin_instance`]. Validation does
-//! not take a plugin family, entrypoint, alias, or host id. GraphicAudio's
-//! extra allowlist is selected by the installed manifest id `graphicaudio`.
+//! not take a plugin family, entrypoint, alias, or host id. First-party
+//! storefront allowlists are selected by the installed manifest id
+//! (`audible`, `libro`, `chirp`, `graphicaudio`).
 
 use std::collections::BTreeMap;
 
@@ -37,6 +38,15 @@ pub const MAX_INSTANCE_SETTING_BYTES: usize = 1024;
 /// Manifest id that selects the GraphicAudio setting allowlist.
 pub const GRAPHICAUDIO_MANIFEST_ID: &str = "graphicaudio";
 
+/// Manifest id that selects the Audible setting allowlist.
+pub const AUDIBLE_MANIFEST_ID: &str = "audible";
+
+/// Manifest id that selects the Libro.fm setting allowlist.
+pub const LIBRO_MANIFEST_ID: &str = "libro";
+
+/// Manifest id that selects the Chirp setting allowlist.
+pub const CHIRP_MANIFEST_ID: &str = "chirp";
+
 /// How strictly schema 1 is checked for one package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstancePackagePolicy {
@@ -44,14 +54,26 @@ pub enum InstancePackagePolicy {
     Generic,
     /// GraphicAudio allowlist, selected by manifest id `graphicaudio`.
     GraphicAudio,
+    /// Audible storefront allowlist (`bitrate`).
+    StorefrontAudible,
+    /// Libro.fm storefront allowlist (`container`, `base_url`).
+    StorefrontLibro,
+    /// Chirp storefront allowlist (`graphql_url`).
+    StorefrontChirp,
 }
 
 impl InstancePackagePolicy {
-    /// GraphicAudio when `manifest_id` is the product package id.
+    /// First-party allowlist when `manifest_id` matches a product package id.
     #[must_use]
     pub fn from_manifest_id(manifest_id: &str) -> Self {
         if manifest_id.eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID) {
             Self::GraphicAudio
+        } else if manifest_id.eq_ignore_ascii_case(AUDIBLE_MANIFEST_ID) {
+            Self::StorefrontAudible
+        } else if manifest_id.eq_ignore_ascii_case(LIBRO_MANIFEST_ID) {
+            Self::StorefrontLibro
+        } else if manifest_id.eq_ignore_ascii_case(CHIRP_MANIFEST_ID) {
+            Self::StorefrontChirp
         } else {
             Self::Generic
         }
@@ -123,8 +145,12 @@ impl PluginInstanceConfigV1 {
                 return Err(invalid("duplicate secret ref key"));
             }
         }
-        if policy == InstancePackagePolicy::GraphicAudio {
-            validate_graphicaudio(self)?;
+        match policy {
+            InstancePackagePolicy::Generic => {}
+            InstancePackagePolicy::GraphicAudio => validate_graphicaudio(self)?,
+            InstancePackagePolicy::StorefrontAudible => validate_storefront_audible(self)?,
+            InstancePackagePolicy::StorefrontLibro => validate_storefront_libro(self)?,
+            InstancePackagePolicy::StorefrontChirp => validate_storefront_chirp(self)?,
         }
         let json = self.to_json()?;
         if json.len() > super::documents::MAX_CONFIGURATION_DOCUMENT_BYTES {
@@ -149,9 +175,82 @@ impl PluginInstanceConfigV1 {
     }
 }
 
-/// GraphicAudio keys copied once from `[sources.graphicaudio]`.
+/// GraphicAudio keys allowed on the instance document.
 pub const GRAPHICAUDIO_IMPORT_KEYS: &[&str] =
     &["access", "base_url", "store_url", "bitrate", "container"];
+
+/// Audible keys allowed on the instance document.
+pub const AUDIBLE_IMPORT_KEYS: &[&str] = &["bitrate"];
+
+/// Libro.fm keys allowed on the instance document.
+pub const LIBRO_IMPORT_KEYS: &[&str] = &["container", "base_url"];
+
+/// Chirp keys allowed on the instance document.
+pub const CHIRP_IMPORT_KEYS: &[&str] = &["graphql_url"];
+
+/// Builds a document from string pairs after policy validation.
+fn string_config(
+    pairs: &[(&str, &str)],
+    policy: InstancePackagePolicy,
+) -> Result<PluginInstanceConfigV1> {
+    let settings = pairs
+        .iter()
+        .map(|(key, value)| {
+            (
+                (*key).to_string(),
+                SettingValue::String((*value).to_string()),
+            )
+        })
+        .collect();
+    let body = PluginInstanceConfigV1 {
+        settings,
+        secret_refs: Vec::new(),
+    };
+    body.validate(policy)?;
+    Ok(body)
+}
+
+/// Code-default Audible document (`bitrate = high`). Never read from TOML.
+///
+/// # Errors
+///
+/// Returns an error when the built-in default fails validation.
+pub fn audible_default_config() -> Result<PluginInstanceConfigV1> {
+    string_config(
+        &[("bitrate", "high")],
+        InstancePackagePolicy::StorefrontAudible,
+    )
+}
+
+/// Code-default Libro.fm document (`container = m4b`). Never read from TOML.
+///
+/// # Errors
+///
+/// Returns an error when the built-in default fails validation.
+pub fn libro_default_config() -> Result<PluginInstanceConfigV1> {
+    string_config(
+        &[("container", "m4b")],
+        InstancePackagePolicy::StorefrontLibro,
+    )
+}
+
+/// Code-default Chirp document (no settings; the guest defaults `graphql_url`).
+///
+/// # Errors
+///
+/// Returns an error when the built-in default fails validation.
+pub fn chirp_default_config() -> Result<PluginInstanceConfigV1> {
+    string_config(&[], InstancePackagePolicy::StorefrontChirp)
+}
+
+/// Code-default GraphicAudio document (`access = web`). Never read from TOML.
+///
+/// # Errors
+///
+/// Returns an error when the built-in default fails validation.
+pub fn graphicaudio_default_config() -> Result<PluginInstanceConfigV1> {
+    string_config(&[("access", "web")], InstancePackagePolicy::GraphicAudio)
+}
 
 /// Builds a GraphicAudio document from string pairs.
 ///
@@ -492,6 +591,52 @@ fn validate_graphicaudio(body: &PluginInstanceConfigV1) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Rejects keys outside `allowed` and non-string values.
+fn validate_string_allowlist(
+    body: &PluginInstanceConfigV1,
+    label: &str,
+    allowed: &[&str],
+) -> Result<()> {
+    for (key, value) in &body.settings {
+        if !allowed.contains(&key.as_str()) {
+            return Err(invalid(&format!("{label} setting `{key}` is not allowed")));
+        }
+        if !matches!(value, SettingValue::String(_)) {
+            return Err(invalid(&format!(
+                "{label} setting `{key}` must be a string"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Audible allowlist. `bitrate` is `high` or `normal` when present.
+fn validate_storefront_audible(body: &PluginInstanceConfigV1) -> Result<()> {
+    validate_string_allowlist(body, "Audible", AUDIBLE_IMPORT_KEYS)?;
+    if let Some(SettingValue::String(text)) = body.settings.get("bitrate") {
+        if !matches!(text.as_str(), "high" | "normal") {
+            return Err(invalid("Audible bitrate must be high or normal"));
+        }
+    }
+    Ok(())
+}
+
+/// Libro.fm allowlist. `container` is `m4b` or `zip` when present.
+fn validate_storefront_libro(body: &PluginInstanceConfigV1) -> Result<()> {
+    validate_string_allowlist(body, "Libro", LIBRO_IMPORT_KEYS)?;
+    if let Some(SettingValue::String(text)) = body.settings.get("container") {
+        if !matches!(text.as_str(), "m4b" | "zip") {
+            return Err(invalid("Libro container must be m4b or zip"));
+        }
+    }
+    Ok(())
+}
+
+/// Chirp allowlist. `graphql_url` is a string when present.
+fn validate_storefront_chirp(body: &PluginInstanceConfigV1) -> Result<()> {
+    validate_string_allowlist(body, "Chirp", CHIRP_IMPORT_KEYS)
 }
 
 /// Setting and secret-ref keys use the schema-1 grammar.

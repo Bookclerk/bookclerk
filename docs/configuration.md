@@ -52,7 +52,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_LIBRO_PASSWORD` | Libro.fm login |
 | `BOOKCLERK_CHIRP_PASSWORD` | Chirp login |
 | `BOOKCLERK_GA_PASSWORD` | GraphicAudio login |
-| `BOOKCLERK_GA_ACCESS` | GraphicAudio access mode (`web`/`zip`/`device`) |
+| `BOOKCLERK_GA_ACCESS` | Not a live override; set `access` on the GraphicAudio plugin instance |
 | `BOOKCLERK_ABS_API_KEY` | Audiobookshelf API key |
 | `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on/off |
 | `BOOKCLERK_DISCOVERY_OPENLIBRARY_ENABLED` | Open Library enrichment on/off |
@@ -150,13 +150,18 @@ of local delivery tasks is chosen at process start. Other `[events]` neighbors
 in this file (`[library]`, `[jobs]`, sources, output, media, plugins,
 diagnostics) are still TOML and environment configuration.
 
-GraphicAudio `access`, `base_url`, `store_url`, `bitrate`, and `container`
-move to the plugin instance document the first time that manifest is
-installed. After the document exists, `PATCH /api/settings` rejects those
-keys. Change them with `PUT /api/config/plugin-instances/{id}/config`
-(`expected_revision`, scalar `settings`, and secret ref names). The device
-token stays on the account credential, not in the document.
-`sources.graphicaudio.enabled` stays in `config.toml`. Setting it to false
+First-party storefront knobs are PluginInstance CONFIG only, not TOML:
+Audible `bitrate`; Libro.fm `container` and `base_url`; Chirp `graphql_url`;
+GraphicAudio `access`, `base_url`, `store_url`, `bitrate`, and `container`.
+There is no import from `[sources.<id>]` and no TOML fallback. When the
+package is installed and enabled, startup seeds a code-default document
+(Audible `high`, Libro.fm `m4b`, Chirp empty, GraphicAudio `web`) and a local
+deployment. `PATCH /api/settings` always rejects those keys and Settings
+does not list them. Change them with
+`PUT /api/config/plugin-instances/{id}/config`
+(`expected_revision`, scalar `settings`, and secret ref names). Credentials
+stay in Accounts (`encrypted_secrets`), not in the document.
+`sources.<id>.enabled` stays in `config.toml` for those storefronts. Setting it to false
 retires the running guest on reconcile and on reload. `bookclerk library scan`
 and `bookclerk library acquire` read the instance document and require
 `--instance` when more than one instance shares the plugin key. Plugins with no

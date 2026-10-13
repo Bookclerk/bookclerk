@@ -35,6 +35,8 @@
 mod deployment_reconcile_tests;
 #[cfg(test)]
 mod graphicaudio_instance_test;
+#[cfg(test)]
+mod storefront_cutover_tests;
 
 mod authority;
 mod builtins;
@@ -104,17 +106,19 @@ pub use consent::{
 };
 pub use crates_io::search_crates_io;
 pub use deployment::{
-    enroll_graphicaudio_instance, load_authorized_local_packages, reconcile_local_deployments,
-    AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
-    LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
+    enroll_audible_instance, enroll_chirp_instance, enroll_graphicaudio_instance,
+    enroll_libro_instance, enroll_storefront_instances, load_authorized_local_packages,
+    reconcile_local_deployments, AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn,
+    LiveDeploymentRuntime, LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
 };
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
     discover_plugins, first_party_database_kind, identity_matches_occupancy,
-    is_first_party_local_output, is_first_party_s3_output, occupancy_matches_alias,
-    occupancy_names_alias, occupancy_spec, plugin_matches_occupancy, plugin_search_dirs,
-    resolve_plugin_ref, resolve_plugin_slot, settings_table, settings_table_for,
-    stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy, DiscoveredPlugin,
+    is_first_party_local_output, is_first_party_s3_output, is_first_party_storefront,
+    occupancy_matches_alias, occupancy_names_alias, occupancy_spec, plugin_matches_occupancy,
+    plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot, settings_table,
+    settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
+    DiscoveredPlugin,
 };
 pub use error::{PluginError, Result};
 pub use event_publisher::{EventOutbox, OutboxEventPublisher};
@@ -131,9 +135,12 @@ pub use install_preflight::{
     install_local_archive_with_configured_aliases, reject_configured_alias_collision,
 };
 pub use instance_bindings::{
+    audible_plugin_key, chirp_plugin_key, first_party_manifest_plugin_key,
     graphicaudio_document_exists, graphicaudio_document_exists_for_key,
     graphicaudio_key_from_discovered, graphicaudio_key_from_ledger, graphicaudio_plugin_key,
-    is_graphicaudio_imported_setting, prepare_open_bindings, PreparedOpen,
+    instance_document_exists_for_key, is_audible_imported_setting, is_chirp_imported_setting,
+    is_graphicaudio_imported_setting, is_libro_imported_setting, libro_plugin_key,
+    manifest_key_from_discovered, manifest_key_from_ledger, prepare_open_bindings, PreparedOpen,
 };
 pub use jail::plugin_data_dir;
 pub use manifest::{

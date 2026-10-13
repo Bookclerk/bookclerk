@@ -128,6 +128,16 @@ pub fn is_first_party_s3_output(plugin: &DiscoveredPlugin) -> bool {
         && plugin.plugin_key().package() == "bookclerk-plugin-destination-s3"
 }
 
+/// True when this install is a verified Bookclerk first-party storefront
+/// (`audible`, `libro`, `chirp`, `graphicaudio`).
+///
+/// PluginInstance CONFIG is the only authority for its non-`enabled` knobs.
+#[must_use]
+pub fn is_first_party_storefront(plugin: &DiscoveredPlugin) -> bool {
+    plugin.identity.provenance.is_verified_artifact()
+        && bookclerk_plugin_catalog::is_first_party_storefront(plugin.plugin_key())
+}
+
 /// Path-only identity used when an install tree cannot be hashed (test fixtures).
 fn local_identity(root: &Path, manifest: &PluginManifest) -> PluginInstallIdentity {
     let plugin_key = PluginKey::from_install_path(root, &manifest.id)
@@ -787,6 +797,9 @@ pub fn settings_table_for(
     family: crate::PluginFamily,
 ) -> toml::Table {
     match family {
+        // First-party storefronts use PluginInstance CONFIG only. An empty
+        // table keeps transitional callers from applying live `[sources.*]`.
+        crate::PluginFamily::Source if is_first_party_storefront(plugin) => toml::Table::new(),
         crate::PluginFamily::Source => config
             .sources
             .table(&plugin.manifest.id)

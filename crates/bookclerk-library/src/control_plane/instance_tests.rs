@@ -507,6 +507,100 @@ async fn graphicaudio_allowlist_rejects_unknown_keys() {
     assert!(graphicaudio_config_from_pairs([("access", "nope")]).is_err());
 }
 
+fn string_settings(pairs: &[(&str, &str)]) -> PluginInstanceConfigV1 {
+    PluginInstanceConfigV1 {
+        settings: pairs
+            .iter()
+            .map(|(key, value)| {
+                (
+                    (*key).to_string(),
+                    SettingValue::String((*value).to_string()),
+                )
+            })
+            .collect(),
+        secret_refs: Vec::new(),
+    }
+}
+
+#[test]
+fn storefront_policies_follow_the_manifest_id() {
+    for (id, policy) in [
+        ("audible", InstancePackagePolicy::StorefrontAudible),
+        ("LIBRO", InstancePackagePolicy::StorefrontLibro),
+        ("chirp", InstancePackagePolicy::StorefrontChirp),
+        ("graphicaudio", InstancePackagePolicy::GraphicAudio),
+        ("echo", InstancePackagePolicy::Generic),
+    ] {
+        assert_eq!(InstancePackagePolicy::from_manifest_id(id), policy, "{id}");
+    }
+}
+
+#[test]
+fn storefront_code_defaults_validate_and_match_the_plan() {
+    let audible = audible_default_config().unwrap();
+    assert_eq!(audible, string_settings(&[("bitrate", "high")]));
+    audible
+        .validate(InstancePackagePolicy::StorefrontAudible)
+        .unwrap();
+    let libro = libro_default_config().unwrap();
+    assert_eq!(libro, string_settings(&[("container", "m4b")]));
+    libro
+        .validate(InstancePackagePolicy::StorefrontLibro)
+        .unwrap();
+    let chirp = chirp_default_config().unwrap();
+    assert!(chirp.settings.is_empty());
+    chirp
+        .validate(InstancePackagePolicy::StorefrontChirp)
+        .unwrap();
+    let ga = graphicaudio_default_config().unwrap();
+    assert_eq!(ga, string_settings(&[("access", "web")]));
+    ga.validate(InstancePackagePolicy::GraphicAudio).unwrap();
+}
+
+#[test]
+fn storefront_allowlists_reject_unknown_keys_and_bad_values() {
+    let audible = InstancePackagePolicy::StorefrontAudible;
+    string_settings(&[("bitrate", "normal")])
+        .validate(audible)
+        .unwrap();
+    assert!(string_settings(&[("bitrate", "loud")])
+        .validate(audible)
+        .is_err());
+    assert!(string_settings(&[("container", "m4b")])
+        .validate(audible)
+        .is_err());
+
+    let libro = InstancePackagePolicy::StorefrontLibro;
+    string_settings(&[("container", "zip"), ("base_url", "https://libro.test")])
+        .validate(libro)
+        .unwrap();
+    assert!(string_settings(&[("container", "flac")])
+        .validate(libro)
+        .is_err());
+    assert!(string_settings(&[("bitrate", "high")])
+        .validate(libro)
+        .is_err());
+
+    let chirp = InstancePackagePolicy::StorefrontChirp;
+    string_settings(&[("graphql_url", "https://chirp.test/graphql")])
+        .validate(chirp)
+        .unwrap();
+    assert!(string_settings(&[("container", "m4b")])
+        .validate(chirp)
+        .is_err());
+
+    let mut numeric = std::collections::BTreeMap::new();
+    numeric.insert(
+        "bitrate".to_string(),
+        SettingValue::Number(serde_json::Number::from(1)),
+    );
+    let body = PluginInstanceConfigV1 {
+        settings: numeric,
+        secret_refs: Vec::new(),
+    };
+    assert!(body.validate(audible).is_err());
+}
+
 #[tokio::test]
 async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
     let _guard = master_key_test_lock_async().await;

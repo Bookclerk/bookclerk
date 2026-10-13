@@ -1,14 +1,17 @@
 //! `CONFIG` and `SECRETS` for one plugin instance.
 //!
 //! When the plugin key has an instance document, spawn uses that document.
-//! Plugins with no instance keep the transitional `config.toml` table.
+//! Plugins with no instance keep the transitional `config.toml` table, except
+//! first-party storefronts, which require an instance document (the spawn path
+//! fails closed instead of falling back to `[sources.*]`).
 
 use std::path::Path;
 
 use bookclerk_library::control_plane::{
     list_plugin_instances_for_key, load_instance_config, load_plugin_instance,
     resolve_instance_bindings, InstanceBindingGrant, PluginInstance, PluginInstanceId,
-    ResolvedInstanceBindings, GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
+    ResolvedInstanceBindings, AUDIBLE_MANIFEST_ID, CHIRP_MANIFEST_ID, GRAPHICAUDIO_IMPORT_KEYS,
+    GRAPHICAUDIO_MANIFEST_ID, LIBRO_MANIFEST_ID,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_sdk::{BindingValues, ExtensibleConfig};
@@ -259,13 +262,52 @@ pub fn graphicaudio_imported_setting_keys() -> &'static [&'static str] {
     KEYS
 }
 
+/// Dotted settings keys retired from file-backed `[sources.audible]` authority.
+///
+/// `sources.audible.enabled` stays file-backed.
+pub fn audible_imported_setting_keys() -> &'static [&'static str] {
+    &["sources.audible.bitrate"]
+}
+
+/// Dotted settings keys retired from file-backed `[sources.libro]` authority.
+///
+/// `sources.libro.enabled` stays file-backed.
+pub fn libro_imported_setting_keys() -> &'static [&'static str] {
+    &["sources.libro.container", "sources.libro.base_url"]
+}
+
+/// Dotted settings keys retired from file-backed `[sources.chirp]` authority.
+///
+/// `sources.chirp.enabled` stays file-backed.
+pub fn chirp_imported_setting_keys() -> &'static [&'static str] {
+    &["sources.chirp.graphql_url"]
+}
+
 /// True when `key` is a GraphicAudio setting owned by the instance document.
 #[must_use]
 pub fn is_graphicaudio_imported_setting(key: &str) -> bool {
     graphicaudio_imported_setting_keys().contains(&key)
 }
 
-/// Canonical plugin key for the installed GraphicAudio manifest, if any.
+/// True when `key` is an Audible setting owned by the instance document.
+#[must_use]
+pub fn is_audible_imported_setting(key: &str) -> bool {
+    audible_imported_setting_keys().contains(&key)
+}
+
+/// True when `key` is a Libro.fm setting owned by the instance document.
+#[must_use]
+pub fn is_libro_imported_setting(key: &str) -> bool {
+    libro_imported_setting_keys().contains(&key)
+}
+
+/// True when `key` is a Chirp setting owned by the instance document.
+#[must_use]
+pub fn is_chirp_imported_setting(key: &str) -> bool {
+    chirp_imported_setting_keys().contains(&key)
+}
+
+/// Canonical plugin key for an installed first-party manifest id, if any.
 ///
 /// Discovery wins. The install ledger is the fallback when the tree is recorded
 /// but not currently discovered. A config that was not loaded from a files
@@ -275,29 +317,72 @@ pub fn is_graphicaudio_imported_setting(key: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error when the install ledger cannot be read.
-pub fn graphicaudio_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+pub fn first_party_manifest_plugin_key(
+    config: &bookclerk_config::Config,
+    manifest_id: &str,
+) -> Result<Option<String>> {
     if config.paths.is_none() {
         return Ok(None);
     }
     if let Ok(plugins) = crate::discover_plugins(config) {
-        if let Some(key) = graphicaudio_key_from_discovered(&plugins) {
+        if let Some(key) = manifest_key_from_discovered(&plugins, manifest_id) {
             return Ok(Some(key));
         }
     }
-    graphicaudio_key_from_ledger(config)
+    manifest_key_from_ledger(config, manifest_id)
+}
+
+/// Canonical plugin key for the installed GraphicAudio manifest, if any.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+pub fn graphicaudio_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    first_party_manifest_plugin_key(config, GRAPHICAUDIO_MANIFEST_ID)
+}
+
+/// Canonical plugin key for the installed Audible manifest, if any.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+pub fn audible_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    first_party_manifest_plugin_key(config, AUDIBLE_MANIFEST_ID)
+}
+
+/// Canonical plugin key for the installed Libro.fm manifest, if any.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+pub fn libro_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    first_party_manifest_plugin_key(config, LIBRO_MANIFEST_ID)
+}
+
+/// Canonical plugin key for the installed Chirp manifest, if any.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read.
+pub fn chirp_plugin_key(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    first_party_manifest_plugin_key(config, CHIRP_MANIFEST_ID)
 }
 
 /// Plugin key for a discovered GraphicAudio manifest, without reading the disk again.
 #[must_use]
 pub fn graphicaudio_key_from_discovered(plugins: &[crate::DiscoveredPlugin]) -> Option<String> {
+    manifest_key_from_discovered(plugins, GRAPHICAUDIO_MANIFEST_ID)
+}
+
+/// Plugin key for a discovered manifest id, without reading the disk again.
+#[must_use]
+pub fn manifest_key_from_discovered(
+    plugins: &[crate::DiscoveredPlugin],
+    manifest_id: &str,
+) -> Option<String> {
     plugins
         .iter()
-        .find(|plugin| {
-            plugin
-                .manifest
-                .id
-                .eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID)
-        })
+        .find(|plugin| plugin.manifest.id.eq_ignore_ascii_case(manifest_id))
         .map(|plugin| plugin.plugin_key().canonical().to_string())
 }
 
@@ -308,6 +393,19 @@ pub fn graphicaudio_key_from_discovered(plugins: &[crate::DiscoveredPlugin]) -> 
 /// Returns an error when the install ledger cannot be read. A config with no
 /// files directory returns `None`.
 pub fn graphicaudio_key_from_ledger(config: &bookclerk_config::Config) -> Result<Option<String>> {
+    manifest_key_from_ledger(config, GRAPHICAUDIO_MANIFEST_ID)
+}
+
+/// Install-ledger plugin key for `manifest_id` when discovery did not see it.
+///
+/// # Errors
+///
+/// Returns an error when the install ledger cannot be read. A config with no
+/// files directory returns `None`.
+pub fn manifest_key_from_ledger(
+    config: &bookclerk_config::Config,
+    manifest_id: &str,
+) -> Result<Option<String>> {
     if config.paths.is_none() {
         return Ok(None);
     }
@@ -316,10 +414,7 @@ pub fn graphicaudio_key_from_ledger(config: &bookclerk_config::Config) -> Result
     Ok(ledger
         .artifacts
         .iter()
-        .find(|row| {
-            row.manifest_id
-                .eq_ignore_ascii_case(GRAPHICAUDIO_MANIFEST_ID)
-        })
+        .find(|row| row.manifest_id.eq_ignore_ascii_case(manifest_id))
         .map(|row| row.plugin_key.clone()))
 }
 
@@ -345,6 +440,18 @@ pub async fn graphicaudio_document_exists(
 ///
 /// Returns an error when the instance row cannot be read.
 pub async fn graphicaudio_document_exists_for_key(
+    store: &LibraryStore,
+    plugin_key: Option<&str>,
+) -> Result<bool> {
+    instance_document_exists_for_key(store, plugin_key).await
+}
+
+/// True when an instance document exists for an already-resolved plugin key.
+///
+/// # Errors
+///
+/// Returns an error when the instance row cannot be read.
+pub async fn instance_document_exists_for_key(
     store: &LibraryStore,
     plugin_key: Option<&str>,
 ) -> Result<bool> {

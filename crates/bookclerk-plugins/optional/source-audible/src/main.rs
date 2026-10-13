@@ -65,16 +65,29 @@ impl PluginWorker for AudibleRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        _bindings: Bindings,
+        bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let config = bindings.config.json_value().unwrap_or(Value::Null);
         Ok(Entrypoints {
-            storefront: Some(Box::new(AudibleContentSource)),
+            storefront: Some(Box::new(AudibleContentSource { config })),
             ..Entrypoints::default()
         })
     }
 }
 
-struct AudibleContentSource;
+/// Granted `CONFIG` captured at `open` for login, scan, and fetch.
+struct AudibleContentSource {
+    config: Value,
+}
+
+/// Granted `CONFIG` for this open. `fetchTitle` prefers the per-call grant and
+/// falls back to the config captured at `open`.
+fn effective_config(captured: &Value, per_call: Value) -> Value {
+    match &per_call {
+        Value::Object(map) if !map.is_empty() => per_call,
+        _ => captured.clone(),
+    }
+}
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
@@ -135,7 +148,10 @@ impl ContentSourceRole for AudibleContentSource {
             .ok_or_else(|| PluginError::invalid_params("fetchTitle requires host credentials"))?;
         let creds = credentials_from_bytes(creds)
             .map_err(|e| PluginError::invalid_params(e.to_string()))?;
-        let source_config = params.source_config.json_value().unwrap_or(Value::Null);
+        let source_config = effective_config(
+            &self.config,
+            params.source_config.json_value().unwrap_or(Value::Null),
+        );
         bookclerk_plugin_source_audible::guest_fetch_title(
             &creds,
             &params.title_id,

@@ -61,16 +61,29 @@ impl PluginWorker for LibroRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        _bindings: Bindings,
+        bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let config = bindings.config.json_value().unwrap_or(Value::Null);
         Ok(Entrypoints {
-            storefront: Some(Box::new(LibroContentSource)),
+            storefront: Some(Box::new(LibroContentSource { config })),
             ..Entrypoints::default()
         })
     }
 }
 
-struct LibroContentSource;
+/// Granted `CONFIG` captured at `open` for login, scan, and fetch.
+struct LibroContentSource {
+    config: Value,
+}
+
+/// Granted `CONFIG` for this open. `fetchTitle` prefers the per-call grant and
+/// falls back to the config captured at `open`.
+fn effective_config(captured: &Value, per_call: Value) -> Value {
+    match &per_call {
+        Value::Object(map) if !map.is_empty() => per_call,
+        _ => captured.clone(),
+    }
+}
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
@@ -94,21 +107,24 @@ impl ContentSourceRole for LibroContentSource {
     }
 
     async fn login(&self, params: LoginParams) -> Result<LoginResult, PluginError> {
-        let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
+        let base = bookclerk_plugin_source_libro::resolve_base_url(&self.config);
         bookclerk_plugin_source_libro::guest_login_rpc(&base, params)
             .await
             .map_err(internal)
     }
 
     async fn scan(&self, params: ScanParams) -> Result<ScanSummary, PluginError> {
-        let base = bookclerk_plugin_source_libro::resolve_base_url(&Value::Null);
+        let base = bookclerk_plugin_source_libro::resolve_base_url(&self.config);
         bookclerk_plugin_source_libro::guest_scan_rpc(&base, &params)
             .await
             .map_err(internal)
     }
 
     async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {
-        let source_config = params.source_config.json_value().unwrap_or(Value::Null);
+        let source_config = effective_config(
+            &self.config,
+            params.source_config.json_value().unwrap_or(Value::Null),
+        );
         let base = bookclerk_plugin_source_libro::resolve_base_url(&source_config);
         let container = bookclerk_plugin_source_libro::resolve_container(&source_config);
         bookclerk_plugin_source_libro::guest_fetch_title_rpc(&base, &params, container)

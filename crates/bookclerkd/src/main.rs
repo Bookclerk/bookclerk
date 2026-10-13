@@ -137,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
         events_revision = control_plane.events.revision,
         "enrolled control plane; core.events is database-authoritative"
     );
-    if let Err(err) = bookclerk_plugin_host::enroll_graphicaudio_instance(
+    if let Err(err) = bookclerk_plugin_host::enroll_storefront_instances(
         &library_store,
         &config,
         &control_plane.host.host_id,
@@ -146,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
     {
         tracing::warn!(
             error = %err,
-            "GraphicAudio instance import did not complete; file-backed settings stay in use"
+            "storefront instance enrollment did not complete; first-party storefronts fail closed without PluginInstance CONFIG"
         );
     }
     let owned = deployment_skip_keys(&library_store, &control_plane.host.host_id).await?;

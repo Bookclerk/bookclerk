@@ -37,7 +37,7 @@ const ALIASES: &[&str] = &["libro.fm", "librofm"];
 pub struct LibroSource {
     /// Libro.fm API origin (production default, or a wiremock / staging URL).
     base_url: String,
-    /// Preferred download container (`[sources.libro] container`).
+    /// Preferred download container (production: PluginInstance CONFIG `container`).
     pub container: LibroContainer,
 }
 
@@ -57,7 +57,8 @@ impl LibroSource {
         }
     }
 
-    /// Parse `[sources.libro]` knobs from config.
+    /// Parse `[sources.libro]` knobs from a loaded config (in-process / test
+    /// helper; the hosted guest takes `container` from PluginInstance CONFIG).
     #[must_use]
     pub fn from_config(config: &Config) -> Self {
         let container = config

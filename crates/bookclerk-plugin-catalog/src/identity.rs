@@ -185,6 +185,44 @@ pub fn is_first_party_destination(key: &PluginKey) -> bool {
     first_party_named(key, FIRST_PARTY_DESTINATIONS)
 }
 
+/// Host-controlled first-party storefront identities.
+///
+/// PluginInstance CONFIG is the authority for their non-`enabled` knobs.
+/// A third-party tree that reuses an `audible` / `libro` / `chirp` /
+/// `graphicaudio` alias never matches.
+pub const FIRST_PARTY_STOREFRONTS: &[PlatformArtifact] = &[
+    PlatformArtifact {
+        package_name: "bookclerk-plugin-source-audible",
+        manifest_id: "audible",
+        allowed_entrypoints: &["storefront"],
+        allowed_bindings: &["config", "secrets", "work_fs"],
+    },
+    PlatformArtifact {
+        package_name: "bookclerk-plugin-source-libro",
+        manifest_id: "libro",
+        allowed_entrypoints: &["storefront"],
+        allowed_bindings: &["config", "secrets", "work_fs"],
+    },
+    PlatformArtifact {
+        package_name: "bookclerk-plugin-source-chirp",
+        manifest_id: "chirp",
+        allowed_entrypoints: &["storefront"],
+        allowed_bindings: &["config", "secrets", "work_fs"],
+    },
+    PlatformArtifact {
+        package_name: "bookclerk-plugin-source-graphicaudio",
+        manifest_id: "graphicaudio",
+        allowed_entrypoints: &["storefront"],
+        allowed_bindings: &["config", "secrets", "work_fs"],
+    },
+];
+
+/// True when `key` names a host-controlled first-party storefront.
+#[must_use]
+pub fn is_first_party_storefront(key: &PluginKey) -> bool {
+    first_party_named(key, FIRST_PARTY_STOREFRONTS)
+}
+
 /// Provenance scheme in a canonical [`PluginKey`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -881,6 +919,19 @@ mod tests {
         let npm = PackageCoordinate::parse("npm:bookclerk-plugin-destination-local@1.0.0").unwrap();
         let npm_key = PluginKey::from_coordinate(&npm, "local").unwrap();
         assert!(!is_first_party_destination(&npm_key));
+    }
+
+    #[test]
+    fn first_party_storefront_requires_exact_package_not_alias() {
+        let audible = PluginKey::platform("bookclerk-plugin-source-audible", "audible").unwrap();
+        assert!(is_first_party_storefront(&audible));
+        let libro = PluginKey::platform("bookclerk-plugin-source-libro", "libro").unwrap();
+        assert!(is_first_party_storefront(&libro));
+        let path = PluginKey::from_install_path(Path::new("/tmp/audible"), "audible").unwrap();
+        assert!(!is_first_party_storefront(&path));
+        let npm = PackageCoordinate::parse("npm:bookclerk-plugin-source-audible@1.0.0").unwrap();
+        let npm_key = PluginKey::from_coordinate(&npm, "audible").unwrap();
+        assert!(!is_first_party_storefront(&npm_key));
     }
 
     #[test]

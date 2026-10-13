@@ -128,6 +128,12 @@ impl ExternalSource {
                 plugin.manifest.id, plugin.manifest.api_version
             )));
         }
+        if crate::is_first_party_storefront(plugin) && !prepared.from_instance {
+            return Err(crate::PluginError::message(format!(
+                "first-party storefront `{}` requires PluginInstance CONFIG; [sources.{}] is not the authority",
+                plugin.manifest.id, plugin.manifest.id
+            )));
+        }
         let opened_config = prepared.bindings.config.clone();
         let opened_secrets = prepared.bindings.secrets.clone();
         let session = Arc::new(

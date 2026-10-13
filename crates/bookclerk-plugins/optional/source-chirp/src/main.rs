@@ -48,16 +48,29 @@ impl PluginWorker for ChirpRoot {
     async fn open(
         &self,
         _invocation: Invocation,
-        _bindings: Bindings,
+        bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        let config = bindings.config.json_value().unwrap_or(Value::Null);
         Ok(Entrypoints {
-            storefront: Some(Box::new(ChirpContentSource)),
+            storefront: Some(Box::new(ChirpContentSource { config })),
             ..Entrypoints::default()
         })
     }
 }
 
-struct ChirpContentSource;
+/// Granted `CONFIG` captured at `open` for login, scan, and fetch.
+struct ChirpContentSource {
+    config: Value,
+}
+
+/// Granted `CONFIG` for this open. `fetchTitle` prefers the per-call grant and
+/// falls back to the config captured at `open`.
+fn effective_config(captured: &Value, per_call: Value) -> Value {
+    match &per_call {
+        Value::Object(map) if !map.is_empty() => per_call,
+        _ => captured.clone(),
+    }
+}
 
 fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
@@ -81,21 +94,24 @@ impl ContentSourceRole for ChirpContentSource {
     }
 
     async fn login(&self, params: LoginParams) -> Result<LoginResult, PluginError> {
-        let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&Value::Null);
+        let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&self.config);
         bookclerk_plugin_source_chirp::guest_login_rpc(&gql, params)
             .await
             .map_err(internal)
     }
 
     async fn scan(&self, params: ScanParams) -> Result<ScanSummary, PluginError> {
-        let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&Value::Null);
+        let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&self.config);
         bookclerk_plugin_source_chirp::guest_scan_rpc(&gql, &params)
             .await
             .map_err(internal)
     }
 
     async fn fetch_title(&self, params: FetchTitleParams) -> Result<PlainFetch, PluginError> {
-        let source_config = params.source_config.json_value().unwrap_or(Value::Null);
+        let source_config = effective_config(
+            &self.config,
+            params.source_config.json_value().unwrap_or(Value::Null),
+        );
         let gql = bookclerk_plugin_source_chirp::resolve_graphql_url(&source_config);
         bookclerk_plugin_source_chirp::guest_fetch_title_rpc(&gql, &params)
             .await

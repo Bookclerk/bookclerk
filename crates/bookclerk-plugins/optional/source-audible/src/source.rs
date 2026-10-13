@@ -42,7 +42,7 @@ pub const ID: &str = "audible";
 /// [`AudibleSource::new`] / [`AudibleSource::with_bitrate`] in tests.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AudibleSource {
-    /// License bitrate tier (`[sources.audible] bitrate`).
+    /// License bitrate tier (production: PluginInstance CONFIG `bitrate`).
     pub bitrate: AudioQuality,
 }
 
@@ -53,7 +53,8 @@ impl AudibleSource {
         Self::default()
     }
 
-    /// Parse `[sources.audible]` knobs from config.
+    /// Parse `[sources.audible]` knobs from a loaded config (in-process / test
+    /// helper; the hosted guest takes `bitrate` from PluginInstance CONFIG).
     #[must_use]
     pub fn from_config(config: &Config) -> Self {
         let bitrate = config

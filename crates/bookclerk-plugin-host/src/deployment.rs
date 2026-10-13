@@ -13,12 +13,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    bounded_observation_detail, current_process_incarnation, ensure_plugin_deployment,
-    ensure_plugin_instance, graphicaudio_config_from_pairs, import_instance_config_if_absent,
+    audible_default_config, bounded_observation_detail, chirp_default_config,
+    current_process_incarnation, ensure_plugin_deployment, ensure_plugin_instance,
+    graphicaudio_default_config, import_instance_config_if_absent, libro_default_config,
     list_present_deployments_for_host, load_instance_config, load_observation,
     load_plugin_instance, resolve_instance_bindings, upsert_observation, ConfigActor,
     DeploymentObservation, DeploymentStatus, InstanceBindingGrant, InstancePackagePolicy,
-    GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
+    PluginInstanceConfigV1, AUDIBLE_MANIFEST_ID, CHIRP_MANIFEST_ID, GRAPHICAUDIO_MANIFEST_ID,
+    LIBRO_MANIFEST_ID,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{
@@ -28,7 +30,9 @@ use bookclerk_plugin_sdk::ExtensibleConfig;
 use chrono::Utc;
 
 use crate::consent::PluginGrantStore;
-use crate::instance_bindings::graphicaudio_plugin_key;
+use crate::instance_bindings::{
+    audible_plugin_key, chirp_plugin_key, graphicaudio_plugin_key, libro_plugin_key,
+};
 use crate::Result;
 
 /// Local archive the reconciler may install when the ledger has no row.
@@ -211,27 +215,37 @@ impl<'a> SharedPlugins<'a> {
     }
 }
 
-/// Ensures the GraphicAudio instance, its imported document, and a local deployment.
+/// Which first-party storefront an enrollment targets.
+#[derive(Clone, Copy)]
+struct StorefrontEnroll {
+    /// Manifest id and `[sources.<id>]` alias.
+    manifest_id: &'static str,
+    /// Policy that validates the seeded document.
+    policy: InstancePackagePolicy,
+    /// Code-default document builder.
+    default_config: fn() -> std::result::Result<PluginInstanceConfigV1, LibraryError>,
+    /// Plugin key lookup for the installed manifest.
+    plugin_key: fn(&Config) -> Result<Option<String>>,
+    /// Prefix for the seed operation id.
+    seed_prefix: &'static str,
+}
+
+/// Ensures one storefront instance, its code-default document, and a local deployment.
 ///
-/// A second call returns the same instance id. After the document exists this
-/// function does not read `[sources.graphicaudio]` or `BOOKCLERK_GA_ACCESS`.
-/// `sources.graphicaudio.enabled = false` returns before creating a deployment.
-/// An existing deployment stays so a later enable can start it. Invalid
-/// `access` fails the import and does not write the document.
-///
-/// # Errors
-///
-/// Returns an error when the ledger cannot be read, the import is invalid, or
-/// the deployment row cannot be written.
-pub async fn enroll_graphicaudio_instance(
+/// `sources.<id>.enabled = false` returns before creating anything. A missing
+/// document is seeded from code defaults only: `[sources.<id>]` and
+/// `BOOKCLERK_*` knob env vars are never read. An existing document and
+/// deployment are left unchanged.
+async fn enroll_storefront(
     store: &LibraryStore,
     config: &Config,
     host_id: &str,
+    target: StorefrontEnroll,
 ) -> Result<()> {
-    if !config.sources.is_enabled(GRAPHICAUDIO_MANIFEST_ID) {
+    if !config.sources.is_enabled(target.manifest_id) {
         return Ok(());
     }
-    let Some(plugin_key) = graphicaudio_plugin_key(config)? else {
+    let Some(plugin_key) = (target.plugin_key)(config)? else {
         return Ok(());
     };
     let actor = ConfigActor::Bootstrap;
@@ -241,15 +255,14 @@ pub async fn enroll_graphicaudio_instance(
     match load_instance_config(store, &instance.id).await {
         Ok(_) => {}
         Err(LibraryError::NotFound(_)) => {
-            let body =
-                graphicaudio_config_from_pairs(graphicaudio_pairs(config)).map_err(library_err)?;
+            let body = (target.default_config)().map_err(library_err)?;
             import_instance_config_if_absent(
                 store,
                 &actor,
                 &instance.id,
-                InstancePackagePolicy::GraphicAudio,
+                target.policy,
                 &body,
-                &format!("import-ga-{}", instance.id),
+                &format!("{}-{}", target.seed_prefix, instance.id),
             )
             .await
             .map_err(library_err)?;
@@ -262,21 +275,140 @@ pub async fn enroll_graphicaudio_instance(
     Ok(())
 }
 
-/// Copies non-secret GraphicAudio keys that are present in TOML.
+/// Ensures the GraphicAudio instance, its code-default document, and a local deployment.
 ///
-/// Absent keys are omitted. `BOOKCLERK_GA_ACCESS` is not consulted.
-fn graphicaudio_pairs(config: &Config) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
-    for key in GRAPHICAUDIO_IMPORT_KEYS {
-        let Some(value) = config.sources.get_string(GRAPHICAUDIO_MANIFEST_ID, key) else {
-            continue;
-        };
-        if value.is_empty() {
-            continue;
-        }
-        pairs.push(((*key).to_string(), value.to_string()));
-    }
-    pairs
+/// A second call returns the same instance id. A missing document is seeded
+/// with [`bookclerk_library::control_plane::graphicaudio_default_config`]
+/// (`access = web`); `[sources.graphicaudio]` and `BOOKCLERK_GA_ACCESS` are
+/// never read. `sources.graphicaudio.enabled = false` returns before creating
+/// a deployment. An existing deployment stays so a later enable can start it.
+///
+/// # Errors
+///
+/// Returns an error when the ledger cannot be read or the document or
+/// deployment row cannot be written.
+pub async fn enroll_graphicaudio_instance(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    enroll_storefront(
+        store,
+        config,
+        host_id,
+        StorefrontEnroll {
+            manifest_id: GRAPHICAUDIO_MANIFEST_ID,
+            policy: InstancePackagePolicy::GraphicAudio,
+            default_config: graphicaudio_default_config,
+            plugin_key: graphicaudio_plugin_key,
+            seed_prefix: "seed-ga",
+        },
+    )
+    .await
+}
+
+/// Ensures the Audible instance, a code-default document (`bitrate = high`),
+/// and a local deployment. See [`enroll_graphicaudio_instance`] for the rules.
+///
+/// # Errors
+///
+/// Returns an error when the ledger cannot be read or the document or
+/// deployment row cannot be written.
+pub async fn enroll_audible_instance(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    enroll_storefront(
+        store,
+        config,
+        host_id,
+        StorefrontEnroll {
+            manifest_id: AUDIBLE_MANIFEST_ID,
+            policy: InstancePackagePolicy::StorefrontAudible,
+            default_config: audible_default_config,
+            plugin_key: audible_plugin_key,
+            seed_prefix: "seed-audible",
+        },
+    )
+    .await
+}
+
+/// Ensures the Libro.fm instance, a code-default document (`container = m4b`),
+/// and a local deployment. See [`enroll_graphicaudio_instance`] for the rules.
+///
+/// # Errors
+///
+/// Returns an error when the ledger cannot be read or the document or
+/// deployment row cannot be written.
+pub async fn enroll_libro_instance(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    enroll_storefront(
+        store,
+        config,
+        host_id,
+        StorefrontEnroll {
+            manifest_id: LIBRO_MANIFEST_ID,
+            policy: InstancePackagePolicy::StorefrontLibro,
+            default_config: libro_default_config,
+            plugin_key: libro_plugin_key,
+            seed_prefix: "seed-libro",
+        },
+    )
+    .await
+}
+
+/// Ensures the Chirp instance, an empty code-default document, and a local
+/// deployment. See [`enroll_graphicaudio_instance`] for the rules.
+///
+/// # Errors
+///
+/// Returns an error when the ledger cannot be read or the document or
+/// deployment row cannot be written.
+pub async fn enroll_chirp_instance(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    enroll_storefront(
+        store,
+        config,
+        host_id,
+        StorefrontEnroll {
+            manifest_id: CHIRP_MANIFEST_ID,
+            policy: InstancePackagePolicy::StorefrontChirp,
+            default_config: chirp_default_config,
+            plugin_key: chirp_plugin_key,
+            seed_prefix: "seed-chirp",
+        },
+    )
+    .await
+}
+
+/// Enrolls every installed first-party storefront (Audible, Libro.fm, Chirp,
+/// GraphicAudio).
+///
+/// Every storefront is attempted. The first error is returned after the rest
+/// ran, so one broken tree does not block the others.
+///
+/// # Errors
+///
+/// Returns the first enrollment error. Callers typically warn and continue.
+pub async fn enroll_storefront_instances(
+    store: &LibraryStore,
+    config: &Config,
+    host_id: &str,
+) -> Result<()> {
+    let results = [
+        enroll_audible_instance(store, config, host_id).await,
+        enroll_libro_instance(store, config, host_id).await,
+        enroll_chirp_instance(store, config, host_id).await,
+        enroll_graphicaudio_instance(store, config, host_id).await,
+    ];
+    results.into_iter().collect::<Result<Vec<()>>>().map(|_| ())
 }
 
 /// Reconciles every present deployment for `host_id`.
