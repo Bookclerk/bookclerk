@@ -48,10 +48,14 @@ tokio.workspace = true
 tracing.workspace = true
 ureq.workspace = true
 secrecy.workspace = true
+bookclerk-plugin-manifest.workspace = true
 
 [dev-dependencies]
+<<<<<<< HEAD
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 bookclerk-plugin-manifest.workspace = true
+=======
+>>>>>>> 0506837a (fix(ci): link plugin-manifest for staged health + docs)
 tempfile.workspace = true
 
 [lints]

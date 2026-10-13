@@ -1137,6 +1137,12 @@ fn open_staged_plugin_for_health(
     ))
 }
 
+/// Reads `plugin.toml` under `plugin_root` and resolves the guest command path.
+///
+/// # Errors
+///
+/// Returns an error string when the manifest is missing/invalid, `command` is
+/// absent, or the resolved binary is not a file.
 fn read_plugin_command(
     plugin_root: &Path,
 ) -> std::result::Result<(bookclerk_plugin_manifest::PluginManifest, PathBuf), String> {

@@ -1092,10 +1092,15 @@ const PENDING_INSTALL_MARKER_VERSION: u32 = 1;
 /// Durable record of a staged install awaiting health + commit.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PendingInstallMarker {
+    /// Marker schema version (`PENDING_INSTALL_MARKER_VERSION`).
     version: u32,
+    /// Canonical plugin key for the staged install.
     plugin_key: String,
+    /// Absolute path of the staged tree under `.staging/`.
     staged_root: String,
+    /// Absolute live install path the stage will be promoted onto.
     dest: String,
+    /// Optional Bookclerk files dir used when activating (for ledger paths).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     files_dir: Option<String>,
 }
