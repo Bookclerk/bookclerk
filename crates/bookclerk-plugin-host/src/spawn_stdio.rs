@@ -3912,6 +3912,9 @@ mod tests {
 
     #[test]
     fn live_session_journal_is_not_reaped() {
+        // Clear any leaked thread-local revoke hook from a prior test on this
+        // worker thread so the post-drop sweep is not spuriously fail-closed.
+        bookclerk_sandbox::spawn::set_test_fail_acl_revoke(None);
         let root = tempfile::tempdir().expect("temp");
         let session = root.path().join("session-live");
         std::fs::create_dir(&session).expect("session dir");
@@ -3939,10 +3942,23 @@ mod tests {
         );
         assert!(!session.join("acl-journal-owner.lock").exists());
         drop(owner);
-        retry_abandoned_session_journals(root.path());
+        bookclerk_sandbox::spawn::set_test_fail_acl_revoke(None);
+        for _ in 0..5 {
+            retry_abandoned_session_journals(root.path());
+            if !session.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(
             !session.exists(),
-            "once the owner lock is gone, the sweep revokes and removes the directory"
+            "once the owner lock is gone, the sweep revokes and removes the directory \
+             (journal={}, lock={})",
+            host_journal(&session).is_file(),
+            root.path()
+                .join("acl-journals")
+                .join("session-live.lock")
+                .is_file()
         );
         assert!(
             !root
