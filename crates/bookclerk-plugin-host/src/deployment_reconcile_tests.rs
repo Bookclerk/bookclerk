@@ -16,6 +16,7 @@ use std::sync::Arc;
 use crate::consent::{consent_request, PluginGrant, PluginGrantStore};
 use crate::discover::DiscoveredPlugin;
 use crate::instance_bindings::prepare_open_for_instance;
+use crate::PROCESS_DEK_TEST_LOCK as TEST_LOCK;
 use crate::{
     discover_plugins, load_authorized_local_packages, reconcile_local_deployments,
     AuthorizedLocalPackages, DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime,
@@ -37,7 +38,6 @@ use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
     host_bookclerk_target, InstallLedger, InstallOptions, Installer, PluginKey, TrustPolicy,
 };
-static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Runs `fut` while counting [`discover_plugins`](crate::discover_plugins) calls on this task.
 async fn with_discover_count<F, T>(fut: F) -> (T, usize)
@@ -1088,11 +1088,12 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
     )
     .await
     .unwrap();
-    {
-        let spawns = probe.spawns.lock().unwrap();
-        assert_eq!(spawns.len(), 1);
-        assert_eq!(secret_value(&spawns[0]), secret);
+    let spawned = probe.spawns.lock().unwrap().len();
+    if spawned != 1 {
+        let obs = observation(&world).await;
+        panic!("expected one spawn, got {spawned}: {obs:?}");
     }
+    assert_eq!(secret_value(&probe.spawns.lock().unwrap()[0]), secret);
 
     let dangling = open_world(true).await;
     let mut body = mode_body("device");

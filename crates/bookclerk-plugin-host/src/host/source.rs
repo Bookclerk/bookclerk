@@ -673,7 +673,7 @@ mod tests {
     use std::sync::OnceLock;
     use tempfile::TempDir;
 
-    static MASTER_KEY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    use crate::PROCESS_DEK_TEST_LOCK as MASTER_KEY_TEST_LOCK;
 
     fn shared_test_master_key() {
         static SHARED: OnceLock<TempDir> = OnceLock::new();

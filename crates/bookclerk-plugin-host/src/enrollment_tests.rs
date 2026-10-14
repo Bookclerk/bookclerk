@@ -16,7 +16,7 @@ use crate::consent::{consent_request, PluginGrantStore};
 use crate::discover_plugins;
 use crate::enrollment::{enroll_local_plugins, enroll_one, is_bootstrap_only};
 
-static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+use crate::PROCESS_DEK_TEST_LOCK as TEST_LOCK;
 
 fn storefront_manifest(id: &str) -> String {
     format!(
