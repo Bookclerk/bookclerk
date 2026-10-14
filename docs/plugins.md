@@ -1360,6 +1360,7 @@ bookclerk nodes list                              # liveness, capacity, budget, 
 bookclerk nodes set --memory-budget 50            # this node (or pass a node id)
 bookclerk nodes set <node-id> --drain             # move scheduled replicas away
 bookclerk nodes label --add nas --add zone=eu
+bookclerk nodes owner <node-id> --user alice        # alice may now set its budgets and drain it
 bookclerk plugins deploy example --replicas 2 --on nas --on '!slow'
 bookclerk plugins deploy example --replicas all   # every node with room
 bookclerk plugins deploy example --replicas 0     # keep the placement, stop every replica
@@ -1489,9 +1490,11 @@ becomes `absent`. Uninstalling a plugin (`plugins uninstall`, `DELETE
 | --- | --- | --- |
 | `PUT` | `/api/config/plugin-instances/{id}/placement` | `{replicas, constraints, expected_revision}`; `replicas` is a count or `"all"`; `expected_revision` 0 (or omitted) creates; 409 on a stale revision |
 | `DELETE` | `/api/config/plugin-instances/{id}/placement` | back to hand-managed |
-| `GET` | `/api/config/nodes` | each node's `labels`, `implicit_labels`, `target`, `live`, `runtime` (budgets, drain) and `status` (latest heartbeat) |
-| `PUT` | `/api/config/nodes/{node_id}/runtime` | any of `{label, cpu_budget_percent, memory_budget_percent, schedulable}` |
-| `PUT` | `/api/config/nodes/{node_id}/labels` | `{labels}`: the node's complete operator label set |
+| `GET` | `/api/config/nodes` | each node's `labels`, `implicit_labels`, `target`, `live`, `kind`, `owner`, `runtime` (budgets, drain) and `status` (latest heartbeat), plus the caller's `capabilities`. A node owner gets only its own nodes. |
+| `PUT` | `/api/config/nodes/{node_id}/runtime` | any of `{label, cpu_budget_percent, memory_budget_percent, schedulable}`; a node owner may edit only its own nodes |
+| `PUT` | `/api/config/nodes/{node_id}/labels` | `{labels}`: the node's complete operator label set (operator only) |
+| `PUT` | `/api/config/nodes/{node_id}/owner` | `{user_id}` (or `null`): the user who administers the node (operator only) |
+| `GET` | `/api/cluster/status` | node counts, committed CPU and memory across live nodes, active jobs, delivery backlog, and the nodes the caller may see |
 
 `GET /api/config/plugin-instances` and the Settings plugin groups carry each
 instance's `placement` (requested and placed replicas, constraints, detail).

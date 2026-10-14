@@ -729,6 +729,62 @@ running a plugin. Nodes still only share the database.
   dispatcher would have to choose, and a dead target needs reassignment
   logic) and forwarding between nodes (they cannot connect).
 
+### Node kinds, ownership, and the Host role
+
+Decided 2026-10-14 with the owner. A cluster has two kinds of node:
+
+- **Owner nodes** share the library database and `master.key` and give the
+  cluster its HA. Every node described above is one; `nodes.kind` is
+  `owner`.
+- **Host nodes** are independent Bookclerk installs with their own database
+  and their own operator, who enroll in an owner cluster to contribute
+  work. They reach an owner node over HTTPS and never hold the cluster's
+  database credentials or DEK. Enrollment, the node API, and the transport
+  are not built yet (see *Remaining work*); `nodes.kind` already records
+  `host` for them.
+
+Who may administer a node is separate from its kind. `nodes.owner_user_id`
+names the user who owns it, assigned by an operator (`bookclerk nodes
+owner`, `PUT /api/config/nodes/{id}/owner`). That user may change the
+node's `node.runtime` document (budgets, drain switch, display name)
+without operator authority. The library enforces it: a write carries
+`ConfigActor::NodeOwner`, which only `verify_node_owner` builds after it
+reads `nodes.owner_user_id`, and which covers exactly that node's
+`node.runtime` document. Placement labels, deployments, instances, and
+every other document stay operator writes. An unknown node and a node owned
+by someone else return the same 403, so a non-owner cannot probe node ids.
+
+A new **Host** user role is a Member who owns nodes. Hosts, and
+Administrators or Owners who own nodes, reach `GET /api/config/nodes`,
+`PUT /api/config/nodes/{id}/runtime`, and `GET /api/cluster/status` through
+`require_operator_or_node_owner_auth`, which scopes them to their own
+nodes. The cluster summary in `/api/cluster/status` (node counts, committed
+capacity, active jobs, delivery backlog) is visible to every node
+administrator. Only an Owner or the operator assigns the Host role.
+
+Decided, not yet built:
+
+- Trust follows the role. A Host's node receives only cluster work whose
+  secrets belong to that Host (accounts linked to the user, instances the
+  Host owns); promoting the user to Administrator lets the node receive
+  any placement. The check runs per work item at the owner when the node
+  claims it.
+- A node may configure its own `local` output, an instance owned by that
+  node and deployed only there. It adds to the cluster's outputs rather
+  than replacing them; writes stay mirrored.
+- Outputs that need the owner's credentials (S3 keys, the owner's own
+  `local` disk) are not run on a Host's node. When a Host's work finishes
+  there, the node writes its own local output and uploads the result
+  through a secure upload endpoint on an owner node, which writes the
+  cluster's outputs with credentials the Host never holds. Both nodes end
+  up with a local copy.
+- A Host approves each owner plugin's capabilities before it runs on the
+  Host's machine, as it would for its own plugins. Platform plugins are
+  approved automatically.
+- Host nodes and the SPA use WebSockets rather than polling.
+- Owner nodes serve the node API over Let's Encrypt TLS, behind a detected
+  TLS-terminating proxy, or only within loopback and private address space.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `nodes`,
@@ -747,7 +803,8 @@ running a plugin. Nodes still only share the database.
   CPU;
   `domain_events` gains `queue_name`, `content_type`, and `deliver_after`
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
-  `nodes` gains `target` and `labels_json`. Checksum of the
+  `nodes` gains `target`, `labels_json`, `kind`, and `owner_user_id`.
+  Checksum of the
   unreleased pack changes. Existing development databases fail closed until
   recreated (`cargo reset --yes` or a new database). That matches the
   unreleased-schema rule.
@@ -800,8 +857,12 @@ Not in this phase, and not claimed as production HA:
   on storage every placed host can read through its `file://` path.
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
-- Rolling upgrades and a cluster dashboard beyond Settings → Nodes
-  (Phase 5). Drain exists (`nodes set --drain`).
+- Host nodes: enrollment by an owner-generated link, the node API over
+  WebSockets with its transport rules, the host-node client, per-work-item
+  trust, and node-local outputs (see *Node kinds, ownership, and the Host
+  role*).
+- Rolling upgrades and a cluster dashboard beyond the Status page and
+  Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).
 - Schema pinning compares package versions, not schema contents: a newer
   package that only renames a key still drops the operator's value for the
   old name. A declared per-key migration in `[[settings]]` is a possible

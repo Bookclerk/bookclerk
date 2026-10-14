@@ -14,6 +14,7 @@ mod instance_config;
 mod instances;
 mod node_queue;
 mod node_status;
+mod ownership;
 mod placement;
 mod routing;
 mod schemas;
@@ -34,13 +35,13 @@ pub use deployments::{
 };
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,
-    CLUSTER_SCOPE_ID, CLUSTER_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES, NODE_SCOPE_TYPE,
-    PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
+    VerifiedNodeOwner, CLUSTER_SCOPE_ID, CLUSTER_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES,
+    NODE_SCOPE_TYPE, PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use identity::{
     current_process_incarnation, list_node_ids, list_nodes, load_node,
-    load_or_create_node_identity, node_identity_path, node_target, NodeIdentity, NodeRecord,
-    NODE_IDENTITY_FILE,
+    load_or_create_node_identity, node_identity_path, node_target, NodeIdentity, NodeKind,
+    NodeRecord, NODE_IDENTITY_FILE,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,
@@ -65,6 +66,7 @@ pub use node_status::{
     NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM, AVAILABILITY_TAU, DEFAULT_GUEST_CPU_MILLICORES,
     DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
 };
+pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use placement::{
     acquire_lease, delete_plugin_placement, effective_node_labels, ensure_hand_managed,
     labels_satisfy, list_plugin_placements, live_node_ids, load_lease, load_plugin_placement,

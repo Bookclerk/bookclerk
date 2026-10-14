@@ -1,4 +1,5 @@
-//! `bookclerk nodes`: the cluster's nodes and their placement labels.
+//! `bookclerk nodes`: the cluster's nodes, their placement labels, and
+//! their owners.
 //!
 //! Reads and writes the library database directly, like `plugins`. Label
 //! changes wake the cluster scheduler through every node's queue.
@@ -6,7 +7,8 @@
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     effective_node_labels, list_node_statuses, list_nodes, load_node, load_node_runtime,
-    set_node_labels, update_node_runtime, ConfigActor, NodeRuntimeSettingsV1, NodeStatus,
+    set_node_labels, set_node_owner, update_node_runtime, ConfigActor, NodeRuntimeSettingsV1,
+    NodeStatus,
 };
 use clap::Subcommand;
 use serde_json::json;
@@ -53,6 +55,18 @@ pub enum NodesCommand {
         #[arg(long)]
         clear: bool,
     },
+    /// Assign a node to the user who administers it, or clear its owner. The
+    /// owner may then change the node's budgets, drain switch, and name.
+    Owner {
+        /// Node id (default: this node).
+        node: Option<String>,
+        /// User id or login name.
+        #[arg(long, value_name = "USER", required_unless_present = "clear")]
+        user: Option<String>,
+        /// Remove the node's owner.
+        #[arg(long, conflicts_with = "user")]
+        clear: bool,
+    },
 }
 
 /// Dispatches a nodes verb.
@@ -90,6 +104,8 @@ pub async fn run(
                 };
                 rows.push(json!({
                     "node_id": node.node_id,
+                    "kind": node.kind.as_str(),
+                    "owner_user_id": node.owner_user_id,
                     "this_node": node.node_id == this_node,
                     "live": status.is_some_and(|s| s.is_live(now_ms)),
                     "target": node.target,
@@ -129,6 +145,12 @@ pub async fn run(
                         } else {
                             node.labels.join(",")
                         }
+                    );
+                    println!(
+                        "  {} node, owner {}",
+                        node.kind.as_str(),
+                        node.owner_user_id
+                            .map_or_else(|| "-".to_string(), |id| format!("user {id}"))
                     );
                     match status {
                         Some(status) => println!("  {}", status_line(status)),
@@ -223,7 +245,42 @@ pub async fn run(
                 );
             })
         }
+        NodesCommand::Owner { node, user, clear } => {
+            let node_id = node.unwrap_or_else(|| this_node.clone());
+            let owner = match (user, clear) {
+                (Some(user), false) => Some(resolve_user(store, &user).await?),
+                _ => None,
+            };
+            let updated = set_node_owner(
+                store,
+                &ConfigActor::Operator { id: "cli".into() },
+                &node_id,
+                owner,
+            )
+            .await?;
+            let payload = json!({
+                "node_id": updated.node_id,
+                "owner_user_id": updated.owner_user_id,
+            });
+            emit(format, &payload, || match updated.owner_user_id {
+                Some(id) => println!("node {} is owned by user {id}", updated.node_id),
+                None => println!("node {} has no owner", updated.node_id),
+            })
+        }
     }
+}
+
+/// A user id, or the id of the user with that login name.
+async fn resolve_user(store: &bookclerk_library::LibraryStore, user: &str) -> anyhow::Result<i64> {
+    let user = user.trim();
+    if let Ok(id) = user.parse::<i64>() {
+        return Ok(id);
+    }
+    store
+        .get_user_by_login_name(user)
+        .await?
+        .map(|record| record.id)
+        .ok_or_else(|| anyhow::anyhow!("no user with login name `{user}`"))
 }
 
 /// One-line summary of a heartbeat: capacity, budget, committed, measured,

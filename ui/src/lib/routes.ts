@@ -7,6 +7,7 @@ const APP_PATHS = new Set([
   "/library",
   "/wishlist",
   "/accounts",
+  "/status",
   "/settings",
   "/invite",
 ]);
@@ -51,6 +52,8 @@ export function viewFromPath(pathname: string): AppView | null {
       return "wishlist";
     case "/accounts":
       return "accounts";
+    case "/status":
+      return "status";
     case "/settings":
       return "settings";
     default:
@@ -74,6 +77,8 @@ export function pathForView(view: AppView): string {
       return "/wishlist";
     case "accounts":
       return "/accounts";
+    case "status":
+      return "/status";
     case "settings":
       return "/settings";
   }

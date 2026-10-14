@@ -39,7 +39,7 @@ export function AccountsPage({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [oauthUrl, setOauthUrl] = useState<string | null>(null);
-  const canConnect = role === "administrator" || role === "member";
+  const canConnect = role === "administrator" || role === "host" || role === "member";
 
   async function refresh() {
     setError(null);

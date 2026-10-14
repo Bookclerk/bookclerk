@@ -43,6 +43,11 @@ pub struct Model {
     pub target: String,
     /// JSON array of operator-assigned placement labels.
     pub labels_json: String,
+    /// `owner` (shares the database and `master.key`) or `host` (its own
+    /// database, enrolled to contribute).
+    pub kind: String,
+    /// User who owns this node and may administer it, when one is assigned.
+    pub owner_user_id: Option<i64>,
 }
 
 /// Declared SeaORM relations (nodes are addressed by `node_id`).

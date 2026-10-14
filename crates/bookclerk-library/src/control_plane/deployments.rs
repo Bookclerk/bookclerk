@@ -890,7 +890,9 @@ fn authorize_create(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         ConfigActor::Operator { .. } => !desired.is_scheduled(),
         ConfigActor::Bootstrap => desired != DesiredState::Placed,
         ConfigActor::Scheduler => desired.is_scheduled(),
-        ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => false,
+        ConfigActor::Administrator { .. }
+        | ConfigActor::Member { .. }
+        | ConfigActor::NodeOwner(_) => false,
     };
     if allowed {
         Ok(())
@@ -904,9 +906,10 @@ fn authorize_replace(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
     let allowed = match actor {
         ConfigActor::Operator { .. } => !desired.is_scheduled(),
         ConfigActor::Scheduler => desired.is_scheduled(),
-        ConfigActor::Bootstrap | ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => {
-            false
-        }
+        ConfigActor::Bootstrap
+        | ConfigActor::Administrator { .. }
+        | ConfigActor::Member { .. }
+        | ConfigActor::NodeOwner(_) => false,
     };
     if allowed {
         Ok(())
@@ -924,7 +927,9 @@ fn unauthorized_state(actor: &ConfigActor, desired: DesiredState) -> LibraryErro
                 actor.audit_id()
             ))
         }
-        ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => unauthorized(),
+        ConfigActor::Administrator { .. }
+        | ConfigActor::Member { .. }
+        | ConfigActor::NodeOwner(_) => unauthorized(),
     }
 }
 

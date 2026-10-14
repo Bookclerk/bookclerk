@@ -1227,6 +1227,82 @@ pub async fn require_operator_or_owner_auth(
     Err(StatusCode::UNAUTHORIZED)
 }
 
+/// Who is calling a node-administration route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeAdminCaller {
+    /// Operator token or session, or auth disabled: every node.
+    Operator,
+    /// A portal user whose role administers the nodes it owns (Host,
+    /// Administrator, Owner). Sees and edits only those nodes.
+    NodeOwner {
+        /// Calling user.
+        user_id: i64,
+    },
+}
+
+/// True when a session role may administer the nodes its user owns.
+fn role_administers_owned_nodes(role: &str) -> bool {
+    UserRole::parse(role).is_some_and(UserRole::can_administer_owned_nodes)
+}
+
+/// Operator token/session **or** a portal user who may administer the nodes
+/// they own. Puts a [`NodeAdminCaller`] in the request extensions; handlers
+/// scope what they read and write by it. Impersonating a user acts as that
+/// user. Members are refused.
+pub async fn require_operator_or_node_owner_auth(
+    State(state): State<Arc<AppState>>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth = state.auth_snapshot().await;
+    if !auth.enabled {
+        req.extensions_mut().insert(NodeAdminCaller::Operator);
+        return Ok(next.run(req).await);
+    }
+    if let Some(op) = resolve_operator_session(&state, &auth, req.headers()).await {
+        if let Some(target_id) = op.impersonating_user_id {
+            let library = state.library_snapshot().await;
+            let (role, _, _, _) = impersonation_caller_identity(&library, target_id).await;
+            if !role_administers_owned_nodes(&role) {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            if let Some(denied) =
+                reject_if_enrollment_required(&state, &library, target_id, req.uri().path()).await
+            {
+                return Ok(denied);
+            }
+            req.extensions_mut()
+                .insert(NodeAdminCaller::NodeOwner { user_id: target_id });
+            return Ok(next.run(req).await);
+        }
+        req.extensions_mut().insert(NodeAdminCaller::Operator);
+        return Ok(next.run(req).await);
+    }
+    if authorize_operator_bearer_only(&auth, req.headers()) {
+        req.extensions_mut().insert(NodeAdminCaller::Operator);
+        return Ok(next.run(req).await);
+    }
+    let library = state.library_snapshot().await;
+    if let Some(identity) = timed_portal_identity_from_headers(&library, req.headers()).await {
+        let (role, _, _, _) = resolve_portal_caller_identity(&library, &identity).await;
+        let Some(user_id) = identity.user_id else {
+            return Err(StatusCode::FORBIDDEN);
+        };
+        if !role_administers_owned_nodes(&role) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        if let Some(denied) =
+            reject_if_enrollment_required(&state, &library, user_id, req.uri().path()).await
+        {
+            return Ok(denied);
+        }
+        req.extensions_mut()
+            .insert(NodeAdminCaller::NodeOwner { user_id });
+        return Ok(next.run(req).await);
+    }
+    Err(StatusCode::UNAUTHORIZED)
+}
+
 /// Operator token/session **or** an active Administrator user portal session.
 ///
 /// Used for scan / acquire / jobs. Full control-plane settings stay on
@@ -2149,11 +2225,8 @@ pub async fn patch_user(
     }
 
     if let Some(role_raw) = body.role.as_deref() {
-        let role = match role_raw.trim() {
-            "owner" => UserRole::Owner,
-            "administrator" => UserRole::Administrator,
-            "member" => UserRole::Member,
-            _ => return Err(StatusCode::BAD_REQUEST),
+        let Some(role) = UserRole::parse(role_raw.trim()) else {
+            return Err(StatusCode::BAD_REQUEST);
         };
         if !actor.can_assign_role(role) {
             return Err(StatusCode::FORBIDDEN);
@@ -2536,11 +2609,8 @@ pub async fn create_user(
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
-    let role = match body.role.as_deref().unwrap_or("member") {
-        "owner" => UserRole::Owner,
-        "administrator" => UserRole::Administrator,
-        "member" => UserRole::Member,
-        _ => return Err(StatusCode::BAD_REQUEST),
+    let Some(role) = UserRole::parse(body.role.as_deref().unwrap_or("member")) else {
+        return Err(StatusCode::BAD_REQUEST);
     };
     if !actor.can_assign_role(role) {
         return Err(StatusCode::FORBIDDEN);
@@ -2897,7 +2967,7 @@ async fn provisioner_for_impersonated_user(
     match user.role {
         UserRole::Owner => Ok(Provisioner::Owner { user_id }),
         UserRole::Administrator => Ok(Provisioner::Administrator { user_id }),
-        UserRole::Member => Err(StatusCode::FORBIDDEN),
+        UserRole::Host | UserRole::Member => Err(StatusCode::FORBIDDEN),
     }
 }
 
@@ -5802,5 +5872,77 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(body.contains("already been used"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn node_routes_admit_operators_and_node_owning_roles_only() {
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use axum::routing::get;
+        use bookclerk_library::UserRole;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let _dek = process_dek_lock().await;
+        let token = "op-token-node-owner";
+        let (state, _app, library) = phase2_harness(token).await;
+        let host = library
+            .upsert_portal_identity("test", "host-ext", Some("Hosting"))
+            .await
+            .unwrap();
+        library
+            .set_user_role(host.user_id.expect("bridged host"), UserRole::Host)
+            .await
+            .unwrap();
+        // Echoes the caller the middleware resolved.
+        let probe = axum::Router::new()
+            .route(
+                "/probe",
+                get(
+                    |axum::Extension(caller): axum::Extension<NodeAdminCaller>| async move {
+                        match caller {
+                            NodeAdminCaller::Operator => String::from("operator"),
+                            NodeAdminCaller::NodeOwner { user_id } => format!("owner:{user_id}"),
+                        }
+                    },
+                ),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                require_operator_or_node_owner_auth,
+            ))
+            .with_state(state.clone());
+        let call = |header_value: Option<(header::HeaderName, String)>| {
+            let probe = probe.clone();
+            async move {
+                let mut request = Request::builder().uri("/probe");
+                if let Some((name, value)) = header_value {
+                    request = request.header(name, value);
+                }
+                let response = probe
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (status, String::from_utf8_lossy(&body).to_string())
+            }
+        };
+
+        let (status, body) = call(Some((header::AUTHORIZATION, format!("Bearer {token}")))).await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "operator"));
+        let host_cookie = portal_cookie_for(&library, "test", "host-ext").await;
+        let (status, body) = call(Some((header::COOKIE, host_cookie))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, format!("owner:{}", host.user_id.unwrap()));
+        let admin_cookie = portal_cookie_for(&library, "test", "administrator-ext").await;
+        let (status, body) = call(Some((header::COOKIE, admin_cookie))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.starts_with("owner:"), "{body}");
+        let member_cookie = portal_cookie_for(&library, "test", "member-ext").await;
+        let (status, _) = call(Some((header::COOKIE, member_cookie))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = call(None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }
