@@ -1111,6 +1111,11 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
 }
 
 /// Builds a discovered plugin from a committed install tree (ledger required).
+///
+/// # Errors
+///
+/// Returns when the manifest/command cannot be read or install evaluation fails
+/// closed (receipt/ledger/hash mismatch).
 pub fn open_installed_plugin(
     plugin_root: &Path,
     files_dir: &Path,
