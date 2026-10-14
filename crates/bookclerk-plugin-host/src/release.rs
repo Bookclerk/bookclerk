@@ -1,0 +1,587 @@
+//! Publishing and materializing cluster releases.
+//!
+//! Publishing resolves and verifies a package once (archive digest,
+//! `plugin.toml`, executable, payload-root digest) and records a
+//! [`PluginRelease`] row; nothing on the publishing host's plugin tree
+//! changes. A host materializes the active release when its reconciler needs
+//! it: fetch the artifact for its target, extract under
+//! `plugins/.staging/release-<digest>.<pid>`, verify the payload-root digest
+//! against the row, and rename to `plugins/.releases/<digest>`. A partial
+//! extract never reaches the final path, a cached digest is immutable and
+//! shared by every instance of that release, and digests no deployment
+//! references are swept after a grace period.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use bookclerk_library::control_plane::{
+    activate_release, load_active_release, load_release_blob, publish_release, put_release_blob,
+    ConfigActor, PluginRelease, ReleaseArtifact, ReleasePointer, MAX_RELEASE_BLOB_BYTES,
+    RELEASE_BLOB_SCHEME,
+};
+use bookclerk_library::LibraryStore;
+use bookclerk_plugin_catalog::{
+    extract_archive, fetch_artifact, host_bookclerk_target, is_platform_plugin_key,
+    payload_root_sha256, require_mutable_child, safe_join, select_target, sha256_file,
+    ArchiveFormat, ArtifactTarget, BookclerkPackageManifest, PluginKey, PluginMutationLock,
+};
+
+use crate::consent::PluginGrant;
+use crate::manifest::PluginManifest;
+use crate::{DiscoveredPlugin, PluginError, Result};
+
+/// Directory under `plugins/` holding materialized release trees.
+pub const RELEASE_CACHE_DIR: &str = ".releases";
+
+/// How long an unreferenced cached digest survives before the sweep.
+pub const RELEASE_CACHE_GRACE: Duration = Duration::from_secs(3600);
+
+/// Cache root: `<files_dir>/plugins/.releases`.
+#[must_use]
+pub fn release_cache_root(files_dir: &Path) -> PathBuf {
+    files_dir.join("plugins").join(RELEASE_CACHE_DIR)
+}
+
+/// Cached tree of one payload-root digest.
+#[must_use]
+pub fn release_cache_path(files_dir: &Path, payload_root_sha256: &str) -> PathBuf {
+    release_cache_root(files_dir).join(payload_root_sha256)
+}
+
+/// When publishing moves the active pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activate {
+    /// Always point at the new release (`update`, `--activate`).
+    Always,
+    /// Only when the plugin has no active release yet (first install).
+    IfNone,
+    /// Never; publish only.
+    Never,
+}
+
+/// One package to publish.
+#[derive(Debug, Clone)]
+pub struct ReleaseRequest {
+    /// Canonical plugin key the release is recorded under.
+    pub plugin_key: String,
+    /// Install-grade package manifest.
+    pub package: BookclerkPackageManifest,
+    /// Local archive for the host target. `None` fetches every target's
+    /// artifact from its URL and verifies the manifest digests.
+    pub archive: Option<PathBuf>,
+    /// Publisher verification result (recorded on the release).
+    pub publisher_verified: bool,
+    /// Consent grant approved at publish time, if any.
+    pub grant: Option<PluginGrant>,
+    /// When to move the active pointer.
+    pub activate: Activate,
+}
+
+/// What [`publish_package_release`] recorded.
+#[derive(Debug, Clone)]
+pub struct PublishedRelease {
+    /// The release row.
+    pub release: PluginRelease,
+    /// True when this call wrote the row (false for an identical re-publish).
+    pub created: bool,
+    /// Pointer after activation, when this call moved it.
+    pub pointer: Option<ReleasePointer>,
+}
+
+/// Maps a library error onto the host error type.
+fn lib(err: bookclerk_library::LibraryError) -> PluginError {
+    PluginError::message(err.to_string())
+}
+
+/// Maps a catalog error onto the host error type.
+fn cat(err: bookclerk_plugin_catalog::CatalogError) -> PluginError {
+    PluginError::message(err.to_string())
+}
+
+/// Maps an I/O error onto the host error type.
+fn io(err: std::io::Error) -> PluginError {
+    PluginError::message(err.to_string())
+}
+
+/// What extracting one archive taught the publisher.
+struct Inspected {
+    /// `plugin.toml` text.
+    manifest_toml: String,
+    /// Parsed manifest.
+    manifest: PluginManifest,
+    /// Payload-root digest of the plugin tree.
+    payload_root_sha256: String,
+    /// SHA-256 of the archive bytes.
+    archive_sha256: String,
+}
+
+/// Archive format recorded on a release artifact.
+fn format_name(format: ArchiveFormat) -> &'static str {
+    format.extension()
+}
+
+/// Parses a recorded archive format.
+fn parse_format(name: &str) -> ArchiveFormat {
+    if name == "zip" {
+        ArchiveFormat::Zip
+    } else {
+        ArchiveFormat::TarGz
+    }
+}
+
+/// Extracts `archive` into a scratch directory and reads the plugin tree.
+fn inspect_archive(
+    files_dir: &Path,
+    archive: &Path,
+    artifact: &ArtifactTarget,
+) -> Result<Inspected> {
+    let plugins = files_dir.join("plugins");
+    let staging_root = plugins.join(".staging");
+    std::fs::create_dir_all(&staging_root).map_err(io)?;
+    let scratch = require_mutable_child(
+        &plugins,
+        &staging_root.join(format!("publish-{}", uuid::Uuid::new_v4().simple())),
+    )
+    .map_err(cat)?;
+    std::fs::create_dir_all(&scratch).map_err(io)?;
+    let result = (|| {
+        let archive_sha256 = sha256_file(archive).map_err(cat)?;
+        let tree = scratch.join("tree");
+        extract_archive(archive, artifact.archive_format(), &tree).map_err(cat)?;
+        let root = safe_join(&tree, Path::new(&artifact.archive_root)).map_err(cat)?;
+        let manifest_toml = std::fs::read_to_string(root.join("plugin.toml"))
+            .map_err(|err| PluginError::message(format!("archive has no plugin.toml: {err}")))?;
+        let manifest = bookclerk_plugin_manifest::parse(&manifest_toml)
+            .map_err(|err| PluginError::message(format!("plugin.toml: {err}")))?;
+        let executable = safe_join(&root, Path::new(&artifact.executable)).map_err(cat)?;
+        if !executable.is_file() {
+            return Err(PluginError::message(format!(
+                "archive is missing the executable `{}`",
+                artifact.executable
+            )));
+        }
+        let payload_root_sha256 = payload_root_sha256(&root).map_err(cat)?;
+        Ok(Inspected {
+            manifest_toml,
+            manifest,
+            payload_root_sha256,
+            archive_sha256,
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+/// Verifies `package`, records a [`PluginRelease`], and moves the active
+/// pointer per [`ReleaseRequest::activate`].
+///
+/// A local archive's digest is computed here (it is the operator's own
+/// file); a remote artifact must match the digest its package manifest
+/// declares. Archives up to the library blob cap are stored in the
+/// database when no shared URL exists, so every host can materialize them.
+///
+/// # Errors
+///
+/// Returns an error for a platform key (platform guests ship with the
+/// host), a malformed or yanked package, a digest mismatch, a tree that
+/// disagrees with the package, or a library write failure.
+pub async fn publish_package_release(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    files_dir: &Path,
+    host_id: &str,
+    request: ReleaseRequest,
+) -> Result<PublishedRelease> {
+    let key = PluginKey::parse(&request.plugin_key).map_err(cat)?;
+    if is_platform_plugin_key(&key) {
+        return Err(PluginError::message(format!(
+            "`{}` is a platform guest; it ships with the host and is not published",
+            request.plugin_key
+        )));
+    }
+    request.package.validate_for_install().map_err(cat)?;
+    let files = files_dir.to_path_buf();
+    let package = request.package.clone();
+    let archive = request.archive.clone();
+    let inspected: Vec<(ArtifactTarget, Inspected, Option<PathBuf>)> =
+        tokio::task::spawn_blocking(move || -> Result<_> {
+            let mut out = Vec::new();
+            if let Some(archive) = archive {
+                let artifact = select_target(&package.artifacts, |a| a.target.as_str(), None)
+                    .map_err(cat)?
+                    .clone();
+                let inspected = inspect_archive(&files, &archive, &artifact)?;
+                out.push((artifact, inspected, Some(archive)));
+            } else {
+                let scratch = files.join("plugins").join(".staging");
+                std::fs::create_dir_all(&scratch).map_err(io)?;
+                for artifact in &package.artifacts {
+                    let download = scratch.join(format!("fetch-{}", uuid::Uuid::new_v4().simple()));
+                    let fetched = fetch_artifact(&artifact.url, &download, false).map_err(cat);
+                    let inspected = fetched.and_then(|()| {
+                        let actual = sha256_file(&download).map_err(cat)?;
+                        if actual != artifact.archive_sha256 {
+                            return Err(PluginError::message(format!(
+                                "artifact for `{}` has digest {actual}, the package declares {}",
+                                artifact.target, artifact.archive_sha256
+                            )));
+                        }
+                        inspect_archive(&files, &download, artifact)
+                    });
+                    let _ = std::fs::remove_file(&download);
+                    out.push((artifact.clone(), inspected?, None));
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|err| PluginError::message(format!("publish task: {err}")))??;
+
+    let (_, first, _) = inspected
+        .first()
+        .ok_or_else(|| PluginError::message("package has no artifact"))?;
+    let version = first
+        .manifest
+        .package_version()
+        .map_err(|err| PluginError::message(err.to_string()))?;
+    for (artifact, tree, _) in &inspected {
+        if tree.manifest.id != request.package.id {
+            return Err(PluginError::message(format!(
+                "artifact `{}` carries plugin `{}`, the package is `{}`",
+                artifact.target, tree.manifest.id, request.package.id
+            )));
+        }
+        let tree_version = tree
+            .manifest
+            .package_version()
+            .map_err(|err| PluginError::message(err.to_string()))?;
+        if tree_version != version {
+            return Err(PluginError::message(format!(
+                "artifacts disagree on the version ({tree_version} vs {version})"
+            )));
+        }
+    }
+    let mut artifacts = Vec::with_capacity(inspected.len());
+    for (artifact, tree, local) in &inspected {
+        let url = match local {
+            Some(path) => {
+                let bytes = tokio::fs::read(path).await.map_err(io)?;
+                if bytes.len() <= MAX_RELEASE_BLOB_BYTES {
+                    put_release_blob(store, &bytes).await.map_err(lib)?
+                } else {
+                    let canonical = path.canonicalize().map_err(io)?;
+                    format!("file://{}", canonical.display())
+                }
+            }
+            None => artifact.url.clone(),
+        };
+        artifacts.push(ReleaseArtifact {
+            target: artifact.bookclerk_target(),
+            url,
+            format: format_name(artifact.archive_format()).to_string(),
+            archive_root: artifact.archive_root.clone(),
+            archive_sha256: tree.archive_sha256.clone(),
+            payload_root_sha256: tree.payload_root_sha256.clone(),
+            executable: artifact.executable.clone(),
+        });
+    }
+    let grant_json = match &request.grant {
+        Some(grant) => serde_json::to_string(grant)
+            .map_err(|err| PluginError::message(format!("encode grant: {err}")))?,
+        None => String::new(),
+    };
+    if request.activate == Activate::IfNone {
+        // An automatic first activation never rolls a newer pin back: a
+        // stale operator-placed archive must not prune documents written
+        // for the newer schema. An explicit activation (`update`,
+        // `rollback`) may.
+        if let Some(pinned) =
+            bookclerk_library::control_plane::load_plugin_schema(store, &request.plugin_key)
+                .await
+                .map_err(lib)?
+        {
+            let order = bookclerk_plugin_abi::package_version::package_version_order(
+                &version,
+                &pinned.package_version,
+            )
+            .map_err(PluginError::message)?;
+            if order == std::cmp::Ordering::Less {
+                return Err(PluginError::message(format!(
+                    "package version {version} is older than {} pinned by host {}; not activated",
+                    pinned.package_version, pinned.recorded_by_host
+                )));
+            }
+        }
+    }
+    let release = PluginRelease {
+        plugin_key: request.plugin_key.clone(),
+        version: version.clone(),
+        manifest_id: first.manifest.id.clone(),
+        manifest_toml: first.manifest_toml.clone(),
+        settings: first.manifest.settings_schema(),
+        artifacts,
+        publisher_verified: request.publisher_verified,
+        grant_json,
+        published_at: String::new(),
+        published_by: String::new(),
+    };
+    let outcome = publish_release(store, actor, release).await.map_err(lib)?;
+    let created = matches!(
+        outcome,
+        bookclerk_library::control_plane::PublishRelease::Created(_)
+    );
+    let release = outcome.release().clone();
+    let activate = match request.activate {
+        Activate::Always => true,
+        Activate::IfNone => load_active_release(store, &request.plugin_key)
+            .await
+            .map_err(lib)?
+            .is_none(),
+        Activate::Never => false,
+    };
+    let pointer = if activate {
+        Some(
+            activate_release(store, actor, &request.plugin_key, &version, host_id)
+                .await
+                .map_err(lib)?
+                .0,
+        )
+    } else {
+        None
+    };
+    Ok(PublishedRelease {
+        release,
+        created,
+        pointer,
+    })
+}
+
+/// The release artifact this host runs.
+///
+/// # Errors
+///
+/// Returns an error naming the host target when the release has none for
+/// it, so placement can exclude this host.
+pub fn host_artifact(release: &PluginRelease) -> Result<&ReleaseArtifact> {
+    let target = host_bookclerk_target();
+    release.artifact_for(target).ok_or_else(|| {
+        PluginError::message(format!(
+            "release {} {} has no artifact for target `{target}`",
+            release.plugin_key, release.version
+        ))
+    })
+}
+
+/// Makes the active release's tree available under
+/// `plugins/.releases/<payload digest>` and returns that path.
+///
+/// A cached digest is reused as is; otherwise the archive is fetched (from
+/// the library blob store, a `file:` path, or HTTPS), its digest checked,
+/// extracted under `.staging`, the payload-root digest checked against the
+/// release, and renamed into place under the plugin mutation lock.
+///
+/// # Errors
+///
+/// Returns an error when the release has no artifact for this host, the
+/// artifact cannot be fetched, or a digest does not match.
+pub async fn materialize_release(
+    store: &LibraryStore,
+    files_dir: &Path,
+    release: &PluginRelease,
+) -> Result<PathBuf> {
+    let artifact = host_artifact(release)?.clone();
+    let cache = release_cache_path(files_dir, &artifact.payload_root_sha256);
+    if cache.join("plugin.toml").is_file() {
+        return Ok(cache);
+    }
+    let blob = match artifact.url.strip_prefix(RELEASE_BLOB_SCHEME) {
+        Some(sha) => Some(
+            load_release_blob(store, sha)
+                .await
+                .map_err(lib)?
+                .ok_or_else(|| {
+                    PluginError::message(format!(
+                        "release {} {} archive is missing from the library",
+                        release.plugin_key, release.version
+                    ))
+                })?,
+        ),
+        None => None,
+    };
+    let files = files_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        materialize_blocking(&files, &artifact, blob.as_deref(), &cache)
+    })
+    .await
+    .map_err(|err| PluginError::message(format!("materialize task: {err}")))?
+}
+
+/// Filesystem half of [`materialize_release`].
+fn materialize_blocking(
+    files_dir: &Path,
+    artifact: &ReleaseArtifact,
+    blob: Option<&[u8]>,
+    cache: &Path,
+) -> Result<PathBuf> {
+    let _lock = PluginMutationLock::acquire(files_dir).map_err(cat)?;
+    if cache.join("plugin.toml").is_file() {
+        return Ok(cache.to_path_buf());
+    }
+    let plugins = files_dir.join("plugins");
+    std::fs::create_dir_all(plugins.join(".staging")).map_err(io)?;
+    std::fs::create_dir_all(plugins.join(RELEASE_CACHE_DIR)).map_err(io)?;
+    let staging = require_mutable_child(
+        &plugins,
+        &plugins.join(".staging").join(format!(
+            "release-{}.{}",
+            artifact.payload_root_sha256,
+            std::process::id()
+        )),
+    )
+    .map_err(cat)?;
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(io)?;
+    }
+    std::fs::create_dir_all(&staging).map_err(io)?;
+    let result = (|| {
+        let archive = staging.join("archive");
+        match blob {
+            Some(bytes) => std::fs::write(&archive, bytes).map_err(io)?,
+            None => fetch_artifact(&artifact.url, &archive, false).map_err(cat)?,
+        }
+        let actual = sha256_file(&archive).map_err(cat)?;
+        if actual != artifact.archive_sha256 {
+            return Err(PluginError::message(format!(
+                "release archive digest {actual} does not match the release ({})",
+                artifact.archive_sha256
+            )));
+        }
+        let tree = staging.join("tree");
+        extract_archive(&archive, parse_format(&artifact.format), &tree).map_err(cat)?;
+        let root = safe_join(&tree, Path::new(&artifact.archive_root)).map_err(cat)?;
+        let payload = payload_root_sha256(&root).map_err(cat)?;
+        if payload != artifact.payload_root_sha256 {
+            return Err(PluginError::message(format!(
+                "release payload digest {payload} does not match the release ({})",
+                artifact.payload_root_sha256
+            )));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let exe = safe_join(&root, Path::new(&artifact.executable)).map_err(cat)?;
+            if exe.is_file() {
+                std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))
+                    .map_err(io)?;
+            }
+        }
+        let dest = require_mutable_child(&plugins, cache).map_err(cat)?;
+        std::fs::rename(&root, &dest).map_err(io)?;
+        Ok(dest)
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// Opens a materialized release tree as a spawnable plugin carrying the
+/// release's identity and consent grant.
+///
+/// # Errors
+///
+/// Returns an error when the tree's manifest is unreadable or names another
+/// plugin, or the release has no approved grant yet.
+pub fn open_released_plugin(root: &Path, release: &PluginRelease) -> Result<DiscoveredPlugin> {
+    let artifact = host_artifact(release)?;
+    let grant = release_grant(release)?;
+    let text = std::fs::read_to_string(root.join("plugin.toml")).map_err(io)?;
+    let manifest = bookclerk_plugin_manifest::parse(&text)
+        .map_err(|err| PluginError::message(format!("plugin.toml: {err}")))?;
+    if manifest.id != release.manifest_id {
+        return Err(PluginError::message(format!(
+            "cached tree carries plugin `{}`, the release is `{}`",
+            manifest.id, release.manifest_id
+        )));
+    }
+    DiscoveredPlugin::from_release(
+        manifest,
+        root.to_path_buf(),
+        &release.plugin_key,
+        &release.version,
+        &artifact.payload_root_sha256,
+        &artifact.archive_sha256,
+        grant,
+    )
+}
+
+/// The consent grant recorded on `release`.
+///
+/// # Errors
+///
+/// Returns an error when no operator has approved the release yet or the
+/// recorded grant is malformed.
+pub fn release_grant(release: &PluginRelease) -> Result<PluginGrant> {
+    if release.grant_json.trim().is_empty() {
+        return Err(PluginError::message(format!(
+            "release {} {} has no approved grant; run `bookclerk plugins approve {}`",
+            release.plugin_key, release.version, release.manifest_id
+        )));
+    }
+    serde_json::from_str(&release.grant_json)
+        .map_err(|err| PluginError::message(format!("release grant is malformed: {err}")))
+}
+
+/// Removes cached digests not in `keep` and older than `grace`, plus stale
+/// release staging directories. Returns how many entries were removed.
+///
+/// # Errors
+///
+/// Returns an error when the mutation lock cannot be taken.
+pub fn sweep_release_cache(
+    files_dir: &Path,
+    keep: &BTreeSet<String>,
+    grace: Duration,
+) -> Result<usize> {
+    let plugins = files_dir.join("plugins");
+    if !plugins.is_dir() {
+        return Ok(0);
+    }
+    let _lock = PluginMutationLock::acquire(files_dir).map_err(cat)?;
+    let old_enough = |path: &Path| {
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= grace)
+    };
+    let mut removed = 0;
+    for (dir, wanted) in [
+        (plugins.join(RELEASE_CACHE_DIR), None::<&str>),
+        (plugins.join(".staging"), Some("release-")),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            match wanted {
+                Some(prefix) if !name.starts_with(prefix) && !name.starts_with("publish-") => {
+                    continue
+                }
+                None if keep.contains(&name) => continue,
+                _ => {}
+            }
+            let path = entry.path();
+            if !old_enough(&path) {
+                continue;
+            }
+            let Ok(path) = require_mutable_child(&plugins, &path) else {
+                continue;
+            };
+            if std::fs::remove_dir_all(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}

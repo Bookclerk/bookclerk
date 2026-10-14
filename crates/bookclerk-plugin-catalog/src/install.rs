@@ -1448,7 +1448,19 @@ fn installed_alias_owners(plugins_root: &Path) -> Result<Vec<(PluginKey, String,
     Ok(out)
 }
 
-/// Copies a `file://` or local path, or HTTPS/localhost HTTP, refusing oversized bodies.
+/// Fetches an artifact URL (`file://` or local path, or HTTPS/localhost
+/// HTTP bounded by [`MAX_DOWNLOAD_BYTES`] and [`DOWNLOAD_TIMEOUT`]) into
+/// `dest`, refusing oversized bodies.
+///
+/// # Errors
+///
+/// Returns an error when the URL is unsupported, the host is offline for a
+/// remote URL, or the transfer fails or exceeds the cap.
+pub fn fetch_artifact(url: &str, dest: &Path, offline: bool) -> Result<()> {
+    download_to(url, dest, offline)
+}
+
+/// Implementation of [`fetch_artifact`] (the installer's own name for it).
 fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
     if let Some(path) = url.strip_prefix("file://") {
         fs::copy(path, dest)?;

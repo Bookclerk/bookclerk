@@ -2037,6 +2037,22 @@ pub fn spawn_grant(
     files_dir: &Path,
     plugin: &crate::discover::DiscoveredPlugin,
 ) -> Result<PluginGrant> {
+    if let Some(release_grant) = &plugin.release_grant {
+        // A released plugin's consent is the grant recorded on its release
+        // row (approved once for the cluster), checked against this tree's
+        // manifest exactly as a host grant would be.
+        let requested = consent_request(&plugin.manifest, plugin.plugin_key());
+        return if grant_covers(release_grant, &requested) {
+            Ok(effective_grant(release_grant, &requested))
+        } else {
+            Err(PluginError::message(format!(
+                "plugin `{}` release grant does not cover this release; re-approve with \
+                 `bookclerk plugins approve {}`",
+                plugin.alias(),
+                plugin.alias()
+            )))
+        };
+    }
     if plugin.identity.provenance.grants_platform_defaults()
         && bookclerk_plugin_catalog::is_platform_plugin_key(plugin.plugin_key())
     {

@@ -601,6 +601,9 @@ pub enum PluginProvenance {
     LocalDevelopment,
     /// Receipt exists but the immutable payload no longer matches.
     Modified,
+    /// Materialized from a cluster release: the payload-root digest of the
+    /// cached tree matched the `plugin_releases` row the host trusts.
+    Released,
 }
 
 impl PluginProvenance {
@@ -612,11 +615,15 @@ impl PluginProvenance {
 
     /// True when discovery verified the installed payload against the host ledger.
     ///
-    /// [`Self::PlatformBundled`] and [`Self::VerifiedInstalled`] qualify.
-    /// [`Self::LocalDevelopment`] (no receipt) and [`Self::Modified`] never do.
+    /// [`Self::PlatformBundled`], [`Self::VerifiedInstalled`], and
+    /// [`Self::Released`] qualify. [`Self::LocalDevelopment`] (no receipt)
+    /// and [`Self::Modified`] never do.
     #[must_use]
     pub fn is_verified_artifact(self) -> bool {
-        matches!(self, Self::PlatformBundled | Self::VerifiedInstalled)
+        matches!(
+            self,
+            Self::PlatformBundled | Self::VerifiedInstalled | Self::Released
+        )
     }
 }
 
@@ -627,6 +634,7 @@ impl fmt::Display for PluginProvenance {
             Self::VerifiedInstalled => "verified_installed",
             Self::LocalDevelopment => "local_development",
             Self::Modified => "modified",
+            Self::Released => "released",
         })
     }
 }

@@ -1,6 +1,8 @@
-//! Current-host deployment reconcile: installer transaction, ledger hit,
-//! revision apply, foreign host, secrets, desired `absent`, and instance
-//! document resolution against the installed `[[settings]]` schema.
+//! Current-host deployment reconcile: operator packages published as
+//! releases, materialization by digest (also on a second host), release
+//! pointer moves, a host-local ledger hit, revision apply, foreign host,
+//! secrets, desired `absent`, and instance document resolution against the
+//! installed `[[settings]]` schema.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -22,6 +24,9 @@ use crate::{
 use async_trait::async_trait;
 use bookclerk_config::{Config, EventsConfig, Isolation};
 use bookclerk_library::control_plane::{
+    activate_release, load_active_release, RELEASE_BLOB_SCHEME,
+};
+use bookclerk_library::control_plane::{
     create_plugin_instance, ensure_plugin_deployment, import_instance_config_if_absent,
     load_deployment, load_instance_config, load_observation, replace_instance_config,
     replace_plugin_deployment, seal_instance_secret, ConfigActor, DeploymentReplace,
@@ -30,8 +35,7 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
-    host_bookclerk_target, InstallLedger, InstallOptions, InstallReceipt, Installer, PluginKey,
-    TrustPolicy, PLUGIN_MUTATION_LOCK_FILE, RECEIPT_FILE,
+    host_bookclerk_target, InstallLedger, InstallOptions, Installer, PluginKey, TrustPolicy,
 };
 static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -72,55 +76,56 @@ fn kill_pid(pid: u32) {
 }
 
 struct Probe {
-    files: PathBuf,
     fail_health: bool,
-    health_calls: AtomicUsize,
     spawns: Mutex<Vec<DeploymentSpawn>>,
     retired: Mutex<Vec<String>>,
 }
 
 impl Probe {
-    fn new(files: PathBuf, fail_health: bool) -> Self {
+    fn new(_files: PathBuf, fail_health: bool) -> Self {
         Self {
-            files,
             fail_health,
-            health_calls: AtomicUsize::new(0),
             spawns: Mutex::new(Vec::new()),
             retired: Mutex::new(Vec::new()),
         }
     }
 
-    fn saw_lock(&self) -> bool {
-        self.files.join(PLUGIN_MUTATION_LOCK_FILE).is_file()
+    fn last_root(&self) -> PathBuf {
+        self.spawns
+            .lock()
+            .expect("spawns")
+            .last()
+            .and_then(|spawn| spawn.plugin_root.clone())
+            .expect("a spawn with a root")
     }
 }
 
 #[async_trait]
 impl DeploymentRuntime for Probe {
-    async fn health_before_commit(
-        &self,
-        plugin_root: &Path,
-        _request: &DeploymentSpawn,
-    ) -> Result<(), String> {
+    async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth {
+        let root = request.plugin_root.as_deref().expect("spawn root");
         assert!(
-            plugin_root.join("plugin.toml").is_file(),
-            "install tree missing plugin.toml"
+            root.join("plugin.toml").is_file(),
+            "tree missing plugin.toml"
         );
-        assert!(
-            self.saw_lock(),
-            "PluginMutationLock must be held during health"
-        );
-        self.health_calls.fetch_add(1, Ordering::SeqCst);
+        self.spawns.lock().expect("spawns").push(request.clone());
         if self.fail_health {
-            Err("forced health failure before commit".into())
+            SpawnHealth::HealthFailed {
+                detail: "forced health failure".into(),
+            }
         } else {
-            Ok(())
+            SpawnHealth::Healthy
         }
     }
 
-    async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth {
-        self.spawns.lock().expect("spawns").push(request.clone());
-        SpawnHealth::Healthy
+    async fn guest_root(&self, plugin_instance_id: &str) -> Option<PathBuf> {
+        self.spawns
+            .lock()
+            .expect("spawns")
+            .iter()
+            .rev()
+            .find(|spawn| spawn.plugin_instance_id == plugin_instance_id)
+            .and_then(|spawn| spawn.plugin_root.clone())
     }
 
     async fn retire_instance(&self, plugin_instance_id: &str) {
@@ -398,7 +403,6 @@ async fn foreign_host_deployment_does_not_install_or_observe() {
     )
     .await
     .expect("reconcile local");
-    assert_eq!(probe.health_calls.load(Ordering::SeqCst), 0);
     assert!(probe.spawns.lock().expect("spawns").is_empty());
     assert!(
         load_observation(&world.store, &foreign_row.deployment_id, foreign)
@@ -416,7 +420,7 @@ async fn foreign_host_deployment_does_not_install_or_observe() {
 }
 
 #[tokio::test]
-async fn installer_commit_reaches_healthy_and_rollback_clears_ledger() {
+async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
     let _guard = TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
@@ -429,24 +433,48 @@ async fn installer_commit_reaches_healthy_and_rollback_clears_ledger() {
     )
     .await
     .expect("reconcile");
-    assert_eq!(probe.health_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
+    let release = load_active_release(&world.store, &world.key)
+        .await
+        .unwrap()
+        .expect("the package was published as the active release");
+    assert_eq!(release.version, "0.1.0");
+    assert!(
+        release.grant_json.contains("fxdep"),
+        "the approved grant rides on the release"
+    );
+    let artifact = crate::host_artifact(&release).unwrap();
+    assert!(
+        artifact.url.starts_with(RELEASE_BLOB_SCHEME),
+        "a small archive is stored in the library: {}",
+        artifact.url
+    );
+    let cache = crate::release_cache_path(&world.files, &artifact.payload_root_sha256);
+    assert!(
+        cache.join("plugin.toml").is_file(),
+        "materialized by digest"
+    );
+    let spawns = probe.spawns.lock().expect("spawns").clone();
+    assert_eq!(spawns.len(), 1);
+    assert_eq!(spawns[0].plugin_root.as_deref(), Some(cache.as_path()));
+    assert_eq!(
+        spawns[0].release.as_ref().map(|r| r.version.as_str()),
+        Some("0.1.0")
+    );
+    // Nothing host-local was written: no ledger row, no receipt, no
+    // `plugins/<fs-id>` tree.
     let key = PluginKey::parse(&world.key).unwrap();
-    let ledger = InstallLedger::load(&world.files).unwrap();
-    assert!(ledger.get(&key).is_some(), "ledger records the install");
-    let root = world.files.join("plugins").join(key.fs_id());
-    assert!(root.join(RECEIPT_FILE).is_file(), "receipt present");
-    InstallReceipt::load(&root).expect("receipt parses");
+    assert!(InstallLedger::load(&world.files)
+        .unwrap()
+        .get(&key)
+        .is_none());
+    assert!(!world.files.join("plugins").join(key.fs_id()).exists());
     let obs = observation(&world).await;
     assert_eq!(obs.status, DeploymentStatus::Healthy);
     assert!(obs.detail.is_empty());
     assert_eq!(obs.applied_config_revision, Some(1));
-    let desired = load_deployment(&world.store, &world.deployment_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(desired.desired, DESIRED_PRESENT);
 
+    // Health is an observation, not a gate: a failing guest leaves the
+    // release active and the digest cached, and nothing is rolled back.
     let failed = open_world(false).await;
     let probe = Probe::new(failed.files.clone(), true);
     reconcile_local_deployments(
@@ -458,23 +486,223 @@ async fn installer_commit_reaches_healthy_and_rollback_clears_ledger() {
     )
     .await
     .expect("reconcile failure");
-    assert_eq!(probe.health_calls.load(Ordering::SeqCst), 1);
-    assert!(probe.spawns.lock().expect("spawns").is_empty());
-    let key = PluginKey::parse(&failed.key).unwrap();
-    let ledger = InstallLedger::load(&failed.files).unwrap();
-    assert!(
-        ledger.get(&key).is_none(),
-        "rollback must not leave the failed tree as the ledger occupant"
-    );
     let obs = observation(&failed).await;
     assert_eq!(obs.status, DeploymentStatus::Error);
-    assert!(obs.detail.contains("forced health failure"));
-    assert!(obs.applied_config_revision.is_none());
-    let desired = load_deployment(&failed.store, &failed.deployment_id)
+    assert!(
+        obs.detail.contains("forced health failure"),
+        "{}",
+        obs.detail
+    );
+    let release = load_active_release(&failed.store, &failed.key)
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(desired.desired, DESIRED_PRESENT);
+        .expect("still active");
+    let artifact = crate::host_artifact(&release).unwrap();
+    assert!(crate::release_cache_path(&failed.files, &artifact.payload_root_sha256).is_dir());
+    assert_eq!(
+        load_deployment(&failed.store, &failed.deployment_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .desired,
+        DESIRED_PRESENT
+    );
+}
+
+/// Publishes `version` of the fixture plugin as a release of `world.key`.
+async fn publish_version(world: &World, version: &str, activate: crate::Activate) {
+    let stage = world.files.join(format!("v{version}-stage"));
+    std::fs::create_dir_all(&stage).unwrap();
+    std::fs::write(
+        stage.join("plugin.toml"),
+        fixture_manifest("fxdep", "outbound", false).replace("0.1.0", version),
+    )
+    .unwrap();
+    std::fs::write(stage.join("echo"), format!("#!/bin/sh\necho {version}\n")).unwrap();
+    let archive = world.files.join(format!("fxdep-{version}.tar.gz"));
+    let status = std::process::Command::new("tar")
+        .arg("-czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&stage)
+        .args(["plugin.toml", "echo"])
+        .status()
+        .expect("tar");
+    assert!(status.success());
+    let grant = PluginGrantStore::load(&world.files)
+        .unwrap()
+        .get_by_plugin_key(&world.key)
+        .cloned();
+    crate::publish_package_release(
+        &world.store,
+        &ConfigActor::Operator { id: "cli".into() },
+        &world.files,
+        &world.host_id,
+        crate::ReleaseRequest {
+            plugin_key: world.key.clone(),
+            package: package_manifest("fxdep"),
+            archive: Some(archive),
+            publisher_verified: false,
+            grant,
+            activate,
+        },
+    )
+    .await
+    .expect("publish");
+}
+
+#[tokio::test]
+async fn moving_the_release_pointer_respawns_from_the_new_digest() {
+    let _guard = TEST_LOCK.lock().await;
+    let world = open_world(false).await;
+    let probe = Probe::new(world.files.clone(), false);
+    let pass = || async {
+        reconcile_local_deployments(
+            &world.store,
+            &world.config,
+            &world.host_id,
+            &packages(&world),
+            &probe,
+        )
+        .await
+        .expect("reconcile");
+    };
+    pass().await;
+    let first = probe.last_root();
+    pass().await;
+    assert_eq!(
+        probe.spawns.lock().unwrap().len(),
+        1,
+        "an idle pass does not respawn"
+    );
+
+    publish_version(&world, "0.2.0", crate::Activate::Always).await;
+    pass().await;
+    let second = probe.last_root();
+    assert_eq!(probe.spawns.lock().unwrap().len(), 2, "update respawns");
+    assert_ne!(first, second, "a new version is a new digest");
+    assert_eq!(
+        probe
+            .spawns
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .release
+            .as_ref()
+            .unwrap()
+            .version,
+        "0.2.0"
+    );
+
+    // Rollback is a pointer move; the old digest is still cached.
+    activate_release(
+        &world.store,
+        &ConfigActor::Operator { id: "cli".into() },
+        &world.key,
+        "0.1.0",
+        &world.host_id,
+    )
+    .await
+    .expect("rollback");
+    pass().await;
+    assert_eq!(probe.spawns.lock().unwrap().len(), 3);
+    assert_eq!(probe.last_root(), first);
+    assert_eq!(observation(&world).await.status, DeploymentStatus::Healthy);
+}
+
+#[tokio::test]
+async fn a_release_published_on_one_host_is_materialized_and_spawned_on_another() {
+    let _guard = TEST_LOCK.lock().await;
+    // Host A publishes the operator package as a release and runs it.
+    let world = open_world(false).await;
+    let probe_a = Probe::new(world.files.clone(), false);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe_a,
+    )
+    .await
+    .expect("host a");
+    let release = load_active_release(&world.store, &world.key)
+        .await
+        .unwrap()
+        .expect("published");
+    let digest = crate::host_artifact(&release)
+        .unwrap()
+        .payload_root_sha256
+        .clone();
+
+    // Host B: its own files dir, its own connection to the same library,
+    // no package and no grant file of its own.
+    let files_b = tempfile::tempdir().unwrap();
+    let files_b = files_b.keep();
+    std::fs::copy(
+        bookclerk_library::master_key_path(&world.files),
+        bookclerk_library::master_key_path(&files_b),
+    )
+    .unwrap();
+    std::fs::write(files_b.join("config.toml"), "").unwrap();
+    let config_b =
+        Config::load(Some(files_b.clone()), Some(files_b.join("config.toml"))).expect("config b");
+    let store_b = file_store(&world.files.join("library.db")).await;
+    let session_b = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store_b,
+        &files_b,
+        &files_b.join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .expect("bootstrap b");
+    assert_ne!(session_b.host.host_id, world.host_id);
+    let deployment_b = ensure_plugin_deployment(
+        &store_b,
+        &ConfigActor::Operator { id: "cli".into() },
+        &world.instance_id,
+        &session_b.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .expect("deployment on b");
+    let probe_b = Probe::new(files_b.clone(), false);
+    reconcile_local_deployments(
+        &store_b,
+        &config_b,
+        &session_b.host.host_id,
+        &AuthorizedLocalPackages::default(),
+        &probe_b,
+    )
+    .await
+    .expect("host b");
+    let cache_b = crate::release_cache_path(&files_b, &digest);
+    assert!(
+        cache_b.join("plugin.toml").is_file(),
+        "host b materialized the digest"
+    );
+    assert_eq!(probe_b.last_root(), cache_b);
+    let spawned = probe_b.spawns.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(spawned.plugin_key, world.key);
+    assert_eq!(
+        config_mode(&spawned),
+        "device",
+        "host b reads the instance document"
+    );
+    let obs = load_observation(
+        &store_b,
+        &deployment_b.deployment_id,
+        &session_b.host.host_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+    assert!(
+        !files_b.join("plugin-grants.json").exists(),
+        "host b trusts the release grant, not a host file"
+    );
 }
 
 #[tokio::test]
@@ -732,10 +960,12 @@ async fn ledger_hit_skips_install_and_still_reaches_healthy() {
     )
     .await
     .expect("reconcile");
-    assert_eq!(
-        probe.health_calls.load(Ordering::SeqCst),
-        0,
-        "ledger hit skips the installer"
+    assert!(
+        load_active_release(&world.store, &world.key)
+            .await
+            .unwrap()
+            .is_none(),
+        "a host-local ledger hit publishes nothing"
     );
     assert_eq!(probe.spawns.lock().expect("spawns").len(), 1);
     assert_eq!(observation(&world).await.status, DeploymentStatus::Healthy);
@@ -897,7 +1127,6 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
         probe.spawns.lock().unwrap().is_empty(),
         "dangling ref must not spawn"
     );
-    assert_eq!(probe.health_calls.load(Ordering::SeqCst), 0);
     let obs = observation(&dangling).await;
     assert_eq!(obs.status, DeploymentStatus::Error);
     // Observation detail is redacted; secret names may become `[REDACTED]`.
@@ -1348,7 +1577,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
 }
 
 #[tokio::test]
-async fn broken_guest_health_rolls_the_install_back() {
+async fn broken_guest_health_is_an_error_observation_and_keeps_the_release() {
     let _guard = TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let mut config = world.config.clone();
@@ -1363,14 +1592,15 @@ async fn broken_guest_health_rolls_the_install_back() {
     )
     .await
     .unwrap();
-    let ledger = InstallLedger::load(&world.files).unwrap();
-    let key = PluginKey::parse(&world.key).unwrap();
-    assert!(
-        ledger.get(&key).is_none(),
-        "broken guest health must roll the ledger back"
-    );
     let obs = observation(&world).await;
     assert_eq!(obs.status, DeploymentStatus::Error, "{}", obs.detail);
+    assert!(
+        load_active_release(&world.store, &world.key)
+            .await
+            .unwrap()
+            .is_some(),
+        "health never rolls a release back"
+    );
     assert_eq!(
         load_deployment(&world.store, &world.deployment_id)
             .await
@@ -1436,10 +1666,11 @@ fn duplicate_authorized_packages_reject_both() {
 }
 
 #[tokio::test]
-async fn a_package_older_than_the_pinned_schema_is_retired_and_not_spawned() {
+async fn a_host_local_tree_older_than_the_pinned_schema_is_retired_and_not_spawned() {
     use bookclerk_library::control_plane::{pin_plugin_schema, SchemaPin, SchemaPinChange};
     let _guard = TEST_LOCK.lock().await;
     let world = open_world(false).await;
+    preinstall_host_local(&world);
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
         &world.store,
@@ -1498,5 +1729,62 @@ async fn a_package_older_than_the_pinned_schema_is_retired_and_not_spawned() {
             .contains("is older than 0.9.0 pinned by host host-b; not spawned"),
         "{}",
         observed.detail
+    );
+}
+
+/// Installs the fixture as a host-local tree (ledger + receipt), the path
+/// platform guests and development trees still take.
+fn preinstall_host_local(world: &World) {
+    let opts = InstallOptions {
+        plugins_root: world.files.join("plugins"),
+        offline: true,
+        trust: TrustPolicy::allow_unverified_publisher(),
+        skip_health: true,
+        ..InstallOptions::default()
+    };
+    let outcome = Installer::install_local_archive(&world.archive, &world.manifest, &opts)
+        .expect("preinstall");
+    Installer::commit(&outcome).expect("commit");
+}
+
+#[tokio::test]
+async fn an_operator_package_older_than_the_pin_is_not_activated() {
+    use bookclerk_library::control_plane::{pin_plugin_schema, SchemaPin};
+    let _guard = TEST_LOCK.lock().await;
+    let world = open_world(false).await;
+    pin_plugin_schema(
+        &world.store,
+        &SchemaPin {
+            plugin_key: &world.key,
+            manifest_id: "fxdep",
+            package_version: "0.9.0",
+            schema: &fixture_schema(),
+            host_id: "host-b",
+        },
+    )
+    .await
+    .expect("pin 0.9.0");
+    let probe = Probe::new(world.files.clone(), false);
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .expect("reconcile");
+    assert!(probe.spawns.lock().unwrap().is_empty());
+    assert!(load_active_release(&world.store, &world.key)
+        .await
+        .unwrap()
+        .is_none());
+    let obs = observation(&world).await;
+    assert_eq!(obs.status, DeploymentStatus::Error);
+    assert!(
+        obs.detail
+            .contains("0.1.0 is older than 0.9.0 pinned by host host-b; not activated"),
+        "{}",
+        obs.detail
     );
 }

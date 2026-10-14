@@ -55,6 +55,7 @@ mod kv_binding;
 mod manifest;
 mod queue_producer;
 mod registry;
+mod release;
 mod rpc;
 mod rpc_session;
 mod spawn_plan;
@@ -155,6 +156,11 @@ pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
     family_keyword, host_target_triple, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,
+};
+pub use release::{
+    host_artifact, materialize_release, open_released_plugin, publish_package_release,
+    release_cache_path, release_cache_root, release_grant, sweep_release_cache, Activate,
+    PublishedRelease, ReleaseRequest, RELEASE_CACHE_DIR, RELEASE_CACHE_GRACE,
 };
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,

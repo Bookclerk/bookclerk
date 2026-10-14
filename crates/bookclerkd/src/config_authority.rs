@@ -1351,7 +1351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_reconcile_installs_a_local_archive_to_healthy() {
+    async fn daemon_reconcile_publishes_and_runs_a_local_archive_release() {
         use std::collections::BTreeMap;
         use std::path::PathBuf;
 
@@ -1439,14 +1439,34 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(desired.desired, DESIRED_PRESENT);
-        let mut committed = false;
+        // The operator package became the active cluster release; the host
+        // runs it from the digest cache and wrote no receipt or ledger row.
+        let release =
+            bookclerk_library::control_plane::load_active_release(&store, &instance.plugin_key)
+                .await
+                .unwrap()
+                .expect("active release");
+        let artifact = bookclerk_plugin_host::host_artifact(&release).unwrap();
+        assert!(
+            artifact.url.starts_with("file://"),
+            "a guest binary over the blob cap is referenced in place: {}",
+            artifact.url
+        );
+        assert!(bookclerk_plugin_host::release_cache_path(
+            files_path,
+            &artifact.payload_root_sha256
+        )
+        .join("plugin.toml")
+        .is_file());
         for entry in std::fs::read_dir(files_path.join("plugins")).unwrap() {
             let path = entry.unwrap().path();
-            if path.join("receipt.json").is_file() && path.join("plugin.toml").is_file() {
-                committed = true;
-            }
+            assert!(
+                !path.join("receipt.json").is_file(),
+                "no host-local install was committed at {}",
+                path.display()
+            );
         }
-        assert!(committed, "install did not commit a receipt");
+        assert!(!files_path.join("install-ledger.json").exists());
 
         let runtime = state.deployment_runtime();
         let instance_id = instance.id.as_str();

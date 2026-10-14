@@ -40,8 +40,8 @@ pub use identity::{
     PLUGIN_KEY_FS_ID_HEX_CHARS,
 };
 pub use install::{
-    InstallOptions, InstallOutcome, Installer, DOWNLOAD_TIMEOUT, MAX_DOWNLOAD_BYTES,
-    PLUGIN_HOLD_DIR,
+    fetch_artifact, InstallOptions, InstallOutcome, Installer, DOWNLOAD_TIMEOUT,
+    MAX_DOWNLOAD_BYTES, PLUGIN_HOLD_DIR,
 };
 pub use kind::{PluginKind, RuntimeIdentity};
 pub use ledger::{

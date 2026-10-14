@@ -16,14 +16,12 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, default_instance_for_key,
-    list_deployments_for_host, load_instance_config, load_observation, load_plugin_instance,
-    resolve_instance_bindings, stale_against_pin, upsert_observation, DeploymentObservation,
-    DeploymentStatus, DESIRED_PRESENT,
+    list_deployments_for_host, load_active_release, load_instance_config, load_observation,
+    load_plugin_instance, resolve_instance_bindings, stale_against_pin, upsert_observation,
+    ConfigActor, DeploymentObservation, DeploymentStatus, PluginRelease, DESIRED_PRESENT,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
-use bookclerk_plugin_catalog::{
-    InstallLedger, InstallOptions, Installer, PluginKey, PluginMutationLock, TrustPolicy,
-};
+use bookclerk_plugin_catalog::{InstallLedger, Installer, PluginKey};
 use bookclerk_plugin_sdk::ExtensibleConfig;
 use chrono::Utc;
 
@@ -111,6 +109,9 @@ pub struct DeploymentSpawn {
     pub secrets: ExtensibleConfig,
     /// Document revision the spawn applies.
     pub config_revision: i64,
+    /// Cluster release the tree was materialized from; `None` for a
+    /// host-local tree.
+    pub release: Option<Arc<PluginRelease>>,
 }
 
 /// Result of spawn plus the health RPC.
@@ -133,17 +134,8 @@ pub enum SpawnHealth {
 /// Install health and spawn for one deployment row.
 #[async_trait]
 pub trait DeploymentRuntime: Send + Sync {
-    /// Health of a tree that is not committed yet.
-    ///
-    /// Failure rolls the install back. The lock is still held. `request`
-    /// carries the deployment's instance id and resolved bindings.
-    async fn health_before_commit(
-        &self,
-        plugin_root: &Path,
-        request: &DeploymentSpawn,
-    ) -> std::result::Result<(), String>;
-
-    /// Spawn the guest and run health.
+    /// Spawn the guest and run health. Health is the deployment observation;
+    /// there is no pre-commit gate and nothing to roll back.
     async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth;
 
     /// True when the guest spawned for `plugin_instance_id` is still running.
@@ -154,6 +146,14 @@ pub trait DeploymentRuntime: Send + Sync {
     async fn guest_still_running(&self, plugin_instance_id: &str) -> bool {
         let _ = plugin_instance_id;
         true
+    }
+
+    /// Tree the running guest for `plugin_instance_id` was spawned from.
+    ///
+    /// `None` (the default) means unknown and never forces a respawn.
+    async fn guest_root(&self, plugin_instance_id: &str) -> Option<PathBuf> {
+        let _ = plugin_instance_id;
+        None
     }
 
     /// Stops a guest this process is running for `plugin_instance_id`.
@@ -312,7 +312,45 @@ pub async fn reconcile_local_deployments(
             runtime.retire_instance(&instance_id).await;
         }
     }
+    sweep_unreferenced_releases(store, config, &present).await;
     Ok(())
+}
+
+/// Removes cached release digests no present deployment on this host
+/// still runs (after [`crate::RELEASE_CACHE_GRACE`]).
+async fn sweep_unreferenced_releases(
+    store: &LibraryStore,
+    config: &Config,
+    present: &std::collections::BTreeSet<String>,
+) {
+    let files_dir = config.paths().files_dir.clone();
+    if !crate::release_cache_root(&files_dir).is_dir() {
+        return;
+    }
+    let mut keep = std::collections::BTreeSet::new();
+    for instance_id in present {
+        let Ok(id) = bookclerk_library::control_plane::PluginInstanceId::parse(instance_id) else {
+            continue;
+        };
+        let Ok(Some(instance)) = load_plugin_instance(store, &id).await else {
+            continue;
+        };
+        if let Ok(Some(release)) = load_active_release(store, &instance.plugin_key).await {
+            if let Ok(artifact) = crate::host_artifact(&release) {
+                keep.insert(artifact.payload_root_sha256.clone());
+            }
+        }
+    }
+    let swept = tokio::task::spawn_blocking(move || {
+        crate::sweep_release_cache(&files_dir, &keep, crate::RELEASE_CACHE_GRACE)
+    })
+    .await;
+    match swept {
+        Ok(Ok(0)) => {}
+        Ok(Ok(removed)) => tracing::info!(removed, "swept unreferenced release cache entries"),
+        Ok(Err(err)) => tracing::warn!(error = %err, "release cache sweep failed"),
+        Err(err) => tracing::warn!(error = %err, "release cache sweep task failed"),
+    }
 }
 
 /// Installs or spawns one deployment and records the observation.
@@ -358,16 +396,6 @@ async fn reconcile_one(
         return Ok(());
     };
 
-    let grants = PluginGrantStore::load(&config.paths().files_dir)?;
-    let Some(grant) = grants.get_by_plugin_key(&instance.plugin_key).cloned() else {
-        note(
-            DeploymentStatus::Error,
-            "plugin grant is missing; deployment was not spawned".into(),
-            None,
-        )
-        .await;
-        return Ok(());
-    };
     let plugin_key = match PluginKey::parse(&instance.plugin_key) {
         Ok(key) => key,
         Err(err) => {
@@ -398,131 +426,140 @@ async fn reconcile_one(
         }
     }
 
-    let ledger = InstallLedger::load(&files_dir)
-        .map_err(|err| crate::PluginError::message(err.to_string()))?;
-    let in_ledger = ledger.get(&plugin_key).is_some();
-    let mut root = installed_root(&files_dir, &plugin_key);
-    if root.is_none() {
-        root = discovered.root(plugin_key.canonical());
+    // The active cluster release names what runs; a host-local tree (a
+    // platform guest, a development tree) is used only for a plugin with no
+    // release.
+    let mut active = match load_active_release(store, &instance.plugin_key).await {
+        Ok(active) => active,
+        Err(err) => {
+            note(DeploymentStatus::Error, err.to_string(), None).await;
+            return Ok(());
+        }
+    };
+    let mut local_root = None;
+    if active.is_none() {
+        let ledger = InstallLedger::load(&files_dir)
+            .map_err(|err| crate::PluginError::message(err.to_string()))?;
+        let in_ledger = ledger.get(&plugin_key).is_some();
+        let mut root = installed_root(&files_dir, &plugin_key);
+        if root.is_none() {
+            root = discovered.root(plugin_key.canonical());
+        }
+        if !in_ledger && root.is_none() {
+            let Some(package) = packages.get(&instance.plugin_key) else {
+                note(DeploymentStatus::Error, "not installed".into(), None).await;
+                return Ok(());
+            };
+            // An operator-placed package becomes a cluster release this host
+            // publishes; every host placed on it then materializes the same
+            // digest. The consent the operator approved for the key rides on
+            // the release.
+            let grant = PluginGrantStore::load(&files_dir)?
+                .get_by_plugin_key(&instance.plugin_key)
+                .cloned();
+            let request = crate::ReleaseRequest {
+                plugin_key: instance.plugin_key.clone(),
+                package: package.manifest.clone(),
+                archive: Some(package.archive.clone()),
+                publisher_verified: false,
+                grant,
+                activate: crate::Activate::IfNone,
+            };
+            if let Err(err) = crate::publish_package_release(
+                store,
+                &ConfigActor::Bootstrap,
+                &files_dir,
+                host_id,
+                request,
+            )
+            .await
+            {
+                note(DeploymentStatus::Error, err.to_string(), None).await;
+                return Ok(());
+            }
+            active = match load_active_release(store, &instance.plugin_key).await {
+                Ok(active) => active,
+                Err(err) => {
+                    note(DeploymentStatus::Error, err.to_string(), None).await;
+                    return Ok(());
+                }
+            };
+        } else {
+            local_root = root;
+        }
     }
 
-    if !in_ledger && root.is_none() {
-        let Some(package) = packages.get(&instance.plugin_key) else {
-            note(DeploymentStatus::Error, "not installed".into(), None).await;
-            return Ok(());
-        };
-        let files_for_install = files_dir.clone();
-        let archive = package.archive.clone();
-        let manifest = package.manifest.clone();
-        let staged = tokio::task::spawn_blocking(move || -> Result<_> {
-            let plugins_root = files_for_install.join("plugins");
-            std::fs::create_dir_all(&plugins_root)
-                .map_err(|err| crate::PluginError::message(err.to_string()))?;
-            let lock = PluginMutationLock::acquire(&files_for_install)
-                .map_err(|err| crate::PluginError::message(err.to_string()))?;
-            let opts = InstallOptions {
-                plugins_root,
-                offline: true,
-                trust: TrustPolicy::allow_unverified_publisher(),
-                skip_health: true,
-                ..InstallOptions::default()
-            };
-            let outcome =
-                Installer::install_local_archive_with_lock(&lock, &archive, &manifest, &opts)
-                    .map_err(|err| crate::PluginError::message(err.to_string()))?;
-            Ok((lock, outcome))
-        })
-        .await
-        .map_err(|err| crate::PluginError::message(format!("install task: {err}")))?;
-        let (lock, outcome) = match staged {
-            Ok(pair) => pair,
+    let (grant, root, release) = if let Some(release) = active {
+        let grant = match crate::release_grant(&release) {
+            Ok(grant) => grant,
             Err(err) => {
                 note(DeploymentStatus::Error, err.to_string(), None).await;
                 return Ok(());
             }
         };
-        // The staged tree's manifest supplies the schema for the pre-commit
-        // health probe; the committed tree is read again below.
-        let request = match installed_settings_schema(&outcome.plugin_root) {
-            Ok(schema) => resolve_spawn(store, &instance, &grant, &schema).await,
-            Err(err) => Err(err),
-        };
-        let request = match request {
-            Ok(request) => request,
+        let root = match crate::materialize_release(store, &files_dir, &release).await {
+            Ok(root) => root,
             Err(err) => {
-                let mut detail = err;
-                if let Err(rollback) = Installer::rollback(&outcome) {
-                    detail = format!("{detail}; rollback: {rollback}");
-                }
-                drop(lock);
-                note(DeploymentStatus::Error, detail, None).await;
+                note(DeploymentStatus::Error, err.to_string(), None).await;
                 return Ok(());
             }
         };
-        if let Err(err) = runtime
-            .health_before_commit(&outcome.plugin_root, &request)
-            .await
-        {
-            let mut detail = err;
-            if let Err(rollback) = Installer::rollback(&outcome) {
-                detail = format!("{detail}; rollback: {rollback}");
-            }
-            drop(lock);
-            note(DeploymentStatus::Error, detail, None).await;
+        (grant, root, Some(Arc::new(release)))
+    } else {
+        let Some(root) = local_root else {
+            note(DeploymentStatus::Error, "not installed".into(), None).await;
             return Ok(());
-        }
-        if let Err(err) = Installer::commit(&outcome) {
-            drop(lock);
-            note(DeploymentStatus::Error, err.to_string(), None).await;
-            return Ok(());
-        }
-        drop(lock);
-        root = Some(outcome.plugin_root);
-    }
-
-    let Some(root) = root else {
-        note(DeploymentStatus::Error, "not installed".into(), None).await;
-        return Ok(());
-    };
-    // Cheap checks first. A package older than the pinned schema version is
-    // not spawned (its documents may already carry the newer shape), and a
-    // healthy guest on the current document revision is left alone before
-    // anything parses the manifest or unseals a secret.
-    let local_version = match discovered.installed_version(&root) {
-        Ok(version) => version,
-        Err(err) => {
-            note(DeploymentStatus::Error, err, None).await;
-            return Ok(());
-        }
-    };
-    match stale_against_pin(store, plugin_key.canonical(), &local_version).await {
-        Ok(None) => {}
-        Ok(Some(pinned)) => {
-            let instance_id = deployment.plugin_instance_id.as_str();
-            if runtime
-                .tracked_instance_ids()
-                .await
-                .iter()
-                .any(|id| id == instance_id)
-            {
-                runtime.retire_instance(instance_id).await;
-            }
+        };
+        let grants = PluginGrantStore::load(&files_dir)?;
+        let Some(grant) = grants.get_by_plugin_key(&instance.plugin_key).cloned() else {
             note(
                 DeploymentStatus::Error,
-                format!(
-                    "installed version {local_version} is older than {} pinned by host {}; not spawned",
-                    pinned.package_version, pinned.recorded_by_host
-                ),
+                "plugin grant is missing; deployment was not spawned".into(),
                 None,
             )
             .await;
             return Ok(());
+        };
+        // Cheap checks first. A host-local package older than the pinned
+        // schema version is not spawned (its documents may already carry the
+        // newer shape). A released plugin's pin is its active release.
+        let local_version = match discovered.installed_version(&root) {
+            Ok(version) => version,
+            Err(err) => {
+                note(DeploymentStatus::Error, err, None).await;
+                return Ok(());
+            }
+        };
+        match stale_against_pin(store, plugin_key.canonical(), &local_version).await {
+            Ok(None) => {}
+            Ok(Some(pinned)) => {
+                let instance_id = deployment.plugin_instance_id.as_str();
+                if runtime
+                    .tracked_instance_ids()
+                    .await
+                    .iter()
+                    .any(|id| id == instance_id)
+                {
+                    runtime.retire_instance(instance_id).await;
+                }
+                note(
+                    DeploymentStatus::Error,
+                    format!(
+                        "installed version {local_version} is older than {} pinned by host {}; not spawned",
+                        pinned.package_version, pinned.recorded_by_host
+                    ),
+                    None,
+                )
+                .await;
+                return Ok(());
+            }
+            Err(err) => {
+                note(DeploymentStatus::Error, err.to_string(), None).await;
+                return Ok(());
+            }
         }
-        Err(err) => {
-            note(DeploymentStatus::Error, err.to_string(), None).await;
-            return Ok(());
-        }
-    }
+        (grant, root, None)
+    };
     let document_revision = match load_instance_config(store, &instance.id).await {
         Ok(document) => document.revision,
         Err(err) => {
@@ -537,6 +574,12 @@ async fn reconcile_one(
             && runtime
                 .guest_still_running(deployment.plugin_instance_id.as_str())
                 .await
+            // A moved release pointer changes the tree; the guest is
+            // respawned from the new digest.
+            && runtime
+                .guest_root(deployment.plugin_instance_id.as_str())
+                .await
+                .is_none_or(|running| running == root)
         {
             return Ok(());
         }
@@ -560,6 +603,7 @@ async fn reconcile_one(
     };
     note(DeploymentStatus::Installed, String::new(), None).await;
     request.plugin_root = Some(root);
+    request.release = release;
     note(
         DeploymentStatus::Running,
         String::new(),
@@ -616,6 +660,7 @@ async fn resolve_spawn(
         config: bindings.config,
         secrets: bindings.secrets,
         config_revision: bindings.config_revision,
+        release: None,
     })
 }
 
@@ -695,6 +740,8 @@ fn library_err(err: LibraryError) -> crate::PluginError {
 struct TrackedGuest {
     /// Session whose process liveness is the skip check.
     session: Arc<crate::PluginSession>,
+    /// Tree the guest was spawned from.
+    root: Option<PathBuf>,
     /// `CONFIG` passed to `open`.
     config: ExtensibleConfig,
     /// `SECRETS` passed to `open`. Tests read this; production keeps the payload
@@ -1020,21 +1067,6 @@ fn local_artifact_url(url: &str, package_dir: &Path) -> bool {
 
 #[async_trait]
 impl DeploymentRuntime for LiveDeploymentRuntime {
-    async fn health_before_commit(
-        &self,
-        plugin_root: &Path,
-        request: &DeploymentSpawn,
-    ) -> std::result::Result<(), String> {
-        let config = self.config.read().await.clone();
-        let plugin = open_installed_plugin(plugin_root, &config.paths().files_dir)?;
-        let prepared = crate::instance_bindings::prepared_open_from_resolved(
-            request.config.clone(),
-            request.secrets.clone(),
-            request.config_revision,
-        );
-        probe_guest_health(&plugin, &config, prepared).await
-    }
-
     async fn retire_instance(&self, plugin_instance_id: &str) {
         self.retire_plugin_instance(plugin_instance_id).await;
     }
@@ -1048,7 +1080,13 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
                 detail: "installed plugin was not discovered".into(),
             };
         };
-        let plugin = match open_installed_plugin(root, &config.paths().files_dir) {
+        let opened = match &request.release {
+            Some(release) => {
+                crate::open_released_plugin(root, release).map_err(|err| err.to_string())
+            }
+            None => open_installed_plugin(root, &config.paths().files_dir),
+        };
+        let plugin = match opened {
             Ok(plugin) => plugin,
             Err(err) => {
                 return SpawnHealth::SpawnFailed { detail: err };
@@ -1099,6 +1137,14 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
             .is_some_and(|guest| guest.session.guest_running())
     }
 
+    async fn guest_root(&self, plugin_instance_id: &str) -> Option<PathBuf> {
+        self.guests
+            .lock()
+            .expect("deployment guests")
+            .get(plugin_instance_id)
+            .and_then(|guest| guest.root.clone())
+    }
+
     async fn tracked_instance_ids(&self) -> Vec<String> {
         self.guests
             .lock()
@@ -1139,90 +1185,6 @@ fn open_installed_plugin(
     .map_err(|err| err.to_string())
 }
 
-/// Starts the staged guest, calls health, and drops the temporary session.
-///
-/// The install lock is still held. This function does not acquire it.
-async fn probe_guest_health(
-    plugin: &crate::DiscoveredPlugin,
-    config: &Config,
-    prepared: crate::PreparedOpen,
-) -> std::result::Result<(), String> {
-    let services = crate::SessionServices::default();
-    if plugin
-        .manifest
-        .has_entrypoint(crate::Entrypoint::Storefront)
-    {
-        let source = crate::ExternalSource::spawn_prepared(plugin, config, services, prepared)
-            .await
-            .map_err(|err| err.to_string())?;
-        source.check_health().await.map_err(|err| err.to_string())?;
-        drop(source);
-        return Ok(());
-    }
-    if plugin
-        .manifest
-        .has_entrypoint(crate::Entrypoint::RemoteLibrary)
-        || plugin
-            .manifest
-            .families()
-            .contains(&crate::PluginFamily::Integration)
-    {
-        let integration =
-            crate::ExternalIntegration::spawn_prepared(plugin, config, services, prepared, true)
-                .await
-                .map_err(|err| err.to_string())?;
-        integration
-            .check_health()
-            .await
-            .map_err(|err| err.to_string())?;
-        drop(integration);
-        return Ok(());
-    }
-    if plugin.manifest.has_entrypoint(crate::Entrypoint::Storage) {
-        let mut services = services;
-        let mut extra_env: Vec<(&str, std::ffi::OsString)> = Vec::new();
-        let mut open_bindings = prepared.bindings.clone();
-        let mut spawn_config = prepared.spawn_config_table.clone();
-        if crate::is_first_party_local_output(plugin) {
-            let root = crate::host::instance_local_root(config, &prepared.granted_config)
-                .map_err(|err| err.to_string())?;
-            extra_env.push((
-                "BOOKCLERK_OUTPUT_LOCAL_ROOT",
-                std::ffi::OsString::from(root.as_os_str()),
-            ));
-            services.local_output_root = Some(root);
-        }
-        if crate::is_first_party_s3_output(plugin) {
-            let context =
-                crate::host::instance_s3_context(&prepared).map_err(|err| err.to_string())?;
-            let secrets = crate::host::s3_open_secrets(&prepared);
-            services.deployed_endpoint = crate::host::s3_deployed_endpoint(plugin, &context);
-            spawn_config = context.clone();
-            open_bindings.config = bookclerk_plugin_sdk::ExtensibleConfig::json(&context);
-            open_bindings.secrets = secrets;
-        }
-        let session = Arc::new(
-            crate::PluginSession::spawn_with(
-                plugin,
-                config,
-                spawn_config,
-                crate::OPERATOR_ACCOUNT,
-                &extra_env,
-                services,
-            )
-            .await
-            .map_err(|err| err.to_string())?,
-        );
-        session
-            .open(open_bindings)
-            .await
-            .map_err(|err| err.to_string())?;
-        drop(session);
-        return Ok(());
-    }
-    Err("plugin has no entrypoint this host can health-check".into())
-}
-
 /// Spawns a storefront session with the deployment's resolved bindings.
 async fn spawn_storefront(
     runtime: &LiveDeploymentRuntime,
@@ -1244,6 +1206,7 @@ async fn spawn_storefront(
     source.bind_plugin_instance(&request.plugin_instance_id);
     let tracked = TrackedGuest {
         session: Arc::clone(source.session()),
+        root: request.plugin_root.clone(),
         config: source.opened_config().clone(),
         secrets: source.opened_secrets().clone(),
     };
@@ -1301,6 +1264,7 @@ async fn spawn_integration(
     integration.bind_plugin_instance(&request.plugin_instance_id);
     let tracked = TrackedGuest {
         session: Arc::clone(integration.session()),
+        root: request.plugin_root.clone(),
         config: integration.opened_config().clone(),
         secrets: integration.opened_secrets().clone(),
     };
@@ -1389,6 +1353,7 @@ async fn spawn_storage(
         &request.plugin_instance_id,
         TrackedGuest {
             session,
+            root: request.plugin_root.clone(),
             config: tracked_config,
             secrets: tracked_secrets,
         },
