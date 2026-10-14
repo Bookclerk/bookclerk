@@ -131,6 +131,16 @@ returns bootstrap `{ "engine" }` for diagnostics only. The host always builds
 the SeaORM RPC proxy as SQLite-shaped canonical SQL (`?` placeholders) and
 never admits or rejects a guest based on physical engine identity.
 
+The typed execute ABI has no last-insert-id (D1 and Postgres cannot report a
+portable one), and the proxy's SQLite backend does not use SeaORM `RETURNING`
+(`ActiveModel::update` would then emit unbounded `UPDATE … RETURNING`, which
+D1 refuses). Instead `db.execute` sends a single-tuple `INSERT … VALUES (…)`
+into a table with an `INTEGER PRIMARY KEY AUTOINCREMENT` column as
+`… RETURNING <identity>` with host-proven `maxRows = 1`, and reports the
+returned key as `last_insert_id`. `ActiveModel::insert` and
+`Entity::insert(..).exec` therefore see the real key on every engine. Other
+writes, including `ON CONFLICT` upserts, report `last_insert_id = 0`.
+
 First-party guests: `bookclerk-plugin-database-sqlite` (platform),
 `bookclerk-plugin-database-d1` and `bookclerk-plugin-database-postgres` (optional).
 Each is a full Workers-RPC guest with its own binary and `plugin.toml`. Install

@@ -19,12 +19,12 @@ use crate::Entrypoint;
 
 const LIKE_SQL: &str = "SELECT 1 AS n WHERE 'rowcap-keep' LIKE ?";
 
-struct StagedGuest {
+pub(super) struct StagedGuest {
     /// Files-dir used for grants and plugin state (`HOME` / `TMPDIR`).
     files: TempDir,
     /// Install directory containing `plugin.toml` and the guest binary.
     _install: TempDir,
-    plugin: DiscoveredPlugin,
+    pub(super) plugin: DiscoveredPlugin,
 }
 
 fn plugin_crate_dir(id: &str) -> PathBuf {
@@ -100,7 +100,7 @@ fn stage_files_dir() -> Option<TempDir> {
     tempfile::Builder::new().prefix("td").tempdir_in(base).ok()
 }
 
-fn stage_first_party_guest(id: &str) -> Option<StagedGuest> {
+pub(super) fn stage_first_party_guest(id: &str) -> Option<StagedGuest> {
     let src = plugin_crate_dir(id);
     if !src.join("plugin.toml").is_file() {
         return None;
@@ -152,7 +152,11 @@ fn stage_first_party_guest(id: &str) -> Option<StagedGuest> {
     })
 }
 
-fn guest_config(staged: &StagedGuest, plugin_id: &str, postgres_url: Option<String>) -> Config {
+pub(super) fn guest_config(
+    staged: &StagedGuest,
+    plugin_id: &str,
+    postgres_url: Option<String>,
+) -> Config {
     let mut config = Config {
         paths: Some(Paths::from_files_dir(staged.files.path().to_path_buf())),
         ..Config::default()
@@ -167,7 +171,7 @@ fn guest_config(staged: &StagedGuest, plugin_id: &str, postgres_url: Option<Stri
     config
 }
 
-fn approve_guest(config: &Config, plugin: &DiscoveredPlugin) {
+pub(super) fn approve_guest(config: &Config, plugin: &DiscoveredPlugin) {
     let files = &config.paths().files_dir;
     let mut grants = PluginGrantStore::load(files).expect("load grants");
     let mut grant = consent_request(&plugin.manifest, plugin.plugin_key());
@@ -181,7 +185,7 @@ fn approve_guest(config: &Config, plugin: &DiscoveredPlugin) {
     grants.save(files).expect("save grants");
 }
 
-fn postgres_plugin_tests_enabled() -> bool {
+pub(super) fn postgres_plugin_tests_enabled() -> bool {
     let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL")
         .ok()
         .filter(|s| !s.trim().is_empty());
@@ -219,7 +223,7 @@ fn postgres_url_with_db(url: &str, db_name: &str) -> String {
     }
 }
 
-async fn create_disposable_postgres_url() -> String {
+pub(super) async fn create_disposable_postgres_url() -> String {
     let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL").expect("BOOKCLERK_TEST_POSTGRES_URL");
     let db_name = format!("rpc_like_{}", uuid::Uuid::new_v4().as_simple());
     let admin = sea_orm::Database::connect(url.as_str())
@@ -302,7 +306,7 @@ async fn assert_like_through_production_proxy(config: &Config, plugin: &Discover
 
 /// Skips when a first-party guest binary is missing, unless
 /// `BOOKCLERK_REQUIRE_TEST_GUESTS=1` (CI) demands it be built.
-fn missing_guest(package: &str) {
+pub(super) fn missing_guest(package: &str) {
     let hint = format!("build {package} (cargo build -p {package})");
     if std::env::var("BOOKCLERK_REQUIRE_TEST_GUESTS").is_ok_and(|v| v == "1") {
         panic!("BOOKCLERK_REQUIRE_TEST_GUESTS=1 but guest binary is missing: {hint}");
@@ -312,6 +316,7 @@ fn missing_guest(package: &str) {
 
 #[tokio::test]
 async fn production_rpc_proxy_keeps_like_through_sqlite_guest() {
+    let _live = crate::authority::test_live_lock();
     let Some(staged) = stage_first_party_guest("sqlite") else {
         missing_guest("bookclerk-plugin-database-sqlite");
         return;
@@ -324,6 +329,7 @@ async fn production_rpc_proxy_keeps_like_through_sqlite_guest() {
 /// that the ignored LIKE vector only runs in the postgres CI job.
 #[tokio::test]
 async fn postgres_guest_describes_through_workerd() {
+    let _live = crate::authority::test_live_lock();
     let Some(staged) = stage_first_party_guest("postgres") else {
         missing_guest("bookclerk-plugin-database-postgres");
         return;
@@ -346,6 +352,7 @@ async fn production_rpc_proxy_keeps_like_through_postgres_guest() {
     if !postgres_plugin_tests_enabled() {
         return;
     }
+    let _live = crate::authority::test_live_lock();
     let staged = stage_first_party_guest("postgres").unwrap_or_else(|| {
         panic!("postgres plugin binary missing; cargo build -p bookclerk-plugin-database-postgres")
     });
