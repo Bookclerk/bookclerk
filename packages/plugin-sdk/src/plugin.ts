@@ -2535,7 +2535,12 @@ class GrantedQueue extends RpcTarget implements QueueBinding {
   }
 }
 
-/** Fails closed on an empty key or one longer than `maxKvKeyBytes`. */
+/**
+ * Fails closed on an empty key or one longer than `maxKvKeyBytes`.
+ *
+ * @param key - Key the guest passed.
+ * @returns The key, once checked.
+ */
 function checkKvKey(key: unknown): string {
   if (typeof key !== "string" || key.length === 0) {
     throw PluginError.fromWire("invalid_params", "kv key must be a non-empty string");
@@ -2547,7 +2552,12 @@ function checkKvKey(key: unknown): string {
   return key;
 }
 
-/** Stored metadata text → value (`null` when none or unparsable). */
+/**
+ * Stored metadata text → value (`null` when none or unparsable).
+ *
+ * @param text - Metadata as stored.
+ * @returns The parsed value, or `null`.
+ */
 function parseKvMetadata(text: unknown): unknown {
   if (typeof text !== "string" || text === "") return null;
   try {

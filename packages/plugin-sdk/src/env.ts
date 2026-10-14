@@ -144,7 +144,21 @@ export interface KvNamespaceBinding {
    * @returns The value, or `null` when absent or expired.
    */
   get(key: string, type?: "text"): Promise<string | null>;
+  /**
+   * Read one key and parse it as JSON.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @param type - `json`.
+   * @returns The parsed value, or `null` when absent or expired.
+   */
   get<T = unknown>(key: string, type: "json"): Promise<T | null>;
+  /**
+   * Read one key as bytes.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @param type - `arrayBuffer`.
+   * @returns The bytes, or `null` when absent or expired.
+   */
   get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
   /**
    * Read one key with its metadata.
@@ -154,7 +168,21 @@ export interface KvNamespaceBinding {
    * @returns Value and metadata; both `null` when absent.
    */
   getWithMetadata(key: string, type?: "text"): Promise<KvValueWithMetadata<string>>;
+  /**
+   * Read one key as JSON with its metadata.
+   *
+   * @param key - Key to read.
+   * @param type - `json`.
+   * @returns Parsed value and metadata; both `null` when absent.
+   */
   getWithMetadata<T = unknown>(key: string, type: "json"): Promise<KvValueWithMetadata<T>>;
+  /**
+   * Read one key as bytes with its metadata.
+   *
+   * @param key - Key to read.
+   * @param type - `arrayBuffer`.
+   * @returns Bytes and metadata; both `null` when absent.
+   */
   getWithMetadata(key: string, type: "arrayBuffer"): Promise<KvValueWithMetadata<ArrayBuffer>>;
   /**
    * Write one key, replacing any previous value and metadata.
