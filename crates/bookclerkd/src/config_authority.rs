@@ -933,25 +933,60 @@ pub async fn get_hosts(
     let cfg = state.config.read().await.clone();
     let this_host = this_host_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let live = bookclerk_library::control_plane::live_host_ids(&library)
-        .await
-        .map_err(events_error)?;
+    let statuses = host_statuses(&library).await?;
     let mut hosts = Vec::new();
     for host in bookclerk_library::control_plane::list_hosts(&library)
         .await
         .map_err(events_error)?
     {
-        hosts.push(host_json(&host, &this_host, live.contains(&host.host_id)));
+        let runtime = host_runtime_or_default(&library, &host.host_id).await?;
+        hosts.push(host_json(
+            &host,
+            &this_host,
+            statuses.get(&host.host_id),
+            &runtime,
+        ));
     }
     Ok(Json(json!({ "host_id": this_host, "hosts": hosts })))
 }
 
-/// JSON projection of one host row.
+/// Every host's latest heartbeat, by host id.
+async fn host_statuses(
+    library: &LibraryStore,
+) -> Result<std::collections::HashMap<String, bookclerk_library::control_plane::HostStatus>, Response>
+{
+    Ok(
+        bookclerk_library::control_plane::list_host_statuses(library)
+            .await
+            .map_err(events_error)?
+            .into_iter()
+            .map(|status| (status.host_id.clone(), status))
+            .collect(),
+    )
+}
+
+/// A host's runtime document, or the defaults when it never wrote one.
+async fn host_runtime_or_default(
+    library: &LibraryStore,
+    host_id: &str,
+) -> Result<bookclerk_library::control_plane::HostRuntimeSettingsV1, Response> {
+    match bookclerk_library::control_plane::load_host_runtime(library, host_id).await {
+        Ok(document) => Ok(document.body),
+        Err(bookclerk_library::LibraryError::NotFound(_)) => {
+            Ok(bookclerk_library::control_plane::HostRuntimeSettingsV1::new())
+        }
+        Err(err) => Err(events_error(err)),
+    }
+}
+
+/// JSON projection of one host row with its latest heartbeat and budget.
 fn host_json(
     host: &bookclerk_library::control_plane::HostRecord,
     this_host: &str,
-    live: bool,
+    status: Option<&bookclerk_library::control_plane::HostStatus>,
+    runtime: &bookclerk_library::control_plane::HostRuntimeSettingsV1,
 ) -> serde_json::Value {
+    let now_ms = chrono::Utc::now().timestamp_millis();
     json!({
         "host_id": host.host_id,
         "cluster_id": host.cluster_id,
@@ -966,9 +1001,69 @@ fn host_json(
             .into_iter()
             .filter(|label| !host.labels.contains(label))
             .collect::<Vec<_>>(),
-        "live": live,
+        "live": status.is_some_and(|s| s.is_live(now_ms)),
+        "runtime": runtime,
+        "status": status,
         "this_host": host.host_id == this_host,
     })
+}
+
+/// `PUT /api/config/hosts/{host_id}/runtime` body: any subset of the
+/// host's runtime document.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PutHostRuntime {
+    /// Operator label.
+    #[serde(default)]
+    label: Option<String>,
+    /// Share of detected CPU the scheduler may commit (1..=100).
+    #[serde(default)]
+    cpu_budget_percent: Option<u8>,
+    /// Share of detected memory the scheduler may commit (1..=100).
+    #[serde(default)]
+    memory_budget_percent: Option<u8>,
+    /// False drains the host.
+    #[serde(default)]
+    schedulable: Option<bool>,
+}
+
+/// `PUT /api/config/hosts/{host_id}/runtime`: edit a host's label, budgets,
+/// or drain switch. Applies at that host's next heartbeat.
+pub async fn put_host_runtime(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(host_id): axum::extract::Path<String>,
+    Json(body): Json<PutHostRuntime>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let host_id = host_id.trim().to_string();
+    bookclerk_library::control_plane::load_host(&library, &host_id)
+        .await
+        .map_err(events_error)?;
+    let document = bookclerk_library::control_plane::update_host_runtime(
+        &library,
+        &operator_actor(),
+        &host_id,
+        |runtime| {
+            if let Some(label) = &body.label {
+                runtime.label.clone_from(label);
+            }
+            if let Some(percent) = body.cpu_budget_percent {
+                runtime.cpu_budget_percent = percent;
+            }
+            if let Some(percent) = body.memory_budget_percent {
+                runtime.memory_budget_percent = percent;
+            }
+            if let Some(schedulable) = body.schedulable {
+                runtime.schedulable = schedulable;
+            }
+        },
+    )
+    .await
+    .map_err(events_error)?;
+    Ok(Json(json!({
+        "host_id": host_id,
+        "revision": document.revision,
+        "runtime": document.body,
+    })))
 }
 
 /// `PUT /api/config/hosts/{host_id}/labels` body.
@@ -996,11 +1091,14 @@ pub async fn put_host_labels(
     )
     .await
     .map_err(events_error)?;
-    let live = bookclerk_library::control_plane::live_host_ids(&library)
-        .await
-        .map_err(events_error)?
-        .contains(&host.host_id);
-    Ok(Json(host_json(&host, &this_host, live)))
+    let statuses = host_statuses(&library).await?;
+    let runtime = host_runtime_or_default(&library, &host.host_id).await?;
+    Ok(Json(host_json(
+        &host,
+        &this_host,
+        statuses.get(&host.host_id),
+        &runtime,
+    )))
 }
 
 /// `PUT /api/config/plugin-instances/{id}/placement` body.

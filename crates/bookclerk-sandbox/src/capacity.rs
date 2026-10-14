@@ -238,6 +238,161 @@ fn read_memory_stat_field(path: &Path, field: &str) -> Option<u64> {
     None
 }
 
+/// Whole-machine memory and CPU counters from `/proc` (Linux).
+///
+/// The heartbeat diffs two [`CpuTimes`] samples to get utilization. Other
+/// platforms report nothing and the scheduler falls back to the detected
+/// capacity alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SystemMemory {
+    /// `MemTotal` in bytes.
+    pub total_bytes: Option<u64>,
+    /// `MemAvailable` in bytes: what new work can use without swapping.
+    pub available_bytes: Option<u64>,
+}
+
+/// Cumulative CPU time counters. Two samples give utilization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuTimes {
+    /// Aggregate `/proc/stat` line: busy and total jiffies across all CPUs.
+    System {
+        /// Jiffies spent not idle (`user + nice + system + irq + softirq + steal`).
+        busy: u64,
+        /// All jiffies, idle and iowait included.
+        total: u64,
+    },
+    /// cgroup v2 `cpu.stat` `usage_usec` of a CPU-limited cgroup.
+    Cgroup {
+        /// Microseconds of CPU the cgroup used since it was created.
+        usage_usec: u64,
+    },
+}
+
+/// Reads `MemTotal` / `MemAvailable` from `/proc/meminfo`.
+#[must_use]
+pub fn read_system_memory() -> SystemMemory {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/meminfo")
+            .map(|text| parse_meminfo(&text))
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        SystemMemory::default()
+    }
+}
+
+/// Parses `/proc/meminfo` text (values are in kB).
+#[must_use]
+pub fn parse_meminfo(text: &str) -> SystemMemory {
+    let field = |name: &str| {
+        text.lines().find_map(|line| {
+            let rest = line.strip_prefix(name)?.strip_prefix(':')?;
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            Some(kb.saturating_mul(1024))
+        })
+    };
+    SystemMemory {
+        total_bytes: field("MemTotal"),
+        available_bytes: field("MemAvailable"),
+    }
+}
+
+/// Reads CPU time counters for utilization: the cgroup's own usage when the
+/// process runs under a CPU-limited cgroup (a container quota is the real
+/// ceiling), else the whole machine (a desktop's other applications count
+/// against what Bookclerk can use).
+#[must_use]
+pub fn read_cpu_times(cgroup_dir: Option<&Path>, cgroup: &CgroupSample) -> Option<CpuTimes> {
+    if cgroup.cpu_max_quota_us.is_some() {
+        if let Some(dir) = cgroup_dir {
+            if let Some(usage_usec) = std::fs::read_to_string(dir.join("cpu.stat"))
+                .ok()
+                .and_then(|text| parse_cpu_stat_usage(&text))
+            {
+                return Some(CpuTimes::Cgroup { usage_usec });
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/stat")
+            .ok()
+            .and_then(|text| parse_proc_stat(&text))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// `usage_usec` from cgroup v2 `cpu.stat` text.
+#[must_use]
+pub fn parse_cpu_stat_usage(text: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        (parts.next()? == "usage_usec").then(|| parts.next()?.parse().ok())?
+    })
+}
+
+/// Aggregate `cpu` line of `/proc/stat` text.
+#[must_use]
+pub fn parse_proc_stat(text: &str) -> Option<CpuTimes> {
+    let line = text.lines().find(|line| line.starts_with("cpu "))?;
+    let values: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    // user nice system idle iowait irq softirq steal [guest guest_nice]
+    if values.len() < 4 {
+        return None;
+    }
+    let get = |i: usize| values.get(i).copied().unwrap_or(0);
+    let idle = get(3).saturating_add(get(4));
+    let total: u64 = values.iter().take(8).sum();
+    Some(CpuTimes::System {
+        busy: total.saturating_sub(idle),
+        total,
+    })
+}
+
+/// CPU in use between two samples, in millicores (1000 = one core busy).
+///
+/// `cores_millis` scales the machine-wide busy fraction; `elapsed` is the
+/// wall time between a cgroup's two samples. Returns [`None`] when the
+/// samples are of different kinds or did not advance.
+#[must_use]
+pub fn cpu_used_millicores(
+    before: CpuTimes,
+    after: CpuTimes,
+    cores_millis: u64,
+    elapsed: std::time::Duration,
+) -> Option<u64> {
+    match (before, after) {
+        (
+            CpuTimes::System {
+                busy: b0,
+                total: t0,
+            },
+            CpuTimes::System {
+                busy: b1,
+                total: t1,
+            },
+        ) => {
+            let total = t1.checked_sub(t0).filter(|t| *t > 0)?;
+            let busy = b1.saturating_sub(b0).min(total);
+            Some(busy.saturating_mul(cores_millis) / total)
+        }
+        (CpuTimes::Cgroup { usage_usec: u0 }, CpuTimes::Cgroup { usage_usec: u1 }) => {
+            let wall = u64::try_from(elapsed.as_micros()).ok().filter(|w| *w > 0)?;
+            Some(u1.saturating_sub(u0).saturating_mul(1000) / wall)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +463,41 @@ mod tests {
         let sample = read_cgroup_sample(dir.path());
         assert_eq!(sample, CgroupSample::default());
         assert!(!cgroup_sample_is_low_resource(&sample));
+    }
+
+    #[test]
+    fn meminfo_and_cpu_counters_parse() {
+        let mem = super::parse_meminfo(
+            "MemTotal:       16303428 kB\nMemFree:  100 kB\nMemAvailable:    8151714 kB\n",
+        );
+        assert_eq!(mem.total_bytes, Some(16_303_428 * 1024));
+        assert_eq!(mem.available_bytes, Some(8_151_714 * 1024));
+        assert_eq!(
+            super::parse_cpu_stat_usage("usage_usec 1500\nuser_usec 1000\n"),
+            Some(1500)
+        );
+        let before = super::parse_proc_stat("cpu  100 0 100 700 100 0 0 0 0 0\ncpu0 1 1 1 1\n")
+            .expect("cpu line");
+        let after =
+            super::parse_proc_stat("cpu  200 0 200 1300 300 0 0 0 0 0\n").expect("cpu line");
+        // 200 busy of 1000 jiffies on a 4-core machine is 0.8 cores.
+        assert_eq!(
+            super::cpu_used_millicores(before, after, 4000, std::time::Duration::from_secs(1)),
+            Some(800)
+        );
+        let used = super::cpu_used_millicores(
+            super::CpuTimes::Cgroup { usage_usec: 0 },
+            super::CpuTimes::Cgroup {
+                usage_usec: 500_000,
+            },
+            2000,
+            std::time::Duration::from_secs(1),
+        );
+        assert_eq!(used, Some(500), "half a core over one second");
+        assert_eq!(
+            super::cpu_used_millicores(before, before, 4000, std::time::Duration::from_secs(1)),
+            None,
+            "no elapsed jiffies"
+        );
     }
 }

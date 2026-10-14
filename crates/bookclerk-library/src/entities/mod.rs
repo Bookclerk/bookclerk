@@ -24,6 +24,7 @@ pub mod encrypted_secrets;
 pub mod event_deliveries;
 pub mod event_outbox_stats;
 pub mod event_subscriber_nodes;
+pub mod host_status;
 pub mod hosts;
 pub mod ignored_titles;
 pub mod job_temp_paths;

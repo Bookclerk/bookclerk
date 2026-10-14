@@ -38,8 +38,10 @@ mod spawn_path;
 mod spec;
 
 pub use capacity::{
-    cgroup_sample_is_low_resource, filesystem_free_bytes, logical_cpu_count, process_cgroup_dir,
-    read_cgroup_sample, CgroupSample, LOW_RESOURCE_MEMORY_MAX_BYTES,
+    cgroup_sample_is_low_resource, cpu_used_millicores, filesystem_free_bytes, logical_cpu_count,
+    parse_cpu_stat_usage, parse_meminfo, parse_proc_stat, process_cgroup_dir, read_cgroup_sample,
+    read_cpu_times, read_system_memory, CgroupSample, CpuTimes, SystemMemory,
+    LOW_RESOURCE_MEMORY_MAX_BYTES,
 };
 #[cfg(unix)]
 pub use guest_ipc::{create_guest_ipc_dir, ensure_guest_ipc_fits, MACOS_SUN_PATH_CAPACITY};

@@ -5,7 +5,8 @@
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    effective_host_labels, list_hosts, live_host_ids, load_host, set_host_labels, ConfigActor,
+    effective_host_labels, list_host_statuses, list_hosts, load_host, load_host_runtime,
+    set_host_labels, update_host_runtime, ConfigActor, HostRuntimeSettingsV1, HostStatus,
 };
 use clap::Subcommand;
 use serde_json::json;
@@ -17,6 +18,27 @@ use crate::format_out::{emit, OutputFormat};
 pub enum HostsCommand {
     /// Every registered host: liveness, artifact target, and labels.
     List,
+    /// Set a host's scheduling budget or drain it. Applies at that host's
+    /// next heartbeat.
+    Set {
+        /// Host id (default: this host).
+        host: Option<String>,
+        /// Share of detected CPU the scheduler may commit here (1-100).
+        #[arg(long, value_name = "PERCENT")]
+        cpu_budget: Option<u8>,
+        /// Share of detected memory the scheduler may commit here (1-100).
+        #[arg(long, value_name = "PERCENT")]
+        memory_budget: Option<u8>,
+        /// Place nothing new here and move scheduled replicas away.
+        #[arg(long, conflicts_with = "undrain")]
+        drain: bool,
+        /// Accept scheduled replicas again.
+        #[arg(long)]
+        undrain: bool,
+        /// Operator label for the host.
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Add or remove placement labels on a host (`nas`, `zone=eu`).
     Label {
         /// Host id (default: this host).
@@ -47,30 +69,43 @@ pub async fn run(
     let plane = crate::registry::open_host(config).await?;
     let store = &plane.store;
     let this_host = plane.host_id().to_string();
-    let live = live_host_ids(store).await?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let statuses: std::collections::HashMap<String, HostStatus> = list_host_statuses(store)
+        .await?
+        .into_iter()
+        .map(|status| (status.host_id.clone(), status))
+        .collect();
     match command {
         HostsCommand::List => {
             let hosts = list_hosts(store).await?;
-            let rows: Vec<_> = hosts
-                .iter()
-                .map(|host| {
-                    json!({
-                        "host_id": host.host_id,
-                        "this_host": host.host_id == this_host,
-                        "live": live.contains(&host.host_id),
-                        "target": host.target,
-                        "labels": host.labels,
-                        "implicit_labels": effective_host_labels(host)
-                            .into_iter()
-                            .filter(|label| !host.labels.contains(label))
-                            .collect::<Vec<_>>(),
-                        "software_version": host.software_version,
-                        "heartbeat_at": host.heartbeat_at,
-                    })
-                })
-                .collect();
+            let mut rows = Vec::new();
+            for host in &hosts {
+                let status = statuses.get(&host.host_id);
+                let runtime = match load_host_runtime(store, &host.host_id).await {
+                    Ok(document) => document.body,
+                    Err(bookclerk_library::LibraryError::NotFound(_)) => {
+                        HostRuntimeSettingsV1::new()
+                    }
+                    Err(err) => return Err(err.into()),
+                };
+                rows.push(json!({
+                    "host_id": host.host_id,
+                    "this_host": host.host_id == this_host,
+                    "live": status.is_some_and(|s| s.is_live(now_ms)),
+                    "target": host.target,
+                    "labels": host.labels,
+                    "implicit_labels": effective_host_labels(host)
+                        .into_iter()
+                        .filter(|label| !host.labels.contains(label))
+                        .collect::<Vec<_>>(),
+                    "runtime": runtime,
+                    "status": status,
+                    "software_version": host.software_version,
+                }));
+            }
             emit(format, &json!({ "hosts": rows }), || {
                 for host in &hosts {
+                    let status = statuses.get(&host.host_id);
                     println!(
                         "{}{} {} target={} labels={}",
                         host.host_id,
@@ -79,7 +114,7 @@ pub async fn run(
                         } else {
                             ""
                         },
-                        if live.contains(&host.host_id) {
+                        if status.is_some_and(|s| s.is_live(now_ms)) {
                             "live"
                         } else {
                             "not-live"
@@ -95,7 +130,63 @@ pub async fn run(
                             host.labels.join(",")
                         }
                     );
+                    match status {
+                        Some(status) => println!("  {}", status_line(status)),
+                        None => println!("  no daemon heartbeat yet"),
+                    }
                 }
+            })
+        }
+        HostsCommand::Set {
+            host,
+            cpu_budget,
+            memory_budget,
+            drain,
+            undrain,
+            label,
+        } => {
+            let host_id = host.unwrap_or_else(|| this_host.clone());
+            load_host(store, &host_id).await?;
+            let document = update_host_runtime(
+                store,
+                &ConfigActor::Operator { id: "cli".into() },
+                &host_id,
+                |runtime| {
+                    if let Some(percent) = cpu_budget {
+                        runtime.cpu_budget_percent = percent;
+                    }
+                    if let Some(percent) = memory_budget {
+                        runtime.memory_budget_percent = percent;
+                    }
+                    if drain {
+                        runtime.schedulable = false;
+                    }
+                    if undrain {
+                        runtime.schedulable = true;
+                    }
+                    if let Some(label) = &label {
+                        runtime.label.clone_from(label);
+                    }
+                },
+            )
+            .await?;
+            let payload = json!({
+                "host_id": host_id,
+                "revision": document.revision,
+                "runtime": document.body,
+            });
+            emit(format, &payload, || {
+                println!(
+                    "host {host_id}: cpu budget {}%, memory budget {}%, {} (revision {}); applies at its next heartbeat",
+                    document.body.cpu_budget_percent,
+                    document.body.memory_budget_percent,
+                    if document.body.schedulable {
+                        "schedulable"
+                    } else {
+                        "drained"
+                    },
+                    document.revision
+                );
             })
         }
         HostsCommand::Label {
@@ -133,4 +224,28 @@ pub async fn run(
             })
         }
     }
+}
+
+/// One-line summary of a heartbeat: capacity, budget, committed, measured,
+/// availability.
+fn status_line(status: &HostStatus) -> String {
+    let cores = |millis: i64| format!("{:.1}", millis as f64 / 1000.0);
+    let gib = |bytes: i64| format!("{:.1}G", bytes as f64 / f64::from(1u32 << 30));
+    let opt_gib = |bytes: Option<i64>| bytes.map_or_else(|| "?".to_string(), gib);
+    format!(
+        "cpu {} cores (budget {}, reserved {}, busy {}) | memory {} (budget {}, reserved {}, available {}) | guests {} | availability {:.0}%{}",
+        cores(status.cpu_millicores),
+        cores(status.cpu_budget_millicores),
+        cores(status.reserved.cpu_millicores),
+        status
+            .cpu_used_millicores
+            .map_or_else(|| "?".to_string(), cores),
+        opt_gib(status.memory_bytes),
+        opt_gib(status.memory_budget_bytes),
+        gib(status.reserved.memory_bytes),
+        opt_gib(status.memory_available_bytes),
+        status.running_guests,
+        status.availability_ppm as f64 / 10_000.0,
+        if status.schedulable { "" } else { " | drained" }
+    )
 }

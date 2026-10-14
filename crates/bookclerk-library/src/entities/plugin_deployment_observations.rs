@@ -24,6 +24,10 @@ pub struct Model {
     pub applied_config_revision: Option<i64>,
     /// RFC 3339 timestamp of this observation.
     pub observed_at: String,
+    /// Memory ceiling of the running guest (its grant after `[plugins.jail]`).
+    pub reserved_memory_bytes: Option<i64>,
+    /// CPU ceiling of the running guest, in millicores.
+    pub reserved_cpu_millicores: Option<i64>,
 }
 
 /// Declared SeaORM relations (observations are addressed by deployment and host).

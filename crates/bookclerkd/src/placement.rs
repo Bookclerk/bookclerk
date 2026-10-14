@@ -86,10 +86,9 @@ mod tests {
     use axum::routing::{get, put};
     use bookclerk_config::{Config, EventsConfig};
     use bookclerk_library::control_plane::{
-        bootstrap_control_plane, create_plugin_instance, host_consumer_id, host_queue_name,
-        list_deployments_for_instance, ConfigActor, DesiredState,
+        bootstrap_control_plane, create_plugin_instance, list_deployments_for_instance,
+        ConfigActor, DesiredState,
     };
-    use bookclerk_library::EventCatalogSubscription;
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use tower::ServiceExt;
@@ -130,16 +129,14 @@ mod tests {
         .await
         .unwrap();
         let host = session.host.host_id.clone();
-        // This daemon's host queue consumer is live.
-        store
-            .upsert_event_subscriber(
-                "node-test",
-                &host_consumer_id(&host),
-                &[EventCatalogSubscription::queue(host_queue_name(&host))],
-                true,
-            )
-            .await
-            .unwrap();
+        // This daemon is live: it heartbeats its detected capacity.
+        let heartbeat = bookclerk_library::control_plane::HostSampler::new(files_path).sample();
+        let status =
+            bookclerk_library::control_plane::record_host_heartbeat(&store, &host, &heartbeat)
+                .await
+                .unwrap();
+        assert!(status.cpu_millicores >= 1000);
+        assert_eq!(status.running_guests, 0);
         let instance = create_plugin_instance(
             &store,
             &ConfigActor::Operator {

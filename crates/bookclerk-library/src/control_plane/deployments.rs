@@ -713,6 +713,9 @@ pub async fn upsert_observation(
         detail: Set(detail),
         applied_config_revision: Set(observation.applied_config_revision),
         observed_at: Set(observation.observed_at.clone()),
+        // Recorded separately after a successful spawn; never reset here.
+        reserved_memory_bytes: sea_orm::ActiveValue::NotSet,
+        reserved_cpu_millicores: sea_orm::ActiveValue::NotSet,
     };
     plugin_deployment_observations::Entity::insert(model)
         .on_conflict(

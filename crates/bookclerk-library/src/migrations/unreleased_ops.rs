@@ -936,6 +936,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         detail TEXT NOT NULL,
         applied_config_revision INTEGER,
         observed_at TEXT NOT NULL,
+        reserved_memory_bytes INTEGER,
+        reserved_cpu_millicores INTEGER,
         PRIMARY KEY (deployment_id, host_id),
         FOREIGN KEY (deployment_id) REFERENCES plugin_deployments(deployment_id)
     )",
@@ -997,6 +999,29 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         detail TEXT NOT NULL DEFAULT '',
         scheduled_at TEXT NOT NULL DEFAULT '',
         FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS host_status (
+        host_id TEXT PRIMARY KEY NOT NULL,
+        incarnation TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        heartbeat_ms INTEGER NOT NULL,
+        interval_ms INTEGER NOT NULL,
+        cpu_millicores INTEGER NOT NULL,
+        memory_bytes INTEGER,
+        cpu_budget_millicores INTEGER NOT NULL,
+        memory_budget_bytes INTEGER,
+        schedulable INTEGER NOT NULL,
+        cpu_used_millicores INTEGER,
+        memory_available_bytes INTEGER,
+        files_dir_free_bytes INTEGER,
+        reserved_cpu_millicores INTEGER NOT NULL,
+        reserved_memory_bytes INTEGER NOT NULL,
+        running_guests INTEGER NOT NULL,
+        availability_ppm INTEGER NOT NULL,
+        online_since_ms INTEGER NOT NULL
     )",
     ),
     MigrationOp::Schema(

@@ -983,6 +983,47 @@ fn build_spec_with_grant(
     }
 }
 
+/// CPU and memory one guest may use at most on this host: its grant's
+/// ceilings after `[plugins.jail]`, the numbers its jail enforces. The
+/// cluster scheduler accounts host budgets against these.
+#[must_use]
+pub fn guest_reservation(
+    manifest: &bookclerk_plugin_manifest::PluginManifest,
+    grant: Option<&PluginGrant>,
+    jail: &bookclerk_config::PluginsJailConfig,
+) -> bookclerk_library::control_plane::GuestReservation {
+    use crate::consent::{effective_cpu_rate_percent, effective_memory_mib};
+
+    let isolate = manifest.runtime == PluginRuntimeKind::Workerd;
+    let memory_mib = effective_memory_mib(grant.and_then(|g| g.memory_mib));
+    let cpu_rate = if isolate {
+        effective_cpu_rate_percent(None)
+    } else {
+        effective_cpu_rate_percent(grant.and_then(|g| g.cpu_rate_percent))
+    };
+    let runtime = if isolate {
+        GuestRuntimeKind::Workerd
+    } else {
+        GuestRuntimeKind::NativeDirect
+    };
+    let mut limits = bookclerk_sandbox::ResourceLimits {
+        memory_bytes: Some(u64::from(memory_mib).saturating_mul(1024 * 1024)),
+        active_processes: None,
+        cpu_rate_percent: Some(cpu_rate),
+    };
+    apply_global_jail_resource_overrides(&mut limits, jail, runtime);
+    bookclerk_library::control_plane::GuestReservation {
+        memory_bytes: limits
+            .memory_bytes
+            .and_then(|bytes| i64::try_from(bytes).ok())
+            .unwrap_or(bookclerk_library::control_plane::DEFAULT_GUEST_MEMORY_BYTES),
+        cpu_millicores: limits
+            .cpu_rate_percent
+            .map(|percent| i64::from(percent).saturating_mul(10))
+            .unwrap_or(bookclerk_library::control_plane::DEFAULT_GUEST_CPU_MILLICORES),
+    }
+}
+
 /// Tightens guest memory/CPU/process ceilings using `[plugins.jail]` without widening filesystem grants.
 fn apply_global_jail_resource_overrides(
     resources: &mut bookclerk_sandbox::ResourceLimits,

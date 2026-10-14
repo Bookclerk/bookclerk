@@ -8,6 +8,7 @@ mod auth;
 mod config_authority;
 mod csrf;
 mod event_worker;
+mod heartbeat;
 mod host_queue;
 mod http_error;
 mod job_handler;
@@ -183,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
     start_event_runtime(state.clone());
     config_authority::spawn_config_reconciler(state.clone());
     config_authority::spawn_deployment_reconciler(state.clone());
+    heartbeat::spawn_heartbeat(state.clone());
     placement::spawn_placement_scheduler(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());

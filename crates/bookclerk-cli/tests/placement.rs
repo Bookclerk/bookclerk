@@ -101,6 +101,28 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
         rows[0]["target"],
         bookclerk_plugin_catalog::host_bookclerk_target()
     );
+    assert!(rows[0]["status"].is_null(), "no daemon heartbeat yet");
+    assert_eq!(rows[0]["runtime"]["cpu_budget_percent"], 80);
+    let budget = json(&run_bookclerk(
+        files,
+        &[
+            "--format",
+            "json",
+            "hosts",
+            "set",
+            "--cpu-budget",
+            "50",
+            "--memory-budget",
+            "40",
+            "--drain",
+        ],
+        &[],
+    ));
+    assert_eq!(budget["runtime"]["cpu_budget_percent"], 50);
+    assert_eq!(budget["runtime"]["memory_budget_percent"], 40);
+    assert_eq!(budget["runtime"]["schedulable"], false);
+    let out_of_range = run_bookclerk(files, &["hosts", "set", "--cpu-budget", "0"], &[]);
+    assert!(!out_of_range.status.success(), "budgets are 1-100");
     let bad = run_bookclerk(files, &["hosts", "label", "--add", "NAS"], &[]);
     assert!(!bad.status.success(), "labels are lowercase");
     let reserved = run_bookclerk(files, &["hosts", "label", "--add", "host=x"], &[]);

@@ -899,6 +899,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             put(crate::config_authority::put_host_labels),
         )
         .route(
+            "/api/config/hosts/{host_id}/runtime",
+            put(crate::config_authority::put_host_runtime),
+        )
+        .route(
             "/api/config/plugin-releases",
             get(crate::plugin_releases::get_plugin_releases)
                 .post(crate::plugin_releases::post_plugin_release),

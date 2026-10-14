@@ -622,6 +622,11 @@ async fn reconcile_one(
         }
     };
     note(DeploymentStatus::Installed, String::new(), None).await;
+    // The ceilings this guest's jail will enforce; the heartbeat sums them
+    // into the host's reservations.
+    let reservation = installed_manifest(&root).ok().map(|manifest| {
+        crate::jail::guest_reservation(&manifest, Some(&grant), &config.plugins.jail)
+    });
     request.plugin_root = Some(root);
     request.release = release;
     note(
@@ -638,6 +643,18 @@ async fn reconcile_one(
                 Some(request.config_revision),
             )
             .await;
+            if let Err(err) = bookclerk_library::control_plane::record_deployment_reservation(
+                store,
+                &deployment.deployment_id,
+                host_id,
+                reservation.unwrap_or_else(
+                    bookclerk_library::control_plane::GuestReservation::default_guest,
+                ),
+            )
+            .await
+            {
+                tracing::warn!(error = %err, "deployment reservation write failed");
+            }
         }
         SpawnHealth::SpawnFailed { detail } => {
             note(DeploymentStatus::Error, detail, None).await;

@@ -161,6 +161,7 @@ async fn independent_connections_share_cluster_events_and_isolate_hosts() {
 
     let label_a = HostRuntimeSettingsV1 {
         label: "alpha".into(),
+        ..HostRuntimeSettingsV1::new()
     };
     let applied = replace_host_runtime(
         &store_a,
@@ -1573,4 +1574,18 @@ async fn postgres_scheduler_lease_and_placement_cross_two_pools() {
     assert_eq!(present_hosts(other, &instance.id).await, expected);
     assert!(ensure_hand_managed(other, &instance.id).await.is_err());
     assert_eq!(load_host(other, &host_b).await.unwrap().labels, ["nas"]);
+
+    // A real heartbeat written through one pool is the other pool's view of
+    // that host: capacity, the default budget, and its availability.
+    let beat = HostSampler::new(files_a.path()).sample();
+    let written = record_host_heartbeat(&store_a, &host_a, &beat)
+        .await
+        .unwrap();
+    let read = load_host_status(&store_b, &host_a).await.unwrap().unwrap();
+    assert_eq!(read, written);
+    assert_eq!(
+        read.cpu_budget_millicores,
+        read.cpu_millicores * i64::from(DEFAULT_CPU_BUDGET_PERCENT) / 100
+    );
+    assert!(read.is_live(chrono::Utc::now().timestamp_millis()));
 }

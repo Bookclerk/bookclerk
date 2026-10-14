@@ -10,6 +10,7 @@ mod batch;
 mod deployments;
 mod documents;
 mod host_queue;
+mod host_status;
 mod identity;
 mod instance_config;
 mod instances;
@@ -39,6 +40,12 @@ pub use documents::{
 pub use host_queue::{
     host_consumer_id, host_queue_name, is_host_consumer_id, publish_host_message,
     publish_to_all_hosts, HostMessage, HOST_CONSUMER_PREFIX,
+};
+pub use host_status::{
+    host_reservations, instance_demand, list_host_statuses, load_host_status, next_availability,
+    record_deployment_reservation, record_host_heartbeat, GuestReservation, HostHeartbeat,
+    HostSampler, HostStatus, AVAILABILITY_FULL_PPM, AVAILABILITY_TAU, DEFAULT_GUEST_CPU_MILLICORES,
+    DEFAULT_GUEST_MEMORY_BYTES, HOST_HEARTBEAT_INTERVAL, HOST_LIVE_INTERVALS,
 };
 pub use identity::{
     current_process_incarnation, host_identity_path, host_target, list_host_ids, list_hosts,
@@ -160,28 +167,66 @@ impl EventsSettingsV1 {
 
 /// Typed host-scoped runtime document, schema version 1.
 ///
-/// The label is desired state for one host. It is not a hostname and it is not
-/// applied as another host's runtime settings.
+/// Desired state for one host, editable from any host in the cluster: an
+/// operator label, and the budget the scheduler may commit on this host.
+/// Budgets are shares of the capacity the host detects at heartbeat
+/// (CPU cores and memory, the tighter of the machine and its cgroup).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostRuntimeSettingsV1 {
     /// Operator label shown for this host. Empty is allowed.
     pub label: String,
+    /// Share of detected CPU cores the scheduler may commit to plugin
+    /// guests on this host (1..=100).
+    #[serde(default = "default_cpu_budget_percent")]
+    pub cpu_budget_percent: u8,
+    /// Share of detected memory the scheduler may commit (1..=100).
+    #[serde(default = "default_memory_budget_percent")]
+    pub memory_budget_percent: u8,
+    /// False drains the host: the scheduler places nothing new here and
+    /// moves its replicas elsewhere. Hand-managed deployments still run.
+    #[serde(default = "default_schedulable")]
+    pub schedulable: bool,
+}
+
+/// Default CPU budget: leave a fifth of the cores to the rest of the host.
+pub const DEFAULT_CPU_BUDGET_PERCENT: u8 = 80;
+
+/// Default memory budget: leave a quarter of the memory to the rest of the host.
+pub const DEFAULT_MEMORY_BUDGET_PERCENT: u8 = 75;
+
+/// Serde default for [`HostRuntimeSettingsV1::cpu_budget_percent`].
+fn default_cpu_budget_percent() -> u8 {
+    DEFAULT_CPU_BUDGET_PERCENT
+}
+
+/// Serde default for [`HostRuntimeSettingsV1::memory_budget_percent`].
+fn default_memory_budget_percent() -> u8 {
+    DEFAULT_MEMORY_BUDGET_PERCENT
+}
+
+/// Serde default for [`HostRuntimeSettingsV1::schedulable`].
+fn default_schedulable() -> bool {
+    true
 }
 
 impl HostRuntimeSettingsV1 {
-    /// Empty label.
+    /// Empty label, default budgets, schedulable.
     #[must_use]
     pub fn new() -> Self {
         Self {
             label: String::new(),
+            cpu_budget_percent: DEFAULT_CPU_BUDGET_PERCENT,
+            memory_budget_percent: DEFAULT_MEMORY_BUDGET_PERCENT,
+            schedulable: true,
         }
     }
 
-    /// Rejects control characters and labels longer than 64 bytes.
+    /// Rejects control characters, labels longer than 64 bytes, and budgets
+    /// outside 1..=100.
     ///
     /// # Errors
     ///
-    /// Returns an error when `label` is not a short single-line string.
+    /// Returns an error when a field is out of range.
     pub fn validate(&self) -> Result<()> {
         if self.label.len() > 64 {
             return Err(invalid_events(
@@ -192,6 +237,14 @@ impl HostRuntimeSettingsV1 {
             return Err(invalid_events(
                 "host runtime label must not contain control characters",
             ));
+        }
+        for (name, percent) in [
+            ("cpu_budget_percent", self.cpu_budget_percent),
+            ("memory_budget_percent", self.memory_budget_percent),
+        ] {
+            if !(1..=100).contains(&percent) {
+                return Err(invalid_events(&format!("{name} must be between 1 and 100")));
+            }
         }
         Ok(())
     }
@@ -507,6 +560,65 @@ pub async fn replace_host_runtime(
         }
         ReplaceOutcome::Replayed { revision } => Ok(HostRuntimeReplace::Replayed { revision }),
     }
+}
+
+/// Applies `edit` to a host's runtime document (creating it with defaults
+/// when the host never wrote one) under compare-and-swap, retrying a few
+/// times on a concurrent edit. Budgets reach the scheduler with the host's
+/// next heartbeat.
+///
+/// # Errors
+///
+/// Returns an error when the actor may not write, the edited body is
+/// invalid, or the document keeps changing underneath.
+pub async fn update_host_runtime(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    host_id: &str,
+    edit: impl Fn(&mut HostRuntimeSettingsV1),
+) -> Result<ConfigurationDocument<HostRuntimeSettingsV1>> {
+    for attempt in 0..4 {
+        let current = match load_host_runtime(store, host_id).await {
+            Ok(document) => document,
+            Err(LibraryError::NotFound(_)) => {
+                import_host_runtime_if_absent(
+                    store,
+                    actor,
+                    host_id,
+                    &HostRuntimeSettingsV1::new(),
+                    &format!("host-runtime-default-{host_id}"),
+                )
+                .await?
+            }
+            Err(err) => return Err(err),
+        };
+        let mut body = current.body.clone();
+        edit(&mut body);
+        if body == current.body {
+            return Ok(current);
+        }
+        let operation_id = format!(
+            "host-runtime-{host_id}-{}-{attempt}-{}",
+            current.revision,
+            uuid::Uuid::new_v4().simple()
+        );
+        match replace_host_runtime(
+            store,
+            actor,
+            host_id,
+            current.revision,
+            &body,
+            &operation_id,
+        )
+        .await?
+        {
+            HostRuntimeReplace::Applied(document) => return Ok(document),
+            HostRuntimeReplace::Conflict { .. } | HostRuntimeReplace::Replayed { .. } => {}
+        }
+    }
+    Err(LibraryError::Conflict(format!(
+        "host.runtime for {host_id} kept changing; retry"
+    )))
 }
 
 /// Outcome of [`replace_host_runtime`].

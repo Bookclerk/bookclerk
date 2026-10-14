@@ -36,13 +36,12 @@ use super::deployments::{
     replace_plugin_deployment, DeploymentReplace, DesiredState, PluginDeployment,
 };
 use super::documents::ConfigActor;
-use super::host_queue::{notify_all_hosts, HostMessage, HOST_CONSUMER_PREFIX};
+use super::host_queue::{notify_all_hosts, HostMessage};
 use super::identity::{list_hosts, load_host, HostRecord};
 use super::instances::{load_plugin_instance, PluginInstanceId};
 use super::releases::load_active_release;
 use crate::entities::{cluster_leases, hosts, plugin_placements};
 use crate::error::{LibraryError, Result};
-use crate::models::EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS;
 use crate::store::LibraryStore;
 
 /// Name of the cluster lease the scheduler runs under.
@@ -523,23 +522,19 @@ pub async fn set_host_labels(
     load_host(store, host_id).await
 }
 
-/// Hosts whose daemon is live: their `host:<host_id>` queue consumer row
-/// heartbeated within the event catalog TTL.
+/// Hosts whose daemon is live: its last heartbeat in `host_status` is
+/// younger than three heartbeat intervals.
 ///
 /// # Errors
 ///
-/// Returns an error when the catalog read fails.
+/// Returns an error when the read fails.
 pub async fn live_host_ids(store: &LibraryStore) -> Result<BTreeSet<String>> {
-    Ok(store
-        .list_live_event_subscriber_nodes(EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS)
+    let now_ms = Utc::now().timestamp_millis();
+    Ok(super::host_status::list_host_statuses(store)
         .await?
         .into_iter()
-        .filter(|row| row.enabled)
-        .filter_map(|row| {
-            row.plugin_id
-                .strip_prefix(HOST_CONSUMER_PREFIX)
-                .map(str::to_string)
-        })
+        .filter(|status| status.is_live(now_ms))
+        .map(|status| status.host_id)
         .collect())
 }
 

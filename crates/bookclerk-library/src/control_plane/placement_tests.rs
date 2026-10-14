@@ -9,7 +9,6 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use super::identity::{register_and_heartbeat, HostObservation};
 use super::*;
 use crate::master_key::master_key_test_lock_async;
-use crate::models::EventCatalogSubscription;
 use crate::store::LibraryStore;
 
 async fn file_store(path: &std::path::Path) -> LibraryStore {
@@ -43,19 +42,45 @@ pub(super) async fn register(store: &LibraryStore, host_id: &str, cluster_id: &s
         .expect("register host");
 }
 
-/// Heartbeats `host_id`'s queue consumer `age` ago (zero: now).
+/// Writes a heartbeat for `host_id` as if sent `age` ago, with a 4-core,
+/// 8 GiB host and nothing reserved.
 pub(super) async fn heartbeat_consumer(store: &LibraryStore, host_id: &str, age: Duration) {
-    let at = chrono::Utc::now() - chrono::Duration::from_std(age).unwrap();
-    store
-        .upsert_event_subscriber_at(
-            &format!("node-{host_id}"),
-            &host_consumer_id(host_id),
-            &[EventCatalogSubscription::queue(host_queue_name(host_id))],
-            true,
-            at,
-        )
+    heartbeat_with(store, host_id, age, |_| {}).await;
+}
+
+/// Like [`heartbeat_consumer`], with `edit` applied to the status first.
+pub(super) async fn heartbeat_with(
+    store: &LibraryStore,
+    host_id: &str,
+    age: Duration,
+    edit: impl FnOnce(&mut HostStatus),
+) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let at = now - i64::try_from(age.as_millis()).unwrap();
+    let mut status = HostStatus {
+        host_id: host_id.to_string(),
+        incarnation: "test".into(),
+        started_at: String::new(),
+        heartbeat_at: String::new(),
+        heartbeat_ms: at,
+        interval_ms: 15_000,
+        cpu_millicores: 4000,
+        memory_bytes: Some(8 << 30),
+        cpu_budget_millicores: 3200,
+        memory_budget_bytes: Some(6 << 30),
+        schedulable: true,
+        cpu_used_millicores: Some(0),
+        memory_available_bytes: Some(6 << 30),
+        files_dir_free_bytes: None,
+        reserved: GuestReservation::default(),
+        running_guests: 0,
+        availability_ppm: 1_000_000,
+        online_since_ms: at,
+    };
+    edit(&mut status);
+    super::host_status::upsert_host_status(store, &status)
         .await
-        .expect("catalog row");
+        .expect("host status");
 }
 
 /// Hosts with a present deployment of `instance`.

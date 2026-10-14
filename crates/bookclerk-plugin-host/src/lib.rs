@@ -142,7 +142,7 @@ pub use install_preflight::{
 pub use instance_bindings::{
     binding_grant_flags, prepare_open_for_instance, prepared_open_from_resolved, PreparedOpen,
 };
-pub use jail::plugin_data_dir;
+pub use jail::{guest_reservation, plugin_data_dir};
 pub use kv_binding::{KvNamespaces, LibraryKvNamespace, KV_GRANT_BINDING};
 pub use manifest::{
     embedded_logo_api_path, entrypoint_family, logo_content_type, validate_logo,

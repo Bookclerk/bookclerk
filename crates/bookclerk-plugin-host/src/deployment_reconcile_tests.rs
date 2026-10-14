@@ -1890,4 +1890,13 @@ async fn a_verified_platform_guest_without_a_grant_file_persists_its_grant_and_s
             .is_some(),
         "the platform grant is persisted before the first spawn"
     );
+    // The running guest's jail ceilings are the host's reservation: the
+    // grant defaults here (512 MiB, 80% of a core).
+    let (reserved, running) =
+        bookclerk_library::control_plane::host_reservations(&store, &session.host.host_id)
+            .await
+            .unwrap();
+    assert_eq!(running, 1);
+    assert_eq!(reserved.memory_bytes, 512 * 1024 * 1024);
+    assert_eq!(reserved.cpu_millicores, 800);
 }
