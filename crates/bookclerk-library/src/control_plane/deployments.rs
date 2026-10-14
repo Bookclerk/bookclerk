@@ -398,6 +398,20 @@ pub async fn list_deployments_for_host(
     rows.into_iter().map(deployment_from_model).collect()
 }
 
+/// Every deployment row in the cluster.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn list_all_deployments(store: &LibraryStore) -> Result<Vec<PluginDeployment>> {
+    let rows = plugin_deployments::Entity::find()
+        .order_by_asc(plugin_deployments::Column::DeploymentId)
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    rows.into_iter().map(deployment_from_model).collect()
+}
+
 /// Every deployment row for `instance_id`, on any host.
 ///
 /// # Errors

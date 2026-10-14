@@ -18,6 +18,7 @@ mod oidc_rp;
 mod oidc_verify;
 mod origin;
 mod passkeys;
+mod placement;
 mod plugin_releases;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
@@ -182,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
     start_event_runtime(state.clone());
     config_authority::spawn_config_reconciler(state.clone());
     config_authority::spawn_deployment_reconciler(state.clone());
+    placement::spawn_placement_scheduler(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

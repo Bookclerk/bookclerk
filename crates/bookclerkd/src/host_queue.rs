@@ -27,6 +27,8 @@ pub const RECONCILE_BACKSTOP: Duration = Duration::from_secs(60);
 static DEPLOYMENT_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
 /// Wakes the configuration (`core.events`) reconciler.
 static CONFIG_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
+/// Wakes the placement scheduler (it acts only while holding the lease).
+static PLACEMENT_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
 /// This process's host id, read once from `host-identity.json`.
 static HOST_ID: OnceLock<String> = OnceLock::new();
 
@@ -40,12 +42,25 @@ pub async fn config_wakeup() {
     CONFIG_WAKEUP.notified().await;
 }
 
+/// Waits until a placement wakeup arrives.
+pub async fn placement_wakeup() {
+    PLACEMENT_WAKEUP.notified().await;
+}
+
 /// Wakes the reconcilers a message concerns. `notify_one` stores a permit,
 /// so a wakeup that lands mid-pass runs one more pass afterwards.
 pub fn wake_for(message: &HostMessage) {
     match message {
-        HostMessage::DeploymentChanged { .. } | HostMessage::ReleaseChanged { .. } => {
+        HostMessage::DeploymentChanged { .. } => {
             DEPLOYMENT_WAKEUP.notify_one();
+        }
+        HostMessage::ReleaseChanged { .. } => {
+            // A new release can add or drop targets, so placements may move.
+            DEPLOYMENT_WAKEUP.notify_one();
+            PLACEMENT_WAKEUP.notify_one();
+        }
+        HostMessage::PlacementChanged { .. } => {
+            PLACEMENT_WAKEUP.notify_one();
         }
         HostMessage::ConfigurationChanged { .. } => {
             // Cluster settings feed the config reconciler; instance documents

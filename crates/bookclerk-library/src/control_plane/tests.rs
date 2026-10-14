@@ -1505,3 +1505,72 @@ async fn postgres_kv_and_host_queues_cross_two_pools() {
         );
     }
 }
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_scheduler_lease_and_placement_cross_two_pools() {
+    use super::placement_tests::{heartbeat_consumer, present_hosts};
+
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let _guard = master_key_test_lock_async().await;
+    let (store_a, store_b) = postgres_stores().await;
+    let files_a = tempdir().unwrap();
+    let files_b = tempdir().unwrap();
+    let session_a = bootstrap_pair(&store_a, files_a.path()).await;
+    std::fs::copy(
+        master_key_path(files_a.path()),
+        master_key_path(files_b.path()),
+    )
+    .unwrap();
+    let session_b = bootstrap_pair(&store_b, files_b.path()).await;
+    let host_a = session_a.host.host_id.clone();
+    let host_b = session_b.host.host_id.clone();
+    for host in [&host_a, &host_b] {
+        heartbeat_consumer(&store_a, host, std::time::Duration::ZERO).await;
+    }
+    set_host_labels(&store_a, &operator(), &host_b, &["nas".to_string()])
+        .await
+        .unwrap();
+    let instance =
+        create_plugin_instance(&store_a, &operator(), "path:file:///tmp/pg-placed#p", "")
+            .await
+            .unwrap();
+    put_plugin_placement(
+        &store_a,
+        &operator(),
+        &instance.id,
+        &PlacementSpec {
+            replicas: 1,
+            constraints: vec!["nas".into()],
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Both pools race for the scheduler lease; exactly one wins.
+    let (lease_a, lease_b) = tokio::join!(
+        acquire_lease(&store_a, SCHEDULER_LEASE, &host_a, SCHEDULER_LEASE_TTL),
+        acquire_lease(&store_b, SCHEDULER_LEASE, &host_b, SCHEDULER_LEASE_TTL),
+    );
+    let (lease_a, lease_b) = (lease_a.unwrap(), lease_b.unwrap());
+    assert_eq!(
+        u8::from(lease_a.is_some()) + u8::from(lease_b.is_some()),
+        1,
+        "one scheduler at a time"
+    );
+    let (winner, other) = if lease_a.is_some() {
+        (&store_a, &store_b)
+    } else {
+        (&store_b, &store_a)
+    };
+    let report = schedule_placements(winner).await.unwrap();
+    assert_eq!(report.added, 1);
+    let mut expected = std::collections::BTreeSet::new();
+    expected.insert(host_b.clone());
+    assert_eq!(present_hosts(other, &instance.id).await, expected);
+    assert!(ensure_hand_managed(other, &instance.id).await.is_err());
+    assert_eq!(load_host(other, &host_b).await.unwrap().labels, ["nas"]);
+}

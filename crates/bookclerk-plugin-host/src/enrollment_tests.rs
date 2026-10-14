@@ -221,6 +221,73 @@ async fn granted_plugins_enroll_present_and_database_adapters_are_not_enrolled()
     );
 }
 
+#[tokio::test]
+async fn a_scheduler_placed_instance_enrolls_absent_even_with_a_grant() {
+    use bookclerk_library::control_plane::{
+        ensure_plugin_instance, put_plugin_placement, ConfigActor, PlacementSpec,
+    };
+
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    stage_tree(files, "fxplaced", &storefront_manifest("fxplaced"));
+    let (config, store, host_id) = open_host(files).await;
+    let discovered = discover_plugins(&config).unwrap();
+    let plugin = discovered
+        .iter()
+        .find(|plugin| plugin.manifest.id == "fxplaced")
+        .expect("discovered");
+    let mut grants = PluginGrantStore::default();
+    grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
+    grants.save(files).unwrap();
+    let instance = ensure_plugin_instance(
+        &store,
+        &ConfigActor::Bootstrap,
+        plugin.plugin_key().canonical(),
+    )
+    .await
+    .unwrap();
+    put_plugin_placement(
+        &store,
+        &ConfigActor::Operator { id: "cli".into() },
+        &instance.id,
+        &PlacementSpec {
+            replicas: 1,
+            constraints: vec!["nas".into()],
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    let enrolled = enroll_local_plugins(&store, &config, &host_id)
+        .await
+        .unwrap();
+    assert_eq!(enrolled.len(), 1);
+    assert_eq!(enrolled[0].instance.id, instance.id);
+    assert_eq!(
+        enrolled[0].deployment.desired, DESIRED_ABSENT,
+        "the scheduler, not enrollment, deploys a placed instance"
+    );
+    assert_eq!(
+        load_deployment_for_host(&store, &instance.id, &host_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .desired,
+        DESIRED_ABSENT
+    );
+}
+
+#[test]
+fn library_host_target_matches_the_catalog_target() {
+    assert_eq!(
+        bookclerk_library::control_plane::host_target(),
+        bookclerk_plugin_catalog::host_bookclerk_target(),
+        "hosts.target and release artifact targets must use one vocabulary"
+    );
+}
+
 /// Storefront manifest at `version` whose `[[settings]]` are `keys`
 /// (plain strings).
 fn versioned_manifest(id: &str, version: &str, keys: &[&str]) -> String {

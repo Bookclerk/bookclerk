@@ -92,6 +92,33 @@ pub struct HostRecord {
     pub files_dir_free_bytes: Option<i64>,
     /// Byte size of the acquire scratch tree under the download cache.
     pub scratch_bytes: Option<i64>,
+    /// Bookclerk artifact target of the reporting binary; empty on a row
+    /// written before targets were recorded.
+    pub target: String,
+    /// Operator-assigned placement labels, sorted.
+    pub labels: Vec<String>,
+}
+
+/// Bookclerk artifact target this binary runs as (`linux-x64-gnu`,
+/// `macos-arm64`, …). Matches `bookclerk_plugin_catalog::host_bookclerk_target`
+/// (a plugin-host test pins the two together).
+#[must_use]
+pub fn host_target() -> &'static str {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "linux-x64-gnu"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "linux-arm64-gnu"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "macos-x64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "macos-arm64"
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "windows-x64"
+    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+        "windows-arm64"
+    } else {
+        "unknown"
+    }
 }
 
 /// Capacity sample written on heartbeat. Not desired state.
@@ -229,8 +256,8 @@ pub async fn register_and_heartbeat(
                         software_version, schema_state, compatible,
                         logical_cpus, cpu_max_quota_us, cpu_max_period_us,
                         memory_max_bytes, memory_current_bytes, memory_anon_bytes,
-                        files_dir_free_bytes, scratch_bytes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        files_dir_free_bytes, scratch_bytes, target
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     vec![
                         text(host_id),
                         text(cluster_id),
@@ -248,6 +275,7 @@ pub async fn register_and_heartbeat(
                         int_opt(observation.memory_anon_bytes),
                         int_opt(observation.files_dir_free_bytes),
                         int_opt(observation.scratch_bytes),
+                        text(host_target()),
                     ],
                 ),
                 exec(
@@ -256,7 +284,7 @@ pub async fn register_and_heartbeat(
                         schema_state = ?, compatible = ?,
                         logical_cpus = ?, cpu_max_quota_us = ?, cpu_max_period_us = ?,
                         memory_max_bytes = ?, memory_current_bytes = ?, memory_anon_bytes = ?,
-                        files_dir_free_bytes = ?, scratch_bytes = ?
+                        files_dir_free_bytes = ?, scratch_bytes = ?, target = ?
                      WHERE host_id = ? AND cluster_id = ?",
                     vec![
                         text(incarnation),
@@ -272,6 +300,7 @@ pub async fn register_and_heartbeat(
                         int_opt(observation.memory_anon_bytes),
                         int_opt(observation.files_dir_free_bytes),
                         int_opt(observation.scratch_bytes),
+                        text(host_target()),
                         text(host_id),
                         text(cluster_id),
                     ],
@@ -476,7 +505,17 @@ fn record_from_model(row: hosts::Model) -> HostRecord {
         memory_anon_bytes: row.memory_anon_bytes,
         files_dir_free_bytes: row.files_dir_free_bytes,
         scratch_bytes: row.scratch_bytes,
+        target: row.target,
+        labels: parse_labels(&row.labels_json),
     }
+}
+
+/// Stored label JSON as a sorted list; malformed JSON reads as no labels.
+pub(super) fn parse_labels(raw: &str) -> Vec<String> {
+    let mut labels: Vec<String> = serde_json::from_str(raw).unwrap_or_default();
+    labels.sort();
+    labels.dedup();
+    labels
 }
 
 /// True when `state` is the unreleased pack this binary applies.

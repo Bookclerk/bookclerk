@@ -39,6 +39,10 @@ pub struct Model {
     pub files_dir_free_bytes: Option<i64>,
     /// Byte size of the acquire scratch tree under the download cache.
     pub scratch_bytes: Option<i64>,
+    /// Bookclerk artifact target of the reporting binary (`linux-x64-gnu`, …).
+    pub target: String,
+    /// JSON array of operator-assigned placement labels.
+    pub labels_json: String,
 }
 
 /// Declared SeaORM relations (hosts are addressed by `host_id`).

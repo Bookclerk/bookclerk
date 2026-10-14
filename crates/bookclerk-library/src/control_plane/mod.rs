@@ -13,6 +13,7 @@ mod host_queue;
 mod identity;
 mod instance_config;
 mod instances;
+mod placement;
 mod releases;
 mod schemas;
 mod secret;
@@ -23,12 +24,12 @@ use serde::{Deserialize, Serialize};
 
 pub use deployments::{
     bounded_observation_detail, delete_plugin_deployment, ensure_plugin_deployment,
-    instance_has_deployment, list_deployments_for_host, list_deployments_for_instance,
-    list_observations_for_deployment, list_present_deployments_for_host, load_deployment,
-    load_deployment_for_host, load_observation, present_plugin_keys_for_host,
-    replace_plugin_deployment, upsert_observation, DeploymentObservation, DeploymentReplace,
-    DeploymentStatus, PluginDeployment, DESIRED_ABSENT, DESIRED_PRESENT,
-    MAX_OBSERVATION_DETAIL_BYTES,
+    instance_has_deployment, list_all_deployments, list_deployments_for_host,
+    list_deployments_for_instance, list_observations_for_deployment,
+    list_present_deployments_for_host, load_deployment, load_deployment_for_host, load_observation,
+    present_plugin_keys_for_host, replace_plugin_deployment, upsert_observation,
+    DeploymentObservation, DeploymentReplace, DeploymentStatus, PluginDeployment, DESIRED_ABSENT,
+    DESIRED_PRESENT, MAX_OBSERVATION_DETAIL_BYTES,
 };
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,
@@ -40,8 +41,8 @@ pub use host_queue::{
     publish_to_all_hosts, HostMessage, HOST_CONSUMER_PREFIX,
 };
 pub use identity::{
-    current_process_incarnation, host_identity_path, list_host_ids, list_hosts, load_host,
-    load_or_create_host_identity, HostIdentity, HostRecord, HOST_IDENTITY_FILE,
+    current_process_incarnation, host_identity_path, host_target, list_host_ids, list_hosts,
+    load_host, load_or_create_host_identity, HostIdentity, HostRecord, HOST_IDENTITY_FILE,
 };
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,
@@ -55,6 +56,15 @@ pub use instances::{
     create_plugin_instance, default_instance_for_key, delete_plugin_instance,
     ensure_plugin_instance, find_plugin_instance_by_key, list_all_plugin_instances,
     list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
+};
+pub use placement::{
+    acquire_lease, delete_plugin_placement, effective_host_labels, ensure_hand_managed,
+    labels_satisfy, list_plugin_placements, live_host_ids, load_lease, load_plugin_placement,
+    plan_placement, put_plugin_placement, release_lease, schedule_placements, scheduler_actor,
+    set_host_labels, validate_constraint, validate_host_label, validate_label, ClusterLease,
+    HostCandidate, PlacementPlan, PlacementSpec, PlacementWrite, PluginPlacement, ScheduleReport,
+    HOST_LABEL, MAX_HOST_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, SCHEDULER_ACTOR_ID,
+    SCHEDULER_LEASE, SCHEDULER_LEASE_TTL, TARGET_LABEL,
 };
 pub use releases::{
     activate_release, approve_release_grant, clear_active_release, list_release_pointers,
@@ -567,5 +577,7 @@ fn invalid_events(detail: &str) -> LibraryError {
 
 #[cfg(test)]
 mod instance_tests;
+#[cfg(test)]
+mod placement_tests;
 #[cfg(test)]
 mod tests;

@@ -52,6 +52,16 @@ pub enum HostMessage {
         /// Pointer revision (0 for a grant change or a clear).
         revision: i64,
     },
+    /// Placement intent, or a fact it depends on, changed: an instance's
+    /// replicas or constraints, or a host's labels. Only the host holding
+    /// the scheduler lease acts on it; every other host ignores it.
+    #[serde(rename = "placement.changed", rename_all = "camelCase")]
+    PlacementChanged {
+        /// `instance:<id>` or `host:<id>`.
+        subject: String,
+        /// Placement revision (0 for a host label change or a delete).
+        revision: i64,
+    },
     /// A configuration document changed (cluster settings or an instance
     /// document).
     #[serde(rename = "configuration.changed", rename_all = "camelCase")]
@@ -84,6 +94,10 @@ impl HostMessage {
                 namespace,
                 revision,
             } => format!("configuration.changed:{scope_type}:{scope_id}:{namespace}:{revision}"),
+            Self::PlacementChanged { subject, revision } => format!(
+                "placement.changed:{subject}:{revision}:{}",
+                uuid::Uuid::new_v4()
+            ),
             // Grant approvals and clears carry revision 0; a fresh id keeps
             // each one a distinct wakeup.
             Self::ReleaseChanged {

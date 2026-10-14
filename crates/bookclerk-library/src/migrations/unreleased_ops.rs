@@ -797,7 +797,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         memory_current_bytes INTEGER,
         memory_anon_bytes INTEGER,
         files_dir_free_bytes INTEGER,
-        scratch_bytes INTEGER
+        scratch_bytes INTEGER,
+        target TEXT NOT NULL DEFAULT '',
+        labels_json TEXT NOT NULL DEFAULT '[]'
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_hosts_heartbeat ON hosts(heartbeat_at)"),
@@ -981,6 +983,29 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         revision INTEGER NOT NULL,
         updated_at TEXT NOT NULL,
         updated_by TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_placements (
+        plugin_instance_id TEXT PRIMARY KEY NOT NULL,
+        replicas INTEGER NOT NULL CHECK (replicas >= 0),
+        constraints_json TEXT NOT NULL DEFAULT '[]',
+        revision INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        placed INTEGER NOT NULL DEFAULT 0,
+        detail TEXT NOT NULL DEFAULT '',
+        scheduled_at TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS cluster_leases (
+        name TEXT PRIMARY KEY NOT NULL,
+        holder TEXT NOT NULL,
+        token INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        renewed_at TEXT NOT NULL
     )",
     ),
     MigrationOp::Schema(

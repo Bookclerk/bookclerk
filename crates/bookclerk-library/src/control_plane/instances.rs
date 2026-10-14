@@ -298,6 +298,10 @@ pub async fn delete_plugin_instance(
     )
     .await
     .map_err(LibraryError::Orm)?;
+    crate::entities::plugin_placements::Entity::delete_by_id(id.as_str().to_string())
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
     plugin_instances::Entity::delete_by_id(id.as_str().to_string())
         .exec(store.db())
         .await
