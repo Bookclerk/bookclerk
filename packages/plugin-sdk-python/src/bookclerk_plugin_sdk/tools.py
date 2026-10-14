@@ -251,6 +251,9 @@ def _validate_int(field: str, value: Any, low: int, high: int, message: str) -> 
         raise ValueError(f"plugin.toml: {field} {message}")
 
 
+HOST_EVENT_TYPES = frozenset({"book_acquired"})
+"""Domain event types only the host emits; plugins consume them but cannot produce them."""
+
 MAX_KV_NAMESPACE_VALUE_BYTES = 1_048_576
 """Largest ``max_value_bytes`` a ``[[kv_namespaces]]`` row may declare (1 MiB)."""
 MAX_KV_NAMESPACE_KEYS = 1_000_000
@@ -657,9 +660,15 @@ def _validate_surface(m: dict[str, Any]) -> None:
     for consumer in consumers:
         if not str(consumer.get("type") or "").strip():
             raise ValueError("plugin.toml: [[events.consumers]] `type` is required")
-    for producer in events.get("producers") or []:
+    for index, producer in enumerate(events.get("producers") or []):
         if not str(producer.get("type") or "").strip():
             raise ValueError("plugin.toml: [[events.producers]] `type` is required")
+        if producer.get("type") in HOST_EVENT_TYPES:
+            raise ValueError(
+                f"plugin.toml: events.producers[{index}].type `{producer.get('type')}` is emitted "
+                "by the host (after a source's acquire handler returns); plugins may consume it "
+                "but not publish it"
+            )
     if m.get("cli") is not None and "cli" not in seen:
         raise ValueError('plugin.toml: `[cli]` requires `"cli"` in `entrypoints`')
     if ((m.get("oidc") or {}).get("clients") or []) and "oidc" not in seen:

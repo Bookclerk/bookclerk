@@ -504,6 +504,20 @@ impl EventsManifest {
     }
 }
 
+/// Domain event types only the host emits.
+///
+/// `book_acquired` is written by the host's acquire pipeline in the same
+/// transaction as the library row once a source plugin's acquire handler
+/// returns; the source never publishes it. Plugins consume these types but
+/// cannot declare them under `[[events.producers]]`.
+pub const HOST_EVENT_TYPES: [&str; 1] = ["book_acquired"];
+
+/// True when `event_type` is in [`HOST_EVENT_TYPES`].
+#[must_use]
+pub fn is_host_event_type(event_type: &str) -> bool {
+    HOST_EVENT_TYPES.contains(&event_type)
+}
+
 /// Maximum length of a queue name.
 pub const MAX_QUEUE_NAME_LEN: usize = 63;
 /// Queue-name prefixes only the host may use (`core.events`, `host.<id>`).
@@ -1688,6 +1702,14 @@ impl PluginManifest {
                         producer.event_type
                     )));
                 }
+                if is_host_event_type(&producer.event_type) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: events.producers[{i}].type `{}` is emitted by the host \
+                         (after a source's acquire handler returns); plugins may consume it \
+                         but not publish it",
+                        producer.event_type
+                    )));
+                }
             }
         }
         self.validate_queues()?;
@@ -2598,6 +2620,22 @@ mode = "deny"
             !ts.to_string().to_ascii_lowercase().contains("database"),
             "{ts}"
         );
+    }
+
+    #[test]
+    fn host_event_types_cannot_be_produced_by_plugins() {
+        let err = PluginManifest::parse(&workerd_body(
+            "\n[[events.producers]]\ntype = \"book_acquired\"\n",
+        ))
+        .expect_err("book_acquired is host-emitted");
+        assert!(err.to_string().contains("emitted by the host"), "{err}");
+        let consumer = PluginManifest::parse(&workerd_body(
+            "\n[[events.consumers]]\ntype = \"book_acquired\"\nschema_versions = [1]\n",
+        ))
+        .expect("plugins still consume it");
+        assert_eq!(consumer.events.consumers[0].event_type, "book_acquired");
+        assert!(is_host_event_type("book_acquired"));
+        assert!(!is_host_event_type("echo_seen"));
     }
 
     #[test]

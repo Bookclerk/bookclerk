@@ -1407,6 +1407,13 @@ The host `EventPublisher` writes straight into the library outbox
   `account_id` is the opening invocation's account; a guest cannot spoof
   another producer. `correlationId` / `causationId` default to the
   invocation's values when the guest leaves them empty.
+- **Host-emitted types.** Some domain events belong to the host.
+  `book_acquired` is one: a source plugin's acquire handler returns the
+  book, then the host's acquire pipeline records it and publishes
+  `book_acquired` in the same transaction as the library row. A plugin
+  consumes it under `[[events.consumers]]` but cannot declare it under
+  `[[events.producers]]` (`check` and load fail), and the host publisher
+  refuses it even from an older grant.
 - **Producer grant.** The binding exists only when the manifest declares
   `[[events.producers]]` *and* the operator grant covers those types (the
   consent request lists them). Publishing a type outside that intersection

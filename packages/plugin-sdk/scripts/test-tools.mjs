@@ -52,6 +52,7 @@ run(["check", path.join(fixtures, "valid-producer-shares-oauth-name")], true);
 run(["check", path.join(fixtures, "invalid-undeclared-python")], false, "undeclared Python file");
 run(["check", path.join(fixtures, "invalid-module-ts")], false, "not implemented yet");
 run(["check", path.join(fixtures, "valid-kv")], true);
+run(["check", path.join(fixtures, "invalid-producer-host-event")], false, "emitted by the host");
 run(["check", path.join(fixtures, "invalid-kv-namespace")], false, "namespace");
 run(["check", path.join(fixtures, "valid-queues")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-workerd/plugin.fmt.toml")], true);

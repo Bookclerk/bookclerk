@@ -249,6 +249,11 @@ def test_check_accepts_kv_and_queues_declarations():
     assert "valid_queues" in check_plugin(FIXTURES / "valid-queues")
 
 
+def test_check_rejects_plugin_producing_host_event():
+    with pytest.raises(ValueError, match="emitted by the host"):
+        check_plugin(FIXTURES / "invalid-producer-host-event")
+
+
 def test_check_rejects_bad_kv_namespace():
     with pytest.raises(ValueError, match="namespace"):
         check_plugin(FIXTURES / "invalid-kv-namespace")

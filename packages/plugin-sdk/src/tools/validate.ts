@@ -177,6 +177,13 @@ function validateQueueName(field: string, name: unknown): void {
   }
 }
 
+/**
+ * Domain event types only the host emits (`book_acquired` is written by the
+ * acquire pipeline once a source's acquire handler returns). Plugins consume
+ * them but cannot declare them under `[[events.producers]]`.
+ */
+export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set(["book_acquired"]);
+
 /** Largest `max_value_bytes` a `[[kv_namespaces]]` row may declare (1 MiB). */
 export const MAX_KV_NAMESPACE_VALUE_BYTES = 1_048_576;
 /** Largest `max_keys` a `[[kv_namespaces]]` row may declare. */
@@ -603,9 +610,15 @@ function validateSurface(m: Manifest): void {
       throw new Error("plugin.toml: [[events.consumers]] `type` is required");
     }
   }
-  for (const producer of m.events?.producers ?? []) {
+  for (const [i, producer] of (m.events?.producers ?? []).entries()) {
     if (!producer.type || !String(producer.type).trim()) {
       throw new Error("plugin.toml: [[events.producers]] `type` is required");
+    }
+    if (HOST_EVENT_TYPES.has(producer.type)) {
+      throw new Error(
+        `plugin.toml: events.producers[${i}].type \`${producer.type}\` is emitted by the host ` +
+          "(after a source's acquire handler returns); plugins may consume it but not publish it",
+      );
     }
   }
   if (m.cli != null && !seen.has("cli")) {

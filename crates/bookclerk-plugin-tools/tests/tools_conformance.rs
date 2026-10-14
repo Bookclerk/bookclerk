@@ -237,6 +237,11 @@ fn check_rejects_bad_kv_namespace() {
 }
 
 #[test]
+fn check_rejects_plugin_producing_host_event() {
+    assert_check_fails("invalid-producer-host-event", "emitted by the host");
+}
+
+#[test]
 fn check_accepts_queues_declaration() {
     let out = check_fixture("valid-queues");
     assert!(
