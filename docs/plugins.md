@@ -985,10 +985,12 @@ Bookclerk release, and a plugin gets the behavior of the date this release
 actually applied — not a second calendar, and not the raw author date when it
 is past the pin. `[[kv_namespaces]]` is a
 durable KV binding: declaring it is legal, and load or spawn fails with
-"not implemented yet". `[[databases]]` does not replace it. `[queues]` is the
-same kind of declaration (producers and consumers): legal in `plugin.toml`,
-not implemented yet, and not a substitute for `[[events.consumers]]` or
-`[[events.producers]]`.
+"not implemented yet". `[[databases]]` does not replace it. `[queues]` is
+typed: `[[queues.producers]]` rows are `env` send bindings and
+`[[queues.consumers]]` rows are `queue(batch)` triggers, both on the host
+outbox (see [Queues](#queues)). It is not a substitute for
+`[[events.consumers]]` or `[[events.producers]]`, which are the bindings of
+the host's own `core.events` queue.
 
 Unknown capability keys are parse errors rather than silent defaults — a typo in
 a security-relevant field must not read as "whatever we would have picked".
@@ -1371,7 +1373,7 @@ export `cli` (and optional event/job triggers) — not a `kind = "integration"`.
 | `env.DB` | `[[databases]]` → granted on `env` |
 | `env.KV` | `[[kv_namespaces]]` durable KV binding. Not implemented yet. |
 | `env.SECRETS` | `[secrets]` → granted on `env` |
-| `[queues]` producers and consumers | Not implemented yet. Declaring the table is legal. |
+| `[[queues.producers]]` / `[[queues.consumers]]` | `env.<BINDING>.send` / `sendBatch` and `queue(batch)` with per-message `ack` / `retry` |
 | `[[events.consumers]]` | `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend` |
 | `[[events.producers]]` | `env.EVENTS.publish` (host outbox; forced `source`) |
 | Cron / scheduled | Not implemented yet. |

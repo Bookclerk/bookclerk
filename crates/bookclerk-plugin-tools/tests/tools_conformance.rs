@@ -233,7 +233,7 @@ fn check_accepts_kv_declaration() {
 
 #[test]
 fn check_accepts_queues_declaration() {
-    let out = check_fixture("not-implemented-queues");
+    let out = check_fixture("valid-queues");
     assert!(
         out.status.success(),
         "queues declaration must stay legal: {}",

@@ -52,7 +52,7 @@ run(["check", path.join(fixtures, "valid-producer-shares-oauth-name")], true);
 run(["check", path.join(fixtures, "invalid-undeclared-python")], false, "undeclared Python file");
 run(["check", path.join(fixtures, "invalid-module-ts")], false, "not implemented yet");
 run(["check", path.join(fixtures, "not-implemented-kv")], true);
-run(["check", path.join(fixtures, "not-implemented-queues")], true);
+run(["check", path.join(fixtures, "valid-queues")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-workerd/plugin.fmt.toml")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-native/plugin.fmt.toml")], true);
 
@@ -97,66 +97,16 @@ const queuesText = formatManifest({
   entrypoints: ["cli"],
   queues: {
     producers: [{ binding: "MY_QUEUE", queue: "jobs" }],
-    names: ["a"],
-    empty: [],
+    consumers: [{ queue: "jobs", max_retries: 5, dead_letter_queue: "jobs-dlq" }],
   },
   capabilities: { network: { mode: "deny" } },
 });
 const keptQueueParts =
   Number(queuesText.includes("[[queues.producers]]")) +
-  Number(queuesText.includes('names = ["a"]')) +
-  Number(queuesText.includes("empty = []"));
+  Number(queuesText.includes("[[queues.consumers]]")) +
+  Number(queuesText.includes('dead_letter_queue = "jobs-dlq"'));
 if (keptQueueParts !== 3) {
-  console.error("FAIL queues formatter dropped scalar arrays", keptQueueParts);
-  process.exit(1);
-}
-const scalarTableCount =
-  Number(queuesText.includes("[[queues.names]]")) +
-  Number(queuesText.includes("[[queues.empty]]"));
-if (scalarTableCount !== 0) {
-  console.error("FAIL queues formatter treated a scalar array as tables", scalarTableCount);
-  process.exit(1);
-}
-let nestedRejected = false;
-try {
-  formatManifest({
-    api_version: 3,
-    id: "echo",
-    runtime: "native",
-    command: "./echo",
-    entrypoints: ["cli"],
-    queues: { meta: { region: "us" } },
-    capabilities: { network: { mode: "deny" } },
-  });
-} catch (err) {
-  nestedRejected = String(err && err.message ? err.message : err).includes("cannot be formatted");
-}
-if (!nestedRejected) {
-  console.error("FAIL queues formatter dropped a nested table", Number(nestedRejected));
-  process.exit(1);
-}
-let dateRejected = false;
-try {
-  formatManifest(
-    parse(`
-api_version = 3
-id = "echo"
-runtime = "native"
-command = "./echo"
-entrypoints = ["cli"]
-
-[queues]
-since = 2026-01-01
-
-[capabilities.network]
-mode = "deny"
-`),
-  );
-} catch (err) {
-  dateRejected = String(err && err.message ? err.message : err).includes("cannot be formatted");
-}
-if (!dateRejected) {
-  console.error("FAIL queues formatter accepted a TOML date", Number(dateRejected));
+  console.error("FAIL queues formatter dropped a producer or consumer row", keptQueueParts);
   process.exit(1);
 }
 const { validateManifest } = await import("../dist/tools/validate.js");
@@ -244,7 +194,7 @@ if (emittedPath) {
   console.error("FAIL formatter emitted an omitted module path", emittedPath);
   process.exit(1);
 }
-console.log("ok format keeps scalar queues and omits empty module paths");
+console.log("ok format keeps queue rows and omits empty module paths");
 
 const undeclaredDir = path.join(fixtures, "invalid-undeclared-python");
 const undeclared = parse(fs.readFileSync(path.join(undeclaredDir, "plugin.toml"), "utf8"));

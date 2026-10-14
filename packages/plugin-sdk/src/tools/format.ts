@@ -3,7 +3,7 @@
  * / `toml::to_string_pretty` for conformance fixtures.
  */
 
-import type { EventConsumerToml, Manifest } from "./validate.js";
+import type { EventConsumerToml, Manifest, QueuesToml } from "./validate.js";
 
 function esc(s: string): string {
   return JSON.stringify(s);
@@ -79,64 +79,23 @@ function emitConsumer(lines: string[], consumer: EventConsumerToml): void {
   }
 }
 
-/**
- * True for a non-empty array whose elements are all TOML tables.
- *
- * @param value - Candidate `[queues]` field value.
- * @returns Whether `value` should be emitted as an array of tables.
- */
-function isArrayOfRecords(value: unknown): value is Record<string, unknown>[] {
-  return (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.every((row) => row != null && typeof row === "object" && !Array.isArray(row))
-  );
-}
-
-function rejectDroppedQueueTables(queues: Record<string, unknown>): void {
-  for (const [key, value] of Object.entries(queues)) {
-    if (isArrayOfRecords(value)) {
-      for (const row of value) {
-        for (const [field, fieldValue] of Object.entries(row)) {
-          if (emitValue(fieldValue) === null) {
-            throw new Error(
-              `plugin.toml: [queues] \`${key}.${field}\` value cannot be formatted`,
-            );
-          }
-        }
-      }
-      continue;
-    }
-    if (emitValue(value) === null) {
-      throw new Error(
-        `plugin.toml: [queues] \`${key}\` value cannot be formatted`,
-      );
-    }
-  }
-}
-
-function emitQueues(lines: string[], queues: Record<string, unknown> | undefined): void {
-  if (!queues) return;
-  rejectDroppedQueueTables(queues);
-  const scalars: Record<string, unknown> = {};
-  const lists: Record<string, Record<string, unknown>[]> = {};
-  for (const [key, value] of Object.entries(queues)) {
-    if (isArrayOfRecords(value)) lists[key] = value;
-    else scalars[key] = value;
-  }
-  if (Object.keys(scalars).length > 0 || Object.keys(lists).length === 0) {
+function emitQueues(lines: string[], queues: QueuesToml | undefined): void {
+  for (const producer of queues?.producers ?? []) {
     lines.push("");
-    lines.push("[queues]");
-    emitTableRows(lines, scalars);
+    lines.push("[[queues.producers]]");
+    lines.push(`queue = ${esc(producer.queue)}`);
+    lines.push(`binding = ${esc(producer.binding)}`);
   }
-  for (const key of Object.keys(lists).sort()) {
-    for (const row of lists[key] ?? []) {
-      lines.push("");
-      lines.push(`[[queues.${key}]]`);
-      if (row && typeof row === "object") {
-        emitTableRows(lines, row as Record<string, unknown>);
-      }
-    }
+  for (const consumer of queues?.consumers ?? []) {
+    lines.push("");
+    lines.push("[[queues.consumers]]");
+    lines.push(`queue = ${esc(consumer.queue)}`);
+    if (consumer.max_batch_size != null) lines.push(`max_batch_size = ${consumer.max_batch_size}`);
+    if (consumer.max_batch_timeout != null) lines.push(`max_batch_timeout = ${consumer.max_batch_timeout}`);
+    if (consumer.max_retries != null) lines.push(`max_retries = ${consumer.max_retries}`);
+    if (consumer.dead_letter_queue != null) lines.push(`dead_letter_queue = ${esc(consumer.dead_letter_queue)}`);
+    if (consumer.retry_delay != null) lines.push(`retry_delay = ${consumer.retry_delay}`);
+    if (consumer.max_concurrency != null) lines.push(`max_concurrency = ${consumer.max_concurrency}`);
   }
 }
 

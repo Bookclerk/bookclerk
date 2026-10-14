@@ -400,6 +400,122 @@ impl EventsManifest {
     }
 }
 
+/// Maximum length of a queue name.
+pub const MAX_QUEUE_NAME_LEN: usize = 63;
+/// Queue-name prefixes only the host may use (`core.events`, `host.<id>`).
+pub const RESERVED_QUEUE_PREFIXES: [&str; 2] = ["core.", "host."];
+/// Default `max_batch_size` for `[[queues.consumers]]`.
+pub const DEFAULT_QUEUE_MAX_BATCH_SIZE: u32 = 10;
+/// Largest `max_batch_size` a consumer may declare.
+pub const MAX_QUEUE_BATCH_SIZE: u32 = 100;
+/// Default `max_batch_timeout` (seconds) for `[[queues.consumers]]`.
+pub const DEFAULT_QUEUE_MAX_BATCH_TIMEOUT_SECS: u32 = 5;
+/// Largest `max_batch_timeout` (seconds) a consumer may declare.
+pub const MAX_QUEUE_BATCH_TIMEOUT_SECS: u32 = 60;
+/// Default `max_retries` for `[[queues.consumers]]`.
+pub const DEFAULT_QUEUE_MAX_RETRIES: u32 = 3;
+/// Largest `max_retries` a consumer may declare.
+pub const MAX_QUEUE_RETRIES: u32 = 100;
+/// Largest `retry_delay` (seconds) a consumer may declare: 12 hours.
+pub const MAX_QUEUE_RETRY_DELAY_SECS: u32 = 43_200;
+
+/// True when `name` is a valid queue name: `[a-z0-9][a-z0-9._-]*`, at most
+/// [`MAX_QUEUE_NAME_LEN`] characters.
+#[must_use]
+pub fn is_valid_queue_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_QUEUE_NAME_LEN
+        && name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+/// True when `name` starts with a [`RESERVED_QUEUE_PREFIXES`] entry.
+#[must_use]
+pub fn is_reserved_queue_name(name: &str) -> bool {
+    RESERVED_QUEUE_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// `[queues]` — Workers Queues producers (send bindings) and consumers
+/// (`queue(batch)` triggers).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct QueuesManifest {
+    /// Queues the plugin may send to, one `env.<BINDING>` each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub producers: Vec<QueueProducer>,
+    /// Queues delivered to the default entrypoint's `queue(batch)`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consumers: Vec<QueueConsumer>,
+}
+
+impl QueuesManifest {
+    /// True when neither producers nor consumers are declared (omit `[queues]`).
+    fn is_default(&self) -> bool {
+        self.producers.is_empty() && self.consumers.is_empty()
+    }
+}
+
+/// One `[[queues.producers]]` row — a queue the plugin may send to through
+/// the named `env` binding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct QueueProducer {
+    /// Queue name (`[a-z0-9][a-z0-9._-]*`; `core.` and `host.` are reserved).
+    pub queue: String,
+    /// Binding name on `env` (`[A-Z][A-Z0-9_]*`); required, as in Wrangler.
+    pub binding: String,
+}
+
+/// One `[[queues.consumers]]` row — a durable queue trigger for the default
+/// entrypoint's `queue(batch)` handler.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct QueueConsumer {
+    /// Queue name to consume.
+    pub queue: String,
+    /// Most messages in one `queue(batch)` call (default
+    /// [`DEFAULT_QUEUE_MAX_BATCH_SIZE`], at most [`MAX_QUEUE_BATCH_SIZE`]).
+    #[serde(default = "default_queue_max_batch_size")]
+    pub max_batch_size: u32,
+    /// Longest wait, in seconds, to fill a batch (default
+    /// [`DEFAULT_QUEUE_MAX_BATCH_TIMEOUT_SECS`]).
+    #[serde(default = "default_queue_max_batch_timeout")]
+    pub max_batch_timeout: u32,
+    /// Redeliveries before a message is dead-lettered (default
+    /// [`DEFAULT_QUEUE_MAX_RETRIES`]).
+    #[serde(default = "default_queue_max_retries")]
+    pub max_retries: u32,
+    /// Queue that receives messages after `max_retries` is exhausted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letter_queue: Option<String>,
+    /// Seconds a retried message waits before redelivery (default `0`).
+    #[serde(default)]
+    pub retry_delay: u32,
+    /// Most concurrent `queue(batch)` invocations across the cluster; `None`
+    /// lets the host choose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<u32>,
+}
+
+/// Serde default for [`QueueConsumer::max_batch_size`].
+fn default_queue_max_batch_size() -> u32 {
+    DEFAULT_QUEUE_MAX_BATCH_SIZE
+}
+
+/// Serde default for [`QueueConsumer::max_batch_timeout`].
+fn default_queue_max_batch_timeout() -> u32 {
+    DEFAULT_QUEUE_MAX_BATCH_TIMEOUT_SECS
+}
+
+/// Serde default for [`QueueConsumer::max_retries`].
+fn default_queue_max_retries() -> u32 {
+    DEFAULT_QUEUE_MAX_RETRIES
+}
+
 /// Serde skip predicate for the optional `[vars]` table.
 fn vars_is_none(v: &Option<std::collections::BTreeMap<String, toml::Value>>) -> bool {
     v.is_none()
@@ -636,13 +752,11 @@ pub struct PluginManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kv_namespaces: Vec<NamedBinding>,
     /// Workers Queues (`[queues]` with `[[queues.producers]]` /
-    /// `[[queues.consumers]]`).
-    ///
-    /// Expected local parity. Any declaration is legal and fails load or spawn
-    /// with "not implemented yet". The key is not an unknown-field error and
-    /// is not a reason to use `[[events.consumers]]` or `[[databases]]`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queues: Option<toml::Value>,
+    /// `[[queues.consumers]]`): send bindings and `queue(batch)` triggers on
+    /// the host outbox. The domain-event bus (`[events]`) is the host's own
+    /// `core.events` queue; `[queues]` names plugin-owned queues.
+    #[serde(default, skip_serializing_if = "QueuesManifest::is_default")]
+    pub queues: QueuesManifest,
     /// Host-mediated work filesystem binding (`[work_fs]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_fs: Option<NamedBinding>,
@@ -744,26 +858,86 @@ impl PluginManifest {
         })
     }
 
+    /// Validates `[queues]`: queue-name grammar, reserved prefixes, one
+    /// consumer per queue, bounded batch / retry knobs, and a dead-letter
+    /// queue that is a different, unreserved queue.
+    fn validate_queues(&self) -> Result<()> {
+        for (i, producer) in self.queues.producers.iter().enumerate() {
+            validate_queue_name(&format!("queues.producers[{i}].queue"), &producer.queue)?;
+            if producer.binding.trim().is_empty() {
+                return Err(Error::message(format!(
+                    "plugin.toml: queues.producers[{i}].binding is required"
+                )));
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (i, consumer) in self.queues.consumers.iter().enumerate() {
+            validate_queue_name(&format!("queues.consumers[{i}].queue"), &consumer.queue)?;
+            if !seen.insert(consumer.queue.as_str()) {
+                return Err(Error::message(format!(
+                    "plugin.toml: queues.consumers[{i}].queue `{}` is duplicated",
+                    consumer.queue
+                )));
+            }
+            if consumer.max_batch_size == 0 || consumer.max_batch_size > MAX_QUEUE_BATCH_SIZE {
+                return Err(Error::message(format!(
+                    "plugin.toml: queues.consumers[{i}].max_batch_size must be \
+                     1..={MAX_QUEUE_BATCH_SIZE}"
+                )));
+            }
+            if consumer.max_batch_timeout > MAX_QUEUE_BATCH_TIMEOUT_SECS {
+                return Err(Error::message(format!(
+                    "plugin.toml: queues.consumers[{i}].max_batch_timeout must be at most \
+                     {MAX_QUEUE_BATCH_TIMEOUT_SECS} seconds"
+                )));
+            }
+            if consumer.max_retries > MAX_QUEUE_RETRIES {
+                return Err(Error::message(format!(
+                    "plugin.toml: queues.consumers[{i}].max_retries must be at most \
+                     {MAX_QUEUE_RETRIES}"
+                )));
+            }
+            if consumer.retry_delay > MAX_QUEUE_RETRY_DELAY_SECS {
+                return Err(Error::message(format!(
+                    "plugin.toml: queues.consumers[{i}].retry_delay must be at most \
+                     {MAX_QUEUE_RETRY_DELAY_SECS} seconds"
+                )));
+            }
+            if consumer.max_concurrency == Some(0) {
+                return Err(Error::message(format!(
+                    "plugin.toml: queues.consumers[{i}].max_concurrency must be at least 1"
+                )));
+            }
+            if let Some(dlq) = &consumer.dead_letter_queue {
+                validate_queue_name(&format!("queues.consumers[{i}].dead_letter_queue"), dlq)?;
+                if dlq == &consumer.queue {
+                    return Err(Error::message(format!(
+                        "plugin.toml: queues.consumers[{i}].dead_letter_queue must differ \
+                         from the consumed queue"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Spawn/load error when the manifest declares a surface the host cannot
     /// run yet.
     ///
-    /// The refusal is runtime-agnostic: a native plugin that declares KV or
-    /// Queues fails spawn the same way a workerd plugin does.
-    /// `[[kv_namespaces]]` and `[queues]` stay in the schema. The message
-    /// contains "not implemented yet" and does not suggest `[[databases]]`
-    /// or events as a substitute. `None` means load may continue.
+    /// The refusal is runtime-agnostic: a native plugin that declares KV
+    /// fails spawn the same way a workerd plugin does. `[[kv_namespaces]]`
+    /// stays in the schema. The message contains "not implemented yet" and
+    /// does not suggest `[[databases]]` or events as a substitute. `None`
+    /// means load may continue.
     ///
     /// # Returns
     ///
     /// The first unimplemented surface, or `None` when the manifest does not
-    /// declare KV or Queues.
+    /// declare KV.
     #[must_use]
     pub fn unimplemented_surface(&self) -> Option<String> {
         if !self.kv_namespaces.is_empty() {
             return Some("[[kv_namespaces]] is not implemented yet".to_string());
-        }
-        if self.queues.is_some() {
-            return Some("[queues] is not implemented yet".to_string());
         }
         None
     }
@@ -830,12 +1004,48 @@ impl PluginManifest {
         !self.events.producers.is_empty()
     }
 
+    /// True when the default entrypoint has a `queue(batch)` trigger.
+    #[must_use]
+    pub fn consumes_queues(&self) -> bool {
+        !self.queues.consumers.is_empty()
+    }
+
+    /// True when the plugin declares any queue send binding.
+    #[must_use]
+    pub fn produces_queues(&self) -> bool {
+        !self.queues.producers.is_empty()
+    }
+
+    /// Queue names the default entrypoint consumes (`[[queues.consumers]]`).
+    #[must_use]
+    pub fn queue_consumer_names(&self) -> Vec<String> {
+        self.queues
+            .consumers
+            .iter()
+            .map(|c| c.queue.clone())
+            .collect()
+    }
+
+    /// Queue names this plugin may send to (`[[queues.producers]]`),
+    /// deduplicated in declaration order.
+    #[must_use]
+    pub fn queue_producer_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for producer in &self.queues.producers {
+            if !names.contains(&producer.queue) {
+                names.push(producer.queue.clone());
+            }
+        }
+        names
+    }
+
     /// Handler families this plugin belongs to, in
     /// [`PluginFamily::ALL`] priority order.
     ///
     /// A plugin joins the `Source` / `Output` / `Database` families through
     /// the matching named entrypoint and the `Integration` family through
-    /// event consumers, job triggers, `RemoteLibrary`, `Cli`, or `Oidc`.
+    /// event consumers, queue consumers, job triggers, `RemoteLibrary`,
+    /// `Cli`, or `Oidc`.
     ///
     /// # Returns
     ///
@@ -850,6 +1060,7 @@ impl PluginManifest {
                 PluginFamily::Database => self.has_entrypoint(Entrypoint::DatabaseAdapter),
                 PluginFamily::Integration => {
                     self.consumes_events()
+                        || self.consumes_queues()
                         || self.runs_jobs()
                         || self.has_entrypoint(Entrypoint::RemoteLibrary)
                         || self.has_entrypoint(Entrypoint::Oidc)
@@ -904,7 +1115,7 @@ impl PluginManifest {
     ///
     /// Entrypoints, event consumers/producers, job types, database binding
     /// names, and named binding names (`CONFIG`, `SECRETS`, `WORK_FS`,
-    /// `OAUTH`, KV and event bindings) in manifest order.
+    /// `OAUTH`, KV, event, and queue bindings) in manifest order.
     #[must_use]
     pub fn capabilities(&self) -> PluginCapabilities {
         PluginCapabilities {
@@ -931,8 +1142,9 @@ impl PluginManifest {
     /// # Returns
     ///
     /// `CONFIG` (when `[vars]` is present), the resolved `[secrets]`,
-    /// `[work_fs]`, `[oauth]` names, every `[[kv_namespaces]]` binding, and
-    /// every distinct `[[events.producers]]` binding, in that order.
+    /// `[work_fs]`, `[oauth]` names, every `[[kv_namespaces]]` binding,
+    /// every distinct `[[events.producers]]` binding, and every
+    /// `[[queues.producers]]` binding, in that order.
     #[must_use]
     pub fn binding_names(&self) -> Vec<String> {
         let mut names = Vec::new();
@@ -955,6 +1167,11 @@ impl PluginManifest {
             let name = producer.binding_name().to_string();
             if !names.contains(&name) {
                 names.push(name);
+            }
+        }
+        for producer in &self.queues.producers {
+            if !names.contains(&producer.binding) {
+                names.push(producer.binding.clone());
             }
         }
         names
@@ -1183,10 +1400,14 @@ impl PluginManifest {
                 ))
             })?;
         }
-        if self.entrypoints.is_empty() && !self.consumes_events() && !self.runs_jobs() {
+        if self.entrypoints.is_empty()
+            && !self.consumes_events()
+            && !self.consumes_queues()
+            && !self.runs_jobs()
+        {
             return Err(Error::message(
                 "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, \
-                 or `[triggers].jobs`",
+                 `[[queues.consumers]]`, or `[triggers].jobs`",
             ));
         }
         {
@@ -1253,13 +1474,16 @@ impl PluginManifest {
             for (index, p) in self.events.producers.iter().enumerate() {
                 named.push(("events.producers", p.binding_name(), index));
             }
+            for (index, p) in self.queues.producers.iter().enumerate() {
+                named.push(("queues.producers", p.binding.as_str(), index));
+            }
             for &(table, name, index) in &named {
                 if !is_valid_database_binding_name(name) {
                     return Err(Error::message(format!(
                         "plugin.toml: [{table}][{index}] binding must be `[A-Z][A-Z0-9_]*`"
                     )));
                 }
-                if table == "kv_namespaces"
+                if matches!(table, "kv_namespaces" | "queues.producers")
                     && matches!(
                         name,
                         CONFIG_BINDING
@@ -1338,6 +1562,7 @@ impl PluginManifest {
                 }
             }
         }
+        self.validate_queues()?;
         Ok(())
     }
 
@@ -1379,6 +1604,22 @@ impl PluginManifest {
             NetworkMode::Outbound => JailNetworkNeed::Outbound,
         }
     }
+}
+
+/// Rejects an invalid or host-reserved queue name at `field`.
+fn validate_queue_name(field: &str, name: &str) -> Result<()> {
+    if !is_valid_queue_name(name) {
+        return Err(Error::message(format!(
+            "plugin.toml: {field} `{name}` must be `[a-z0-9][a-z0-9._-]*` and at most \
+             {MAX_QUEUE_NAME_LEN} chars"
+        )));
+    }
+    if is_reserved_queue_name(name) {
+        return Err(Error::message(format!(
+            "plugin.toml: {field} `{name}` uses a host-reserved prefix (`core.`, `host.`)"
+        )));
+    }
+    Ok(())
 }
 
 /// True for `[a-z][a-z0-9_]*` event / command type names.
@@ -2257,19 +2498,88 @@ mode = "deny"
     }
 
     #[test]
-    fn queues_declaration_is_not_an_unknown_key() {
+    fn queues_are_typed_bindings_and_triggers() {
         let m = PluginManifest::parse(&workerd_body(
-            "\n[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n",
+            "\n[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n\
+             \n[[queues.consumers]]\nqueue = \"jobs\"\nmax_retries = 5\n\
+             dead_letter_queue = \"jobs-dlq\"\n",
         ))
-        .expect("queues key is legal");
-        assert!(m.queues.is_some());
-        let message = m.unimplemented_surface().expect("queues refuse spawn");
-        assert!(message.contains("not implemented yet"), "{message}");
-        assert!(message.contains("queues"), "{message}");
-        assert!(
-            !message.to_ascii_lowercase().contains("retired"),
-            "{message}"
+        .expect("queues are legal");
+        assert_eq!(m.queues.producers.len(), 1);
+        assert_eq!(m.queues.producers[0].binding, "MY_QUEUE");
+        assert_eq!(m.queue_producer_names(), vec!["jobs"]);
+        assert_eq!(m.queue_consumer_names(), vec!["jobs"]);
+        let consumer = &m.queues.consumers[0];
+        assert_eq!(consumer.max_batch_size, DEFAULT_QUEUE_MAX_BATCH_SIZE);
+        assert_eq!(
+            consumer.max_batch_timeout,
+            DEFAULT_QUEUE_MAX_BATCH_TIMEOUT_SECS
         );
+        assert_eq!(consumer.max_retries, 5);
+        assert_eq!(consumer.dead_letter_queue.as_deref(), Some("jobs-dlq"));
+        assert_eq!(consumer.retry_delay, 0);
+        assert!(m.unimplemented_surface().is_none(), "queues spawn");
+        assert!(m.consumes_queues() && m.produces_queues());
+        assert!(m.families().contains(&PluginFamily::Integration));
+        assert!(m.binding_names().contains(&"MY_QUEUE".to_string()));
+        assert!(m.capabilities().bindings.contains(&"MY_QUEUE".to_string()));
+    }
+
+    #[test]
+    fn queue_consumer_alone_is_a_valid_trigger() {
+        let body = workerd_body("\n[[queues.consumers]]\nqueue = \"jobs\"\n")
+            .replace("entrypoints = [\"cli\"]\n", "");
+        let m = PluginManifest::parse(&body).expect("queue consumer is a trigger");
+        assert_eq!(m.families(), vec![PluginFamily::Integration]);
+    }
+
+    #[test]
+    fn queue_names_bindings_and_knobs_are_validated() {
+        let cases: [(&str, &str); 9] = [
+            (
+                "\n[[queues.producers]]\nbinding = \"Q\"\nqueue = \"Jobs\"\n",
+                "queues.producers[0].queue",
+            ),
+            (
+                "\n[[queues.producers]]\nbinding = \"Q\"\nqueue = \"core.events\"\n",
+                "host-reserved",
+            ),
+            (
+                "\n[[queues.consumers]]\nqueue = \"host.abc\"\n",
+                "host-reserved",
+            ),
+            (
+                "\n[[queues.producers]]\nbinding = \"q\"\nqueue = \"jobs\"\n",
+                "[queues.producers][0] binding must be",
+            ),
+            (
+                "\n[[queues.producers]]\nbinding = \"EVENTS\"\nqueue = \"jobs\"\n",
+                "collides",
+            ),
+            (
+                "\n[[queues.producers]]\nbinding = \"Q\"\nqueue = \"a\"\n\
+                 [[queues.producers]]\nbinding = \"Q\"\nqueue = \"b\"\n",
+                "collides",
+            ),
+            (
+                "\n[[queues.consumers]]\nqueue = \"jobs\"\n[[queues.consumers]]\nqueue = \"jobs\"\n",
+                "is duplicated",
+            ),
+            (
+                "\n[[queues.consumers]]\nqueue = \"jobs\"\nmax_batch_size = 101\n",
+                "max_batch_size",
+            ),
+            (
+                "\n[[queues.consumers]]\nqueue = \"jobs\"\ndead_letter_queue = \"jobs\"\n",
+                "must differ",
+            ),
+        ];
+        for (extra, needle) in cases {
+            let err = PluginManifest::parse(&workerd_body(extra))
+                .expect_err(extra)
+                .to_string();
+            assert!(err.contains(needle), "{extra}: {err}");
+        }
     }
 
     #[test]

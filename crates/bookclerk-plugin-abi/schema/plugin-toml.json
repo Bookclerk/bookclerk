@@ -68,10 +68,7 @@
       "description": "Durable KV bindings (default name KV). Legal to declare. Load and spawn fail with \"not implemented yet\". Distinct from [[databases]].",
       "items": { "$ref": "#/$defs/NamedBinding" }
     },
-    "queues": {
-      "type": "object",
-      "description": "Workers Queues producers and consumers. Legal to declare. Load and spawn fail with \"not implemented yet\". Events and databases do not replace this surface."
-    },
+    "queues": { "$ref": "#/$defs/Queues" },
     "work_fs": { "$ref": "#/$defs/NamedBinding" },
     "oauth": { "$ref": "#/$defs/NamedBinding" },
     "capabilities": { "$ref": "#/$defs/Capabilities" },
@@ -249,6 +246,53 @@
           "pattern": "^[a-z][a-z0-9_]*$"
         },
         "binding": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Queues": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Workers Queues: producers are `env` send bindings, consumers are `queue(batch)` triggers. Queue names are `[a-z0-9][a-z0-9._-]*` (at most 63 chars); the `core.` and `host.` prefixes are reserved for the host.",
+      "properties": {
+        "producers": { "type": "array", "items": { "$ref": "#/$defs/QueueProducer" } },
+        "consumers": { "type": "array", "items": { "$ref": "#/$defs/QueueConsumer" } }
+      }
+    },
+    "QueueProducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["queue", "binding"],
+      "properties": {
+        "queue": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "binding": { "type": "string", "minLength": 1, "pattern": "^[A-Z][A-Z0-9_]*$" }
+      }
+    },
+    "QueueConsumer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["queue"],
+      "properties": {
+        "queue": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "max_batch_size": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 },
+        "max_batch_timeout": { "type": "integer", "minimum": 0, "maximum": 60, "default": 5 },
+        "max_retries": { "type": "integer", "minimum": 0, "maximum": 100, "default": 3 },
+        "dead_letter_queue": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "retry_delay": { "type": "integer", "minimum": 0, "maximum": 43200, "default": 0 },
+        "max_concurrency": { "type": "integer", "minimum": 1 }
       }
     },
     "SettingSpec": {

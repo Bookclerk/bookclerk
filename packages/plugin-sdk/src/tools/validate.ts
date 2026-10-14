@@ -79,9 +79,10 @@ export type Manifest = {
    */
   kv_namespaces?: Array<{ binding?: string }>;
   /**
-   * `[queues]` producers and consumers. Legal to declare. Not implemented yet.
+   * `[queues]` — Workers Queues: producers are `env` send bindings,
+   * consumers are `queue(batch)` triggers on the host outbox.
    */
-  queues?: Record<string, unknown>;
+  queues?: QueuesToml;
   /** `[work_fs]` — scratch filesystem binding (default name `WORK_FS`). */
   work_fs?: { binding?: string };
   /** `[oauth]` — loopback OAuth callback binding (default name `OAUTH`). */
@@ -112,6 +113,110 @@ export type EventConsumerToml = {
   /** Redelivery attempts before dead-lettering. */
   max_retries?: number;
 };
+
+/** `[queues]` producers and consumers. */
+export type QueuesToml = {
+  /** `[[queues.producers]]` rows: queue plus the `env` binding that sends to it. */
+  producers?: QueueProducerToml[];
+  /** `[[queues.consumers]]` rows delivered to `queue(batch)`. */
+  consumers?: QueueConsumerToml[];
+};
+
+/** One `[[queues.producers]]` row. */
+export type QueueProducerToml = {
+  /** Queue name (`[a-z0-9][a-z0-9._-]*`; `core.` and `host.` are reserved). */
+  queue: string;
+  /** Binding name on `env` (`[A-Z][A-Z0-9_]*`); required. */
+  binding: string;
+};
+
+/** One `[[queues.consumers]]` row. */
+export type QueueConsumerToml = {
+  /** Queue name to consume. */
+  queue: string;
+  /** Most messages per `queue(batch)` call (default 10, at most 100). */
+  max_batch_size?: number;
+  /** Longest wait in seconds to fill a batch (default 5, at most 60). */
+  max_batch_timeout?: number;
+  /** Redeliveries before dead-lettering (default 3, at most 100). */
+  max_retries?: number;
+  /** Queue that receives messages once `max_retries` is exhausted. */
+  dead_letter_queue?: string;
+  /** Seconds a retried message waits before redelivery (default 0, at most 43200). */
+  retry_delay?: number;
+  /** Most concurrent `queue(batch)` invocations; omitted lets the host choose. */
+  max_concurrency?: number;
+};
+
+/** Longest queue name. */
+export const MAX_QUEUE_NAME_LEN = 63;
+/** Queue-name prefixes only the host may use. */
+export const RESERVED_QUEUE_PREFIXES = ["core.", "host."] as const;
+
+/**
+ * True when `name` is a valid queue name: `[a-z0-9][a-z0-9._-]*`, at most
+ * {@link MAX_QUEUE_NAME_LEN} characters.
+ *
+ * @param name - Candidate queue name.
+ * @returns Whether the grammar accepts it.
+ */
+export function isValidQueueName(name: string): boolean {
+  return name.length > 0 && name.length <= MAX_QUEUE_NAME_LEN && /^[a-z0-9][a-z0-9._-]*$/.test(name);
+}
+
+function validateQueueName(field: string, name: unknown): void {
+  const text = typeof name === "string" ? name : "";
+  if (!isValidQueueName(text)) {
+    throw new Error(
+      `plugin.toml: ${field} \`${text}\` must be \`[a-z0-9][a-z0-9._-]*\` and at most ${MAX_QUEUE_NAME_LEN} chars`,
+    );
+  }
+  if (RESERVED_QUEUE_PREFIXES.some((prefix) => text.startsWith(prefix))) {
+    throw new Error(`plugin.toml: ${field} \`${text}\` uses a host-reserved prefix (\`core.\`, \`host.\`)`);
+  }
+}
+
+function validateQueues(m: Manifest): void {
+  for (const [i, producer] of (m.queues?.producers ?? []).entries()) {
+    validateQueueName(`queues.producers[${i}].queue`, producer.queue);
+    if (!producer.binding || !String(producer.binding).trim()) {
+      throw new Error(`plugin.toml: queues.producers[${i}].binding is required`);
+    }
+  }
+  const seen = new Set<string>();
+  for (const [i, consumer] of (m.queues?.consumers ?? []).entries()) {
+    validateQueueName(`queues.consumers[${i}].queue`, consumer.queue);
+    if (seen.has(consumer.queue)) {
+      throw new Error(`plugin.toml: queues.consumers[${i}].queue \`${consumer.queue}\` is duplicated`);
+    }
+    seen.add(consumer.queue);
+    const batch = consumer.max_batch_size ?? 10;
+    if (!Number.isInteger(batch) || batch < 1 || batch > 100) {
+      throw new Error(`plugin.toml: queues.consumers[${i}].max_batch_size must be 1..=100`);
+    }
+    const timeout = consumer.max_batch_timeout ?? 5;
+    if (!Number.isInteger(timeout) || timeout < 0 || timeout > 60) {
+      throw new Error(`plugin.toml: queues.consumers[${i}].max_batch_timeout must be at most 60 seconds`);
+    }
+    const retries = consumer.max_retries ?? 3;
+    if (!Number.isInteger(retries) || retries < 0 || retries > 100) {
+      throw new Error(`plugin.toml: queues.consumers[${i}].max_retries must be at most 100`);
+    }
+    const delay = consumer.retry_delay ?? 0;
+    if (!Number.isInteger(delay) || delay < 0 || delay > 43200) {
+      throw new Error(`plugin.toml: queues.consumers[${i}].retry_delay must be at most 43200 seconds`);
+    }
+    if (consumer.max_concurrency != null && (!Number.isInteger(consumer.max_concurrency) || consumer.max_concurrency < 1)) {
+      throw new Error(`plugin.toml: queues.consumers[${i}].max_concurrency must be at least 1`);
+    }
+    if (consumer.dead_letter_queue != null) {
+      validateQueueName(`queues.consumers[${i}].dead_letter_queue`, consumer.dead_letter_queue);
+      if (consumer.dead_letter_queue === consumer.queue) {
+        throw new Error(`plugin.toml: queues.consumers[${i}].dead_letter_queue must differ from the consumed queue`);
+      }
+    }
+  }
+}
 
 /** Value types accepted in `[[settings]] type`. */
 export const SETTING_TYPES = ["string", "bool", "integer", "enum", "secret"] as const;
@@ -459,12 +564,14 @@ function validateSurface(m: Manifest): void {
     seen.add(entrypoint);
   }
   const consumers = m.events?.consumers ?? [];
+  const queueConsumers = m.queues?.consumers ?? [];
   const jobs = m.triggers?.jobs ?? [];
-  if (entrypoints.length === 0 && consumers.length === 0 && jobs.length === 0) {
+  if (entrypoints.length === 0 && consumers.length === 0 && queueConsumers.length === 0 && jobs.length === 0) {
     throw new Error(
-      "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, or `[triggers].jobs`",
+      "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, or `[triggers].jobs`",
     );
   }
+  validateQueues(m);
   for (const consumer of consumers) {
     if (!consumer.type || !String(consumer.type).trim()) {
       throw new Error("plugin.toml: [[events.consumers]] `type` is required");
@@ -507,13 +614,16 @@ function validateSurface(m: Manifest): void {
   for (const [index, producer] of (m.events?.producers ?? []).entries()) {
     named.push(["events.producers", producer.binding || "EVENTS", index]);
   }
+  for (const [index, producer] of (m.queues?.producers ?? []).entries()) {
+    named.push(["queues.producers", String(producer.binding ?? ""), index]);
+  }
   for (const [table, name, index] of named) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
       throw new Error(
         `plugin.toml: [${table}][${index}] binding must be \`[A-Z][A-Z0-9_]*\``,
       );
     }
-    if (table === "kv_namespaces" && reserved.has(name)) {
+    if ((table === "kv_namespaces" || table === "queues.producers") && reserved.has(name)) {
       throw new Error(
         `plugin.toml: [${table}][${index}] binding collides with another binding`,
       );
@@ -663,20 +773,17 @@ export function declaresPython(m: Manifest): boolean {
 }
 
 /**
- * Spawn/load message when KV or Queues are declared.
+ * Spawn/load message when KV is declared.
  *
- * The refusal is runtime-agnostic: a native plugin that declares KV or Queues
- * fails spawn the same way a workerd plugin does.
+ * The refusal is runtime-agnostic: a native plugin that declares KV fails
+ * spawn the same way a workerd plugin does.
  *
  * @param m - Manifest that may declare unimplemented surfaces.
- * @returns The refusal, or `null` when neither surface is declared.
+ * @returns The refusal, or `null` when KV is not declared.
  */
 export function unimplementedSurface(m: Manifest): string | null {
   if ((m.kv_namespaces?.length ?? 0) > 0) {
     return "[[kv_namespaces]] is not implemented yet";
-  }
-  if (m.queues != null) {
-    return "[queues] is not implemented yet";
   }
   return null;
 }
