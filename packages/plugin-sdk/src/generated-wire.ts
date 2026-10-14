@@ -367,6 +367,61 @@ export interface EventPublisherPublishResults {
 }
 
 /**
+ * Params envelope of `QueueConsumer.queue`.
+ *
+ * @internal
+ */
+export interface QueueConsumerQueueParams {
+  batch: T.QueueBatch;
+}
+
+/**
+ * Results envelope of `QueueConsumer.queue`.
+ *
+ * @internal
+ */
+export interface QueueConsumerQueueResults {
+  result: T.QueueBatchReply;
+}
+
+/**
+ * Params envelope of `QueueProducer.send`.
+ *
+ * @internal
+ */
+export interface QueueProducerSendParams {
+  message: T.QueueSendMessage;
+}
+
+/**
+ * Results envelope of `QueueProducer.send`.
+ *
+ * @internal
+ */
+export interface QueueProducerSendResults {
+  result: T.QueueSendReply;
+}
+
+/**
+ * Params envelope of `QueueProducer.sendBatch`.
+ *
+ * @internal
+ */
+export interface QueueProducerSendBatchParams {
+  messages: T.QueueSendMessage[];
+  delaySeconds: number;
+}
+
+/**
+ * Results envelope of `QueueProducer.sendBatch`.
+ *
+ * @internal
+ */
+export interface QueueProducerSendBatchResults {
+  result: T.QueueSendReply;
+}
+
+/**
  * Params envelope of `ContentSource.login`.
  *
  * @internal
@@ -1380,7 +1435,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       ScalarLimitsCodec.write(s.initStruct(3, 2, 0), v.scalarLimits, caps);
     }
     if (v.capabilities != null) {
-      PluginCapabilitiesCodec.write(s.initStruct(4, 0, 6), v.capabilities, caps);
+      PluginCapabilitiesCodec.write(s.initStruct(4, 0, 8), v.capabilities, caps);
     }
     s.setUint16(2, ord(A.PORTAL_AUTH_MODES, v.portalAuthMode ?? A.PORTAL_AUTH_MODES[0]!, "PortalAuthMode"));
     if (v.passwordEnvVar !== undefined) {
@@ -1409,7 +1464,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       displayName: s.getText(1),
       rpcFeatures: s.getTextList(2),
       scalarLimits: ScalarLimitsCodec.read(s.getStruct(3, 2, 0), caps),
-      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 0, 6), caps),
+      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 0, 8), caps),
       portalAuthMode: fromOrd(A.PORTAL_AUTH_MODES, s.getUint16(2), "PortalAuthMode"),
       aliases: s.getTextList(6),
       sortKey: s.getUint32(2),
@@ -1545,13 +1600,13 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `Bindings` (0 data words, 7 pointers).
+ * Wire codec for `Bindings` (0 data words, 8 pointers).
  *
  * @internal
  */
 export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
-  pointerCount: 7,
+  pointerCount: 8,
   write(s, v, caps) {
     if (v.config != null) {
       ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
@@ -1578,6 +1633,13 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (v.storage != null) {
       s.setCap(6, caps.exportCap(v.storage));
     }
+    {
+      const list = v.queues ?? [];
+      const items = s.initStructList(7, list.length, 0, 3);
+      for (let i = 0; i < items.length; i++) {
+        NamedQueueCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
   },
   read(s, caps) {
     const out: T.Bindings = {
@@ -1585,6 +1647,7 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
       secrets: ExtensibleConfigCodec.read(s.getStruct(1, 1, 2), caps),
       adapter: DatabaseAdapterConfigCodec.read(s.getStruct(2, 1, 4), caps),
       databases: s.getStructList(4, 0, 2).map((item) => NamedDatabaseCodec.read(item, caps)),
+      queues: s.getStructList(7, 0, 3).map((item) => NamedQueueCodec.read(item, caps)),
     };
     const eventsValue = caps.importCap(s.getCapIndex(3)) as T.EventPublisher;
     if (!(eventsValue == null)) {
@@ -1603,13 +1666,13 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 8 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 9 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 8,
+  pointerCount: 9,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -1634,6 +1697,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     }
     if (v.oidc != null) {
       s.setCap(7, caps.exportCap(v.oidc));
+    }
+    if (v.queueConsumer != null) {
+      s.setCap(8, caps.exportCap(v.queueConsumer));
     }
   },
   read(s, caps) {
@@ -1671,6 +1737,10 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(oidcValue == null)) {
       out.oidc = oidcValue;
     }
+    const queueConsumerValue = caps.importCap(s.getCapIndex(8)) as T.QueueConsumer;
+    if (!(queueConsumerValue == null)) {
+      out.queueConsumer = queueConsumerValue;
+    }
     return out;
   },
 };
@@ -1688,7 +1758,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 8), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 9), v.value, caps);
         }
         break;
       case "err":
@@ -1705,7 +1775,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 8), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 9), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
       default:
@@ -2920,6 +2990,34 @@ export const NamedDatabaseCodec: StructCodec<T.NamedDatabase> = {
 };
 
 /**
+ * Wire codec for `NamedQueue` (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const NamedQueueCodec: StructCodec<T.NamedQueue> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.name ?? "");
+    s.setText(1, v.queue ?? "");
+    if (v.producer != null) {
+      s.setCap(2, caps.exportCap(v.producer));
+    }
+  },
+  read(s, caps) {
+    const out: T.NamedQueue = {
+      name: s.getText(0),
+      queue: s.getText(1),
+    };
+    const producerValue = caps.importCap(s.getCapIndex(2)) as T.QueueProducer;
+    if (!(producerValue == null)) {
+      out.producer = producerValue;
+    }
+    return out;
+  },
+};
+
+/**
  * Wire codec for `EventConsumerSpec` (1 data words, 2 pointers).
  *
  * @internal
@@ -2944,13 +3042,13 @@ export const EventConsumerSpecCodec: StructCodec<T.EventConsumerSpec> = {
 };
 
 /**
- * Wire codec for `PluginCapabilities` (0 data words, 6 pointers).
+ * Wire codec for `PluginCapabilities` (0 data words, 8 pointers).
  *
  * @internal
  */
 export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
   dataWords: 0,
-  pointerCount: 6,
+  pointerCount: 8,
   write(s, v, caps) {
     s.setUint16List(0, (v.entrypoints ?? []).map((v) => ord(A.ENTRYPOINTS, v, "Entrypoint")));
     {
@@ -2964,6 +3062,8 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
     s.setTextList(3, v.jobs ?? []);
     s.setTextList(4, v.databases ?? []);
     s.setTextList(5, v.bindings ?? []);
+    s.setTextList(6, v.queueConsumers ?? []);
+    s.setTextList(7, v.queueProducers ?? []);
   },
   read(s, caps) {
     return {
@@ -2973,6 +3073,8 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
       jobs: s.getTextList(3),
       databases: s.getTextList(4),
       bindings: s.getTextList(5),
+      queueConsumers: s.getTextList(6),
+      queueProducers: s.getTextList(7),
     };
   },
 };
@@ -5343,6 +5445,266 @@ export const InvocationCodec: StructCodec<T.Invocation> = {
 };
 
 /**
+ * Wire codec for `QueueMessage` (2 data words, 4 pointers).
+ *
+ * @internal
+ */
+export const QueueMessageCodec: StructCodec<T.QueueMessage> = {
+  dataWords: 2,
+  pointerCount: 4,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.id ?? "");
+    s.setUint64(0, BigInt(v.timestampUnixMs ?? 0));
+    s.setData(1, v.body ?? EMPTY_BYTES);
+    s.setText(2, v.contentType ?? "");
+    s.setUint32(2, v.attempts ?? 0);
+    s.setText(3, v.source ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      id: s.getText(0),
+      timestampUnixMs: Number(s.getUint64(0)),
+      body: s.getData(1),
+      contentType: s.getText(2),
+      attempts: s.getUint32(2),
+      source: s.getText(3),
+    };
+  },
+};
+
+/**
+ * Wire codec for `QueueBatch` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const QueueBatchCodec: StructCodec<T.QueueBatch> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.queue ?? "");
+    {
+      const list = v.messages ?? [];
+      const items = s.initStructList(1, list.length, 2, 4);
+      for (let i = 0; i < items.length; i++) {
+        QueueMessageCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      queue: s.getText(0),
+      messages: s.getStructList(1, 2, 4).map((item) => QueueMessageCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `QueueRetry` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueRetryCodec: StructCodec<T.QueueRetry> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setUint32(0, v.delaySeconds ?? 0);
+    s.setText(0, v.reason ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      delaySeconds: s.getUint32(0),
+      reason: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `QueueResult` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueResultCodec: StructCodec<T.QueueResult> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ack":
+        s.setUint16(0, 0);
+        break;
+      case "retry":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          QueueRetryCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("QueueResult", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ack" };
+      case 1:
+        return { kind: "retry", value: QueueRetryCodec.read(s.getStruct(0, 1, 1), caps) };
+      default:
+        throw unknownUnion("QueueResult", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `QueueBatchOk` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueBatchOkCodec: StructCodec<T.QueueBatchOk> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        QueueResultCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 1, 1).map((item) => QueueResultCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `QueueBatchReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueBatchReplyCodec: StructCodec<T.QueueBatchReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          QueueBatchOkCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("QueueBatchReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: QueueBatchOkCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("QueueBatchReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `QueueSendMessage` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const QueueSendMessageCodec: StructCodec<T.QueueSendMessage> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setData(0, v.body ?? EMPTY_BYTES);
+    s.setText(1, v.contentType ?? "");
+    s.setUint32(0, v.delaySeconds ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      body: s.getData(0),
+      contentType: s.getText(1),
+      delaySeconds: s.getUint32(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `QueueSendOk` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueSendOkCodec: StructCodec<T.QueueSendOk> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.messageIds ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      messageIds: s.getTextList(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `QueueSendReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueSendReplyCodec: StructCodec<T.QueueSendReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          QueueSendOkCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("QueueSendReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: QueueSendOkCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("QueueSendReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -7198,6 +7560,132 @@ export const EventPublisherPublishResultsCodec: StructCodec<EventPublisherPublis
 };
 
 /**
+ * Wire codec for the `QueueConsumer.queue` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueConsumerQueueParamsCodec: StructCodec<QueueConsumerQueueParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.batch != null) {
+      QueueBatchCodec.write(s.initStruct(0, 0, 2), v.batch, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      batch: QueueBatchCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `QueueConsumer.queue` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueConsumerQueueResultsCodec: StructCodec<QueueConsumerQueueResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      QueueBatchReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: QueueBatchReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `QueueProducer.send` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueProducerSendParamsCodec: StructCodec<QueueProducerSendParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.message != null) {
+      QueueSendMessageCodec.write(s.initStruct(0, 1, 2), v.message, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      message: QueueSendMessageCodec.read(s.getStruct(0, 1, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `QueueProducer.send` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueProducerSendResultsCodec: StructCodec<QueueProducerSendResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      QueueSendReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: QueueSendReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `QueueProducer.sendBatch` params envelope (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueProducerSendBatchParamsCodec: StructCodec<QueueProducerSendBatchParams> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.messages ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        QueueSendMessageCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setUint32(0, v.delaySeconds ?? 0);
+  },
+  read(s, caps) {
+    return {
+      messages: s.getStructList(0, 1, 2).map((item) => QueueSendMessageCodec.read(item, caps)),
+      delaySeconds: s.getUint32(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `QueueProducer.sendBatch` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const QueueProducerSendBatchResultsCodec: StructCodec<QueueProducerSendBatchResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      QueueSendReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: QueueSendReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `ContentSource.login` params envelope (0 data words, 1 pointers).
  *
  * @internal
@@ -8774,13 +9262,13 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
       InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
-      BindingsCodec.write(s.initStruct(1, 0, 7), v.bindings, caps);
+      BindingsCodec.write(s.initStruct(1, 0, 8), v.bindings, caps);
     }
   },
   read(s, caps) {
     return {
       invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
-      bindings: BindingsCodec.read(s.getStruct(1, 0, 7), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 8), caps),
     };
   },
 };

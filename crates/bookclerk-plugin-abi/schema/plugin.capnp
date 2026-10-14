@@ -21,7 +21,8 @@
 # - The guest root is `PluginWorker`: `describe()`, then
 #   `open(invocation, bindings)` returns the exported `Entrypoints` for one
 #   invocation. Bindings (`env` in the Workers idiom) carry config, secrets,
-#   the `EVENTS` publisher, and named `[[databases]]` sessions.
+#   the `EVENTS` publisher, named `[[queues.producers]]` producers, and named
+#   `[[databases]]` sessions.
 #
 # Authors never see transport-private capability table indexes. Public types
 # are the interfaces below plus TypeScript `BookclerkEntrypoint`. ByteSource is
@@ -289,6 +290,10 @@ struct Bindings {
   # filesystem); null unless `[work_fs]` is granted. Job input/output travel on
   # `JobRunner.job(controller)`, never here.
   storage @6 :Destination;
+  # Named `[[queues.producers]]` bindings: one host-served producer per
+  # binding, each sending into the queue the row names. Empty when the
+  # manifest declares none.
+  queues @7 :List(NamedQueue);
 }
 
 # Exported entrypoints returned by `PluginWorker.open`. One capability per
@@ -311,6 +316,8 @@ struct Entrypoints {
   cli @6 :PluginCli;
   # `oidc` entrypoint.
   oidc @7 :Oidc;
+  # `[[queues.consumers]]` trigger: `queue(batch)` handler.
+  queueConsumer @8 :QueueConsumer;
 }
 
 # Result union of `PluginWorker.open`.
@@ -822,6 +829,40 @@ struct NamedDatabase {
   database @1 :GuestDatabase;
 }
 
+# `[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
+# at-least-once; consumers must be idempotent on `QueueMessage.id`.
+interface QueueConsumer {
+  # Deliver one ordered batch of messages from one queue.
+  queue @0 (
+      batch :QueueBatch  # Messages in delivery order.
+  ) -> (result :QueueBatchReply);
+}
+
+# Queue producer binding: host-served send into the queue a
+# `[[queues.producers]]` row names, granted through `Bindings.queues`.
+interface QueueProducer {
+  # Send one message.
+  send @0 (
+      message :QueueSendMessage  # Body, encoding, and delay.
+  ) -> (result :QueueSendReply);
+  # Send up to `maxListPage` messages in order; `delaySeconds` applies to
+  # every message that carries no delay of its own.
+  sendBatch @1 (
+      messages :List(QueueSendMessage),  # Messages in send order.
+      delaySeconds :UInt32  # Default delay for the batch.
+  ) -> (result :QueueSendReply);
+}
+
+# One named queue producer delivered on `Bindings.queues`.
+struct NamedQueue {
+  # Binding name from `plugin.toml` `[[queues.producers]]`.
+  name @0 :Text;
+  # Queue the binding sends to.
+  queue @1 :Text;
+  # Host-served producer for that queue.
+  producer @2 :QueueProducer;
+}
+
 # Storefront content source (not byte Source). Every method takes and
 # returns typed structs from the "Typed method payloads" section.
 interface ContentSource {
@@ -1009,8 +1050,12 @@ struct PluginCapabilities {
   # Plugin-owned database binding names (`[[databases]]`).
   databases @4 :List(Text);
   # Other named bindings the guest expects on `env` (`CONFIG`, `SECRETS`,
-  # `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, ...).
+  # `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, `[[queues.producers]]` names, ...).
   bindings @5 :List(Text);
+  # Queues the default entrypoint consumes (`queue(batch)` trigger).
+  queueConsumers @6 :List(Text);
+  # Queues the guest may send to through its `[[queues.producers]]` bindings.
+  queueProducers @7 :List(Text);
 }
 
 # Portal Accounts connect mode for storefronts.
@@ -1889,6 +1934,92 @@ struct Invocation {
   correlationId @3 :Text;
   # Id of the event or command that caused this invocation; empty when none.
   causationId @4 :Text;
+}
+
+# One message on a Workers-style queue, delivered by `QueueConsumer.queue`.
+struct QueueMessage {
+  # Outbox row id; stable across redeliveries.
+  id @0 :Text;
+  # When the producer sent the message (UTC Unix milliseconds).
+  timestampUnixMs @1 :UInt64;
+  # Encoded body; at most `maxEventPayloadBytes`.
+  body @2 :Data;
+  # Body encoding: `json`, `text`, or `bytes`.
+  contentType @3 :Text;
+  # Delivery counter, starting at 1.
+  attempts @4 :UInt32;
+  # Producer plugin id; empty when the host sent it.
+  source @5 :Text;
+}
+
+# One `QueueConsumer.queue` delivery: messages from one queue in send order.
+struct QueueBatch {
+  # Queue the messages were sent to.
+  queue @0 :Text;
+  # Messages in delivery order; the reply carries one `QueueResult` per entry.
+  messages @1 :List(QueueMessage);
+}
+
+# Redeliver a queue message later.
+struct QueueRetry {
+  # Seconds before redelivery; zero applies the consumer's `retry_delay`.
+  delaySeconds @0 :UInt32;
+  # Short human reason.
+  reason @1 :Text;
+}
+
+# Per-message outcome inside a `QueueConsumer.queue` batch reply.
+struct QueueResult {
+  union {
+    # Handled; the host marks the message delivered.
+    ack @0 :Void;
+    # Redeliver later.
+    retry @1 :QueueRetry;
+  }
+}
+
+# Success payload of `QueueConsumer.queue`: exactly one entry per
+# `QueueBatch.messages` entry, in order. A short list is a host-side error
+# and the missing tail is retried.
+struct QueueBatchOk {
+  # Per-message outcomes in delivery order.
+  results @0 :List(QueueResult);
+}
+
+# Result union of `QueueConsumer.queue`.
+struct QueueBatchReply {
+  union {
+    # Success: per-message outcomes.
+    ok @0 :QueueBatchOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# One message to send through a `[[queues.producers]]` binding.
+struct QueueSendMessage {
+  # Encoded body; at most `maxEventPayloadBytes`.
+  body @0 :Data;
+  # Body encoding: `json` (default when empty), `text`, or `bytes`.
+  contentType @1 :Text;
+  # Seconds before the message may be delivered; zero means now.
+  delaySeconds @2 :UInt32;
+}
+
+# Success payload of `QueueProducer.send` / `sendBatch`.
+struct QueueSendOk {
+  # Outbox row ids in send order.
+  messageIds @0 :List(Text);
+}
+
+# Result union of `QueueProducer.send` / `sendBatch`.
+struct QueueSendReply {
+  union {
+    # Success: the ids the host assigned.
+    ok @0 :QueueSendOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
 }
 
 # --- rust-generated: end ---

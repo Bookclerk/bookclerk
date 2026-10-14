@@ -282,6 +282,12 @@ export interface Bindings {
    * Null when the guest does not export this capability.
    */
   storage?: Destination | null;
+  /**
+   * Named `[[queues.producers]]` bindings: one host-served producer per
+   * binding, each sending into the queue the row names. Empty when the
+   * manifest declares none.
+   */
+  queues: NamedQueue[];
 }
 
 /**
@@ -330,6 +336,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   oidc?: Oidc | null;
+  /**
+   * `[[queues.consumers]]` trigger: `queue(batch)` handler.
+   * Null when the guest does not export this capability.
+   */
+  queueConsumer?: QueueConsumer | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -840,6 +851,56 @@ export interface NamedDatabase {
 }
 
 /**
+ * `[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
+ * at-least-once; consumers must be idempotent on `QueueMessage.id`.
+ */
+export interface QueueConsumer {
+  /**
+   * Deliver one ordered batch of messages from one queue.
+   *
+   * @param batch - Messages in delivery order.
+   * @returns {@link QueueBatchReply}
+   */
+  queue(batch: QueueBatch): Promise<QueueBatchReply>;
+}
+
+/**
+ * Queue producer binding: host-served send into the queue a
+ * `[[queues.producers]]` row names, granted through `Bindings.queues`.
+ */
+export interface QueueProducer {
+  /**
+   * Send one message.
+   *
+   * @param message - Body, encoding, and delay.
+   * @returns {@link QueueSendReply}
+   */
+  send(message: QueueSendMessage): Promise<QueueSendReply>;
+  /**
+   * Send up to `maxListPage` messages in order; `delaySeconds` applies to
+   * every message that carries no delay of its own.
+   *
+   * @param messages - Messages in send order.
+   * @param delaySeconds - Default delay for the batch.
+   * @returns {@link QueueSendReply}
+   */
+  sendBatch(messages: QueueSendMessage[], delaySeconds: number): Promise<QueueSendReply>;
+}
+
+/** One named queue producer delivered on `Bindings.queues`. */
+export interface NamedQueue {
+  /** Binding name from `plugin.toml` `[[queues.producers]]`. */
+  name: string;
+  /** Queue the binding sends to. */
+  queue: string;
+  /**
+   * Host-served producer for that queue.
+   * Null when the guest does not export this capability.
+   */
+  producer?: QueueProducer | null;
+}
+
+/**
  * Storefront content source (not byte Source). Every method takes and
  * returns typed structs from the "Typed method payloads" section.
  */
@@ -1052,9 +1113,13 @@ export interface PluginCapabilities {
   databases: string[];
   /**
    * Other named bindings the guest expects on `env` (`CONFIG`, `SECRETS`,
-   * `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, ...).
+   * `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, `[[queues.producers]]` names, ...).
    */
   bindings: string[];
+  /** Queues the default entrypoint consumes (`queue(batch)` trigger). */
+  queueConsumers: string[];
+  /** Queues the guest may send to through its `[[queues.producers]]` bindings. */
+  queueProducers: string[];
 }
 
 /**
@@ -2126,6 +2191,79 @@ export interface Invocation {
   /** Id of the event or command that caused this invocation; empty when none. */
   causationId: string;
 }
+
+/** One message on a Workers-style queue, delivered by `QueueConsumer.queue`. */
+export interface QueueMessage {
+  /** Outbox row id; stable across redeliveries. */
+  id: string;
+  /** When the producer sent the message (UTC Unix milliseconds). */
+  timestampUnixMs: number;
+  /** Encoded body; at most `maxEventPayloadBytes`. */
+  body: Uint8Array;
+  /** Body encoding: `json`, `text`, or `bytes`. */
+  contentType: string;
+  /** Delivery counter, starting at 1. */
+  attempts: number;
+  /** Producer plugin id; empty when the host sent it. */
+  source: string;
+}
+
+/** One `QueueConsumer.queue` delivery: messages from one queue in send order. */
+export interface QueueBatch {
+  /** Queue the messages were sent to. */
+  queue: string;
+  /** Messages in delivery order; the reply carries one `QueueResult` per entry. */
+  messages: QueueMessage[];
+}
+
+/** Redeliver a queue message later. */
+export interface QueueRetry {
+  /** Seconds before redelivery; zero applies the consumer's `retry_delay`. */
+  delaySeconds: number;
+  /** Short human reason. */
+  reason: string;
+}
+
+/** Per-message outcome inside a `QueueConsumer.queue` batch reply. */
+export type QueueResult =
+  | { kind: "ack" } // Handled; the host marks the message delivered.
+  | { kind: "retry"; value: QueueRetry }; // Redeliver later.
+
+/**
+ * Success payload of `QueueConsumer.queue`: exactly one entry per
+ * `QueueBatch.messages` entry, in order. A short list is a host-side error
+ * and the missing tail is retried.
+ */
+export interface QueueBatchOk {
+  /** Per-message outcomes in delivery order. */
+  results: QueueResult[];
+}
+
+/** Result union of `QueueConsumer.queue`. */
+export type QueueBatchReply =
+  | { kind: "ok"; value: QueueBatchOk } // Success: per-message outcomes.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One message to send through a `[[queues.producers]]` binding. */
+export interface QueueSendMessage {
+  /** Encoded body; at most `maxEventPayloadBytes`. */
+  body: Uint8Array;
+  /** Body encoding: `json` (default when empty), `text`, or `bytes`. */
+  contentType: string;
+  /** Seconds before the message may be delivered; zero means now. */
+  delaySeconds: number;
+}
+
+/** Success payload of `QueueProducer.send` / `sendBatch`. */
+export interface QueueSendOk {
+  /** Outbox row ids in send order. */
+  messageIds: string[];
+}
+
+/** Result union of `QueueProducer.send` / `sendBatch`. */
+export type QueueSendReply =
+  | { kind: "ok"; value: QueueSendOk } // Success: the ids the host assigned.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =

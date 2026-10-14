@@ -23,8 +23,8 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_abi::{
     encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, GuestDatabase,
-    ObjectMetadata, PluginEvent, ProgressSink, PublishOk, Source, WriteOptions,
-    MAX_EVENT_PAYLOAD_BYTES, MAX_SCALAR_BYTES,
+    ObjectMetadata, PluginEvent, ProgressSink, PublishOk, QueueProducer, QueueSendMessage,
+    QueueSendOk, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -32,6 +32,11 @@ use tokio::sync::{mpsc, oneshot};
 /// Largest `/events/publish` request body: a base64 payload at
 /// [`MAX_EVENT_PAYLOAD_BYTES`] plus the envelope fields.
 pub const MAX_EVENT_PUBLISH_BODY_BYTES: u32 = MAX_EVENT_PAYLOAD_BYTES * 2 + 8 * 1024;
+
+/// Largest `/queues/send` request body: a `sendBatch` of base64 bodies. The
+/// host producer still caps every message at [`MAX_EVENT_PAYLOAD_BYTES`] and
+/// every batch at `maxListPage`; this only bounds the read.
+pub const MAX_QUEUE_SEND_BODY_BYTES: u32 = 4 * 1024 * 1024;
 
 /// How long one `GET /cancel` long poll waits before answering `204` so the
 /// isolate re-arms; short enough that a dropped isolate cannot pin the
@@ -71,9 +76,33 @@ pub struct GrantedSlot {
     pub max_request_bytes: u32,
     /// Host outbox publisher, when this grant carries the `EVENTS` binding.
     pub events: Option<Rc<dyn EventPublisher>>,
+    /// Host queue producer, when this grant is one `[[queues.producers]]`
+    /// binding.
+    pub queue: Option<Rc<dyn QueueProducer>>,
 }
 
 impl GrantedSlot {
+    /// A grant that only sends into one queue (no streams, no database).
+    #[must_use]
+    pub fn queue_only(producer: Rc<dyn QueueProducer>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: Some(producer),
+        }
+    }
+
     /// A grant that only publishes events (no streams, no database).
     #[must_use]
     pub fn events_only(events: Rc<dyn EventPublisher>, expires: std::time::Instant) -> Self {
@@ -91,6 +120,7 @@ impl GrantedSlot {
             sql_policy: GuestSqlPolicy::host_authoritative(),
             max_request_bytes: 0,
             events: Some(events),
+            queue: None,
         }
     }
 
@@ -113,6 +143,7 @@ impl GrantedSlot {
             sql_policy: GuestSqlPolicy::host_authoritative(),
             max_request_bytes: MAX_SCALAR_BYTES,
             events: None,
+            queue: None,
         }
     }
 }
@@ -149,6 +180,14 @@ enum GrantedCmd {
         invocation: String,
         request_bytes: Vec<u8>,
         resp: oneshot::Sender<Result<Vec<u8>, String>>,
+    },
+    /// `env.<QUEUE>.send` / `sendBatch`: every message with its own delay
+    /// applied, `delay_seconds` for the rest.
+    QueueSend {
+        invocation: String,
+        messages: Vec<QueueSendMessage>,
+        delay_seconds: u32,
+        resp: oneshot::Sender<Result<QueueSendOk, PluginError>>,
     },
     AtomicBudget {
         invocation: String,
@@ -241,9 +280,64 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                 } => {
                     let _ = resp.send(dispatch_publish(&table, invocation, event).await);
                 }
+                GrantedCmd::QueueSend {
+                    invocation,
+                    messages,
+                    delay_seconds,
+                    resp,
+                } => {
+                    let _ = resp.send(
+                        dispatch_queue_send(&table, invocation, messages, delay_seconds).await,
+                    );
+                }
             }
         });
     }
+}
+
+/// `env.<QUEUE>.send` / `sendBatch` through the grant: the slot must carry a
+/// producer; the host producer applies the per-message size cap and stamps
+/// `source`.
+async fn dispatch_queue_send(
+    table: &GrantedTable,
+    invocation: String,
+    messages: Vec<QueueSendMessage>,
+    delay_seconds: u32,
+) -> Result<QueueSendOk, PluginError> {
+    let producer = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| PluginError::forbidden("unknown or revoked grant"))?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err(PluginError::forbidden("grant expired"));
+        }
+        slot.queue
+            .clone()
+            .ok_or_else(|| PluginError::forbidden("queue not granted"))?
+    };
+    if messages.is_empty() {
+        return Err(PluginError::invalid_params(
+            "send requires at least one message",
+        ));
+    }
+    if messages.len() > MAX_LIST_PAGE as usize {
+        return Err(PluginError::payload_too_large(format!(
+            "queue send batch of {} exceeds {MAX_LIST_PAGE}",
+            messages.len()
+        )));
+    }
+    if let Some(len) = messages
+        .iter()
+        .map(|m| m.body.len())
+        .find(|len| *len > MAX_EVENT_PAYLOAD_BYTES as usize)
+    {
+        return Err(PluginError::payload_too_large(format!(
+            "queue message body of {len} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}"
+        )));
+    }
+    producer.send_batch(messages, delay_seconds).await
 }
 
 /// `EVENTS.publish` through the grant: the slot must carry a publisher and
@@ -904,8 +998,69 @@ where
         return Ok(());
     }
 
+    if method == "POST" && path_only == "/queues/send" {
+        if declared_content_length_over_cap(&headers, MAX_QUEUE_SEND_BODY_BYTES) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let rest =
+            match read_content(&mut reader, &headers, prefix, MAX_QUEUE_SEND_BODY_BYTES).await {
+                Ok(body) => body,
+                Err(err) if err.to_string().contains("payload_too_large") => {
+                    write_status(&mut writer, 413, "payload too large").await?;
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            };
+        let send: QueueSendRequest = match serde_json::from_slice(&rest) {
+            Ok(send) => send,
+            Err(err) => {
+                write_plugin_error(
+                    &mut writer,
+                    &PluginError::invalid_params(format!("malformed queue send: {err}")),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::QueueSend {
+            invocation,
+            messages: send.messages,
+            delay_seconds: send.delay_seconds,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        match resp_rx.await.context("granted queue send dropped")? {
+            Ok(ok) => {
+                let payload = serde_json::to_vec(&ok)?;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                writer.write_all(resp.as_bytes()).await?;
+                writer.write_all(&payload).await?;
+                writer.flush().await?;
+            }
+            Err(err) => write_plugin_error(&mut writer, &err).await?,
+        }
+        return Ok(());
+    }
+
     write_status(&mut writer, 404, "not found").await?;
     Ok(())
+}
+
+/// `POST /queues/send` body: one or more messages plus the batch delay.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueueSendRequest {
+    /// Messages in send order (base64 `body`, `contentType`, `delaySeconds`).
+    messages: Vec<QueueSendMessage>,
+    /// Delay for messages that carry none of their own.
+    #[serde(default)]
+    delay_seconds: u32,
 }
 
 /// HTTP status for a wire error code on the granted channel.
@@ -1250,6 +1405,7 @@ mod tests {
                 sql_policy: GuestSqlPolicy::deny_all(),
                 max_request_bytes: 0,
                 events: None,
+                queue: None,
             },
         );
         let err = match take_slot_source(&table, "g1") {
@@ -1296,6 +1452,7 @@ mod tests {
                 sql_policy: GuestSqlPolicy::deny_all(),
                 max_request_bytes: 0,
                 events: None,
+                queue: None,
             },
         );
         table.borrow_mut().remove("g-live");
@@ -1329,6 +1486,7 @@ mod tests {
                 sql_policy: GuestSqlPolicy::deny_all(),
                 max_request_bytes: 0,
                 events: None,
+                queue: None,
             },
         );
         let req = ExecuteRequest {
@@ -1427,6 +1585,7 @@ mod tests {
                 sql_policy: GuestSqlPolicy::deny_all(),
                 max_request_bytes: 0,
                 events: None,
+                queue: None,
             },
         );
 
@@ -1469,6 +1628,133 @@ mod tests {
         assert_eq!(plugin_error_status(&no_events), 403);
     }
 
+    struct CountingQueueProducer {
+        sent: std::cell::Cell<u32>,
+        last_delay: std::cell::Cell<u32>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl QueueProducer for CountingQueueProducer {
+        async fn send(
+            &self,
+            message: QueueSendMessage,
+        ) -> bookclerk_plugin_abi::Result<QueueSendOk> {
+            self.send_batch(vec![message], 0).await
+        }
+
+        async fn send_batch(
+            &self,
+            messages: Vec<QueueSendMessage>,
+            delay_seconds: u32,
+        ) -> bookclerk_plugin_abi::Result<QueueSendOk> {
+            self.sent.set(self.sent.get() + messages.len() as u32);
+            self.last_delay.set(delay_seconds);
+            Ok(QueueSendOk {
+                message_ids: (0..messages.len()).map(|i| format!("msg-{i}")).collect(),
+            })
+        }
+    }
+
+    fn queue_message(body_len: usize) -> QueueSendMessage {
+        QueueSendMessage {
+            body: vec![b'{'; body_len],
+            content_type: "json".into(),
+            delay_seconds: 0,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queue_send_requires_a_live_queue_grant_and_bounded_batch() {
+        use bookclerk_plugin_abi::PluginErrorCode;
+        let producer = Rc::new(CountingQueueProducer {
+            sent: std::cell::Cell::new(0),
+            last_delay: std::cell::Cell::new(0),
+        });
+        let publisher = Rc::new(CountingPublisher {
+            published: std::cell::Cell::new(0),
+        });
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-queue".into(),
+            GrantedSlot::queue_only(producer.clone(), Instant::now() + Duration::from_secs(60)),
+        );
+        table.borrow_mut().insert(
+            "g-expired".into(),
+            GrantedSlot::queue_only(producer.clone(), Instant::now()),
+        );
+        table.borrow_mut().insert(
+            "g-events".into(),
+            GrantedSlot::events_only(publisher.clone(), Instant::now() + Duration::from_secs(60)),
+        );
+
+        let ok = dispatch_queue_send(
+            &table,
+            "g-queue".into(),
+            vec![queue_message(2), queue_message(3)],
+            7,
+        )
+        .await
+        .expect("granted send");
+        assert_eq!(
+            ok.message_ids,
+            vec!["msg-0".to_string(), "msg-1".to_string()]
+        );
+        assert_eq!(producer.sent.get(), 2);
+        assert_eq!(
+            producer.last_delay.get(),
+            7,
+            "batch delay reaches the producer"
+        );
+
+        let empty = dispatch_queue_send(&table, "g-queue".into(), Vec::new(), 0)
+            .await
+            .expect_err("empty batch");
+        assert_eq!(empty.code, PluginErrorCode::InvalidParams);
+
+        let oversized = dispatch_queue_send(
+            &table,
+            "g-queue".into(),
+            vec![queue_message(MAX_EVENT_PAYLOAD_BYTES as usize + 1)],
+            0,
+        )
+        .await
+        .expect_err("oversized body");
+        assert_eq!(oversized.code, PluginErrorCode::PayloadTooLarge);
+
+        let too_many = dispatch_queue_send(
+            &table,
+            "g-queue".into(),
+            (0..=MAX_LIST_PAGE).map(|_| queue_message(1)).collect(),
+            0,
+        )
+        .await
+        .expect_err("batch over MAX_LIST_PAGE");
+        assert_eq!(too_many.code, PluginErrorCode::PayloadTooLarge);
+
+        let events_only = dispatch_queue_send(&table, "g-events".into(), vec![queue_message(1)], 0)
+            .await
+            .expect_err("events-only grant");
+        assert_eq!(events_only.code, PluginErrorCode::Forbidden);
+
+        let unknown = dispatch_queue_send(&table, "nope".into(), vec![queue_message(1)], 0)
+            .await
+            .expect_err("unknown grant");
+        assert_eq!(unknown.code, PluginErrorCode::Forbidden);
+
+        let expired = dispatch_queue_send(&table, "g-expired".into(), vec![queue_message(1)], 0)
+            .await
+            .expect_err("expired grant");
+        assert_eq!(expired.code, PluginErrorCode::Forbidden);
+        assert!(
+            !table.borrow().contains_key("g-expired"),
+            "expired grants are revoked on use"
+        );
+        assert_eq!(producer.sent.get(), 2, "only the granted send ran");
+        assert_eq!(publisher.published.get(), 0);
+        assert_eq!(plugin_error_status(&oversized), 413);
+        assert_eq!(plugin_error_status(&events_only), 403);
+    }
+
     struct FlagCancel {
         cancelled: Rc<std::cell::Cell<bool>>,
         fail: bool,
@@ -1499,6 +1785,7 @@ mod tests {
             sql_policy: GuestSqlPolicy::deny_all(),
             max_request_bytes: 0,
             events: None,
+            queue: None,
         }
     }
 
@@ -1629,6 +1916,7 @@ mod tests {
                 sql_policy: policy,
                 max_request_bytes: 0,
                 events: None,
+                queue: None,
             },
         );
         (table, session)

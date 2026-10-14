@@ -487,9 +487,15 @@ pub struct PluginCapabilities {
     #[serde(default)]
     pub databases: Vec<String>,
     /// Other named bindings the guest expects on `env` (`CONFIG`, `SECRETS`,
-    /// `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, ...).
+    /// `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, `\[\[queues.producers\]\]` names, ...).
     #[serde(default)]
     pub bindings: Vec<String>,
+    /// Queues the default entrypoint consumes (`queue(batch)` trigger).
+    #[serde(default)]
+    pub queue_consumers: Vec<String>,
+    /// Queues the guest may send to through its `\[\[queues.producers\]\]` bindings.
+    #[serde(default)]
+    pub queue_producers: Vec<String>,
 }
 
 /// Portal brand crossing the RPC boundary. Distinct from `plugin.toml`
@@ -1570,6 +1576,99 @@ pub struct Invocation {
     pub causation_id: String,
 }
 
+/// One message on a Workers-style queue, delivered by `QueueConsumer.queue`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueMessage {
+    /// Outbox row id; stable across redeliveries.
+    #[serde(default)]
+    pub id: String,
+    /// When the producer sent the message (UTC Unix milliseconds).
+    #[serde(default)]
+    pub timestamp_unix_ms: u64,
+    /// Encoded body; at most `maxEventPayloadBytes`.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub body: Vec<u8>,
+    /// Body encoding: `json`, `text`, or `bytes`.
+    #[serde(default)]
+    pub content_type: String,
+    /// Delivery counter, starting at 1.
+    #[serde(default)]
+    pub attempts: u32,
+    /// Producer plugin id; empty when the host sent it.
+    #[serde(default)]
+    pub source: String,
+}
+
+/// One `QueueConsumer.queue` delivery: messages from one queue in send order.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueBatch {
+    /// Queue the messages were sent to.
+    #[serde(default)]
+    pub queue: String,
+    /// Messages in delivery order; the reply carries one `QueueResult` per entry.
+    #[serde(default)]
+    pub messages: Vec<QueueMessage>,
+}
+
+/// Redeliver a queue message later.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueRetry {
+    /// Seconds before redelivery; zero applies the consumer's `retry_delay`.
+    #[serde(default)]
+    pub delay_seconds: u32,
+    /// Short human reason.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// Per-message outcome inside a `QueueConsumer.queue` batch reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum QueueResult {
+    /// Handled; the host marks the message delivered.
+    Ack,
+    /// Redeliver later.
+    Retry(QueueRetry),
+}
+
+/// Success payload of `QueueConsumer.queue`: exactly one entry per
+/// `QueueBatch.messages` entry, in order. A short list is a host-side error
+/// and the missing tail is retried.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueBatchOk {
+    /// Per-message outcomes in delivery order.
+    #[serde(default)]
+    pub results: Vec<QueueResult>,
+}
+
+/// One message to send through a `\[\[queues.producers\]\]` binding.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueSendMessage {
+    /// Encoded body; at most `maxEventPayloadBytes`.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub body: Vec<u8>,
+    /// Body encoding: `json` (default when empty), `text`, or `bytes`.
+    #[serde(default)]
+    pub content_type: String,
+    /// Seconds before the message may be delivered; zero means now.
+    #[serde(default)]
+    pub delay_seconds: u32,
+}
+
+/// Success payload of `QueueProducer.send` / `sendBatch`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueSendOk {
+    /// Outbox row ids in send order.
+    #[serde(default)]
+    pub message_ids: Vec<String>,
+}
+
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -1654,6 +1753,22 @@ pub fn write_plugin_capabilities(
             items.set(list_len(i)?, item);
         }
     }
+    {
+        let mut items = b
+            .reborrow()
+            .init_queue_consumers(list_len(v.queue_consumers.len())?);
+        for (i, item) in v.queue_consumers.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    {
+        let mut items = b
+            .reborrow()
+            .init_queue_producers(list_len(v.queue_producers.len())?);
+        for (i, item) in v.queue_producers.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
     Ok(())
 }
 
@@ -1680,6 +1795,8 @@ pub fn read_plugin_capabilities(
         jobs: read_text_list(r.get_jobs()?)?,
         databases: read_text_list(r.get_databases()?)?,
         bindings: read_text_list(r.get_bindings()?)?,
+        queue_consumers: read_text_list(r.get_queue_consumers()?)?,
+        queue_producers: read_text_list(r.get_queue_producers()?)?,
     })
 }
 
@@ -3947,4 +4064,293 @@ pub fn read_invocation(r: plugin_capnp::invocation::Reader<'_>) -> capnp::Result
         correlation_id: r.get_correlation_id()?.to_string()?,
         causation_id: r.get_causation_id()?.to_string()?,
     })
+}
+
+/// Encode a [`QueueMessage`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_queue_message(
+    mut b: plugin_capnp::queue_message::Builder<'_>,
+    v: &QueueMessage,
+) -> capnp::Result<()> {
+    b.set_id(&v.id);
+    b.set_timestamp_unix_ms(v.timestamp_unix_ms);
+    b.set_body(&v.body);
+    b.set_content_type(&v.content_type);
+    b.set_attempts(v.attempts);
+    b.set_source(&v.source);
+    Ok(())
+}
+
+/// Decode a [`QueueMessage`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_queue_message(
+    r: plugin_capnp::queue_message::Reader<'_>,
+) -> capnp::Result<QueueMessage> {
+    Ok(QueueMessage {
+        id: r.get_id()?.to_string()?,
+        timestamp_unix_ms: r.get_timestamp_unix_ms(),
+        body: r.get_body()?.to_vec(),
+        content_type: r.get_content_type()?.to_string()?,
+        attempts: r.get_attempts(),
+        source: r.get_source()?.to_string()?,
+    })
+}
+
+/// Encode a [`QueueBatch`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_queue_batch(
+    mut b: plugin_capnp::queue_batch::Builder<'_>,
+    v: &QueueBatch,
+) -> capnp::Result<()> {
+    b.set_queue(&v.queue);
+    {
+        let mut items = b.reborrow().init_messages(list_len(v.messages.len())?);
+        for (i, item) in v.messages.iter().enumerate() {
+            write_queue_message(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`QueueBatch`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_queue_batch(r: plugin_capnp::queue_batch::Reader<'_>) -> capnp::Result<QueueBatch> {
+    Ok(QueueBatch {
+        queue: r.get_queue()?.to_string()?,
+        messages: r
+            .get_messages()?
+            .iter()
+            .map(|item| read_queue_message(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a [`QueueRetry`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_queue_retry(
+    mut b: plugin_capnp::queue_retry::Builder<'_>,
+    v: &QueueRetry,
+) -> capnp::Result<()> {
+    b.set_delay_seconds(v.delay_seconds);
+    b.set_reason(&v.reason);
+    Ok(())
+}
+
+/// Decode a [`QueueRetry`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_queue_retry(r: plugin_capnp::queue_retry::Reader<'_>) -> capnp::Result<QueueRetry> {
+    Ok(QueueRetry {
+        delay_seconds: r.get_delay_seconds(),
+        reason: r.get_reason()?.to_string()?,
+    })
+}
+
+/// Encode a `QueueResult` union.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_queue_result(
+    mut b: plugin_capnp::queue_result::Builder<'_>,
+    v: &QueueResult,
+) -> capnp::Result<()> {
+    match v {
+        QueueResult::Ack => b.set_ack(()),
+        QueueResult::Retry(value) => {
+            write_queue_retry(b.init_retry(), value)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a `QueueResult` union.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_queue_result(r: plugin_capnp::queue_result::Reader<'_>) -> capnp::Result<QueueResult> {
+    Ok(match r.which()? {
+        plugin_capnp::queue_result::Ack(()) => QueueResult::Ack,
+        plugin_capnp::queue_result::Retry(value) => QueueResult::Retry(read_queue_retry(value?)?),
+    })
+}
+
+/// Encode a [`QueueBatchOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_queue_batch_ok(
+    mut b: plugin_capnp::queue_batch_ok::Builder<'_>,
+    v: &QueueBatchOk,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_results(list_len(v.results.len())?);
+        for (i, item) in v.results.iter().enumerate() {
+            write_queue_result(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`QueueBatchOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_queue_batch_ok(
+    r: plugin_capnp::queue_batch_ok::Reader<'_>,
+) -> capnp::Result<QueueBatchOk> {
+    Ok(QueueBatchOk {
+        results: r
+            .get_results()?
+            .iter()
+            .map(|item| read_queue_result(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a `QueueBatchReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_queue_batch_reply(
+    b: plugin_capnp::queue_batch_reply::Builder<'_>,
+    v: &Result<QueueBatchOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_queue_batch_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `QueueBatchReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_queue_batch_reply(
+    r: plugin_capnp::queue_batch_reply::Reader<'_>,
+) -> capnp::Result<Result<QueueBatchOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::queue_batch_reply::Ok(ok) => Ok(Ok(read_queue_batch_ok(ok?)?)),
+        plugin_capnp::queue_batch_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`QueueSendMessage`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_queue_send_message(
+    mut b: plugin_capnp::queue_send_message::Builder<'_>,
+    v: &QueueSendMessage,
+) -> capnp::Result<()> {
+    b.set_body(&v.body);
+    b.set_content_type(&v.content_type);
+    b.set_delay_seconds(v.delay_seconds);
+    Ok(())
+}
+
+/// Decode a [`QueueSendMessage`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_queue_send_message(
+    r: plugin_capnp::queue_send_message::Reader<'_>,
+) -> capnp::Result<QueueSendMessage> {
+    Ok(QueueSendMessage {
+        body: r.get_body()?.to_vec(),
+        content_type: r.get_content_type()?.to_string()?,
+        delay_seconds: r.get_delay_seconds(),
+    })
+}
+
+/// Encode a [`QueueSendOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_queue_send_ok(
+    mut b: plugin_capnp::queue_send_ok::Builder<'_>,
+    v: &QueueSendOk,
+) -> capnp::Result<()> {
+    {
+        let mut items = b
+            .reborrow()
+            .init_message_ids(list_len(v.message_ids.len())?);
+        for (i, item) in v.message_ids.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`QueueSendOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_queue_send_ok(
+    r: plugin_capnp::queue_send_ok::Reader<'_>,
+) -> capnp::Result<QueueSendOk> {
+    Ok(QueueSendOk {
+        message_ids: read_text_list(r.get_message_ids()?)?,
+    })
+}
+
+/// Encode a `QueueSendReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_queue_send_reply(
+    b: plugin_capnp::queue_send_reply::Builder<'_>,
+    v: &Result<QueueSendOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_queue_send_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `QueueSendReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_queue_send_reply(
+    r: plugin_capnp::queue_send_reply::Reader<'_>,
+) -> capnp::Result<Result<QueueSendOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::queue_send_reply::Ok(ok) => Ok(Ok(read_queue_send_ok(ok?)?)),
+        plugin_capnp::queue_send_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
 }

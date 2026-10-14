@@ -1134,6 +1134,8 @@ impl PluginManifest {
             jobs: self.triggers.jobs.clone(),
             databases: self.databases.iter().map(|d| d.binding.clone()).collect(),
             bindings: self.binding_names(),
+            queue_consumers: self.queue_consumer_names(),
+            queue_producers: self.queue_producer_names(),
         }
     }
 

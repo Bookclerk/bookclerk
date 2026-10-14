@@ -1,6 +1,6 @@
 {
   "generator": "tools/abi-layout",
-  "capnpVersion": "Cap'n Proto version 0.9.2",
+  "capnpVersion": "Cap'n Proto version 1.0.1",
   "files": [
     "plugin.capnp",
     "plugin_host.capnp"
@@ -922,7 +922,7 @@
       "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 7,
+      "pointerCount": 8,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -998,6 +998,19 @@
             "name": "Destination"
           },
           "offset": 6
+        },
+        {
+          "name": "queues",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "NamedQueue"
+            }
+          },
+          "offset": 7
         }
       ]
     },
@@ -3935,7 +3948,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 8,
+      "pointerCount": 9,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -4018,6 +4031,16 @@
             "name": "Oidc"
           },
           "offset": 7
+        },
+        {
+          "name": "queueConsumer",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "QueueConsumer"
+          },
+          "offset": 8
         }
       ]
     },
@@ -6476,6 +6499,44 @@
         }
       ]
     },
+    "NamedQueue": {
+      "name": "NamedQueue",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "queue",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "producer",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "QueueProducer"
+          },
+          "offset": 2
+        }
+      ]
+    },
     "NamedSqlType": {
       "name": "NamedSqlType",
       "file": "plugin.capnp",
@@ -7007,7 +7068,7 @@
       "name": "PluginCapabilities",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 6,
+      "pointerCount": 8,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -7084,6 +7145,30 @@
             }
           },
           "offset": 5
+        },
+        {
+          "name": "queueConsumers",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 6
+        },
+        {
+          "name": "queueProducers",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 7
         }
       ]
     },
@@ -8128,6 +8213,433 @@
             "kind": "data"
           },
           "offset": 2
+        }
+      ]
+    },
+    "QueueBatch": {
+      "name": "QueueBatch",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "queue",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "messages",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "QueueMessage"
+            }
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "QueueBatchOk": {
+      "name": "QueueBatchOk",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "results",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "QueueResult"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueBatchReply": {
+      "name": "QueueBatchReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "QueueBatchOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueConsumer.queue$Params": {
+      "name": "QueueConsumer.queue$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "batch",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "QueueBatch"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueConsumer.queue$Results": {
+      "name": "QueueConsumer.queue$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "QueueBatchReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueMessage": {
+      "name": "QueueMessage",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 4,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "id",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "timestampUnixMs",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        },
+        {
+          "name": "body",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 1
+        },
+        {
+          "name": "contentType",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "attempts",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 2
+        },
+        {
+          "name": "source",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        }
+      ]
+    },
+    "QueueProducer.send$Params": {
+      "name": "QueueProducer.send$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "message",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "QueueSendMessage"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueProducer.send$Results": {
+      "name": "QueueProducer.send$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "QueueSendReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueProducer.sendBatch$Params": {
+      "name": "QueueProducer.sendBatch$Params",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "messages",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "QueueSendMessage"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "delaySeconds",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueProducer.sendBatch$Results": {
+      "name": "QueueProducer.sendBatch$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "QueueSendReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueResult": {
+      "name": "QueueResult",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ack",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "void"
+          },
+          "offset": 0
+        },
+        {
+          "name": "retry",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "QueueRetry"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueRetry": {
+      "name": "QueueRetry",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "delaySeconds",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        },
+        {
+          "name": "reason",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueSendMessage": {
+      "name": "QueueSendMessage",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "body",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 0
+        },
+        {
+          "name": "contentType",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "delaySeconds",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueSendOk": {
+      "name": "QueueSendOk",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "messageIds",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "QueueSendReply": {
+      "name": "QueueSendReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "QueueSendOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
         }
       ]
     },
@@ -10137,6 +10649,36 @@
           "ordinal": 0,
           "params": "ProgressSink.report$Params",
           "results": "ProgressSink.report$Results"
+        }
+      ]
+    },
+    "QueueConsumer": {
+      "name": "QueueConsumer",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "queue",
+          "ordinal": 0,
+          "params": "QueueConsumer.queue$Params",
+          "results": "QueueConsumer.queue$Results"
+        }
+      ]
+    },
+    "QueueProducer": {
+      "name": "QueueProducer",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "send",
+          "ordinal": 0,
+          "params": "QueueProducer.send$Params",
+          "results": "QueueProducer.send$Results"
+        },
+        {
+          "name": "sendBatch",
+          "ordinal": 1,
+          "params": "QueueProducer.sendBatch$Params",
+          "results": "QueueProducer.sendBatch$Results"
         }
       ]
     },

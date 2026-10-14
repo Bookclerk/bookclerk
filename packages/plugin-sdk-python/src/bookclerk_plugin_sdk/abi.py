@@ -380,6 +380,9 @@ class Bindings(TypedDict):
             filesystem); null unless `[work_fs]` is granted. Job input/output travel on
             `JobRunner.job(controller)`, never here. Null when the guest does not export
             this capability.
+        queues: Named `[[queues.producers]]` bindings: one host-served producer per
+            binding, each sending into the queue the row names. Empty when the manifest
+            declares none.
     """
 
     config: ExtensibleConfig
@@ -389,6 +392,7 @@ class Bindings(TypedDict):
     databases: list[NamedDatabase]
     cancel: NotRequired[Cancellation | None]
     storage: NotRequired[Destination | None]
+    queues: list[NamedQueue]
 
 
 class Entrypoints(TypedDict):
@@ -411,6 +415,8 @@ class Entrypoints(TypedDict):
             this capability.
         cli: `cli` entrypoint. Null when the guest does not export this capability.
         oidc: `oidc` entrypoint. Null when the guest does not export this capability.
+        queueConsumer: `[[queues.consumers]]` trigger: `queue(batch)` handler. Null when
+            the guest does not export this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -421,6 +427,7 @@ class Entrypoints(TypedDict):
     remoteLibrary: NotRequired[RemoteLibrary | None]
     cli: NotRequired[PluginCli | None]
     oidc: NotRequired[Oidc | None]
+    queueConsumer: NotRequired[QueueConsumer | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -1634,6 +1641,68 @@ class NamedDatabase(TypedDict):
     database: NotRequired[GuestDatabase | None]
 
 
+class QueueConsumer(Protocol):
+    """`[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
+    at-least-once; consumers must be idempotent on `QueueMessage.id`.
+    """
+
+    async def queue(self, batch: QueueBatch) -> QueueBatchReply:
+        """Deliver one ordered batch of messages from one queue.
+
+        Args:
+            batch: Messages in delivery order.
+
+        Returns:
+            ``QueueBatchReply``
+        """
+        ...
+
+
+class QueueProducer(Protocol):
+    """Queue producer binding: host-served send into the queue a
+    `[[queues.producers]]` row names, granted through `Bindings.queues`.
+    """
+
+    async def send(self, message: QueueSendMessage) -> QueueSendReply:
+        """Send one message.
+
+        Args:
+            message: Body, encoding, and delay.
+
+        Returns:
+            ``QueueSendReply``
+        """
+        ...
+
+    async def send_batch(self, messages: list[QueueSendMessage], delay_seconds: int) -> QueueSendReply:
+        """Send up to `maxListPage` messages in order; `delaySeconds` applies to
+        every message that carries no delay of its own.
+
+        Args:
+            messages: Messages in send order.
+            delay_seconds: Default delay for the batch.
+
+        Returns:
+            ``QueueSendReply``
+        """
+        ...
+
+
+class NamedQueue(TypedDict):
+    """One named queue producer delivered on `Bindings.queues`.
+
+    Attributes:
+        name: Binding name from `plugin.toml` `[[queues.producers]]`.
+        queue: Queue the binding sends to.
+        producer: Host-served producer for that queue. Null when the guest does not
+            export this capability.
+    """
+
+    name: str
+    queue: str
+    producer: NotRequired[QueueProducer | None]
+
+
 class ContentSource(Protocol):
     """Storefront content source (not byte Source). Every method takes and
     returns typed structs from the "Typed method payloads" section.
@@ -1914,7 +1983,10 @@ class PluginCapabilities(TypedDict):
         jobs: Command types the default entrypoint runs (`job(controller)` trigger).
         databases: Plugin-owned database binding names (`[[databases]]`).
         bindings: Other named bindings the guest expects on `env` (`CONFIG`, `SECRETS`,
-            `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, ...).
+            `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, `[[queues.producers]]` names, ...).
+        queueConsumers: Queues the default entrypoint consumes (`queue(batch)` trigger).
+        queueProducers: Queues the guest may send to through its `[[queues.producers]]`
+            bindings.
     """
 
     entrypoints: list[Entrypoint]
@@ -1923,6 +1995,8 @@ class PluginCapabilities(TypedDict):
     jobs: list[str]
     databases: list[str]
     bindings: list[str]
+    queueConsumers: list[str]
+    queueProducers: list[str]
 
 
 class Brand(TypedDict):
@@ -3363,6 +3437,191 @@ class Invocation(TypedDict):
     causationId: str
 
 
+class QueueMessage(TypedDict):
+    """One message on a Workers-style queue, delivered by `QueueConsumer.queue`.
+
+    Attributes:
+        id: Outbox row id; stable across redeliveries.
+        timestampUnixMs: When the producer sent the message (UTC Unix milliseconds).
+        body: Encoded body; at most `maxEventPayloadBytes`.
+        contentType: Body encoding: `json`, `text`, or `bytes`.
+        attempts: Delivery counter, starting at 1.
+        source: Producer plugin id; empty when the host sent it.
+    """
+
+    id: str
+    timestampUnixMs: int
+    body: bytes
+    contentType: str
+    attempts: int
+    source: str
+
+
+class QueueBatch(TypedDict):
+    """One `QueueConsumer.queue` delivery: messages from one queue in send order.
+
+    Attributes:
+        queue: Queue the messages were sent to.
+        messages: Messages in delivery order; the reply carries one `QueueResult` per
+            entry.
+    """
+
+    queue: str
+    messages: list[QueueMessage]
+
+
+class QueueRetry(TypedDict):
+    """Redeliver a queue message later.
+
+    Attributes:
+        delaySeconds: Seconds before redelivery; zero applies the consumer's
+            `retry_delay`.
+        reason: Short human reason.
+    """
+
+    delaySeconds: int
+    reason: str
+
+
+class QueueResultAck(TypedDict):
+    """``QueueResult`` member ``ack``.
+
+    Handled; the host marks the message delivered.
+
+    Attributes:
+        kind: Always ``"ack"``.
+    """
+
+    kind: Literal["ack"]
+
+
+class QueueResultRetry(TypedDict):
+    """``QueueResult`` member ``retry``.
+
+    Redeliver later.
+
+    Attributes:
+        kind: Always ``"retry"``.
+        value: Redeliver later.
+    """
+
+    kind: Literal["retry"]
+    value: QueueRetry
+
+
+QueueResult = Union[
+    QueueResultAck,
+    QueueResultRetry,
+]
+"""Per-message outcome inside a `QueueConsumer.queue` batch reply."""
+
+
+class QueueBatchOk(TypedDict):
+    """Success payload of `QueueConsumer.queue`: exactly one entry per
+    `QueueBatch.messages` entry, in order. A short list is a host-side error
+    and the missing tail is retried.
+
+    Attributes:
+        results: Per-message outcomes in delivery order.
+    """
+
+    results: list[QueueResult]
+
+
+class QueueBatchReplyOk(TypedDict):
+    """``QueueBatchReply`` member ``ok``.
+
+    Success: per-message outcomes.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: per-message outcomes.
+    """
+
+    kind: Literal["ok"]
+    value: QueueBatchOk
+
+
+class QueueBatchReplyErr(TypedDict):
+    """``QueueBatchReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+QueueBatchReply = Union[
+    QueueBatchReplyOk,
+    QueueBatchReplyErr,
+]
+"""Result union of `QueueConsumer.queue`."""
+
+
+class QueueSendMessage(TypedDict):
+    """One message to send through a `[[queues.producers]]` binding.
+
+    Attributes:
+        body: Encoded body; at most `maxEventPayloadBytes`.
+        contentType: Body encoding: `json` (default when empty), `text`, or `bytes`.
+        delaySeconds: Seconds before the message may be delivered; zero means now.
+    """
+
+    body: bytes
+    contentType: str
+    delaySeconds: int
+
+
+class QueueSendOk(TypedDict):
+    """Success payload of `QueueProducer.send` / `sendBatch`.
+
+    Attributes:
+        messageIds: Outbox row ids in send order.
+    """
+
+    messageIds: list[str]
+
+
+class QueueSendReplyOk(TypedDict):
+    """``QueueSendReply`` member ``ok``.
+
+    Success: the ids the host assigned.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the ids the host assigned.
+    """
+
+    kind: Literal["ok"]
+    value: QueueSendOk
+
+
+class QueueSendReplyErr(TypedDict):
+    """``QueueSendReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+QueueSendReply = Union[
+    QueueSendReplyOk,
+    QueueSendReplyErr,
+]
+"""Result union of `QueueProducer.send` / `sendBatch`."""
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -4608,6 +4867,9 @@ __all__ = [
     "EventConsumer",
     "EventPublisher",
     "NamedDatabase",
+    "QueueConsumer",
+    "QueueProducer",
+    "NamedQueue",
     "ContentSource",
     "RemoteLibrary",
     "PluginCli",
@@ -4704,6 +4966,21 @@ __all__ = [
     "PublishReplyErr",
     "PublishReply",
     "Invocation",
+    "QueueMessage",
+    "QueueBatch",
+    "QueueRetry",
+    "QueueResultAck",
+    "QueueResultRetry",
+    "QueueResult",
+    "QueueBatchOk",
+    "QueueBatchReplyOk",
+    "QueueBatchReplyErr",
+    "QueueBatchReply",
+    "QueueSendMessage",
+    "QueueSendOk",
+    "QueueSendReplyOk",
+    "QueueSendReplyErr",
+    "QueueSendReply",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

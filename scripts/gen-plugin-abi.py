@@ -229,6 +229,8 @@ def check_method_names() -> list[str]:
         "PluginCli",
         "EventConsumer",
         "EventPublisher",
+        "QueueConsumer",
+        "QueueProducer",
     ):
         match = re.search(rf"interface {interface} \{{(.*?)\n\}}", capnp_text, re.DOTALL)
         if not match:

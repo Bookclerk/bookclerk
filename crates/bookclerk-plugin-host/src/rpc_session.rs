@@ -3469,6 +3469,7 @@ async fn run_stream_copy(
                 databases,
                 cancel: Arc::new(FlagCancel(Arc::clone(&cancel))),
                 storage: None,
+                queues: Vec::new(),
             },
         )
         .await

@@ -227,8 +227,8 @@ pub use limits::{
 pub use roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, ReadResult,
-    RemoteLibrary, Source,
+    JobController, JobRunner, NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker,
+    ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, Source,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
@@ -236,8 +236,8 @@ pub use rpc::{
     byte_source_from_async_read, connect_plugin, pull_byte_source_to_writer, serve_plugin,
     serve_plugin_stdio, ContentSourceClient, DatabaseClient, DestinationClient, DestinationServer,
     EventConsumerClient, EventPublisherClient, HostBindings, JobRunnerClient, OidcClient,
-    OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer, RemoteLibraryClient,
-    SourceClient, SourceServer,
+    OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer, QueueConsumerClient,
+    QueueProducerClient, RemoteLibraryClient, SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

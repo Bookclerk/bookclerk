@@ -151,6 +151,43 @@ pub trait EventPublisher {
     async fn publish(&self, event: PluginEvent) -> Result<PublishOk>;
 }
 
+/// `[[queues.consumers]]` handler ([`Entrypoints::queue_consumer`]).
+///
+/// Delivery is at-least-once; consume idempotently on
+/// [`QueueMessage::id`](crate::QueueMessage::id).
+#[async_trait::async_trait(?Send)]
+pub trait QueueConsumer {
+    /// Handles one ordered batch from one queue and returns exactly one
+    /// [`QueueResult`](crate::QueueResult) per message, in order. A short
+    /// reply is a host-side error: the missing tail is redelivered.
+    async fn queue(&self, batch: crate::QueueBatch) -> Result<Vec<crate::QueueResult>>;
+}
+
+/// Queue producer binding: host-served send into the queue a
+/// `[[queues.producers]]` row names ([`Bindings::queues`]).
+#[async_trait::async_trait(?Send)]
+pub trait QueueProducer {
+    /// Sends one message; the host stamps `source` and assigns the id.
+    async fn send(&self, message: crate::QueueSendMessage) -> Result<crate::QueueSendOk>;
+    /// Sends up to `MAX_LIST_PAGE` messages in order. `delay_seconds` applies
+    /// to every message whose own delay is zero.
+    async fn send_batch(
+        &self,
+        messages: Vec<crate::QueueSendMessage>,
+        delay_seconds: u32,
+    ) -> Result<crate::QueueSendOk>;
+}
+
+/// One granted `[[queues.producers]]` binding on [`Bindings::queues`].
+pub struct NamedQueueBinding {
+    /// Binding name on `env` (`[[queues.producers]] binding`).
+    pub name: String,
+    /// Queue the binding sends to.
+    pub queue: String,
+    /// Host-served producer.
+    pub producer: Box<dyn QueueProducer>,
+}
+
 /// Storefront content source (not byte [`Source`]).
 ///
 /// Every method takes and returns the typed Cap'n Proto payload structs from
@@ -463,6 +500,8 @@ pub struct Bindings {
     /// `None` unless `[work_fs]` is granted. Job input/output travel on
     /// [`JobController`], never here.
     pub storage: Option<Box<dyn Destination>>,
+    /// Named `[[queues.producers]]` bindings; empty when none is granted.
+    pub queues: Vec<NamedQueueBinding>,
 }
 
 impl Bindings {
@@ -478,7 +517,15 @@ impl Bindings {
             databases: Vec::new(),
             cancel: Box::new(NeverCancel),
             storage: None,
+            queues: Vec::new(),
         }
+    }
+
+    /// Takes the named queue producer binding `name`, if granted.
+    #[must_use]
+    pub fn take_named_queue(&mut self, name: &str) -> Option<NamedQueueBinding> {
+        let idx = self.queues.iter().position(|q| q.name == name)?;
+        Some(self.queues.swap_remove(idx))
     }
 
     /// Plain-data view (`config` / `secrets` / `adapter`).
@@ -522,6 +569,8 @@ pub struct Entrypoints {
     pub cli: Option<Box<dyn PluginCli>>,
     /// `oidc` entrypoint.
     pub oidc: Option<Box<dyn Oidc>>,
+    /// `[[queues.consumers]]` trigger.
+    pub queue_consumer: Option<Box<dyn QueueConsumer>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

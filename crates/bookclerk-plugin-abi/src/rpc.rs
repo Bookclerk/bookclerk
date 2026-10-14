@@ -60,6 +60,7 @@ use crate::plugin_capnp::{
     oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
     plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
     plugin_migrations_reply, plugin_worker, progress_sink, pull_reply, put_reply,
+    queue_consumer as queue_consumer_capnp, queue_producer as queue_producer_capnp,
     remote_library as remote_library_capnp, source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
@@ -67,8 +68,8 @@ use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_data
 use crate::roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, ReadResult,
-    RemoteLibrary, Source,
+    JobController, JobRunner, NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker,
+    ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, Source,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
@@ -1524,6 +1525,18 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
     } else {
         None
     };
+    let mut queues: Vec<NamedQueueBinding> = Vec::new();
+    if b.has_queues() {
+        for entry in b.get_queues()?.iter() {
+            queues.push(NamedQueueBinding {
+                name: entry.get_name()?.to_str()?.to_string(),
+                queue: entry.get_queue()?.to_str()?.to_string(),
+                producer: Box::new(QueueProducerClient {
+                    client: entry.get_producer()?,
+                }),
+            });
+        }
+    }
     Ok(Bindings {
         config,
         secrets,
@@ -1532,6 +1545,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         databases,
         cancel,
         storage,
+        queues,
     })
 }
 
@@ -1576,6 +1590,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
     }
     if let Some(x) = eps.oidc {
         b.set_oidc(capnp_rpc::new_client(OidcServer {
+            inner: Arc::from(x),
+        }));
+    }
+    if let Some(x) = eps.queue_consumer {
+        b.set_queue_consumer(capnp_rpc::new_client(QueueConsumerServer {
             inner: Arc::from(x),
         }));
     }
@@ -2316,6 +2335,106 @@ impl event_publisher_capnp::Server for EventPublisherServer {
     }
 }
 
+/// Guest-side server for the `[[queues.consumers]]` trigger.
+struct QueueConsumerServer {
+    inner: Arc<dyn QueueConsumer>,
+}
+
+impl queue_consumer_capnp::Server for QueueConsumerServer {
+    async fn queue(
+        self: Rc<Self>,
+        params: queue_consumer_capnp::QueueParams,
+        mut results: queue_consumer_capnp::QueueResults,
+    ) -> capnp::Result<()> {
+        let batch = crate::generated::read_queue_batch(params.get()?.get_batch()?)?;
+        let outcome = if batch.messages.len() > MAX_LIST_PAGE as usize {
+            Err(PluginError::payload_too_large(format!(
+                "queue batch of {} exceeds {MAX_LIST_PAGE}",
+                batch.messages.len()
+            )))
+        } else if let Some(len) = batch
+            .messages
+            .iter()
+            .map(|m| m.body.len())
+            .find(|len| *len > MAX_EVENT_PAYLOAD_BYTES as usize)
+        {
+            Err(PluginError::payload_too_large(format!(
+                "queue message body of {len} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}"
+            )))
+        } else {
+            let expected = batch.messages.len();
+            match self.inner.queue(batch).await {
+                Ok(results) if results.len() != expected => Err(PluginError::internal(format!(
+                    "queue batch returned {} results for {expected} messages",
+                    results.len()
+                ))),
+                Ok(results) => Ok(crate::QueueBatchOk { results }),
+                Err(err) => Err(err),
+            }
+        };
+        crate::generated::write_queue_batch_reply(results.get().init_result(), &outcome)
+    }
+}
+
+/// Host-side server for a [`QueueProducer`] handed to a guest on
+/// `Bindings.queues`.
+struct QueueProducerServer {
+    inner: Arc<dyn QueueProducer>,
+}
+
+impl queue_producer_capnp::Server for QueueProducerServer {
+    async fn send(
+        self: Rc<Self>,
+        params: queue_producer_capnp::SendParams,
+        mut results: queue_producer_capnp::SendResults,
+    ) -> capnp::Result<()> {
+        let message = crate::generated::read_queue_send_message(params.get()?.get_message()?)?;
+        let outcome = if message.body.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+            Err(PluginError::payload_too_large(format!(
+                "queue message body of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
+                message.body.len()
+            )))
+        } else {
+            self.inner.send(message).await
+        };
+        crate::generated::write_queue_send_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn send_batch(
+        self: Rc<Self>,
+        params: queue_producer_capnp::SendBatchParams,
+        mut results: queue_producer_capnp::SendBatchResults,
+    ) -> capnp::Result<()> {
+        let params = params.get()?;
+        let list = params.get_messages()?;
+        let delay_seconds = params.get_delay_seconds();
+        let outcome = if list.len() > MAX_LIST_PAGE {
+            Err(PluginError::payload_too_large(format!(
+                "queue send batch of {} exceeds {MAX_LIST_PAGE}",
+                list.len()
+            )))
+        } else {
+            let mut messages = Vec::with_capacity(list.len() as usize);
+            let mut oversized = None;
+            for r in list.iter() {
+                let message = crate::generated::read_queue_send_message(r)?;
+                if message.body.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+                    oversized = Some(message.body.len());
+                    break;
+                }
+                messages.push(message);
+            }
+            match oversized {
+                Some(len) => Err(PluginError::payload_too_large(format!(
+                    "queue message body of {len} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}"
+                ))),
+                None => self.inner.send_batch(messages, delay_seconds).await,
+            }
+        };
+        crate::generated::write_queue_send_reply(results.get().init_result(), &outcome)
+    }
+}
+
 struct DatabaseServer {
     inner: Arc<dyn Database>,
 }
@@ -2725,6 +2844,8 @@ pub struct HostBindings {
     pub cancel: Arc<dyn Cancellation>,
     /// `WORK_FS` object storage; `None` unless `[work_fs]` is granted.
     pub storage: Option<Arc<dyn Destination>>,
+    /// Named `[[queues.producers]]` producers as `(binding, queue, producer)`.
+    pub queues: Vec<(String, String, Arc<dyn QueueProducer>)>,
 }
 
 impl HostBindings {
@@ -2737,6 +2858,7 @@ impl HostBindings {
             databases: Vec::new(),
             cancel: Arc::new(NeverCancel),
             storage: None,
+            queues: Vec::new(),
         }
     }
 }
@@ -2767,6 +2889,8 @@ pub struct OpenedEntrypoints {
     pub cli: Option<PluginCliClient>,
     /// `oidc` entrypoint.
     pub oidc: Option<OidcClient>,
+    /// `[[queues.consumers]]` trigger.
+    pub queue_consumer: Option<QueueConsumerClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -2876,6 +3000,19 @@ impl PluginClient {
                     self.window,
                 )));
             }
+            if !bindings.queues.is_empty() {
+                let count = u32::try_from(bindings.queues.len())
+                    .map_err(|_| PluginError::invalid_params("too many queue bindings"))?;
+                let mut list = b.reborrow().init_queues(count);
+                for (i, (name, queue, producer)) in bindings.queues.into_iter().enumerate() {
+                    let mut entry = list.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX));
+                    entry.set_name(&name);
+                    entry.set_queue(&queue);
+                    entry.set_producer(capnp_rpc::new_client(QueueProducerServer {
+                        inner: producer,
+                    }));
+                }
+            }
         }
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
@@ -2952,6 +3089,13 @@ impl PluginClient {
             oidc: if eps.has_oidc() {
                 Some(OidcClient {
                     client: eps.get_oidc()?,
+                })
+            } else {
+                None
+            },
+            queue_consumer: if eps.has_queue_consumer() {
+                Some(QueueConsumerClient {
+                    client: eps.get_queue_consumer()?,
                 })
             } else {
                 None
@@ -3455,6 +3599,119 @@ impl EventPublisher for EventPublisherClient {
         write_plugin_event(req.get().init_event(), &event).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_publish_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Cap'n Proto client for [`QueueConsumer`] (host → guest delivery).
+#[derive(Clone)]
+pub struct QueueConsumerClient {
+    client: queue_consumer_capnp::Client,
+}
+
+impl QueueConsumerClient {
+    /// Wraps a `QueueConsumer` capability client (any transport that yields
+    /// one, including the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: queue_consumer_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl QueueConsumer for QueueConsumerClient {
+    async fn queue(&self, batch: crate::QueueBatch) -> Result<Vec<crate::QueueResult>> {
+        if batch.messages.len() > MAX_LIST_PAGE as usize {
+            return Err(PluginError::payload_too_large(format!(
+                "queue batch of {} exceeds {MAX_LIST_PAGE}",
+                batch.messages.len()
+            )));
+        }
+        for message in &batch.messages {
+            if message.body.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+                return Err(PluginError::payload_too_large(format!(
+                    "queue message body of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
+                    message.body.len()
+                )));
+            }
+        }
+        let expected = batch.messages.len();
+        let mut req = self.client.queue_request();
+        crate::generated::write_queue_batch(req.get().init_batch(), &batch).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let ok = crate::generated::read_queue_batch_reply(reply_result!(reply))
+            .map_err(from_capnp)??;
+        if ok.results.len() != expected {
+            return Err(PluginError::internal(format!(
+                "queue batch returned {} results for {expected} messages",
+                ok.results.len()
+            )));
+        }
+        Ok(ok.results)
+    }
+}
+
+/// Guest-side client for a host queue producer binding ([`QueueProducer`]).
+#[derive(Clone)]
+pub struct QueueProducerClient {
+    client: queue_producer_capnp::Client,
+}
+
+impl QueueProducerClient {
+    /// Wraps a `QueueProducer` capability client.
+    #[must_use]
+    pub fn new(client: queue_producer_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl QueueProducer for QueueProducerClient {
+    async fn send(&self, message: crate::QueueSendMessage) -> Result<crate::QueueSendOk> {
+        if message.body.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+            return Err(PluginError::payload_too_large(format!(
+                "queue message body of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
+                message.body.len()
+            )));
+        }
+        let mut req = self.client.send_request();
+        crate::generated::write_queue_send_message(req.get().init_message(), &message)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_queue_send_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+
+    async fn send_batch(
+        &self,
+        messages: Vec<crate::QueueSendMessage>,
+        delay_seconds: u32,
+    ) -> Result<crate::QueueSendOk> {
+        if messages.len() > MAX_LIST_PAGE as usize {
+            return Err(PluginError::payload_too_large(format!(
+                "queue send batch of {} exceeds {MAX_LIST_PAGE}",
+                messages.len()
+            )));
+        }
+        let mut req = self.client.send_batch_request();
+        {
+            let mut p = req.get();
+            p.set_delay_seconds(delay_seconds);
+            let mut list = p.init_messages(u32_len(messages.len()).map_err(from_capnp)?);
+            for (i, message) in messages.iter().enumerate() {
+                if message.body.len() > MAX_EVENT_PAYLOAD_BYTES as usize {
+                    return Err(PluginError::payload_too_large(format!(
+                        "queue message body of {} bytes exceeds {MAX_EVENT_PAYLOAD_BYTES}",
+                        message.body.len()
+                    )));
+                }
+                crate::generated::write_queue_send_message(
+                    list.reborrow().get(u32_len(i).map_err(from_capnp)?),
+                    message,
+                )
+                .map_err(from_capnp)?;
+            }
+        }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_queue_send_reply(reply_result!(reply)).map_err(from_capnp)?
     }
 }
 
@@ -4260,6 +4517,189 @@ mod tests {
         }
     }
 
+    /// Guest that consumes the `jobs` queue and echoes each body back through
+    /// its granted `NOTIFY` producer before answering.
+    struct QueuePlugin;
+
+    #[async_trait::async_trait(?Send)]
+    impl PluginWorker for QueuePlugin {
+        async fn describe(&self) -> Result<PluginDescribe> {
+            Ok(PluginDescribe {
+                api_version: PRODUCT_API_VERSION,
+                id: "queue_test".into(),
+                capabilities: PluginCapabilities {
+                    bindings: vec!["NOTIFY".into()],
+                    ..PluginCapabilities::default()
+                },
+                rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
+                scalar_limits: ScalarLimits::default().into(),
+                ..PluginDescribe::default()
+            })
+        }
+
+        async fn open(
+            &self,
+            _invocation: Invocation,
+            mut bindings: Bindings,
+        ) -> Result<Entrypoints> {
+            let notify = bindings
+                .take_named_queue("NOTIFY")
+                .ok_or_else(|| PluginError::internal("NOTIFY queue binding missing"))?;
+            if notify.queue != "notify" {
+                return Err(PluginError::internal(
+                    "NOTIFY binding names the wrong queue",
+                ));
+            }
+            Ok(Entrypoints {
+                queue_consumer: Some(Box::new(QueueEcho {
+                    notify: notify.producer,
+                })),
+                ..Entrypoints::default()
+            })
+        }
+    }
+
+    struct QueueEcho {
+        notify: Box<dyn QueueProducer>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl QueueConsumer for QueueEcho {
+        async fn queue(&self, batch: crate::QueueBatch) -> Result<Vec<crate::QueueResult>> {
+            if batch.queue != "jobs" {
+                return Err(PluginError::internal("delivered from the wrong queue"));
+            }
+            let mut results = Vec::new();
+            for message in batch.messages {
+                self.notify
+                    .send(crate::QueueSendMessage {
+                        body: message.body.clone(),
+                        content_type: message.content_type.clone(),
+                        delay_seconds: message.attempts,
+                    })
+                    .await?;
+                results.push(if message.body == b"retry" {
+                    crate::QueueResult::Retry(crate::QueueRetry {
+                        delay_seconds: 5,
+                        reason: "echo retry".into(),
+                    })
+                } else {
+                    crate::QueueResult::Ack
+                });
+            }
+            Ok(results)
+        }
+    }
+
+    /// Host-side producer double that records every send.
+    struct RecordingProducer {
+        sent: std::sync::Mutex<Vec<crate::QueueSendMessage>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl QueueProducer for RecordingProducer {
+        async fn send(&self, message: crate::QueueSendMessage) -> Result<crate::QueueSendOk> {
+            let id = format!("m{}", self.sent.lock().expect("sent").len());
+            self.sent.lock().expect("sent").push(message);
+            Ok(crate::QueueSendOk {
+                message_ids: vec![id],
+            })
+        }
+
+        async fn send_batch(
+            &self,
+            messages: Vec<crate::QueueSendMessage>,
+            delay_seconds: u32,
+        ) -> Result<crate::QueueSendOk> {
+            let mut ids = Vec::new();
+            for mut message in messages {
+                if message.delay_seconds == 0 {
+                    message.delay_seconds = delay_seconds;
+                }
+                ids.extend(self.send(message).await?.message_ids);
+            }
+            Ok(crate::QueueSendOk { message_ids: ids })
+        }
+    }
+
+    #[test]
+    fn queue_consumer_and_producer_round_trip() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let (client_r, server_w) = tokio::io::duplex(64 * 1024);
+            let (server_r, client_w) = tokio::io::duplex(64 * 1024);
+            tokio::task::spawn_local(async move {
+                let _ = serve_plugin(Arc::new(QueuePlugin), server_r, server_w, 64 * 1024).await;
+            });
+            let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            let producer = Arc::new(RecordingProducer {
+                sent: std::sync::Mutex::new(Vec::new()),
+            });
+            let opened = client
+                .open(
+                    &Invocation {
+                        id: "queues".into(),
+                        ..Invocation::default()
+                    },
+                    HostBindings {
+                        queues: vec![(
+                            "NOTIFY".into(),
+                            "notify".into(),
+                            Arc::clone(&producer) as Arc<dyn QueueProducer>,
+                        )],
+                        ..HostBindings::default()
+                    },
+                )
+                .await
+                .expect("open");
+            assert!(opened.event_consumer.is_none());
+            let consumer = opened.queue_consumer.expect("queueConsumer");
+            let message = |id: &str, body: &[u8], attempts: u32| crate::QueueMessage {
+                id: id.into(),
+                timestamp_unix_ms: 7,
+                body: body.to_vec(),
+                content_type: "text".into(),
+                attempts,
+                source: "host".into(),
+            };
+            let results = consumer
+                .queue(crate::QueueBatch {
+                    queue: "jobs".into(),
+                    messages: vec![message("a", b"hello", 1), message("b", b"retry", 2)],
+                })
+                .await
+                .expect("queue batch");
+            assert_eq!(
+                results,
+                vec![
+                    crate::QueueResult::Ack,
+                    crate::QueueResult::Retry(crate::QueueRetry {
+                        delay_seconds: 5,
+                        reason: "echo retry".into(),
+                    }),
+                ]
+            );
+            let sent = producer.sent.lock().expect("sent").clone();
+            assert_eq!(sent.len(), 2, "the guest echoed every message");
+            assert_eq!(sent[0].body, b"hello");
+            assert_eq!(sent[0].content_type, "text");
+            assert_eq!(sent[1].delay_seconds, 2, "attempts rode along as the delay");
+            let err = consumer
+                .queue(crate::QueueBatch {
+                    queue: "other".into(),
+                    messages: vec![message("c", b"x", 1)],
+                })
+                .await
+                .expect_err("wrong queue is a guest error");
+            assert!(err.to_string().contains("wrong queue"), "{err}");
+        });
+    }
+
     struct EventPlugin;
 
     #[async_trait::async_trait(?Send)]
@@ -5006,6 +5446,7 @@ mod tests {
                             )],
                             cancel: Arc::new(TestCancel(Arc::new(AtomicBool::new(false)))),
                             storage: None,
+                            queues: Vec::new(),
                         },
                     )
                     .await
