@@ -433,6 +433,40 @@ pub(crate) struct InstanceConfigView {
     pub secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
 }
 
+/// Scheduler placement of one instance: the operator's intent and the last
+/// pass's result.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PlacementView {
+    /// Hosts that should run the instance.
+    pub replicas: u32,
+    /// Label constraints every chosen host must satisfy.
+    pub constraints: Vec<String>,
+    /// Compare-and-swap revision of the intent.
+    pub revision: i64,
+    /// Replicas the last scheduler pass placed.
+    pub placed: u32,
+    /// Why fewer than requested are placed; empty when satisfied.
+    pub detail: String,
+    /// RFC 3339 time the scheduler last changed the status.
+    pub scheduled_at: String,
+    /// RFC 3339 time of the last intent write.
+    pub updated_at: String,
+}
+
+impl From<bookclerk_library::control_plane::PluginPlacement> for PlacementView {
+    fn from(p: bookclerk_library::control_plane::PluginPlacement) -> Self {
+        Self {
+            replicas: p.spec.replicas,
+            constraints: p.spec.constraints,
+            revision: p.revision,
+            placed: p.placed,
+            detail: p.detail,
+            scheduled_at: p.scheduled_at,
+            updated_at: p.updated_at,
+        }
+    }
+}
+
 /// One plugin instance with its schema, document, and deployments.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PluginInstanceView {
@@ -455,6 +489,9 @@ pub(crate) struct PluginInstanceView {
     pub config: Option<InstanceConfigView>,
     /// Deployment rows across hosts.
     pub deployments: Vec<PluginDeploymentView>,
+    /// Scheduler placement; absent when the instance is hand-managed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementView>,
 }
 
 /// Every plugin instance joined with its pinned schema, document, and
@@ -469,8 +506,14 @@ pub(crate) async fn list_plugin_instance_views(
 ) -> bookclerk_library::Result<Vec<PluginInstanceView>> {
     use bookclerk_library::control_plane::{
         default_instance_for_key, list_all_plugin_instances, list_deployments_for_instance,
-        list_plugin_schemas, load_instance_config, load_observation,
+        list_plugin_placements, list_plugin_schemas, load_instance_config, load_observation,
     };
+    let mut placements: std::collections::HashMap<String, PlacementView> =
+        list_plugin_placements(library)
+            .await?
+            .into_iter()
+            .map(|p| (p.plugin_instance_id.to_string(), PlacementView::from(p)))
+            .collect();
     let schemas: std::collections::HashMap<
         String,
         bookclerk_library::control_plane::PinnedPluginSchema,
@@ -536,6 +579,7 @@ pub(crate) async fn list_plugin_instance_views(
                 .unwrap_or_default(),
             config,
             deployments,
+            placement: placements.remove(instance.id.as_str()),
         });
     }
     Ok(views)
@@ -827,6 +871,9 @@ pub async fn put_plugin_deployment(
                 "plugin instance {instance_id}"
             )))
         })?;
+    bookclerk_library::control_plane::ensure_hand_managed(&library, &instance_id)
+        .await
+        .map_err(events_error)?;
     let host_id = host_id.trim().to_string();
     if !list_host_ids(&library)
         .await
@@ -889,23 +936,140 @@ pub async fn get_hosts(
     let cfg = state.config.read().await.clone();
     let this_host = this_host_id(&cfg)?;
     let library = state.library_snapshot().await;
+    let live = bookclerk_library::control_plane::live_host_ids(&library)
+        .await
+        .map_err(events_error)?;
     let mut hosts = Vec::new();
     for host in bookclerk_library::control_plane::list_hosts(&library)
         .await
         .map_err(events_error)?
     {
-        hosts.push(json!({
-            "host_id": host.host_id,
-            "cluster_id": host.cluster_id,
-            "created_at": host.created_at,
-            "heartbeat_at": host.heartbeat_at,
-            "software_version": host.software_version,
-            "schema_state": host.schema_state,
-            "compatible": host.compatible,
-            "this_host": host.host_id == this_host,
-        }));
+        hosts.push(host_json(&host, &this_host, live.contains(&host.host_id)));
     }
     Ok(Json(json!({ "host_id": this_host, "hosts": hosts })))
+}
+
+/// JSON projection of one host row.
+fn host_json(
+    host: &bookclerk_library::control_plane::HostRecord,
+    this_host: &str,
+    live: bool,
+) -> serde_json::Value {
+    json!({
+        "host_id": host.host_id,
+        "cluster_id": host.cluster_id,
+        "created_at": host.created_at,
+        "heartbeat_at": host.heartbeat_at,
+        "software_version": host.software_version,
+        "schema_state": host.schema_state,
+        "compatible": host.compatible,
+        "target": host.target,
+        "labels": host.labels,
+        "implicit_labels": bookclerk_library::control_plane::effective_host_labels(host)
+            .into_iter()
+            .filter(|label| !host.labels.contains(label))
+            .collect::<Vec<_>>(),
+        "live": live,
+        "this_host": host.host_id == this_host,
+    })
+}
+
+/// `PUT /api/config/hosts/{host_id}/labels` body.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PutHostLabels {
+    /// The host's complete operator label set.
+    labels: Vec<String>,
+}
+
+/// `PUT /api/config/hosts/{host_id}/labels`: replace a host's placement
+/// labels. The scheduler re-plans on the wakeup this publishes.
+pub async fn put_host_labels(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(host_id): axum::extract::Path<String>,
+    Json(body): Json<PutHostLabels>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let cfg = state.config.read().await.clone();
+    let this_host = this_host_id(&cfg)?;
+    let library = state.library_snapshot().await;
+    let host = bookclerk_library::control_plane::set_host_labels(
+        &library,
+        &operator_actor(),
+        host_id.trim(),
+        &body.labels,
+    )
+    .await
+    .map_err(events_error)?;
+    let live = bookclerk_library::control_plane::live_host_ids(&library)
+        .await
+        .map_err(events_error)?
+        .contains(&host.host_id);
+    Ok(Json(host_json(&host, &this_host, live)))
+}
+
+/// `PUT /api/config/plugin-instances/{id}/placement` body.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PutPluginPlacement {
+    /// Hosts that should run the instance (0 stops every replica).
+    replicas: u32,
+    /// Label constraints (`name`, `name=value`, `!name`).
+    #[serde(default)]
+    constraints: Vec<String>,
+    /// Current revision to replace; omit (or 0) to create.
+    #[serde(default)]
+    expected_revision: Option<i64>,
+}
+
+/// `PUT /api/config/plugin-instances/{id}/placement`: hand the instance's
+/// deployments to the scheduler with a replica count and constraints.
+pub async fn put_plugin_placement_route(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<PutPluginPlacement>,
+) -> Result<Json<serde_json::Value>, Response> {
+    use bookclerk_library::control_plane::{
+        put_plugin_placement, PlacementSpec, PlacementWrite, PluginInstanceId,
+    };
+    let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
+    let library = state.library_snapshot().await;
+    let spec = PlacementSpec {
+        replicas: body.replicas,
+        constraints: body.constraints,
+    };
+    match put_plugin_placement(
+        &library,
+        &operator_actor(),
+        &instance_id,
+        &spec,
+        body.expected_revision,
+    )
+    .await
+    .map_err(events_error)?
+    {
+        PlacementWrite::Applied(placement) => Ok(Json(json!({
+            "plugin_instance_id": instance_id.to_string(),
+            "placement": PlacementView::from(placement),
+        }))),
+        PlacementWrite::Conflict { current_revision } => Err(conflict(current_revision)),
+    }
+}
+
+/// `DELETE /api/config/plugin-instances/{id}/placement`: return the
+/// instance to hand-managed enable/disable; its deployments stay as they
+/// are.
+pub async fn delete_plugin_placement_route(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    use bookclerk_library::control_plane::{delete_plugin_placement, PluginInstanceId};
+    let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
+    let library = state.library_snapshot().await;
+    let deleted = delete_plugin_placement(&library, &operator_actor(), &instance_id)
+        .await
+        .map_err(events_error)?;
+    Ok(Json(json!({
+        "plugin_instance_id": instance_id.to_string(),
+        "deleted": deleted,
+    })))
 }
 
 /// `GET /api/config/plugin-schemas`: every pinned settings schema.
@@ -948,7 +1112,9 @@ fn conflict(current_revision: i64) -> Response {
 /// Maps a library configuration error onto an HTTP status.
 fn events_error(err: bookclerk_library::LibraryError) -> Response {
     let message = err.to_string();
-    let status = if message.contains("unauthorized configuration write") {
+    let status = if matches!(err, bookclerk_library::LibraryError::Conflict(_)) {
+        StatusCode::CONFLICT
+    } else if message.contains("unauthorized configuration write") {
         StatusCode::FORBIDDEN
     } else if message.contains("unsupported configuration schema")
         || message.contains("invalid configuration")

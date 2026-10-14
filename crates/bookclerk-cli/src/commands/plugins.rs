@@ -159,6 +159,26 @@ pub enum PluginsCommand {
         #[arg(long)]
         host: Option<String>,
     },
+    /// Place a plugin instance with the cluster scheduler: run it on
+    /// `--replicas` hosts that carry every `--on` label. The scheduler (one
+    /// daemon, under a cluster lease) writes the deployments; `enable` and
+    /// `disable` no longer apply to a placed instance.
+    Deploy {
+        /// Plugin alias, PluginKey, or plugin instance id.
+        id: String,
+        /// Hosts that should run the instance (0 stops every replica).
+        #[arg(long, required_unless_present = "manual")]
+        replicas: Option<u32>,
+        /// Label constraint every chosen host must satisfy (`nas`,
+        /// `zone=eu`, `host=<id>`, `target=linux-x64-gnu`); prefix with `!`
+        /// to exclude. Repeatable.
+        #[arg(long = "on", value_name = "LABEL")]
+        on: Vec<String>,
+        /// Drop the placement: the instance's deployments stay as they are
+        /// and `enable` / `disable` manage them again.
+        #[arg(long, conflicts_with_all = ["replicas", "on"])]
+        manual: bool,
+    },
     /// Plugin instances: one per plugin by default, more when an operator
     /// wants several configurations of one plugin.
     Instances {
@@ -360,6 +380,24 @@ struct InstanceListItem {
     is_default: bool,
     /// Deployment rows across hosts.
     deployments: Vec<DeploymentListItem>,
+    /// Scheduler placement; absent when the instance is hand-managed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    placement: Option<PlacementListItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+/// Scheduler placement of one instance.
+struct PlacementListItem {
+    /// Requested replicas.
+    replicas: u32,
+    /// Label constraints.
+    constraints: Vec<String>,
+    /// Intent revision.
+    revision: i64,
+    /// Replicas the last scheduler pass placed.
+    placed: u32,
+    /// Why fewer are placed; empty when satisfied.
+    detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -681,6 +719,12 @@ pub async fn run(
         PluginsCommand::Disable { id, host } => {
             set_plugin_enabled(config, &id, host, false, format).await
         }
+        PluginsCommand::Deploy {
+            id,
+            replicas,
+            on,
+            manual,
+        } => run_deploy(config, &id, replicas, on, manual, format).await,
         PluginsCommand::Instances { command } => run_instances(config, command, format).await,
         PluginsCommand::Config { command } => run_plugin_config(config, command, format).await,
         PluginsCommand::Approve { id, yes } => {
@@ -1623,6 +1667,7 @@ async fn set_plugin_enabled(
     let plane = crate::registry::open_host(config).await?;
     let store = &plane.store;
     let instance = resolve_instance(store, needle).await?;
+    bookclerk_library::control_plane::ensure_hand_managed(store, &instance.id).await?;
     let installed = plane
         .enrolled
         .iter()
@@ -1846,6 +1891,15 @@ async fn instance_items(
             is_default: defaults
                 .get(&instance.plugin_key)
                 .is_some_and(|id| *id == instance.id.as_str()),
+            placement: bookclerk_library::control_plane::load_plugin_placement(store, &instance.id)
+                .await?
+                .map(|p| PlacementListItem {
+                    replicas: p.spec.replicas,
+                    constraints: p.spec.constraints,
+                    revision: p.revision,
+                    placed: p.placed,
+                    detail: p.detail,
+                }),
             plugin_key: instance.plugin_key,
             display_name: instance.display_name,
             deployments,
@@ -1890,6 +1944,23 @@ fn print_instance_line(instance: &InstanceListItem) {
             format!(" name={}", instance.display_name)
         }
     );
+    if let Some(p) = &instance.placement {
+        println!(
+            "    placed by the scheduler: {}/{} replica(s){}{}",
+            p.placed,
+            p.replicas,
+            if p.constraints.is_empty() {
+                String::new()
+            } else {
+                format!(" on {}", p.constraints.join(", "))
+            },
+            if p.detail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", p.detail)
+            }
+        );
+    }
     if instance.deployments.is_empty() {
         println!("    no deployments");
     }
@@ -1906,6 +1977,105 @@ fn print_instance_line(instance: &InstanceListItem) {
                 .unwrap_or_default()
         );
     }
+}
+
+/// `plugins deploy`: write or drop an instance's scheduler placement.
+async fn run_deploy(
+    config: &Config,
+    needle: &str,
+    replicas: Option<u32>,
+    on: Vec<String>,
+    manual: bool,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    use bookclerk_library::control_plane::{
+        delete_plugin_placement, effective_host_labels, labels_satisfy, list_hosts, live_host_ids,
+        load_plugin_placement, put_plugin_placement, PlacementSpec, PlacementWrite,
+    };
+    let plane = crate::registry::open_host(config).await?;
+    let store = &plane.store;
+    let instance = resolve_instance(store, needle).await?;
+    if manual {
+        let deleted = delete_plugin_placement(store, &cli_actor(), &instance.id).await?;
+        let payload = json!({
+            "plugin_key": instance.plugin_key,
+            "plugin_instance_id": instance.id.to_string(),
+            "placement": null,
+            "deleted": deleted,
+        });
+        return emit(format, &payload, || {
+            if deleted {
+                println!(
+                    "instance {} is hand-managed again; its deployments are unchanged \
+                     (use `plugins enable|disable`)",
+                    instance.id
+                );
+            } else {
+                println!("instance {} had no placement", instance.id);
+            }
+        });
+    }
+    let replicas = replicas.ok_or_else(|| anyhow::anyhow!("--replicas is required"))?;
+    let current = load_plugin_placement(store, &instance.id).await?;
+    let spec = PlacementSpec {
+        replicas,
+        constraints: on,
+    };
+    let placement = match put_plugin_placement(
+        store,
+        &cli_actor(),
+        &instance.id,
+        &spec,
+        current.as_ref().map(|p| p.revision),
+    )
+    .await?
+    {
+        PlacementWrite::Applied(placement) => placement,
+        PlacementWrite::Conflict { current_revision } => {
+            anyhow::bail!("placement changed concurrently (revision {current_revision}); retry")
+        }
+    };
+    let live = live_host_ids(store).await?;
+    let eligible: Vec<String> = list_hosts(store)
+        .await?
+        .iter()
+        .filter(|host| {
+            live.contains(&host.host_id)
+                && labels_satisfy(&effective_host_labels(host), &placement.spec.constraints)
+        })
+        .map(|host| host.host_id.clone())
+        .collect();
+    let payload = json!({
+        "plugin_key": instance.plugin_key,
+        "plugin_instance_id": instance.id.to_string(),
+        "placement": {
+            "replicas": placement.spec.replicas,
+            "constraints": placement.spec.constraints,
+            "revision": placement.revision,
+        },
+        "eligible_hosts": eligible,
+    });
+    emit(format, &payload, || {
+        println!(
+            "placed {} instance {}: {} replica(s){} (revision {}); the scheduler applies it on its next pass",
+            instance.plugin_key,
+            instance.id,
+            placement.spec.replicas,
+            if placement.spec.constraints.is_empty() {
+                String::new()
+            } else {
+                format!(" on {}", placement.spec.constraints.join(", "))
+            },
+            placement.revision
+        );
+        let wanted = usize::try_from(placement.spec.replicas).unwrap_or(usize::MAX);
+        if eligible.len() < wanted {
+            println!(
+                "warning: {} live host(s) satisfy the constraints now; label more with `bookclerk hosts label`",
+                eligible.len()
+            );
+        }
+    })
 }
 
 /// `plugins instances` actions.

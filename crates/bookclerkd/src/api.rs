@@ -442,6 +442,13 @@ struct PluginSettingsGroup {
     /// This host's deployment of the instance, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     deployment: Option<crate::config_authority::PluginDeploymentView>,
+    /// Scheduler placement; absent when the instance is hand-managed (the
+    /// Enabled switch applies only then).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    placement: Option<crate::config_authority::PlacementView>,
+    /// Hosts whose deployment of the instance is `present`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    present_on: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -881,7 +888,16 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/plugin-instances/{id}/deployments/{host_id}",
             put(crate::config_authority::put_plugin_deployment),
         )
+        .route(
+            "/api/config/plugin-instances/{id}/placement",
+            put(crate::config_authority::put_plugin_placement_route)
+                .delete(crate::config_authority::delete_plugin_placement_route),
+        )
         .route("/api/config/hosts", get(crate::config_authority::get_hosts))
+        .route(
+            "/api/config/hosts/{host_id}/labels",
+            put(crate::config_authority::put_host_labels),
+        )
         .route(
             "/api/config/plugin-releases",
             get(crate::plugin_releases::get_plugin_releases)
@@ -2137,6 +2153,8 @@ fn build_database_settings_group(
         is_default: false,
         config_revision: None,
         deployment: None,
+        placement: None,
+        present_on: Vec::new(),
     }
 }
 
@@ -2298,6 +2316,15 @@ fn instance_settings_group(
             .iter()
             .find(|deployment| deployment.host_id == host_id)
             .cloned(),
+        placement: view.placement.clone(),
+        present_on: view
+            .deployments
+            .iter()
+            .filter(|deployment| {
+                deployment.desired == bookclerk_library::control_plane::DESIRED_PRESENT
+            })
+            .map(|deployment| deployment.host_id.clone())
+            .collect(),
     }
 }
 

@@ -117,6 +117,12 @@ enum Commands {
         /// Nested `events` verb (list, dead-letters, retry, ack, cancel, resume).
         command: commands::events::EventsCommand,
     },
+    /// Cluster hosts: liveness, artifact targets, and placement labels.
+    Hosts {
+        #[command(subcommand)]
+        /// Nested `hosts` verb (list, label).
+        command: commands::hosts::HostsCommand,
+    },
     /// Plugin-owned queues on the outbox: counters, consumers, messages.
     Queues {
         #[command(subcommand)]
@@ -367,6 +373,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Db { command } => commands::db::run(command, &config, format).await,
         Commands::Daemon { command } => commands::daemon_cmd::run(command, &config, format).await,
         Commands::Events { command } => commands::events::run(command, &config, format).await,
+        Commands::Hosts { command } => commands::hosts::run(command, &config, format).await,
         Commands::Queues { command } => commands::queues::run(command, &config, format).await,
         Commands::Login => commands::daemon_cmd::run_login(&config, format).await,
         Commands::Diagnostics { command } => {

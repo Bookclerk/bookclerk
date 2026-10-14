@@ -14,10 +14,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    activate_release, approve_release_grant, clear_active_release, list_deployments_for_instance,
-    list_plugin_instances_for_key, list_release_pointers, list_releases,
-    load_or_create_host_identity, load_release, replace_plugin_deployment, ConfigActor,
-    PluginRelease, DESIRED_ABSENT,
+    activate_release, approve_release_grant, clear_active_release, delete_plugin_placement,
+    list_deployments_for_instance, list_plugin_instances_for_key, list_release_pointers,
+    list_releases, load_or_create_host_identity, load_release, replace_plugin_deployment,
+    ConfigActor, PluginRelease, DESIRED_ABSENT,
 };
 use bookclerk_plugin_catalog::{
     safe_join, BookclerkPackageManifest, Installer, PackageCoordinate, TrustPolicy,
@@ -269,6 +269,11 @@ pub async fn delete_active_release(
         .await
         .map_err(library_error)?
     {
+        // A placed instance would be redeployed by the scheduler; removing
+        // the plugin removes its placement first.
+        delete_plugin_placement(&library, &operator_actor(), &instance.id)
+            .await
+            .map_err(library_error)?;
         for deployment in list_deployments_for_instance(&library, &instance.id)
             .await
             .map_err(library_error)?

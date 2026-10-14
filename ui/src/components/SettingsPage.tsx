@@ -5,6 +5,7 @@ import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
+import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
   PluginConsentDialog,
@@ -939,6 +940,12 @@ export function SettingsPage({
     }
   }
 
+  /** Reloads the Settings snapshot after an immediate (non-form) write. */
+  async function reloadSettings() {
+    const next = await withRequestTimeout(fetchSettings(), "Reload settings");
+    applySavedSettings(next, daemonListen);
+  }
+
   /**
    * Flips this host's deployment of an instance and reloads the snapshot.
    *
@@ -1812,6 +1819,7 @@ export function SettingsPage({
                                         <span title={plugin.deployment?.detail}>{deploymentStatus}</span>
                                       </Badge>
                                     ) : null}
+                                    <PlacementBadge plugin={plugin} />
                                     {loaded ? (
                                       <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
                                         Loaded
@@ -1833,8 +1841,13 @@ export function SettingsPage({
                                       type="checkbox"
                                       className="h-4 w-4 accent-teal"
                                       aria-label={`${plugin.display_name?.trim() || plugin.id} enabled`}
+                                      title={
+                                        plugin.placement
+                                          ? "Placed by the cluster scheduler; change its placement instead"
+                                          : undefined
+                                      }
                                       checked={enabled}
-                                      disabled={switchBusy}
+                                      disabled={switchBusy || Boolean(plugin.placement)}
                                       onChange={(e) =>
                                         void onPluginEnabledChange(
                                           plugin,
@@ -1897,6 +1910,14 @@ export function SettingsPage({
                                       })}
                                     </div>
                                   )}
+                                  {instanceGroup ? (
+                                    <PlacementPanel
+                                      plugin={plugin}
+                                      onChanged={reloadSettings}
+                                      onError={setError}
+                                      onSessionExpired={onSessionExpired}
+                                    />
+                                  ) : null}
                                 </div>
                               ) : null}
                             </li>

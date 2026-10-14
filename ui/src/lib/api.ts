@@ -1636,6 +1636,25 @@ export interface PluginDeploymentView {
 }
 
 /**
+ * Scheduler placement of a plugin instance: the operator's intent and the
+ * last scheduler pass's result.
+ */
+export interface PluginPlacementView {
+  /** Hosts that should run the instance (0 stops every replica). */
+  replicas: number;
+  /** Label constraints (`nas`, `zone=eu`, `!slow`, `host=<id>`). */
+  constraints: string[];
+  /** Compare-and-swap revision of the intent. */
+  revision: number;
+  /** Replicas the last scheduler pass placed. */
+  placed: number;
+  /** Why fewer than requested are placed; empty when satisfied. */
+  detail: string;
+  scheduled_at: string;
+  updated_at: string;
+}
+
+/**
  * Settings group for one plugin instance, or for a bootstrap database adapter.
  */
 export interface PluginSettingsGroup {
@@ -1659,6 +1678,10 @@ export interface PluginSettingsGroup {
   config_revision?: number;
   /** This host's deployment of the instance, when one exists. */
   deployment?: PluginDeploymentView;
+  /** Scheduler placement; absent when the instance is managed by hand. */
+  placement?: PluginPlacementView;
+  /** Hosts whose deployment of the instance is `present`. */
+  present_on?: string[];
 }
 
 /**
@@ -2047,6 +2070,47 @@ export async function putPluginDeployment(
     },
   );
   return parseJson<PluginDeploymentView>(res);
+}
+
+/**
+ * Hands an instance's deployments to the cluster scheduler, or changes its
+ * placement (compare-and-swap on `expected_revision`; 0 creates).
+ *
+ * @param instanceId - Plugin instance id.
+ * @param body - Replica count, label constraints, and the revision last seen.
+ * @returns The stored placement.
+ */
+export async function putPluginPlacement(
+  instanceId: string,
+  body: { replicas: number; constraints: string[]; expected_revision: number },
+): Promise<{ plugin_instance_id: string; placement: PluginPlacementView }> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/placement`,
+    {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * Drops an instance's placement: its deployments stay as they are and the
+ * Enabled switch manages them again.
+ *
+ * @param instanceId - Plugin instance id.
+ * @returns Whether a placement was removed.
+ */
+export async function deletePluginPlacement(
+  instanceId: string,
+): Promise<{ plugin_instance_id: string; deleted: boolean }> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/placement`,
+    { method: "DELETE", credentials: "include" },
+  );
+  return parseJson(res);
 }
 
 /**

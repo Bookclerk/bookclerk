@@ -7,6 +7,7 @@ pub mod discover;
 pub mod events;
 pub mod export;
 pub mod export_cmd;
+pub mod hosts;
 pub mod import_cmd;
 pub mod integrations;
 pub mod library;

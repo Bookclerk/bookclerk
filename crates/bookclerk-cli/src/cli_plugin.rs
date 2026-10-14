@@ -18,6 +18,7 @@ pub const RESERVED_PLUGIN_SUBCOMMANDS: &[&str] = &[
     "rollback",
     "releases",
     "remove",
+    "deploy",
     "instances",
     "config",
     "registry",
