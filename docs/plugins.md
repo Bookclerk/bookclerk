@@ -242,48 +242,47 @@ choice made by whoever installs the plugin, not by whoever shipped the binary.
 
 ## Host-local plugin namespace
 
-Plugin deployment state is **host-local**. Shared Bookclerk application data
-may live in a common database, but each host owns its own plugin inventory,
-trust ledger, runtime state, and mutation lock.
-
-`$BOOKCLERK_FILES_DIR` is one host plugin namespace:
+What a plugin *is* (its release, consent, instances, settings, and where it
+is deployed) lives in the library database and is shared by every host in
+the cluster; see [Releases](#releases). What a host *runs* is host-local:
+`$BOOKCLERK_FILES_DIR` holds the materialized trees, guest state, and the
+mutation lock for that host only.
 
 ```text
 $FILES_DIR/
-  plugins/<PluginKey fs-id>/     # immutable install tree (guest cwd, read-only)
+  host-identity.json             # this host's stable HostId
+  plugins/.releases/<digest>/    # materialized release tree (read-only, shared by instances)
+  plugins/.staging/              # partial extracts; never spawned from
+  plugins/<PluginKey fs-id>/     # host-local tree: platform guests, dev trees, older installs
+  plugin-packages/<name>/        # operator-placed package.json + archive.tar.gz
   plugin-state/<PluginKey fs-id>/data
   plugin-state/<PluginKey fs-id>/tmp
   plugin-state/<PluginKey fs-id>/session-<nonce>/  # host-owned; native-behind only
-  install-ledger.json            # host-owned trust anchor (not receipt.json)
-  .plugin-mutation.lock          # OS advisory lock for local install/remove
+  plugin-grants.json             # consent for host-local trees (releases carry their own)
+  install-ledger.json            # trust anchor for host-local installs only
+  .plugin-mutation.lock          # OS advisory lock for cache and tree mutation
   .plugin-hold/                  # held trees/state during remove transactions
 ```
 
-Alias uniqueness, install-ledger mutation, jail/runtime processes, and
-`.plugin-mutation.lock` are scoped to this files directory. Two hosts:
+The cache directory names a digest, not a plugin: two instances of one
+release, or two plugins that ship identical bytes, share one tree. The
+`.releases` and `.staging` names start with a dot so discovery and alias
+scanning skip them; a release is found through the database, never by
+walking `plugins/`.
 
-```text
-Host A $FILES_DIR/.plugin-mutation.lock
-Host B $FILES_DIR/.plugin-mutation.lock
-```
+`.plugin-mutation.lock` is scoped to the files directory. Two hosts that
+share one PostgreSQL or D1 database each take their own lock and never
+block each other; cluster coordination goes through database rows and
+compare-and-swap, not a shared-database advisory lock.
 
-do **not** interact, even when A and B use the same PostgreSQL/D1/shared
-Bookclerk database. That is intentional: the same alias and PluginKey may be
-installed on both hosts with no coordination through the shared database.
-Bookclerk does not take a PostgreSQL advisory lock (or any other shared-database
-lock) for plugin installation.
-
-A future stable `HostId` (for example `$FILES_DIR/host.json`) is expected to
-map naturally onto this files-dir namespace where shared-database placement
-matters (runtime availability, job eligibility, event-consumer placement,
-local SQLite ownership, rolling plugin rollout). This release does **not**
-persist a HostId, register hosts, replicate plugin inventories, or schedule
-cluster plugin deployment.
-
-`receipt.json` inside the install tree is metadata. Remove/install identity
-is bound to the host ledger plus filesystem placement
-(`basename == PluginKey.fs_id()` for `pk-*` directories). A tampered receipt
-cannot redirect `--purge-state` onto another PluginKey.
+Host-local trees remain for three cases: platform guests that ship with the
+host (`sqlite`, `local`), development trees staged by `cargo stage-plugins`
+or `cargo dev`, and installs committed before releases existed. Those use
+`plugin-grants.json` for consent and `install-ledger.json` for identity.
+`receipt.json` inside such a tree is metadata: remove/install identity is
+bound to the ledger plus filesystem placement (`basename ==
+PluginKey.fs_id()` for `pk-*` directories), so a tampered receipt cannot
+redirect `--purge-state` onto another PluginKey.
 
 ## The guest jail
 
@@ -1077,9 +1076,14 @@ manifest stays within the installer envelope (deny network, `config` /
 `work_fs` only). A third-party package that reuses those ids gets no
 privilege.
 
-Grants are persisted under `$BOOKCLERK_FILES_DIR/plugin-grants.json`, keyed
-by provenance-qualified PluginKey. Saving that file is the operator
-mechanism (`bookclerk plugins approve` and `POST /api/plugins/{id}/consent`).
+A released plugin's grant is stored on its release row, so one approval
+covers every host that runs the release (`bookclerk plugins approve`,
+`plugins install --approve-capabilities`, or
+`POST /api/config/plugin-releases/{key}/{version}/approve`); see
+[Releases](#releases). A host-local tree's grant is persisted under
+`$BOOKCLERK_FILES_DIR/plugin-grants.json`, keyed by provenance-qualified
+PluginKey. Saving that file is the operator mechanism for those trees
+(`bookclerk plugins approve` and `POST /api/plugins/{id}/consent`).
 `bookclerkd` watches the file (and same-process saves notify immediately)
 and **proactively** fences any live session whose persisted
 `grant_revision` no longer matches. Malformed grant files keep
@@ -1211,13 +1215,16 @@ validates the document against the host's local manifest: unknown keys are
 dropped with a warning, and a missing `required` key is an `error`
 observation.
 
-The local reconciler installs from `$BOOKCLERK_FILES_DIR/plugin-packages/<name>/`
-when the ledger and discovery both miss the key. That directory is the
-operator's authorized local source: `package.json` plus `archive.tar.gz`,
-with artifact URLs limited to files inside the package directory. The
-reconciler does not download plugins. It starts the staged guest and calls
-health before commit, and it respawns a guest that has exited even when the
-last observation was healthy. The daemon keeps one guest map for the process.
+The reconciler runs a plugin's active [release](#releases) when it has
+one, materializing it by digest; it falls back to a host-local tree only for
+a plugin with no release. An operator package under
+`$BOOKCLERK_FILES_DIR/plugin-packages/<name>/` (`package.json` plus
+`archive.tar.gz`, artifact URLs limited to files inside that directory)
+is published as a release the first time a present deployment needs it,
+offline and with the key's existing `plugin-grants.json` approval carried
+onto the release. The reconciler respawns a guest that has exited even when
+the last observation was healthy. The daemon keeps one guest map for the
+process.
 Config reload re-enrols the host and leaves running guests in place unless
 the database connection changed, in which case every guest is retired and
 the reconciler brings the present deployments back.
@@ -1236,16 +1243,88 @@ authoritative rows. The CLI only produces them (`bookclerk plugins enable
 --host <id>` wakes that host), and `bookclerk queues list` shows each
 host queue with its `host:<id>` consumer.
 
-This host-local install path (receipts, `install-ledger.json`, in-place
-replace of `plugins/<fs-id>`, health before commit) is scheduled to be
-replaced by cluster releases and a content-addressed cache; see the
-control-plane ADR, *Releases and materialization*.
-
 A deployed guest is registered under its plugin instance id. `bookclerk
 library scan` and `bookclerk library acquire` route a plugin key to its
 default instance on this host; pass `--instance` to pin another. Accounts
 are keyed by plugin key, not instance: every instance of a plugin, on every
 host, serves the same connected accounts.
+
+## Releases
+
+A third-party plugin runs from a **release**: a package resolved and
+verified once, recorded in the library database, and run byte-for-byte the
+same on every host. Installing publishes; it does not touch this host's
+`plugins/`.
+
+```bash
+bookclerk plugins install cargo:bookclerk-plugin-source-example@1.2.0 --approve-capabilities
+bookclerk plugins install example --archive ./example.tar.gz \
+  --manifest ./bookclerk-package.json --allow-unverified-publisher
+bookclerk plugins releases [example]         # every published version; * marks the active one
+bookclerk plugins update example [--to 1.3]  # publish a newer registry version and activate it
+bookclerk plugins rollback example 1.2.0     # move the active pointer back
+bookclerk plugins approve example --yes      # record consent on the active release
+bookclerk plugins enable example             # deploy the default instance on this host
+bookclerk plugins remove example             # clear the pointer; every deployment absent
+```
+
+**Publishing** checks the trust policy, fetches each artifact, and verifies
+it: a registry artifact must match the archive digest its package manifest
+declares, and a local archive's digest is computed from the operator's own
+file. The host then extracts the archive to scratch, parses `plugin.toml`,
+checks the executable is present, and computes the payload-root digest. The
+release row records the PluginKey, the version from `plugin.toml`, the
+manifest and settings schema, one artifact per target (URL, archive digest,
+payload-root digest), the coordinate it came from, and the consent grant.
+Publishing the same version twice is a no-op; publishing different bytes
+under a published version is refused. A local archive's path names no
+stable plugin, so a later archive of an alias that is already published
+reuses that alias's key. One alias names one plugin: a release may not take
+an alias another plugin's active release answers to.
+
+**Artifact URLs.** A registry artifact keeps its download URL. A local
+archive up to 1 MiB is stored in the database (`blob:sha256:<hex>`) so every
+host can materialize it. A larger local archive is referenced in place as a
+`file://` URL, which only hosts that see that path (shared storage) can
+materialize; the others record an `error` observation.
+
+**The active pointer.** Each PluginKey has at most one active release. The
+first release of a plugin becomes active; a later one becomes active with
+`install --activate`, `update`, or `rollback`. An automatic publish (an
+operator package, or `install` without `--activate`) never moves the pointer
+back to an older version. Moving the pointer publishes `release.changed`
+to every host queue, and each host respawns its deployments of that plugin
+from the new digest.
+
+**Consent rides on the release.** A release with no approved grant is
+recorded but not spawned; hosts report an `error` observation until it is
+approved. A new release carries the previous active release's grant forward
+when that grant still covers everything the new release requests; a release
+that asks for more needs a fresh `approve`.
+
+**Materialization.** When a present deployment needs the active release, the
+host fetches the artifact for its own target, extracts it under
+`plugins/.staging/release-<digest>.<pid>`, verifies the payload-root digest
+against the row, and renames the tree to `plugins/.releases/<digest>`. A
+partial extract never reaches the final path, a cached digest is immutable,
+and digests no deployment on the host references are swept after an hour.
+
+**Health is an observation.** A guest that fails health records an `error`
+observation and the release stays active; nothing rolls back
+automatically. Use `plugins rollback` to move the pointer.
+
+The daemon exposes the same operations (operator session):
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| `GET` | `/api/config/plugin-releases` | every release with `active`, `approved`, and artifacts |
+| `POST` | `/api/config/plugin-releases` | `{coordinate}` or `{package}` (a directory under `plugin-packages/`), plus `activate`, `approve`, `allow_unverified_publisher` |
+| `PUT` | `/api/config/plugin-releases/{key}/active` | `{version}`: activate, update, or roll back |
+| `DELETE` | `/api/config/plugin-releases/{key}/active` | clear the pointer and set every deployment `absent` |
+| `POST` | `/api/config/plugin-releases/{key}/{version}/approve` | record the requested consent |
+
+`{key}` is the percent-encoded PluginKey. Platform guests are never
+published: they ship with the host.
 
 ## ABI (api_version = 3, object-capability Workers RPC)
 
@@ -1951,10 +2030,12 @@ the target OS/arch.
 The operator’s Bookclerk install already includes `bookclerk-workerd`, the pinned
 Cloudflare `workerd` binary, and `bookclerk-jail`.
 
-Users unpack under `plugins/` (or a `BOOKCLERK_PLUGIN_DIRS` root), **approve**
-capabilities, then set `enabled = true` in `config.toml` (or
-`bookclerk plugins enable`). No rebuild of Bookclerk is required when
-`api_version` matches.
+Operators publish a package as a [release](#releases) (`bookclerk plugins
+install`, `POST /api/config/plugin-releases`, or a package directory under
+`plugin-packages/`), **approve** its capabilities, then deploy it with
+`bookclerk plugins enable`. A development tree unpacked under `plugins/` (or
+a `BOOKCLERK_PLUGIN_DIRS` root) still runs as a host-local plugin. No
+rebuild of Bookclerk is required when `api_version` matches.
 
 ### First-party plugins (staged guests)
 

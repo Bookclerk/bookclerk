@@ -1,7 +1,8 @@
 # Plugin registry (crates.io taxonomy + install without Rust)
 
-Third-party plugins install as archives under `$BOOKCLERK_FILES_DIR/plugins/<plugin-key-fs-id>/`
-(see [plugins.md](plugins.md) and the ADR
+Third-party plugins are published as cluster releases and materialized on
+each host under `$BOOKCLERK_FILES_DIR/plugins/.releases/<payload digest>/`
+(see [plugins.md#releases](plugins.md#releases) and the ADR
 [plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md)):
 
 | Runtime | Archive contents |
@@ -79,18 +80,20 @@ These landed on the follow-up ecosystem track instead of expanding #74:
 | --- | --- |
 | crates.io crate | **Discovery index** + install URL metadata for plugin *authors* |
 | HTTPS downloadable archive | **Native:** per OS/arch binary + `plugin.toml`. **Workerd:** `plugin.toml` + `modules/` (portable) |
-| `$BOOKCLERK_FILES_DIR/plugins/<plugin-key-fs-id>/` | **Installed** layout (`pk-` + 128-bit PluginKey digest); the manifest `id` remains a display alias |
+| `plugin_releases` row + `$BOOKCLERK_FILES_DIR/plugins/.releases/<digest>/` | **Published** release (database) and its **materialized** tree on each host; the manifest `id` remains a display alias |
 | Platform installer / `cargo package-platform` | **Hosts + jail + workerd + sqlite + local** — always bundled, not pulled from crates.io |
 
 Bookclerk never runs `cargo build` / `npm install` on the user’s machine to
 install a plugin. Installing downloads a release asset over HTTPS, verifies it,
-and unpacks the layout above — the same as a manual drop-in. The asset host is
+and records a release; each host then fetches the asset for its own target,
+verifies the payload digest, and unpacks it into its release cache. The asset host is
 **not** tied to GitHub: S3/R2, GitLab/Forgejo/Codeberg releases, a CDN, or a
 self-hosted static directory all work as long as the URL is a direct download.
 
 **Automatic pull today:** nothing from crates.io. Platform plugins ship inside
-the host installer. Optional storefronts install later via
-`bookclerk plugins install` (planned) or manual archive unpack.
+the host installer. Optional storefronts are published with
+`bookclerk plugins install`, `POST /api/config/plugin-releases`, or an
+operator package under `plugin-packages/`.
 
 See [packaging.md](packaging.md) for `cargo package-*` aliases and GitHub Actions
 signing notes.
@@ -297,33 +300,35 @@ is not required for install.
 
 ## Host install layout
 
-`bookclerk plugins install <crate-or-id>` (planned) should:
+`bookclerk plugins install <coordinate>` publishes a release:
 
-1. Resolve crate via crates.io (name taxonomy or exact crate)
+1. Resolve the coordinate (crates.io name taxonomy, exact crate, or a
+   configured registry)
 2. Read `[package.metadata.bookclerk]` from the crate’s published Cargo.toml
-3. Pick the host `target_triple` (or override)
-4. Download + verify the archive
-5. Extract into `$BOOKCLERK_FILES_DIR/plugins/<plugin-key-fs-id>/`
-6. Leave `enabled = false` for integrations (existing default); operator enables
-   in config / dashboard
+3. Download every target's archive and verify its declared digest
+4. Read `plugin.toml` and compute the payload-root digest
+5. Record a `plugin_releases` row; the first release of a plugin (or
+   `--activate`) becomes the active release
+6. Enrol the plugin's default instance; the operator approves consent and
+   deploys it with `plugins enable`
 
-Alias uniqueness (one host plugin namespace / `$BOOKCLERK_FILES_DIR`):
+Each host materializes the active release for its own target when a present
+deployment needs it. See [plugins.md#releases](plugins.md#releases) for
+update, rollback, approval, and the daemon routes.
 
-- Different PluginKey + unused alias → allowed
+Alias uniqueness is cluster-wide for releases:
+
+- Different PluginKey + alias no active release uses → allowed
 - Same PluginKey + same alias (update) → allowed
-- Different PluginKey + already-used alias → **rejected** (even with a full
-  PluginKey or `--replace`)
-- Same PluginKey + different manifest alias → **rejected** (even with
-  `--replace`). Alias changes are not supported by ordinary
-  install/update/replace; they need an explicit future migration because
-  accounts keep the alias as their display `source`
-- Corrupt disk with two PluginKeys sharing an alias → discovery fails closed
-- Distinct hosts with distinct `$FILES_DIR` values may install the same alias
-  and PluginKey independently (no shared-database lock)
+- Different PluginKey + alias another plugin's active release uses →
+  **rejected**; remove that plugin first
+- A later local archive of a published alias reuses that alias's PluginKey
+- Corrupt disk with two host-local trees sharing an alias → discovery fails
+  closed
 
-`--replace` updates files for an existing PluginKey at its current alias. It
-never lets a different provenance seize an alias, and it never renames an
-installed PluginKey's alias.
+`--replace` is an older spelling of `--activate`: it makes the new release
+active even when another version is. It never lets a different provenance
+seize an alias.
 
 No `cargo` / `rustc` on PATH is required.
 
@@ -333,12 +338,13 @@ No `cargo` / `rustc` on PATH is required.
 | --- | --- |
 | **A — Taxonomy (this doc + types)** | Draft-stable crate names; metadata schema continues to evolve with digests / federation |
 | **B — CLI catalog** | `bookclerk plugins search [query]` against crates.io; `info` shows registry metadata |
-| **C — CLI install** | Download/verify/unpack with digests; `plugins update` / `remove` |
-| **D — Daemon API** | Authenticated `/api/plugins/catalog`, `/api/plugins/install` |
+| **C — CLI install** | Publish verified releases; `plugins update` / `rollback` / `remove` / `releases` |
+| **D — Daemon API** | Authenticated `/api/config/plugin-releases` (publish, activate, approve); a catalog search route is still planned |
 | **E — Dashboard browser** | Browse / configure / enable in the operator SPA |
 
-Phases D–E reuse the same catalog DTOs as the CLI. Config knobs remain in
-`config.toml` tables; the UI edits those settings after install.
+Phases D–E reuse the same catalog DTOs as the CLI. Settings live in the
+plugin instance document in the database, validated against the release's
+`[[settings]]` schema.
 
 ## Curated index (optional later)
 
