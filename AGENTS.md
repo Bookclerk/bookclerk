@@ -220,9 +220,12 @@ When exercising real store credentials in this cloud environment:
   edits the instance document (`--secret` reads the value from stdin and
   seals it); `bookclerk plugins enable|disable <plugin> [--host]` sets the
   deployment (`present` = enabled on that host). `bookclerk plugins deploy
-  <plugin> --replicas N --on <label>` hands an instance to the cluster
-  scheduler instead (labels via `bookclerk hosts label`); enable/disable
-  then refuse it until `plugins deploy --manual`. `bookclerk plugins
+  <plugin> --replicas N|all --on <label>` hands an instance to the cluster
+  scheduler instead, which writes `placed`/`unplaced` rows on the live hosts
+  with the most budget headroom (each daemon heartbeats capacity, budget,
+  reservations, and use into `host_status` every 15 s; budgets and drain
+  via `bookclerk hosts set`, labels via `bookclerk hosts label`);
+  enable/disable then refuse it until `plugins deploy --manual`. `bookclerk plugins
   install` publishes a cluster release (hosts materialize it under
   `plugins/.releases/<digest>`); it no longer writes `plugins/<fs-id>`. There are no `[sources.*]`,
   `[output.local]`, `[output.s3]`, or `[integrations.<id>]` tables and no

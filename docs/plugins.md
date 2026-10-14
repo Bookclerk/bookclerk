@@ -1343,21 +1343,65 @@ published: they ship with the host.
 By default an operator deploys an instance host by host with `plugins
 enable --host`. **Placement** hands that job to the cluster scheduler: the
 operator says how many hosts should run the instance and which hosts may,
-and the scheduler writes the per-host deployments.
+and the scheduler picks the hosts with the most room and writes the
+per-host deployments. Hosts never connect to each other; everything below
+travels through the shared library database.
 
 ```bash
-bookclerk hosts list                              # liveness, target, labels
-bookclerk hosts label --add nas --add zone=eu     # this host (or pass a host id)
-bookclerk hosts label <host-id> --remove zone=eu
+bookclerk hosts list                              # liveness, capacity, budget, use, labels
+bookclerk hosts set --memory-budget 50            # this host (or pass a host id)
+bookclerk hosts set <host-id> --drain             # move scheduled replicas away
+bookclerk hosts label --add nas --add zone=eu
 bookclerk plugins deploy example --replicas 2 --on nas --on '!slow'
+bookclerk plugins deploy example --replicas all   # every host with room
 bookclerk plugins deploy example --replicas 0     # keep the placement, stop every replica
 bookclerk plugins deploy example --manual         # back to enable/disable by hand
 ```
 
-**Candidates.** A host qualifies for an instance when:
+### Heartbeats and budgets
 
-- its daemon is live: its `host:<host_id>` queue consumer heartbeated within
-  the event catalog TTL (60 s). A host where only the CLI ran is not live;
+Every daemon writes a heartbeat row to `host_status` every 15 seconds. It
+reports:
+
+- **Capacity** the host detects: logical CPUs and memory, each capped by the
+  daemon's cgroup (`cpu.max`, `memory.max`) when it runs in one.
+- **Budget**: the share of that capacity the scheduler may commit to plugin
+  guests, from the host's `host.runtime` document. Defaults are 80% of the
+  CPU and 75% of the memory, so a desktop keeps room for its user. Set them
+  with `bookclerk hosts set --cpu-budget/--memory-budget`, the hosts API,
+  or **Settings → Hosts**; the host applies a change at its next heartbeat.
+- **Reservations**: the sum of the jail ceilings (memory and CPU, after
+  `[plugins.jail]` limits) of the guests running there. The reconciler
+  records each guest's ceiling on its deployment observation when it
+  spawns it.
+- **Measured use**: CPU busy since the previous heartbeat and memory
+  available, from `/proc` and the cgroup.
+- **Availability**: how much of the recent past the host was up, as a
+  decaying average over about a day. A desktop that is off every night
+  ends up around 60%; an always-on VPS stays near 100%.
+
+Memory and measured use are read on Linux only for now. On macOS and
+Windows a heartbeat reports the CPU count (and free disk on macOS); with no
+memory figure the scheduler cannot hold such a host to a memory budget and
+ranks it by CPU headroom alone.
+
+A host is **live** while its last heartbeat is younger than three
+intervals (45 s). A host where only the CLI ran has no heartbeat and is
+never live. **Draining** a host (`hosts set --drain`, the Drain button)
+stops the scheduler placing anything there and moves its scheduled
+replicas elsewhere; deployments enabled by hand keep running.
+
+A host's **headroom** is its budget minus what is committed. For CPU,
+committed is the larger of the reservations and the measured use, so work
+outside Bookclerk on a shared desktop counts. For memory it is the budget
+minus the reservations, and never more than the memory the machine has
+free.
+
+### Candidates
+
+A host qualifies for an instance when:
+
+- it is live and not drained;
 - it carries every label the constraints name, and none a `!label`
   constraint names. Labels are `name` or `name=value` (lowercase letters,
   digits, `._/-`). Every host also carries `host=<host_id>` and
@@ -1366,17 +1410,56 @@ bookclerk plugins deploy example --manual         # back to enable/disable by ha
 - for a released plugin, the active release has an artifact for the host's
   target, or a target-independent `any` artifact (workerd packages).
 
-**Planning.** The scheduler keeps replicas where they already run, sets
-`unplaced` on hosts that stopped qualifying (a dead daemon, a removed label),
-scales down from the most loaded host, and fills the rest on the least
-loaded candidates (load is the host's count of present deployments). When
-fewer hosts qualify than requested it places what it can and records why on
-the placement ("1 of 2 replica(s) placed: 1 live host(s) satisfy nas").
+### Planning
+
+The scheduler estimates what one guest of the instance needs (its
+**demand**): the largest ceiling any host recorded for it, else the active
+release's grant (`memoryMib`, `cpuRatePercent`), else the grant defaults
+(512 MiB, 0.8 cores). It scores each qualifying host by how many more such
+guests fit its CPU and memory headroom, weighted by availability (an
+always-on host counts in full, a host that is never on counts half). Then:
+
+- replicas stay where they run while their host qualifies; hosts that
+  stopped qualifying (dead, drained, label removed) get `unplaced`;
+- new replicas go to the highest-scoring hosts, and only where the demand
+  fits the memory headroom (memory is the hard limit, because a guest over
+  its memory ceiling is killed; CPU only ranks);
+- a scale-down drops the replicas on the hosts with the least room first;
+- when a replica's host is over its memory budget and another qualifying
+  host has room, the replica moves there, at most one per instance per
+  pass so the cluster does not thrash;
+- `--replicas all` runs the instance on every qualifying host where it fits.
+
+Each pass commits the demand of every replica it adds against that host's
+headroom, so one pass does not stack several instances on the same host.
+When fewer hosts qualify or fit than requested, the scheduler places what
+it can and records why on the placement ("1 of 2 replica(s) placed: 2
+host(s) are live, schedulable, and match nas; 1 lack memory budget for 512
+MiB").
 Each host's reconciler then converges on its own deployment rows exactly as
 it does for hand-written ones.
 
-**One scheduler.** Every daemon runs the scheduler loop, but only the holder
-of the `scheduler` row in `cluster_leases` acts. The holder renews the lease
+### Routing deliveries
+
+Event and queue deliveries addressed to an instance go to the best live
+host running it, without any host contacting another. Every host that runs
+an instance ranks the live hosts whose guest of it is up (a `running` or
+`healthy` observation) by the same score placement uses, so all hosts agree
+on the order. The best host claims a delivery as soon as it is due; the
+host ranked `r` claims it only once it has been due for `r × 10 s`. A best
+host that is saturated, stalled, or gone therefore costs at most a short
+delay before the next one takes over, and the claim's compare-and-swap
+still guarantees one runner. Ranks are re-read every 10 seconds. Deliveries
+addressed to a plugin key or alias, and a host's own queue, are not routed.
+
+Jobs (scan, acquire) are not routed yet: whichever host claims a job runs
+it with its own sources and destinations. A synchronous HTTP call runs on
+the host that receives it.
+
+### One scheduler
+
+Every daemon runs the scheduler loop, but only the holder of the
+`scheduler` row in `cluster_leases` acts. The holder renews the lease
 (60 s) on every pass; when it stops, the next daemon to try takes over with
 a larger fencing token. A pass runs on a `placement.changed` or
 `release.changed` host-queue wakeup and at least every 20 seconds.
@@ -1384,26 +1467,31 @@ Deployment writes are compare-and-swap, so a holder that lost its lease
 mid-pass can at worst add one replica too many, which the next pass
 removes.
 
-**Placed instances are the scheduler's.** `plugins enable|disable` and the
-deployment API refuse a placed instance (409), the Settings Enabled switch
-is read-only for it, and enrollment records a new host `unplaced` for it
-rather than `present`. `plugins deploy --manual` (or deleting the placement)
-hands the deployments back without changing what any host runs: `placed`
-becomes `present` and `unplaced` becomes `absent`. Removing a plugin
-(`plugins remove`, `DELETE /api/config/plugin-releases/{key}/active`) drops
-its placements first.
+### Placed instances are the scheduler's
+
+`plugins enable|disable` and the deployment API refuse a placed instance
+(409), the Settings Enabled switch is read-only for it, and enrollment
+records a new host `unplaced` for it rather than `present`. `plugins deploy
+--manual` (or deleting the placement) hands the deployments back without
+changing what any host runs: `placed` becomes `present` and `unplaced`
+becomes `absent`. Removing a plugin (`plugins remove`, `DELETE
+/api/config/plugin-releases/{key}/active`) drops its placements first.
 
 | Method | Path | Body / result |
 | --- | --- | --- |
-| `PUT` | `/api/config/plugin-instances/{id}/placement` | `{replicas, constraints, expected_revision}` (0 or omitted creates); 409 on a stale revision |
+| `PUT` | `/api/config/plugin-instances/{id}/placement` | `{replicas, constraints, expected_revision}`; `replicas` is a count or `"all"`; `expected_revision` 0 (or omitted) creates; 409 on a stale revision |
 | `DELETE` | `/api/config/plugin-instances/{id}/placement` | back to hand-managed |
-| `GET` | `/api/config/hosts` | each host's `labels`, `implicit_labels`, `target`, and `live` |
+| `GET` | `/api/config/hosts` | each host's `labels`, `implicit_labels`, `target`, `live`, `runtime` (budgets, drain) and `status` (latest heartbeat) |
+| `PUT` | `/api/config/hosts/{host_id}/runtime` | any of `{label, cpu_budget_percent, memory_budget_percent, schedulable}` |
 | `PUT` | `/api/config/hosts/{host_id}/labels` | `{labels}`: the host's complete operator label set |
 
 `GET /api/config/plugin-instances` and the Settings plugin groups carry each
 instance's `placement` (requested and placed replicas, constraints, detail).
 **Settings → Plugins** shows "Placed n/m" on the row and, when expanded,
-replica and label fields plus **Manage by hand**.
+replica and label fields plus **Manage by hand**. **Settings → Hosts** shows
+each host's heartbeat, reservations and measured use against its budget,
+and availability, with fields for the budgets and labels and a Drain
+switch.
 
 ## ABI (api_version = 3, object-capability Workers RPC)
 

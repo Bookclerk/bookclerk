@@ -630,10 +630,11 @@ section is the record.
   `plugin_placements` row per instance (the scheduler's input), not on
   `plugin_deployments` (its per-host output). A count stored on every host
   row could disagree between rows.
-- **Liveness (step 5).** The scheduler treats a host as live when its
-  `host:<host_id>` queue consumer heartbeated within the event catalog TTL
-  (60 s). `hosts.heartbeat_at` is written only at bootstrap, so it cannot
-  tell a running daemon from a host where the CLI once ran.
+- **Liveness (step 5).** The scheduler first treated a host as live when
+  its `host:<host_id>` queue consumer refreshed its event-catalog row
+  within 60 s. `hosts.heartbeat_at` is written only at bootstrap, so it
+  cannot tell a running daemon from a host where the CLI once ran. The
+  periodic host heartbeat below replaced both.
 - **Labels and targets (step 5).** Labels are `name` or `name=value`; every
   host also carries `host=<id>` and `target=<target>`; a constraint may
   exclude with `!`. Beyond the constraints, the scheduler skips a host
@@ -647,8 +648,70 @@ section is the record.
   add one replica that the next pass removes.
 - **Hand-managed versus placed (step 5).** A placed instance refuses
   `enable`/`disable` and the deployment API (409), enrollment writes a new
-  host's row `absent` for it, and `plugins deploy --manual` hands the
-  deployments back unchanged. Removing a plugin drops its placements first.
+  host's row `unplaced` for it, and `plugins deploy --manual` hands the
+  deployments back unchanged (`placed` → `present`, `unplaced` →
+  `absent`). Removing a plugin drops its placements first.
+
+### Resource-aware scheduling and routing
+
+The first placement pass spread replicas by how many deployments each host
+already ran, and nothing routed calls. A cluster of unequal hosts (a small
+always-on VPS and desktops that are often off, none able to reach another)
+needs the scheduler to know each host's capacity, what is committed there,
+and how reliably it is up, and needs calls to land on the best host
+running a plugin. Hosts still only share the database.
+
+- **Whose decision a deployment is.** `plugin_deployments.desired` is
+  `present | absent` (operator) or `placed | unplaced` (scheduler). Reusing
+  `absent` for "the scheduler took it off this host" read as an operator
+  decision and lost the distinction on hand-back. The library refuses a
+  scheduler write of an operator state and the reverse; bootstrap
+  enrollment may write `unplaced` for a placed instance.
+- **A periodic host heartbeat.** There was no heartbeat to remove: host
+  capacity was sampled at bootstrap and reload only (into `hosts`), and
+  liveness came from the event-catalog row. Every daemon now writes
+  `host_status` every 15 s: detected capacity (CPUs and memory, capped by
+  its cgroup), its budget, the reservations of the guests it runs, measured
+  CPU and available memory, free disk, and availability. Live means a
+  heartbeat within three intervals. Only the daemon writes it; the CLI
+  never makes a host live.
+- **Budgets are operator configuration.** `host.runtime` gains
+  `cpu_budget_percent` (default 80), `memory_budget_percent` (75), and
+  `schedulable` (drain). The heartbeat turns them into absolute budgets
+  against what it detected, so a budget follows a resized VM or cgroup
+  without an edit. Edited through `bookclerk hosts set`, `PUT
+  /api/config/hosts/{id}/runtime`, and Settings → Hosts.
+- **Accounting by ceilings.** A host's reservations are the sum of the jail
+  ceilings (after `[plugins.jail]`) of its running guests, recorded on each
+  deployment observation when the reconciler spawns the guest. Ceilings,
+  not samples, because the jail enforces them and a guest's peak is what
+  must fit. Measured use is reported beside them: CPU headroom subtracts
+  the larger of the two (other work on a desktop counts); memory headroom
+  is never more than the machine has free.
+- **Availability.** A decaying average of time online (time constant one
+  day), updated from the gap between heartbeats. It discounts, rather than
+  excludes, hosts that come and go.
+- **Placement by headroom.** An instance's demand is the largest ceiling
+  any host recorded for it, else its release grant, else the grant
+  defaults. A host's score is how many more such guests fit its CPU and
+  memory headroom, times `0.5 + 0.5 × availability`. Memory is a hard fit
+  (a guest over its ceiling is killed); CPU only ranks. Replicas stay
+  while their host qualifies; scale-down drops the least room first; one
+  replica per instance per pass moves off a host that is over its memory
+  budget. A pass commits each added replica's demand against its host so
+  several instances do not land on one host in the same pass.
+  `replicas = all` (stored as NULL) runs on every qualifying host where the
+  demand fits.
+- **Routing deliveries without host-to-host calls.** Every host that runs
+  an instance ranks the live hosts whose guest of it is up by the same
+  score, so all hosts compute the same order from the same rows. Rank `r`
+  claims a delivery only once its `run_after` is `r × 10 s` old
+  (`claim_next_event_delivery_due_by`). The best host takes work at once;
+  if it is saturated, stalled, or gone, the next takes over after a short
+  delay, and the claim's compare-and-swap still admits one runner.
+  Rejected: stamping a target host on each delivery at dispatch (the
+  dispatcher would have to choose, and a dead target needs reassignment
+  logic) and forwarding between hosts (they cannot connect).
 
 ## Consequences
 
@@ -661,7 +724,11 @@ section is the record.
   `accounts` is unique on `(plugin_key, account_id)`; `books`,
   `ignored_titles`, and `account_links` carry `plugin_key`. Phase 3 adds
   `plugin_kv`, `plugin_releases`, `plugin_release_pointers`,
-  `plugin_release_blobs`, `plugin_placements`, and `cluster_leases`;
+  `plugin_release_blobs`, `plugin_placements` (with nullable `replicas`
+  for "all"), `cluster_leases`, and `host_status`;
+  `plugin_deployments.desired` allows `placed` and `unplaced`;
+  `plugin_deployment_observations` gains the guest's reserved memory and
+  CPU;
   `domain_events` gains `queue_name`, `content_type`, and `deliver_after`
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
   `hosts` gains `target` and `labels_json`. Checksum of the
@@ -672,7 +739,7 @@ section is the record.
   Plugin settings and enablement are `bookclerk plugins config` and
   `bookclerk plugins enable|disable`, also database. Releases are
   `bookclerk plugins install|update|rollback|remove|approve|releases` and
-  placement is `bookclerk plugins deploy` with `bookclerk hosts label`, all
+  placement is `bookclerk plugins deploy` with `bookclerk hosts label|set`, all
   database. The remaining `config` keys still edit `config.toml`.
 - `bookclerk config show` prints `events.authority = database` when the
   library can be read, and `transitional` when it cannot.
@@ -692,21 +759,33 @@ Not in this phase, and not claimed as production HA:
 - Moving the rest of `config.toml` (library, jobs, media, plugins,
   diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap is part
   of that.
-- Job placement and cluster semaphores. Heartbeats do not claim jobs. Do
-  not run two daemons against one database and expect safe active/active
-  acquire. `cluster_leases` exists now (the scheduler uses it) and is the
-  place for further singleton maintenance work.
+- Job routing and cluster semaphores. Jobs (scan, acquire) carry no host
+  or plugin target: whichever daemon claims one runs it with its own
+  sources and destinations, so a host that cannot reach a store or
+  destination may take the job. Deliveries are routed (above); jobs are
+  not. Do not run two daemons against one database and expect safe
+  active/active acquire. `cluster_leases` exists now (the scheduler uses
+  it) and is the place for further singleton maintenance work.
+- Synchronous calls (HTTP API, portal, CLI) run on the host that receives
+  them; only queued deliveries reach the best host.
+- Per-guest measured usage is not sampled. Reservations are jail ceilings,
+  so a guest that idles well below its ceiling still occupies it in the
+  scheduler's view. Free disk is reported but not placed on.
+- Memory and measured use are read on Linux only. On macOS and Windows a
+  heartbeat carries the CPU count, so those hosts are ranked by CPU alone
+  and not held to a memory budget.
 - Rollouts: moving a release pointer updates every placed host on its next
   wakeup at once; there is no staged or health-gated rollout across
-  replicas. The scheduler does not read observations, so a replica on a
-  host that keeps failing health stays there until its labels or liveness
-  change. Placement spreads by present-deployment count only.
+  replicas. Placement does not read health: a replica on a host whose guest
+  keeps failing stays until the host stops qualifying (routing already
+  skips a host whose guest is not up).
 - A shared artifact location for releases larger than the 1 MiB blob cap
   (an operator bucket, or KV-backed chunks). Today such an archive must sit
   on storage every placed host can read through its `file://` path.
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
-- Dashboard, drain, and rolling upgrades (Phase 5).
+- Rolling upgrades and a cluster dashboard beyond Settings → Hosts
+  (Phase 5). Drain exists (`hosts set --drain`).
 - Schema pinning compares package versions, not schema contents: a newer
   package that only renames a key still drops the operator's value for the
   old name. A declared per-key migration in `[[settings]]` is a possible

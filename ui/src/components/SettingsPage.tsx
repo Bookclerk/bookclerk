@@ -4,6 +4,7 @@ import { AccountSettingsPanel } from "@/components/AccountSettingsPanel";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
+import { HostsPanel } from "@/components/HostsPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
@@ -60,7 +61,7 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-type SettingsTab = "account" | "users" | "signin" | "server" | "plugins";
+type SettingsTab = "account" | "users" | "signin" | "server" | "plugins" | "hosts";
 
 const ISOLATION_OPTIONS = [
   ["required", "Required"],
@@ -514,7 +515,10 @@ export function SettingsPage({
     if (!showSignInSettings && activeTab === "signin") {
       setActiveTab("account");
     }
-    if (!showOperatorChrome && (activeTab === "server" || activeTab === "plugins")) {
+    if (
+      !showOperatorChrome &&
+      (activeTab === "server" || activeTab === "plugins" || activeTab === "hosts")
+    ) {
       setActiveTab("account");
     }
   }, [showUserAdmin, showSignInSettings, showOperatorChrome, activeTab]);
@@ -1330,6 +1334,20 @@ export function SettingsPage({
                 >
                   Plugins
                 </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "hosts"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "hosts"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("hosts")}
+                >
+                  Hosts
+                </button>
               </>
             ) : null}
           </div>
@@ -1393,6 +1411,17 @@ export function SettingsPage({
         ) : null}
 
         {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
+
+        {activeTab === "hosts" && showOperatorChrome ? (
+          <div className="flex flex-col gap-4">
+            {error ? (
+              <p className="text-sm font-medium text-brick" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <HostsPanel onError={setError} onSessionExpired={onSessionExpired} />
+          </div>
+        ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
           loading ? (

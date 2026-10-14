@@ -2121,6 +2121,110 @@ export async function deletePluginPlacement(
 }
 
 /**
+ * A host's runtime document (`host.runtime`): its label, the share of its
+ * detected capacity the scheduler may commit, and the drain switch.
+ */
+export interface HostRuntimeView {
+  label: string;
+  /** Share of detected CPU the scheduler may commit (1..=100). */
+  cpu_budget_percent: number;
+  /** Share of detected memory the scheduler may commit (1..=100). */
+  memory_budget_percent: number;
+  /** False drains the host: nothing new is placed there. */
+  schedulable: boolean;
+}
+
+/** A host's latest heartbeat (every 15 s while its daemon runs). */
+export interface HostStatusView {
+  heartbeat_at: string;
+  started_at: string;
+  interval_ms: number;
+  /** Detected CPU capacity in millicores. */
+  cpu_millicores: number;
+  /** Detected memory in bytes, when the host could read it. */
+  memory_bytes: number | null;
+  cpu_budget_millicores: number;
+  memory_budget_bytes: number | null;
+  schedulable: boolean;
+  /** Measured CPU in use since the previous heartbeat. */
+  cpu_used_millicores: number | null;
+  /** Measured memory available to new work. */
+  memory_available_bytes: number | null;
+  files_dir_free_bytes: number | null;
+  /** Sum of the running guests' jail ceilings. */
+  reserved: { memory_bytes: number; cpu_millicores: number };
+  running_guests: number;
+  /** Recent online fraction in parts per million (decays over about a day). */
+  availability_ppm: number;
+}
+
+/** One cluster host as `GET /api/config/hosts` returns it. */
+export interface ConfigHostView {
+  host_id: string;
+  target: string;
+  /** Operator labels. */
+  labels: string[];
+  /** Labels every host carries (`host=<id>`, `target=<target>`). */
+  implicit_labels: string[];
+  /** True while the host's daemon heartbeats. */
+  live: boolean;
+  runtime: HostRuntimeView;
+  /** Latest heartbeat; null when the host's daemon never ran. */
+  status: HostStatusView | null;
+  software_version?: string;
+  /** True for the host serving this request. */
+  this_host: boolean;
+}
+
+/**
+ * Lists the cluster's hosts with their heartbeat, budgets, and labels.
+ *
+ * @returns The serving host's id and every host.
+ */
+export async function listConfigHosts(): Promise<{ host_id: string; hosts: ConfigHostView[] }> {
+  const res = await fetch("/api/config/hosts", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Edits a host's label, budgets, or drain switch. The host applies it at
+ * its next heartbeat.
+ *
+ * @param hostId - Host to edit.
+ * @param body - Fields to change; omitted fields keep their value.
+ * @returns The stored runtime document.
+ */
+export async function putHostRuntime(
+  hostId: string,
+  body: Partial<HostRuntimeView>,
+): Promise<{ host_id: string; revision: number; runtime: HostRuntimeView }> {
+  const res = await fetch(`/api/config/hosts/${encodeURIComponent(hostId)}/runtime`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Replaces a host's operator labels.
+ *
+ * @param hostId - Host to edit.
+ * @param labels - The complete label set (`nas`, `zone=eu`).
+ * @returns The updated host.
+ */
+export async function putHostLabels(hostId: string, labels: string[]): Promise<unknown> {
+  const res = await fetch(`/api/config/hosts/${encodeURIComponent(hostId)}/labels`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ labels }),
+  });
+  return parseJson(res);
+}
+
+/**
  * Writes bootstrap settings (`daemon`, `jail`, `[database]` keys) through
  * `PATCH /api/settings`. Plugin settings are not accepted here: they are
  * instance documents, written with {@link putPluginInstanceConfig}.
