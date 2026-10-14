@@ -218,7 +218,8 @@ pub fn authorize_typed_request(
         {
             return Err(crate::LibraryError::Other(anyhow::anyhow!(
                 "statement {i} RETURNING maxRows={} is not provable from the SQL shape \
-                 (only a single-tuple INSERT … VALUES … RETURNING proves maxRows=1)",
+                 (only a single-row INSERT … VALUES or table-free INSERT … SELECT \
+                 … RETURNING proves maxRows=1)",
                 stmt.max_rows
             )));
         }

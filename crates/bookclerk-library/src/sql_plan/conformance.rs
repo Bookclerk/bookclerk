@@ -356,6 +356,54 @@ async fn host_authorize_path_runs_and_replays(
     )
     .await;
     assert_eq!(conflict.status, atomic_status::IDEMPOTENCY_CONFLICT);
+
+    // Publish an event and dispatch it to a network subscriber: the guarded
+    // delivery `INSERT … SELECT … RETURNING` carries a host `maxRows = 1`
+    // claim that authorization must prove from the SQL shape.
+    let publish = DbAtomicParams::PublishDomainEvent {
+        id: "authz-evt".into(),
+        event_type: "book_acquired".into(),
+        schema_version: 1,
+        account_id: "acct".into(),
+        source: String::new(),
+        correlation_id: String::new(),
+        causation_id: String::new(),
+        dedup_key: "authz-dedup".into(),
+        payload: "{}".into(),
+        ordering_key: String::new(),
+    };
+    let published = execute_via_host_authorize(
+        db,
+        compile_named_request("authz-publish", &publish, "2024-06-01T00:00:20Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert_eq!(published.status, atomic_status::OK);
+    let dispatch = DbAtomicParams::DispatchEventDeliveries {
+        event_id: "authz-evt".into(),
+        subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
+        mark_dispatched: true,
+    };
+    let dispatched = execute_via_host_authorize(
+        db,
+        compile_named_request("authz-dispatch", &dispatch, "2024-06-01T00:00:21Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert_eq!(dispatched.status, atomic_status::OK);
+    let backend = sea_orm::ConnectionTrait::get_database_backend(db);
+    let row = sea_orm::ConnectionTrait::query_one_raw(
+        db,
+        sea_orm::Statement::from_string(
+            backend,
+            "SELECT COUNT(*) AS n FROM event_deliveries WHERE id = 'authz-evt:echo'",
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let deliveries: i64 = row.try_get("", "n").unwrap();
+    assert_eq!(deliveries, 1, "dispatch created the subscriber's delivery");
 }
 
 #[tokio::test]

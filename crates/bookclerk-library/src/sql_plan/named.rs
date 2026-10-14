@@ -2390,11 +2390,14 @@ fn plan_dispatch_event_deliveries(
              ) SELECT 1, 0, 0, 0, 0, 0, 0, 0 WHERE TRUE",
             vec![],
         ));
+        // Dispatch latency is clamped to 24 days so the millisecond value
+        // fits Postgres `int4`, which `CAST(… AS INTEGER)` lowers to there.
         statements.push(sql(
             "UPDATE event_outbox_stats SET \
                 dispatch_count = dispatch_count + 1, \
                 dispatch_latency_ms_sum = dispatch_latency_ms_sum + MAX(0, \
-                    CAST((julianday(?) - julianday((SELECT created_at FROM domain_events WHERE id = ?))) * 86400000 AS INTEGER)\
+                    CAST(MIN(julianday(?) - julianday((SELECT created_at FROM domain_events WHERE id = ?)), 24.0) \
+                        * 86400000 AS INTEGER)\
                 ) \
              WHERE id = 1 AND EXISTS (\
                 SELECT 1 FROM domain_events WHERE id = ? AND dispatch_state = 'pending'\
@@ -5136,19 +5139,8 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{id}: {err}"));
             let mut typed = compiled.clone().into_typed_request(id.clone());
             typed.deadline_unix_ms = 1_717_200_120_000;
-            match crate::sql_plan::authorize_typed_request(&mut typed, &caps) {
-                Ok(()) => {}
-                // Known separate gap (not the wire hash): each delivery
-                // `INSERT … SELECT … RETURNING id` carries the host
-                // `maxRows = 1` claim, which `returning_single_row_proven`
-                // only accepts for `INSERT … VALUES`. Remove this arm once
-                // dispatch pages with network subscribers pass authorize.
-                Err(err) if id == "authz-dispatchEventDeliveries" => {
-                    assert!(err.to_string().contains("not provable"), "{id}: {err}");
-                    continue;
-                }
-                Err(err) => panic!("{id}: host-compiled plan rejected: {err}"),
-            }
+            crate::sql_plan::authorize_typed_request(&mut typed, &caps)
+                .unwrap_or_else(|err| panic!("{id}: host-compiled plan rejected: {err}"));
             assert_eq!(
                 typed.request_hash,
                 bookclerk_plugin_abi::canonical_execute_request_hash(&typed).unwrap(),
