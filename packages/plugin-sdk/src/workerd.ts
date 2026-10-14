@@ -50,6 +50,8 @@ export {
   Destination,
   EventBatch,
   EventMessage,
+  QueueBatch,
+  QueueMessage,
   JobController,
   NamedEntrypoint,
   OidcEntrypoint,
@@ -69,6 +71,7 @@ export {
   decodeExtensibleConfig,
   jsonPayload,
   eventBatchResults,
+  queueBatchResults,
   invocationOf,
   jobOutcomeFor,
   fromBridgeJson,
@@ -123,6 +126,10 @@ export type {
   ReadOptions,
   ReadResult,
   RetryOptions,
+  NamedQueue,
+  QueueOutcome,
+  QueueRetryOptions,
+  WireQueueBatch,
   WriteOptions,
 } from "./plugin.js";
 export type {
@@ -130,6 +137,9 @@ export type {
   EventPublisherBinding,
   JsonObject,
   PublishEvent,
+  QueueBinding,
+  QueueSendBatchEntry,
+  QueueSendOptions,
   StorageBinding,
 } from "./env.js";
 export { InvokeError, dispatchInvoke } from "./invoke.js";

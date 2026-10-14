@@ -52,9 +52,18 @@ const enc = new TextEncoder();
 
 // --- Author isolate stand-ins --------------------------------------------
 
-const calls = { event: 0, storefront: [] };
+const calls = { event: 0, queue: 0, queueSends: [], storefront: [] };
 
 class Plugin extends BookclerkEntrypoint {
+  async queue(batch) {
+    calls.queue += 1;
+    const sent = await this.env.NOTIFY.send({ seen: batch.queue }, { delaySeconds: 3 });
+    calls.queueSends.push(sent);
+    for (const msg of batch.messages) {
+      if (msg.id === "msg-2") msg.retry({ delaySeconds: 7, reason: "again" });
+      else msg.ack();
+    }
+  }
   async event(batch) {
     calls.event += 1;
     for (const msg of batch.messages) {
@@ -163,6 +172,10 @@ const granted = {
     const u = new URL(url);
     this.requests.push({ path: u.pathname, method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body });
     if (u.pathname === "/progress") return new Response(null, { status: 200 });
+    if (u.pathname === "/queues/send") {
+      const sent = JSON.parse(init.body);
+      return Response.json({ messageIds: sent.messages.map((_, i) => `q-${i + 1}`) }, { status: 200 });
+    }
     if (u.pathname === "/cancel") {
       this.cancelState.polls += 1;
       if (init.signal?.aborted) throw new Error("aborted");
@@ -206,6 +219,7 @@ const contextJson = JSON.stringify(
     invocation: { id: "inv-1", accountId: "acct" },
     config: jsonPayload({ greeting: "hi", who: "acct" }),
     secrets: jsonPayload({ token: "s3cr3t" }),
+    queues: { NOTIFY: "qtok" },
   }),
 );
 
@@ -406,6 +420,43 @@ function decodeReply(reply, resultsCodec, caps) {
       { kind: "retry", value: { retryAtUnixMs: 0, reason: "again" } },
     ],
   });
+}
+
+// --- QueueConsumer: one author call per batch; env.<QUEUE> sends via GRANTED --
+
+{
+  const message = (id) => ({
+    id,
+    timestampUnixMs: 1_700_000_000_000,
+    body: enc.encode('{"n":1}'),
+    contentType: "json",
+    attempts: 1,
+    source: "echo",
+  });
+  const before = granted.requests.length;
+  const result = decodeReply(
+    await invoke("QueueConsumer", "queue", W.QueueConsumerQueueParamsCodec, {
+      batch: { queue: "jobs", messages: [message("msg-1"), message("msg-2")] },
+    }),
+    W.QueueConsumerQueueResultsCodec,
+  );
+  assert.equal(calls.queue, 1, "the whole batch is one author call");
+  assert.deepEqual(result, {
+    kind: "ok",
+    value: {
+      results: [{ kind: "ack" }, { kind: "retry", value: { delaySeconds: 7, reason: "again" } }],
+    },
+  });
+  assert.deepEqual(calls.queueSends, [{ messageIds: ["q-1"] }], "send returns the host-assigned ids");
+  const send = granted.requests.slice(before).find((r) => r.path === "/queues/send");
+  assert.ok(send, "env.NOTIFY.send went through the granted channel");
+  assert.equal(send.headers.Authorization, "Bearer qtok", "the queue grant token never reaches the author");
+  const body = JSON.parse(send.body);
+  assert.equal(body.delaySeconds, 0);
+  assert.equal(body.messages.length, 1);
+  assert.equal(body.messages[0].contentType, "json");
+  assert.equal(body.messages[0].delaySeconds, 3);
+  assert.equal(Buffer.from(body.messages[0].body, "base64").toString(), '{"seen":"jobs"}');
 }
 
 // --- JobRunner: four capability descriptors -------------------------------

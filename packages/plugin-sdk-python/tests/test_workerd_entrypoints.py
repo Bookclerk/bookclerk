@@ -273,3 +273,115 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _queue_message(message_id: str, body: bytes = b'{"n":1}', **overrides) -> dict:
+    return {
+        "id": message_id,
+        "timestampUnixMs": 1_700_000_000_000,
+        "body": body,
+        "contentType": "json",
+        "attempts": 2,
+        "source": "echo",
+        **overrides,
+    }
+
+
+class QueueMessageTests(unittest.TestCase):
+    def test_fields_and_first_outcome_wins(self) -> None:
+        from bookclerk_plugin_sdk.workerd import QueueBatch, QueueMessage, queue_batch_results
+
+        msg = QueueMessage(_queue_message("msg-1"))
+        self.assertEqual(msg.id, "msg-1")
+        self.assertEqual(msg.timestamp_unix_ms, 1_700_000_000_000)
+        self.assertEqual(msg.content_type, "json")
+        self.assertEqual(msg.attempts, 2)
+        self.assertEqual(msg.source, "echo")
+        self.assertEqual(msg.json(), {"n": 1})
+        self.assertEqual(msg.text(), '{"n":1}')
+        self.assertIsNone(msg.result)
+        msg.retry(delay_seconds=2.9, reason="later")
+        msg.ack()
+        self.assertEqual(msg.result, {"kind": "retry", "delaySeconds": 2, "reason": "later"})
+
+        empty = QueueMessage(_queue_message("msg-2", body=b"", contentType=""))
+        self.assertEqual(empty.body, b"")
+        self.assertEqual(empty.content_type, "json")
+        self.assertIsNone(empty.json())
+
+        batch = QueueBatch("jobs", [_queue_message("a"), _queue_message("b"), _queue_message("c")])
+        self.assertEqual(batch.queue, "jobs")
+        batch.messages[0].retry(reason="again")
+        self.assertEqual(
+            queue_batch_results(batch, None),
+            [
+                {"kind": "retry", "delaySeconds": 0, "reason": "again"},
+                {"kind": "ack"},
+                {"kind": "ack"},
+            ],
+        )
+        self.assertEqual(
+            queue_batch_results(batch, RuntimeError("boom"))[2],
+            {"kind": "retry", "delaySeconds": 0, "reason": "boom"},
+        )
+
+
+class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_queue_dispatch_translates_outcomes_and_installs_binding(self) -> None:
+        from bookclerk_plugin_sdk.workerd import QueueBatch, QueueBinding
+
+        seen: list = []
+
+        class _Stub:
+            calls: list = []
+
+            async def sendBatch(self, messages, options):
+                self.calls.append((messages, options))
+                return {"messageIds": ["q-1"]}
+
+        stub = _Stub()
+
+        class Default(BookclerkEntrypoint):
+            async def queue(self, batch: QueueBatch) -> None:
+                seen.append((batch.queue, batch.invocation["id"]))
+                notify = self.env.NOTIFY
+                assert isinstance(notify, QueueBinding)
+                seen.append(await notify.send({"seen": batch.queue}, delay_seconds=3))
+                for msg in batch.messages:
+                    if msg.id == "msg-2":
+                        msg.retry(delay_seconds=5, reason="again")
+                    else:
+                        msg.ack()
+
+        results = await Default().bookclerkQueue(
+            {"invocation": {"id": "inv-q"}, "queues": [{"name": "NOTIFY", "queue": stub}]},
+            {"queue": "jobs", "messages": [_queue_message("msg-1"), _queue_message("msg-2")]},
+        )
+        self.assertEqual(
+            results,
+            [{"kind": "ack"}, {"kind": "retry", "delaySeconds": 5, "reason": "again"}],
+        )
+        self.assertEqual(seen, [("jobs", "inv-q"), {"messageIds": ["q-1"]}])
+        self.assertEqual(len(stub.calls), 1)
+        messages, options = stub.calls[0]
+        self.assertEqual(options, {"delaySeconds": 3})
+        self.assertEqual(messages, [{"body": {"seen": "jobs"}, "contentType": "json", "delaySeconds": 0}])
+
+    async def test_queue_handler_exception_retries_undecided(self) -> None:
+        from bookclerk_plugin_sdk.workerd import QueueBatch
+
+        class Default(BookclerkEntrypoint):
+            async def queue(self, batch: QueueBatch) -> None:
+                batch.messages[0].ack()
+                raise RuntimeError("half way")
+
+        results = await Default().bookclerkQueue(
+            {}, {"queue": "jobs", "messages": [_queue_message("a"), _queue_message("b")]}
+        )
+        self.assertEqual(results[0], {"kind": "ack"})
+        self.assertEqual(results[1], {"kind": "retry", "delaySeconds": 0, "reason": "half way"})
+
+    async def test_queue_unsupported_without_handler(self) -> None:
+        with self.assertRaises(PluginError) as ctx:
+            await BookclerkEntrypoint().bookclerkQueue({}, {"queue": "jobs", "messages": []})
+        self.assertEqual(ctx.exception.code, "unsupported")

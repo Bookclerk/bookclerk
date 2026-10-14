@@ -25,6 +25,8 @@ export {
   ENTRYPOINT_CLASSES,
   EventBatch,
   EventMessage,
+  QueueBatch,
+  QueueMessage,
   JobController,
   NamedEntrypoint,
   OidcEntrypoint,
@@ -38,6 +40,7 @@ export {
   decodeExtensibleConfig,
   jsonPayload,
   eventBatchResults,
+  queueBatchResults,
   invocationOf,
   jobOutcomeFor,
   wrapPluginFromBinding,
@@ -122,7 +125,11 @@ export type {
   ReadResult,
   RetryOptions,
   ScalarLimits,
+  NamedQueue,
+  QueueOutcome,
+  QueueRetryOptions,
   WireEventBatch,
+  WireQueueBatch,
   WriteOptions,
 } from "./plugin.js";
 
@@ -136,5 +143,8 @@ export type {
   EventPublisherBinding,
   JsonObject,
   PublishEvent,
+  QueueBinding,
+  QueueSendBatchEntry,
+  QueueSendOptions,
   StorageBinding,
 } from "./env.js";

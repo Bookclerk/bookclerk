@@ -4274,6 +4274,147 @@ var SyncListeningReplyCodec = {
     }
   }
 };
+var QueueMessageCodec = {
+  dataWords: 2,
+  pointerCount: 4,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.id ?? "");
+    s.setUint64(0, BigInt(v.timestampUnixMs ?? 0));
+    s.setData(1, v.body ?? EMPTY_BYTES);
+    s.setText(2, v.contentType ?? "");
+    s.setUint32(2, v.attempts ?? 0);
+    s.setText(3, v.source ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      id: s.getText(0),
+      timestampUnixMs: Number(s.getUint64(0)),
+      body: s.getData(1),
+      contentType: s.getText(2),
+      attempts: s.getUint32(2),
+      source: s.getText(3)
+    };
+  }
+};
+var QueueBatchCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.queue ?? "");
+    {
+      const list = v.messages ?? [];
+      const items = s.initStructList(1, list.length, 2, 4);
+      for (let i = 0; i < items.length; i++) {
+        QueueMessageCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      queue: s.getText(0),
+      messages: s.getStructList(1, 2, 4).map((item) => QueueMessageCodec.read(item, caps))
+    };
+  }
+};
+var QueueRetryCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setUint32(0, v.delaySeconds ?? 0);
+    s.setText(0, v.reason ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      delaySeconds: s.getUint32(0),
+      reason: s.getText(0)
+    };
+  }
+};
+var QueueResultCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ack":
+        s.setUint16(0, 0);
+        break;
+      case "retry":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          QueueRetryCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("QueueResult", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ack" };
+      case 1:
+        return { kind: "retry", value: QueueRetryCodec.read(s.getStruct(0, 1, 1), caps) };
+      default:
+        throw unknownUnion("QueueResult", disc);
+    }
+  }
+};
+var QueueBatchOkCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.results ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        QueueResultCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      results: s.getStructList(0, 1, 1).map((item) => QueueResultCodec.read(item, caps))
+    };
+  }
+};
+var QueueBatchReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          QueueBatchOkCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("QueueBatchReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: QueueBatchOkCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("QueueBatchReply", disc);
+    }
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -5467,6 +5608,34 @@ var EventConsumerEventResultsCodec = {
     };
   }
 };
+var QueueConsumerQueueParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.batch != null) {
+      QueueBatchCodec.write(s.initStruct(0, 0, 2), v.batch, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      batch: QueueBatchCodec.read(s.getStruct(0, 0, 2), caps)
+    };
+  }
+};
+var QueueConsumerQueueResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      QueueBatchReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: QueueBatchReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var ContentSourceLoginParamsCodec = {
   dataWords: 0,
   pointerCount: 1,
@@ -6558,6 +6727,19 @@ var okHealth = (value) => {
   const v = value ?? {};
   return okValue({ ok: Boolean(v.ok), detail: String(v.detail ?? "") });
 };
+function queueResult(outcome) {
+  switch (outcome.kind) {
+    case "ack":
+      return { kind: "ack" };
+    case "retry":
+      return {
+        kind: "retry",
+        value: { delaySeconds: Number(outcome.delaySeconds) || 0, reason: String(outcome.reason ?? "") }
+      };
+    default:
+      return { kind: "retry", value: { delaySeconds: 0, reason: "unknown queue outcome" } };
+  }
+}
 function eventResult(outcome) {
   switch (outcome.kind) {
     case "ack":
@@ -6741,6 +6923,18 @@ var METHODS = {
         events: Array.isArray(p.batch?.events) ? p.batch.events : []
       }),
       ok: (value) => okValue(asList(value).map(eventResult))
+    })
+  },
+  QueueConsumer: {
+    queue: spec({
+      params: QueueConsumerQueueParamsCodec,
+      results: QueueConsumerQueueResultsCodec,
+      stub: "author",
+      call: (s, p, cx) => s.bookclerkQueue(cx.host.bindContext(cx.ctx), {
+        queue: String(p.batch?.queue ?? ""),
+        messages: Array.isArray(p.batch?.messages) ? p.batch.messages : []
+      }),
+      ok: (value) => okValue({ results: asList(value).map(queueResult) })
     })
   },
   JobRunner: {
@@ -7230,6 +7424,13 @@ function invocationEnv(rawEnv, context) {
         }
       }
     }
+    if (Array.isArray(context.queues)) {
+      for (const entry of context.queues) {
+        if (!entry || typeof entry.name !== "string" || !entry.name || !entry.queue)
+          continue;
+        merged[entry.name] = entry.queue;
+      }
+    }
   }
   return Object.freeze(merged);
 }
@@ -7440,6 +7641,118 @@ function eventBatchResults(batch, failed) {
     return { kind: "ack" };
   });
 }
+var QueueMessage = class {
+  #result = null;
+  /** Outbox row id; stable across redeliveries. */
+  id;
+  /** When the producer sent the message. */
+  timestamp;
+  /** Encoded body bytes. */
+  body;
+  /** Body encoding: `json`, `text`, or `bytes`. */
+  contentType;
+  /** Delivery counter, starting at 1. */
+  attempts;
+  /** Producer plugin id; empty when the host sent it. */
+  source;
+  /** Raw wire envelope. */
+  raw;
+  constructor(message) {
+    const m = message && typeof message === "object" ? message : {};
+    this.id = String(m.id ?? "");
+    this.timestamp = new Date(Number(m.timestampUnixMs ?? 0) || 0);
+    const body = m.body;
+    this.body = body instanceof Uint8Array ? body : body instanceof ArrayBuffer ? new Uint8Array(body) : new Uint8Array();
+    this.contentType = String(m.contentType ?? "") || "json";
+    this.attempts = Number(m.attempts ?? 1) || 1;
+    this.source = String(m.source ?? "");
+    this.raw = m;
+  }
+  /**
+   * Decode {@link QueueMessage.body} as JSON.
+   *
+   * @returns Parsed body (`null` for an empty body).
+   */
+  json() {
+    if (this.body.byteLength === 0)
+      return null;
+    return JSON.parse(new TextDecoder().decode(this.body));
+  }
+  /**
+   * Decode {@link QueueMessage.body} as UTF-8 text.
+   *
+   * @returns The body text.
+   */
+  text() {
+    return new TextDecoder().decode(this.body);
+  }
+  /**
+   * Recorded outcome.
+   *
+   * @returns The outcome, or `null` while undecided.
+   */
+  get result() {
+    return this.#result;
+  }
+  #record(result) {
+    if (this.#result === null)
+      this.#result = Object.freeze(result);
+  }
+  /** Mark handled; the host marks the message delivered. */
+  ack() {
+    this.#record({ kind: "ack" });
+  }
+  /**
+   * Redeliver later: after `delaySeconds`, or — when omitted — after the
+   * consumer's `retry_delay`.
+   *
+   * @param options - Redelivery timing and reason.
+   */
+  retry(options) {
+    this.#record({
+      kind: "retry",
+      delaySeconds: Math.max(0, Math.floor(Number(options?.delaySeconds ?? 0) || 0)),
+      reason: String(options?.reason ?? "")
+    });
+  }
+};
+var QueueBatch = class {
+  /** Queue the messages were sent to. */
+  queue;
+  /** Messages in delivery order. */
+  messages;
+  /** Invocation identity of this delivery. */
+  invocation;
+  constructor(queue, messages, invocation) {
+    this.queue = String(queue ?? "");
+    this.messages = Object.freeze((Array.isArray(messages) ? messages : []).map((message) => new QueueMessage(message)));
+    this.invocation = invocation ?? invocationOf(void 0);
+  }
+  /** Ack every message. */
+  ackAll() {
+    for (const m of this.messages)
+      m.ack();
+  }
+  /**
+   * Retry every message.
+   *
+   * @param options - Redelivery timing and reason.
+   */
+  retryAll(options) {
+    for (const m of this.messages)
+      m.retry(options);
+  }
+};
+function queueBatchResults(batch, failed) {
+  return batch.messages.map((m) => {
+    if (m.result)
+      return m.result;
+    if (failed !== void 0) {
+      return { kind: "retry", delaySeconds: 0, reason: errorMessage(failed) };
+    }
+    return { kind: "ack" };
+  });
+}
 var JobController = class {
   #result = null;
   #progress;
@@ -7633,6 +7946,28 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
       return eventBatchResults(batch, void 0);
     } catch (err) {
       return eventBatchResults(batch, err ?? new Error("event handler failed"));
+    }
+  }
+  /**
+   * Adapter dispatch for the `queue(batch)` trigger.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wireBatch - Wire `QueueBatch`.
+   * @returns One outcome per message, in order.
+   * @internal
+   */
+  async bookclerkQueue(context, wireBatch) {
+    if (typeof this.queue !== "function") {
+      throw unsupported("queue");
+    }
+    applyInvocationEnv(this, context);
+    const messages = Array.isArray(wireBatch?.messages) ? wireBatch.messages : [];
+    const batch = new QueueBatch(wireBatch?.queue, messages, invocationOf(context));
+    try {
+      await this.queue(batch);
+      return queueBatchResults(batch, void 0);
+    } catch (err) {
+      return queueBatchResults(batch, err ?? new Error("queue handler failed"));
     }
   }
   /**
@@ -8328,6 +8663,92 @@ var GrantedEvents = class extends RpcTarget {
     return { eventId: String(value.eventId ?? ""), duplicate: Boolean(value.duplicate) };
   }
 };
+function queueBodyBytes(body, contentType) {
+  const kind = contentType || "json";
+  if (kind === "bytes") {
+    if (body instanceof Uint8Array)
+      return { body, contentType: kind };
+    if (body instanceof ArrayBuffer)
+      return { body: new Uint8Array(body), contentType: kind };
+    throw PluginError.fromWire("invalid_params", "bytes queue message requires a Uint8Array body");
+  }
+  if (kind === "text") {
+    if (typeof body !== "string") {
+      throw PluginError.fromWire("invalid_params", "text queue message requires a string body");
+    }
+    return { body: new TextEncoder().encode(body), contentType: kind };
+  }
+  if (kind !== "json") {
+    throw PluginError.fromWire("invalid_params", `unknown queue content type \`${kind}\``);
+  }
+  return { body: new TextEncoder().encode(JSON.stringify(body ?? null)), contentType: kind };
+}
+var GrantedQueue = class extends RpcTarget {
+  #granted;
+  #auth;
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the queue grant.
+   */
+  constructor(granted, auth) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+  /**
+   * Send one message.
+   *
+   * @param body - JSON value, string, or bytes per `options.contentType`.
+   * @param options - Encoding and delay.
+   * @returns The outbox id the host assigned.
+   */
+  async send(body, options) {
+    return this.sendBatch([{ body, ...options ?? {} }]);
+  }
+  /**
+   * Send up to `maxListPage` messages in order.
+   *
+   * @param messages - Bodies with per-message options.
+   * @param options - Default delay for entries that carry none.
+   * @returns The outbox ids in send order.
+   */
+  async sendBatch(messages, options) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      throw PluginError.fromWire("invalid_params", "sendBatch requires at least one message");
+    }
+    if (messages.length > MAX_LIST_PAGE) {
+      throw PluginError.fromWire("payload_too_large", `queue batch of ${messages.length} exceeds ${MAX_LIST_PAGE}`);
+    }
+    const wireMessages = messages.map((entry) => {
+      const encoded = queueBodyBytes(entry?.body, entry?.contentType);
+      if (encoded.body.byteLength > MAX_EVENT_PAYLOAD_BYTES) {
+        throw PluginError.fromWire("payload_too_large", `queue message body of ${encoded.body.byteLength} bytes exceeds ${MAX_EVENT_PAYLOAD_BYTES}`);
+      }
+      return {
+        body: encoded.body,
+        contentType: encoded.contentType,
+        delaySeconds: Math.max(0, Math.floor(Number(entry?.delaySeconds ?? 0) || 0))
+      };
+    });
+    const wire = toBridgeJson({
+      messages: wireMessages,
+      delaySeconds: Math.max(0, Math.floor(Number(options?.delaySeconds ?? 0) || 0))
+    });
+    const resp = await this.#granted.fetch("http://granted/queues/send", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(wire)
+    });
+    const value = await resp.json().catch(() => ({}));
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `queue send HTTP ${resp.status}`);
+    }
+    return { messageIds: Array.isArray(value.messageIds) ? value.messageIds.map((id) => String(id)) : [] };
+  }
+};
 var GrantedDatabase = class extends RpcTarget {
   #granted;
   #auth;
@@ -8469,6 +8890,7 @@ function wrapPluginFromNative() {
 }
 var TRIGGER_FAMILIES = Object.freeze({
   eventConsumer: "eventConsumer",
+  queueConsumer: "queueConsumer",
   jobRunner: "jobRunner"
 });
 function allowedEntrypointFamilies(capabilities, requested) {
@@ -8476,6 +8898,7 @@ function allowedEntrypointFamilies(capabilities, requested) {
     return [];
   const entrypoints = Array.isArray(capabilities.entrypoints) ? capabilities.entrypoints : [];
   const consumes = Array.isArray(capabilities.consumes) ? capabilities.consumes : [];
+  const queueConsumers = Array.isArray(capabilities.queueConsumers) ? capabilities.queueConsumers : [];
   const jobs = Array.isArray(capabilities.jobs) ? capabilities.jobs : [];
   const exportsStorage = entrypoints.includes("storage");
   const out = [];
@@ -8484,6 +8907,9 @@ function allowedEntrypointFamilies(capabilities, requested) {
       continue;
     if (name === TRIGGER_FAMILIES.eventConsumer) {
       if (consumes.length > 0)
+        out.push(name);
+    } else if (name === TRIGGER_FAMILIES.queueConsumer) {
+      if (queueConsumers.length > 0)
         out.push(name);
     } else if (name === TRIGGER_FAMILIES.jobRunner) {
       if (jobs.length > 0 || exportsStorage)
@@ -8528,15 +8954,16 @@ function createInvocationAdapter() {
       return stub;
     }
     /**
-     * Turn the bridge context into the author-facing one: the host's events
-     * grant token becomes an `EVENTS` stub and never reaches the author.
+     * Turn the bridge context into the author-facing one: the host's events,
+     * database, and queue grant tokens become `EVENTS` / `env.<BINDING>`
+     * stubs and never reach the author.
      *
      * @param ctx - Bridge context from the launcher.
      * @returns Author-facing granted context.
      */
     #bindContext(ctx) {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, ...rest } = source;
+      const { eventsToken, databases, queues, ...rest } = source;
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -8556,6 +8983,16 @@ function createInvocationAdapter() {
         }
         if (named2.length > 0)
           bound.databases = named2;
+      }
+      if (queues && typeof queues === "object" && !Array.isArray(queues) && granted) {
+        const named2 = [];
+        for (const [name, token] of Object.entries(queues)) {
+          if (!name || typeof token !== "string" || !token)
+            continue;
+          named2.push({ name, queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` }) });
+        }
+        if (named2.length > 0)
+          bound.queues = named2;
       }
       return bound;
     }
@@ -8765,6 +9202,8 @@ export {
   PRODUCT_API_VERSION,
   PluginError,
   ProgressSink,
+  QueueBatch,
+  QueueMessage,
   RemoteLibraryEntrypoint,
   Source,
   StorageEntrypoint,
@@ -8790,6 +9229,7 @@ export {
   jobOutcomeFor,
   jsonPayload,
   parseDbValue,
+  queueBatchResults,
   requirePluginMigrationRegistration,
   schemaMigrationOp,
   statementResultToD1Result,

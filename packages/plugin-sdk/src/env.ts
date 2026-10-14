@@ -8,7 +8,7 @@
  */
 
 import type { DatabaseBinding } from "./db-execute.js";
-import type { PluginEvent, PublishOk } from "./generated.js";
+import type { PluginEvent, PublishOk, QueueSendOk } from "./generated.js";
 
 /** Plain JSON object (string keys, JSON values). */
 export type JsonObject = Record<string, unknown>;
@@ -32,6 +32,50 @@ export interface EventPublisherBinding {
    * @returns Outbox row identity (`duplicate` when the dedup key matched).
    */
   publish(event: PublishEvent): Promise<PublishOk>;
+}
+
+/** Per-send options for a {@link QueueBinding}. */
+export interface QueueSendOptions {
+  /**
+   * Body encoding: `json` (default; the body is JSON-encoded), `text`
+   * (UTF-8 string), or `bytes` (raw `Uint8Array`).
+   */
+  contentType?: "json" | "text" | "bytes";
+  /** Seconds before the message may be delivered; `0` means now. */
+  delaySeconds?: number;
+}
+
+/** One entry of {@link QueueBinding.sendBatch}. */
+export interface QueueSendBatchEntry extends QueueSendOptions {
+  /** Message body (JSON value, string, or bytes per `contentType`). */
+  body: unknown;
+}
+
+/**
+ * `[[queues.producers]]` binding (`env.<BINDING>`): Workers `Queue`-shaped
+ * producer into the queue the row names. The host assigns ids, stamps the
+ * sending plugin as `source`, and bounds each body at `maxEventPayloadBytes`.
+ */
+export interface QueueBinding {
+  /**
+   * Send one message.
+   *
+   * @param body - JSON value (default), string, or bytes per `contentType`.
+   * @param options - Encoding and delay.
+   * @returns The outbox id the host assigned.
+   */
+  send(body: unknown, options?: QueueSendOptions): Promise<QueueSendOk>;
+  /**
+   * Send up to `maxListPage` messages in order.
+   *
+   * @param messages - Bodies with per-message options.
+   * @param options - Default delay for entries that carry none.
+   * @returns The outbox ids in send order.
+   */
+  sendBatch(
+    messages: ReadonlyArray<QueueSendBatchEntry>,
+    options?: Pick<QueueSendOptions, "delaySeconds">,
+  ): Promise<QueueSendOk>;
 }
 
 /**
@@ -110,6 +154,9 @@ export interface BookclerkEnv {
   KV?: unknown;
   /** `[oauth]` loopback helper; surface reserved. */
   OAUTH?: unknown;
-  /** Named `[[databases]]` bindings and any renamed `binding = "..."` entries. */
-  [binding: string]: DatabaseBinding | EventPublisherBinding | StorageBinding | JsonObject | unknown;
+  /**
+   * Named `[[databases]]` bindings, `[[queues.producers]]` bindings, and any
+   * renamed `binding = "..."` entries.
+   */
+  [binding: string]: DatabaseBinding | EventPublisherBinding | QueueBinding | StorageBinding | JsonObject | unknown;
 }

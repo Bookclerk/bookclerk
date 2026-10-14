@@ -94,6 +94,15 @@ def manifest_capabilities(m: dict[str, Any]) -> dict[str, Any]:
         name = str(producer.get("binding") or "EVENTS")
         if name not in bindings:
             bindings.append(name)
+    queues = m.get("queues") or {}
+    queue_producers: list[str] = []
+    for producer in queues.get("producers") or []:
+        binding = str(producer.get("binding"))
+        if binding not in bindings:
+            bindings.append(binding)
+        queue = str(producer.get("queue"))
+        if queue not in queue_producers:
+            queue_producers.append(queue)
     return {
         "entrypoints": [str(e) for e in (m.get("entrypoints") or [])],
         "consumes": [
@@ -108,6 +117,8 @@ def manifest_capabilities(m: dict[str, Any]) -> dict[str, Any]:
         "jobs": [str(j) for j in ((m.get("triggers") or {}).get("jobs") or [])],
         "databases": [str(d.get("binding")) for d in m.get("databases") or []],
         "bindings": bindings,
+        "queueConsumers": [str(c.get("queue")) for c in queues.get("consumers") or []],
+        "queueProducers": queue_producers,
     }
 
 

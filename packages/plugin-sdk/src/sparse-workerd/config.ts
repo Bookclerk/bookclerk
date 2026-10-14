@@ -130,6 +130,8 @@ export function manifestCapabilities(m: Manifest): {
   jobs: string[];
   databases: string[];
   bindings: string[];
+  queueConsumers: string[];
+  queueProducers: string[];
 } {
   const bindings: string[] = [];
   if (m.vars !== undefined) bindings.push("CONFIG");
@@ -140,6 +142,13 @@ export function manifestCapabilities(m: Manifest): {
   for (const producer of m.events?.producers ?? []) {
     const name = producer.binding || "EVENTS";
     if (!bindings.includes(name)) bindings.push(name);
+  }
+  for (const producer of m.queues?.producers ?? []) {
+    if (!bindings.includes(producer.binding)) bindings.push(producer.binding);
+  }
+  const queueProducers: string[] = [];
+  for (const producer of m.queues?.producers ?? []) {
+    if (!queueProducers.includes(producer.queue)) queueProducers.push(producer.queue);
   }
   return {
     entrypoints: [...(m.entrypoints ?? [])],
@@ -152,6 +161,8 @@ export function manifestCapabilities(m: Manifest): {
     jobs: [...(m.triggers?.jobs ?? [])],
     databases: (m.databases ?? []).map((d) => d.binding),
     bindings,
+    queueConsumers: (m.queues?.consumers ?? []).map((c) => c.queue),
+    queueProducers,
   };
 }
 

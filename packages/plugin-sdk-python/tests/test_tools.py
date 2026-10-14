@@ -944,3 +944,23 @@ def test_workerd_cache_and_currency(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     except ValueError as err:
         assert "symlink" in str(err).lower()
     assert outside.read_bytes() == b"OUT"
+
+def test_manifest_capabilities_report_queues():
+    from bookclerk_plugin_sdk.sparse_workerd.config import manifest_capabilities
+
+    caps = manifest_capabilities(
+        {
+            "id": "q",
+            "entrypoints": ["cli"],
+            "queues": {
+                "producers": [
+                    {"queue": "jobs", "binding": "JOBS"},
+                    {"queue": "jobs", "binding": "JOBS_AGAIN"},
+                ],
+                "consumers": [{"queue": "notify"}],
+            },
+        }
+    )
+    assert caps["queueConsumers"] == ["notify"]
+    assert caps["queueProducers"] == ["jobs"]
+    assert caps["bindings"] == ["JOBS", "JOBS_AGAIN"]

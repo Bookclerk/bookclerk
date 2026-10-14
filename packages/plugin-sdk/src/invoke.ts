@@ -32,6 +32,7 @@ import type {
   PluginError as WirePluginError,
   PluginMigration as WirePluginMigration,
   PurchaseHint,
+  QueueResult,
   SourceAccount,
 } from "./generated.js";
 import * as W from "./generated-wire.js";
@@ -47,6 +48,7 @@ import type {
   NamedStub,
   ObjectMetadata,
   PluginMigration,
+  QueueOutcome,
 } from "./plugin.js";
 
 /**
@@ -222,6 +224,20 @@ const okHealth = (value: unknown) => {
   const v = (value ?? {}) as { ok?: unknown; detail?: unknown };
   return okValue({ ok: Boolean(v.ok), detail: String(v.detail ?? "") });
 };
+
+function queueResult(outcome: QueueOutcome): QueueResult {
+  switch (outcome.kind) {
+    case "ack":
+      return { kind: "ack" };
+    case "retry":
+      return {
+        kind: "retry",
+        value: { delaySeconds: Number(outcome.delaySeconds) || 0, reason: String(outcome.reason ?? "") },
+      };
+    default:
+      return { kind: "retry", value: { delaySeconds: 0, reason: "unknown queue outcome" } };
+  }
+}
 
 function eventResult(outcome: EventOutcome): EventResult {
   switch (outcome.kind) {
@@ -520,6 +536,19 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
           events: Array.isArray(p.batch?.events) ? p.batch.events : [],
         }),
       ok: (value) => okValue(asList<EventOutcome>(value).map(eventResult)),
+    }),
+  },
+  QueueConsumer: {
+    queue: spec<W.QueueConsumerQueueParams, W.QueueConsumerQueueResults["result"]>({
+      params: W.QueueConsumerQueueParamsCodec,
+      results: W.QueueConsumerQueueResultsCodec,
+      stub: "author",
+      call: (s, p, cx) =>
+        (s as AuthorStub).bookclerkQueue(cx.host.bindContext(cx.ctx), {
+          queue: String(p.batch?.queue ?? ""),
+          messages: Array.isArray(p.batch?.messages) ? p.batch.messages : [],
+        }),
+      ok: (value) => okValue({ results: asList<QueueOutcome>(value).map(queueResult) }),
     }),
   },
   JobRunner: {
