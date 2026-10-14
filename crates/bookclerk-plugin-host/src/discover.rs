@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use bookclerk_config::{Config, DatabasePluginKind};
 use bookclerk_library::BOOKCLERK_SCHEMA_NAMESPACE;
 use bookclerk_plugin_abi::PRODUCT_API_VERSION;
-use bookclerk_plugin_catalog::{evaluate_install_in, PluginInstallIdentity, PluginKey};
+use bookclerk_plugin_catalog::{
+    evaluate_install_in, evaluate_staged_install, InstallReceipt, PluginInstallIdentity, PluginKey,
+};
 
 use crate::manifest::{PluginFamily, PluginManifest};
 use crate::{PluginError, Result};
@@ -78,6 +80,31 @@ impl DiscoveredPlugin {
             command,
             identity,
         }
+    }
+
+    /// Opens a staged (pre-commit) install for health under the receipt's PluginKey.
+    ///
+    /// Hashes the tree against `receipt`, allows `pk-<fs-id>.pending-root`
+    /// placement, and does not require a host ledger row. Use this for
+    /// pre-commit probes; [`Self::try_new`] remains the post-commit path.
+    ///
+    /// # Errors
+    ///
+    /// Returns when staged evaluation fails closed (digest/alias/key mismatch).
+    pub fn try_new_staged(
+        manifest: PluginManifest,
+        root: PathBuf,
+        command: PathBuf,
+        receipt: &InstallReceipt,
+    ) -> Result<Self> {
+        let identity = evaluate_staged_install(&root, &manifest, receipt)
+            .map_err(|err| PluginError::message(err.to_string()))?;
+        Ok(Self {
+            manifest,
+            root,
+            command,
+            identity,
+        })
     }
 
     /// Display / CLI alias (`plugin.toml` id).

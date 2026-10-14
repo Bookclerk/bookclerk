@@ -110,6 +110,23 @@ impl DeploymentRuntime for Probe {
             self.saw_lock(),
             "PluginMutationLock must be held during health"
         );
+        // Guard the receipt-identity path: a `for_test` / path-only open would
+        // mint `path:…/.staging/…pending-root` and never match the grant.
+        let receipt = bookclerk_plugin_catalog::InstallReceipt::load(plugin_root)
+            .map_err(|err| format!("staged receipt: {err}"))?;
+        let plugin = crate::open_staged_plugin_for_health(plugin_root)?;
+        assert_eq!(
+            plugin.plugin_key().canonical(),
+            receipt
+                .plugin_key()
+                .map_err(|err| err.to_string())?
+                .canonical(),
+            "pre-commit health must use the receipt PluginKey"
+        );
+        assert!(
+            plugin.identity.provenance.is_verified_artifact(),
+            "staged health must not use LocalDevelopment provenance"
+        );
         self.health_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_health {
             Err("forced health failure before commit".into())
@@ -1379,6 +1396,58 @@ async fn broken_guest_health_rolls_the_install_back() {
             .desired,
         DESIRED_PRESENT
     );
+}
+
+/// Package install path: pre-commit health opens the staged tree under the
+/// receipt PluginKey (`open_staged_plugin_for_health`), then commit leaves a
+/// ledger row and Healthy observation. The Probe runtime asserts the receipt
+/// identity (a `for_test` / path-only open would fail that check).
+#[tokio::test]
+async fn package_install_staged_health_uses_receipt_key_and_reaches_healthy() {
+    let _guard = TEST_LOCK.lock().await;
+    let world = open_world(false).await;
+    let probe = Probe::new(world.files.clone(), false);
+    // Explicit open before reconcile: receipt key, not `.staging/…pending-root`.
+    let archive = world.archive.clone();
+    let manifest = world.manifest.clone();
+    let plugins = world.files.join("plugins");
+    let opts = InstallOptions {
+        plugins_root: plugins.clone(),
+        offline: true,
+        trust: TrustPolicy::allow_unverified_publisher(),
+        skip_health: true,
+        ..InstallOptions::default()
+    };
+    let lock = bookclerk_plugin_catalog::PluginMutationLock::acquire(&world.files).unwrap();
+    let staged =
+        Installer::install_local_archive_with_lock(&lock, &archive, &manifest, &opts).unwrap();
+    let receipt_key = staged.receipt.plugin_key().unwrap();
+    let opened = crate::open_staged_plugin_for_health(&staged.health_root).unwrap();
+    assert_eq!(opened.plugin_key(), &receipt_key);
+    assert!(opened.identity.provenance.is_verified_artifact());
+    assert!(
+        !opened.plugin_key().canonical().contains(".staging/"),
+        "staged health must not mint a path key from the pending-root directory"
+    );
+    Installer::rollback_with_lock(&lock, &staged).unwrap();
+    drop(lock);
+
+    reconcile_local_deployments(
+        &world.store,
+        &world.config,
+        &world.host_id,
+        &packages(&world),
+        &probe,
+    )
+    .await
+    .unwrap();
+    assert_eq!(probe.health_calls.load(Ordering::SeqCst), 1);
+    let key = PluginKey::parse(&world.key).unwrap();
+    assert!(InstallLedger::load(&world.files)
+        .unwrap()
+        .get(&key)
+        .is_some());
+    assert_eq!(observation(&world).await.status, DeploymentStatus::Healthy);
 }
 
 #[test]

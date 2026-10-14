@@ -128,6 +128,12 @@ pub async fn enroll_host(config: &Config, store: &LibraryStore) -> Result<HostEn
     let mut config = config.clone();
     let paths = config.paths().clone();
     let scratch_dir = config.download_cache_dir();
+    // Discard crash-orphaned staged installs before discovery/enrollment.
+    let plugins_root = paths.files_dir.join("plugins");
+    if let Ok(lock) = bookclerk_plugin_catalog::PluginMutationLock::acquire(&paths.files_dir) {
+        let _ =
+            bookclerk_plugin_catalog::Installer::recover_pending_with_lock(&lock, &plugins_root);
+    }
     let session = bootstrap_control_plane(
         store,
         &paths.files_dir,

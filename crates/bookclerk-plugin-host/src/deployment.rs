@@ -1110,8 +1110,8 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
     }
 }
 
-/// Builds a discovered plugin from an install tree that is not committed yet.
-fn open_installed_plugin(
+/// Builds a discovered plugin from a committed install tree (ledger required).
+pub fn open_installed_plugin(
     plugin_root: &Path,
     files_dir: &Path,
 ) -> std::result::Result<crate::DiscoveredPlugin, String> {
@@ -1125,16 +1125,23 @@ fn open_installed_plugin(
     .map_err(|err| err.to_string())
 }
 
-/// Opens a staged (pre-commit) guest for health without requiring a ledger row.
-fn open_staged_plugin_for_health(
+/// Opens a staged (pre-commit) guest for health under the receipt's PluginKey.
+///
+/// Staged trees carry a receipt but no ledger row until commit. Identity comes
+/// from [`bookclerk_plugin_catalog::evaluate_staged_install`], not a path-based
+/// `LocalDevelopment` key.
+///
+/// # Errors
+///
+/// Returns when the manifest/command cannot be read or staged evaluation fails.
+pub fn open_staged_plugin_for_health(
     plugin_root: &Path,
 ) -> std::result::Result<crate::DiscoveredPlugin, String> {
     let (manifest, command) = read_plugin_command(plugin_root)?;
-    Ok(crate::DiscoveredPlugin::for_test(
-        manifest,
-        plugin_root.to_path_buf(),
-        command,
-    ))
+    let receipt = bookclerk_plugin_catalog::InstallReceipt::load(plugin_root)
+        .map_err(|err| format!("staged install receipt: {err}"))?;
+    crate::DiscoveredPlugin::try_new_staged(manifest, plugin_root.to_path_buf(), command, &receipt)
+        .map_err(|err| err.to_string())
 }
 
 /// Reads `plugin.toml` under `plugin_root` and resolves the guest command path.
@@ -1143,7 +1150,7 @@ fn open_staged_plugin_for_health(
 ///
 /// Returns an error string when the manifest is missing/invalid, `command` is
 /// absent, or the resolved binary is not a file.
-fn read_plugin_command(
+pub fn read_plugin_command(
     plugin_root: &Path,
 ) -> std::result::Result<(bookclerk_plugin_manifest::PluginManifest, PathBuf), String> {
     let text = std::fs::read_to_string(plugin_root.join("plugin.toml"))

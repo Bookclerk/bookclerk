@@ -1329,23 +1329,8 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
 
 /// Health-checks a staged (pre-commit) install tree that is not yet in the ledger.
 async fn health_check_staged(config: &Config, root: &Path) -> anyhow::Result<String> {
-    let text = std::fs::read_to_string(root.join("plugin.toml"))
-        .map_err(|err| anyhow::anyhow!("read staged plugin.toml: {err}"))?;
-    let manifest = bookclerk_plugin_manifest::parse(&text)
-        .map_err(|err| anyhow::anyhow!("staged plugin.toml: {err}"))?;
-    let command = manifest
-        .command
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("staged plugin.toml missing command"))?;
-    let command = if command.is_absolute() {
-        command
-    } else {
-        root.join(command)
-    };
-    if !command.is_file() {
-        anyhow::bail!("staged guest is missing {}", command.display());
-    }
-    let plugin = DiscoveredPlugin::for_test(manifest, root.to_path_buf(), command);
+    let plugin = bookclerk_plugin_host::open_staged_plugin_for_health(root)
+        .map_err(|err| anyhow::anyhow!("open staged plugin for health: {err}"))?;
     health_check_plugin(config, &plugin).await
 }
 

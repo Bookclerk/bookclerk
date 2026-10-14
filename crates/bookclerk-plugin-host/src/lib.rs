@@ -102,9 +102,9 @@ pub use consent::{
 };
 pub use crates_io::search_crates_io;
 pub use deployment::{
-    load_authorized_local_packages, reconcile_local_deployments, AuthorizedLocalPackages,
-    DeploymentRuntime, DeploymentSpawn, LiveDeploymentRuntime, LocalPackage, SpawnHealth,
-    AUTHORIZED_PACKAGE_DIR,
+    load_authorized_local_packages, open_installed_plugin, open_staged_plugin_for_health,
+    read_plugin_command, reconcile_local_deployments, AuthorizedLocalPackages, DeploymentRuntime,
+    DeploymentSpawn, LiveDeploymentRuntime, LocalPackage, SpawnHealth, AUTHORIZED_PACKAGE_DIR,
 };
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{

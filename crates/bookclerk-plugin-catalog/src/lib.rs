@@ -27,7 +27,9 @@ pub use adapters::{
 pub use catalog::{CatalogHit, SearchQuery, CATALOG_DTO_SCHEMA_VERSION};
 pub use coordinate::{PackageCoordinate, RegistrySource};
 pub use error::{CatalogError, Result};
-pub use evaluate::{evaluate_install, evaluate_install_in, stamp_platform_receipt};
+pub use evaluate::{
+    evaluate_install, evaluate_install_in, evaluate_staged_install, stamp_platform_receipt,
+};
 pub use extract::{
     extract_archive, require_mutable_child, require_under, safe_join, sha256_bytes, sha256_file,
     MAX_ARCHIVE_BYTES, MAX_EXTRACTED_BYTES,

@@ -14,7 +14,9 @@ use crate::extract::{
 };
 use crate::identity::{PluginKey, PluginProvenance};
 use crate::kind::RuntimeIdentity;
-use crate::ledger::{record_install, restore_ledger_entry, InstallLedger, InstallLedgerEntry};
+use crate::ledger::{
+    entry_matches, record_install, restore_ledger_entry, InstallLedger, InstallLedgerEntry,
+};
 use crate::manifest::{parse_sha256_hex, BookclerkPackageManifest};
 use crate::mutation_lock::{acquire_plugins_lock, PluginMutationLock};
 use crate::receipt::InstallReceipt;
@@ -1148,7 +1150,18 @@ fn alias_from_install_dir(dest: &Path) -> Option<String> {
 }
 
 /// Schema version for pending-install marker JSON.
-const PENDING_INSTALL_MARKER_VERSION: u32 = 1;
+const PENDING_INSTALL_MARKER_VERSION: u32 = 2;
+
+/// Phase recorded in a pending-install marker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PendingPhase {
+    /// Staged tree awaits health; live `dest` is untouched.
+    #[default]
+    Staged,
+    /// Commit renames are in flight or partially applied.
+    Committing,
+}
 
 /// Durable record of a staged install awaiting health + commit.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1157,10 +1170,16 @@ struct PendingInstallMarker {
     version: u32,
     /// Canonical plugin key for the staged install.
     plugin_key: String,
+    /// Install phase. Missing on v1 markers (treated as [`PendingPhase::Staged`]).
+    #[serde(default)]
+    phase: PendingPhase,
     /// Absolute path of the staged tree under `.staging/`.
     staged_root: String,
     /// Absolute live install path the stage will be promoted onto.
     dest: String,
+    /// Absolute backup of the previous live tree during commit, when replacing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup: Option<String>,
     /// Optional Bookclerk files dir used when activating (for ledger paths).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     files_dir: Option<String>,
@@ -1180,14 +1199,24 @@ fn write_pending_marker(
     let marker = PendingInstallMarker {
         version: PENDING_INSTALL_MARKER_VERSION,
         plugin_key: plugin_key.canonical().to_string(),
+        phase: PendingPhase::Staged,
         staged_root: staged_root.display().to_string(),
         dest: dest.display().to_string(),
+        backup: None,
         files_dir: files_dir.map(|p| p.display().to_string()),
     };
     let json = serde_json::to_vec_pretty(&marker)
         .map_err(|err| CatalogError::message(format!("encode pending install marker: {err}")))?;
     write_file(&marker_path, &json)?;
     Ok(marker_path)
+}
+
+/// Rewrites a pending marker (phase / backup) before commit mutates the live tree.
+fn rewrite_pending_marker(marker_path: &Path, marker: &PendingInstallMarker) -> Result<()> {
+    let json = serde_json::to_vec_pretty(marker)
+        .map_err(|err| CatalogError::message(format!("encode pending install marker: {err}")))?;
+    write_file(marker_path, &json)?;
+    Ok(())
 }
 
 /// Promotes a staged tree onto the live install path and records the ledger.
@@ -1198,6 +1227,10 @@ fn activate_staged_install(outcome: &InstallOutcome) -> Result<()> {
             outcome.plugin_root.display()
         ))
     })?;
+    // Resolve the receipt key before any rename so a bad key fails closed
+    // without leaving dest/backup half-swapped.
+    let key = outcome.receipt.plugin_key()?;
+    let key_fs = key.fs_id().to_string();
     let dest = require_mutable_child(plugins_root, &outcome.plugin_root)?;
     let staged = require_mutable_child(plugins_root, &outcome.health_root)?;
     if !staged.exists() {
@@ -1215,24 +1248,29 @@ fn activate_staged_install(outcome: &InstallOutcome) -> Result<()> {
     let staging_parent = require_mutable_child(plugins_root, &staging_parent_path)?;
     fs::create_dir_all(&staging_parent)?;
     let staging_parent = require_mutable_child(plugins_root, &staging_parent_path)?;
+    let bak_path = staging_parent.join(format!("{key_fs}.backup"));
+    let bak = require_mutable_child(plugins_root, &bak_path)?;
+
+    if let Some(marker_path) = &outcome.pending_marker {
+        let marker_path = require_mutable_child(plugins_root, marker_path)?;
+        let marker = PendingInstallMarker {
+            version: PENDING_INSTALL_MARKER_VERSION,
+            plugin_key: key.canonical().to_string(),
+            phase: PendingPhase::Committing,
+            staged_root: staged.display().to_string(),
+            dest: dest.display().to_string(),
+            backup: dest.exists().then(|| bak.display().to_string()),
+            files_dir: outcome.files_dir.as_ref().map(|p| p.display().to_string()),
+        };
+        rewrite_pending_marker(&marker_path, &marker)?;
+    }
 
     let backup = if dest.exists() {
-        let key_fs = outcome
-            .receipt
-            .plugin_key()
-            .map(|k| k.fs_id().to_string())
-            .unwrap_or_else(|_| {
-                dest.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "plugin".into())
-            });
-        let bak_path = staging_parent.join(format!("{key_fs}.backup"));
-        let bak = require_mutable_child(plugins_root, &bak_path)?;
         if bak.exists() {
             remove_dir_retry(&bak)?;
         }
         rename_retry(&dest, &bak)?;
-        Some(bak)
+        Some(bak.clone())
     } else {
         None
     };
@@ -1249,7 +1287,6 @@ fn activate_staged_install(outcome: &InstallOutcome) -> Result<()> {
     }
 
     if let Some(dir) = outcome.files_dir.as_ref() {
-        let key = outcome.receipt.plugin_key()?;
         if let Err(e) = record_install(
             dir,
             &key,
@@ -1323,7 +1360,12 @@ fn discard_staged_install(outcome: &InstallOutcome) -> Result<()> {
     Ok(())
 }
 
-/// Scans `plugins/.staging` for `*.pending.json` and discards each staged tree.
+/// Scans `plugins/.staging` for `*.pending.json` and recovers each install.
+///
+/// Paths are derived from the marker filename (`<fs-id>.pending.json` →
+/// `<fs-id>.pending-root`, `<fs-id>.backup`, `plugins/<fs-id>`) so a corrupt
+/// or relocated JSON body cannot wedge installs of other plugins. Commit-phase
+/// crashes restore a live backup when `dest` is missing.
 fn recover_pending_installs(plugins_root: &Path) -> Result<()> {
     if !plugins_root.is_dir() {
         return Ok(());
@@ -1332,65 +1374,194 @@ fn recover_pending_installs(plugins_root: &Path) -> Result<()> {
     if !staging_parent_path.exists() {
         return Ok(());
     }
-    let staging_parent = require_mutable_child(plugins_root, &staging_parent_path)?;
+    let staging_parent = match require_mutable_child(plugins_root, &staging_parent_path) {
+        Ok(path) => path,
+        Err(_) => return Ok(()),
+    };
     if !staging_parent.is_dir() {
         return Ok(());
     }
-    let entries = fs::read_dir(&staging_parent).map_err(|err| {
-        CatalogError::message(format!("cannot read {}: {err}", staging_parent.display()))
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|err| {
-            CatalogError::message(format!("cannot read {}: {err}", staging_parent.display()))
-        })?;
+    let entries = match fs::read_dir(&staging_parent) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.ends_with(".pending.json") {
+        let Some(fs_id) = name.strip_suffix(".pending.json") else {
+            continue;
+        };
+        if fs_id.is_empty() {
             continue;
         }
-        let marker_path = require_mutable_child(plugins_root, &path)?;
-        let text = match fs::read_to_string(&marker_path) {
-            Ok(text) => text,
-            Err(err) => {
-                return Err(CatalogError::message(format!(
-                    "cannot read pending install marker {}: {err}",
-                    marker_path.display()
-                )));
-            }
-        };
-        let marker: PendingInstallMarker = serde_json::from_str(&text).map_err(|err| {
-            CatalogError::message(format!(
-                "cannot parse pending install marker {}: {err}",
-                marker_path.display()
-            ))
-        })?;
-        if marker.version != PENDING_INSTALL_MARKER_VERSION {
-            return Err(CatalogError::message(format!(
-                "unsupported pending install marker version {} in {}",
-                marker.version,
-                marker_path.display()
-            )));
-        }
-        let staged = PathBuf::from(&marker.staged_root);
-        if !staged.as_os_str().is_empty() {
-            let staged = require_mutable_child(plugins_root, &staged)?;
-            if staged.exists() {
-                remove_dir_retry(&staged)?;
-            }
-        }
-        match fs::remove_file(&marker_path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(CatalogError::message(format!(
-                    "failed to remove pending install marker {}: {err}",
-                    marker_path.display()
-                )));
-            }
-        }
+        // Best-effort per marker: never fail the whole install loop.
+        let _ = recover_one_pending(plugins_root, &staging_parent, fs_id, &path);
     }
     Ok(())
+}
+
+/// Recovers one pending marker. JSON fields are advisory; siblings are authoritative.
+fn recover_one_pending(
+    plugins_root: &Path,
+    staging_parent: &Path,
+    fs_id: &str,
+    marker_path: &Path,
+) -> Result<()> {
+    let Ok(marker_path) = require_mutable_child(plugins_root, marker_path) else {
+        return Ok(());
+    };
+    let staged_default = staging_parent.join(format!("{fs_id}.pending-root"));
+    let backup_default = staging_parent.join(format!("{fs_id}.backup"));
+    let dest_default = plugins_root.join(fs_id);
+
+    let marker = fs::read_to_string(&marker_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<PendingInstallMarker>(&text).ok())
+        .filter(|m| m.version == 1 || m.version == PENDING_INSTALL_MARKER_VERSION);
+
+    let phase = marker
+        .as_ref()
+        .map(|m| m.phase)
+        .unwrap_or(PendingPhase::Staged);
+    let staged = marker
+        .as_ref()
+        .map(|m| PathBuf::from(&m.staged_root))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(staged_default);
+    let dest = marker
+        .as_ref()
+        .map(|m| PathBuf::from(&m.dest))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(dest_default);
+    let backup = marker
+        .as_ref()
+        .and_then(|m| m.backup.as_ref())
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(backup_default);
+    let files_dir = marker
+        .as_ref()
+        .and_then(|m| m.files_dir.as_ref())
+        .map(PathBuf::from)
+        .or_else(|| plugins_root.parent().map(Path::to_path_buf));
+
+    let staged = require_mutable_child(plugins_root, &staged).unwrap_or(staged);
+    let dest = require_mutable_child(plugins_root, &dest).unwrap_or(dest);
+    let backup = require_mutable_child(plugins_root, &backup).unwrap_or(backup);
+
+    match phase {
+        PendingPhase::Staged => {
+            // Pre-commit crash: live dest (if any) is still the old tree.
+            discard_path_dir(&staged);
+            if backup.exists() && !dest.exists() {
+                let _ = rename_retry(&backup, &dest);
+            } else {
+                discard_path_dir(&backup);
+            }
+        }
+        PendingPhase::Committing => {
+            recover_committing_pending(&dest, &staged, &backup, files_dir.as_deref())?;
+        }
+    }
+
+    match fs::remove_file(&marker_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {}
+    }
+    Ok(())
+}
+
+/// Finishes or rolls back a commit-phase pending install.
+fn recover_committing_pending(
+    dest: &Path,
+    staged: &Path,
+    backup: &Path,
+    files_dir: Option<&Path>,
+) -> Result<()> {
+    if !dest.exists() && backup.exists() {
+        // Crash between dest→backup and staged→dest: restore the live tree.
+        let _ = rename_retry(backup, dest);
+        discard_path_dir(staged);
+        return Ok(());
+    }
+
+    if dest.exists() {
+        if ledger_matches_dest_receipt(dest, files_dir) {
+            discard_path_dir(staged);
+            discard_path_dir(backup);
+            return Ok(());
+        }
+        if backup.exists() {
+            // New tree live without a matching ledger: restore previous live.
+            discard_path_dir(dest);
+            let _ = rename_retry(backup, dest);
+            discard_path_dir(staged);
+            return Ok(());
+        }
+        // First install: dest promoted, no backup. Finish the ledger when possible.
+        if let Some(dir) = files_dir {
+            let _ = finish_ledger_from_dest(dest, dir);
+        }
+        discard_path_dir(staged);
+        return Ok(());
+    }
+
+    // Nothing recoverable; discard stage leftovers.
+    discard_path_dir(staged);
+    discard_path_dir(backup);
+    Ok(())
+}
+
+/// Best-effort recursive delete used during pending recovery.
+fn discard_path_dir(path: &Path) {
+    if path.exists() {
+        let _ = remove_dir_retry(path);
+    }
+}
+
+/// True when the host ledger row for `dest`'s receipt matches its digests.
+fn ledger_matches_dest_receipt(dest: &Path, files_dir: Option<&Path>) -> bool {
+    let Some(files_dir) = files_dir else {
+        return false;
+    };
+    let Ok(receipt) = InstallReceipt::load(dest) else {
+        return false;
+    };
+    let Ok(key) = receipt.plugin_key() else {
+        return false;
+    };
+    let Ok(ledger) = InstallLedger::load(files_dir) else {
+        return false;
+    };
+    let Some(entry) = ledger.get(&key) else {
+        return false;
+    };
+    entry_matches(
+        entry,
+        &key,
+        &receipt.manifest_sha256,
+        &receipt.payload_root_sha256,
+    )
+}
+
+/// Writes a VerifiedInstalled ledger row from `dest`'s receipt when missing.
+fn finish_ledger_from_dest(dest: &Path, files_dir: &Path) -> Result<()> {
+    if ledger_matches_dest_receipt(dest, Some(files_dir)) {
+        return Ok(());
+    }
+    let receipt = InstallReceipt::load(dest)?;
+    let key = receipt.plugin_key()?;
+    record_install(
+        files_dir,
+        &key,
+        receipt.coordinate.name.as_str(),
+        &receipt.runtime.id,
+        &receipt.manifest_sha256,
+        &receipt.payload_root_sha256,
+        PluginProvenance::VerifiedInstalled,
+    )
 }
 
 /// Exactly one durable [`PluginKey`] for removal, before any tree mutation.
@@ -3052,6 +3223,109 @@ mod tests {
         assert!(!path_under(tmp.path(), &staged.health_root).exists());
         assert!(staged.pending_marker.as_ref().is_none_or(|p| !p.exists()));
         assert!(path_under(tmp.path(), &staged.plugin_root).is_dir());
+    }
+
+    #[test]
+    fn recover_pending_restores_backup_when_dest_missing_mid_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugins, dest, key, manifest, coord, mut opts) = installed_echo(tmp.path());
+        fs::write(under_tmp(&dest, "old-marker"), b"v1").unwrap();
+        opts.replace = true;
+        let second = Installer::install_from_manifest(&manifest, &coord, &opts).unwrap();
+        let staging = under_tmp(&plugins, ".staging");
+        let fs_id = key.fs_id().to_string();
+        let backup = under_tmp(&staging, format!("{fs_id}.backup"));
+        // Simulate crash after dest→backup, before staged→dest.
+        rename_retry(&dest, &backup).unwrap();
+        assert!(!path_under(tmp.path(), &dest).exists());
+        assert!(path_under(tmp.path(), &backup).is_dir());
+        assert!(path_under(tmp.path(), &second.health_root).is_dir());
+        let marker = second.pending_marker.as_ref().unwrap();
+        let committing = PendingInstallMarker {
+            version: PENDING_INSTALL_MARKER_VERSION,
+            plugin_key: key.canonical().to_string(),
+            phase: PendingPhase::Committing,
+            staged_root: second.health_root.display().to_string(),
+            dest: dest.display().to_string(),
+            backup: Some(backup.display().to_string()),
+            files_dir: Some(tmp.path().display().to_string()),
+        };
+        rewrite_pending_marker(marker, &committing).unwrap();
+
+        Installer::recover_pending(&plugins).unwrap();
+        assert!(
+            under_tmp(&dest, "old-marker").is_file(),
+            "live tree restored"
+        );
+        assert!(!path_under(tmp.path(), &second.health_root).exists());
+        assert!(!path_under(tmp.path(), &backup).exists());
+        assert!(!marker.exists());
+        assert!(InstallLedger::load(tmp.path()).unwrap().get(&key).is_some());
+    }
+
+    #[test]
+    fn recover_pending_finishes_ledger_after_promote_without_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (archive, digest) = make_echo_archive(tmp.path());
+        let plugins = under_tmp(tmp.path(), "plugins");
+        let opts = echo_install_opts(plugins.clone(), false);
+        let coord = PackageCoordinate {
+            source: RegistrySource::LocalArchive,
+            name: archive.display().to_string(),
+            version: "1.0.0".into(),
+        };
+        let staged = Installer::install_from_manifest(
+            &echo_manifest(
+                "echo",
+                digest,
+                format!("file://{}", archive.display()),
+                host_bookclerk_target(),
+            ),
+            &coord,
+            &opts,
+        )
+        .unwrap();
+        let key = staged.receipt.plugin_key().unwrap();
+        // Simulate crash after staged→dest, before ledger write.
+        rename_retry(&staged.health_root, &staged.plugin_root).unwrap();
+        let marker = staged.pending_marker.as_ref().unwrap();
+        let committing = PendingInstallMarker {
+            version: PENDING_INSTALL_MARKER_VERSION,
+            plugin_key: key.canonical().to_string(),
+            phase: PendingPhase::Committing,
+            staged_root: staged.health_root.display().to_string(),
+            dest: staged.plugin_root.display().to_string(),
+            backup: None,
+            files_dir: Some(tmp.path().display().to_string()),
+        };
+        rewrite_pending_marker(marker, &committing).unwrap();
+        assert!(InstallLedger::load(tmp.path()).unwrap().get(&key).is_none());
+
+        Installer::recover_pending(&plugins).unwrap();
+        assert!(path_under(tmp.path(), &staged.plugin_root).is_dir());
+        assert!(InstallLedger::load(tmp.path()).unwrap().get(&key).is_some());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn recover_pending_discards_corrupt_marker_via_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugins, dest, key, manifest, coord, _opts) = installed_echo(tmp.path());
+        let _ = (dest, manifest, coord);
+        let staging = under_tmp(&plugins, ".staging");
+        fs::create_dir_all(&staging).unwrap();
+        let fs_id = key.fs_id().to_string();
+        let staged = under_tmp(&staging, format!("{fs_id}.pending-root"));
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(under_tmp(&staged, "plugin.toml"), b"id = \"echo\"\n").unwrap();
+        let marker = under_tmp(&staging, format!("{fs_id}.pending.json"));
+        fs::write(&marker, b"{}").unwrap();
+
+        Installer::recover_pending(&plugins).unwrap();
+        assert!(!path_under(tmp.path(), &staged).exists());
+        assert!(!path_under(tmp.path(), &marker).exists());
+        // Unrelated live install is untouched.
+        assert!(InstallLedger::load(tmp.path()).unwrap().get(&key).is_some());
     }
 
     #[test]

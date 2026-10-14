@@ -152,6 +152,87 @@ fn require_key_derived_install_path(root: &Path, key: &PluginKey) -> Result<()> 
     Ok(())
 }
 
+/// True when `root`'s basename is the staged pending placement for `key`.
+fn is_pending_root_placement(root: &Path, key: &PluginKey) -> bool {
+    root.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name == format!("{}.pending-root", key.fs_id()))
+}
+
+/// Evaluate a staged (pre-commit) install tree against its installer-written receipt.
+///
+/// Used for health probes before the host ledger row exists. The receipt is the
+/// identity source: hashes must match, the alias must match, and the directory
+/// may be `pk-<fs-id>.pending-root` under `plugins/.staging` (the live
+/// `pk-<fs-id>` check is skipped for that placement). Provenance is
+/// [`PluginProvenance::VerifiedInstalled`], or [`PluginProvenance::PlatformBundled`]
+/// when the receipt already carries a known platform key.
+///
+/// # Errors
+///
+/// Returns when hashing fails, the receipt key is invalid, digests diverge, the
+/// alias mismatches, or the staged basename is neither `key.fs_id()` nor
+/// `key.fs_id().pending-root`.
+pub fn evaluate_staged_install(
+    root: &Path,
+    manifest: &PluginManifest,
+    receipt: &InstallReceipt,
+) -> Result<PluginInstallIdentity> {
+    let root_buf = root.canonicalize().map_err(|source| {
+        CatalogError::message(format!(
+            "could not canonicalize staged plugin root {}: {source}",
+            root.display()
+        ))
+    })?;
+    let root = root_buf.as_path();
+    let plugin_key = receipt.plugin_key()?;
+    if !is_pending_root_placement(root, &plugin_key) {
+        require_key_derived_install_path(root, &plugin_key)?;
+    }
+    if !receipt.runtime.id.eq_ignore_ascii_case(&manifest.id) {
+        return Err(CatalogError::message(format!(
+            "install receipt alias `{}` does not match plugin.toml alias `{}` at {}",
+            receipt.runtime.id,
+            manifest.id,
+            root.display()
+        )));
+    }
+    let manifest_sha = manifest_sha256(root)?;
+    let payload_sha = payload_root_sha256(root)?;
+    if !receipt.manifest_sha256.eq_ignore_ascii_case(&manifest_sha)
+        || !receipt
+            .payload_root_sha256
+            .eq_ignore_ascii_case(&payload_sha)
+    {
+        return Err(CatalogError::message(format!(
+            "staged install at {} does not match its install receipt digests",
+            root.display()
+        )));
+    }
+    let provenance = if receipt.provenance == PluginProvenance::PlatformBundled
+        && is_platform_plugin_key(&plugin_key)
+        && platform_artifact(&plugin_key.package(), manifest.id.as_str()).is_some()
+    {
+        PluginProvenance::PlatformBundled
+    } else {
+        PluginProvenance::VerifiedInstalled
+    };
+    let version = manifest.version.clone().unwrap_or_else(|| "0.0.0".into());
+    let artifact = ArtifactIdentity {
+        plugin_key: plugin_key.clone(),
+        version,
+        manifest_sha256: manifest_sha,
+        payload_root_sha256: payload_sha,
+        archive_sha256: Some(receipt.archive_sha256.clone()).filter(|s| !s.is_empty()),
+    };
+    Ok(PluginInstallIdentity {
+        plugin_key,
+        alias: manifest.id.clone(),
+        artifact,
+        provenance,
+    })
+}
+
 /// Build a host-owned platform-bundled receipt **and** ledger row.
 ///
 /// Only [`crate::identity::PLATFORM_ARTIFACTS`] may be stamped this way.
@@ -244,6 +325,43 @@ mode = "deny"
         assert_eq!(identity.provenance, PluginProvenance::LocalDevelopment);
         assert_eq!(identity.alias(), "sqlite");
         assert!(!is_platform_plugin_key(&identity.plugin_key));
+    }
+
+    #[test]
+    fn staged_pending_root_uses_receipt_key_without_ledger() {
+        let files = tempfile::tempdir().unwrap();
+        let key = PluginKey::platform("bookclerk-plugin-database-sqlite", "sqlite").unwrap();
+        let staging = files.path().join("plugins").join(".staging");
+        let root = staging.join(format!("{}.pending-root", key.fs_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        write_sqlite_tree(&root);
+        let manifest = parse_sqlite(&root);
+        let receipt = stamp_platform_receipt(
+            &root,
+            files.path(),
+            "bookclerk-plugin-database-sqlite",
+            &manifest,
+            "0.1.0",
+        )
+        .unwrap();
+        // Drop the ledger row so production evaluate_install_in would fail closed.
+        let mut ledger = InstallLedger::load(files.path()).unwrap();
+        ledger.artifacts.clear();
+        ledger.store(files.path()).unwrap();
+
+        let identity = evaluate_staged_install(&root, &manifest, &receipt).unwrap();
+        assert_eq!(identity.plugin_key, key);
+        assert_eq!(identity.provenance, PluginProvenance::PlatformBundled);
+        assert!(identity.provenance.grants_platform_defaults());
+
+        let err = evaluate_install_in(&root, &manifest, Some(files.path()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not recorded in the host install ledger")
+                || err.contains("does not match receipt PluginKey filesystem id"),
+            "{err}"
+        );
     }
 
     #[test]

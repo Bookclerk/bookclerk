@@ -346,13 +346,19 @@ desired write never updates observations.
 
 Install stages the archive on a blocking thread while the host mutation lock
 is held, writes a durable pending marker under `plugins/.staging`, and runs
-health against the staged tree. The live `plugins/<fs-id>` tree and install
+health against the staged tree under the receipt's PluginKey (not a
+path-based throwaway identity). The live `plugins/<fs-id>` tree and install
 ledger are updated only on commit after health succeeds. Health failure
-discards the staged tree and marker without touching the live install. A
-crash between stage and commit leaves only the pending marker and staged
-tree; the next installer entry under the mutation lock rolls that pending
-work back (never auto-commits without a fresh health check). Packages come
-from `plugin-packages/` on the local files directory, not from a download.
+discards the staged tree and marker without touching the live install. The
+pending marker records `phase: staged | committing` and an optional backup
+path; a crash mid-commit restores `plugins/<fs-id>` from
+`.staging/<fs-id>.backup` when the live dest is missing, finishes a ledger
+row when promote already succeeded, and never leaves an orphaned backup as
+the only copy of a previously live tree. Corrupt markers are recovered from
+the filename's fs-id so one bad file cannot wedge installs of other plugins.
+Daemon bootstrap also runs pending recovery under the mutation lock. Packages
+come from `plugin-packages/` on the local files directory, not from a
+download.
 
 Enrollment is generic and idempotent, and runs in both the CLI and the daemon
 bootstrap. For every plugin discovered on the host except those whose only
@@ -565,8 +571,9 @@ Not in this phase, and not claimed as production HA:
 - The reconciler holds the process-wide plugin mutation lock across extract
   and the health check. Extract runs on a blocking thread. The lock is still
   held across the health await so a second installer cannot commit the same
-  tree. Pending markers make a crash before commit fail closed on the next
-  installer entry (discard staged work; do not activate without health).
+  tree. Pending markers make a crash before or during commit fail closed on
+  the next installer entry or daemon bootstrap (restore live backup when
+  needed; discard unverified staged work; do not activate without health).
 - D1 multi-host execution. The executing D1 tests in this repository are an
   HTTP mock over one SQLite connection. The shared-database proof is two
   PostgreSQL pools plus two SQLite connections. A live D1 database was not
