@@ -33,7 +33,6 @@ use bookclerk_plugin_catalog::{
     host_bookclerk_target, InstallLedger, InstallOptions, InstallReceipt, Installer, PluginKey,
     TrustPolicy, PLUGIN_MUTATION_LOCK_FILE, RECEIPT_FILE,
 };
-static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Runs `fut` while counting [`discover_plugins`](crate::discover_plugins) calls on this task.
 async fn with_discover_count<F, T>(fut: F) -> (T, usize)
@@ -376,7 +375,7 @@ async fn observation(world: &World) -> bookclerk_library::control_plane::Deploym
 
 #[tokio::test]
 async fn foreign_host_deployment_does_not_install_or_observe() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let foreign = "foreign-host-not-local";
     let foreign_row = ensure_plugin_deployment(
@@ -417,7 +416,7 @@ async fn foreign_host_deployment_does_not_install_or_observe() {
 
 #[tokio::test]
 async fn installer_commit_reaches_healthy_and_rollback_clears_ledger() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
@@ -479,7 +478,7 @@ async fn installer_commit_reaches_healthy_and_rollback_clears_ledger() {
 
 #[tokio::test]
 async fn absent_retires_running_guest_and_present_brings_it_back() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
@@ -579,7 +578,7 @@ async fn absent_retires_running_guest_and_present_brings_it_back() {
 
 #[tokio::test]
 async fn deleted_deployment_prunes_the_tracked_guest() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
@@ -624,7 +623,7 @@ async fn deleted_deployment_prunes_the_tracked_guest() {
 
 #[tokio::test]
 async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
@@ -709,7 +708,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
 
 #[tokio::test]
 async fn ledger_hit_skips_install_and_still_reaches_healthy() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let plugins = world.files.join("plugins");
     let opts = InstallOptions {
@@ -743,7 +742,7 @@ async fn ledger_hit_skips_install_and_still_reaches_healthy() {
 
 #[tokio::test]
 async fn newer_config_revision_respawns_with_the_new_value() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     let packages = packages(&world);
@@ -812,7 +811,7 @@ async fn newer_config_revision_respawns_with_the_new_value() {
 
 #[tokio::test]
 async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(true).await;
     let secret = "sealed-token-value";
     seal_instance_secret(
@@ -921,7 +920,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
 
 #[tokio::test]
 async fn prepare_open_for_instance_resolves_each_document() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     let store = file_store(&files.join("library.db")).await;
@@ -1109,7 +1108,7 @@ async fn save_manifest_grant(files: &Path, plugin: &DiscoveredPlugin) {
 
 #[tokio::test]
 async fn live_two_instances_same_key_route_to_the_default() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     stage_graphicaudio_tree(files);
@@ -1255,7 +1254,7 @@ async fn live_two_instances_same_key_route_to_the_default() {
 
 #[tokio::test]
 async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     stage_graphicaudio_tree(files);
@@ -1349,7 +1348,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
 
 #[tokio::test]
 async fn broken_guest_health_rolls_the_install_back() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let mut config = world.config.clone();
     config.plugins.isolation = Isolation::Off;
@@ -1438,7 +1437,7 @@ fn duplicate_authorized_packages_reject_both() {
 #[tokio::test]
 async fn a_package_older_than_the_pinned_schema_is_retired_and_not_spawned() {
     use bookclerk_library::control_plane::{pin_plugin_schema, SchemaPin, SchemaPinChange};
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
