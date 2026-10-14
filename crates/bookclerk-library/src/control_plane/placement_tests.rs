@@ -742,6 +742,29 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         .await
         .unwrap_err();
     assert!(matches!(unknown, LibraryError::NotFound(_)), "{unknown}");
+    // A Member cannot use the node routes and a disabled user cannot sign
+    // in, so neither may be made an owner.
+    let member = store
+        .create_user(crate::UserRole::Member, Some("Member"), None)
+        .await
+        .unwrap();
+    let not_admin = set_node_owner(&store, &operator(), &mine, Some(member.id))
+        .await
+        .unwrap_err();
+    assert!(matches!(not_admin, LibraryError::Invalid(_)), "{not_admin}");
+    let gone = store
+        .create_user(crate::UserRole::Host, Some("Gone"), None)
+        .await
+        .unwrap();
+    store
+        .set_user_status(gone.id, crate::UserStatus::Disabled)
+        .await
+        .unwrap();
+    let disabled = set_node_owner(&store, &operator(), &mine, Some(gone.id))
+        .await
+        .unwrap_err();
+    assert!(matches!(disabled, LibraryError::Invalid(_)), "{disabled}");
+    assert_eq!(load_node(&store, &mine).await.unwrap().owner_user_id, None);
     let owned = set_node_owner(&store, &operator(), &mine, Some(host.id))
         .await
         .unwrap();

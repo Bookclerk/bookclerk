@@ -14,6 +14,7 @@ use super::documents::{ConfigActor, VerifiedNodeOwner};
 use super::identity::{list_nodes, load_node, NodeRecord};
 use crate::entities::nodes;
 use crate::error::{LibraryError, Result};
+use crate::models::UserStatus;
 use crate::store::LibraryStore;
 
 /// Error for a node the user does not own. An unknown node reads the same,
@@ -51,11 +52,16 @@ pub async fn verify_node_owner(
 
 /// Assigns `node_id` to `owner` (a user id), or clears its owner.
 ///
+/// The owner must be an active user whose role may administer owned nodes
+/// (Host, Administrator, or Owner); anyone else could not use the node
+/// routes, so the assignment would grant nothing.
+///
 /// # Errors
 ///
 /// Returns [`LibraryError::Forbidden`] unless the actor is an operator,
-/// [`LibraryError::NotFound`] when the node or user is unknown, and the
-/// write error when the update fails.
+/// [`LibraryError::NotFound`] when the node or user is unknown,
+/// [`LibraryError::Invalid`] when the user is disabled or their role cannot
+/// administer nodes, and the write error when the update fails.
 pub async fn set_node_owner(
     store: &LibraryStore,
     actor: &ConfigActor,
@@ -68,8 +74,20 @@ pub async fn set_node_owner(
         ));
     }
     if let Some(user_id) = owner {
-        if store.get_user(user_id).await?.is_none() {
-            return Err(LibraryError::NotFound(format!("user {user_id}")));
+        let user = store
+            .get_user(user_id)
+            .await?
+            .ok_or_else(|| LibraryError::NotFound(format!("user {user_id}")))?;
+        if user.status != UserStatus::Active {
+            return Err(LibraryError::Invalid(format!(
+                "user {user_id} is disabled and cannot own a node"
+            )));
+        }
+        if !user.role.can_administer_owned_nodes() {
+            return Err(LibraryError::Invalid(format!(
+                "user {user_id} is a {}; only a host, administrator, or owner can own a node",
+                user.role
+            )));
         }
     }
     let res = nodes::Entity::update_many()

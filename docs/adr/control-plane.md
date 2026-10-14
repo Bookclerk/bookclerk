@@ -745,7 +745,9 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
 names the user who owns it, assigned by an operator (`bookclerk nodes
-owner`, `PUT /api/config/nodes/{id}/owner`). That user may change the
+owner`, `PUT /api/config/nodes/{id}/owner`). Only an active Host,
+Administrator, or Owner can be assigned; a Member or a disabled user could
+not use the node routes, so the write is refused. That user may change the
 node's `node.runtime` document (budgets, drain switch, display name)
 without operator authority. The library enforces it: a write carries
 `ConfigActor::NodeOwner`, which only `verify_node_owner` builds after it

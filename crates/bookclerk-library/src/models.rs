@@ -277,7 +277,7 @@ impl UserStatus {
 pub struct UserRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
-    /// First-party role (`owner`, `administrator`, or `member`).
+    /// First-party role (`owner`, `administrator`, `host`, or `member`).
     pub role: UserRole,
     /// Lifecycle status for the row (user, request, …).
     pub status: UserStatus,

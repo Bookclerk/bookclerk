@@ -116,7 +116,8 @@ interface NodeRowProps {
   /** Users an operator may assign as the node's owner. */
   users: ListedUser[];
   onChanged: () => Promise<void>;
-  onError: (message: string) => void;
+  /** Shows a node action's failure in the panel; `null` clears it. */
+  onError: (message: string | null) => void;
   onSessionExpired: () => void;
 }
 
@@ -144,6 +145,7 @@ function NodeRow({
 
   async function run(action: () => Promise<unknown>, failure: string) {
     setBusy(true);
+    onError(null);
     try {
       await action();
       await onChanged();
@@ -237,6 +239,11 @@ function NodeRow({
             }}
           >
             <option value="">No owner</option>
+            {node.owner && !users.some((user) => user.id === node.owner?.user_id) ? (
+              <option value={node.owner.user_id}>
+                {ownerName(node.owner)} (cannot administer nodes)
+              </option>
+            ) : null}
             {users.map((user) => (
               <option key={user.id} value={user.id}>
                 {user.display_name || user.login_name || `user ${user.id}`} ({user.role})
@@ -342,37 +349,43 @@ function NodeRow({
 }
 
 interface NodesPanelProps {
-  /** Shows a page-level error. */
-  onError: (message: string) => void;
   /** Called on a 401 so the page can return to sign-in. */
   onSessionExpired: () => void;
 }
+
+/** Roles whose owner may administer a node; mirrors `UserRole::can_administer_owned_nodes`. */
+const NODE_OWNER_ROLES = new Set(["host", "administrator", "owner"]);
 
 /**
  * Cluster nodes as their heartbeats report them, with each node's budget
  * and drain switch. The scheduler places plugins by this headroom, and
  * deliveries go to the live node with the most room first.
  */
-export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
+export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
   const [nodes, setNodes] = useState<ConfigNodeView[] | null>(null);
   const [capabilities, setCapabilities] = useState<NodeCapabilities | null>(null);
   const [users, setUsers] = useState<ListedUser[]>([]);
-  // The timer outlives renders; read the latest callbacks through a ref so
+  // Errors stay on this panel: a failed node edit is not a settings-page
+  // failure and must not follow the user to another tab.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // The timer outlives renders; read the latest callback through a ref so
   // a parent re-render does not restart polling.
-  const callbacks = useRef({ onError, onSessionExpired });
-  callbacks.current = { onError, onSessionExpired };
+  const callbacks = useRef({ onSessionExpired });
+  callbacks.current = { onSessionExpired };
 
   const refresh = useCallback(async () => {
     try {
       const body = await listConfigNodes();
       setNodes(body.nodes);
       setCapabilities(body.capabilities);
+      setLoadError(null);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         callbacks.current.onSessionExpired();
         return;
       }
-      callbacks.current.onError(err instanceof Error ? err.message : "Failed to load nodes");
+      setLoadError(err instanceof Error ? err.message : "Failed to load nodes");
     }
   }, []);
 
@@ -382,12 +395,17 @@ export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  // Only an operator assigns owners; it picks from the active users.
+  // Only an operator assigns owners. It picks from active users whose role
+  // may administer a node; the API refuses anyone else.
   const canAssignOwner = capabilities?.can_assign_owner ?? false;
   useEffect(() => {
     if (!canAssignOwner) return;
     listUsers()
-      .then((all) => setUsers(all.filter((user) => user.status === "active")))
+      .then((all) =>
+        setUsers(
+          all.filter((user) => user.status === "active" && NODE_OWNER_ROLES.has(user.role)),
+        ),
+      )
       .catch(() => setUsers([]));
   }, [canAssignOwner]);
 
@@ -405,6 +423,11 @@ export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
           plugins deployed by hand keep running.
         </p>
       </div>
+      {loadError || actionError ? (
+        <p className="text-sm font-medium text-brick" role="alert">
+          {actionError ?? loadError}
+        </p>
+      ) : null}
       {nodes == null || capabilities == null ? (
         <p className="text-sm text-ink/50">Loading nodes…</p>
       ) : nodes.length === 0 ? (
@@ -420,7 +443,7 @@ export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
               capabilities={capabilities}
               users={users}
               onChanged={refresh}
-              onError={onError}
+              onError={setActionError}
               onSessionExpired={onSessionExpired}
             />
           ))}

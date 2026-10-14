@@ -56,11 +56,12 @@ pub enum NodesCommand {
         clear: bool,
     },
     /// Assign a node to the user who administers it, or clear its owner. The
-    /// owner may then change the node's budgets, drain switch, and name.
+    /// owner (an active Host, Administrator, or Owner) may then change the
+    /// node's budgets, drain switch, and name.
     Owner {
         /// Node id (default: this node).
         node: Option<String>,
-        /// User id or login name.
+        /// Login name or user id.
         #[arg(long, value_name = "USER", required_unless_present = "clear")]
         user: Option<String>,
         /// Remove the node's owner.
@@ -270,17 +271,29 @@ pub async fn run(
     }
 }
 
-/// A user id, or the id of the user with that login name.
+/// The id of the user named by `--user`: a login name, or else a numeric
+/// user id. A number that is both one user's login name and another's id
+/// is refused rather than guessed.
+///
+/// # Errors
+///
+/// Returns an error when no user matches, the match is ambiguous, or the
+/// lookup fails.
 async fn resolve_user(store: &bookclerk_library::LibraryStore, user: &str) -> anyhow::Result<i64> {
     let user = user.trim();
-    if let Ok(id) = user.parse::<i64>() {
-        return Ok(id);
+    let by_login = store.get_user_by_login_name(user).await?.map(|r| r.id);
+    let by_id = match user.parse::<i64>() {
+        Ok(id) => store.get_user(id).await?.map(|r| r.id),
+        Err(_) => None,
+    };
+    match (by_login, by_id) {
+        (Some(login), Some(id)) if login != id => anyhow::bail!(
+            "`{user}` is the login name of user {login} and also user id {id}; \
+             assign it with PUT /api/config/nodes/{{id}}/owner and an explicit user_id"
+        ),
+        (Some(found), _) | (None, Some(found)) => Ok(found),
+        (None, None) => anyhow::bail!("no user with login name or id `{user}`"),
     }
-    store
-        .get_user_by_login_name(user)
-        .await?
-        .map(|record| record.id)
-        .ok_or_else(|| anyhow::anyhow!("no user with login name `{user}`"))
 }
 
 /// One-line summary of a heartbeat: capacity, budget, committed, measured,
@@ -305,4 +318,55 @@ fn status_line(status: &NodeStatus) -> String {
         status.availability_ppm as f64 / 10_000.0,
         if status.schedulable { "" } else { " | drained" }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use bookclerk_library::{LibraryStore, UserRole};
+
+    use super::resolve_user;
+
+    #[tokio::test]
+    async fn resolve_user_reads_logins_before_ids_and_refuses_ambiguous_numbers() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        let riley = store
+            .create_user_with_login(UserRole::Host, Some("Riley"), Some("riley"), None)
+            .await
+            .unwrap();
+        // A numeric login whose number is not also a user id.
+        let numeric = store
+            .create_user_with_login(UserRole::Host, Some("Numeric"), Some("4242"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(resolve_user(&store, "riley").await.unwrap(), riley.id);
+        assert_eq!(
+            resolve_user(&store, &riley.id.to_string()).await.unwrap(),
+            riley.id
+        );
+        assert_eq!(resolve_user(&store, "4242").await.unwrap(), numeric.id);
+        assert!(resolve_user(&store, "nobody").await.is_err());
+        assert!(resolve_user(&store, "999999").await.is_err());
+
+        // A login that is another user's id is ambiguous.
+        let shadow = store
+            .create_user_with_login(
+                UserRole::Host,
+                Some("Shadow"),
+                Some(&riley.id.to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_ne!(shadow.id, riley.id);
+        let err = resolve_user(&store, &riley.id.to_string())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("also user id"), "{err}");
+    }
 }

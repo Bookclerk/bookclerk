@@ -1359,7 +1359,7 @@ export function SettingsPage({
           </div>
         </div>
 
-        {error && !showOperatorChrome && activeTab !== "nodes" ? (
+        {error && !showOperatorChrome ? (
           <ErrorStatePage
             title="Settings request failed"
             message={error}
@@ -1419,14 +1419,7 @@ export function SettingsPage({
         {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
 
         {activeTab === "nodes" && showNodes ? (
-          <div className="flex flex-col gap-4">
-            {error ? (
-              <p className="text-sm font-medium text-brick" role="alert">
-                {error}
-              </p>
-            ) : null}
-            <NodesPanel onError={setError} onSessionExpired={onSessionExpired} />
-          </div>
+          <NodesPanel onSessionExpired={onSessionExpired} />
         ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
