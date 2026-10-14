@@ -990,7 +990,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_placements (
         plugin_instance_id TEXT PRIMARY KEY NOT NULL,
-        replicas INTEGER NOT NULL CHECK (replicas >= 0),
+        replicas INTEGER CHECK (replicas IS NULL OR replicas >= 0),
         constraints_json TEXT NOT NULL DEFAULT '[]',
         revision INTEGER NOT NULL,
         updated_at TEXT NOT NULL,

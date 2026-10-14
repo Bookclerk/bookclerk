@@ -1644,8 +1644,11 @@ export interface PluginDeploymentView {
  * last scheduler pass's result.
  */
 export interface PluginPlacementView {
-  /** Hosts that should run the instance (0 stops every replica). */
-  replicas: number;
+  /**
+   * Hosts that should run the instance: a count (0 stops every replica) or
+   * `"all"` (every live, schedulable host with budget room).
+   */
+  replicas: number | "all";
   /** Label constraints (`nas`, `zone=eu`, `!slow`, `host=<id>`). */
   constraints: string[];
   /** Compare-and-swap revision of the intent. */
@@ -2086,7 +2089,7 @@ export async function putPluginDeployment(
  */
 export async function putPluginPlacement(
   instanceId: string,
-  body: { replicas: number; constraints: string[]; expected_revision: number },
+  body: { replicas: number | "all"; constraints: string[]; expected_revision: number },
 ): Promise<{ plugin_instance_id: string; placement: PluginPlacementView }> {
   const res = await fetch(
     `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/placement`,

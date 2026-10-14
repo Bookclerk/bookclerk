@@ -9,8 +9,9 @@ pub struct Model {
     /// Placed instance.
     #[sea_orm(primary_key, auto_increment = false)]
     pub plugin_instance_id: String,
-    /// Hosts that should run the instance.
-    pub replicas: i64,
+    /// Hosts that should run the instance; empty means every host that
+    /// qualifies and has room.
+    pub replicas: Option<i64>,
     /// JSON array of label constraints every chosen host must satisfy.
     pub constraints_json: String,
     /// Compare-and-swap revision of the operator's intent.

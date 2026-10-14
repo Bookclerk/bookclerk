@@ -254,7 +254,7 @@ async fn a_scheduler_placed_instance_enrolls_unplaced_even_with_a_grant() {
         &ConfigActor::Operator { id: "cli".into() },
         &instance.id,
         &PlacementSpec {
-            replicas: 1,
+            replicas: bookclerk_library::control_plane::Replicas::Count(1),
             constraints: vec!["nas".into()],
         },
         None,

@@ -99,7 +99,7 @@ pub(super) async fn present_hosts(
 
 fn spec(replicas: u32, constraints: &[&str]) -> PlacementSpec {
     PlacementSpec {
-        replicas,
+        replicas: Replicas::Count(replicas),
         constraints: constraints.iter().map(|c| (*c).to_string()).collect(),
     }
 }
@@ -465,4 +465,163 @@ async fn host_messages(store: &LibraryStore, host: &str) -> Vec<HostMessage> {
     rows.into_iter()
         .map(|row| serde_json::from_str(&row.payload).expect("host message body"))
         .collect()
+}
+
+#[tokio::test]
+async fn placement_follows_heartbeat_headroom_availability_and_drains() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(&dir.path().join("library.db")).await;
+    let session = bootstrap_control_plane(
+        &store,
+        dir.path(),
+        &dir.path().join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .unwrap();
+    register(&store, "vps", &session.cluster_id).await;
+    register(&store, "desk", &session.cluster_id).await;
+    let gib: i64 = 1 << 30;
+    // A small always-on VPS and a big desktop that is often off.
+    let vps = |s: &mut HostStatus| {
+        s.cpu_budget_millicores = 800;
+        s.memory_budget_bytes = Some(gib);
+        s.memory_available_bytes = Some(gib);
+    };
+    let desk = |s: &mut HostStatus| {
+        s.cpu_budget_millicores = 12_000;
+        s.memory_budget_bytes = Some(24 * gib);
+        s.memory_available_bytes = Some(24 * gib);
+        s.availability_ppm = 400_000;
+    };
+    heartbeat_with(&store, "vps", Duration::ZERO, vps).await;
+    heartbeat_with(&store, "desk", Duration::ZERO, desk).await;
+
+    let instance = create_plugin_instance(&store, &operator(), "path:file:///tmp/ra#ra", "")
+        .await
+        .unwrap();
+    put_plugin_placement(&store, &operator(), &instance.id, &spec(1, &[]), None)
+        .await
+        .unwrap();
+    schedule_placements(&store).await.unwrap();
+    assert_eq!(
+        present_hosts(&store, &instance.id).await,
+        set(&["desk"]),
+        "even at 40% availability the desktop has far more room"
+    );
+
+    // The desktop goes to sleep: its replica moves to the VPS.
+    heartbeat_with(&store, "desk", Duration::from_secs(600), desk).await;
+    schedule_placements(&store).await.unwrap();
+    assert_eq!(present_hosts(&store, &instance.id).await, set(&["vps"]));
+
+    // Draining the VPS leaves nowhere to run it; the placement says why.
+    heartbeat_with(&store, "vps", Duration::ZERO, |s| {
+        vps(s);
+        s.schedulable = false;
+    })
+    .await;
+    schedule_placements(&store).await.unwrap();
+    assert!(present_hosts(&store, &instance.id).await.is_empty());
+    let short = load_plugin_placement(&store, &instance.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(short.detail.starts_with("0 of 1"), "{}", short.detail);
+
+    // `all` runs it on every live, schedulable host with room: the VPS is
+    // back, the desktop is awake, and this host has no heartbeat at all.
+    heartbeat_with(&store, "vps", Duration::ZERO, vps).await;
+    heartbeat_with(&store, "desk", Duration::ZERO, desk).await;
+    put_plugin_placement(
+        &store,
+        &operator(),
+        &instance.id,
+        &PlacementSpec {
+            replicas: Replicas::All,
+            constraints: Vec::new(),
+        },
+        Some(1),
+    )
+    .await
+    .unwrap();
+    schedule_placements(&store).await.unwrap();
+    assert_eq!(
+        present_hosts(&store, &instance.id).await,
+        set(&["desk", "vps"])
+    );
+
+    // A guest bigger than the VPS's memory budget does not go there.
+    let big = create_plugin_instance(&store, &operator(), "path:file:///tmp/big#big", "")
+        .await
+        .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &ConfigActor::Bootstrap,
+        &big.id,
+        "desk",
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
+    upsert_observation(
+        &store,
+        &DeploymentObservation {
+            deployment_id: deployment.deployment_id.clone(),
+            host_id: "desk".into(),
+            incarnation: "test".into(),
+            status: DeploymentStatus::Healthy,
+            detail: String::new(),
+            applied_config_revision: None,
+            observed_at: chrono::Utc::now().to_rfc3339(),
+        },
+    )
+    .await
+    .unwrap();
+    record_deployment_reservation(
+        &store,
+        &deployment.deployment_id,
+        "desk",
+        GuestReservation {
+            memory_bytes: 2 * gib,
+            cpu_millicores: 1000,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        instance_demand(&store, &big.id).await.unwrap(),
+        Some(GuestReservation {
+            memory_bytes: 2 * gib,
+            cpu_millicores: 1000,
+        })
+    );
+    put_plugin_placement(
+        &store,
+        &operator(),
+        &big.id,
+        &PlacementSpec {
+            replicas: Replicas::All,
+            constraints: Vec::new(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    schedule_placements(&store).await.unwrap();
+    assert_eq!(
+        present_hosts(&store, &big.id).await,
+        set(&["desk"]),
+        "2 GiB does not fit the VPS's 1 GiB budget"
+    );
+    let rows = list_deployments_for_instance(&store, &big.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        rows[0].desired,
+        DesiredState::Placed,
+        "the operator's row became the scheduler's"
+    );
 }

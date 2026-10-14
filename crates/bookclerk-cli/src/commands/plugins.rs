@@ -165,9 +165,10 @@ pub enum PluginsCommand {
     Deploy {
         /// Plugin alias, PluginKey, or plugin instance id.
         id: String,
-        /// Hosts that should run the instance (0 stops every replica).
+        /// Hosts that should run the instance: a number (0 stops every
+        /// replica) or `all` (every live, schedulable host with room).
         #[arg(long, required_unless_present = "manual")]
-        replicas: Option<u32>,
+        replicas: Option<bookclerk_library::control_plane::Replicas>,
         /// Label constraint every chosen host must satisfy (`nas`,
         /// `zone=eu`, `host=<id>`, `target=linux-x64-gnu`); prefix with `!`
         /// to exclude. Repeatable.
@@ -388,7 +389,7 @@ struct InstanceListItem {
 /// Scheduler placement of one instance.
 struct PlacementListItem {
     /// Requested replicas.
-    replicas: u32,
+    replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints.
     constraints: Vec<String>,
     /// Intent revision.
@@ -1978,7 +1979,7 @@ fn print_instance_line(instance: &InstanceListItem) {
 async fn run_deploy(
     config: &Config,
     needle: &str,
-    replicas: Option<u32>,
+    replicas: Option<bookclerk_library::control_plane::Replicas>,
     on: Vec<String>,
     manual: bool,
     format: OutputFormat,
@@ -2063,7 +2064,12 @@ async fn run_deploy(
             },
             placement.revision
         );
-        let wanted = usize::try_from(placement.spec.replicas).unwrap_or(usize::MAX);
+        let wanted = match placement.spec.replicas {
+            bookclerk_library::control_plane::Replicas::Count(n) => {
+                usize::try_from(n).unwrap_or(usize::MAX)
+            }
+            bookclerk_library::control_plane::Replicas::All => 1,
+        };
         if eligible.len() < wanted {
             println!(
                 "warning: {} live host(s) satisfy the constraints now; label more with `bookclerk hosts label`",

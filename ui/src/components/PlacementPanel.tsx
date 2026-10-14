@@ -36,7 +36,8 @@ interface PlacementPanelProps {
 export function PlacementBadge({ plugin }: { plugin: PluginSettingsGroup }) {
   const placement = plugin.placement;
   if (!placement) return null;
-  const short = placement.placed < placement.replicas;
+  const short =
+    placement.replicas === "all" ? Boolean(placement.detail) : placement.placed < placement.replicas;
   return (
     <Badge
       className={
@@ -46,7 +47,8 @@ export function PlacementBadge({ plugin }: { plugin: PluginSettingsGroup }) {
       }
     >
       <span title={placement.detail || (plugin.present_on ?? []).join(", ")}>
-        Placed {placement.placed}/{placement.replicas}
+        Placed {placement.placed}
+        {placement.replicas === "all" ? " (all)" : `/${placement.replicas}`}
       </span>
     </Badge>
   );
@@ -86,9 +88,10 @@ export function PlacementPanel({ plugin, onChanged, onError, onSessionExpired }:
   }
 
   function save() {
-    const count = Number.parseInt(replicas, 10);
-    if (!Number.isFinite(count) || count < 0) {
-      onError("Replicas must be a whole number of hosts (0 or more).");
+    const text = replicas.trim().toLowerCase();
+    const count: number | "all" = text === "all" ? "all" : Number.parseInt(text, 10);
+    if (count !== "all" && (!Number.isFinite(count) || count < 0 || String(count) !== text)) {
+      onError("Replicas must be a whole number of hosts (0 or more) or `all`.");
       return;
     }
     void run(
@@ -116,9 +119,11 @@ export function PlacementPanel({ plugin, onChanged, onError, onSessionExpired }:
       <p className="text-xs font-medium text-ink/70">Placement</p>
       <p className="mt-1 text-xs text-ink/50">
         {placement
-          ? `The cluster scheduler runs this instance on ${placement.placed} of ${placement.replicas} host(s)${
+          ? `The cluster scheduler runs this instance on ${placement.placed}${
+              placement.replicas === "all" ? " (every host with room)" : ` of ${placement.replicas}`
+            } host(s)${
               placement.constraints.length ? ` labelled ${placement.constraints.join(", ")}` : ""
-            }. The Enabled switch does not apply while it is placed.`
+            }, choosing the live hosts with the most budget headroom. The Enabled switch does not apply while it is placed.`
           : "Managed by hand: the Enabled switch runs it on this host. Place it to let the scheduler pick hosts."}
       </p>
       {placement?.detail ? <p className="mt-1 text-xs text-brick">{placement.detail}</p> : null}
@@ -131,10 +136,8 @@ export function PlacementPanel({ plugin, onChanged, onError, onSessionExpired }:
         <label className="grid gap-1 text-xs text-ink/60">
           Replicas
           <Input
-            type="number"
-            min={0}
-            max={64}
             className="w-24"
+            placeholder="1 or all"
             value={replicas}
             disabled={busy}
             onChange={(e) => setReplicas(e.target.value)}

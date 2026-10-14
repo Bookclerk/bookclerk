@@ -1543,7 +1543,7 @@ async fn postgres_scheduler_lease_and_placement_cross_two_pools() {
         &operator(),
         &instance.id,
         &PlacementSpec {
-            replicas: 1,
+            replicas: Replicas::Count(1),
             constraints: vec!["nas".into()],
         },
         None,

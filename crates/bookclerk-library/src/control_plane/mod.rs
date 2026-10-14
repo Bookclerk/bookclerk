@@ -69,9 +69,9 @@ pub use placement::{
     labels_satisfy, list_plugin_placements, live_host_ids, load_lease, load_plugin_placement,
     plan_placement, put_plugin_placement, release_lease, schedule_placements, set_host_labels,
     validate_constraint, validate_host_label, validate_label, ClusterLease, HostCandidate,
-    PlacementPlan, PlacementSpec, PlacementWrite, PluginPlacement, ScheduleReport, HOST_LABEL,
-    MAX_HOST_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
-    TARGET_LABEL,
+    PlacementPlan, PlacementSpec, PlacementWrite, PluginPlacement, Replicas, ScheduleReport,
+    HOST_LABEL, MAX_HOST_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, SCHEDULER_LEASE,
+    SCHEDULER_LEASE_TTL, TARGET_LABEL,
 };
 pub use releases::{
     activate_release, approve_release_grant, clear_active_release, list_release_pointers,

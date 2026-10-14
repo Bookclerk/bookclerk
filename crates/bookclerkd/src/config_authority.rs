@@ -438,7 +438,7 @@ pub(crate) struct InstanceConfigView {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PlacementView {
     /// Hosts that should run the instance.
-    pub replicas: u32,
+    pub replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints every chosen host must satisfy.
     pub constraints: Vec<String>,
     /// Compare-and-swap revision of the intent.
@@ -1104,8 +1104,9 @@ pub async fn put_host_labels(
 /// `PUT /api/config/plugin-instances/{id}/placement` body.
 #[derive(Debug, Deserialize)]
 pub(crate) struct PutPluginPlacement {
-    /// Hosts that should run the instance (0 stops every replica).
-    replicas: u32,
+    /// Hosts that should run the instance: a number (0 stops every
+    /// replica) or `"all"`.
+    replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints (`name`, `name=value`, `!name`).
     #[serde(default)]
     constraints: Vec<String>,
