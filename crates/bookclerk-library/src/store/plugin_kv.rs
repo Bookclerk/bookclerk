@@ -518,10 +518,10 @@ mod tests {
     /// Two hosts, two connections, one library: the cursor an instance wrote
     /// on host A is what the same instance reads after moving to host B.
     #[tokio::test]
-    async fn cursor_written_on_one_host_reads_back_on_another() {
+    async fn cursor_written_on_one_node_reads_back_on_another() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("library.db");
-        let host_a = {
+        let node_a = {
             let db = bookclerk_plugin_database_sqlite::open(&path)
                 .await
                 .expect("open a");
@@ -530,7 +530,7 @@ mod tests {
                 .expect("schema");
             LibraryStore::from_connection(db)
         };
-        host_a
+        node_a
             .kv_put(
                 PLUGIN,
                 "sync.cursors",
@@ -542,13 +542,13 @@ mod tests {
             )
             .await
             .expect("write on host a");
-        drop(host_a);
-        let host_b = LibraryStore::from_connection(
+        drop(node_a);
+        let node_b = LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open(&path)
                 .await
                 .expect("open b"),
         );
-        let entry = host_b
+        let entry = node_b
             .kv_get(PLUGIN, "sync.cursors", "audible:acct-1")
             .await
             .expect("read on host b")
@@ -556,7 +556,7 @@ mod tests {
         assert_eq!(entry.value, b"page-42");
         assert_eq!(entry.metadata, r#"{"host":"a"}"#);
         assert!(
-            host_b
+            node_b
                 .kv_get("other-plugin", "sync.cursors", "audible:acct-1")
                 .await
                 .expect("read")

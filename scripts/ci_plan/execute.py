@@ -611,8 +611,8 @@ def check_commands(check: str, plan: Plan, ctx: Context) -> list[Command]:
         # and its own assertions; identity filters are the existing library tests.
         guest_env = {**runtime_env, "BOOKCLERK_REQUIRE_TEST_GUESTS": "1"}
         identity = (
-            ("host identity create", "host_identity_is_stable_and_distinct"),
-            ("host identity restart and binding", "restart_keeps_host_id_and_distinct_hosts_stay_distinct"),
+            ("node identity create", "node_identity_is_stable_and_distinct"),
+            ("node identity restart and binding", "restart_keeps_node_id_and_distinct_nodes_stay_distinct"),
             ("copied identity rejects a different cluster", "copied_identity_rejects_a_different_cluster"),
         )
         cmds = [

@@ -18,9 +18,9 @@ the same fenced-lease pattern as jobs. Acquire success publishes
 `book_acquired` with producer `source` on the envelope. Each host heartbeats discovered (config-enabled, even if spawn
 failed) and loaded integrations into a **per-node** catalog keyed by
 `(node_id, PluginKey)` (`plugin_id` stores the canonical PluginKey, not the
-display alias) and does **not** delete other nodes’ rows. The process
-resolves `event_node_id` once at event-runtime start (best-effort file under
-the files dir) and reuses that in-memory id on every heartbeat. Dispatch uses
+display alias) and does **not** delete other nodes’ rows. The catalog key is
+the node id from `node-identity.json`, the same id the node registers with
+the cluster and claims its `node.<node_id>` queue under. Dispatch uses
 the live union (any enabled node whose heartbeat is within 60s). Optional
 payload-object filters and `resource_class` (currently `network` only) are
 matched host-side. Each dispatcher tick dispatches at most 32 undispatched
@@ -122,8 +122,8 @@ pending → running → succeeded
   phase, cursor) with `checkpoint_running_job` while the row stays `running`.
   The generation is a UUID bound in `storage_scan_generations` to that storage
   instance and the job. Local-backed scans, including fan-out and plugin
-  wrappers, also store the host placement (`event_node_id` under the files
-  directory). A resume on another node, or a backend whose placement cannot
+  wrappers, also store the node placement (the node id from
+  `node-identity.json`). A resume on another node, or a backend whose placement cannot
   be proved, starts a new scan instead of adopting the old rows. Object rows
   live in `storage_scan_rows`, not in the 64 KiB checkpoint. Page inserts happen before the cursor advances; replaying
   a page is idempotent.   `run_acquire` performs one fenced scan and matches

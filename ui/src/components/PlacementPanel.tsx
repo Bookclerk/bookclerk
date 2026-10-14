@@ -29,8 +29,8 @@ interface PlacementPanelProps {
 }
 
 /**
- * Where a plugin instance runs: by hand on this host (the Enabled switch), or
- * on `replicas` hosts the cluster scheduler picks among those carrying every
+ * Where a plugin instance runs: by hand on this node (the Enabled switch), or
+ * on `replicas` nodes the cluster scheduler picks among those carrying every
  * label constraint.
  */
 export function PlacementBadge({ plugin }: { plugin: PluginSettingsGroup }) {
@@ -91,7 +91,7 @@ export function PlacementPanel({ plugin, onChanged, onError, onSessionExpired }:
     const text = replicas.trim().toLowerCase();
     const count: number | "all" = text === "all" ? "all" : Number.parseInt(text, 10);
     if (count !== "all" && (!Number.isFinite(count) || count < 0 || String(count) !== text)) {
-      onError("Replicas must be a whole number of hosts (0 or more) or `all`.");
+      onError("Replicas must be a whole number of nodes (0 or more) or `all`.");
       return;
     }
     void run(
@@ -120,11 +120,11 @@ export function PlacementPanel({ plugin, onChanged, onError, onSessionExpired }:
       <p className="mt-1 text-xs text-ink/50">
         {placement
           ? `The cluster scheduler runs this instance on ${placement.placed}${
-              placement.replicas === "all" ? " (every host with room)" : ` of ${placement.replicas}`
-            } host(s)${
+              placement.replicas === "all" ? " (every node with room)" : ` of ${placement.replicas}`
+            } node(s)${
               placement.constraints.length ? ` labelled ${placement.constraints.join(", ")}` : ""
-            }, choosing the live hosts with the most budget headroom. The Enabled switch does not apply while it is placed.`
-          : "Managed by hand: the Enabled switch runs it on this host. Place it to let the scheduler pick hosts."}
+            }, choosing the live nodes with the most budget headroom. The Enabled switch does not apply while it is placed.`
+          : "Managed by hand: the Enabled switch runs it on this node. Place it to let the scheduler pick nodes."}
       </p>
       {placement?.detail ? <p className="mt-1 text-xs text-brick">{placement.detail}</p> : null}
       {runningOn.length ? (
@@ -145,7 +145,7 @@ export function PlacementPanel({ plugin, onChanged, onError, onSessionExpired }:
           />
         </label>
         <label className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/60">
-          Host labels
+          Node labels
           <Input
             placeholder="nas, zone=eu, !slow"
             value={constraints}

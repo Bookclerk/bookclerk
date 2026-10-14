@@ -157,7 +157,7 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                 cfg.paths = Some(bookclerk_config::Paths::from_files_dir(
                     opts.dest_files_dir.clone(),
                 ));
-                if let Err(err) = bookclerk_plugin_host::enroll_host(&cfg, &dest_store.store).await
+                if let Err(err) = bookclerk_plugin_host::enroll_node(&cfg, &dest_store.store).await
                 {
                     summary.warnings.push(format!(
                         "plugin enrollment failed; instance settings may not be written: {err}"

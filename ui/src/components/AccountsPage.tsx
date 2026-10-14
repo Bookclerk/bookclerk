@@ -169,7 +169,7 @@ export function AccountsPage({
         <section className="space-y-3">
           <h2 className="text-lg font-semibold text-ink">Bookstore sources</h2>
           {sources.length === 0 ? (
-            <p className="text-sm text-ink/50">No storefront plugin is deployed on this host.</p>
+            <p className="text-sm text-ink/50">No storefront plugin is deployed on this node.</p>
           ) : (
             <ul className="divide-y divide-ink/10 bg-card">
               {sources.map((s) => {
@@ -284,7 +284,7 @@ export function AccountsPage({
                       </p>
                       <p className="text-xs text-ink/50">
                         {c.source} · {c.connection_status}
-                        {!c.source_enabled ? " · source not deployed on this host" : ""}
+                        {!c.source_enabled ? " · source not deployed on this node" : ""}
                       </p>
                     </div>
                   </div>

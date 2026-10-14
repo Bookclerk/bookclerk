@@ -198,7 +198,7 @@ pub async fn publish_package_release(
     store: &LibraryStore,
     actor: &ConfigActor,
     files_dir: &Path,
-    host_id: &str,
+    node_id: &str,
     request: ReleaseRequest,
 ) -> Result<PublishedRelease> {
     let key = PluginKey::parse(&request.plugin_key).map_err(cat)?;
@@ -319,8 +319,8 @@ pub async fn publish_package_release(
             .map_err(PluginError::message)?;
             if order == std::cmp::Ordering::Less {
                 return Err(PluginError::message(format!(
-                    "package version {version} is older than {} pinned by host {}; not activated",
-                    pinned.package_version, pinned.recorded_by_host
+                    "package version {version} is older than {} pinned by node {}; not activated",
+                    pinned.package_version, pinned.recorded_by_node
                 )));
             }
         }
@@ -354,7 +354,7 @@ pub async fn publish_package_release(
     };
     let pointer = if activate {
         Some(
-            activate_release(store, actor, &request.plugin_key, &version, host_id)
+            activate_release(store, actor, &request.plugin_key, &version, node_id)
                 .await
                 .map_err(lib)?
                 .0,
@@ -742,7 +742,7 @@ pub async fn install_release(
     store: &LibraryStore,
     actor: &ConfigActor,
     files_dir: &Path,
-    host_id: &str,
+    node_id: &str,
     request: InstallRequest,
 ) -> Result<InstalledRelease> {
     let key = install_plugin_key(store, files_dir, &request.coordinate, &request.package).await?;
@@ -770,7 +770,7 @@ pub async fn install_release(
         store,
         actor,
         files_dir,
-        host_id,
+        node_id,
         ReleaseRequest {
             plugin_key: key.clone(),
             package: request.package,

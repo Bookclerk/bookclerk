@@ -4,7 +4,7 @@
 //! bootstrap configuration → library database → secret root and host
 //! identity → database-backed core domains → plugin enrollment. After that,
 //! plugins are loaded only from the deployments the database says are
-//! present on this host, with `CONFIG` / `SECRETS` resolved from their
+//! present on this node, with `CONFIG` / `SECRETS` resolved from their
 //! instance documents. There is no `config.toml` path for plugin settings
 //! and no process that enrolls differently from another.
 //!
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use bookclerk_config::Config;
 use bookclerk_integrations::IntegrationRegistry;
 use bookclerk_library::control_plane::{
-    bootstrap_control_plane, default_instance_for_key, list_present_deployments_for_host,
+    bootstrap_control_plane, default_instance_for_key, list_present_deployments_for_node,
     load_plugin_instance, overlay_events, ControlPlaneSession, PluginDeployment, PluginInstance,
 };
 use bookclerk_library::LibraryStore;
@@ -30,7 +30,7 @@ use crate::instance_bindings::prepare_open_for_instance;
 use crate::rpc_session::SessionServices;
 use crate::Result;
 
-/// A deployment the database wants present on this host, joined with the
+/// A deployment the database wants present on this node, joined with the
 /// instance row and the local install it will run.
 #[derive(Debug, Clone)]
 pub struct PresentDeployment {
@@ -38,7 +38,7 @@ pub struct PresentDeployment {
     pub deployment: PluginDeployment,
     /// Instance the row runs.
     pub instance: PluginInstance,
-    /// Install discovered on this host, when there is one.
+    /// Install discovered on this node, when there is one.
     pub plugin: Option<DiscoveredPlugin>,
 }
 
@@ -50,11 +50,11 @@ pub struct HostControlPlane {
     pub database_registry: DatabaseRegistry,
     /// Open library.
     pub store: LibraryStore,
-    /// Host identity, cluster id, and core documents.
+    /// Node identity, cluster id, and core documents.
     pub session: ControlPlaneSession,
     /// Plugins enrolled on this pass.
     pub enrolled: Vec<EnrolledPlugin>,
-    /// Deployments desired present on this host, in deployment-id order.
+    /// Deployments desired present on this node, in deployment-id order.
     pub present: Vec<PresentDeployment>,
     /// Default instance id per plugin key, for routing a bare key.
     pub default_instances: HashMap<String, String>,
@@ -65,7 +65,7 @@ pub struct HostControlPlane {
 /// # Errors
 ///
 /// Returns an error when the database cannot be opened, the secret root or
-/// host identity cannot be established, or enrollment fails as a whole.
+/// node identity cannot be established, or enrollment fails as a whole.
 pub async fn open_host_control_plane(config: &Config) -> Result<HostControlPlane> {
     let database_registry = crate::load_external_database(config).await?;
     let store = crate::open_library_store(config, &database_registry)
@@ -86,13 +86,13 @@ pub async fn open_host_control_plane_with_store(
     database_registry: DatabaseRegistry,
     store: LibraryStore,
 ) -> Result<HostControlPlane> {
-    let HostEnrollment {
+    let NodeEnrollment {
         config,
         session,
         enrolled,
-    } = enroll_host(config, &store).await?;
+    } = enroll_node(config, &store).await?;
     let (present, default_instances) =
-        present_deployments(&store, &session.host.host_id, &enrolled).await?;
+        present_deployments(&store, &session.node.node_id, &enrolled).await?;
     Ok(HostControlPlane {
         config,
         database_registry,
@@ -104,11 +104,11 @@ pub async fn open_host_control_plane_with_store(
     })
 }
 
-/// Result of [`enroll_host`]: the bootstrap half of a host control plane.
-pub struct HostEnrollment {
+/// Result of [`enroll_node`]: the bootstrap half of a host control plane.
+pub struct NodeEnrollment {
     /// Bootstrap config with the database-backed domains overlaid.
     pub config: Config,
-    /// Host identity, cluster id, and core documents.
+    /// Node identity, cluster id, and core documents.
     pub session: ControlPlaneSession,
     /// Plugins enrolled on this pass.
     pub enrolled: Vec<EnrolledPlugin>,
@@ -122,9 +122,9 @@ pub struct HostEnrollment {
 ///
 /// # Errors
 ///
-/// Returns an error when the secret root or host identity cannot be
+/// Returns an error when the secret root or node identity cannot be
 /// established, or enrollment fails as a whole.
-pub async fn enroll_host(config: &Config, store: &LibraryStore) -> Result<HostEnrollment> {
+pub async fn enroll_node(config: &Config, store: &LibraryStore) -> Result<NodeEnrollment> {
     let mut config = config.clone();
     let paths = config.paths().clone();
     let scratch_dir = config.download_cache_dir();
@@ -138,8 +138,8 @@ pub async fn enroll_host(config: &Config, store: &LibraryStore) -> Result<HostEn
     .await
     .map_err(|err| crate::PluginError::message(err.to_string()))?;
     overlay_events(&mut config, &session.events, &session.cluster_id);
-    let enrolled = enroll_local_plugins(store, &config, &session.host.host_id).await?;
-    Ok(HostEnrollment {
+    let enrolled = enroll_local_plugins(store, &config, &session.node.node_id).await?;
+    Ok(NodeEnrollment {
         config,
         session,
         enrolled,
@@ -149,14 +149,14 @@ pub async fn enroll_host(config: &Config, store: &LibraryStore) -> Result<HostEn
 /// Joins present deployment rows with instances and discovered installs.
 async fn present_deployments(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
     enrolled: &[EnrolledPlugin],
 ) -> Result<(Vec<PresentDeployment>, HashMap<String, String>)> {
     let by_key: HashMap<&str, &DiscoveredPlugin> = enrolled
         .iter()
         .map(|one| (one.plugin.plugin_key().canonical(), &one.plugin))
         .collect();
-    let rows = list_present_deployments_for_host(store, host_id)
+    let rows = list_present_deployments_for_node(store, node_id)
         .await
         .map_err(library_err)?;
     let mut present = Vec::with_capacity(rows.len());
@@ -189,10 +189,10 @@ async fn present_deployments(
 }
 
 impl HostControlPlane {
-    /// This host's id.
+    /// This node's id.
     #[must_use]
-    pub fn host_id(&self) -> &str {
-        &self.session.host.host_id
+    pub fn node_id(&self) -> &str {
+        &self.session.node.node_id
     }
 
     /// Present deployments whose plugin is installed here and exports `entrypoint`.
@@ -373,10 +373,10 @@ pub fn allow_credential_login(granted_config: &serde_json::Value) -> bool {
 /// Returns an error when the deployment table cannot be read.
 pub async fn refresh_present(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
     enrolled: &[EnrolledPlugin],
 ) -> Result<(Vec<PresentDeployment>, HashMap<String, String>)> {
-    present_deployments(store, host_id, enrolled).await
+    present_deployments(store, node_id, enrolled).await
 }
 
 /// Maps a library error onto the host error type.

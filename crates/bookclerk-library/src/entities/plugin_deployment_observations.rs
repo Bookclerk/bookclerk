@@ -13,7 +13,7 @@ pub struct Model {
     pub deployment_id: String,
     /// Host that recorded the observation. Matches the deployment target when local.
     #[sea_orm(primary_key, auto_increment = false)]
-    pub host_id: String,
+    pub node_id: String,
     /// Process incarnation that recorded the row.
     pub incarnation: String,
     /// `installed`, `running`, `healthy`, `error`, or `retired`.

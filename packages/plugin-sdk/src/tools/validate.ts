@@ -125,7 +125,7 @@ export type QueuesToml = {
 
 /** One `[[queues.producers]]` row. */
 export type QueueProducerToml = {
-  /** Queue name (`[a-z0-9][a-z0-9._-]*`; `core.` and `host.` are reserved). */
+  /** Queue name (`[a-z0-9][a-z0-9._-]*`; `core.` and `node.` are reserved). */
   queue: string;
   /** Binding name on `env` (`[A-Z][A-Z0-9_]*`); required. */
   binding: string;
@@ -152,7 +152,7 @@ export type QueueConsumerToml = {
 /** Longest queue name. */
 export const MAX_QUEUE_NAME_LEN = 63;
 /** Queue-name prefixes only the host may use. */
-export const RESERVED_QUEUE_PREFIXES = ["core.", "host."] as const;
+export const RESERVED_QUEUE_PREFIXES = ["core.", "node."] as const;
 
 /**
  * True when `name` is a valid queue name: `[a-z0-9][a-z0-9._-]*`, at most

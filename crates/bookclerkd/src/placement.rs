@@ -6,14 +6,14 @@
 //! holder renews it on every pass, so a dead holder's lease expires and the
 //! next daemon to try takes over with a larger fencing token. A pass runs on
 //! a `placement.changed` or `release.changed` wakeup and at least every
-//! [`PLACEMENT_INTERVAL`], which also notices hosts whose daemons stopped
+//! [`PLACEMENT_INTERVAL`], which also notices nodes whose daemons stopped
 //! heartbeating.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    acquire_lease, load_or_create_host_identity, schedule_placements, ScheduleReport,
+    acquire_lease, load_or_create_node_identity, schedule_placements, ScheduleReport,
     SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
 };
 use tracing::{debug, info, warn};
@@ -30,7 +30,7 @@ pub fn spawn_placement_scheduler(state: Arc<AppState>) {
         loop {
             run_placement_pass(&state).await;
             tokio::select! {
-                () = crate::host_queue::placement_wakeup() => {}
+                () = crate::node_queue::placement_wakeup() => {}
                 () = tokio::time::sleep(PLACEMENT_INTERVAL) => {}
             }
         }
@@ -38,18 +38,18 @@ pub fn spawn_placement_scheduler(state: Arc<AppState>) {
 }
 
 /// One pass: take or renew the lease, then schedule. Returns `None` when
-/// another host holds the lease or the pass failed.
+/// another node holds the lease or the pass failed.
 pub async fn run_placement_pass(state: &AppState) -> Option<ScheduleReport> {
     let files_dir = state.config.read().await.paths().files_dir.clone();
-    let host_id = match load_or_create_host_identity(&files_dir) {
-        Ok(identity) => identity.host_id,
+    let node_id = match load_or_create_node_identity(&files_dir) {
+        Ok(identity) => identity.node_id,
         Err(err) => {
-            warn!(error = %err, "host identity unavailable; scheduler idle");
+            warn!(error = %err, "node identity unavailable; scheduler idle");
             return None;
         }
     };
     let library = state.library_snapshot().await;
-    match acquire_lease(&library, SCHEDULER_LEASE, &host_id, SCHEDULER_LEASE_TTL).await {
+    match acquire_lease(&library, SCHEDULER_LEASE, &node_id, SCHEDULER_LEASE_TTL).await {
         Ok(Some(lease)) => debug!(token = lease.token, "holding the scheduler lease"),
         Ok(None) => return None,
         Err(err) => {
@@ -128,11 +128,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let host = session.host.host_id.clone();
+        let node = session.node.node_id.clone();
         // This daemon is live: it heartbeats its detected capacity.
-        let heartbeat = bookclerk_library::control_plane::HostSampler::new(files_path).sample();
+        let heartbeat = bookclerk_library::control_plane::NodeSampler::new(files_path).sample();
         let status =
-            bookclerk_library::control_plane::record_host_heartbeat(&store, &host, &heartbeat)
+            bookclerk_library::control_plane::record_node_heartbeat(&store, &node, &heartbeat)
                 .await
                 .unwrap();
         assert!(status.cpu_millicores >= 1000);
@@ -157,10 +157,10 @@ mod tests {
             config,
         ));
         let app = axum::Router::new()
-            .route("/api/config/hosts", get(crate::config_authority::get_hosts))
+            .route("/api/config/nodes", get(crate::config_authority::get_nodes))
             .route(
-                "/api/config/hosts/{host_id}/labels",
-                put(crate::config_authority::put_host_labels),
+                "/api/config/nodes/{node_id}/labels",
+                put(crate::config_authority::put_node_labels),
             )
             .route(
                 "/api/config/plugin-instances/{id}/placement",
@@ -168,7 +168,7 @@ mod tests {
                     .delete(crate::config_authority::delete_plugin_placement_route),
             )
             .route(
-                "/api/config/plugin-instances/{id}/deployments/{host_id}",
+                "/api/config/plugin-instances/{id}/deployments/{node_id}",
                 put(crate::config_authority::put_plugin_deployment),
             )
             .with_state(Arc::clone(&state));
@@ -176,7 +176,7 @@ mod tests {
         let (status, labelled) = send(
             &app,
             "PUT",
-            &format!("/api/config/hosts/{host}/labels"),
+            &format!("/api/config/nodes/{node}/labels"),
             json!({ "labels": ["nas"] }),
         )
         .await;
@@ -186,17 +186,17 @@ mod tests {
         let (status, _) = send(
             &app,
             "PUT",
-            &format!("/api/config/hosts/{host}/labels"),
+            &format!("/api/config/nodes/{node}/labels"),
             json!({ "labels": ["Bad Label"] }),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        let (status, hosts) = send(&app, "GET", "/api/config/hosts", Value::Null).await;
+        let (status, nodes) = send(&app, "GET", "/api/config/nodes", Value::Null).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(hosts["hosts"][0]["implicit_labels"]
+        assert!(nodes["nodes"][0]["implicit_labels"]
             .as_array()
             .unwrap()
-            .contains(&json!(format!("host={host}"))));
+            .contains(&json!(format!("node={node}"))));
 
         let placement_uri = format!("/api/config/plugin-instances/{}/placement", instance.id);
         let (status, placed) = send(
@@ -226,12 +226,12 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(
-            (rows[0].host_id.as_str(), rows[0].desired),
-            (host.as_str(), DesiredState::Placed)
+            (rows[0].node_id.as_str(), rows[0].desired),
+            (node.as_str(), DesiredState::Placed)
         );
 
         let deployment_uri = format!(
-            "/api/config/plugin-instances/{}/deployments/{host}",
+            "/api/config/plugin-instances/{}/deployments/{node}",
             instance.id
         );
         let (status, refused) =

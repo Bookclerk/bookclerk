@@ -1,7 +1,7 @@
 //! Durable plugin instance identity.
 //!
 //! [`PluginInstanceId`] is minted once. Restart, alias text, entrypoint list,
-//! capability list, and [`HostId`](crate::control_plane::HostIdentity) do not
+//! capability list, and [`NodeId`](crate::control_plane::NodeIdentity) do not
 //! change it. Two instances may name the same canonical plugin key.
 
 use chrono::Utc;

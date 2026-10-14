@@ -7,9 +7,9 @@
 //! hashes are **not** part of the key; they belong on [`ArtifactIdentity`].
 //!
 //! Aliases are unique within **one host plugin namespace** (`$BOOKCLERK_FILES_DIR`),
-//! conceptually `(HostId, alias) → PluginKey`. A future stable `HostId` may
+//! conceptually `(NodeId, alias) → PluginKey`. A future stable `NodeId` may
 //! be persisted locally (for example `$FILES_DIR/host.json`) for shared-database
-//! placement; this crate does not implement HostId, cluster inventory, or
+//! placement; this crate does not implement NodeId, cluster inventory, or
 //! database advisory locks. Two hosts with distinct files dirs may install the
 //! same alias and PluginKey independently.
 //!

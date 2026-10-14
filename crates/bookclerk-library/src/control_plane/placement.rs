@@ -1,25 +1,25 @@
-//! Placement: how many hosts run a plugin instance, and which hosts may.
+//! Placement: how many nodes run a plugin instance, and which nodes may.
 //!
 //! An operator writes intent per instance in `plugin_placements`: a replica
 //! count and label constraints. The scheduler, a singleton that holds the
 //! [`SCHEDULER_LEASE`] cluster lease, turns that intent into
 //! `plugin_deployments` rows (the same rows `plugins enable` writes by
-//! hand), and each host's reconciler converges on its own rows as before.
+//! hand), and each node's reconciler converges on its own rows as before.
 //! An instance with no placement row is managed by hand; the scheduler never
 //! touches it.
 //!
-//! A host is a candidate for an instance when:
+//! A node is a candidate for an instance when:
 //!
-//! - its daemon is live: its `host:<host_id>` queue consumer heartbeated
+//! - its daemon is live: its `node:<node_id>` queue consumer heartbeated
 //!   within the event catalog TTL;
 //! - its labels satisfy every constraint (`name` or `name=value` must be
-//!   present, `!name…` must be absent). Every host also carries the implicit
-//!   labels `host=<host_id>` and `target=<target>`;
+//!   present, `!name…` must be absent). Every node also carries the implicit
+//!   labels `node=<node_id>` and `target=<target>`;
 //! - for a released plugin, the active release has an artifact for the
-//!   host's target.
+//!   node's target.
 //!
 //! The planner keeps replicas where they already run, drops replicas on
-//! hosts that stopped qualifying (a dead host, a removed label), and fills
+//! nodes that stopped qualifying (a dead node, a removed label), and fills
 //! the rest on the least-loaded candidates. Deployment writes are
 //! compare-and-swap, so a scheduler that lost its lease mid-pass can at worst
 //! place one replica too many, which the next pass removes.
@@ -36,12 +36,12 @@ use super::deployments::{
     replace_plugin_deployment, DeploymentReplace, DesiredState, PluginDeployment,
 };
 use super::documents::ConfigActor;
-use super::host_queue::{notify_all_hosts, HostMessage};
-use super::host_status::{GuestReservation, HostStatus};
-use super::identity::{list_hosts, load_host, HostRecord};
+use super::identity::{list_nodes, load_node, NodeRecord};
 use super::instances::{load_plugin_instance, PluginInstanceId};
+use super::node_queue::{notify_all_nodes, NodeMessage};
+use super::node_status::{GuestReservation, NodeStatus};
 use super::releases::load_active_release;
-use crate::entities::{cluster_leases, hosts, plugin_placements};
+use crate::entities::{cluster_leases, nodes, plugin_placements};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
@@ -54,8 +54,8 @@ pub const SCHEDULER_LEASE_TTL: Duration = Duration::from_secs(60);
 /// Largest replica count an operator may ask for.
 pub const MAX_REPLICAS: u32 = 64;
 
-/// Most operator labels one host may carry.
-pub const MAX_HOST_LABELS: usize = 32;
+/// Most operator labels one node may carry.
+pub const MAX_NODE_LABELS: usize = 32;
 
 /// Most constraints one placement may carry.
 pub const MAX_PLACEMENT_CONSTRAINTS: usize = 16;
@@ -63,20 +63,20 @@ pub const MAX_PLACEMENT_CONSTRAINTS: usize = 16;
 /// Longest label or constraint (without its `!`), in bytes.
 const MAX_LABEL_BYTES: usize = 63;
 
-/// Implicit label name every host carries with its own id.
-pub const HOST_LABEL: &str = "host";
+/// Implicit label name every node carries with its own id.
+pub const NODE_LABEL: &str = "node";
 
-/// Implicit label name every host carries with its artifact target.
+/// Implicit label name every node carries with its artifact target.
 pub const TARGET_LABEL: &str = "target";
 
-/// How many hosts should run a placed instance.
+/// How many nodes should run a placed instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Replicas {
-    /// Exactly this many hosts (zero keeps the placement and stops every
+    /// Exactly this many nodes (zero keeps the placement and stops every
     /// replica).
     Count(u32),
-    /// Every host that qualifies and has room; calls then go to the best of
-    /// them. Suits hosts that come and go.
+    /// Every node that qualifies and has room; calls then go to the best of
+    /// them. Suits nodes that come and go.
     All,
 }
 
@@ -158,12 +158,12 @@ impl Replicas {
     }
 }
 
-/// What an operator asks for: how many hosts, and which may qualify.
+/// What an operator asks for: how many nodes, and which may qualify.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PlacementSpec {
-    /// Hosts that should run the instance.
+    /// Nodes that should run the instance.
     pub replicas: Replicas,
-    /// Label constraints every chosen host must satisfy.
+    /// Label constraints every chosen node must satisfy.
     pub constraints: Vec<String>,
 }
 
@@ -233,7 +233,7 @@ fn invalid(detail: &str) -> LibraryError {
     LibraryError::Other(anyhow::anyhow!("invalid configuration: {detail}"))
 }
 
-/// Only an operator writes placement intent and host labels.
+/// Only an operator writes placement intent and node labels.
 fn authorize(actor: &ConfigActor) -> Result<()> {
     match actor {
         ConfigActor::Operator { .. } => Ok(()),
@@ -294,17 +294,17 @@ pub fn validate_label(label: &str) -> Result<()> {
 }
 
 /// Checks an operator label: the grammar of [`validate_label`], and not one
-/// of the implicit names every host already carries.
+/// of the implicit names every node already carries.
 ///
 /// # Errors
 ///
 /// Returns an error for a malformed or reserved label.
-pub fn validate_host_label(label: &str) -> Result<()> {
+pub fn validate_node_label(label: &str) -> Result<()> {
     validate_label(label)?;
     let name = label.split_once('=').map_or(label, |(name, _)| name);
-    if name == HOST_LABEL || name == TARGET_LABEL {
+    if name == NODE_LABEL || name == TARGET_LABEL {
         return Err(invalid(&format!(
-            "label name `{name}` is implicit on every host and cannot be assigned"
+            "label name `{name}` is implicit on every node and cannot be assigned"
         )));
     }
     Ok(())
@@ -319,16 +319,16 @@ pub fn validate_constraint(constraint: &str) -> Result<()> {
     validate_label(constraint.strip_prefix('!').unwrap_or(constraint))
 }
 
-/// A host's operator labels plus `host=<id>` and `target=<target>`.
+/// A node's operator labels plus `node=<id>` and `target=<target>`.
 #[must_use]
-pub fn effective_host_labels(host: &HostRecord) -> BTreeSet<String> {
-    let mut labels: BTreeSet<String> = host.labels.iter().cloned().collect();
+pub fn effective_node_labels(node: &NodeRecord) -> BTreeSet<String> {
+    let mut labels: BTreeSet<String> = node.labels.iter().cloned().collect();
     labels.insert(format!(
-        "{HOST_LABEL}={}",
-        host.host_id.to_ascii_lowercase()
+        "{NODE_LABEL}={}",
+        node.node_id.to_ascii_lowercase()
     ));
-    if !host.target.is_empty() {
-        labels.insert(format!("{TARGET_LABEL}={}", host.target));
+    if !node.target.is_empty() {
+        labels.insert(format!("{TARGET_LABEL}={}", node.target));
     }
     labels
 }
@@ -399,7 +399,7 @@ pub async fn list_plugin_placements(store: &LibraryStore) -> Result<Vec<PluginPl
 /// Writes placement intent for an instance.
 ///
 /// `expected_revision` is `None` (or `Some(0)`) to create a placement and the
-/// current revision to replace one. Every host is woken so the scheduler,
+/// current revision to replace one. Every node is woken so the scheduler,
 /// wherever it runs, applies the change.
 ///
 /// # Errors
@@ -484,9 +484,9 @@ pub async fn put_plugin_placement(
     let stored = load_plugin_placement(store, instance_id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("placement {instance_id}")))?;
-    notify_all_hosts(
+    notify_all_nodes(
         store,
-        HostMessage::PlacementChanged {
+        NodeMessage::PlacementChanged {
             subject: format!("instance:{instance_id}"),
             revision: stored.revision,
         },
@@ -497,7 +497,7 @@ pub async fn put_plugin_placement(
 
 /// Deletes an instance's placement and hands its deployments back to the
 /// operator: each `placed` row becomes `present` and each `unplaced` row
-/// `absent`, so every host keeps doing what it does now. Returns false when
+/// `absent`, so every node keeps doing what it does now. Returns false when
 /// there was no placement.
 ///
 /// # Errors
@@ -531,9 +531,9 @@ pub async fn delete_plugin_placement(
         .await?;
     }
     if res.rows_affected > 0 {
-        notify_all_hosts(
+        notify_all_nodes(
             store,
-            HostMessage::PlacementChanged {
+            NodeMessage::PlacementChanged {
                 subject: format!("instance:{instance_id}"),
                 revision: 0,
             },
@@ -569,61 +569,61 @@ pub async fn ensure_hand_managed(
     Ok(())
 }
 
-/// Replaces a host's operator labels and wakes the scheduler.
+/// Replaces a node's operator labels and wakes the scheduler.
 ///
 /// # Errors
 ///
 /// Returns an error when the actor is not an operator, a label is invalid or
-/// reserved, there are too many labels, or the host is unknown.
-pub async fn set_host_labels(
+/// reserved, there are too many labels, or the node is unknown.
+pub async fn set_node_labels(
     store: &LibraryStore,
     actor: &ConfigActor,
-    host_id: &str,
+    node_id: &str,
     labels: &[String],
-) -> Result<HostRecord> {
+) -> Result<NodeRecord> {
     authorize(actor)?;
     let labels = normalize(labels);
-    if labels.len() > MAX_HOST_LABELS {
-        return Err(invalid(&format!("at most {MAX_HOST_LABELS} host labels")));
+    if labels.len() > MAX_NODE_LABELS {
+        return Err(invalid(&format!("at most {MAX_NODE_LABELS} node labels")));
     }
     for label in &labels {
-        validate_host_label(label)?;
+        validate_node_label(label)?;
     }
     let json =
-        serde_json::to_string(&labels).map_err(|err| invalid(&format!("host labels: {err}")))?;
-    let res = hosts::Entity::update_many()
-        .col_expr(hosts::Column::LabelsJson, Expr::value(json))
-        .filter(hosts::Column::HostId.eq(host_id))
+        serde_json::to_string(&labels).map_err(|err| invalid(&format!("node labels: {err}")))?;
+    let res = nodes::Entity::update_many()
+        .col_expr(nodes::Column::LabelsJson, Expr::value(json))
+        .filter(nodes::Column::NodeId.eq(node_id))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
     if res.rows_affected == 0 {
-        return Err(LibraryError::NotFound(format!("host {host_id}")));
+        return Err(LibraryError::NotFound(format!("node {node_id}")));
     }
-    notify_all_hosts(
+    notify_all_nodes(
         store,
-        HostMessage::PlacementChanged {
-            subject: format!("host:{host_id}"),
+        NodeMessage::PlacementChanged {
+            subject: format!("node:{node_id}"),
             revision: 0,
         },
     )
     .await;
-    load_host(store, host_id).await
+    load_node(store, node_id).await
 }
 
-/// Hosts whose daemon is live: its last heartbeat in `host_status` is
+/// Nodes whose daemon is live: its last heartbeat in `node_status` is
 /// younger than three heartbeat intervals.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn live_host_ids(store: &LibraryStore) -> Result<BTreeSet<String>> {
+pub async fn live_node_ids(store: &LibraryStore) -> Result<BTreeSet<String>> {
     let now_ms = Utc::now().timestamp_millis();
-    Ok(super::host_status::list_host_statuses(store)
+    Ok(super::node_status::list_node_statuses(store)
         .await?
         .into_iter()
         .filter(|status| status.is_live(now_ms))
-        .map(|status| status.host_id)
+        .map(|status| status.node_id)
         .collect())
 }
 
@@ -632,7 +632,7 @@ pub async fn live_host_ids(store: &LibraryStore) -> Result<BTreeSet<String>> {
 pub struct ClusterLease {
     /// Lease name.
     pub name: String,
-    /// Holder (a host id).
+    /// Holder (a node id).
     pub holder: String,
     /// Fencing token; a new holder always gets a larger one.
     pub token: i64,
@@ -747,43 +747,43 @@ pub async fn load_lease(store: &LibraryStore, name: &str) -> Result<Option<Clust
         }))
 }
 
-/// One host as the planner sees it: identity, liveness, and the budget
+/// One node as the planner sees it: identity, liveness, and the budget
 /// headroom its last heartbeat reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostCandidate {
-    /// Host id.
-    pub host_id: String,
-    /// Effective labels ([`effective_host_labels`]).
+pub struct NodeCandidate {
+    /// Node id.
+    pub node_id: String,
+    /// Effective labels ([`effective_node_labels`]).
     pub labels: BTreeSet<String>,
     /// Artifact target; empty when unknown.
     pub target: String,
-    /// True when the host's daemon heartbeated recently.
+    /// True when the node's daemon heartbeated recently.
     pub live: bool,
-    /// False when an operator drained the host.
+    /// False when an operator drained the node.
     pub schedulable: bool,
-    /// CPU still uncommitted under the host's budget, in millicores
+    /// CPU still uncommitted under the node's budget, in millicores
     /// (measured use counts when it exceeds the reservations).
     pub cpu_headroom_millicores: i64,
     /// Memory still uncommitted under the budget and free on the machine;
-    /// empty when the host could not detect its memory.
+    /// empty when the node could not detect its memory.
     pub memory_headroom_bytes: Option<i64>,
     /// Recent online fraction in parts per million.
     pub availability_ppm: i64,
 }
 
-impl HostCandidate {
-    /// A host as of its last heartbeat (`None`: its daemon never ran, so it
+impl NodeCandidate {
+    /// A node as of its last heartbeat (`None`: its daemon never ran, so it
     /// is not live).
     #[must_use]
-    pub fn from_status(host: &HostRecord, status: Option<&HostStatus>, now_ms: i64) -> Self {
+    pub fn from_status(node: &NodeRecord, status: Option<&NodeStatus>, now_ms: i64) -> Self {
         Self {
-            host_id: host.host_id.clone(),
-            labels: effective_host_labels(host),
-            target: host.target.clone(),
+            node_id: node.node_id.clone(),
+            labels: effective_node_labels(node),
+            target: node.target.clone(),
             live: status.is_some_and(|s| s.is_live(now_ms)),
             schedulable: status.is_none_or(|s| s.schedulable),
-            cpu_headroom_millicores: status.map_or(0, HostStatus::cpu_headroom_millicores),
-            memory_headroom_bytes: status.and_then(HostStatus::memory_headroom_bytes),
+            cpu_headroom_millicores: status.map_or(0, NodeStatus::cpu_headroom_millicores),
+            memory_headroom_bytes: status.and_then(NodeStatus::memory_headroom_bytes),
             availability_ppm: status.map_or(0, |s| s.availability_ppm),
         }
     }
@@ -796,7 +796,7 @@ impl HostCandidate {
             .is_none_or(|headroom| headroom >= demand.memory_bytes)
     }
 
-    /// True when the host has committed more memory than its budget, or
+    /// True when the node has committed more memory than its budget, or
     /// more than the machine has free.
     #[must_use]
     pub fn over_budget(&self) -> bool {
@@ -804,9 +804,9 @@ impl HostCandidate {
             .is_some_and(|headroom| headroom < 0)
     }
 
-    /// How many more guests like `demand` the host has room for, in
-    /// thousandths, weighted by availability (an always-on host counts in
-    /// full, a host that is never on counts half). Larger is better.
+    /// How many more guests like `demand` the node has room for, in
+    /// thousandths, weighted by availability (an always-on node counts in
+    /// full, a node that is never on counts half). Larger is better.
     #[must_use]
     pub fn score(&self, demand: GuestReservation) -> i64 {
         let cpu_room =
@@ -820,7 +820,7 @@ impl HostCandidate {
         room.saturating_mul(500_000 + self.availability_ppm.clamp(0, 1_000_000) / 2) / 1_000_000
     }
 
-    /// Commits `demand` on this host for the rest of a pass.
+    /// Commits `demand` on this node for the rest of a pass.
     pub fn take(&mut self, demand: GuestReservation) {
         self.cpu_headroom_millicores = self
             .cpu_headroom_millicores
@@ -830,7 +830,7 @@ impl HostCandidate {
             .map(|m| m.saturating_sub(demand.memory_bytes));
     }
 
-    /// Releases `demand` on this host for the rest of a pass.
+    /// Releases `demand` on this node for the rest of a pass.
     pub fn give(&mut self, demand: GuestReservation) {
         self.cpu_headroom_millicores = self
             .cpu_headroom_millicores
@@ -844,9 +844,9 @@ impl HostCandidate {
 /// What the planner decided for one instance.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PlacementPlan {
-    /// Hosts that should gain a replica.
+    /// Nodes that should gain a replica.
     pub add: Vec<String>,
-    /// Hosts whose replica should be removed.
+    /// Nodes whose replica should be removed.
     pub remove: Vec<String>,
     /// Replicas placed after the plan applies.
     pub placed: u32,
@@ -858,78 +858,78 @@ pub struct PlacementPlan {
 ///
 /// `release_targets` is the active release's artifact targets (`None` for a
 /// plugin with no release), `demand` what one guest of the instance needs,
-/// and `present` the hosts that already run it.
+/// and `present` the nodes that already run it.
 ///
-/// A host qualifies when it is live, schedulable, satisfies the
+/// A node qualifies when it is live, schedulable, satisfies the
 /// constraints, and has an artifact for its target. Replicas stay where
-/// they run while their host qualifies. New replicas go to the qualifying
-/// hosts with the most room for this demand, and only to hosts where its
-/// memory fits the budget. A scale-down drops the replicas on the hosts
-/// with the least room first. When a replica's host is over its memory
-/// budget and another qualifying host has room, the replica moves there
+/// they run while their node qualifies. New replicas go to the qualifying
+/// nodes with the most room for this demand, and only to nodes where its
+/// memory fits the budget. A scale-down drops the replicas on the nodes
+/// with the least room first. When a replica's node is over its memory
+/// budget and another qualifying node has room, the replica moves there
 /// (one move per pass, so the cluster does not thrash).
 #[must_use]
 pub fn plan_placement(
     spec: &PlacementSpec,
     release_targets: Option<&BTreeSet<String>>,
     demand: GuestReservation,
-    hosts: &[HostCandidate],
+    nodes: &[NodeCandidate],
     present: &BTreeSet<String>,
 ) -> PlacementPlan {
     // Same rule as `PluginRelease::artifact_for`: an exact target, or a
-    // target-independent (`any`) artifact. A host that has not reported its
+    // target-independent (`any`) artifact. A node that has not reported its
     // target is not excluded; its reconciler reports a missing artifact.
-    let target_ok = |host: &HostCandidate| match release_targets {
+    let target_ok = |node: &NodeCandidate| match release_targets {
         Some(targets) => {
-            host.target.is_empty() || targets.contains(&host.target) || targets.contains("any")
+            node.target.is_empty() || targets.contains(&node.target) || targets.contains("any")
         }
         None => true,
     };
-    let qualifies = |host: &HostCandidate| {
-        host.live
-            && host.schedulable
-            && labels_satisfy(&host.labels, &spec.constraints)
-            && target_ok(host)
+    let qualifies = |node: &NodeCandidate| {
+        node.live
+            && node.schedulable
+            && labels_satisfy(&node.labels, &spec.constraints)
+            && target_ok(node)
     };
-    let by_id: BTreeMap<&str, &HostCandidate> =
-        hosts.iter().map(|h| (h.host_id.as_str(), h)).collect();
+    let by_id: BTreeMap<&str, &NodeCandidate> =
+        nodes.iter().map(|h| (h.node_id.as_str(), h)).collect();
     let mut plan = PlacementPlan::default();
 
-    // Replicas stay while their host qualifies.
-    let mut keep: Vec<&HostCandidate> = Vec::new();
-    for host_id in present {
-        match by_id.get(host_id.as_str()) {
-            Some(host) if qualifies(host) => keep.push(host),
-            _ => plan.remove.push(host_id.clone()),
+    // Replicas stay while their node qualifies.
+    let mut keep: Vec<&NodeCandidate> = Vec::new();
+    for node_id in present {
+        match by_id.get(node_id.as_str()) {
+            Some(node) if qualifies(node) => keep.push(node),
+            _ => plan.remove.push(node_id.clone()),
         }
     }
     // Most room first: the end of the list is what a scale-down drops.
     keep.sort_by(|a, b| {
         b.score(demand)
             .cmp(&a.score(demand))
-            .then_with(|| a.host_id.cmp(&b.host_id))
+            .then_with(|| a.node_id.cmp(&b.node_id))
     });
-    let mut candidates: Vec<&HostCandidate> = hosts
+    let mut candidates: Vec<&NodeCandidate> = nodes
         .iter()
-        .filter(|h| !present.contains(&h.host_id) && qualifies(h) && h.fits(demand))
+        .filter(|h| !present.contains(&h.node_id) && qualifies(h) && h.fits(demand))
         .collect();
     candidates.sort_by(|a, b| {
         b.score(demand)
             .cmp(&a.score(demand))
-            .then_with(|| a.host_id.cmp(&b.host_id))
+            .then_with(|| a.node_id.cmp(&b.node_id))
     });
 
-    let qualifying = hosts.iter().filter(|h| qualifies(h)).count();
-    let lacking_room = hosts
+    let qualifying = nodes.iter().filter(|h| qualifies(h)).count();
+    let lacking_room = nodes
         .iter()
-        .filter(|h| !present.contains(&h.host_id) && qualifies(h) && !h.fits(demand))
+        .filter(|h| !present.contains(&h.node_id) && qualifies(h) && !h.fits(demand))
         .count();
     match spec.replicas {
         Replicas::Count(n) => {
             let want = usize::try_from(n).unwrap_or(usize::MAX);
             if keep.len() > want {
-                for host in keep.split_off(want) {
-                    plan.remove.push(host.host_id.clone());
+                for node in keep.split_off(want) {
+                    plan.remove.push(node.node_id.clone());
                 }
             }
             let need = want.saturating_sub(keep.len());
@@ -937,17 +937,17 @@ pub fn plan_placement(
             plan.add = fresh
                 .by_ref()
                 .take(need)
-                .map(|h| h.host_id.clone())
+                .map(|h| h.node_id.clone())
                 .collect();
-            // Rebalance: move one replica off an over-budget host when a
-            // host with room is left over.
+            // Rebalance: move one replica off an over-budget node when a
+            // node with room is left over.
             if plan.add.len() == need {
                 if let (Some(pos), Some(better)) =
                     (keep.iter().rposition(|h| h.over_budget()), fresh.next())
                 {
                     let from = keep.remove(pos);
-                    plan.remove.push(from.host_id.clone());
-                    plan.add.push(better.host_id.clone());
+                    plan.remove.push(from.node_id.clone());
+                    plan.add.push(better.node_id.clone());
                 }
             }
             let placed = keep.len() + plan.add.len();
@@ -963,13 +963,13 @@ pub fn plan_placement(
             }
         }
         Replicas::All => {
-            plan.add = candidates.iter().map(|h| h.host_id.clone()).collect();
-            // Every qualifying host runs it; shed one replica from an
-            // over-budget host while another host still runs it.
+            plan.add = candidates.iter().map(|h| h.node_id.clone()).collect();
+            // Every qualifying node runs it; shed one replica from an
+            // over-budget node while another node still runs it.
             if keep.len() + plan.add.len() > 1 {
                 if let Some(pos) = keep.iter().rposition(|h| h.over_budget()) {
                     let from = keep.remove(pos);
-                    plan.remove.push(from.host_id.clone());
+                    plan.remove.push(from.node_id.clone());
                 }
             }
             let placed = keep.len() + plan.add.len();
@@ -990,7 +990,7 @@ pub fn plan_placement(
     plan
 }
 
-/// Why a placement is short: how many hosts qualify and how many lack room.
+/// Why a placement is short: how many nodes qualify and how many lack room.
 fn shortfall(
     head: &str,
     qualifying: usize,
@@ -1006,7 +1006,7 @@ fn shortfall(
             spec.constraints.join(", ")
         )
     };
-    let mut text = format!("{head}: {qualifying} host(s) {rule}");
+    let mut text = format!("{head}: {qualifying} node(s) {rule}");
     if lacking_room > 0 {
         text.push_str(&format!(
             "; {lacking_room} lack memory budget for {} MiB",
@@ -1017,14 +1017,14 @@ fn shortfall(
 }
 
 /// What one more guest of a placed instance needs: the largest ceiling any
-/// host recorded for it, else its release grant's memory and CPU, else the
+/// node recorded for it, else its release grant's memory and CPU, else the
 /// grant defaults.
 async fn placement_demand(
     store: &LibraryStore,
     instance_id: &PluginInstanceId,
     release: Option<&super::releases::PluginRelease>,
 ) -> Result<GuestReservation> {
-    if let Some(observed) = super::host_status::instance_demand(store, instance_id).await? {
+    if let Some(observed) = super::node_status::instance_demand(store, instance_id).await? {
         return Ok(observed);
     }
     let mut demand = GuestReservation::default_guest();
@@ -1058,13 +1058,13 @@ pub struct ScheduleReport {
     pub conflicts: usize,
 }
 
-/// Sets `host_id`'s deployment of `instance_id` to `placed` (`true`) or
+/// Sets `node_id`'s deployment of `instance_id` to `placed` (`true`) or
 /// `unplaced`, creating the row when missing. Returns false on a
 /// compare-and-swap loss.
 async fn write_deployment(
     store: &LibraryStore,
     instance_id: &PluginInstanceId,
-    host_id: &str,
+    node_id: &str,
     existing: Option<&PluginDeployment>,
     placed: bool,
 ) -> Result<bool> {
@@ -1074,7 +1074,7 @@ async fn write_deployment(
         Some(row) => row.clone(),
         // `ensure` returns a row a concurrent writer created first; that row
         // may carry another state, so fall through to replace it.
-        None => ensure_plugin_deployment(store, &actor, instance_id, host_id, desired).await?,
+        None => ensure_plugin_deployment(store, &actor, instance_id, node_id, desired).await?,
     };
     if row.desired == desired {
         return Ok(true);
@@ -1094,12 +1094,12 @@ async fn write_deployment(
     ))
 }
 
-/// One scheduler pass: plans every placement against the hosts' last
+/// One scheduler pass: plans every placement against the nodes' last
 /// heartbeats and writes the deployments the plans call for. Call it only
 /// while holding the [`SCHEDULER_LEASE`].
 ///
 /// Headroom is tracked across the pass: a replica placed for one instance
-/// is committed against its host before the next instance is planned.
+/// is committed against its node before the next instance is planned.
 ///
 /// # Errors
 ///
@@ -1114,18 +1114,18 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         return Ok(report);
     }
     let now_ms = Utc::now().timestamp_millis();
-    let statuses: BTreeMap<String, HostStatus> = super::host_status::list_host_statuses(store)
+    let statuses: BTreeMap<String, NodeStatus> = super::node_status::list_node_statuses(store)
         .await?
         .into_iter()
-        .map(|status| (status.host_id.clone(), status))
+        .map(|status| (status.node_id.clone(), status))
         .collect();
-    let mut candidates: BTreeMap<String, HostCandidate> = list_hosts(store)
+    let mut candidates: BTreeMap<String, NodeCandidate> = list_nodes(store)
         .await?
         .iter()
-        .map(|host| {
+        .map(|node| {
             (
-                host.host_id.clone(),
-                HostCandidate::from_status(host, statuses.get(&host.host_id), now_ms),
+                node.node_id.clone(),
+                NodeCandidate::from_status(node, statuses.get(&node.node_id), now_ms),
             )
         })
         .collect();
@@ -1154,33 +1154,33 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         let present: BTreeSet<String> = rows
             .iter()
             .filter(|d| d.desired.runs())
-            .map(|d| d.host_id.clone())
+            .map(|d| d.node_id.clone())
             .collect();
-        let hosts: Vec<HostCandidate> = candidates.values().cloned().collect();
+        let nodes: Vec<NodeCandidate> = candidates.values().cloned().collect();
         let plan = plan_placement(
             &placement.spec,
             release_targets.as_ref(),
             demand,
-            &hosts,
+            &nodes,
             &present,
         );
-        for host_id in &plan.remove {
-            let row = rows.iter().find(|d| &d.host_id == host_id);
-            if write_deployment(store, instance_id, host_id, row, false).await? {
+        for node_id in &plan.remove {
+            let row = rows.iter().find(|d| &d.node_id == node_id);
+            if write_deployment(store, instance_id, node_id, row, false).await? {
                 report.removed += 1;
-                if let Some(host) = candidates.get_mut(host_id) {
-                    host.give(demand);
+                if let Some(node) = candidates.get_mut(node_id) {
+                    node.give(demand);
                 }
             } else {
                 report.conflicts += 1;
             }
         }
-        for host_id in &plan.add {
-            let row = rows.iter().find(|d| &d.host_id == host_id);
-            if write_deployment(store, instance_id, host_id, row, true).await? {
+        for node_id in &plan.add {
+            let row = rows.iter().find(|d| &d.node_id == node_id);
+            if write_deployment(store, instance_id, node_id, row, true).await? {
                 report.added += 1;
-                if let Some(host) = candidates.get_mut(host_id) {
-                    host.take(demand);
+                if let Some(node) = candidates.get_mut(node_id) {
+                    node.take(demand);
                 }
             } else {
                 report.conflicts += 1;
@@ -1190,15 +1190,15 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         // rewrite kept rows into the scheduler's own states.
         for row in &rows {
             if row.desired.is_scheduled()
-                || plan.add.contains(&row.host_id)
-                || plan.remove.contains(&row.host_id)
+                || plan.add.contains(&row.node_id)
+                || plan.remove.contains(&row.node_id)
             {
                 continue;
             }
             if write_deployment(
                 store,
                 instance_id,
-                &row.host_id,
+                &row.node_id,
                 Some(row),
                 row.desired.runs(),
             )
@@ -1234,13 +1234,13 @@ mod tests {
 
     const GIB: i64 = 1 << 30;
 
-    /// A live, schedulable host with `cores` of CPU headroom and `mem_gib`
+    /// A live, schedulable node with `cores` of CPU headroom and `mem_gib`
     /// of memory headroom.
-    fn host(id: &str, labels: &[&str], cores: i64, mem_gib: i64) -> HostCandidate {
+    fn node(id: &str, labels: &[&str], cores: i64, mem_gib: i64) -> NodeCandidate {
         let mut set: BTreeSet<String> = labels.iter().map(|l| (*l).to_string()).collect();
-        set.insert(format!("host={id}"));
-        HostCandidate {
-            host_id: id.into(),
+        set.insert(format!("node={id}"));
+        NodeCandidate {
+            node_id: id.into(),
             labels: set,
             target: "linux-x64-gnu".into(),
             live: true,
@@ -1270,12 +1270,12 @@ mod tests {
     }
 
     #[test]
-    fn new_replicas_go_to_the_hosts_with_the_most_room() {
+    fn new_replicas_go_to_the_nodes_with_the_most_room() {
         // A small always-on VPS and a big desktop: the desktop has room for
         // far more guests, so it wins; the VPS is next.
-        let vps = host("vps", &["nas"], 1, 1);
-        let desktop = host("desk", &["nas"], 12, 24);
-        let other = host("other", &[], 16, 64);
+        let vps = node("vps", &["nas"], 1, 1);
+        let desktop = node("desk", &["nas"], 12, 24);
+        let other = node("other", &[], 16, 64);
         let plan = plan_placement(
             &spec(Replicas::Count(2), &["nas"]),
             None,
@@ -1290,10 +1290,10 @@ mod tests {
 
     #[test]
     fn availability_discounts_room_and_memory_budget_is_a_hard_limit() {
-        let mut flaky = host("flaky", &[], 8, 16);
+        let mut flaky = node("flaky", &[], 8, 16);
         flaky.availability_ppm = 0; // never on: room counts half
-        let steady = host("steady", &[], 5, 16);
-        let full = host("full", &[], 32, 0); // no memory budget left
+        let steady = node("steady", &[], 5, 16);
+        let full = node("full", &[], 32, 0); // no memory budget left
         let plan = plan_placement(
             &spec(Replicas::Count(1), &[]),
             None,
@@ -1307,7 +1307,7 @@ mod tests {
             &spec(Replicas::Count(3), &[]),
             None,
             demand(),
-            &[host("full", &[], 32, 0)],
+            &[node("full", &[], 32, 0)],
             &BTreeSet::new(),
         );
         assert!(plan.add.is_empty());
@@ -1319,13 +1319,13 @@ mod tests {
     }
 
     #[test]
-    fn dead_drained_or_unlabelled_hosts_lose_their_replicas() {
-        let mut dead = host("dead", &["nas"], 4, 8);
+    fn dead_drained_or_unlabelled_nodes_lose_their_replicas() {
+        let mut dead = node("dead", &["nas"], 4, 8);
         dead.live = false;
-        let mut drained = host("drained", &["nas"], 4, 8);
+        let mut drained = node("drained", &["nas"], 4, 8);
         drained.schedulable = false;
-        let unlabelled = host("plain", &[], 4, 8);
-        let fresh = host("fresh", &["nas"], 4, 8);
+        let unlabelled = node("plain", &[], 4, 8);
+        let fresh = node("fresh", &["nas"], 4, 8);
         let plan = plan_placement(
             &spec(Replicas::Count(1), &["nas"]),
             None,
@@ -1339,8 +1339,8 @@ mod tests {
 
     #[test]
     fn scale_down_drops_the_least_room_and_an_over_budget_replica_moves() {
-        let roomy = host("roomy", &[], 8, 16);
-        let tight = host("tight", &[], 1, 1);
+        let roomy = node("roomy", &[], 8, 16);
+        let tight = node("tight", &[], 1, 1);
         let plan = plan_placement(
             &spec(Replicas::Count(1), &[]),
             None,
@@ -1351,7 +1351,7 @@ mod tests {
         assert_eq!(plan.remove, vec!["tight"]);
         assert!(plan.add.is_empty());
 
-        let mut overloaded = host("over", &[], 0, 0);
+        let mut overloaded = node("over", &[], 0, 0);
         overloaded.memory_headroom_bytes = Some(-GIB);
         let plan = plan_placement(
             &spec(Replicas::Count(1), &[]),
@@ -1367,12 +1367,12 @@ mod tests {
 
     #[test]
     fn all_runs_everywhere_with_room_and_targets_still_filter() {
-        let mut mac = host("mac", &[], 8, 16);
+        let mut mac = node("mac", &[], 8, 16);
         mac.target = "macos-arm64".into();
-        let mut unknown = host("old", &[], 2, 2);
+        let mut unknown = node("old", &[], 2, 2);
         unknown.target = String::new();
-        let x86 = host("x86", &[], 4, 8);
-        let tiny = host("tiny", &[], 4, 0);
+        let x86 = node("x86", &[], 4, 8);
+        let tiny = node("tiny", &[], 4, 0);
         let targets = set(&["linux-x64-gnu"]);
         let plan = plan_placement(
             &spec(Replicas::All, &[]),
@@ -1394,10 +1394,10 @@ mod tests {
         );
         assert_eq!(any.add, vec!["mac"]);
         let pinned = plan_placement(
-            &spec(Replicas::Count(1), &["host=x86", "!slow"]),
+            &spec(Replicas::Count(1), &["node=x86", "!slow"]),
             None,
             demand(),
-            &[host("x86", &[], 1, 1), host("big", &[], 32, 64)],
+            &[node("x86", &[], 1, 1), node("big", &[], 32, 64)],
             &BTreeSet::new(),
         );
         assert_eq!(pinned.add, vec!["x86"]);
@@ -1427,7 +1427,7 @@ mod tests {
     fn label_grammar() {
         for ok in ["nas", "disk=ssd", "zone=eu-west/1", "a.b_c-d"] {
             validate_label(ok).unwrap();
-            validate_host_label(ok).unwrap();
+            validate_node_label(ok).unwrap();
             validate_constraint(&format!("!{ok}")).unwrap();
         }
         for bad in [
@@ -1442,9 +1442,9 @@ mod tests {
         ] {
             assert!(validate_label(bad).is_err(), "{bad}");
         }
-        assert!(validate_host_label("host=abc").is_err());
-        assert!(validate_host_label("target").is_err());
-        validate_constraint("host=abc").unwrap();
+        assert!(validate_node_label("node=abc").is_err());
+        assert!(validate_node_label("target").is_err());
+        validate_constraint("node=abc").unwrap();
         assert!(spec(Replicas::Count(MAX_REPLICAS + 1), &[])
             .normalized()
             .is_err());

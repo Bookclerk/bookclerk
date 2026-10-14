@@ -6923,7 +6923,7 @@ async fn terminal_jobs_drop_scan_inventory_and_pending_retries_keep_it() {
 }
 
 #[tokio::test]
-async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_hosts() {
+async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_nodes() {
     let store = test_store().await;
     let id = expect_created(
         persist_outbox_event(

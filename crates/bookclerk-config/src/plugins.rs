@@ -125,7 +125,7 @@ impl PluginsJailConfig {
 
 /// Logical CPUs visible to this process (at least 1).
 #[must_use]
-pub fn host_logical_cpus() -> u32 {
+pub fn node_logical_cpus() -> u32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(1)
@@ -135,7 +135,7 @@ pub fn host_logical_cpus() -> u32 {
 /// Host CPU rate ceiling in one-core percent units (`logical_cpus × 100`).
 #[must_use]
 pub fn host_cpu_rate_max() -> u32 {
-    host_logical_cpus().saturating_mul(100)
+    node_logical_cpus().saturating_mul(100)
 }
 
 impl PluginsConfig {

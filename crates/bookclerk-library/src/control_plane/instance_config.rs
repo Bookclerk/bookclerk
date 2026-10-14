@@ -4,8 +4,8 @@
 //! only the operator's overrides and secret ref names; the plugin's pinned
 //! `[[settings]]` schema (see [`super::schemas`]) supplies types, enum values,
 //! and defaults. Validation takes that schema and nothing else: no plugin
-//! family, entrypoint, alias, or host id, and no per-plugin allowlist in the
-//! host.
+//! family, entrypoint, alias, or node id, and no per-plugin allowlist in the
+//! node.
 
 use std::collections::BTreeMap;
 
@@ -359,7 +359,7 @@ pub struct PrunedInstanceConfig {
 /// rather than staying invalid. A document that already fits is not
 /// rewritten; defaults for new keys are not written (`CONFIG` resolution
 /// applies them at spawn). One instance's failure (a compare-and-swap
-/// conflict because another host wrote the document meanwhile, or an
+/// conflict because another node wrote the document meanwhile, or an
 /// unreadable row) is logged and skipped so the others are still handled.
 ///
 /// # Errors

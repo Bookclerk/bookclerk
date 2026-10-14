@@ -155,7 +155,7 @@ struct World {
     files: PathBuf,
     store: LibraryStore,
     config: Config,
-    host_id: String,
+    node_id: String,
     key: String,
     archive: PathBuf,
     manifest: bookclerk_plugin_catalog::BookclerkPackageManifest,
@@ -317,7 +317,7 @@ async fn open_world(secrets: bool) -> World {
         &store,
         &actor,
         &instance.id,
-        &session.host.host_id,
+        &session.node.node_id,
         DesiredState::Present,
     )
     .await
@@ -327,7 +327,7 @@ async fn open_world(secrets: bool) -> World {
         files,
         store,
         config,
-        host_id: session.host.host_id,
+        node_id: session.node.node_id,
         key,
         archive,
         manifest,
@@ -373,14 +373,14 @@ fn secret_value(spawn: &DeploymentSpawn) -> String {
 }
 
 async fn observation(world: &World) -> bookclerk_library::control_plane::DeploymentObservation {
-    load_observation(&world.store, &world.deployment_id, &world.host_id)
+    load_observation(&world.store, &world.deployment_id, &world.node_id)
         .await
         .expect("observation read")
         .expect("observation row")
 }
 
 #[tokio::test]
-async fn foreign_host_deployment_does_not_install_or_observe() {
+async fn foreign_node_deployment_does_not_install_or_observe() {
     let _guard = TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let foreign = "foreign-host-not-local";
@@ -397,7 +397,7 @@ async fn foreign_host_deployment_does_not_install_or_observe() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &AuthorizedLocalPackages::default(),
         &probe,
     )
@@ -412,7 +412,7 @@ async fn foreign_host_deployment_does_not_install_or_observe() {
         "this process must not upsert the other host's observation"
     );
     assert!(
-        load_observation(&world.store, &foreign_row.deployment_id, &world.host_id)
+        load_observation(&world.store, &foreign_row.deployment_id, &world.node_id)
             .await
             .expect("read")
             .is_none()
@@ -427,7 +427,7 @@ async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -480,7 +480,7 @@ async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
     reconcile_local_deployments(
         &failed.store,
         &failed.config,
-        &failed.host_id,
+        &failed.node_id,
         &packages(&failed),
         &probe,
     )
@@ -537,7 +537,7 @@ async fn publish_version(world: &World, version: &str, activate: crate::Activate
         &world.store,
         &ConfigActor::Operator { id: "cli".into() },
         &world.files,
-        &world.host_id,
+        &world.node_id,
         crate::ReleaseRequest {
             plugin_key: world.key.clone(),
             package: package_manifest("fxdep"),
@@ -563,7 +563,7 @@ async fn moving_the_release_pointer_respawns_from_the_new_digest() {
         reconcile_local_deployments(
             &world.store,
             &world.config,
-            &world.host_id,
+            &world.node_id,
             &packages(&world),
             &probe,
         )
@@ -604,7 +604,7 @@ async fn moving_the_release_pointer_respawns_from_the_new_digest() {
         &ConfigActor::Operator { id: "cli".into() },
         &world.key,
         "0.1.0",
-        &world.host_id,
+        &world.node_id,
     )
     .await
     .expect("rollback");
@@ -615,7 +615,7 @@ async fn moving_the_release_pointer_respawns_from_the_new_digest() {
 }
 
 #[tokio::test]
-async fn a_release_published_on_one_host_is_materialized_and_spawned_on_another() {
+async fn a_release_published_on_one_node_is_materialized_and_spawned_on_another() {
     let _guard = TEST_LOCK.lock().await;
     // Host A publishes the operator package as a release and runs it.
     let world = open_world(false).await;
@@ -623,7 +623,7 @@ async fn a_release_published_on_one_host_is_materialized_and_spawned_on_another(
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe_a,
     )
@@ -660,12 +660,12 @@ async fn a_release_published_on_one_host_is_materialized_and_spawned_on_another(
     )
     .await
     .expect("bootstrap b");
-    assert_ne!(session_b.host.host_id, world.host_id);
+    assert_ne!(session_b.node.node_id, world.node_id);
     let deployment_b = ensure_plugin_deployment(
         &store_b,
         &ConfigActor::Operator { id: "cli".into() },
         &world.instance_id,
-        &session_b.host.host_id,
+        &session_b.node.node_id,
         DesiredState::Present,
     )
     .await
@@ -674,7 +674,7 @@ async fn a_release_published_on_one_host_is_materialized_and_spawned_on_another(
     reconcile_local_deployments(
         &store_b,
         &config_b,
-        &session_b.host.host_id,
+        &session_b.node.node_id,
         &AuthorizedLocalPackages::default(),
         &probe_b,
     )
@@ -696,7 +696,7 @@ async fn a_release_published_on_one_host_is_materialized_and_spawned_on_another(
     let obs = load_observation(
         &store_b,
         &deployment_b.deployment_id,
-        &session_b.host.host_id,
+        &session_b.node.node_id,
     )
     .await
     .unwrap()
@@ -716,7 +716,7 @@ async fn absent_retires_running_guest_and_present_brings_it_back() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -748,7 +748,7 @@ async fn absent_retires_running_guest_and_present_brings_it_back() {
     let (absent, discover_calls) = with_discover_count(reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &AuthorizedLocalPackages::default(),
         &probe,
     ))
@@ -769,7 +769,7 @@ async fn absent_retires_running_guest_and_present_brings_it_back() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &AuthorizedLocalPackages::default(),
         &probe,
     )
@@ -798,7 +798,7 @@ async fn absent_retires_running_guest_and_present_brings_it_back() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -816,7 +816,7 @@ async fn deleted_deployment_prunes_the_tracked_guest() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -841,7 +841,7 @@ async fn deleted_deployment_prunes_the_tracked_guest() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &AuthorizedLocalPackages::default(),
         &probe,
     )
@@ -861,7 +861,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -870,7 +870,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
     let (idle, discover_calls) = with_discover_count(reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     ))
@@ -908,7 +908,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
             &world.store,
             &actor,
             &instance.id,
-            &world.host_id,
+            &world.node_id,
             DesiredState::Present,
         )
         .await
@@ -928,7 +928,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
     let (two, discover_calls) = with_discover_count(reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &both,
         &fresh,
     ))
@@ -957,7 +957,7 @@ async fn ledger_hit_skips_install_and_still_reaches_healthy() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -983,7 +983,7 @@ async fn newer_config_revision_respawns_with_the_new_value() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages,
         &probe,
     )
@@ -1012,7 +1012,7 @@ async fn newer_config_revision_respawns_with_the_new_value() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages,
         &probe,
     )
@@ -1026,7 +1026,7 @@ async fn newer_config_revision_respawns_with_the_new_value() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages,
         &probe,
     )
@@ -1082,7 +1082,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -1120,7 +1120,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
     reconcile_local_deployments(
         &dangling.store,
         &dangling.config,
-        &dangling.host_id,
+        &dangling.node_id,
         &packages(&dangling),
         &probe,
     )
@@ -1399,7 +1399,7 @@ async fn live_two_instances_same_key_route_to_the_default() {
         &store,
         &actor,
         &first.id,
-        &session.host.host_id,
+        &session.node.node_id,
         DesiredState::Present,
     )
     .await
@@ -1408,7 +1408,7 @@ async fn live_two_instances_same_key_route_to_the_default() {
         &store,
         &actor,
         &second.id,
-        &session.host.host_id,
+        &session.node.node_id,
         DesiredState::Present,
     )
     .await
@@ -1417,14 +1417,14 @@ async fn live_two_instances_same_key_route_to_the_default() {
     reconcile_local_deployments(
         &store,
         &config,
-        &session.host.host_id,
+        &session.node.node_id,
         &AuthorizedLocalPackages::default(),
         &runtime,
     )
     .await
     .unwrap();
     for deployment in [&deploy_a, &deploy_b] {
-        let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+        let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
             .await
             .unwrap()
             .unwrap();
@@ -1530,7 +1530,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         &store,
         &actor,
         &instance.id,
-        &session.host.host_id,
+        &session.node.node_id,
         DesiredState::Present,
     )
     .await
@@ -1539,7 +1539,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
     reconcile_local_deployments(
         &store,
         &config,
-        &session.host.host_id,
+        &session.node.node_id,
         &AuthorizedLocalPackages::default(),
         &runtime,
     )
@@ -1561,7 +1561,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
     reconcile_local_deployments(
         &store,
         &config,
-        &session.host.host_id,
+        &session.node.node_id,
         &AuthorizedLocalPackages::default(),
         &runtime,
     )
@@ -1572,7 +1572,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         .expect("replacement pid");
     assert_ne!(first_pid, second_pid);
     assert!(DeploymentRuntime::guest_still_running(&runtime, instance.id.as_str()).await);
-    let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+    let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
         .await
         .unwrap()
         .unwrap();
@@ -1589,7 +1589,7 @@ async fn broken_guest_health_is_an_error_observation_and_keeps_the_release() {
     reconcile_local_deployments(
         &world.store,
         &config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &runtime,
     )
@@ -1678,7 +1678,7 @@ async fn a_host_local_tree_older_than_the_pinned_schema_is_retired_and_not_spawn
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -1695,7 +1695,7 @@ async fn a_host_local_tree_older_than_the_pinned_schema_is_retired_and_not_spawn
             manifest_id: "fxdep",
             package_version: "0.9.0",
             schema: &fixture_schema(),
-            host_id: "host-b",
+            node_id: "host-b",
         },
     )
     .await
@@ -1708,7 +1708,7 @@ async fn a_host_local_tree_older_than_the_pinned_schema_is_retired_and_not_spawn
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -1729,7 +1729,7 @@ async fn a_host_local_tree_older_than_the_pinned_schema_is_retired_and_not_spawn
     assert!(
         observed
             .detail
-            .contains("is older than 0.9.0 pinned by host host-b; not spawned"),
+            .contains("is older than 0.9.0 pinned by node host-b; not spawned"),
         "{}",
         observed.detail
     );
@@ -1762,7 +1762,7 @@ async fn an_operator_package_older_than_the_pin_is_not_activated() {
             manifest_id: "fxdep",
             package_version: "0.9.0",
             schema: &fixture_schema(),
-            host_id: "host-b",
+            node_id: "host-b",
         },
     )
     .await
@@ -1771,7 +1771,7 @@ async fn an_operator_package_older_than_the_pin_is_not_activated() {
     reconcile_local_deployments(
         &world.store,
         &world.config,
-        &world.host_id,
+        &world.node_id,
         &packages(&world),
         &probe,
     )
@@ -1786,7 +1786,7 @@ async fn an_operator_package_older_than_the_pin_is_not_activated() {
     assert_eq!(obs.status, DeploymentStatus::Error);
     assert!(
         obs.detail
-            .contains("0.1.0 is older than 0.9.0 pinned by host host-b; not activated"),
+            .contains("0.1.0 is older than 0.9.0 pinned by node host-b; not activated"),
         "{}",
         obs.detail
     );
@@ -1854,7 +1854,7 @@ async fn a_verified_platform_guest_without_a_grant_file_persists_its_grant_and_s
         &store,
         &actor,
         &instance.id,
-        &session.host.host_id,
+        &session.node.node_id,
         DesiredState::Present,
     )
     .await
@@ -1871,13 +1871,13 @@ async fn a_verified_platform_guest_without_a_grant_file_persists_its_grant_and_s
     reconcile_local_deployments(
         &store,
         &config,
-        &session.host.host_id,
+        &session.node.node_id,
         &AuthorizedLocalPackages::default(),
         &probe,
     )
     .await
     .expect("reconcile");
-    let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+    let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
         .await
         .unwrap()
         .expect("observation");
@@ -1893,7 +1893,7 @@ async fn a_verified_platform_guest_without_a_grant_file_persists_its_grant_and_s
     // The running guest's jail ceilings are the host's reservation: the
     // grant defaults here (512 MiB, 80% of a core).
     let (reserved, running) =
-        bookclerk_library::control_plane::host_reservations(&store, &session.host.host_id)
+        bookclerk_library::control_plane::node_reservations(&store, &session.node.node_id)
             .await
             .unwrap();
     assert_eq!(running, 1);

@@ -1,4 +1,4 @@
-//! `bookclerk hosts label` and `bookclerk plugins deploy` write placement
+//! `bookclerk nodes label` and `bookclerk plugins deploy` write placement
 //! intent; a placed instance refuses hand-written enable/disable until
 //! `--manual` hands it back.
 
@@ -86,16 +86,16 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
         &[],
     ));
 
-    // This host is registered with its target; no daemon runs, so it is not
+    // This node is registered with its target; no daemon runs, so it is not
     // live and nothing qualifies yet.
-    let hosts = json(&run_bookclerk(
+    let nodes = json(&run_bookclerk(
         files,
-        &["--format", "json", "hosts", "list"],
+        &["--format", "json", "nodes", "list"],
         &[],
     ));
-    let rows = hosts["hosts"].as_array().unwrap();
+    let rows = nodes["nodes"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["this_host"], true);
+    assert_eq!(rows[0]["this_node"], true);
     assert_eq!(rows[0]["live"], false);
     assert_eq!(
         rows[0]["target"],
@@ -108,7 +108,7 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
         &[
             "--format",
             "json",
-            "hosts",
+            "nodes",
             "set",
             "--cpu-budget",
             "50",
@@ -121,11 +121,11 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
     assert_eq!(budget["runtime"]["cpu_budget_percent"], 50);
     assert_eq!(budget["runtime"]["memory_budget_percent"], 40);
     assert_eq!(budget["runtime"]["schedulable"], false);
-    let out_of_range = run_bookclerk(files, &["hosts", "set", "--cpu-budget", "0"], &[]);
+    let out_of_range = run_bookclerk(files, &["nodes", "set", "--cpu-budget", "0"], &[]);
     assert!(!out_of_range.status.success(), "budgets are 1-100");
-    let bad = run_bookclerk(files, &["hosts", "label", "--add", "NAS"], &[]);
+    let bad = run_bookclerk(files, &["nodes", "label", "--add", "NAS"], &[]);
     assert!(!bad.status.success(), "labels are lowercase");
-    let reserved = run_bookclerk(files, &["hosts", "label", "--add", "host=x"], &[]);
+    let reserved = run_bookclerk(files, &["nodes", "label", "--add", "node=x"], &[]);
     assert!(
         !reserved.status.success(),
         "implicit label names are reserved"
@@ -133,7 +133,7 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
     let labelled = json(&run_bookclerk(
         files,
         &[
-            "--format", "json", "hosts", "label", "--add", "nas", "--add", "zone=eu",
+            "--format", "json", "nodes", "label", "--add", "nas", "--add", "zone=eu",
         ],
         &[],
     ));
@@ -160,7 +160,7 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
         serde_json::json!(["nas"])
     );
     assert_eq!(placed["placement"]["revision"], 1);
-    assert_eq!(placed["eligible_hosts"], serde_json::json!([]));
+    assert_eq!(placed["eligible_nodes"], serde_json::json!([]));
     let again = json(&run_bookclerk(
         files,
         &[
@@ -219,7 +219,7 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
 
     let cleared = json(&run_bookclerk(
         files,
-        &["--format", "json", "hosts", "label", "--remove", "nas"],
+        &["--format", "json", "nodes", "label", "--remove", "nas"],
         &[],
     ));
     assert_eq!(cleared["labels"], serde_json::json!(["zone=eu"]));

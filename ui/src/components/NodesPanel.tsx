@@ -4,15 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   isApiError,
-  listConfigHosts,
-  putHostLabels,
-  putHostRuntime,
-  type ConfigHostView,
-  type HostStatusView,
+  listConfigNodes,
+  putNodeLabels,
+  putNodeRuntime,
+  type ConfigNodeView,
+  type NodeStatusView,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-/** How often the panel re-reads heartbeats (hosts report every 15 s). */
+/** How often the panel re-reads heartbeats (nodes report every 15 s). */
 const REFRESH_MS = 15_000;
 
 /** `1536` millicores → `1.5`. */
@@ -88,7 +88,7 @@ function Meter({
 }
 
 /** Capacity, budget, accounting, and availability from one heartbeat. */
-function HostMeters({ status }: { status: HostStatusView }) {
+function NodeMeters({ status }: { status: NodeStatusView }) {
   const memoryUsed =
     status.memory_bytes != null && status.memory_available_bytes != null
       ? status.memory_bytes - status.memory_available_bytes
@@ -123,27 +123,27 @@ function HostMeters({ status }: { status: HostStatusView }) {
   );
 }
 
-interface HostRowProps {
-  host: ConfigHostView;
+interface NodeRowProps {
+  node: ConfigNodeView;
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
   onSessionExpired: () => void;
 }
 
-/** One host: heartbeat summary, meters, and its editable runtime document. */
-function HostRow({ host, onChanged, onError, onSessionExpired }: HostRowProps) {
-  const [label, setLabel] = useState(host.runtime.label);
-  const [cpu, setCpu] = useState(String(host.runtime.cpu_budget_percent));
-  const [memory, setMemory] = useState(String(host.runtime.memory_budget_percent));
-  const [labels, setLabels] = useState(host.labels.join(", "));
+/** One node: heartbeat summary, meters, and its editable runtime document. */
+function NodeRow({ node, onChanged, onError, onSessionExpired }: NodeRowProps) {
+  const [label, setLabel] = useState(node.runtime.label);
+  const [cpu, setCpu] = useState(String(node.runtime.cpu_budget_percent));
+  const [memory, setMemory] = useState(String(node.runtime.memory_budget_percent));
+  const [labels, setLabels] = useState(node.labels.join(", "));
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    setLabel(host.runtime.label);
-    setCpu(String(host.runtime.cpu_budget_percent));
-    setMemory(String(host.runtime.memory_budget_percent));
-    setLabels(host.labels.join(", "));
-  }, [host.runtime, host.labels]);
+    setLabel(node.runtime.label);
+    setCpu(String(node.runtime.cpu_budget_percent));
+    setMemory(String(node.runtime.memory_budget_percent));
+    setLabels(node.labels.join(", "));
+  }, [node.runtime, node.labels]);
 
   async function run(action: () => Promise<unknown>, failure: string) {
     setBusy(true);
@@ -174,18 +174,18 @@ function HostRow({ host, onChanged, onError, onSessionExpired }: HostRowProps) {
       }
     }
     const nextLabels = parseLabels(labels);
-    const labelsChanged = nextLabels.join(",") !== host.labels.join(",");
+    const labelsChanged = nextLabels.join(",") !== node.labels.join(",");
     void run(async () => {
-      await putHostRuntime(host.host_id, {
+      await putNodeRuntime(node.node_id, {
         label: label.trim(),
         cpu_budget_percent: cpuPercent,
         memory_budget_percent: memoryPercent,
       });
-      if (labelsChanged) await putHostLabels(host.host_id, nextLabels);
-    }, "Failed to save host");
+      if (labelsChanged) await putNodeLabels(node.node_id, nextLabels);
+    }, "Failed to save node");
   }
 
-  /** Enter saves the host. */
+  /** Enter saves the node. */
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -193,31 +193,31 @@ function HostRow({ host, onChanged, onError, onSessionExpired }: HostRowProps) {
     }
   }
 
-  const status = host.status;
-  const drained = !host.runtime.schedulable;
+  const status = node.status;
+  const drained = !node.runtime.schedulable;
   return (
     <li className="space-y-3 px-4 py-4">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-semibold text-ink">{host.runtime.label || host.host_id}</span>
-        {host.runtime.label ? (
-          <span className="break-all font-mono text-[11px] text-ink/45">{host.host_id}</span>
+        <span className="font-semibold text-ink">{node.runtime.label || node.node_id}</span>
+        {node.runtime.label ? (
+          <span className="break-all font-mono text-[11px] text-ink/45">{node.node_id}</span>
         ) : null}
-        {host.this_host ? (
-          <Badge className="bg-ink/10 text-ink/70 normal-case tracking-normal">This host</Badge>
+        {node.this_node ? (
+          <Badge className="bg-ink/10 text-ink/70 normal-case tracking-normal">This node</Badge>
         ) : null}
         <Badge
           className={cn(
             "normal-case tracking-normal",
-            host.live ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick",
+            node.live ? "bg-teal/10 text-ink/70" : "bg-brick/10 text-brick",
           )}
         >
-          {host.live ? "Live" : "Offline"}
+          {node.live ? "Live" : "Offline"}
         </Badge>
         {drained ? (
           <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
         ) : null}
-        {host.target ? (
-          <span className="font-mono text-[11px] text-ink/45">{host.target}</span>
+        {node.target ? (
+          <span className="font-mono text-[11px] text-ink/45">{node.target}</span>
         ) : null}
       </div>
 
@@ -230,13 +230,13 @@ function HostRow({ host, onChanged, onError, onSessionExpired }: HostRowProps) {
               ? ` · ${size(status.files_dir_free_bytes)} free disk`
               : ""}
           </p>
-          <div className={cn(!host.live && "opacity-50")}>
-            <HostMeters status={status} />
+          <div className={cn(!node.live && "opacity-50")}>
+            <NodeMeters status={status} />
           </div>
         </>
       ) : (
         <p className="text-xs text-ink/55">
-          No heartbeat yet: this host's daemon has not run since heartbeats were added.
+          No heartbeat yet: this node's daemon has not run since heartbeats were added.
         </p>
       )}
 
@@ -292,8 +292,8 @@ function HostRow({ host, onChanged, onError, onSessionExpired }: HostRowProps) {
           disabled={busy}
           onClick={() =>
             void run(
-              () => putHostRuntime(host.host_id, { schedulable: drained }),
-              drained ? "Failed to resume host" : "Failed to drain host",
+              () => putNodeRuntime(node.node_id, { schedulable: drained }),
+              drained ? "Failed to resume node" : "Failed to drain node",
             )
           }
         >
@@ -304,7 +304,7 @@ function HostRow({ host, onChanged, onError, onSessionExpired }: HostRowProps) {
   );
 }
 
-interface HostsPanelProps {
+interface NodesPanelProps {
   /** Shows a page-level error. */
   onError: (message: string) => void;
   /** Called on a 401 so the page can return to sign-in. */
@@ -312,12 +312,12 @@ interface HostsPanelProps {
 }
 
 /**
- * Cluster hosts as their heartbeats report them, with each host's budget
+ * Cluster nodes as their heartbeats report them, with each node's budget
  * and drain switch. The scheduler places plugins by this headroom, and
- * deliveries go to the live host with the most room first.
+ * deliveries go to the live node with the most room first.
  */
-export function HostsPanel({ onError, onSessionExpired }: HostsPanelProps) {
-  const [hosts, setHosts] = useState<ConfigHostView[] | null>(null);
+export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
+  const [nodes, setNodes] = useState<ConfigNodeView[] | null>(null);
   // The timer outlives renders; read the latest callbacks through a ref so
   // a parent re-render does not restart polling.
   const callbacks = useRef({ onError, onSessionExpired });
@@ -325,14 +325,14 @@ export function HostsPanel({ onError, onSessionExpired }: HostsPanelProps) {
 
   const refresh = useCallback(async () => {
     try {
-      const body = await listConfigHosts();
-      setHosts(body.hosts);
+      const body = await listConfigNodes();
+      setNodes(body.nodes);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         callbacks.current.onSessionExpired();
         return;
       }
-      callbacks.current.onError(err instanceof Error ? err.message : "Failed to load hosts");
+      callbacks.current.onError(err instanceof Error ? err.message : "Failed to load nodes");
     }
   }, []);
 
@@ -345,25 +345,25 @@ export function HostsPanel({ onError, onSessionExpired }: HostsPanelProps) {
   return (
     <section className="space-y-5">
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold text-ink">Hosts</h2>
+        <h2 className="text-lg font-semibold text-ink">Nodes</h2>
         <p className="text-sm text-ink/55">
           Every daemon reports its capacity, use, and running guests every 15 seconds through the
-          shared database. The budget is the share of a host's CPU and memory the scheduler may
+          shared database. The budget is the share of a node's CPU and memory the scheduler may
           commit to plugin guests; the bar shows what running guests reserve and the marker what
-          the machine measures in use. Draining a host moves its scheduled plugins elsewhere;
+          the machine measures in use. Draining a node moves its scheduled plugins elsewhere;
           plugins enabled by hand keep running.
         </p>
       </div>
-      {hosts == null ? (
-        <p className="text-sm text-ink/50">Loading hosts…</p>
-      ) : hosts.length === 0 ? (
-        <p className="text-sm text-ink/50">No hosts registered.</p>
+      {nodes == null ? (
+        <p className="text-sm text-ink/50">Loading nodes…</p>
+      ) : nodes.length === 0 ? (
+        <p className="text-sm text-ink/50">No nodes registered.</p>
       ) : (
         <ul className="divide-y divide-ink/10 bg-card">
-          {hosts.map((host) => (
-            <HostRow
-              key={host.host_id}
-              host={host}
+          {nodes.map((node) => (
+            <NodeRow
+              key={node.node_id}
+              node={node}
               onChanged={refresh}
               onError={onError}
               onSessionExpired={onSessionExpired}

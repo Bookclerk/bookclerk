@@ -118,7 +118,7 @@ pub struct AccountRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
     /// Provenance-qualified PluginKey that owns this account. Any instance
-    /// of that plugin, on any host, may act for it.
+    /// of that plugin, on any node, may act for it.
     pub plugin_key: String,
     /// Store or operator account id, unique within one plugin key.
     pub account_id: String,
@@ -1693,8 +1693,8 @@ pub enum PublishDomainEventOutcome {
 pub const EVENT_RESOURCE_CLASS_NETWORK: &str = "network";
 /// Queue that carries the domain-event bus (`[events]` producers and consumers).
 pub const CORE_EVENTS_QUEUE: &str = "core.events";
-/// Prefix of the per-host queues (`host.<host_id>`) host subsystems consume.
-pub const HOST_QUEUE_PREFIX: &str = "host.";
+/// Prefix of the per-node queues (`node.<node_id>`) node subsystems consume.
+pub const NODE_QUEUE_PREFIX: &str = "node.";
 /// Queue message body is UTF-8 JSON text.
 pub const QUEUE_CONTENT_TYPE_JSON: &str = "json";
 /// Queue message body is plain UTF-8 text.
@@ -1716,7 +1716,7 @@ fn default_content_type() -> String {
 
 /// True when `name` is `[a-z0-9][a-z0-9._-]*` and at most [`MAX_QUEUE_NAME_LEN`] chars.
 ///
-/// Host-reserved names (`core.events`, `host.<id>`) satisfy this grammar; the
+/// Host-reserved names (`core.events`, `node.<id>`) satisfy this grammar; the
 /// manifest validator, not the outbox, keeps plugins off those prefixes.
 #[must_use]
 pub fn is_valid_queue_name(name: &str) -> bool {

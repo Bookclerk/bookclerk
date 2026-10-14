@@ -1,17 +1,17 @@
-//! Consumer side of this host's `host.<host_id>` queue.
+//! Consumer side of this node's `node.<node_id>` queue.
 //!
-//! Deployment and configuration writes (from this daemon, another host, or
-//! the CLI) publish a [`HostMessage`] onto the target host's queue. The
+//! Deployment and configuration writes (from this daemon, another node, or
+//! the CLI) publish a [`NodeMessage`] onto the target node's queue. The
 //! daemon registers itself as that queue's only consumer, and each delivery
 //! wakes the deployment or configuration reconciler instead of a fixed 5 s
 //! re-read. Reconcilers still run one slow backstop pass so a message
-//! dispatched while this host's catalog row was not live is not lost for
+//! dispatched while this node's catalog row was not live is not lost for
 //! long.
 
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
-use bookclerk_library::control_plane::{host_consumer_id, host_queue_name, HostMessage};
+use bookclerk_library::control_plane::{node_consumer_id, node_queue_name, NodeMessage};
 use bookclerk_library::{
     DomainEventRecord, EventCatalogSubscription, EventDeliveryRecord, LibraryStore,
 };
@@ -20,7 +20,7 @@ use tracing::{debug, warn};
 
 use crate::api::AppState;
 
-/// Backstop reconcile cadence when no host-queue wakeup arrives.
+/// Backstop reconcile cadence when no node-queue wakeup arrives.
 pub const RECONCILE_BACKSTOP: Duration = Duration::from_secs(60);
 
 /// Wakes the deployment reconciler.
@@ -29,8 +29,8 @@ static DEPLOYMENT_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
 static CONFIG_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
 /// Wakes the placement scheduler (it acts only while holding the lease).
 static PLACEMENT_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
-/// This process's host id, read once from `host-identity.json`.
-static HOST_ID: OnceLock<String> = OnceLock::new();
+/// This process's node id, read once from `node-identity.json`.
+static NODE_ID: OnceLock<String> = OnceLock::new();
 
 /// Waits until a deployment wakeup arrives (a stored permit returns at once).
 pub async fn deployment_wakeup() {
@@ -49,20 +49,20 @@ pub async fn placement_wakeup() {
 
 /// Wakes the reconcilers a message concerns. `notify_one` stores a permit,
 /// so a wakeup that lands mid-pass runs one more pass afterwards.
-pub fn wake_for(message: &HostMessage) {
+pub fn wake_for(message: &NodeMessage) {
     match message {
-        HostMessage::DeploymentChanged { .. } => {
+        NodeMessage::DeploymentChanged { .. } => {
             DEPLOYMENT_WAKEUP.notify_one();
         }
-        HostMessage::ReleaseChanged { .. } => {
+        NodeMessage::ReleaseChanged { .. } => {
             // A new release can add or drop targets, so placements may move.
             DEPLOYMENT_WAKEUP.notify_one();
             PLACEMENT_WAKEUP.notify_one();
         }
-        HostMessage::PlacementChanged { .. } => {
+        NodeMessage::PlacementChanged { .. } => {
             PLACEMENT_WAKEUP.notify_one();
         }
-        HostMessage::ConfigurationChanged { .. } => {
+        NodeMessage::ConfigurationChanged { .. } => {
             // Cluster settings feed the config reconciler; instance documents
             // change what a running guest was spawned with.
             CONFIG_WAKEUP.notify_one();
@@ -71,65 +71,61 @@ pub fn wake_for(message: &HostMessage) {
     }
 }
 
-/// This host's id, or `None` when the identity file cannot be read.
-pub fn host_id(files_dir: &std::path::Path) -> Option<String> {
-    if let Some(id) = HOST_ID.get() {
+/// This node's id, or `None` when the identity file cannot be read.
+pub fn node_id(files_dir: &std::path::Path) -> Option<String> {
+    if let Some(id) = NODE_ID.get() {
         return Some(id.clone());
     }
-    match bookclerk_library::control_plane::load_or_create_host_identity(files_dir) {
-        Ok(identity) => Some(HOST_ID.get_or_init(|| identity.host_id).clone()),
+    match bookclerk_library::control_plane::load_or_create_node_identity(files_dir) {
+        Ok(identity) => Some(NODE_ID.get_or_init(|| identity.node_id).clone()),
         Err(err) => {
-            warn!(error = %err, "host identity unavailable; host queue consumer disabled");
+            warn!(error = %err, "node identity unavailable; node queue consumer disabled");
             None
         }
     }
 }
 
-/// Catalog id this host claims its own queue's deliveries under.
+/// Catalog id this node claims its own queue's deliveries under.
 pub fn consumer_id(files_dir: &std::path::Path) -> Option<String> {
-    host_id(files_dir).map(|id| host_consumer_id(&id))
+    node_id(files_dir).map(|id| node_consumer_id(&id))
 }
 
-/// Heartbeats this host's consumer row: one subscription to `host.<host_id>`.
-pub async fn upsert_catalog_row(
-    library: &LibraryStore,
-    node_id: &str,
-    files_dir: &std::path::Path,
-) {
-    let Some(host_id) = host_id(files_dir) else {
+/// Heartbeats this node's consumer row: one subscription to `node.<node_id>`.
+pub async fn upsert_catalog_row(library: &LibraryStore, files_dir: &std::path::Path) {
+    let Some(node_id) = node_id(files_dir) else {
         return;
     };
-    let subs = [EventCatalogSubscription::queue(host_queue_name(&host_id))];
+    let subs = [EventCatalogSubscription::queue(node_queue_name(&node_id))];
     if let Err(err) = library
-        .upsert_event_subscriber(node_id, &host_consumer_id(&host_id), &subs, true)
+        .upsert_event_subscriber(&node_id, &node_consumer_id(&node_id), &subs, true)
         .await
     {
-        warn!(error = %err, "host queue consumer catalog upsert failed");
+        warn!(error = %err, "node queue consumer catalog upsert failed");
     }
 }
 
-/// Handles one claimed delivery for this host's consumer: wake the matching
-/// reconciler and ack. A body that is not a [`HostMessage`] is dead-lettered
-/// (a newer host may publish a type this one does not know; the backstop
+/// Handles one claimed delivery for this node's consumer: wake the matching
+/// reconciler and ack. A body that is not a [`NodeMessage`] is dead-lettered
+/// (a newer node may publish a type this one does not know; the backstop
 /// pass still converges).
-pub async fn run_host_delivery(
+pub async fn run_node_delivery(
     library: &LibraryStore,
     event: &DomainEventRecord,
     delivery: &EventDeliveryRecord,
 ) {
     let fence = delivery.fence();
-    match serde_json::from_str::<HostMessage>(&event.payload) {
+    match serde_json::from_str::<NodeMessage>(&event.payload) {
         Ok(message) => {
-            debug!(event_id = %event.id, ?message, "host queue wakeup");
+            debug!(event_id = %event.id, ?message, "node queue wakeup");
             wake_for(&message);
             if let Err(err) = library.ack_event_delivery(&fence).await {
-                warn!(delivery_id = %delivery.id, error = %err, "host queue ack failed");
+                warn!(delivery_id = %delivery.id, error = %err, "node queue ack failed");
             }
         }
         Err(err) => {
-            warn!(event_id = %event.id, error = %err, "unknown host queue message");
+            warn!(event_id = %event.id, error = %err, "unknown node queue message");
             let _ = library
-                .dead_letter_event_delivery(&fence, &format!("unknown host message: {err}"))
+                .dead_letter_event_delivery(&fence, &format!("unknown node message: {err}"))
                 .await;
         }
     }
@@ -168,7 +164,7 @@ pub fn config_wait() -> WakeFuture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_library::control_plane::publish_host_message;
+    use bookclerk_library::control_plane::publish_node_message;
     use bookclerk_library::{catalog_subscribers_for_event, PublishDomainEventSpec};
 
     async fn memory_store() -> LibraryStore {
@@ -193,7 +189,7 @@ mod tests {
             .expect("row");
         let catalog = store.list_live_event_subscribers().await.expect("catalog");
         let subscribers = catalog_subscribers_for_event(&catalog, &event);
-        assert_eq!(subscribers.len(), 1, "only this host consumes its queue");
+        assert_eq!(subscribers.len(), 1, "only this node consumes its queue");
         store
             .dispatch_event_deliveries(&event.id, &subscribers, &uuid::Uuid::new_v4().to_string())
             .await
@@ -209,28 +205,28 @@ mod tests {
             )
             .await
             .expect("claim")
-            .expect("a delivery for the host consumer");
+            .expect("a delivery for the node consumer");
         (event, delivery)
     }
 
     #[tokio::test]
-    async fn host_deliveries_are_claimed_by_the_host_and_acked() {
+    async fn node_deliveries_are_claimed_by_the_node_and_acked() {
         let store = memory_store().await;
-        let host = "3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b";
-        let consumer = host_consumer_id(host);
+        let node = "3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b";
+        let consumer = node_consumer_id(node);
         store
             .upsert_event_subscriber(
                 "node-a",
                 &consumer,
-                &[EventCatalogSubscription::queue(host_queue_name(host))],
+                &[EventCatalogSubscription::queue(node_queue_name(node))],
                 true,
             )
             .await
             .expect("catalog");
-        publish_host_message(
+        publish_node_message(
             &store,
-            host,
-            &HostMessage::DeploymentChanged {
+            node,
+            &NodeMessage::DeploymentChanged {
                 deployment_id: "dep-1".into(),
                 plugin_instance_id: "inst-1".into(),
                 desired: "present".into(),
@@ -240,16 +236,16 @@ mod tests {
         .await
         .expect("publish");
         let row = store
-            .list_domain_events_for_queue(&host_queue_name(host), 10)
+            .list_domain_events_for_queue(&node_queue_name(node), 10)
             .await
             .expect("rows")
             .pop()
             .expect("one message");
         let (event, delivery) = dispatch_and_claim(&store, &row.id, &consumer).await;
         assert_eq!(delivery.plugin_id, consumer);
-        run_host_delivery(&store, &event, &delivery).await;
+        run_node_delivery(&store, &event, &delivery).await;
         let acked = store
-            .list_event_deliveries_for_queue(&host_queue_name(host), Some("acked"), 10)
+            .list_event_deliveries_for_queue(&node_queue_name(node), Some("acked"), 10)
             .await
             .expect("deliveries");
         assert_eq!(
@@ -258,13 +254,13 @@ mod tests {
             "the wakeup is acked once the reconciler is woken"
         );
 
-        // A body this host does not understand is parked, not retried forever.
+        // A body this node does not understand is parked, not retried forever.
         let bogus = store
             .publish_domain_event(PublishDomainEventSpec {
                 schema_version: 1,
                 dedup_key: "bogus".into(),
                 payload: r#"{"type":"future.message"}"#.into(),
-                queue_name: host_queue_name(host),
+                queue_name: node_queue_name(node),
                 ..PublishDomainEventSpec::default()
             })
             .await
@@ -274,9 +270,9 @@ mod tests {
             other => panic!("unexpected outcome {other:?}"),
         };
         let (event, delivery) = dispatch_and_claim(&store, &bogus_id, &consumer).await;
-        run_host_delivery(&store, &event, &delivery).await;
+        run_node_delivery(&store, &event, &delivery).await;
         let parked = store
-            .list_event_deliveries_for_queue(&host_queue_name(host), Some("dead_letter"), 10)
+            .list_event_deliveries_for_queue(&node_queue_name(node), Some("dead_letter"), 10)
             .await
             .expect("deliveries");
         assert_eq!(parked.len(), 1);
@@ -284,7 +280,7 @@ mod tests {
 
     #[tokio::test]
     async fn deployment_and_configuration_messages_wake_the_right_loops() {
-        wake_for(&HostMessage::DeploymentChanged {
+        wake_for(&NodeMessage::DeploymentChanged {
             deployment_id: "d".into(),
             plugin_instance_id: "i".into(),
             desired: "present".into(),
@@ -293,7 +289,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), deployment_wakeup())
             .await
             .expect("deployment permit stored");
-        wake_for(&HostMessage::ConfigurationChanged {
+        wake_for(&NodeMessage::ConfigurationChanged {
             scope_type: "cluster".into(),
             scope_id: "c".into(),
             namespace: "core.events".into(),

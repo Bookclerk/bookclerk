@@ -1850,8 +1850,8 @@ pub fn host_cpu_rate_max() -> u32 {
 
 /// Logical CPUs visible to this process (at least 1).
 #[must_use]
-pub fn host_logical_cpus() -> u32 {
-    bookclerk_sandbox::host_logical_cpus()
+pub fn node_logical_cpus() -> u32 {
+    bookclerk_sandbox::node_logical_cpus()
 }
 
 /// Format cores for operator-facing text (`0.80`).

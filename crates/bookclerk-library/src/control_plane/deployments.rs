@@ -1,10 +1,10 @@
-//! Desired plugin deployments and host-local observations.
+//! Desired plugin deployments and node-local observations.
 //!
-//! A deployment row means one host should have the instance installed and
-//! running. Observation rows are written only by that host's reconciler.
+//! A deployment row means one node should have the instance installed and
+//! running. Observation rows are written only by that node's reconciler.
 //! Desired writes do not update observations.
 
-use super::host_queue::HostMessage;
+use super::node_queue::NodeMessage;
 use chrono::{Duration, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
@@ -19,24 +19,24 @@ use crate::entities::{bookclerk_receipts, plugin_deployment_observations, plugin
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
-/// What a deployment row asks its host to do, and who decided it.
+/// What a deployment row asks its node to do, and who decided it.
 ///
 /// Operators write [`DesiredState::Present`] and [`DesiredState::Absent`]
 /// (`plugins enable|disable`, the Settings switch). The placement scheduler
 /// writes [`DesiredState::Placed`] and [`DesiredState::Unplaced`] for an
-/// instance it owns. A host runs the instance for `present` and `placed`
+/// instance it owns. A node runs the instance for `present` and `placed`
 /// and retires it for `absent` and `unplaced`; the split only records whose
 /// decision the row carries, so "the operator turned this off" never reads
 /// like "the scheduler put the replica elsewhere".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DesiredState {
-    /// An operator enabled the instance on this host.
+    /// An operator enabled the instance on this node.
     Present,
-    /// An operator disabled the instance on this host.
+    /// An operator disabled the instance on this node.
     Absent,
-    /// The scheduler placed a replica on this host.
+    /// The scheduler placed a replica on this node.
     Placed,
-    /// The scheduler holds no replica on this host (scaled away, host no
+    /// The scheduler holds no replica on this node (scaled away, node no
     /// longer qualifies, or not chosen).
     Unplaced,
 }
@@ -68,7 +68,7 @@ impl DesiredState {
             .ok_or_else(|| invalid("desired must be `present`, `absent`, `placed`, or `unplaced`"))
     }
 
-    /// True when the host should run the instance.
+    /// True when the node should run the instance.
     #[must_use]
     pub fn runs(self) -> bool {
         matches!(self, Self::Present | Self::Placed)
@@ -142,7 +142,7 @@ pub enum DeploymentStatus {
     Healthy,
     /// Install, grant, config, secrets, spawn, or health failed.
     Error,
-    /// Desired state is `absent`; the host stopped the guest.
+    /// Desired state is `absent`; the node stopped the guest.
     Retired,
 }
 
@@ -185,9 +185,9 @@ pub struct PluginDeployment {
     pub deployment_id: String,
     /// Instance to run.
     pub plugin_instance_id: PluginInstanceId,
-    /// Target host.
-    pub host_id: String,
-    /// What the host should do, and whose decision it is.
+    /// Target node.
+    pub node_id: String,
+    /// What the node should do, and whose decision it is.
     pub desired: DesiredState,
     /// Compare-and-swap revision.
     pub revision: i64,
@@ -197,13 +197,13 @@ pub struct PluginDeployment {
     pub updated_by: String,
 }
 
-/// One host's observation of a deployment.
+/// One node's observation of a deployment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploymentObservation {
     /// Deployment id.
     pub deployment_id: String,
-    /// Observing host.
-    pub host_id: String,
+    /// Observing node.
+    pub node_id: String,
     /// Process incarnation.
     pub incarnation: String,
     /// Last status.
@@ -233,7 +233,7 @@ pub enum DeploymentReplace {
     },
 }
 
-/// Inserts `(instance, host, desired)` when that pair has no row.
+/// Inserts `(instance, node, desired)` when that pair has no row.
 ///
 /// A second call returns the original row and does not bump the revision.
 ///
@@ -245,17 +245,17 @@ pub async fn ensure_plugin_deployment(
     store: &LibraryStore,
     actor: &ConfigActor,
     instance_id: &PluginInstanceId,
-    host_id: &str,
+    node_id: &str,
     desired: DesiredState,
 ) -> Result<PluginDeployment> {
     authorize_create(actor, desired)?;
-    validate_host_id(host_id)?;
+    validate_node_id(node_id)?;
     if load_plugin_instance(store, instance_id).await?.is_none() {
         return Err(LibraryError::NotFound(format!(
             "plugin instance {instance_id}"
         )));
     }
-    if let Some(existing) = find_deployment_pair(store, instance_id, host_id).await? {
+    if let Some(existing) = find_deployment_pair(store, instance_id, node_id).await? {
         return Ok(existing);
     }
     let deployment_id = Uuid::new_v4().hyphenated().to_string();
@@ -263,7 +263,7 @@ pub async fn ensure_plugin_deployment(
     let model = plugin_deployments::ActiveModel {
         deployment_id: Set(deployment_id.clone()),
         plugin_instance_id: Set(instance_id.as_str().to_string()),
-        host_id: Set(host_id.to_string()),
+        node_id: Set(node_id.to_string()),
         desired: Set(desired.as_str().to_string()),
         revision: Set(1),
         updated_at: Set(now),
@@ -281,7 +281,7 @@ pub async fn ensure_plugin_deployment(
             Ok(created)
         }
         Err(err) => {
-            if let Some(existing) = find_deployment_pair(store, instance_id, host_id).await? {
+            if let Some(existing) = find_deployment_pair(store, instance_id, node_id).await? {
                 return Ok(existing);
             }
             Err(LibraryError::Orm(err))
@@ -452,19 +452,19 @@ pub async fn replace_plugin_deployment(
     }
 }
 
-/// Present deployments whose `host_id` is `host_id`.
+/// Present deployments whose `node_id` is `node_id`.
 ///
-/// Rows for any other host are not returned.
+/// Rows for any other node are not returned.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn list_present_deployments_for_host(
+pub async fn list_present_deployments_for_node(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<Vec<PluginDeployment>> {
     let rows = plugin_deployments::Entity::find()
-        .filter(plugin_deployments::Column::HostId.eq(host_id))
+        .filter(plugin_deployments::Column::NodeId.eq(node_id))
         .filter(
             plugin_deployments::Column::Desired.is_in(
                 DesiredState::ALL
@@ -480,17 +480,17 @@ pub async fn list_present_deployments_for_host(
     rows.into_iter().map(deployment_from_model).collect()
 }
 
-/// Every deployment row targeting `host_id`, present or absent.
+/// Every deployment row targeting `node_id`, present or absent.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn list_deployments_for_host(
+pub async fn list_deployments_for_node(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<Vec<PluginDeployment>> {
     let rows = plugin_deployments::Entity::find()
-        .filter(plugin_deployments::Column::HostId.eq(host_id))
+        .filter(plugin_deployments::Column::NodeId.eq(node_id))
         .order_by_asc(plugin_deployments::Column::DeploymentId)
         .all(store.db())
         .await
@@ -512,7 +512,7 @@ pub async fn list_all_deployments(store: &LibraryStore) -> Result<Vec<PluginDepl
     rows.into_iter().map(deployment_from_model).collect()
 }
 
-/// Every deployment row for `instance_id`, on any host.
+/// Every deployment row for `instance_id`, on any node.
 ///
 /// # Errors
 ///
@@ -523,14 +523,14 @@ pub async fn list_deployments_for_instance(
 ) -> Result<Vec<PluginDeployment>> {
     let rows = plugin_deployments::Entity::find()
         .filter(plugin_deployments::Column::PluginInstanceId.eq(instance_id.as_str()))
-        .order_by_asc(plugin_deployments::Column::HostId)
+        .order_by_asc(plugin_deployments::Column::NodeId)
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
     rows.into_iter().map(deployment_from_model).collect()
 }
 
-/// Every observation row for `deployment_id`, from any host.
+/// Every observation row for `deployment_id`, from any node.
 ///
 /// # Errors
 ///
@@ -541,24 +541,24 @@ pub async fn list_observations_for_deployment(
 ) -> Result<Vec<DeploymentObservation>> {
     let rows = plugin_deployment_observations::Entity::find()
         .filter(plugin_deployment_observations::Column::DeploymentId.eq(deployment_id))
-        .order_by_asc(plugin_deployment_observations::Column::HostId)
+        .order_by_asc(plugin_deployment_observations::Column::NodeId)
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
     rows.into_iter().map(observation_from_model).collect()
 }
 
-/// The deployment of `instance_id` on `host_id`, if any.
+/// The deployment of `instance_id` on `node_id`, if any.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn load_deployment_for_host(
+pub async fn load_deployment_for_node(
     store: &LibraryStore,
     instance_id: &PluginInstanceId,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<Option<PluginDeployment>> {
-    find_deployment_pair(store, instance_id, host_id).await
+    find_deployment_pair(store, instance_id, node_id).await
 }
 
 /// Deletes an absent deployment and its observations.
@@ -591,10 +591,10 @@ pub async fn delete_plugin_deployment(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    super::host_queue::notify_host(
+    super::node_queue::notify_node(
         store,
-        &current.host_id,
-        HostMessage::DeploymentChanged {
+        &current.node_id,
+        NodeMessage::DeploymentChanged {
             deployment_id: current.deployment_id.clone(),
             plugin_instance_id: current.plugin_instance_id.as_str().to_string(),
             desired: "deleted".into(),
@@ -605,12 +605,12 @@ pub async fn delete_plugin_deployment(
     Ok(())
 }
 
-/// Wakes the deployment's host after a committed desired-state write.
+/// Wakes the deployment's node after a committed desired-state write.
 async fn notify_deployment(store: &LibraryStore, deployment: &PluginDeployment) {
-    super::host_queue::notify_host(
+    super::node_queue::notify_node(
         store,
-        &deployment.host_id,
-        HostMessage::DeploymentChanged {
+        &deployment.node_id,
+        NodeMessage::DeploymentChanged {
             deployment_id: deployment.deployment_id.clone(),
             plugin_instance_id: deployment.plugin_instance_id.as_str().to_string(),
             desired: deployment.desired.as_str().to_string(),
@@ -640,16 +640,16 @@ pub async fn instance_has_deployment(
     Ok(found.is_some())
 }
 
-/// Canonical plugin keys with a present deployment on `host_id`.
+/// Canonical plugin keys with a present deployment on `node_id`.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn present_plugin_keys_for_host(
+pub async fn present_plugin_keys_for_node(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<Vec<String>> {
-    let deployments = list_present_deployments_for_host(store, host_id).await?;
+    let deployments = list_present_deployments_for_node(store, node_id).await?;
     let mut keys = Vec::new();
     for deployment in deployments {
         if let Some(instance) = load_plugin_instance(store, &deployment.plugin_instance_id).await? {
@@ -673,7 +673,7 @@ pub async fn load_deployment(
     load_deployment_by_id(store, deployment_id).await
 }
 
-/// Loads the observation for one deployment on one host.
+/// Loads the observation for one deployment on one node.
 ///
 /// # Errors
 ///
@@ -681,11 +681,11 @@ pub async fn load_deployment(
 pub async fn load_observation(
     store: &LibraryStore,
     deployment_id: &str,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<Option<DeploymentObservation>> {
     let row = plugin_deployment_observations::Entity::find_by_id((
         deployment_id.to_string(),
-        host_id.to_string(),
+        node_id.to_string(),
     ))
     .one(store.db())
     .await
@@ -707,7 +707,7 @@ pub async fn upsert_observation(
     let detail = bounded_observation_detail(&observation.detail);
     let model = plugin_deployment_observations::ActiveModel {
         deployment_id: Set(observation.deployment_id.clone()),
-        host_id: Set(observation.host_id.clone()),
+        node_id: Set(observation.node_id.clone()),
         incarnation: Set(observation.incarnation.clone()),
         status: Set(observation.status.as_str().to_string()),
         detail: Set(detail),
@@ -721,7 +721,7 @@ pub async fn upsert_observation(
         .on_conflict(
             OnConflict::columns([
                 plugin_deployment_observations::Column::DeploymentId,
-                plugin_deployment_observations::Column::HostId,
+                plugin_deployment_observations::Column::NodeId,
             ])
             .update_columns([
                 plugin_deployment_observations::Column::Incarnation,
@@ -771,7 +771,7 @@ async fn load_deployment_by_id(
     row.map(deployment_from_model).transpose()
 }
 
-/// Finds the unique `(instance, host)` row.
+/// Finds the unique `(instance, node)` row.
 ///
 /// # Errors
 ///
@@ -779,11 +779,11 @@ async fn load_deployment_by_id(
 async fn find_deployment_pair(
     store: &LibraryStore,
     instance_id: &PluginInstanceId,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<Option<PluginDeployment>> {
     let row = plugin_deployments::Entity::find()
         .filter(plugin_deployments::Column::PluginInstanceId.eq(instance_id.as_str()))
-        .filter(plugin_deployments::Column::HostId.eq(host_id))
+        .filter(plugin_deployments::Column::NodeId.eq(node_id))
         .one(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -795,7 +795,7 @@ fn deployment_from_model(row: plugin_deployments::Model) -> Result<PluginDeploym
     Ok(PluginDeployment {
         deployment_id: row.deployment_id,
         plugin_instance_id: PluginInstanceId::parse(&row.plugin_instance_id)?,
-        host_id: row.host_id,
+        node_id: row.node_id,
         desired: DesiredState::parse(&row.desired)?,
         revision: row.revision,
         updated_at: row.updated_at,
@@ -809,7 +809,7 @@ fn observation_from_model(
 ) -> Result<DeploymentObservation> {
     Ok(DeploymentObservation {
         deployment_id: row.deployment_id,
-        host_id: row.host_id,
+        node_id: row.node_id,
         incarnation: row.incarnation,
         status: DeploymentStatus::parse(&row.status)?,
         detail: row.detail,
@@ -883,7 +883,7 @@ fn deployment_hash(
 
 /// Who may create a row in each state: operators and bootstrap enrollment
 /// write the operator states, the scheduler writes its own, and enrollment
-/// may record a scheduler-owned instance as `unplaced` on a new host.
+/// may record a scheduler-owned instance as `unplaced` on a new node.
 fn authorize_create(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
     let allowed = match actor {
         ConfigActor::Operator { .. } => !desired.is_scheduled(),
@@ -927,10 +927,10 @@ fn unauthorized_state(actor: &ConfigActor, desired: DesiredState) -> LibraryErro
     }
 }
 
-/// Rejects an empty or oversized host id.
-fn validate_host_id(host_id: &str) -> Result<()> {
-    if host_id.is_empty() || host_id.len() > 128 || host_id.contains('\u{0000}') {
-        return Err(invalid("host id must be 1..=128 characters"));
+/// Rejects an empty or oversized node id.
+fn validate_node_id(node_id: &str) -> Result<()> {
+    if node_id.is_empty() || node_id.len() > 128 || node_id.contains('\u{0000}') {
+        return Err(invalid("node id must be 1..=128 characters"));
     }
     Ok(())
 }

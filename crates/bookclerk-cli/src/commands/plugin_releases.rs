@@ -138,7 +138,7 @@ pub async fn run_install(
         &plane.store,
         &cli_actor(),
         &config.paths().files_dir,
-        plane.host_id(),
+        plane.node_id(),
         InstallRequest {
             package,
             coordinate,
@@ -214,7 +214,7 @@ pub async fn run_update(
     format: OutputFormat,
 ) -> anyhow::Result<bool> {
     let store = crate::registry::open_host(config).await?;
-    let host_id = store.host_id().to_string();
+    let node_id = store.node_id().to_string();
     let store = &store.store;
     let mut targets = Vec::new();
     match id {
@@ -280,7 +280,7 @@ pub async fn run_update(
             store,
             &cli_actor(),
             &config.paths().files_dir,
-            &host_id,
+            &node_id,
             ReleaseRequest {
                 plugin_key: current.plugin_key.clone(),
                 package,
@@ -371,7 +371,7 @@ pub async fn run_rollback(
         &cli_actor(),
         &current.plugin_key,
         version,
-        plane.host_id(),
+        plane.node_id(),
     )
     .await?;
     let payload = json!({
@@ -544,7 +544,7 @@ pub async fn run_list(
                 "publisher_verified": r.publisher_verified,
                 "published_at": r.published_at,
                 "published_by": r.published_by,
-                "host_target": host_artifact(r).ok().map(|a| a.payload_root_sha256.clone()),
+                "node_target": host_artifact(r).ok().map(|a| a.payload_root_sha256.clone()),
                 "targets": r.artifacts.iter().map(|a| a.target.clone()).collect::<Vec<_>>(),
             })
         })

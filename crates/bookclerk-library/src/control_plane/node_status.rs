@@ -1,17 +1,17 @@
-//! Host heartbeats: capacity, budget, accounting, and availability.
+//! Node heartbeats: capacity, budget, accounting, and availability.
 //!
-//! Hosts never talk to each other; each daemon writes its own row here every
-//! [`HOST_HEARTBEAT_INTERVAL`] and the scheduler reads every row from the
+//! Nodes never talk to each other; each daemon writes its own row here every
+//! [`NODE_HEARTBEAT_INTERVAL`] and the scheduler reads every row from the
 //! shared database. A row carries:
 //!
-//! - **capacity** the host detects now: CPU cores and memory, the tighter of
+//! - **capacity** the node detects now: CPU cores and memory, the tighter of
 //!   the machine and the daemon's cgroup;
 //! - **budget**: the share of that capacity an operator lets the scheduler
-//!   commit (`host.runtime`: `cpu_budget_percent`, `memory_budget_percent`,
+//!   commit (`node.runtime`: `cpu_budget_percent`, `memory_budget_percent`,
 //!   `schedulable`);
 //! - **reservations**: the sum of the CPU and memory ceilings of the guests
-//!   running on the host, the same numbers the jail enforces, so the budget is
-//!   accounted against what the host has promised, not a guess;
+//!   running on the node, the same numbers the jail enforces, so the budget is
+//!   accounted against what the node has promised, not a guess;
 //! - **measured use**: CPU busy and memory available on the machine (or the
 //!   CPU-limited cgroup), so a desktop busy with other work reads as busy;
 //! - **availability**: a decaying online fraction in parts per million (about
@@ -19,7 +19,7 @@
 //!   desktop that is often off ranks below an always-on VPS with the same
 //!   free capacity.
 //!
-//! A host is live while its last heartbeat is younger than three intervals.
+//! A node is live while its last heartbeat is younger than three intervals.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -29,18 +29,18 @@ use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use super::deployments::{
-    list_deployments_for_host, list_deployments_for_instance, DeploymentStatus,
+    list_deployments_for_instance, list_deployments_for_node, DeploymentStatus,
 };
 use super::instances::PluginInstanceId;
-use crate::entities::{host_status, plugin_deployment_observations};
+use crate::entities::{node_status, plugin_deployment_observations};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
 /// How often a daemon heartbeats.
-pub const HOST_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+pub const NODE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
-/// A host whose last heartbeat is older than this many intervals is not live.
-pub const HOST_LIVE_INTERVALS: i64 = 3;
+/// A node whose last heartbeat is older than this many intervals is not live.
+pub const NODE_LIVE_INTERVALS: i64 = 3;
 
 /// Time constant of the availability average (about a day).
 pub const AVAILABILITY_TAU: Duration = Duration::from_secs(24 * 3600);
@@ -54,7 +54,7 @@ pub const DEFAULT_GUEST_MEMORY_BYTES: i64 = 512 * 1024 * 1024;
 pub const DEFAULT_GUEST_CPU_MILLICORES: i64 = 800;
 
 /// CPU and memory one guest may use at most: its grant's ceilings after the
-/// host's `[plugins.jail]` limits.
+/// node's `[plugins.jail]` limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct GuestReservation {
     /// Memory ceiling in bytes.
@@ -94,7 +94,7 @@ impl GuestReservation {
 
 /// One heartbeat's measurements, before budget and accounting are applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostHeartbeat {
+pub struct NodeHeartbeat {
     /// Daemon process incarnation.
     pub incarnation: String,
     /// RFC 3339 time the daemon started.
@@ -113,11 +113,11 @@ pub struct HostHeartbeat {
     pub files_dir_free_bytes: Option<i64>,
 }
 
-/// A host's latest heartbeat with budget, accounting, and availability.
+/// A node's latest heartbeat with budget, accounting, and availability.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct HostStatus {
-    /// Reporting host.
-    pub host_id: String,
+pub struct NodeStatus {
+    /// Reporting node.
+    pub node_id: String,
     /// Daemon process incarnation.
     pub incarnation: String,
     /// RFC 3339 daemon start.
@@ -136,7 +136,7 @@ pub struct HostStatus {
     pub cpu_budget_millicores: i64,
     /// Memory the scheduler may commit.
     pub memory_budget_bytes: Option<i64>,
-    /// False when an operator drained the host.
+    /// False when an operator drained the node.
     pub schedulable: bool,
     /// Measured CPU in use.
     pub cpu_used_millicores: Option<i64>,
@@ -154,15 +154,15 @@ pub struct HostStatus {
     pub online_since_ms: i64,
 }
 
-impl HostStatus {
+impl NodeStatus {
     /// True while the last heartbeat is younger than
-    /// [`HOST_LIVE_INTERVALS`] intervals.
+    /// [`NODE_LIVE_INTERVALS`] intervals.
     #[must_use]
     pub fn is_live(&self, now_ms: i64) -> bool {
         let window = self
             .interval_ms
             .max(1_000)
-            .saturating_mul(HOST_LIVE_INTERVALS);
+            .saturating_mul(NODE_LIVE_INTERVALS);
         now_ms.saturating_sub(self.heartbeat_ms) <= window
     }
 
@@ -179,7 +179,7 @@ impl HostStatus {
     }
 
     /// Memory still uncommitted under the budget and actually available on
-    /// the machine; empty when the host could not detect its memory.
+    /// the machine; empty when the node could not detect its memory.
     #[must_use]
     pub fn memory_headroom_bytes(&self) -> Option<i64> {
         let budget = self.memory_budget_bytes?;
@@ -194,7 +194,7 @@ impl HostStatus {
 /// Samples capacity and measured use for heartbeats. Keeps the previous CPU
 /// counters so each sample reports utilization since the last one.
 #[derive(Debug)]
-pub struct HostSampler {
+pub struct NodeSampler {
     /// Directory whose filesystem free space is reported.
     files_dir: PathBuf,
     /// The daemon's cgroup, when it runs in one.
@@ -207,7 +207,7 @@ pub struct HostSampler {
     started_at: String,
 }
 
-impl HostSampler {
+impl NodeSampler {
     /// A sampler for this process.
     #[must_use]
     pub fn new(files_dir: &Path) -> Self {
@@ -229,7 +229,7 @@ impl HostSampler {
 
     /// Reads capacity and use now. The first sample has no CPU use yet.
     /// Blocking: small `/proc`, cgroup, and `statvfs` reads.
-    pub fn sample(&mut self) -> HostHeartbeat {
+    pub fn sample(&mut self) -> NodeHeartbeat {
         let cgroup = self
             .cgroup_dir
             .as_deref()
@@ -277,10 +277,10 @@ impl HostSampler {
         if let Some(times) = times {
             self.last_cpu = Some((times, now));
         }
-        HostHeartbeat {
+        NodeHeartbeat {
             incarnation: self.incarnation.clone(),
             started_at: self.started_at.clone(),
-            interval: HOST_HEARTBEAT_INTERVAL,
+            interval: NODE_HEARTBEAT_INTERVAL,
             cpu_millicores,
             memory_bytes,
             cpu_used_millicores,
@@ -297,7 +297,7 @@ pub const AVAILABILITY_FULL_PPM: i64 = 1_000_000;
 /// Next availability average (parts per million) after `gap_ms` since the
 /// previous heartbeat.
 ///
-/// The host counts as online for the whole gap when it is within the live
+/// The node counts as online for the whole gap when it is within the live
 /// window, else for one interval (it stopped right after the last
 /// heartbeat). The average decays with [`AVAILABILITY_TAU`].
 #[must_use]
@@ -305,7 +305,7 @@ pub fn next_availability(previous_ppm: i64, gap_ms: i64, interval_ms: i64) -> i6
     if gap_ms <= 0 {
         return previous_ppm.clamp(0, AVAILABILITY_FULL_PPM);
     }
-    let live_window = interval_ms.max(1_000).saturating_mul(HOST_LIVE_INTERVALS);
+    let live_window = interval_ms.max(1_000).saturating_mul(NODE_LIVE_INTERVALS);
     let online_ms = if gap_ms <= live_window {
         gap_ms
     } else {
@@ -323,28 +323,28 @@ pub fn next_availability(previous_ppm: i64, gap_ms: i64, interval_ms: i64) -> i6
     rounded.clamp(0, AVAILABILITY_FULL_PPM)
 }
 
-/// Records this host's heartbeat: its measurements, its budget from
-/// `host.runtime`, the reservations of its running guests, and the updated
+/// Records this node's heartbeat: its measurements, its budget from
+/// `node.runtime`, the reservations of its running guests, and the updated
 /// availability.
 ///
 /// # Errors
 ///
 /// Returns an error when a read or the upsert fails.
-pub async fn record_host_heartbeat(
+pub async fn record_node_heartbeat(
     store: &LibraryStore,
-    host_id: &str,
-    heartbeat: &HostHeartbeat,
-) -> Result<HostStatus> {
+    node_id: &str,
+    heartbeat: &NodeHeartbeat,
+) -> Result<NodeStatus> {
     let now = Utc::now();
     let now_ms = now.timestamp_millis();
     let interval_ms = i64::try_from(heartbeat.interval.as_millis()).unwrap_or(i64::MAX);
-    let runtime = match super::load_host_runtime(store, host_id).await {
+    let runtime = match super::load_node_runtime(store, node_id).await {
         Ok(document) => document.body,
-        Err(LibraryError::NotFound(_)) => super::HostRuntimeSettingsV1::new(),
+        Err(LibraryError::NotFound(_)) => super::NodeRuntimeSettingsV1::new(),
         Err(err) => return Err(err),
     };
-    let (reserved, running_guests) = host_reservations(store, host_id).await?;
-    let previous = load_host_status(store, host_id).await?;
+    let (reserved, running_guests) = node_reservations(store, node_id).await?;
+    let previous = load_node_status(store, node_id).await?;
     let (availability_ppm, online_since_ms) = match &previous {
         Some(prev) => {
             let gap = now_ms.saturating_sub(prev.heartbeat_ms);
@@ -361,8 +361,8 @@ pub async fn record_host_heartbeat(
         None => (AVAILABILITY_FULL_PPM, now_ms),
     };
     let budget = |value: i64, percent: u8| value.saturating_mul(i64::from(percent)) / 100;
-    let status = HostStatus {
-        host_id: host_id.to_string(),
+    let status = NodeStatus {
+        node_id: node_id.to_string(),
         incarnation: heartbeat.incarnation.clone(),
         started_at: heartbeat.started_at.clone(),
         heartbeat_at: now.to_rfc3339(),
@@ -383,14 +383,14 @@ pub async fn record_host_heartbeat(
         availability_ppm,
         online_since_ms,
     };
-    upsert_host_status(store, &status).await?;
+    upsert_node_status(store, &status).await?;
     Ok(status)
 }
 
-/// Writes `status` as the host's row (insert or replace).
-pub(crate) async fn upsert_host_status(store: &LibraryStore, status: &HostStatus) -> Result<()> {
-    let model = host_status::ActiveModel {
-        host_id: Set(status.host_id.clone()),
+/// Writes `status` as the node's row (insert or replace).
+pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus) -> Result<()> {
+    let model = node_status::ActiveModel {
+        node_id: Set(status.node_id.clone()),
         incarnation: Set(status.incarnation.clone()),
         started_at: Set(status.started_at.clone()),
         heartbeat_at: Set(status.heartbeat_at.clone()),
@@ -410,28 +410,28 @@ pub(crate) async fn upsert_host_status(store: &LibraryStore, status: &HostStatus
         availability_ppm: Set(status.availability_ppm),
         online_since_ms: Set(status.online_since_ms),
     };
-    host_status::Entity::insert(model)
+    node_status::Entity::insert(model)
         .on_conflict(
-            OnConflict::column(host_status::Column::HostId)
+            OnConflict::column(node_status::Column::NodeId)
                 .update_columns([
-                    host_status::Column::Incarnation,
-                    host_status::Column::StartedAt,
-                    host_status::Column::HeartbeatAt,
-                    host_status::Column::HeartbeatMs,
-                    host_status::Column::IntervalMs,
-                    host_status::Column::CpuMillicores,
-                    host_status::Column::MemoryBytes,
-                    host_status::Column::CpuBudgetMillicores,
-                    host_status::Column::MemoryBudgetBytes,
-                    host_status::Column::Schedulable,
-                    host_status::Column::CpuUsedMillicores,
-                    host_status::Column::MemoryAvailableBytes,
-                    host_status::Column::FilesDirFreeBytes,
-                    host_status::Column::ReservedCpuMillicores,
-                    host_status::Column::ReservedMemoryBytes,
-                    host_status::Column::RunningGuests,
-                    host_status::Column::AvailabilityPpm,
-                    host_status::Column::OnlineSinceMs,
+                    node_status::Column::Incarnation,
+                    node_status::Column::StartedAt,
+                    node_status::Column::HeartbeatAt,
+                    node_status::Column::HeartbeatMs,
+                    node_status::Column::IntervalMs,
+                    node_status::Column::CpuMillicores,
+                    node_status::Column::MemoryBytes,
+                    node_status::Column::CpuBudgetMillicores,
+                    node_status::Column::MemoryBudgetBytes,
+                    node_status::Column::Schedulable,
+                    node_status::Column::CpuUsedMillicores,
+                    node_status::Column::MemoryAvailableBytes,
+                    node_status::Column::FilesDirFreeBytes,
+                    node_status::Column::ReservedCpuMillicores,
+                    node_status::Column::ReservedMemoryBytes,
+                    node_status::Column::RunningGuests,
+                    node_status::Column::AvailabilityPpm,
+                    node_status::Column::OnlineSinceMs,
                 ])
                 .to_owned(),
         )
@@ -442,9 +442,9 @@ pub(crate) async fn upsert_host_status(store: &LibraryStore, status: &HostStatus
 }
 
 /// Maps a stored row.
-fn status_from_model(row: host_status::Model) -> HostStatus {
-    HostStatus {
-        host_id: row.host_id,
+fn status_from_model(row: node_status::Model) -> NodeStatus {
+    NodeStatus {
+        node_id: row.node_id,
         incarnation: row.incarnation,
         started_at: row.started_at,
         heartbeat_at: row.heartbeat_at,
@@ -468,27 +468,27 @@ fn status_from_model(row: host_status::Model) -> HostStatus {
     }
 }
 
-/// One host's latest heartbeat, if its daemon ever ran.
+/// One node's latest heartbeat, if its daemon ever ran.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn load_host_status(store: &LibraryStore, host_id: &str) -> Result<Option<HostStatus>> {
-    Ok(host_status::Entity::find_by_id(host_id.to_string())
+pub async fn load_node_status(store: &LibraryStore, node_id: &str) -> Result<Option<NodeStatus>> {
+    Ok(node_status::Entity::find_by_id(node_id.to_string())
         .one(store.db())
         .await
         .map_err(LibraryError::Orm)?
         .map(status_from_model))
 }
 
-/// Every host's latest heartbeat, by host id.
+/// Every node's latest heartbeat, by node id.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn list_host_statuses(store: &LibraryStore) -> Result<Vec<HostStatus>> {
-    Ok(host_status::Entity::find()
-        .order_by_asc(host_status::Column::HostId)
+pub async fn list_node_statuses(store: &LibraryStore) -> Result<Vec<NodeStatus>> {
+    Ok(node_status::Entity::find()
+        .order_by_asc(node_status::Column::NodeId)
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?
@@ -497,7 +497,7 @@ pub async fn list_host_statuses(store: &LibraryStore) -> Result<Vec<HostStatus>>
         .collect())
 }
 
-/// Records the ceilings of the guest a host just started for a deployment.
+/// Records the ceilings of the guest a node just started for a deployment.
 ///
 /// # Errors
 ///
@@ -505,7 +505,7 @@ pub async fn list_host_statuses(store: &LibraryStore) -> Result<Vec<HostStatus>>
 pub async fn record_deployment_reservation(
     store: &LibraryStore,
     deployment_id: &str,
-    host_id: &str,
+    node_id: &str,
     reservation: GuestReservation,
 ) -> Result<()> {
     plugin_deployment_observations::Entity::update_many()
@@ -518,7 +518,7 @@ pub async fn record_deployment_reservation(
             sea_orm::sea_query::Expr::value(Some(reservation.cpu_millicores)),
         )
         .filter(plugin_deployment_observations::Column::DeploymentId.eq(deployment_id))
-        .filter(plugin_deployment_observations::Column::HostId.eq(host_id))
+        .filter(plugin_deployment_observations::Column::NodeId.eq(node_id))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -538,24 +538,24 @@ fn row_reservation(row: &plugin_deployment_observations::Model) -> Option<GuestR
     })
 }
 
-/// Sum of the ceilings of the guests running on `host_id`, and how many run.
+/// Sum of the ceilings of the guests running on `node_id`, and how many run.
 /// A running guest with no recorded ceiling counts as the grant defaults.
 ///
 /// # Errors
 ///
 /// Returns an error when a read fails.
-pub async fn host_reservations(
+pub async fn node_reservations(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<(GuestReservation, i64)> {
-    let running: std::collections::BTreeSet<String> = list_deployments_for_host(store, host_id)
+    let running: std::collections::BTreeSet<String> = list_deployments_for_node(store, node_id)
         .await?
         .into_iter()
         .filter(|d| d.desired.runs())
         .map(|d| d.deployment_id)
         .collect();
     let rows = plugin_deployment_observations::Entity::find()
-        .filter(plugin_deployment_observations::Column::HostId.eq(host_id))
+        .filter(plugin_deployment_observations::Column::NodeId.eq(node_id))
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -572,7 +572,7 @@ pub async fn host_reservations(
 }
 
 /// What one more guest of `instance_id` is expected to need: the largest
-/// ceiling any host recorded for it, or `None` when no host ran it yet.
+/// ceiling any node recorded for it, or `None` when no node ran it yet.
 ///
 /// # Errors
 ///
@@ -604,12 +604,12 @@ mod tests {
     #[test]
     fn availability_rises_while_online_and_decays_while_off() {
         let full = AVAILABILITY_FULL_PPM;
-        // Continuous heartbeats keep a fully available host full.
+        // Continuous heartbeats keep a fully available node full.
         assert_eq!(next_availability(full, 15_000, 15_000), full);
         // Ten hours off costs about a third of a day-long average.
         let after_gap = next_availability(full, 10 * 3600 * 1000, 15_000);
         assert!((600_000..700_000).contains(&after_gap), "{after_gap}");
-        // A host that keeps coming back climbs again.
+        // A node that keeps coming back climbs again.
         let mut a = after_gap;
         for _ in 0..(4 * 60 * 6) {
             a = next_availability(a, 15_000, 15_000);
@@ -621,8 +621,8 @@ mod tests {
 
     #[test]
     fn headroom_counts_reservations_measured_use_and_available_memory() {
-        let status = HostStatus {
-            host_id: "h".into(),
+        let status = NodeStatus {
+            node_id: "h".into(),
             incarnation: String::new(),
             started_at: String::new(),
             heartbeat_at: String::new(),

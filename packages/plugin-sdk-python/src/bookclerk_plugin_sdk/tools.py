@@ -215,7 +215,7 @@ def unimplemented_surface(m: dict[str, Any]) -> str | None:
 MAX_QUEUE_NAME_LEN = 63
 """Longest queue name."""
 
-RESERVED_QUEUE_PREFIXES = ("core.", "host.")
+RESERVED_QUEUE_PREFIXES = ("core.", "node.")
 """Queue-name prefixes only the host may use."""
 
 _QUEUE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -242,7 +242,7 @@ def _validate_queue_name(field: str, name: Any) -> None:
         )
     if text.startswith(RESERVED_QUEUE_PREFIXES):
         raise ValueError(
-            f"plugin.toml: {field} `{text}` uses a host-reserved prefix (`core.`, `host.`)"
+            f"plugin.toml: {field} `{text}` uses a host-reserved prefix (`core.`, `node.`)"
         )
 
 

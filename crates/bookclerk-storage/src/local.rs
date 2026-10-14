@@ -113,7 +113,7 @@ impl LocalFsBackend {
 
     /// Overrides the host placement reported for scan adoption.
     ///
-    /// Production backends leave this unset and use [`crate::host_placement_id`].
+    /// Production backends leave this unset and use [`crate::node_placement_id`].
     #[must_use]
     pub fn with_scan_placement(mut self, placement: impl Into<String>) -> Self {
         self.placement_override = Some(placement.into());
@@ -251,7 +251,7 @@ impl StorageBackend for LocalFsBackend {
         Some(
             self.placement_override
                 .clone()
-                .unwrap_or_else(crate::host_placement_id),
+                .unwrap_or_else(crate::node_placement_id),
         )
     }
 

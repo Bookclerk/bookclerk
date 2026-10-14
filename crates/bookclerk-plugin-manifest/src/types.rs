@@ -520,8 +520,8 @@ pub fn is_host_event_type(event_type: &str) -> bool {
 
 /// Maximum length of a queue name.
 pub const MAX_QUEUE_NAME_LEN: usize = 63;
-/// Queue-name prefixes only the host may use (`core.events`, `host.<id>`).
-pub const RESERVED_QUEUE_PREFIXES: [&str; 2] = ["core.", "host."];
+/// Queue-name prefixes only the host may use (`core.events`, `node.<id>`).
+pub const RESERVED_QUEUE_PREFIXES: [&str; 2] = ["core.", "node."];
 /// Default `max_batch_size` for `[[queues.consumers]]`.
 pub const DEFAULT_QUEUE_MAX_BATCH_SIZE: u32 = 10;
 /// Largest `max_batch_size` a consumer may declare.
@@ -582,7 +582,7 @@ impl QueuesManifest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct QueueProducer {
-    /// Queue name (`[a-z0-9][a-z0-9._-]*`; `core.` and `host.` are reserved).
+    /// Queue name (`[a-z0-9][a-z0-9._-]*`; `core.` and `node.` are reserved).
     pub queue: String,
     /// Binding name on `env` (`[A-Z][A-Z0-9_]*`); required, as in Wrangler.
     pub binding: String,
@@ -1767,7 +1767,7 @@ fn validate_queue_name(field: &str, name: &str) -> Result<()> {
     }
     if is_reserved_queue_name(name) {
         return Err(Error::message(format!(
-            "plugin.toml: {field} `{name}` uses a host-reserved prefix (`core.`, `host.`)"
+            "plugin.toml: {field} `{name}` uses a host-reserved prefix (`core.`, `node.`)"
         )));
     }
     Ok(())
@@ -2736,7 +2736,7 @@ mode = "deny"
                 "host-reserved",
             ),
             (
-                "\n[[queues.consumers]]\nqueue = \"host.abc\"\n",
+                "\n[[queues.consumers]]\nqueue = \"node.abc\"\n",
                 "host-reserved",
             ),
             (

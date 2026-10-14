@@ -96,8 +96,6 @@ pub struct AppState {
     pub tray: RwLock<Option<bookclerk_tray::SharedTrayConfig>>,
     /// Single-use tray Open Bookclerk ticket (hash + deadline). Replaced on prepare; restart clears it.
     pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
-    /// Process-stable catalog heartbeat key (resolved once at event runtime start).
-    pub event_node_id: OnceLock<String>,
     /// Guest sessions for deployed instances. One map for the process lifetime.
     pub deployment_runtime: OnceLock<Arc<bookclerk_plugin_host::LiveDeploymentRuntime>>,
 }
@@ -439,14 +437,14 @@ struct PluginSettingsGroup {
     /// Instance document revision for compare-and-swap writes.
     #[serde(skip_serializing_if = "Option::is_none")]
     config_revision: Option<i64>,
-    /// This host's deployment of the instance, when one exists.
+    /// This node's deployment of the instance, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     deployment: Option<crate::config_authority::PluginDeploymentView>,
     /// Scheduler placement; absent when the instance is hand-managed (the
     /// Enabled switch applies only then).
     #[serde(skip_serializing_if = "Option::is_none")]
     placement: Option<crate::config_authority::PlacementView>,
-    /// Hosts whose deployment of the instance is `present`.
+    /// Nodes whose deployment of the instance is `present`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     present_on: Vec<String>,
 }
@@ -885,7 +883,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 .put(crate::config_authority::put_plugin_instance_config),
         )
         .route(
-            "/api/config/plugin-instances/{id}/deployments/{host_id}",
+            "/api/config/plugin-instances/{id}/deployments/{node_id}",
             put(crate::config_authority::put_plugin_deployment),
         )
         .route(
@@ -893,14 +891,14 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             put(crate::config_authority::put_plugin_placement_route)
                 .delete(crate::config_authority::delete_plugin_placement_route),
         )
-        .route("/api/config/hosts", get(crate::config_authority::get_hosts))
+        .route("/api/config/nodes", get(crate::config_authority::get_nodes))
         .route(
-            "/api/config/hosts/{host_id}/labels",
-            put(crate::config_authority::put_host_labels),
+            "/api/config/nodes/{node_id}/labels",
+            put(crate::config_authority::put_node_labels),
         )
         .route(
-            "/api/config/hosts/{host_id}/runtime",
-            put(crate::config_authority::put_host_runtime),
+            "/api/config/nodes/{node_id}/runtime",
+            put(crate::config_authority::put_node_runtime),
         )
         .route(
             "/api/config/plugin-releases",
@@ -1417,13 +1415,13 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         Some(lib) => lib.clone(),
         None => state.library_snapshot().await,
     };
-    let bookclerk_plugin_host::HostEnrollment {
+    let bookclerk_plugin_host::NodeEnrollment {
         config: mut new_cfg,
         session: control_plane,
         enrolled,
-    } = bookclerk_plugin_host::enroll_host(&new_cfg, &library_for_auth).await?;
+    } = bookclerk_plugin_host::enroll_node(&new_cfg, &library_for_auth).await?;
     tracing::info!(
-        host_id = %control_plane.host.host_id,
+        node_id = %control_plane.node.node_id,
         enrolled = enrolled.len(),
         "re-enrolled local plugins on config reload"
     );
@@ -2163,11 +2161,11 @@ fn build_database_settings_group(
 }
 
 /// Settings groups: one per plugin instance from the control plane, plus the
-/// bootstrap database adapters discovered on this host.
+/// bootstrap database adapters discovered on this node.
 async fn plugin_settings_snapshot(
     config: &Config,
     library: &bookclerk_library::LibraryStore,
-    host_id: &str,
+    node_id: &str,
     discovered_plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
 ) -> Vec<PluginSettingsGroup> {
     let mut groups = Vec::new();
@@ -2201,7 +2199,7 @@ async fn plugin_settings_snapshot(
         groups.push(group);
     }
 
-    let views = match crate::config_authority::list_plugin_instance_views(library, host_id).await {
+    let views = match crate::config_authority::list_plugin_instance_views(library, node_id).await {
         Ok(views) => views,
         Err(err) => {
             tracing::warn!(error = %err, "plugin instances unavailable for settings");
@@ -2212,7 +2210,7 @@ async fn plugin_settings_snapshot(
         let plugin = discovered_plugins
             .iter()
             .find(|plugin| plugin.plugin_key().canonical() == view.plugin_key);
-        groups.push(instance_settings_group(view, plugin, host_id));
+        groups.push(instance_settings_group(view, plugin, node_id));
     }
     groups.sort_by(|a, b| {
         (a.family.as_str(), a.id.as_str(), &a.display_name).cmp(&(
@@ -2231,7 +2229,7 @@ async fn plugin_settings_snapshot(
 fn instance_settings_group(
     view: &crate::config_authority::PluginInstanceView,
     plugin: Option<&bookclerk_plugin_host::DiscoveredPlugin>,
-    host_id: &str,
+    node_id: &str,
 ) -> PluginSettingsGroup {
     use bookclerk_library::control_plane::SettingValue;
     use bookclerk_plugin_abi::SettingKind;
@@ -2318,14 +2316,14 @@ fn instance_settings_group(
         deployment: view
             .deployments
             .iter()
-            .find(|deployment| deployment.host_id == host_id)
+            .find(|deployment| deployment.node_id == node_id)
             .cloned(),
         placement: view.placement.clone(),
         present_on: view
             .deployments
             .iter()
             .filter(|deployment| deployment.desired == "present" || deployment.desired == "placed")
-            .map(|deployment| deployment.host_id.clone())
+            .map(|deployment| deployment.node_id.clone())
             .collect(),
     }
 }
@@ -2908,26 +2906,26 @@ async fn get_settings(
     let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
     let discovered_plugins = discover_plugins_for_settings(&cfg).await;
-    // A config without resolved paths (unit tests) has no host identity and
+    // A config without resolved paths (unit tests) has no node identity and
     // therefore no per-host deployment view; the plugin groups still render.
-    let host_id = cfg
+    let node_id = cfg
         .paths
         .as_ref()
         .and_then(|paths| {
-            bookclerk_library::control_plane::load_or_create_host_identity(&paths.files_dir)
+            bookclerk_library::control_plane::load_or_create_node_identity(&paths.files_dir)
                 .map_err(|err| {
-                    tracing::warn!(error = %err, "host identity unavailable for settings");
+                    tracing::warn!(error = %err, "node identity unavailable for settings");
                 })
                 .ok()
         })
-        .map(|host| host.host_id)
+        .map(|host| host.node_id)
         .unwrap_or_default();
     let auth = state.auth_snapshot().await;
     let settings = current_settings_snapshot(&cfg);
     let mut effective = settings.clone();
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
-    effective.insert("host.id".into(), host_id.clone());
+    effective.insert("node.id".into(), node_id.clone());
     for source in state.sources.read().await.all() {
         let address = source
             .plugin_instance_id()
@@ -2951,7 +2949,7 @@ async fn get_settings(
     Ok(Json(SettingsResponse {
         settings,
         effective,
-        plugins: plugin_settings_snapshot(&cfg, &library, &host_id, &discovered_plugins).await,
+        plugins: plugin_settings_snapshot(&cfg, &library, &node_id, &discovered_plugins).await,
         host_cpu_cores_max: host_cpu_cores_max(),
         jail_cpu_cores: cfg
             .plugins
@@ -3967,7 +3965,7 @@ async fn get_book(
 }
 
 /// Serves the JPEG cover sidecar from the deployed local destination, or 404
-/// when no local destination runs on this host.
+/// when no local destination runs on this node.
 async fn get_book_cover(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
@@ -6026,7 +6024,6 @@ mode = "deny"
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
-            event_node_id: std::sync::OnceLock::new(),
             deployment_runtime: std::sync::OnceLock::new(),
         });
 
@@ -6126,7 +6123,6 @@ mode = "deny"
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
-            event_node_id: std::sync::OnceLock::new(),
             deployment_runtime: std::sync::OnceLock::new(),
         });
 
@@ -6548,7 +6544,6 @@ mode = "deny"
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
-            event_node_id: std::sync::OnceLock::new(),
             deployment_runtime: std::sync::OnceLock::new(),
         });
 

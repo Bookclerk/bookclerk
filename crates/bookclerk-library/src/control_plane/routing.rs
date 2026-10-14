@@ -1,13 +1,13 @@
-//! Routing work for a plugin instance to the best live host that runs it.
+//! Routing work for a plugin instance to the best live node that runs it.
 //!
-//! Hosts never talk to each other, so nobody hands a call to a host. Each
-//! host that runs an instance ranks every live host running it, from the
+//! Nodes never talk to each other, so nobody hands a call to a node. Each
+//! node that runs an instance ranks every live node running it, from the
 //! heartbeats in the shared database, by the same headroom score placement
 //! uses (room for more of this instance's demand, weighted by
-//! availability). Every host computes the same ranking. The best host
-//! (rank 0) claims the instance's deliveries as soon as they are due; a host
+//! availability). Every node computes the same ranking. The best node
+//! (rank 0) claims the instance's deliveries as soon as they are due; a node
 //! ranked `r` claims one only after it has been due for
-//! `r × ROUTE_DEFER_PER_RANK`. A busy, stalled, or vanished best host
+//! `r × ROUTE_DEFER_PER_RANK`. A busy, stalled, or vanished best node
 //! therefore costs at most a short delay before the next one takes over,
 //! with no coordination beyond the claim's compare-and-swap.
 
@@ -17,57 +17,57 @@ use std::time::Duration;
 use chrono::Utc;
 
 use super::deployments::{list_deployments_for_instance, load_observation, DeploymentStatus};
-use super::host_status::{instance_demand, list_host_statuses, GuestReservation};
-use super::identity::list_hosts;
+use super::identity::list_nodes;
 use super::instances::PluginInstanceId;
-use super::placement::HostCandidate;
+use super::node_status::{instance_demand, list_node_statuses, GuestReservation};
+use super::placement::NodeCandidate;
 use crate::error::Result;
 use crate::store::LibraryStore;
 
 /// How long each rank waits behind the one above it.
 pub const ROUTE_DEFER_PER_RANK: Duration = Duration::from_secs(10);
 
-/// This host's position among the live hosts running one instance.
+/// This node's position among the live nodes running one instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteRank {
-    /// 0 for the best host.
+    /// 0 for the best node.
     pub rank: usize,
-    /// Live hosts running the instance, best first.
-    pub hosts: Vec<String>,
+    /// Live nodes running the instance, best first.
+    pub nodes: Vec<String>,
 }
 
 impl RouteRank {
-    /// How long this host lets a delivery wait before claiming it.
+    /// How long this node lets a delivery wait before claiming it.
     #[must_use]
     pub fn defer(&self) -> Duration {
         ROUTE_DEFER_PER_RANK.saturating_mul(u32::try_from(self.rank).unwrap_or(u32::MAX))
     }
 }
 
-/// Ranks `running` hosts for `demand`, best first (most room, then host id).
+/// Ranks `running` nodes for `demand`, best first (most room, then node id).
 #[must_use]
-pub fn rank_hosts(running: &[HostCandidate], demand: GuestReservation) -> Vec<String> {
-    let mut ordered: Vec<&HostCandidate> = running.iter().collect();
+pub fn rank_nodes(running: &[NodeCandidate], demand: GuestReservation) -> Vec<String> {
+    let mut ordered: Vec<&NodeCandidate> = running.iter().collect();
     ordered.sort_by(|a, b| {
         b.score(demand)
             .cmp(&a.score(demand))
-            .then_with(|| a.host_id.cmp(&b.host_id))
+            .then_with(|| a.node_id.cmp(&b.node_id))
     });
-    ordered.into_iter().map(|h| h.host_id.clone()).collect()
+    ordered.into_iter().map(|h| h.node_id.clone()).collect()
 }
 
-/// For each claim id that is a plugin instance id, `host_id`'s rank among
-/// the live hosts whose guest of that instance is up (`running` or
-/// `healthy`). Ids that are not instance ids (plugin keys, aliases, host
-/// consumers) are left out: they are not routed. A host missing from the
-/// list (no heartbeat yet) ranks after every live host.
+/// For each claim id that is a plugin instance id, `node_id`'s rank among
+/// the live nodes whose guest of that instance is up (`running` or
+/// `healthy`). Ids that are not instance ids (plugin keys, aliases, node
+/// consumers) are left out: they are not routed. A node missing from the
+/// list (no heartbeat yet) ranks after every live node.
 ///
 /// # Errors
 ///
 /// Returns an error when a read fails.
 pub async fn route_ranks(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
     claim_ids: &[String],
 ) -> Result<BTreeMap<String, RouteRank>> {
     let instances: BTreeSet<PluginInstanceId> = claim_ids
@@ -79,18 +79,18 @@ pub async fn route_ranks(
         return Ok(ranks);
     }
     let now_ms = Utc::now().timestamp_millis();
-    let statuses: BTreeMap<String, _> = list_host_statuses(store)
+    let statuses: BTreeMap<String, _> = list_node_statuses(store)
         .await?
         .into_iter()
-        .map(|status| (status.host_id.clone(), status))
+        .map(|status| (status.node_id.clone(), status))
         .collect();
-    let candidates: BTreeMap<String, HostCandidate> = list_hosts(store)
+    let candidates: BTreeMap<String, NodeCandidate> = list_nodes(store)
         .await?
         .iter()
-        .map(|host| {
+        .map(|node| {
             (
-                host.host_id.clone(),
-                HostCandidate::from_status(host, statuses.get(&host.host_id), now_ms),
+                node.node_id.clone(),
+                NodeCandidate::from_status(node, statuses.get(&node.node_id), now_ms),
             )
         })
         .filter(|(_, candidate)| candidate.live)
@@ -101,10 +101,10 @@ pub async fn route_ranks(
             if !deployment.desired.runs() {
                 continue;
             }
-            let Some(candidate) = candidates.get(&deployment.host_id) else {
+            let Some(candidate) = candidates.get(&deployment.node_id) else {
                 continue;
             };
-            let up = load_observation(store, &deployment.deployment_id, &deployment.host_id)
+            let up = load_observation(store, &deployment.deployment_id, &deployment.node_id)
                 .await?
                 .is_some_and(|o| {
                     matches!(
@@ -119,12 +119,12 @@ pub async fn route_ranks(
         let demand = instance_demand(store, &instance)
             .await?
             .unwrap_or_else(GuestReservation::default_guest);
-        let hosts = rank_hosts(&running, demand);
-        let rank = hosts
+        let nodes = rank_nodes(&running, demand);
+        let rank = nodes
             .iter()
-            .position(|id| id == host_id)
-            .unwrap_or(hosts.len());
-        ranks.insert(instance.as_str().to_string(), RouteRank { rank, hosts });
+            .position(|id| id == node_id)
+            .unwrap_or(nodes.len());
+        ranks.insert(instance.as_str().to_string(), RouteRank { rank, nodes });
     }
     Ok(ranks)
 }
@@ -133,9 +133,9 @@ pub async fn route_ranks(
 mod tests {
     use super::*;
 
-    fn candidate(id: &str, cores: i64, availability_ppm: i64) -> HostCandidate {
-        HostCandidate {
-            host_id: id.into(),
+    fn candidate(id: &str, cores: i64, availability_ppm: i64) -> NodeCandidate {
+        NodeCandidate {
+            node_id: id.into(),
             labels: BTreeSet::new(),
             target: String::new(),
             live: true,
@@ -147,8 +147,8 @@ mod tests {
     }
 
     #[test]
-    fn the_host_with_the_most_room_ranks_first_and_waits_least() {
-        let order = rank_hosts(
+    fn the_node_with_the_most_room_ranks_first_and_waits_least() {
+        let order = rank_nodes(
             &[
                 candidate("vps", 1, 1_000_000),
                 candidate("desk", 10, 400_000),
@@ -159,13 +159,13 @@ mod tests {
         assert_eq!(order, vec!["desk", "vps", "busy"]);
         let second = RouteRank {
             rank: 1,
-            hosts: order,
+            nodes: order,
         };
         assert_eq!(second.defer(), ROUTE_DEFER_PER_RANK);
         assert_eq!(
             RouteRank {
                 rank: 0,
-                hosts: Vec::new()
+                nodes: Vec::new()
             }
             .defer(),
             Duration::ZERO

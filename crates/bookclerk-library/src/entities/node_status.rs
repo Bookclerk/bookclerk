@@ -1,14 +1,14 @@
-//! SeaORM entity for `host_status`: each host's latest daemon heartbeat.
+//! SeaORM entity for `node_status`: each node's latest daemon heartbeat.
 
 use sea_orm::entity::prelude::*;
 
 /// Row shape for this table (`DeriveEntityModel`).
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-#[sea_orm(table_name = "host_status")]
+#[sea_orm(table_name = "node_status")]
 pub struct Model {
-    /// Reporting host.
+    /// Reporting node.
     #[sea_orm(primary_key, auto_increment = false)]
-    pub host_id: String,
+    pub node_id: String,
     /// Daemon process incarnation.
     pub incarnation: String,
     /// RFC 3339 time the daemon process started.
@@ -27,7 +27,7 @@ pub struct Model {
     pub cpu_budget_millicores: i64,
     /// Memory the scheduler may commit here; empty when memory is unknown.
     pub memory_budget_bytes: Option<i64>,
-    /// `1` unless an operator drained the host.
+    /// `1` unless an operator drained the node.
     pub schedulable: i64,
     /// Measured CPU in use, in millicores; empty until two samples exist.
     pub cpu_used_millicores: Option<i64>,
@@ -39,7 +39,7 @@ pub struct Model {
     pub reserved_cpu_millicores: i64,
     /// Sum of running guests' memory ceilings.
     pub reserved_memory_bytes: i64,
-    /// Guests running on the host.
+    /// Guests running on the node.
     pub running_guests: i64,
     /// Recent online fraction in parts per million.
     pub availability_ppm: i64,

@@ -9,11 +9,11 @@ mod config_authority;
 mod csrf;
 mod event_worker;
 mod heartbeat;
-mod host_queue;
 mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod node_queue;
 mod oidc;
 mod oidc_rp;
 mod oidc_verify;
@@ -127,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
         ..
     } = bookclerk_plugin_host::open_host_control_plane(&config).await?;
     tracing::info!(
-        host_id = %control_plane.host.host_id,
+        node_id = %control_plane.node.node_id,
         cluster_id = %control_plane.cluster_id,
         events_revision = control_plane.events.revision,
         enrolled = enrolled.len(),
@@ -168,7 +168,6 @@ async fn main() -> anyhow::Result<()> {
         last_bound_listen: RwLock::new(None),
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
-        event_node_id: std::sync::OnceLock::new(),
         deployment_runtime: std::sync::OnceLock::new(),
     });
 

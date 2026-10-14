@@ -1,4 +1,4 @@
-//! Placement, host labels, and the scheduler lease across two connections.
+//! Placement, node labels, and the scheduler lease across two connections.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -6,7 +6,7 @@ use std::time::Duration;
 use bookclerk_config::EventsConfig;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
-use super::identity::{register_and_heartbeat, HostObservation};
+use super::identity::{register_and_heartbeat, NodeObservation};
 use super::*;
 use crate::master_key::master_key_test_lock_async;
 use crate::store::LibraryStore;
@@ -25,9 +25,9 @@ fn operator() -> ConfigActor {
     }
 }
 
-/// Registers another host in the cluster.
-pub(super) async fn register(store: &LibraryStore, host_id: &str, cluster_id: &str) {
-    let empty = HostObservation {
+/// Registers another node in the cluster.
+pub(super) async fn register(store: &LibraryStore, node_id: &str, cluster_id: &str) {
+    let empty = NodeObservation {
         logical_cpus: None,
         cpu_max_quota_us: None,
         cpu_max_period_us: None,
@@ -37,28 +37,28 @@ pub(super) async fn register(store: &LibraryStore, host_id: &str, cluster_id: &s
         files_dir_free_bytes: None,
         scratch_bytes: None,
     };
-    register_and_heartbeat(store, host_id, cluster_id, "test", &empty)
+    register_and_heartbeat(store, node_id, cluster_id, "test", &empty)
         .await
-        .expect("register host");
+        .expect("register node");
 }
 
-/// Writes a heartbeat for `host_id` as if sent `age` ago, with a 4-core,
-/// 8 GiB host and nothing reserved.
-pub(super) async fn heartbeat_consumer(store: &LibraryStore, host_id: &str, age: Duration) {
-    heartbeat_with(store, host_id, age, |_| {}).await;
+/// Writes a heartbeat for `node_id` as if sent `age` ago, with a 4-core,
+/// 8 GiB node and nothing reserved.
+pub(super) async fn heartbeat_consumer(store: &LibraryStore, node_id: &str, age: Duration) {
+    heartbeat_with(store, node_id, age, |_| {}).await;
 }
 
 /// Like [`heartbeat_consumer`], with `edit` applied to the status first.
 pub(super) async fn heartbeat_with(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
     age: Duration,
-    edit: impl FnOnce(&mut HostStatus),
+    edit: impl FnOnce(&mut NodeStatus),
 ) {
     let now = chrono::Utc::now().timestamp_millis();
     let at = now - i64::try_from(age.as_millis()).unwrap();
-    let mut status = HostStatus {
-        host_id: host_id.to_string(),
+    let mut status = NodeStatus {
+        node_id: node_id.to_string(),
         incarnation: "test".into(),
         started_at: String::new(),
         heartbeat_at: String::new(),
@@ -78,13 +78,13 @@ pub(super) async fn heartbeat_with(
         online_since_ms: at,
     };
     edit(&mut status);
-    super::host_status::upsert_host_status(store, &status)
+    super::node_status::upsert_node_status(store, &status)
         .await
-        .expect("host status");
+        .expect("node status");
 }
 
-/// Hosts with a present deployment of `instance`.
-pub(super) async fn present_hosts(
+/// Nodes with a present deployment of `instance`.
+pub(super) async fn present_nodes(
     store: &LibraryStore,
     instance: &PluginInstanceId,
 ) -> BTreeSet<String> {
@@ -93,7 +93,7 @@ pub(super) async fn present_hosts(
         .unwrap()
         .into_iter()
         .filter(|d| d.desired.runs())
-        .map(|d| d.host_id)
+        .map(|d| d.node_id)
         .collect()
 }
 
@@ -128,33 +128,33 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
     .await
     .unwrap();
     let store_b = file_store(&db).await;
-    let host_a = session.host.host_id.clone();
-    assert_eq!(session.host.target, host_target());
-    register(&store_b, "host-b", &session.cluster_id).await;
-    register(&store_b, "host-c", &session.cluster_id).await;
-    for host in [host_a.as_str(), "host-b", "host-c"] {
-        heartbeat_consumer(&store_a, host, Duration::ZERO).await;
+    let node_a = session.node.node_id.clone();
+    assert_eq!(session.node.target, node_target());
+    register(&store_b, "node-b", &session.cluster_id).await;
+    register(&store_b, "node-c", &session.cluster_id).await;
+    for node in [node_a.as_str(), "node-b", "node-c"] {
+        heartbeat_consumer(&store_a, node, Duration::ZERO).await;
     }
     assert_eq!(
-        live_host_ids(&store_b).await.unwrap(),
-        set(&[&host_a, "host-b", "host-c"])
+        live_node_ids(&store_b).await.unwrap(),
+        set(&[&node_a, "node-b", "node-c"])
     );
 
-    let host = set_host_labels(&store_a, &operator(), &host_a, &labels(&["zone=eu", "nas"]))
+    let node = set_node_labels(&store_a, &operator(), &node_a, &labels(&["zone=eu", "nas"]))
         .await
         .unwrap();
-    assert_eq!(host.labels, labels(&["nas", "zone=eu"]));
-    set_host_labels(&store_a, &operator(), "host-b", &labels(&["nas"]))
+    assert_eq!(node.labels, labels(&["nas", "zone=eu"]));
+    set_node_labels(&store_a, &operator(), "node-b", &labels(&["nas"]))
         .await
         .unwrap();
     assert!(
-        set_host_labels(&store_a, &operator(), "host-b", &labels(&["host=x"]))
+        set_node_labels(&store_a, &operator(), "node-b", &labels(&["node=x"]))
             .await
             .is_err(),
         "implicit label names are not assignable"
     );
     assert!(
-        set_host_labels(&store_a, &ConfigActor::Bootstrap, "host-b", &[])
+        set_node_labels(&store_a, &ConfigActor::Bootstrap, "node-b", &[])
             .await
             .is_err(),
         "only an operator assigns labels"
@@ -190,18 +190,18 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
         ensure_hand_managed(&store_b, &instance.id).await.is_err(),
         "a placed instance refuses hand-written enable/disable"
     );
-    assert!(host_messages(&store_a, "host-c").await.iter().any(|m| matches!(
+    assert!(node_messages(&store_a, "node-c").await.iter().any(|m| matches!(
         m,
-        HostMessage::PlacementChanged { subject, revision: 1 } if subject.starts_with("instance:")
+        NodeMessage::PlacementChanged { subject, revision: 1 } if subject.starts_with("instance:")
     )));
 
-    // Host B holds the scheduler lease; host A's attempt waits its turn.
-    let lease = acquire_lease(&store_b, SCHEDULER_LEASE, "host-b", SCHEDULER_LEASE_TTL)
+    // Node B holds the scheduler lease; node A's attempt waits its turn.
+    let lease = acquire_lease(&store_b, SCHEDULER_LEASE, "node-b", SCHEDULER_LEASE_TTL)
         .await
         .unwrap()
         .expect("free lease");
     assert!(
-        acquire_lease(&store_a, SCHEDULER_LEASE, &host_a, SCHEDULER_LEASE_TTL)
+        acquire_lease(&store_a, SCHEDULER_LEASE, &node_a, SCHEDULER_LEASE_TTL)
             .await
             .unwrap()
             .is_none()
@@ -209,8 +209,8 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
     let report = schedule_placements(&store_b).await.unwrap();
     assert_eq!((report.added, report.removed), (2, 0));
     assert_eq!(
-        present_hosts(&store_a, &instance.id).await,
-        set(&[&host_a, "host-b"])
+        present_nodes(&store_a, &instance.id).await,
+        set(&[&node_a, "node-b"])
     );
     let status = load_plugin_placement(&store_a, &instance.id)
         .await
@@ -223,18 +223,18 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
         (0, 0),
         "a settled pass writes nothing"
     );
-    let b_messages = host_messages(&store_a, "host-b").await;
+    let b_messages = node_messages(&store_a, "node-b").await;
     assert!(b_messages.iter().any(|m| matches!(
         m,
-        HostMessage::DeploymentChanged { desired, .. } if desired == "placed"
+        NodeMessage::DeploymentChanged { desired, .. } if desired == "placed"
     )));
 
-    // Host B's daemon stops heartbeating: its replica is set absent, and
-    // with no other `nas` host the placement reports the shortfall.
-    heartbeat_consumer(&store_a, "host-b", Duration::from_secs(600)).await;
+    // Node B's daemon stops heartbeating: its replica is set absent, and
+    // with no other `nas` node the placement reports the shortfall.
+    heartbeat_consumer(&store_a, "node-b", Duration::from_secs(600)).await;
     let moved = schedule_placements(&store_b).await.unwrap();
     assert_eq!((moved.added, moved.removed), (0, 1));
-    assert_eq!(present_hosts(&store_a, &instance.id).await, set(&[&host_a]));
+    assert_eq!(present_nodes(&store_a, &instance.id).await, set(&[&node_a]));
     let short = load_plugin_placement(&store_a, &instance.id)
         .await
         .unwrap()
@@ -242,23 +242,23 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
     assert_eq!(short.placed, 1);
     assert!(short.detail.starts_with("1 of 2"), "{}", short.detail);
 
-    // Labelling host C makes it a candidate; the next pass fills it.
-    set_host_labels(&store_a, &operator(), "host-c", &labels(&["nas"]))
+    // Labelling node C makes it a candidate; the next pass fills it.
+    set_node_labels(&store_a, &operator(), "node-c", &labels(&["nas"]))
         .await
         .unwrap();
     let filled = schedule_placements(&store_b).await.unwrap();
     assert_eq!(filled.added, 1);
     assert_eq!(
-        present_hosts(&store_a, &instance.id).await,
-        set(&[&host_a, "host-c"])
+        present_nodes(&store_a, &instance.id).await,
+        set(&[&node_a, "node-c"])
     );
 
-    // Pinning by the implicit host label, then scaling to zero.
+    // Pinning by the implicit node label, then scaling to zero.
     let PlacementWrite::Applied(pinned) = put_plugin_placement(
         &store_a,
         &operator(),
         &instance.id,
-        &spec(1, &[&format!("host={host_a}")]),
+        &spec(1, &[&format!("node={node_a}")]),
         Some(1),
     )
     .await
@@ -267,12 +267,12 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
     };
     assert_eq!(pinned.revision, 2);
     schedule_placements(&store_b).await.unwrap();
-    assert_eq!(present_hosts(&store_a, &instance.id).await, set(&[&host_a]));
+    assert_eq!(present_nodes(&store_a, &instance.id).await, set(&[&node_a]));
     put_plugin_placement(&store_a, &operator(), &instance.id, &spec(0, &[]), Some(2))
         .await
         .unwrap();
     schedule_placements(&store_b).await.unwrap();
-    assert!(present_hosts(&store_a, &instance.id).await.is_empty());
+    assert!(present_nodes(&store_a, &instance.id).await.is_empty());
 
     // Every row the scheduler wrote carries its own states, never the
     // operator's, and only the scheduler may write them.
@@ -316,12 +316,12 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
         .await
         .unwrap();
     schedule_placements(&store_b).await.unwrap();
-    assert_eq!(present_hosts(&store_a, &instance.id).await.len(), 1);
+    assert_eq!(present_nodes(&store_a, &instance.id).await.len(), 1);
 
     // Dropping the placement hands the instance back to enable/disable:
     // `placed` becomes `present`, `unplaced` becomes `absent`, and every
-    // host keeps doing what it did.
-    let before = present_hosts(&store_a, &instance.id).await;
+    // node keeps doing what it did.
+    let before = present_nodes(&store_a, &instance.id).await;
     assert!(delete_plugin_placement(&store_a, &operator(), &instance.id)
         .await
         .unwrap());
@@ -332,14 +332,14 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
     assert!(handed
         .iter()
         .all(|d| matches!(d.desired, DesiredState::Present | DesiredState::Absent)));
-    assert_eq!(present_hosts(&store_a, &instance.id).await, before);
+    assert_eq!(present_nodes(&store_a, &instance.id).await, before);
     assert_eq!(
         schedule_placements(&store_b).await.unwrap(),
         ScheduleReport::default()
     );
     release_lease(&store_b, &lease).await.unwrap();
     assert!(
-        acquire_lease(&store_a, SCHEDULER_LEASE, &host_a, SCHEDULER_LEASE_TTL)
+        acquire_lease(&store_a, SCHEDULER_LEASE, &node_a, SCHEDULER_LEASE_TTL)
             .await
             .unwrap()
             .is_some(),
@@ -348,7 +348,7 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
 }
 
 #[tokio::test]
-async fn a_release_without_an_artifact_for_a_host_target_skips_that_host() {
+async fn a_release_without_an_artifact_for_a_node_target_skips_that_node() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(&dir.path().join("library.db")).await;
@@ -361,19 +361,19 @@ async fn a_release_without_an_artifact_for_a_host_target_skips_that_host() {
     )
     .await
     .unwrap();
-    register(&store, "host-arm", &session.cluster_id).await;
-    // A row from an arm host: rewrite its target as that host would report.
-    crate::entities::hosts::Entity::update_many()
+    register(&store, "node-arm", &session.cluster_id).await;
+    // A row from an arm node: rewrite its target as that node would report.
+    crate::entities::nodes::Entity::update_many()
         .col_expr(
-            crate::entities::hosts::Column::Target,
+            crate::entities::nodes::Column::Target,
             sea_orm::sea_query::Expr::value("linux-arm64-gnu"),
         )
-        .filter(crate::entities::hosts::Column::HostId.eq("host-arm"))
+        .filter(crate::entities::nodes::Column::NodeId.eq("node-arm"))
         .exec(store.db())
         .await
         .unwrap();
-    for host in [session.host.host_id.as_str(), "host-arm"] {
-        heartbeat_consumer(&store, host, Duration::ZERO).await;
+    for node in [session.node.node_id.as_str(), "node-arm"] {
+        heartbeat_consumer(&store, node, Duration::ZERO).await;
     }
     let key = "path:file:///tmp/x86-only#x86only";
     let release = PluginRelease {
@@ -383,7 +383,7 @@ async fn a_release_without_an_artifact_for_a_host_target_skips_that_host() {
         manifest_toml: "id = \"x86only\"\nversion = \"1.0.0\"\n".into(),
         settings: bookclerk_plugin_abi::SettingsSchema::default(),
         artifacts: vec![ReleaseArtifact {
-            target: host_target().into(),
+            target: node_target().into(),
             url: format!("{RELEASE_BLOB_SCHEME}{}", "a".repeat(64)),
             format: "tar.gz".into(),
             archive_root: ".".into(),
@@ -398,7 +398,7 @@ async fn a_release_without_an_artifact_for_a_host_target_skips_that_host() {
         published_by: String::new(),
     };
     publish_release(&store, &operator(), release).await.unwrap();
-    activate_release(&store, &operator(), key, "1.0.0", &session.host.host_id)
+    activate_release(&store, &operator(), key, "1.0.0", &session.node.node_id)
         .await
         .unwrap();
     let instance = create_plugin_instance(&store, &operator(), key, "")
@@ -409,8 +409,8 @@ async fn a_release_without_an_artifact_for_a_host_target_skips_that_host() {
         .unwrap();
     schedule_placements(&store).await.unwrap();
     assert_eq!(
-        present_hosts(&store, &instance.id).await,
-        set(&[&session.host.host_id])
+        present_nodes(&store, &instance.id).await,
+        set(&[&session.node.node_id])
     );
 }
 
@@ -455,15 +455,15 @@ async fn the_scheduler_lease_has_one_holder_and_a_fencing_token() {
     assert_eq!(load_lease(&b, "test").await.unwrap().unwrap().holder, "h1");
 }
 
-/// Host-queue messages on `host`'s queue, oldest first.
-async fn host_messages(store: &LibraryStore, host: &str) -> Vec<HostMessage> {
+/// Node-queue messages on `node`'s queue, oldest first.
+async fn node_messages(store: &LibraryStore, node: &str) -> Vec<NodeMessage> {
     let mut rows = store
-        .list_domain_events_for_queue(&host_queue_name(host), 200)
+        .list_domain_events_for_queue(&node_queue_name(node), 200)
         .await
         .expect("queue rows");
     rows.reverse();
     rows.into_iter()
-        .map(|row| serde_json::from_str(&row.payload).expect("host message body"))
+        .map(|row| serde_json::from_str(&row.payload).expect("node message body"))
         .collect()
 }
 
@@ -485,12 +485,12 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
     register(&store, "desk", &session.cluster_id).await;
     let gib: i64 = 1 << 30;
     // A small always-on VPS and a big desktop that is often off.
-    let vps = |s: &mut HostStatus| {
+    let vps = |s: &mut NodeStatus| {
         s.cpu_budget_millicores = 800;
         s.memory_budget_bytes = Some(gib);
         s.memory_available_bytes = Some(gib);
     };
-    let desk = |s: &mut HostStatus| {
+    let desk = |s: &mut NodeStatus| {
         s.cpu_budget_millicores = 12_000;
         s.memory_budget_bytes = Some(24 * gib);
         s.memory_available_bytes = Some(24 * gib);
@@ -507,7 +507,7 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
         .unwrap();
     schedule_placements(&store).await.unwrap();
     assert_eq!(
-        present_hosts(&store, &instance.id).await,
+        present_nodes(&store, &instance.id).await,
         set(&["desk"]),
         "even at 40% availability the desktop has far more room"
     );
@@ -515,7 +515,7 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
     // The desktop goes to sleep: its replica moves to the VPS.
     heartbeat_with(&store, "desk", Duration::from_secs(600), desk).await;
     schedule_placements(&store).await.unwrap();
-    assert_eq!(present_hosts(&store, &instance.id).await, set(&["vps"]));
+    assert_eq!(present_nodes(&store, &instance.id).await, set(&["vps"]));
 
     // Draining the VPS leaves nowhere to run it; the placement says why.
     heartbeat_with(&store, "vps", Duration::ZERO, |s| {
@@ -524,15 +524,15 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
     })
     .await;
     schedule_placements(&store).await.unwrap();
-    assert!(present_hosts(&store, &instance.id).await.is_empty());
+    assert!(present_nodes(&store, &instance.id).await.is_empty());
     let short = load_plugin_placement(&store, &instance.id)
         .await
         .unwrap()
         .unwrap();
     assert!(short.detail.starts_with("0 of 1"), "{}", short.detail);
 
-    // `all` runs it on every live, schedulable host with room: the VPS is
-    // back, the desktop is awake, and this host has no heartbeat at all.
+    // `all` runs it on every live, schedulable node with room: the VPS is
+    // back, the desktop is awake, and this node has no heartbeat at all.
     heartbeat_with(&store, "vps", Duration::ZERO, vps).await;
     heartbeat_with(&store, "desk", Duration::ZERO, desk).await;
     put_plugin_placement(
@@ -549,7 +549,7 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
     .unwrap();
     schedule_placements(&store).await.unwrap();
     assert_eq!(
-        present_hosts(&store, &instance.id).await,
+        present_nodes(&store, &instance.id).await,
         set(&["desk", "vps"])
     );
 
@@ -570,7 +570,7 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
         &store,
         &DeploymentObservation {
             deployment_id: deployment.deployment_id.clone(),
-            host_id: "desk".into(),
+            node_id: "desk".into(),
             incarnation: "test".into(),
             status: DeploymentStatus::Healthy,
             detail: String::new(),
@@ -612,7 +612,7 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
     .unwrap();
     schedule_placements(&store).await.unwrap();
     assert_eq!(
-        present_hosts(&store, &big.id).await,
+        present_nodes(&store, &big.id).await,
         set(&["desk"]),
         "2 GiB does not fit the VPS's 1 GiB budget"
     );
@@ -627,7 +627,7 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
 }
 
 #[tokio::test]
-async fn deliveries_route_to_the_live_host_with_the_most_room() {
+async fn deliveries_route_to_the_live_node_with_the_most_room() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(&dir.path().join("library.db")).await;
@@ -640,8 +640,8 @@ async fn deliveries_route_to_the_live_host_with_the_most_room() {
     )
     .await
     .unwrap();
-    for host in ["vps", "desk", "cold"] {
-        register(&store, host, &session.cluster_id).await;
+    for node in ["vps", "desk", "cold"] {
+        register(&store, node, &session.cluster_id).await;
     }
     heartbeat_with(&store, "vps", Duration::ZERO, |s| {
         s.cpu_budget_millicores = 800;
@@ -654,12 +654,12 @@ async fn deliveries_route_to_the_live_host_with_the_most_room() {
     let instance = create_plugin_instance(&store, &operator(), "path:file:///tmp/rt#rt", "")
         .await
         .unwrap();
-    for host in ["vps", "desk", "cold"] {
+    for node in ["vps", "desk", "cold"] {
         let deployment = ensure_plugin_deployment(
             &store,
             &ConfigActor::Bootstrap,
             &instance.id,
-            host,
+            node,
             DesiredState::Present,
         )
         .await
@@ -668,7 +668,7 @@ async fn deliveries_route_to_the_live_host_with_the_most_room() {
             &store,
             &DeploymentObservation {
                 deployment_id: deployment.deployment_id,
-                host_id: host.into(),
+                node_id: node.into(),
                 incarnation: "test".into(),
                 status: DeploymentStatus::Healthy,
                 detail: String::new(),
@@ -684,19 +684,19 @@ async fn deliveries_route_to_the_live_host_with_the_most_room() {
     assert_eq!(desk.len(), 1, "only instance ids are routed");
     let desk = &desk[instance.id.as_str()];
     assert_eq!(desk.rank, 0);
-    assert_eq!(desk.hosts, vec!["desk", "vps"], "`cold` never heartbeated");
+    assert_eq!(desk.nodes, vec!["desk", "vps"], "`cold` never heartbeated");
     let vps = &route_ranks(&store, "vps", &ids).await.unwrap()[instance.id.as_str()];
     assert_eq!(vps.rank, 1);
     assert_eq!(vps.defer(), ROUTE_DEFER_PER_RANK);
     let cold = &route_ranks(&store, "cold", &ids).await.unwrap()[instance.id.as_str()];
     assert_eq!(
         cold.rank, 2,
-        "a host without a heartbeat waits behind every live one"
+        "a node without a heartbeat waits behind every live one"
     );
 
     // The desktop sleeps: the VPS is now first in line.
     heartbeat_with(&store, "desk", Duration::from_secs(600), |_| {}).await;
     let vps = &route_ranks(&store, "vps", &ids).await.unwrap()[instance.id.as_str()];
     assert_eq!(vps.rank, 0);
-    assert_eq!(vps.hosts, vec!["vps"]);
+    assert_eq!(vps.nodes, vec!["vps"]);
 }

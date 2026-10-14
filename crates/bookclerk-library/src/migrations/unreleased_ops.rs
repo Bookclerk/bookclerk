@@ -781,8 +781,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS hosts (
-        host_id TEXT PRIMARY KEY NOT NULL,
+        r"CREATE TABLE IF NOT EXISTS nodes (
+        node_id TEXT PRIMARY KEY NOT NULL,
         cluster_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         incarnation TEXT NOT NULL,
@@ -802,7 +802,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         labels_json TEXT NOT NULL DEFAULT '[]'
     )",
     ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_hosts_heartbeat ON hosts(heartbeat_at)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_heartbeat ON nodes(heartbeat_at)"),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS configuration_documents (
         scope_type TEXT NOT NULL,
@@ -894,7 +894,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         schema_version INTEGER NOT NULL,
         settings_json TEXT NOT NULL,
         recorded_at TEXT NOT NULL,
-        recorded_by_host TEXT NOT NULL
+        recorded_by_node TEXT NOT NULL
     )",
     ),
     MigrationOp::Schema(
@@ -914,23 +914,23 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS plugin_deployments (
         deployment_id TEXT PRIMARY KEY NOT NULL,
         plugin_instance_id TEXT NOT NULL,
-        host_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
         desired TEXT NOT NULL CHECK (desired IN ('present', 'absent', 'placed', 'unplaced')),
         revision INTEGER NOT NULL,
         updated_at TEXT NOT NULL,
         updated_by TEXT NOT NULL,
-        UNIQUE (plugin_instance_id, host_id),
+        UNIQUE (plugin_instance_id, node_id),
         FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
     )",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_plugin_deployments_host_id
-        ON plugin_deployments(host_id)",
+        ON plugin_deployments(node_id)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_deployment_observations (
         deployment_id TEXT NOT NULL,
-        host_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
         incarnation TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('installed', 'running', 'healthy', 'error', 'retired')),
         detail TEXT NOT NULL,
@@ -938,13 +938,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         observed_at TEXT NOT NULL,
         reserved_memory_bytes INTEGER,
         reserved_cpu_millicores INTEGER,
-        PRIMARY KEY (deployment_id, host_id),
+        PRIMARY KEY (deployment_id, node_id),
         FOREIGN KEY (deployment_id) REFERENCES plugin_deployments(deployment_id)
     )",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_plugin_deployment_observations_host_id
-        ON plugin_deployment_observations(host_id)",
+        ON plugin_deployment_observations(node_id)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_kv (
@@ -1002,8 +1002,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS host_status (
-        host_id TEXT PRIMARY KEY NOT NULL,
+        r"CREATE TABLE IF NOT EXISTS node_status (
+        node_id TEXT PRIMARY KEY NOT NULL,
         incarnation TEXT NOT NULL,
         started_at TEXT NOT NULL,
         heartbeat_at TEXT NOT NULL,

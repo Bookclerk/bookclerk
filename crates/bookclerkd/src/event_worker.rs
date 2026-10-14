@@ -42,9 +42,6 @@ const WAKE_PENDING_PAGE: u64 = 32;
 /// Dispatch undispatched outbox rows and run configured delivery workers.
 pub fn start_event_runtime(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let files_dir = state.config.read().await.paths().files_dir.clone();
-        let node_id = resolve_event_node_id(&files_dir);
-        let _ = state.event_node_id.set(node_id);
         upsert_event_subscriber_catalog(&state).await;
         let (retention_days, dead_letter_retention_days, workers) = {
             let cfg = state.config.read().await;
@@ -85,8 +82,8 @@ fn spawn_dispatcher(state: Arc<AppState>) {
                 let cfg = state.config.read().await;
                 (cfg.events.retention_days, cfg.paths().files_dir.clone())
             };
-            let node_id = event_node_id(&state, &files_dir);
-            crate::host_queue::upsert_catalog_row(&library, &node_id, &files_dir).await;
+            crate::node_queue::upsert_catalog_row(&library, &files_dir).await;
+            let node_id = event_node_id(&files_dir);
             let more = match dispatch_pending(
                 &library,
                 retention_days,
@@ -172,9 +169,9 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
             }
             let files_dir = state.config.read().await.paths().files_dir.clone();
             let max_in_flight = state.config.read().await.events.concurrency.max(1);
-            let node_id = event_node_id(&state, &files_dir);
+            let node_id = event_node_id(&files_dir);
             let mut claim_ids = loaded_plugin_ids(&state).await;
-            claim_ids.extend(crate::host_queue::consumer_id(&files_dir));
+            claim_ids.extend(crate::node_queue::consumer_id(&files_dir));
             let groups = claim_groups(
                 &claim_ids,
                 ranks.get(&library, &files_dir, &claim_ids).await,
@@ -205,7 +202,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
 /// of one key each get their own row so event delivery does not collapse them.
 pub async fn upsert_event_subscriber_catalog(state: &AppState) {
     let cfg = state.config.read().await.clone();
-    let node_id = event_node_id(state, &cfg.paths().files_dir);
+    let node_id = event_node_id(&cfg.paths().files_dir);
     let loaded = {
         let integrations = state.integrations.read().await;
         integrations
@@ -243,7 +240,7 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
                 {
                     continue;
                 }
-                // Not loaded on this host: no present deployment runs it here,
+                // Not loaded on this node: no present deployment runs it here,
                 // so its catalog row is recorded disabled until one does.
                 let enabled = false;
                 let plugin_id = plugin.plugin_key().canonical().to_string();
@@ -336,32 +333,13 @@ struct LoadedSubscriber {
     runtime_subs: Vec<EventCatalogSubscription>,
 }
 
-/// Process-stable per-files-dir node id used as the catalog heartbeat key.
-fn event_node_id(state: &AppState, files_dir: &Path) -> String {
-    state
-        .event_node_id
-        .get_or_init(|| resolve_event_node_id(files_dir))
-        .clone()
-}
-
-/// Read or mint the node id once. Persistence is best-effort.
-fn resolve_event_node_id(files_dir: &Path) -> String {
-    let path = files_dir.join("event_node_id");
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let trimmed = existing.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    let id = Uuid::new_v4().to_string();
-    if let Err(err) = std::fs::create_dir_all(files_dir) {
-        warn!(error = %err, "event_node_id directory create failed");
-        return id;
-    }
-    if let Err(err) = std::fs::write(&path, &id) {
-        warn!(error = %err, "event_node_id write failed");
-    }
-    id
+/// This node's id, the key of its rows in the subscriber catalog. Falls back
+/// to a process-lifetime id when the node identity cannot be read, so a
+/// catalog row never matches another node's.
+fn event_node_id(files_dir: &Path) -> String {
+    static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    crate::node_queue::node_id(files_dir)
+        .unwrap_or_else(|| FALLBACK.get_or_init(|| Uuid::new_v4().to_string()).clone())
 }
 
 /// Map `[[events.consumers]]` rows onto the durable catalog JSON shape.
@@ -716,13 +694,13 @@ fn claim_ids_for_loaded(rows: &[LoadedClaimId]) -> Vec<String> {
 /// How long a cached route ranking stays valid (heartbeats come every 15 s).
 const RANK_CACHE_TTL: Duration = Duration::from_secs(10);
 
-/// This host's route ranks for its loaded instances, refreshed every
+/// This node's route ranks for its loaded instances, refreshed every
 /// [`RANK_CACHE_TTL`].
 #[derive(Default)]
 struct RankCache {
     /// When the ranks were read, and for which claim ids.
     read: Option<(Instant, Vec<String>)>,
-    /// Instance id → this host's rank among live hosts running it.
+    /// Instance id → this node's rank among live nodes running it.
     ranks: BTreeMap<String, RouteRank>,
 }
 
@@ -740,8 +718,8 @@ impl RankCache {
             .as_ref()
             .is_some_and(|(at, ids)| at.elapsed() < RANK_CACHE_TTL && ids == claim_ids);
         if !fresh {
-            let host_id = crate::host_queue::host_id(files_dir).unwrap_or_default();
-            self.ranks = match route_ranks(library, &host_id, claim_ids).await {
+            let node_id = crate::node_queue::node_id(files_dir).unwrap_or_default();
+            self.ranks = match route_ranks(library, &node_id, claim_ids).await {
                 Ok(ranks) => ranks,
                 Err(err) => {
                     warn!(error = %err, "delivery route ranks unavailable; claiming unranked");
@@ -754,8 +732,8 @@ impl RankCache {
     }
 }
 
-/// Claim ids grouped by how long this host lets their deliveries wait:
-/// ids this host is best placed for (and ids that are not routed, such as
+/// Claim ids grouped by how long this node lets their deliveries wait:
+/// ids this node is best placed for (and ids that are not routed, such as
 /// plugin keys and the host's own queue) first with no wait, then each
 /// lower rank with [`bookclerk_library::control_plane::ROUTE_DEFER_PER_RANK`]
 /// more.
@@ -851,8 +829,8 @@ async fn run_delivery(
             .await;
         return;
     };
-    if bookclerk_library::control_plane::is_host_consumer_id(&delivery.plugin_id) {
-        crate::host_queue::run_host_delivery(library, &event, &delivery).await;
+    if bookclerk_library::control_plane::is_node_consumer_id(&delivery.plugin_id) {
+        crate::node_queue::run_node_delivery(library, &event, &delivery).await;
         return;
     }
     let integration = {
@@ -1478,17 +1456,14 @@ mod tests {
     }
 
     #[test]
-    fn event_node_id_reuses_persisted_value() {
+    fn catalog_rows_and_the_node_queue_share_the_node_id() {
         let dir = tempfile::tempdir().unwrap();
-        let first = resolve_event_node_id(dir.path());
-        let second = resolve_event_node_id(dir.path());
-        assert_eq!(first, second);
+        let catalog = event_node_id(dir.path());
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("event_node_id"))
-                .unwrap()
-                .trim(),
-            first
+            Some(catalog.clone()),
+            crate::node_queue::node_id(dir.path())
         );
+        assert_eq!(catalog, event_node_id(dir.path()));
     }
 
     #[test]
@@ -2091,21 +2066,21 @@ queue = "other"
                 "instance-best".to_string(),
                 RouteRank {
                     rank: 0,
-                    hosts: vec!["here".into(), "there".into()],
+                    nodes: vec!["here".into(), "there".into()],
                 },
             ),
             (
                 "instance-second".to_string(),
                 RouteRank {
                     rank: 1,
-                    hosts: vec!["there".into(), "here".into()],
+                    nodes: vec!["there".into(), "here".into()],
                 },
             ),
             (
                 "instance-third".to_string(),
                 RouteRank {
                     rank: 2,
-                    hosts: vec!["a".into(), "b".into(), "here".into()],
+                    nodes: vec!["a".into(), "b".into(), "here".into()],
                 },
             ),
         ]);
@@ -2114,7 +2089,7 @@ queue = "other"
             "path:echo",
             "instance-second",
             "instance-best",
-            "host:here",
+            "node:here",
         ]
         .map(String::from)
         .to_vec();
@@ -2127,7 +2102,7 @@ queue = "other"
                     vec![
                         "path:echo".to_string(),
                         "instance-best".to_string(),
-                        "host:here".to_string()
+                        "node:here".to_string()
                     ]
                 ),
                 (step, vec!["instance-second".to_string()]),

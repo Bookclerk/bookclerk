@@ -1,15 +1,15 @@
-//! Generic plugin enrollment for one host.
+//! Generic plugin enrollment for one node.
 //!
-//! Every plugin discovered on this host, except database adapters (which
+//! Every plugin discovered on this node, except database adapters (which
 //! stay bootstrap until Phase 4), gets the same treatment regardless of
 //! family, alias, or provenance:
 //!
-//! 1. its `[[settings]]` schema is pinned in `plugin_schemas` so any API host
+//! 1. its `[[settings]]` schema is pinned in `plugin_schemas` so any node serving the API
 //!    can validate a document for it;
 //! 2. its default [`PluginInstance`] exists with an (initially empty)
 //!    configuration document — values come from schema defaults until an
 //!    operator writes some;
-//! 3. a [`PluginDeployment`] for this host exists. It is created `present`
+//! 3. a [`PluginDeployment`] for this node exists. It is created `present`
 //!    when the plugin already has a covering grant (platform guests grant
 //!    themselves; an operator approved everything else), otherwise `absent`
 //!    until `bookclerk plugins enable` sets it.
@@ -19,7 +19,7 @@
 
 use bookclerk_library::control_plane::{
     current_process_incarnation, default_instance_for_key, ensure_plugin_deployment,
-    ensure_plugin_instance, import_instance_config_if_absent, load_deployment_for_host,
+    ensure_plugin_instance, import_instance_config_if_absent, load_deployment_for_node,
     load_plugin_placement, pin_plugin_schema, reconcile_instance_configs_to_schema,
     upsert_observation, ConfigActor, DeploymentObservation, DeploymentStatus, DesiredState,
     PinnedPluginSchema, PluginDeployment, PluginInstance, PluginInstanceConfigV1, SchemaPin,
@@ -31,14 +31,14 @@ use crate::consent::PluginGrantStore;
 use crate::discover::DiscoveredPlugin;
 use crate::Result;
 
-/// One plugin after enrollment on this host.
+/// One plugin after enrollment on this node.
 #[derive(Debug, Clone)]
 pub struct EnrolledPlugin {
     /// Discovered install.
     pub plugin: DiscoveredPlugin,
     /// Default instance for the plugin key.
     pub instance: PluginInstance,
-    /// This host's deployment of the default instance.
+    /// This node's deployment of the default instance.
     pub deployment: PluginDeployment,
     /// Pinned settings schema.
     pub schema: PinnedPluginSchema,
@@ -51,7 +51,7 @@ pub fn is_bootstrap_only(plugin: &DiscoveredPlugin) -> bool {
     plugin.manifest.families() == vec![crate::PluginFamily::Database]
 }
 
-/// Enrolls every discovered plugin on `host_id`.
+/// Enrolls every discovered plugin on `node_id`.
 ///
 /// A plugin that fails to enroll is logged and skipped so one bad install
 /// does not keep the others from starting.
@@ -62,7 +62,7 @@ pub fn is_bootstrap_only(plugin: &DiscoveredPlugin) -> bool {
 pub async fn enroll_local_plugins(
     store: &LibraryStore,
     config: &bookclerk_config::Config,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<Vec<EnrolledPlugin>> {
     let plugins = crate::discover_plugins(config)?;
     let grants = PluginGrantStore::load(&config.paths().files_dir)?;
@@ -79,7 +79,7 @@ pub async fn enroll_local_plugins(
             );
             continue;
         }
-        match enroll_one(store, host_id, &plugin, &grants).await {
+        match enroll_one(store, node_id, &plugin, &grants).await {
             Ok(one) => enrolled.push(one),
             Err(err) => tracing::warn!(
                 id = %plugin.manifest.id,
@@ -99,7 +99,7 @@ pub async fn enroll_local_plugins(
 /// Returns an error when a schema, instance, document, or deployment write fails.
 pub async fn enroll_one(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
     plugin: &DiscoveredPlugin,
     grants: &PluginGrantStore,
 ) -> Result<EnrolledPlugin> {
@@ -116,7 +116,7 @@ pub async fn enroll_one(
             manifest_id: &plugin.manifest.id,
             package_version: &package_version,
             schema: &schema_body,
-            host_id,
+            node_id,
         },
     )
     .await
@@ -124,10 +124,10 @@ pub async fn enroll_one(
     match &pinned.change {
         SchemaPinChange::Stale { local_version } => {
             let detail = format!(
-                "installed version {local_version} is older than {} pinned by host {}; not loaded",
-                pinned.schema.package_version, pinned.schema.recorded_by_host
+                "installed version {local_version} is older than {} pinned by node {}; not loaded",
+                pinned.schema.package_version, pinned.schema.recorded_by_node
             );
-            record_stale_version(store, host_id, &key, &detail).await;
+            record_stale_version(store, node_id, &key, &detail).await;
             return Err(crate::PluginError::message(format!(
                 "plugin `{key}`: {detail}"
             )));
@@ -181,14 +181,14 @@ pub async fn enroll_one(
     )
     .await
     .map_err(library_err)?;
-    let deployment = match load_deployment_for_host(store, &instance.id, host_id)
+    let deployment = match load_deployment_for_node(store, &instance.id, node_id)
         .await
         .map_err(library_err)?
     {
         Some(existing) => existing,
         None => {
             // A scheduler-placed instance is the scheduler's to deploy:
-            // enrollment records this host `unplaced` until a pass chooses
+            // enrollment records this node `unplaced` until a pass chooses
             // it. Otherwise a covering grant enrols it enabled.
             let placed = load_plugin_placement(store, &instance.id)
                 .await
@@ -199,7 +199,7 @@ pub async fn enroll_one(
             } else {
                 DesiredState::operator(has_covering_grant(plugin, grants))
             };
-            ensure_plugin_deployment(store, &actor, &instance.id, host_id, desired)
+            ensure_plugin_deployment(store, &actor, &instance.id, node_id, desired)
                 .await
                 .map_err(library_err)?
         }
@@ -226,10 +226,10 @@ pub fn has_covering_grant(plugin: &DiscoveredPlugin, grants: &PluginGrantStore) 
         && bookclerk_plugin_catalog::is_platform_plugin_key(plugin.plugin_key())
 }
 
-/// Writes an `error` observation on this host's deployment of the default
+/// Writes an `error` observation on this node's deployment of the default
 /// instance so the stale package is visible in Settings, when such a
 /// deployment exists. Nothing else is written.
-async fn record_stale_version(store: &LibraryStore, host_id: &str, plugin_key: &str, detail: &str) {
+async fn record_stale_version(store: &LibraryStore, node_id: &str, plugin_key: &str, detail: &str) {
     let instance = match default_instance_for_key(store, plugin_key).await {
         Ok(Some(instance)) => instance,
         Ok(None) => return,
@@ -238,7 +238,7 @@ async fn record_stale_version(store: &LibraryStore, host_id: &str, plugin_key: &
             return;
         }
     };
-    let deployment = match load_deployment_for_host(store, &instance.id, host_id).await {
+    let deployment = match load_deployment_for_node(store, &instance.id, node_id).await {
         Ok(Some(deployment)) => deployment,
         Ok(None) => return,
         Err(err) => {
@@ -248,7 +248,7 @@ async fn record_stale_version(store: &LibraryStore, host_id: &str, plugin_key: &
     };
     let observation = DeploymentObservation {
         deployment_id: deployment.deployment_id,
-        host_id: host_id.to_string(),
+        node_id: node_id.to_string(),
         incarnation: current_process_incarnation().to_string(),
         status: DeploymentStatus::Error,
         detail: detail.to_string(),

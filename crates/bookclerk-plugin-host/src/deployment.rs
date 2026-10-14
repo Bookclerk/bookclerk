@@ -1,7 +1,7 @@
-//! Reconcile plugin deployments onto this host.
+//! Reconcile plugin deployments onto this node.
 //!
-//! The loop selects `plugin_deployments` for the local [`HostId`] only. Other
-//! hosts are not installed and do not receive observation writes. A row whose
+//! The loop selects `plugin_deployments` for the local [`NodeId`] only. Other
+//! nodes are not installed and do not receive observation writes. A row whose
 //! desired state is `absent` retires the running guest and records `retired`;
 //! a `present` row is installed, spawned, and health-checked. Startup does not
 //! download plugins: a missing ledger row is installed only when the caller
@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, default_instance_for_key,
-    list_deployments_for_host, load_active_release, load_instance_config, load_observation,
+    list_deployments_for_node, load_active_release, load_instance_config, load_observation,
     load_plugin_instance, resolve_instance_bindings, stale_against_pin, upsert_observation,
     ConfigActor, DeploymentObservation, DeploymentStatus, PluginRelease,
 };
@@ -229,7 +229,7 @@ impl<'a> SharedPlugins<'a> {
         self.plugin(canonical).map(|plugin| plugin.root)
     }
 
-    /// The discovered plugin for `canonical`, if this host has its tree.
+    /// The discovered plugin for `canonical`, if this node has its tree.
     fn plugin(&self, canonical: &str) -> Option<crate::DiscoveredPlugin> {
         let mut cached = self.cached.lock().expect("shared plugin discovery");
         if cached.is_none() {
@@ -244,7 +244,7 @@ impl<'a> SharedPlugins<'a> {
     }
 }
 
-/// Reconciles every present deployment for `host_id`.
+/// Reconciles every present deployment for `node_id`.
 ///
 /// # Errors
 ///
@@ -254,11 +254,11 @@ impl<'a> SharedPlugins<'a> {
 pub async fn reconcile_local_deployments(
     store: &LibraryStore,
     config: &Config,
-    host_id: &str,
+    node_id: &str,
     packages: &AuthorizedLocalPackages,
     runtime: &dyn DeploymentRuntime,
 ) -> Result<()> {
-    let rows = list_deployments_for_host(store, host_id)
+    let rows = list_deployments_for_node(store, node_id)
         .await
         .map_err(library_err)?;
     let (deployments, absent): (Vec<_>, Vec<_>) = rows
@@ -276,7 +276,7 @@ pub async fn reconcile_local_deployments(
         if was_tracked {
             runtime.retire_instance(instance_id).await;
         }
-        let already_retired = load_observation(store, &deployment.deployment_id, host_id)
+        let already_retired = load_observation(store, &deployment.deployment_id, node_id)
             .await
             .map_err(library_err)?
             .is_some_and(|existing| existing.status == DeploymentStatus::Retired);
@@ -284,7 +284,7 @@ pub async fn reconcile_local_deployments(
             record_observation(
                 store,
                 &deployment.deployment_id,
-                host_id,
+                node_id,
                 &incarnation,
                 DeploymentStatus::Retired,
                 "desired absent",
@@ -298,7 +298,7 @@ pub async fn reconcile_local_deployments(
         if let Err(err) = reconcile_one(
             store,
             config,
-            host_id,
+            node_id,
             &deployment,
             packages,
             runtime,
@@ -322,7 +322,7 @@ pub async fn reconcile_local_deployments(
     Ok(())
 }
 
-/// Removes cached release digests no present deployment on this host
+/// Removes cached release digests no present deployment on this node
 /// still runs (after [`crate::RELEASE_CACHE_GRACE`]).
 async fn sweep_unreferenced_releases(
     store: &LibraryStore,
@@ -363,7 +363,7 @@ async fn sweep_unreferenced_releases(
 async fn reconcile_one(
     store: &LibraryStore,
     config: &Config,
-    host_id: &str,
+    node_id: &str,
     deployment: &bookclerk_library::control_plane::PluginDeployment,
     packages: &AuthorizedLocalPackages,
     runtime: &dyn DeploymentRuntime,
@@ -374,12 +374,12 @@ async fn reconcile_one(
     let note = |status, detail: String, revision| {
         let deployment_id = deployment_id.clone();
         let incarnation = incarnation.clone();
-        let host_id = host_id.to_string();
+        let node_id = node_id.to_string();
         async move {
             record_observation(
                 store,
                 &deployment_id,
-                &host_id,
+                &node_id,
                 &incarnation,
                 status,
                 &detail,
@@ -423,7 +423,7 @@ async fn reconcile_one(
     }
     let files_dir = config.paths().files_dir.clone();
 
-    let existing = load_observation(store, &deployment.deployment_id, host_id)
+    let existing = load_observation(store, &deployment.deployment_id, node_id)
         .await
         .map_err(library_err)?;
     if let Some(existing) = &existing {
@@ -456,8 +456,8 @@ async fn reconcile_one(
                 note(DeploymentStatus::Error, "not installed".into(), None).await;
                 return Ok(());
             };
-            // An operator-placed package becomes a cluster release this host
-            // publishes; every host placed on it then materializes the same
+            // An operator-placed package becomes a cluster release this node
+            // publishes; every node placed on it then materializes the same
             // digest. The consent the operator approved for the key rides on
             // the release.
             let grant = PluginGrantStore::load(&files_dir)?
@@ -478,7 +478,7 @@ async fn reconcile_one(
                 store,
                 &ConfigActor::Bootstrap,
                 &files_dir,
-                host_id,
+                node_id,
                 request,
             )
             .await
@@ -565,8 +565,8 @@ async fn reconcile_one(
                 note(
                     DeploymentStatus::Error,
                     format!(
-                        "installed version {local_version} is older than {} pinned by host {}; not spawned",
-                        pinned.package_version, pinned.recorded_by_host
+                        "installed version {local_version} is older than {} pinned by node {}; not spawned",
+                        pinned.package_version, pinned.recorded_by_node
                     ),
                     None,
                 )
@@ -623,7 +623,7 @@ async fn reconcile_one(
     };
     note(DeploymentStatus::Installed, String::new(), None).await;
     // The ceilings this guest's jail will enforce; the heartbeat sums them
-    // into the host's reservations.
+    // into the node's reservations.
     let reservation = installed_manifest(&root).ok().map(|manifest| {
         crate::jail::guest_reservation(&manifest, Some(&grant), &config.plugins.jail)
     });
@@ -646,7 +646,7 @@ async fn reconcile_one(
             if let Err(err) = bookclerk_library::control_plane::record_deployment_reservation(
                 store,
                 &deployment.deployment_id,
-                host_id,
+                node_id,
                 reservation.unwrap_or_else(
                     bookclerk_library::control_plane::GuestReservation::default_guest,
                 ),
@@ -734,11 +734,11 @@ fn installed_root(files_dir: &Path, plugin_key: &PluginKey) -> Option<PathBuf> {
     root.is_dir().then_some(root)
 }
 
-/// Upserts this host's observation. A failed write is retried next tick.
+/// Upserts this node's observation. A failed write is retried next tick.
 async fn record_observation(
     store: &LibraryStore,
     deployment_id: &str,
-    host_id: &str,
+    node_id: &str,
     incarnation: &str,
     status: DeploymentStatus,
     detail: &str,
@@ -751,7 +751,7 @@ async fn record_observation(
     };
     let observation = DeploymentObservation {
         deployment_id: deployment_id.to_string(),
-        host_id: host_id.to_string(),
+        node_id: node_id.to_string(),
         incarnation: incarnation.to_string(),
         status,
         detail,
@@ -1162,7 +1162,7 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
             };
         }
         SpawnHealth::SpawnFailed {
-            detail: "plugin has no entrypoint this host reconciles".into(),
+            detail: "plugin has no entrypoint this node reconciles".into(),
         }
     }
 

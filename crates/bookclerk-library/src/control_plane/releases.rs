@@ -1,12 +1,12 @@
-//! Plugin releases: what is "installed" is a cluster record, not a host
+//! Plugin releases: what is "installed" is a cluster record, not a node
 //! directory.
 //!
 //! A [`PluginRelease`] row per `(plugin_key, version)` carries the manifest,
 //! the settings schema, one artifact per target with its digests, the
 //! publisher verification result, and the operator's consent grant. A
-//! pointer row names the active release per plugin key. Hosts materialize
+//! pointer row names the active release per plugin key. Nodes materialize
 //! the active release's artifact into a content-addressed cache and spawn
-//! from there; moving the pointer (update, rollback) wakes every host.
+//! from there; moving the pointer (update, rollback) wakes every node.
 //!
 //! Small archives may be stored in `plugin_release_blobs` when no shared
 //! location exists (the `blob:sha256:<hex>` artifact URL); larger ones stay
@@ -20,7 +20,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrde
 use serde::{Deserialize, Serialize};
 
 use super::documents::ConfigActor;
-use super::host_queue::{notify_all_hosts, HostMessage};
+use super::node_queue::{notify_all_nodes, NodeMessage};
 use super::schemas::{pin_release_schema, SchemaPin, SchemaPinOutcome};
 use crate::entities::{plugin_release_blobs, plugin_release_pointers, plugin_releases};
 use crate::error::{LibraryError, Result};
@@ -38,7 +38,7 @@ pub const RELEASE_BLOB_SCHEME: &str = "blob:sha256:";
 pub struct ReleaseArtifact {
     /// Bookclerk target (`linux-x64-gnu`, …; `any` for workerd packages).
     pub target: String,
-    /// Where hosts fetch the archive: `https:`, `file:`, or
+    /// Where nodes fetch the archive: `https:`, `file:`, or
     /// `blob:sha256:<hex>`.
     pub url: String,
     /// Archive format (`tar.gz` or `zip`).
@@ -212,7 +212,7 @@ fn from_model(row: plugin_releases::Model) -> Result<PluginRelease> {
 /// Records a release. Publishing the same `(plugin_key, version)` again
 /// with the same artifact digests is a no-op ([`PublishRelease::Existing`]);
 /// different digests under a published version are refused, so a version
-/// never changes content behind a host's cache.
+/// never changes content behind a node's cache.
 ///
 /// `published_at` / `published_by` are stamped here.
 ///
@@ -393,7 +393,7 @@ pub async fn load_active_release(
 
 /// Moves the active pointer of `plugin_key` to `version` (first install,
 /// update, or rollback), pins the release's settings schema, and wakes every
-/// host. Pointing at the version that is already active is a no-op.
+/// node. Pointing at the version that is already active is a no-op.
 ///
 /// # Errors
 ///
@@ -404,7 +404,7 @@ pub async fn activate_release(
     actor: &ConfigActor,
     plugin_key: &str,
     version: &str,
-    host_id: &str,
+    node_id: &str,
 ) -> Result<(ReleasePointer, SchemaPinOutcome)> {
     authorize(actor)?;
     let release = load_release(store, plugin_key, version)
@@ -417,7 +417,7 @@ pub async fn activate_release(
             manifest_id: &release.manifest_id,
             package_version: &release.version,
             schema: &release.settings,
-            host_id,
+            node_id,
         },
     )
     .await?;
@@ -450,9 +450,9 @@ pub async fn activate_release(
     let pointer = load_release_pointer(store, plugin_key)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("release pointer {plugin_key}")))?;
-    notify_all_hosts(
+    notify_all_nodes(
         store,
-        HostMessage::ReleaseChanged {
+        NodeMessage::ReleaseChanged {
             plugin_key: plugin_key.to_string(),
             version: pointer.version.clone(),
             revision: pointer.revision,
@@ -463,7 +463,7 @@ pub async fn activate_release(
 }
 
 /// Clears the active pointer (`plugins remove`). Release rows stay so the
-/// plugin can be re-activated; hosts retire guests whose plugin has no
+/// plugin can be re-activated; nodes retire guests whose plugin has no
 /// active release and sweep the cache.
 ///
 /// # Errors
@@ -480,9 +480,9 @@ pub async fn clear_active_release(
         .await
         .map_err(LibraryError::Orm)?;
     if result.rows_affected > 0 {
-        notify_all_hosts(
+        notify_all_nodes(
             store,
-            HostMessage::ReleaseChanged {
+            NodeMessage::ReleaseChanged {
                 plugin_key: plugin_key.to_string(),
                 version: String::new(),
                 revision: 0,
@@ -525,9 +525,9 @@ pub async fn approve_release_grant(
     let release = load_release(store, plugin_key, version)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("release {plugin_key} {version}")))?;
-    notify_all_hosts(
+    notify_all_nodes(
         store,
-        HostMessage::ReleaseChanged {
+        NodeMessage::ReleaseChanged {
             plugin_key: plugin_key.to_string(),
             version: version.to_string(),
             revision: 0,

@@ -6,7 +6,7 @@ use bookclerk_config::{Config, PluginRegistryEntry};
 use bookclerk_library::control_plane::{
     create_plugin_instance, default_instance_for_key, delete_plugin_instance,
     ensure_plugin_deployment, import_instance_config_if_absent, list_all_plugin_instances,
-    list_deployments_for_instance, list_host_ids, list_plugin_schemas, load_deployment_for_host,
+    list_deployments_for_instance, list_node_ids, list_plugin_schemas, load_deployment_for_node,
     load_instance_config, load_observation, load_plugin_instance, parse_setting_text,
     replace_instance_config, replace_plugin_deployment, require_plugin_schema,
     seal_instance_secret, set_secret_ref, set_setting, ConfigActor, DeploymentReplace,
@@ -49,7 +49,7 @@ pub enum PluginsCommand {
     },
     /// Publish a plugin release from a source-qualified coordinate or local
     /// archive. The first release of a plugin (or `--activate`) becomes the
-    /// active release every host materializes; nothing on this host's
+    /// active release every node materializes; nothing on this node's
     /// `plugins/` changes.
     Install {
         /// Coordinate (`cargo:…@ver`, `registry:…#name@ver`, `local:…`) or legacy crate name.
@@ -138,7 +138,7 @@ pub enum PluginsCommand {
         /// Plugin id (default: all discovered).
         id: Option<String>,
     },
-    /// Enable a plugin: mark its instance's deployment `present` on a host.
+    /// Enable a plugin: mark its instance's deployment `present` on a node.
     ///
     /// Database adapters are the bootstrap exception and still select
     /// `[database].plugin` in `config.toml`.
@@ -146,15 +146,15 @@ pub enum PluginsCommand {
         /// Plugin alias, PluginKey, or plugin instance id (an alias or key
         /// names the plugin's default instance).
         id: String,
-        /// Host id to deploy on (default: this host).
+        /// Node id to deploy on (default: this node).
         #[arg(long)]
         host: Option<String>,
     },
-    /// Disable a plugin: mark its instance's deployment `absent` on a host.
+    /// Disable a plugin: mark its instance's deployment `absent` on a node.
     Disable {
         /// Plugin alias, PluginKey, or plugin instance id.
         id: String,
-        /// Host id (default: this host).
+        /// Node id (default: this node).
         #[arg(long)]
         host: Option<String>,
     },
@@ -165,12 +165,12 @@ pub enum PluginsCommand {
     Deploy {
         /// Plugin alias, PluginKey, or plugin instance id.
         id: String,
-        /// Hosts that should run the instance: a number (0 stops every
-        /// replica) or `all` (every live, schedulable host with room).
+        /// Nodes that should run the instance: a number (0 stops every
+        /// replica) or `all` (every live, schedulable node with room).
         #[arg(long, required_unless_present = "manual")]
         replicas: Option<bookclerk_library::control_plane::Replicas>,
-        /// Label constraint every chosen host must satisfy (`nas`,
-        /// `zone=eu`, `host=<id>`, `target=linux-x64-gnu`); prefix with `!`
+        /// Label constraint every chosen node must satisfy (`nas`,
+        /// `zone=eu`, `node=<id>`, `target=linux-x64-gnu`); prefix with `!`
         /// to exclude. Repeatable.
         #[arg(long = "on", value_name = "LABEL")]
         on: Vec<String>,
@@ -221,7 +221,7 @@ pub enum PluginsCommand {
 #[derive(Debug, Subcommand)]
 /// `plugins instances` subcommands.
 pub enum InstancesCommand {
-    /// List instances with their deployments on every host.
+    /// List instances with their deployments on every node.
     List {
         /// Only instances of this plugin (alias or PluginKey).
         #[arg(long)]
@@ -235,7 +235,7 @@ pub enum InstancesCommand {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Delete an instance that has no deployment on any host.
+    /// Delete an instance that has no deployment on any node.
     Delete {
         /// Plugin instance id.
         instance: String,
@@ -342,7 +342,7 @@ pub enum RegistryKindArg {
 #[derive(Debug, Serialize)]
 /// One discovered plugin row for `plugins list` JSON/text output.
 struct PluginListItem {
-    /// Runtime plugin id from `plugin.toml` (unique within this host plugin namespace).
+    /// Runtime plugin id from `plugin.toml` (unique within this node plugin namespace).
     id: String,
     /// Provenance-qualified PluginKey (canonical text).
     plugin_key: String,
@@ -353,7 +353,7 @@ struct PluginListItem {
     /// Exported entrypoints declared in `plugin.toml` (`storefront`, `cli`, …).
     entrypoints: Vec<String>,
     /// True when a deployment of the plugin's default instance is desired
-    /// present on this host (database adapters: selected in `[database]`).
+    /// present on this node (database adapters: selected in `[database]`).
     enabled: bool,
     /// Guest executable path used for describe and CLI invoke.
     command: String,
@@ -378,7 +378,7 @@ struct InstanceListItem {
     display_name: String,
     /// True when a bare key or alias routes to this instance.
     is_default: bool,
-    /// Deployment rows across hosts.
+    /// Deployment rows across nodes.
     deployments: Vec<DeploymentListItem>,
     /// Scheduler placement; absent when the instance is hand-managed.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -401,20 +401,20 @@ struct PlacementListItem {
 }
 
 #[derive(Debug, Clone, Serialize)]
-/// One deployment row with that host's latest observation.
+/// One deployment row with that node's latest observation.
 struct DeploymentListItem {
-    /// Host the row targets.
-    host_id: String,
+    /// Node the row targets.
+    node_id: String,
     /// `present` or `absent`.
     desired: String,
     /// Compare-and-swap revision.
     revision: i64,
-    /// Latest observation status, when the host reported one.
+    /// Latest observation status, when the node reported one.
     status: Option<String>,
     /// Observation detail (redacted error text).
     detail: Option<String>,
-    /// True when `host_id` is this host.
-    this_host: bool,
+    /// True when `node_id` is this node.
+    this_node: bool,
 }
 
 /// Dispatches a `plugins` subcommand against the loaded config.
@@ -435,7 +435,7 @@ pub async fn run(
                 } else {
                     instance_items(
                         &host.store,
-                        host.host_id(),
+                        host.node_id(),
                         Some(p.plugin_key().canonical()),
                     )
                     .await?
@@ -464,9 +464,9 @@ pub async fn run(
             }
             emit(
                 format,
-                &json!({ "host_id": host.host_id(), "search_dirs": dirs, "plugins": items }),
+                &json!({ "node_id": host.node_id(), "search_dirs": dirs, "plugins": items }),
                 || {
-                    println!("host: {}", host.host_id());
+                    println!("node: {}", host.node_id());
                     println!("search dirs:");
                     for d in &dirs {
                         println!("  {}", d.display());
@@ -579,7 +579,7 @@ pub async fn run(
             } else {
                 instance_items(
                     &host.store,
-                    host.host_id(),
+                    host.node_id(),
                     Some(plugin.plugin_key().canonical()),
                 )
                 .await?
@@ -610,7 +610,7 @@ pub async fn run(
                 "root": plugin.root.display().to_string(),
                 "cli": schema,
                 "receipt": receipt,
-                "host_target": host_bookclerk_target(),
+                "node_target": host_bookclerk_target(),
                 "runtime": plugin.manifest.runtime,
                 "plugin_key": plugin.plugin_key().canonical(),
                 "pending_structural": pending.as_ref().map(|p| p.summary_lines()),
@@ -675,7 +675,7 @@ pub async fn run(
                     } else {
                         instance_items(
                             &host.store,
-                            host.host_id(),
+                            host.node_id(),
                             Some(p.plugin_key().canonical()),
                         )
                         .await?
@@ -796,7 +796,7 @@ fn run_search(
                 format,
                 &json!({
                     "schema_version": 1,
-                    "host_target": host_bookclerk_target(),
+                    "node_target": host_bookclerk_target(),
                     "rust_triple": host_target_triple(),
                     "prefix": CRATE_NAME_PREFIX,
                     "plugins": legacy,
@@ -829,7 +829,7 @@ fn run_search(
         format,
         &json!({
             "schema_version": 1,
-            "host_target": host_bookclerk_target(),
+            "node_target": host_bookclerk_target(),
             "plugins": hits,
         }),
         || {
@@ -1082,7 +1082,7 @@ struct PluginDbListItem {
 }
 
 /// Registry rows for `spec`: canonical PluginKey, or an alias unique within
-/// this host plugin namespace (`$FILES_DIR`).
+/// this node plugin namespace (`$FILES_DIR`).
 ///
 /// A parseable PluginKey is an exact registry lookup. A bare alias resolves
 /// through discovery to exactly one PluginKey. Leftover alias-era rows keyed
@@ -1385,14 +1385,14 @@ pub async fn run_plugin_cli(
         } else {
             instance_items(
                 &host.store,
-                host.host_id(),
+                host.node_id(),
                 Some(plugin.plugin_key().canonical()),
             )
             .await?
         };
         if !enabled_here(config, &plugin, &instances) {
             anyhow::bail!(
-                "plugin `{}` is not enabled on this host; run `bookclerk plugins enable {}`",
+                "plugin `{}` is not enabled on this node; run `bookclerk plugins enable {}`",
                 plugin.manifest.id,
                 plugin.manifest.id
             );
@@ -1673,22 +1673,22 @@ async fn set_plugin_enabled(
         .iter()
         .find(|e| e.plugin.plugin_key().canonical() == instance.plugin_key)
         .map(|e| e.plugin.clone());
-    let host_id = host.unwrap_or_else(|| plane.host_id().to_string());
+    let node_id = host.unwrap_or_else(|| plane.node_id().to_string());
     let released =
         bookclerk_library::control_plane::load_active_release(store, &instance.plugin_key).await?;
     if enabled {
         if let Some(release) = &released {
-            // A released plugin runs on any host from its digest; consent is
+            // A released plugin runs on any node from its digest; consent is
             // the grant recorded on the release.
             bookclerk_plugin_host::release_grant(release)
                 .map_err(|err| anyhow::anyhow!("{err}"))?;
-            if host_id != plane.host_id() && !list_host_ids(store).await?.contains(&host_id) {
-                anyhow::bail!("host `{host_id}` is not registered with this cluster");
+            if node_id != plane.node_id() && !list_node_ids(store).await?.contains(&node_id) {
+                anyhow::bail!("node `{node_id}` is not registered with this cluster");
             }
-        } else if host_id == plane.host_id() {
+        } else if node_id == plane.node_id() {
             let plugin = installed.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "plugin `{}` is not installed on this host; install it or pass --host",
+                    "plugin `{}` is not installed on this node; install it or pass --host",
                     instance.plugin_key
                 )
             })?;
@@ -1698,14 +1698,14 @@ async fn set_plugin_enabled(
                     plugin.manifest.id
                 )
             })?;
-        } else if !list_host_ids(store).await?.contains(&host_id) {
-            anyhow::bail!("host `{host_id}` is not registered with this cluster");
+        } else if !list_node_ids(store).await?.contains(&node_id) {
+            anyhow::bail!("node `{node_id}` is not registered with this cluster");
         }
     }
     let desired = bookclerk_library::control_plane::DesiredState::operator(enabled);
-    let row = match load_deployment_for_host(store, &instance.id, &host_id).await? {
+    let row = match load_deployment_for_node(store, &instance.id, &node_id).await? {
         None => {
-            ensure_plugin_deployment(store, &cli_actor(), &instance.id, &host_id, desired).await?
+            ensure_plugin_deployment(store, &cli_actor(), &instance.id, &node_id, desired).await?
         }
         Some(current) if current.desired == desired => current,
         Some(current) => match replace_plugin_deployment(
@@ -1728,21 +1728,21 @@ async fn set_plugin_enabled(
     let payload = json!({
         "plugin_key": instance.plugin_key,
         "plugin_instance_id": instance.id.to_string(),
-        "host_id": row.host_id,
+        "node_id": row.node_id,
         "desired": row.desired.as_str(),
         "revision": row.revision,
         "enabled": enabled,
     });
     emit(format, &payload, || {
         println!(
-            "{} {} instance {} on host {} (deployment {})",
+            "{} {} instance {} on node {} (deployment {})",
             if enabled { "enabled" } else { "disabled" },
             instance.plugin_key,
             instance.id,
-            row.host_id,
+            row.node_id,
             row.desired
         );
-        if host_id == plane.host_id() {
+        if node_id == plane.node_id() {
             println!("a running bookclerkd applies the change on its next reconcile pass");
         }
     })
@@ -1809,7 +1809,7 @@ async fn resolve_instance(store: &LibraryStore, needle: &str) -> anyhow::Result<
     let key = resolve_plugin_key(store, needle).await?;
     default_instance_for_key(store, &key).await?.ok_or_else(|| {
         anyhow::anyhow!(
-            "plugin `{key}` has no instance yet; run a host that has it installed \
+            "plugin `{key}` has no instance yet; run a node that has it installed \
                  (enrollment creates the default instance)"
         )
     })
@@ -1844,7 +1844,7 @@ async fn resolve_plugin_key(store: &LibraryStore, needle: &str) -> anyhow::Resul
 /// Instances (optionally of one plugin key) with their deployments.
 async fn instance_items(
     store: &LibraryStore,
-    this_host: &str,
+    this_node: &str,
     plugin_key: Option<&str>,
 ) -> anyhow::Result<Vec<InstanceListItem>> {
     let aliases: std::collections::HashMap<String, String> = list_plugin_schemas(store)
@@ -1866,10 +1866,10 @@ async fn instance_items(
         let mut deployments = Vec::new();
         for deployment in list_deployments_for_instance(store, &instance.id).await? {
             let observation =
-                load_observation(store, &deployment.deployment_id, &deployment.host_id).await?;
+                load_observation(store, &deployment.deployment_id, &deployment.node_id).await?;
             deployments.push(DeploymentListItem {
-                this_host: deployment.host_id == this_host,
-                host_id: deployment.host_id,
+                this_node: deployment.node_id == this_node,
+                node_id: deployment.node_id,
                 desired: deployment.desired.as_str().to_string(),
                 revision: deployment.revision,
                 status: observation.as_ref().map(|o| o.status.as_str().to_string()),
@@ -1904,7 +1904,7 @@ async fn instance_items(
     Ok(items)
 }
 
-/// True when the plugin is enabled on this host: a bootstrap database
+/// True when the plugin is enabled on this node: a bootstrap database
 /// adapter occupies `[database].plugin`; any other plugin has its default
 /// instance's deployment desired present here.
 fn enabled_here(
@@ -1920,7 +1920,7 @@ fn enabled_here(
             && instance
                 .deployments
                 .iter()
-                .any(|d| d.this_host && (d.desired == "present" || d.desired == "placed"))
+                .any(|d| d.this_node && (d.desired == "present" || d.desired == "placed"))
     })
 }
 
@@ -1962,9 +1962,9 @@ fn print_instance_line(instance: &InstanceListItem) {
     }
     for d in &instance.deployments {
         println!(
-            "    host {}{} desired={} status={}{}",
-            d.host_id,
-            if d.this_host { " (this host)" } else { "" },
+            "    node {}{} desired={} status={}{}",
+            d.node_id,
+            if d.this_node { " (this node)" } else { "" },
             d.desired,
             d.status.as_deref().unwrap_or("-"),
             d.detail
@@ -1985,7 +1985,7 @@ async fn run_deploy(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     use bookclerk_library::control_plane::{
-        delete_plugin_placement, effective_host_labels, labels_satisfy, list_hosts, live_host_ids,
+        delete_plugin_placement, effective_node_labels, labels_satisfy, list_nodes, live_node_ids,
         load_plugin_placement, put_plugin_placement, PlacementSpec, PlacementWrite,
     };
     let plane = crate::registry::open_host(config).await?;
@@ -2031,15 +2031,15 @@ async fn run_deploy(
             anyhow::bail!("placement changed concurrently (revision {current_revision}); retry")
         }
     };
-    let live = live_host_ids(store).await?;
-    let eligible: Vec<String> = list_hosts(store)
+    let live = live_node_ids(store).await?;
+    let eligible: Vec<String> = list_nodes(store)
         .await?
         .iter()
         .filter(|host| {
-            live.contains(&host.host_id)
-                && labels_satisfy(&effective_host_labels(host), &placement.spec.constraints)
+            live.contains(&host.node_id)
+                && labels_satisfy(&effective_node_labels(host), &placement.spec.constraints)
         })
-        .map(|host| host.host_id.clone())
+        .map(|host| host.node_id.clone())
         .collect();
     let payload = json!({
         "plugin_key": instance.plugin_key,
@@ -2049,7 +2049,7 @@ async fn run_deploy(
             "constraints": placement.spec.constraints,
             "revision": placement.revision,
         },
-        "eligible_hosts": eligible,
+        "eligible_nodes": eligible,
     });
     emit(format, &payload, || {
         println!(
@@ -2072,7 +2072,7 @@ async fn run_deploy(
         };
         if eligible.len() < wanted {
             println!(
-                "warning: {} live host(s) satisfy the constraints now; label more with `bookclerk hosts label`",
+                "warning: {} live node(s) satisfy the constraints now; label more with `bookclerk nodes label`",
                 eligible.len()
             );
         }
@@ -2093,10 +2093,10 @@ async fn run_instances(
                 Some(needle) => Some(resolve_plugin_key(store, needle).await?),
                 None => None,
             };
-            let items = instance_items(store, plane.host_id(), key.as_deref()).await?;
+            let items = instance_items(store, plane.node_id(), key.as_deref()).await?;
             emit(
                 format,
-                &json!({ "host_id": plane.host_id(), "instances": items }),
+                &json!({ "node_id": plane.node_id(), "instances": items }),
                 || {
                     if items.is_empty() {
                         println!("no plugin instances");

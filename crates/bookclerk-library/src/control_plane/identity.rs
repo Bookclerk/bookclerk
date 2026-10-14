@@ -1,4 +1,4 @@
-//! Stable host identity file and database registration.
+//! Stable node identity file and database registration.
 //!
 //! The identity file is bootstrap material. Hostname text is never an input.
 //! A process incarnation is memory-only and is written as a heartbeat observation.
@@ -15,20 +15,20 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::batch::{self, exec, int, int_opt, request, text};
-use crate::entities::hosts;
+use crate::entities::nodes;
 use crate::error::{LibraryError, Result};
 use crate::host_schema::current_schema_state;
 use crate::migrations::{unreleased_checksum, SCHEMA_VERSION};
 use crate::schema_state::SchemaState;
 use crate::store::LibraryStore;
 
-/// Bootstrap file under `$BOOKCLERK_FILES_DIR` that stores the stable host id.
-pub const HOST_IDENTITY_FILE: &str = "host-identity.json";
+/// Bootstrap file under `$BOOKCLERK_FILES_DIR` that stores the stable node id.
+pub const NODE_IDENTITY_FILE: &str = "node-identity.json";
 
 /// Identity file schema. Unknown versions fail closed.
 const IDENTITY_FILE_VERSION: u32 = 1;
 
-/// Process-local incarnation. A restart mints a new value; the host id does not.
+/// Process-local incarnation. A restart mints a new value; the node id does not.
 fn process_incarnation() -> &'static str {
     static INCARNATION: OnceLock<String> = OnceLock::new();
     INCARNATION
@@ -41,28 +41,28 @@ fn process_incarnation() -> &'static str {
 struct IdentityFile {
     /// File schema version.
     v: u32,
-    /// Stable host id (UUID).
-    host_id: String,
+    /// Stable node id (UUID).
+    node_id: String,
     /// Cluster this file has enrolled into, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cluster_id: Option<String>,
 }
 
-/// Bootstrap identity loaded from [`HOST_IDENTITY_FILE`].
+/// Bootstrap identity loaded from [`NODE_IDENTITY_FILE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostIdentity {
-    /// Stable host id.
-    pub host_id: String,
+pub struct NodeIdentity {
+    /// Stable node id.
+    pub node_id: String,
     /// Cluster binding, once enrollment has succeeded.
     pub cluster_id: Option<String>,
 }
 
-/// Durable host row plus the latest observation columns.
+/// Durable node row plus the latest observation columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostRecord {
-    /// Stable host id.
-    pub host_id: String,
-    /// Cluster id stored with the host.
+pub struct NodeRecord {
+    /// Stable node id.
+    pub node_id: String,
+    /// Cluster id stored with the node.
     pub cluster_id: String,
     /// RFC 3339 creation time. Heartbeats do not change it.
     pub created_at: String,
@@ -103,7 +103,7 @@ pub struct HostRecord {
 /// `macos-arm64`, …). Matches `bookclerk_plugin_catalog::host_bookclerk_target`
 /// (a plugin-host test pins the two together).
 #[must_use]
-pub fn host_target() -> &'static str {
+pub fn node_target() -> &'static str {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "linux-x64-gnu"
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
@@ -123,7 +123,7 @@ pub fn host_target() -> &'static str {
 
 /// Capacity sample written on heartbeat. Not desired state.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HostObservation {
+pub(crate) struct NodeObservation {
     /// `available_parallelism`, empty when the probe failed.
     pub logical_cpus: Option<i64>,
     /// `cpu.max` quota. Empty when the value is `max` or the file is missing.
@@ -142,23 +142,23 @@ pub(crate) struct HostObservation {
     pub scratch_bytes: Option<i64>,
 }
 
-/// Path of the host identity file.
+/// Path of the node identity file.
 #[must_use]
-pub fn host_identity_path(files_dir: &Path) -> PathBuf {
-    files_dir.join(HOST_IDENTITY_FILE)
+pub fn node_identity_path(files_dir: &Path) -> PathBuf {
+    files_dir.join(NODE_IDENTITY_FILE)
 }
 
-/// Loads the identity file or creates a new host id.
+/// Loads the identity file or creates a new node id.
 ///
-/// Concurrent creators of the same path share the winner's host id.
-/// Copying the file copies the host id. A new file is a distinct host.
+/// Concurrent creators of the same path share the winner's node id.
+/// Copying the file copies the node id. A new file is a distinct node.
 ///
 /// # Errors
 ///
 /// Returns an error when the file is unreadable, has an unknown version, or
 /// cannot be created.
-pub fn load_or_create_host_identity(files_dir: &Path) -> Result<HostIdentity> {
-    let path = host_identity_path(files_dir);
+pub fn load_or_create_node_identity(files_dir: &Path) -> Result<NodeIdentity> {
+    let path = node_identity_path(files_dir);
     if path.is_file() {
         return read_identity(&path).map(public_identity);
     }
@@ -167,7 +167,7 @@ pub fn load_or_create_host_identity(files_dir: &Path) -> Result<HostIdentity> {
     }
     let fresh = IdentityFile {
         v: IDENTITY_FILE_VERSION,
-        host_id: Uuid::new_v4().to_string(),
+        node_id: Uuid::new_v4().to_string(),
         cluster_id: None,
     };
     match write_identity_create_new(&path, &fresh) {
@@ -187,13 +187,13 @@ pub fn load_or_create_host_identity(files_dir: &Path) -> Result<HostIdentity> {
 /// # Errors
 ///
 /// Returns an error on a cluster mismatch or when the file cannot be replaced.
-pub fn bind_cluster_id(files_dir: &Path, cluster_id: &str) -> Result<HostIdentity> {
-    let path = host_identity_path(files_dir);
+pub fn bind_cluster_id(files_dir: &Path, cluster_id: &str) -> Result<NodeIdentity> {
+    let path = node_identity_path(files_dir);
     let mut identity = read_identity(&path)?;
     match identity.cluster_id.as_deref() {
         Some(existing) if existing == cluster_id => Ok(public_identity(identity)),
         Some(existing) => Err(LibraryError::Conflict(format!(
-            "cluster mismatch: host identity is bound to {existing}, database cluster is {cluster_id}"
+            "cluster mismatch: node identity is bound to {existing}, database cluster is {cluster_id}"
         ))),
         None => {
             identity.cluster_id = Some(cluster_id.to_string());
@@ -209,17 +209,17 @@ pub fn bind_cluster_id(files_dir: &Path, cluster_id: &str) -> Result<HostIdentit
 ///
 /// Returns an error when the identity file cannot be read.
 pub fn preferred_cluster_id(files_dir: &Path) -> Result<Option<String>> {
-    let path = host_identity_path(files_dir);
+    let path = node_identity_path(files_dir);
     if !path.is_file() {
         return Ok(None);
     }
     Ok(read_identity(&path)?.cluster_id)
 }
 
-/// Inserts the host when absent and refreshes observation columns.
+/// Inserts the node when absent and refreshes observation columns.
 ///
 /// `created_at` and `cluster_id` stay at their first values. A heartbeat for a
-/// host id already enrolled in another cluster fails and does not rewrite that
+/// node id already enrolled in another cluster fails and does not rewrite that
 /// row.
 ///
 /// # Errors
@@ -227,11 +227,11 @@ pub fn preferred_cluster_id(files_dir: &Path) -> Result<Option<String>> {
 /// Returns an error when the schema is incompatible or the write fails.
 pub async fn register_and_heartbeat(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
     cluster_id: &str,
     incarnation: &str,
-    observation: &HostObservation,
-) -> Result<HostRecord> {
+    observation: &NodeObservation,
+) -> Result<NodeRecord> {
     let now = Utc::now().to_rfc3339();
     let state = current_schema_state(store.db()).await?;
     let compatible = schema_compatible(&state);
@@ -244,22 +244,22 @@ pub async fn register_and_heartbeat(
     }
     let schema_state = state.display();
     let version = env!("CARGO_PKG_VERSION");
-    let operation_id = format!("host-heartbeat-{host_id}-{incarnation}");
+    let operation_id = format!("node-heartbeat-{node_id}-{incarnation}");
     let reply = batch::execute_host_batch(
         store,
         request(
             &operation_id,
             vec![
                 exec(
-                    "INSERT OR IGNORE INTO hosts (
-                        host_id, cluster_id, created_at, incarnation, heartbeat_at,
+                    "INSERT OR IGNORE INTO nodes (
+                        node_id, cluster_id, created_at, incarnation, heartbeat_at,
                         software_version, schema_state, compatible,
                         logical_cpus, cpu_max_quota_us, cpu_max_period_us,
                         memory_max_bytes, memory_current_bytes, memory_anon_bytes,
                         files_dir_free_bytes, scratch_bytes, target
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     vec![
-                        text(host_id),
+                        text(node_id),
                         text(cluster_id),
                         text(&now),
                         text(incarnation),
@@ -275,17 +275,17 @@ pub async fn register_and_heartbeat(
                         int_opt(observation.memory_anon_bytes),
                         int_opt(observation.files_dir_free_bytes),
                         int_opt(observation.scratch_bytes),
-                        text(host_target()),
+                        text(node_target()),
                     ],
                 ),
                 exec(
-                    "UPDATE hosts SET
+                    "UPDATE nodes SET
                         incarnation = ?, heartbeat_at = ?, software_version = ?,
                         schema_state = ?, compatible = ?,
                         logical_cpus = ?, cpu_max_quota_us = ?, cpu_max_period_us = ?,
                         memory_max_bytes = ?, memory_current_bytes = ?, memory_anon_bytes = ?,
                         files_dir_free_bytes = ?, scratch_bytes = ?, target = ?
-                     WHERE host_id = ? AND cluster_id = ?",
+                     WHERE node_id = ? AND cluster_id = ?",
                     vec![
                         text(incarnation),
                         text(&now),
@@ -300,8 +300,8 @@ pub async fn register_and_heartbeat(
                         int_opt(observation.memory_anon_bytes),
                         int_opt(observation.files_dir_free_bytes),
                         int_opt(observation.scratch_bytes),
-                        text(host_target()),
-                        text(host_id),
+                        text(node_target()),
+                        text(node_id),
                         text(cluster_id),
                     ],
                 ),
@@ -310,7 +310,7 @@ pub async fn register_and_heartbeat(
     )
     .await?;
     if batch::rows_affected(&reply, 1) == 0 {
-        let existing = hosts::Entity::find_by_id(host_id.to_string())
+        let existing = nodes::Entity::find_by_id(node_id.to_string())
             .one(store.db())
             .await
             .map_err(LibraryError::Orm)?;
@@ -319,10 +319,10 @@ pub async fn register_and_heartbeat(
             .map(|row| row.cluster_id.as_str())
             .unwrap_or("missing");
         return Err(LibraryError::Conflict(format!(
-            "cluster mismatch: host {host_id} is registered in cluster {bound}, not {cluster_id}"
+            "cluster mismatch: node {node_id} is registered in cluster {bound}, not {cluster_id}"
         )));
     }
-    load_host(store, host_id).await
+    load_node(store, node_id).await
 }
 
 /// Heartbeats using this process's incarnation.
@@ -332,22 +332,22 @@ pub async fn register_and_heartbeat(
 /// Returns an error when registration fails.
 pub async fn heartbeat_process(
     store: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
     cluster_id: &str,
     files_dir: &Path,
     scratch_dir: &Path,
-) -> Result<HostRecord> {
+) -> Result<NodeRecord> {
     let cgroup = process_cgroup_dir();
     let files = files_dir.to_path_buf();
     let scratch = scratch_dir.to_path_buf();
     let observation = tokio::task::spawn_blocking(move || {
-        sample_host_observation(cgroup.as_deref(), &files, &scratch)
+        sample_node_observation(cgroup.as_deref(), &files, &scratch)
     })
     .await
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("heartbeat sample panicked: {err}")))?;
     register_and_heartbeat(
         store,
-        host_id,
+        node_id,
         cluster_id,
         process_incarnation(),
         &observation,
@@ -359,13 +359,13 @@ pub async fn heartbeat_process(
 ///
 /// `cgroup_dir` overrides the process cgroup so tests can point at fake
 /// controller files. `None` records empty cgroup columns.
-pub(crate) fn sample_host_observation(
+pub(crate) fn sample_node_observation(
     cgroup_dir: Option<&Path>,
     files_dir: &Path,
     scratch_dir: &Path,
-) -> HostObservation {
+) -> NodeObservation {
     let cgroup = cgroup_dir.map(read_cgroup_sample).unwrap_or_default();
-    HostObservation {
+    NodeObservation {
         logical_cpus: logical_cpu_count(),
         cpu_max_quota_us: fit_i64(cgroup.cpu_max_quota_us),
         cpu_max_period_us: fit_i64(cgroup.cpu_max_period_us),
@@ -426,49 +426,49 @@ fn dir_bytes(path: &Path) -> u64 {
     total
 }
 
-/// Loads one host row.
+/// Loads one node row.
 ///
 /// # Errors
 ///
 /// Returns an error when the row is missing or the read fails.
-pub async fn load_host(store: &LibraryStore, host_id: &str) -> Result<HostRecord> {
-    let row = hosts::Entity::find_by_id(host_id.to_string())
+pub async fn load_node(store: &LibraryStore, node_id: &str) -> Result<NodeRecord> {
+    let row = nodes::Entity::find_by_id(node_id.to_string())
         .one(store.db())
         .await
         .map_err(LibraryError::Orm)?
-        .ok_or_else(|| LibraryError::NotFound(format!("host {host_id}")))?;
+        .ok_or_else(|| LibraryError::NotFound(format!("node {node_id}")))?;
     Ok(record_from_model(row))
 }
 
-/// Lists host ids, sorted.
+/// Lists node ids, sorted.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn list_host_ids(store: &LibraryStore) -> Result<Vec<String>> {
-    let rows = hosts::Entity::find()
+pub async fn list_node_ids(store: &LibraryStore) -> Result<Vec<String>> {
+    let rows = nodes::Entity::find()
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    let mut ids: Vec<String> = rows.into_iter().map(|row| row.host_id).collect();
+    let mut ids: Vec<String> = rows.into_iter().map(|row| row.node_id).collect();
     ids.sort();
     Ok(ids)
 }
 
-/// Every host row, sorted by id.
+/// Every node row, sorted by id.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-pub async fn list_hosts(store: &LibraryStore) -> Result<Vec<HostRecord>> {
-    let mut rows: Vec<HostRecord> = hosts::Entity::find()
+pub async fn list_nodes(store: &LibraryStore) -> Result<Vec<NodeRecord>> {
+    let mut rows: Vec<NodeRecord> = nodes::Entity::find()
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?
         .into_iter()
         .map(record_from_model)
         .collect();
-    rows.sort_by(|a, b| a.host_id.cmp(&b.host_id));
+    rows.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     Ok(rows)
 }
 
@@ -479,17 +479,17 @@ pub fn current_process_incarnation() -> &'static str {
 }
 
 /// Projects the on-disk file onto the public identity.
-fn public_identity(identity: IdentityFile) -> HostIdentity {
-    HostIdentity {
-        host_id: identity.host_id,
+fn public_identity(identity: IdentityFile) -> NodeIdentity {
+    NodeIdentity {
+        node_id: identity.node_id,
         cluster_id: identity.cluster_id,
     }
 }
 
-/// Maps a host row onto the public record.
-fn record_from_model(row: hosts::Model) -> HostRecord {
-    HostRecord {
-        host_id: row.host_id,
+/// Maps a node row onto the public record.
+fn record_from_model(row: nodes::Model) -> NodeRecord {
+    NodeRecord {
+        node_id: row.node_id,
         cluster_id: row.cluster_id,
         created_at: row.created_at,
         incarnation: row.incarnation,
@@ -539,20 +539,20 @@ fn read_identity(path: &Path) -> Result<IdentityFile> {
     let raw = std::fs::read_to_string(path)?;
     let parsed: IdentityFile = serde_json::from_str(&raw).map_err(|err| {
         LibraryError::Other(anyhow::anyhow!(
-            "host identity file {} is not valid JSON: {err}",
+            "node identity file {} is not valid JSON: {err}",
             path.display()
         ))
     })?;
     if parsed.v != IDENTITY_FILE_VERSION {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "unsupported host identity file version {} in {}",
+            "unsupported node identity file version {} in {}",
             parsed.v,
             path.display()
         )));
     }
-    if Uuid::parse_str(&parsed.host_id).is_err() {
+    if Uuid::parse_str(&parsed.node_id).is_err() {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "host identity file {} has a non-UUID host_id",
+            "node identity file {} has a non-UUID node_id",
             path.display()
         )));
     }
@@ -569,11 +569,11 @@ fn write_identity_create_new(path: &Path, identity: &IdentityFile) -> std::io::R
 /// Replaces the identity file via a same-directory rename.
 fn write_identity_atomic(path: &Path, identity: &IdentityFile) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(identity)
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("host identity encode: {err}")))?;
+        .map_err(|err| LibraryError::Other(anyhow::anyhow!("node identity encode: {err}")))?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let tmp = parent.join(format!(
         ".{}.tmp-{}-{}",
-        HOST_IDENTITY_FILE,
+        NODE_IDENTITY_FILE,
         std::process::id(),
         Uuid::new_v4().simple()
     ));

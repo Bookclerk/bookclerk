@@ -1374,7 +1374,7 @@ mod tests {
             assert!(cpu.hard_cap);
             assert_eq!(
                 cpu.cpu_rate,
-                crate::windows_job_cpu_rate(80, crate::host_logical_cpus())
+                crate::windows_job_cpu_rate(80, crate::node_logical_cpus())
             );
             let mut children = Vec::new();
             for _ in 0..cap {
@@ -1475,7 +1475,7 @@ mod tests {
         assert!(control.hard_cap);
         assert_eq!(
             control.cpu_rate,
-            crate::windows_job_cpu_rate(10, crate::host_logical_cpus())
+            crate::windows_job_cpu_rate(10, crate::node_logical_cpus())
         );
         // Startup runs before the gate, so Job accounting does not include it.
         // The burn itself is 2s of wall time after the process is in the Job.

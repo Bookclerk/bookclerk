@@ -137,8 +137,8 @@ batch them with `events.*`. `GET /api/settings` includes `events.revision` in
 `effective`.
 
 Running processes re-read the document on startup and whenever a
-`configuration.changed` message reaches their host queue (`host.<host_id>`;
-every committed write publishes one to each registered host), with a
+`configuration.changed` message reaches their node queue (`node.<node_id>`;
+every committed write publishes one to each registered node), with a
 60-second backstop pass.
 A reload reads that document before it replaces the library connection or
 operator auth. If the read fails, the previous runtime stays in place. Guests
@@ -171,7 +171,7 @@ These stay outside the database because the process needs them before
 | --- | --- |
 | `[database]` and `BOOKCLERK_DATABASE_*` / D1 / Postgres env | Which library database to open |
 | `master.key` plus `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | Cluster data-encryption key |
-| `host-identity.json` | Stable host id and the cluster id this files directory joined |
+| `node-identity.json` | Stable host id and the cluster id this files directory joined |
 
 A second host joining an existing database must have the same `master.key`.
 Bookclerk does not mint a new key when the database already has a secret-root
@@ -180,7 +180,7 @@ does not mint or cache a key before command dispatch. `bookclerk config
 master-key status` and `bookclerk config master-key wrap` do not open the
 database; wrap fails when `master.key` is absent. Copy `master.key` and the
 database settings. Omit
-`host-identity.json` when the process should be a new host; copying that file
+`node-identity.json` when the process should be a new host; copying that file
 reuses the host id. A file bound to a different cluster id fails without
 rewriting either side.
 
@@ -206,7 +206,7 @@ bookclerk plugins instances create s3 --name "Backup bucket"
 
 The daemon's operator API mirrors this under `/api/config/plugin-instances`
 (list / create, `GET`/`PUT …/{id}/config` with `expected_revision`,
-`PUT …/{id}/deployments/{host_id}`), plus `/api/config/hosts` and
+`PUT …/{id}/deployments/{node_id}`), plus `/api/config/nodes` and
 `/api/config/plugin-schemas`. **Settings → Plugins** is built from the same
 schema. `PATCH /api/settings` no longer accepts plugin keys.
 

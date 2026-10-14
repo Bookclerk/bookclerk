@@ -1620,11 +1620,11 @@ export interface PluginSettingOption {
 }
 
 /**
- * This host's deployment of a plugin instance, with its latest observation.
+ * This node's deployment of a plugin instance, with its latest observation.
  */
 export interface PluginDeploymentView {
   deployment_id: string;
-  host_id: string;
+  node_id: string;
   /**
    * `present` / `absent` when an operator manages the instance (the Enabled
    * switch), `placed` / `unplaced` when the cluster scheduler does. The
@@ -1645,7 +1645,7 @@ export interface PluginDeploymentView {
  */
 export interface PluginPlacementView {
   /**
-   * Hosts that should run the instance: a count (0 stops every replica) or
+   * Nodes that should run the instance: a count (0 stops every replica) or
    * `"all"` (every live, schedulable host with budget room).
    */
   replicas: number | "all";
@@ -1683,11 +1683,11 @@ export interface PluginSettingsGroup {
   is_default?: boolean;
   /** Instance document revision for compare-and-swap writes. */
   config_revision?: number;
-  /** This host's deployment of the instance, when one exists. */
+  /** This node's deployment of the instance, when one exists. */
   deployment?: PluginDeploymentView;
   /** Scheduler placement; absent when the instance is managed by hand. */
   placement?: PluginPlacementView;
-  /** Hosts whose deployment of the instance is `present`. */
+  /** Nodes whose deployment of the instance is `present`. */
   present_on?: string[];
 }
 
@@ -2056,19 +2056,19 @@ export async function putPluginInstanceConfig(
  * Sets whether a plugin instance should run on a host (the enable switch).
  *
  * @param instanceId - Plugin instance id.
- * @param hostId - Target host id.
+ * @param nodeId - Target node id.
  * @param desired - `present` to run it there, `absent` to retire it.
  * @param expectedRevision - Deployment revision last observed, for compare-and-swap.
  * @returns The deployment row after the write.
  */
 export async function putPluginDeployment(
   instanceId: string,
-  hostId: string,
+  nodeId: string,
   desired: "present" | "absent",
   expectedRevision?: number,
 ): Promise<PluginDeploymentView> {
   const res = await fetch(
-    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/deployments/${encodeURIComponent(hostId)}`,
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/deployments/${encodeURIComponent(nodeId)}`,
     {
       method: "PUT",
       credentials: "include",
@@ -2121,27 +2121,27 @@ export async function deletePluginPlacement(
 }
 
 /**
- * A host's runtime document (`host.runtime`): its label, the share of its
+ * A node's runtime document (`node.runtime`): its label, the share of its
  * detected capacity the scheduler may commit, and the drain switch.
  */
-export interface HostRuntimeView {
+export interface NodeRuntimeView {
   label: string;
   /** Share of detected CPU the scheduler may commit (1..=100). */
   cpu_budget_percent: number;
   /** Share of detected memory the scheduler may commit (1..=100). */
   memory_budget_percent: number;
-  /** False drains the host: nothing new is placed there. */
+  /** False drains the node: nothing new is placed there. */
   schedulable: boolean;
 }
 
-/** A host's latest heartbeat (every 15 s while its daemon runs). */
-export interface HostStatusView {
+/** A node's latest heartbeat (every 15 s while its daemon runs). */
+export interface NodeStatusView {
   heartbeat_at: string;
   started_at: string;
   interval_ms: number;
   /** Detected CPU capacity in millicores. */
   cpu_millicores: number;
-  /** Detected memory in bytes, when the host could read it. */
+  /** Detected memory in bytes, when the node could read it. */
   memory_bytes: number | null;
   cpu_budget_millicores: number;
   memory_budget_bytes: number | null;
@@ -2158,47 +2158,47 @@ export interface HostStatusView {
   availability_ppm: number;
 }
 
-/** One cluster host as `GET /api/config/hosts` returns it. */
-export interface ConfigHostView {
-  host_id: string;
+/** One cluster node as `GET /api/config/nodes` returns it. */
+export interface ConfigNodeView {
+  node_id: string;
   target: string;
   /** Operator labels. */
   labels: string[];
-  /** Labels every host carries (`host=<id>`, `target=<target>`). */
+  /** Labels every node carries (`node=<id>`, `target=<target>`). */
   implicit_labels: string[];
-  /** True while the host's daemon heartbeats. */
+  /** True while the node's daemon heartbeats. */
   live: boolean;
-  runtime: HostRuntimeView;
-  /** Latest heartbeat; null when the host's daemon never ran. */
-  status: HostStatusView | null;
+  runtime: NodeRuntimeView;
+  /** Latest heartbeat; null when the node's daemon never ran. */
+  status: NodeStatusView | null;
   software_version?: string;
-  /** True for the host serving this request. */
-  this_host: boolean;
+  /** True for the node serving this request. */
+  this_node: boolean;
 }
 
 /**
- * Lists the cluster's hosts with their heartbeat, budgets, and labels.
+ * Lists the cluster's nodes with their heartbeat, budgets, and labels.
  *
- * @returns The serving host's id and every host.
+ * @returns The serving node's id and every node.
  */
-export async function listConfigHosts(): Promise<{ host_id: string; hosts: ConfigHostView[] }> {
-  const res = await fetch("/api/config/hosts", { credentials: "include" });
+export async function listConfigNodes(): Promise<{ node_id: string; nodes: ConfigNodeView[] }> {
+  const res = await fetch("/api/config/nodes", { credentials: "include" });
   return parseJson(res);
 }
 
 /**
- * Edits a host's label, budgets, or drain switch. The host applies it at
+ * Edits a node's label, budgets, or drain switch. The node applies it at
  * its next heartbeat.
  *
- * @param hostId - Host to edit.
+ * @param nodeId - Node to edit.
  * @param body - Fields to change; omitted fields keep their value.
  * @returns The stored runtime document.
  */
-export async function putHostRuntime(
-  hostId: string,
-  body: Partial<HostRuntimeView>,
-): Promise<{ host_id: string; revision: number; runtime: HostRuntimeView }> {
-  const res = await fetch(`/api/config/hosts/${encodeURIComponent(hostId)}/runtime`, {
+export async function putNodeRuntime(
+  nodeId: string,
+  body: Partial<NodeRuntimeView>,
+): Promise<{ node_id: string; revision: number; runtime: NodeRuntimeView }> {
+  const res = await fetch(`/api/config/nodes/${encodeURIComponent(nodeId)}/runtime`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -2208,14 +2208,14 @@ export async function putHostRuntime(
 }
 
 /**
- * Replaces a host's operator labels.
+ * Replaces a node's operator labels.
  *
- * @param hostId - Host to edit.
+ * @param nodeId - Node to edit.
  * @param labels - The complete label set (`nas`, `zone=eu`).
- * @returns The updated host.
+ * @returns The updated node.
  */
-export async function putHostLabels(hostId: string, labels: string[]): Promise<unknown> {
-  const res = await fetch(`/api/config/hosts/${encodeURIComponent(hostId)}/labels`, {
+export async function putNodeLabels(nodeId: string, labels: string[]): Promise<unknown> {
+  const res = await fetch(`/api/config/nodes/${encodeURIComponent(nodeId)}/labels`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },

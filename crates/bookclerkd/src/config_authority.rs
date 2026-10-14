@@ -30,11 +30,11 @@ fn operator_actor() -> ConfigActor {
 }
 
 /// Re-reads `core.events` on each `configuration.changed` delivery on this
-/// host's queue, plus a slow backstop pass, until the process stops.
+/// node's queue, plus a slow backstop pass, until the process stops.
 pub fn spawn_config_reconciler(state: Arc<AppState>) {
-    crate::host_queue::spawn_woken_loop(
+    crate::node_queue::spawn_woken_loop(
         state,
-        crate::host_queue::config_wait,
+        crate::node_queue::config_wait,
         |state| async move {
             if let Err(err) = reconcile_events(&state).await {
                 tracing::warn!(error = %err, "configuration reconcile failed");
@@ -357,12 +357,12 @@ fn events_json(
 }
 
 /// Re-reads local plugin deployments on each `deployment.changed` or
-/// `configuration.changed` delivery on this host's queue, plus a slow
+/// `configuration.changed` delivery on this node's queue, plus a slow
 /// backstop pass, until the process stops.
 pub fn spawn_deployment_reconciler(state: Arc<AppState>) {
-    crate::host_queue::spawn_woken_loop(
+    crate::node_queue::spawn_woken_loop(
         state,
-        crate::host_queue::deployment_wait,
+        crate::node_queue::deployment_wait,
         |state| async move {
             if let Err(err) = reconcile_deployments(&state).await {
                 tracing::warn!(error = %err, "plugin deployment reconcile failed");
@@ -371,7 +371,7 @@ pub fn spawn_deployment_reconciler(state: Arc<AppState>) {
     );
 }
 
-/// Reconciles this host's deployments: installs, spawns, respawns, and
+/// Reconciles this node's deployments: installs, spawns, respawns, and
 /// retires guests until the live registries match `plugin_deployments`.
 ///
 /// One pass runs at a time; the periodic tick and an on-demand pass after a
@@ -381,14 +381,14 @@ pub(crate) async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()
     let _pass = runtime.reconcile_lock().lock().await;
     let config = state.config.read().await.clone();
     let store = state.library.read().await.clone();
-    let host =
-        bookclerk_library::control_plane::load_or_create_host_identity(&config.paths().files_dir)?;
+    let node =
+        bookclerk_library::control_plane::load_or_create_node_identity(&config.paths().files_dir)?;
     let packages = bookclerk_plugin_host::load_authorized_local_packages(&config.paths().files_dir)
         .map_err(|err| anyhow::anyhow!(err))?;
     bookclerk_plugin_host::reconcile_local_deployments(
         &store,
         &config,
-        &host.host_id,
+        &node.node_id,
         &packages,
         runtime.as_ref(),
     )
@@ -396,18 +396,18 @@ pub(crate) async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()
     Ok(())
 }
 
-/// This host's view of one deployment row, with its latest observation.
+/// This node's view of one deployment row, with its latest observation.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PluginDeploymentView {
     /// Deployment row id.
     pub deployment_id: String,
-    /// Host the row targets.
-    pub host_id: String,
+    /// Node the row targets.
+    pub node_id: String,
     /// `present` or `absent`.
     pub desired: String,
     /// Compare-and-swap revision of the desired row.
     pub revision: i64,
-    /// Latest observation status from that host, when it reported one.
+    /// Latest observation status from that node, when it reported one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// Observation detail (error text, redacted).
@@ -437,9 +437,9 @@ pub(crate) struct InstanceConfigView {
 /// pass's result.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PlacementView {
-    /// Hosts that should run the instance.
+    /// Nodes that should run the instance.
     pub replicas: bookclerk_library::control_plane::Replicas,
-    /// Label constraints every chosen host must satisfy.
+    /// Label constraints every chosen node must satisfy.
     pub constraints: Vec<String>,
     /// Compare-and-swap revision of the intent.
     pub revision: i64,
@@ -487,7 +487,7 @@ pub(crate) struct PluginInstanceView {
     /// Current document, when the instance has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<InstanceConfigView>,
-    /// Deployment rows across hosts.
+    /// Deployment rows across nodes.
     pub deployments: Vec<PluginDeploymentView>,
     /// Scheduler placement; absent when the instance is hand-managed.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -495,14 +495,14 @@ pub(crate) struct PluginInstanceView {
 }
 
 /// Every plugin instance joined with its pinned schema, document, and
-/// deployments. `host_id` selects whose observation each deployment carries.
+/// deployments. `node_id` selects whose observation each deployment carries.
 ///
 /// # Errors
 ///
 /// Returns an error when a control-plane read fails.
 pub(crate) async fn list_plugin_instance_views(
     library: &LibraryStore,
-    host_id: &str,
+    node_id: &str,
 ) -> bookclerk_library::Result<Vec<PluginInstanceView>> {
     use bookclerk_library::control_plane::{
         default_instance_for_key, list_all_plugin_instances, list_deployments_for_instance,
@@ -542,14 +542,14 @@ pub(crate) async fn list_plugin_instance_views(
         };
         let mut deployments = Vec::new();
         for deployment in list_deployments_for_instance(library, &instance.id).await? {
-            let observation = if deployment.host_id == host_id {
-                load_observation(library, &deployment.deployment_id, host_id).await?
+            let observation = if deployment.node_id == node_id {
+                load_observation(library, &deployment.deployment_id, node_id).await?
             } else {
-                load_observation(library, &deployment.deployment_id, &deployment.host_id).await?
+                load_observation(library, &deployment.deployment_id, &deployment.node_id).await?
             };
             deployments.push(PluginDeploymentView {
                 deployment_id: deployment.deployment_id,
-                host_id: deployment.host_id,
+                node_id: deployment.node_id,
                 desired: deployment.desired.as_str().to_string(),
                 revision: deployment.revision,
                 status: observation.as_ref().map(|o| o.status.as_str().to_string()),
@@ -585,10 +585,10 @@ pub(crate) async fn list_plugin_instance_views(
     Ok(views)
 }
 
-/// This host's id from `host-identity.json`.
-fn this_host_id(config: &bookclerk_config::Config) -> Result<String, Response> {
-    bookclerk_library::control_plane::load_or_create_host_identity(&config.paths().files_dir)
-        .map(|host| host.host_id)
+/// This node's id from `node-identity.json`.
+fn this_node_id(config: &bookclerk_config::Config) -> Result<String, Response> {
+    bookclerk_library::control_plane::load_or_create_node_identity(&config.paths().files_dir)
+        .map(|node| node.node_id)
         .map_err(events_error)
 }
 
@@ -597,13 +597,13 @@ pub async fn get_plugin_instances(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let cfg = state.config.read().await.clone();
-    let host_id = this_host_id(&cfg)?;
+    let node_id = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let instances = list_plugin_instance_views(&library, &host_id)
+    let instances = list_plugin_instance_views(&library, &node_id)
         .await
         .map_err(events_error)?;
     Ok(Json(json!({
-        "host_id": host_id,
+        "node_id": node_id,
         "instances": instances,
     })))
 }
@@ -754,7 +754,7 @@ pub(crate) struct PutPluginInstanceConfig {
 ///
 /// Operator principal only. The route is mounted on the operator router.
 /// The document is validated against the plugin's pinned schema, so this
-/// host does not need the guest installed.
+/// node does not need the guest installed.
 pub async fn put_plugin_instance_config(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -838,7 +838,7 @@ pub async fn put_plugin_instance_config(
     })))
 }
 
-/// `PUT /api/config/plugin-instances/{id}/deployments/{host_id}` body.
+/// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body.
 #[derive(Debug, Deserialize)]
 pub(crate) struct PutPluginDeployment {
     /// `present` or `absent`.
@@ -850,15 +850,15 @@ pub(crate) struct PutPluginDeployment {
     expected_revision: Option<i64>,
 }
 
-/// `PUT /api/config/plugin-instances/{id}/deployments/{host_id}`: the
-/// enable/disable switch. Creates the row when the host has none.
+/// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}`: the
+/// enable/disable switch. Creates the row when the node has none.
 pub async fn put_plugin_deployment(
     State(state): State<Arc<AppState>>,
-    axum::extract::Path((id, host_id)): axum::extract::Path<(String, String)>,
+    axum::extract::Path((id, node_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<PutPluginDeployment>,
 ) -> Result<Json<serde_json::Value>, Response> {
     use bookclerk_library::control_plane::{
-        ensure_plugin_deployment, list_host_ids, load_deployment_for_host, load_plugin_instance,
+        ensure_plugin_deployment, list_node_ids, load_deployment_for_node, load_plugin_instance,
         replace_plugin_deployment, DeploymentReplace, PluginInstanceId,
     };
     let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
@@ -874,24 +874,24 @@ pub async fn put_plugin_deployment(
     bookclerk_library::control_plane::ensure_hand_managed(&library, &instance_id)
         .await
         .map_err(events_error)?;
-    let host_id = host_id.trim().to_string();
-    if !list_host_ids(&library)
+    let node_id = node_id.trim().to_string();
+    if !list_node_ids(&library)
         .await
         .map_err(events_error)?
-        .contains(&host_id)
+        .contains(&node_id)
     {
         return Err(events_error(bookclerk_library::LibraryError::NotFound(
-            format!("host {host_id}"),
+            format!("node {node_id}"),
         )));
     }
     let desired = bookclerk_library::control_plane::DesiredState::parse(&body.desired)
         .map_err(events_error)?;
-    let existing = load_deployment_for_host(&library, &instance_id, &host_id)
+    let existing = load_deployment_for_node(&library, &instance_id, &node_id)
         .await
         .map_err(events_error)?;
     let row = match existing {
         None => {
-            ensure_plugin_deployment(&library, &operator_actor(), &instance_id, &host_id, desired)
+            ensure_plugin_deployment(&library, &operator_actor(), &instance_id, &node_id, desired)
                 .await
                 .map_err(events_error)?
         }
@@ -920,98 +920,98 @@ pub async fn put_plugin_deployment(
     Ok(Json(json!({
         "deployment_id": row.deployment_id,
         "plugin_instance_id": row.plugin_instance_id.to_string(),
-        "host_id": row.host_id,
+        "node_id": row.node_id,
         "desired": row.desired.as_str(),
         "revision": row.revision,
     })))
 }
 
-/// `GET /api/config/hosts`: every host that registered with the cluster.
-pub async fn get_hosts(
+/// `GET /api/config/nodes`: every node that registered with the cluster.
+pub async fn get_nodes(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let cfg = state.config.read().await.clone();
-    let this_host = this_host_id(&cfg)?;
+    let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let statuses = host_statuses(&library).await?;
-    let mut hosts = Vec::new();
-    for host in bookclerk_library::control_plane::list_hosts(&library)
+    let statuses = node_statuses(&library).await?;
+    let mut nodes = Vec::new();
+    for node in bookclerk_library::control_plane::list_nodes(&library)
         .await
         .map_err(events_error)?
     {
-        let runtime = host_runtime_or_default(&library, &host.host_id).await?;
-        hosts.push(host_json(
-            &host,
-            &this_host,
-            statuses.get(&host.host_id),
+        let runtime = node_runtime_or_default(&library, &node.node_id).await?;
+        nodes.push(node_json(
+            &node,
+            &this_node,
+            statuses.get(&node.node_id),
             &runtime,
         ));
     }
-    Ok(Json(json!({ "host_id": this_host, "hosts": hosts })))
+    Ok(Json(json!({ "node_id": this_node, "nodes": nodes })))
 }
 
-/// Every host's latest heartbeat, by host id.
-async fn host_statuses(
+/// Every node's latest heartbeat, by node id.
+async fn node_statuses(
     library: &LibraryStore,
-) -> Result<std::collections::HashMap<String, bookclerk_library::control_plane::HostStatus>, Response>
+) -> Result<std::collections::HashMap<String, bookclerk_library::control_plane::NodeStatus>, Response>
 {
     Ok(
-        bookclerk_library::control_plane::list_host_statuses(library)
+        bookclerk_library::control_plane::list_node_statuses(library)
             .await
             .map_err(events_error)?
             .into_iter()
-            .map(|status| (status.host_id.clone(), status))
+            .map(|status| (status.node_id.clone(), status))
             .collect(),
     )
 }
 
-/// A host's runtime document, or the defaults when it never wrote one.
-async fn host_runtime_or_default(
+/// A node's runtime document, or the defaults when it never wrote one.
+async fn node_runtime_or_default(
     library: &LibraryStore,
-    host_id: &str,
-) -> Result<bookclerk_library::control_plane::HostRuntimeSettingsV1, Response> {
-    match bookclerk_library::control_plane::load_host_runtime(library, host_id).await {
+    node_id: &str,
+) -> Result<bookclerk_library::control_plane::NodeRuntimeSettingsV1, Response> {
+    match bookclerk_library::control_plane::load_node_runtime(library, node_id).await {
         Ok(document) => Ok(document.body),
         Err(bookclerk_library::LibraryError::NotFound(_)) => {
-            Ok(bookclerk_library::control_plane::HostRuntimeSettingsV1::new())
+            Ok(bookclerk_library::control_plane::NodeRuntimeSettingsV1::new())
         }
         Err(err) => Err(events_error(err)),
     }
 }
 
-/// JSON projection of one host row with its latest heartbeat and budget.
-fn host_json(
-    host: &bookclerk_library::control_plane::HostRecord,
-    this_host: &str,
-    status: Option<&bookclerk_library::control_plane::HostStatus>,
-    runtime: &bookclerk_library::control_plane::HostRuntimeSettingsV1,
+/// JSON projection of one node row with its latest heartbeat and budget.
+fn node_json(
+    node: &bookclerk_library::control_plane::NodeRecord,
+    this_node: &str,
+    status: Option<&bookclerk_library::control_plane::NodeStatus>,
+    runtime: &bookclerk_library::control_plane::NodeRuntimeSettingsV1,
 ) -> serde_json::Value {
     let now_ms = chrono::Utc::now().timestamp_millis();
     json!({
-        "host_id": host.host_id,
-        "cluster_id": host.cluster_id,
-        "created_at": host.created_at,
-        "heartbeat_at": host.heartbeat_at,
-        "software_version": host.software_version,
-        "schema_state": host.schema_state,
-        "compatible": host.compatible,
-        "target": host.target,
-        "labels": host.labels,
-        "implicit_labels": bookclerk_library::control_plane::effective_host_labels(host)
+        "node_id": node.node_id,
+        "cluster_id": node.cluster_id,
+        "created_at": node.created_at,
+        "heartbeat_at": node.heartbeat_at,
+        "software_version": node.software_version,
+        "schema_state": node.schema_state,
+        "compatible": node.compatible,
+        "target": node.target,
+        "labels": node.labels,
+        "implicit_labels": bookclerk_library::control_plane::effective_node_labels(node)
             .into_iter()
-            .filter(|label| !host.labels.contains(label))
+            .filter(|label| !node.labels.contains(label))
             .collect::<Vec<_>>(),
         "live": status.is_some_and(|s| s.is_live(now_ms)),
         "runtime": runtime,
         "status": status,
-        "this_host": host.host_id == this_host,
+        "this_node": node.node_id == this_node,
     })
 }
 
-/// `PUT /api/config/hosts/{host_id}/runtime` body: any subset of the
-/// host's runtime document.
+/// `PUT /api/config/nodes/{node_id}/runtime` body: any subset of the
+/// node's runtime document.
 #[derive(Debug, Deserialize)]
-pub(crate) struct PutHostRuntime {
+pub(crate) struct PutNodeRuntime {
     /// Operator label.
     #[serde(default)]
     label: Option<String>,
@@ -1021,27 +1021,27 @@ pub(crate) struct PutHostRuntime {
     /// Share of detected memory the scheduler may commit (1..=100).
     #[serde(default)]
     memory_budget_percent: Option<u8>,
-    /// False drains the host.
+    /// False drains the node.
     #[serde(default)]
     schedulable: Option<bool>,
 }
 
-/// `PUT /api/config/hosts/{host_id}/runtime`: edit a host's label, budgets,
-/// or drain switch. Applies at that host's next heartbeat.
-pub async fn put_host_runtime(
+/// `PUT /api/config/nodes/{node_id}/runtime`: edit a node's label, budgets,
+/// or drain switch. Applies at that node's next heartbeat.
+pub async fn put_node_runtime(
     State(state): State<Arc<AppState>>,
-    axum::extract::Path(host_id): axum::extract::Path<String>,
-    Json(body): Json<PutHostRuntime>,
+    axum::extract::Path(node_id): axum::extract::Path<String>,
+    Json(body): Json<PutNodeRuntime>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
-    let host_id = host_id.trim().to_string();
-    bookclerk_library::control_plane::load_host(&library, &host_id)
+    let node_id = node_id.trim().to_string();
+    bookclerk_library::control_plane::load_node(&library, &node_id)
         .await
         .map_err(events_error)?;
-    let document = bookclerk_library::control_plane::update_host_runtime(
+    let document = bookclerk_library::control_plane::update_node_runtime(
         &library,
         &operator_actor(),
-        &host_id,
+        &node_id,
         |runtime| {
             if let Some(label) = &body.label {
                 runtime.label.clone_from(label);
@@ -1060,43 +1060,43 @@ pub async fn put_host_runtime(
     .await
     .map_err(events_error)?;
     Ok(Json(json!({
-        "host_id": host_id,
+        "node_id": node_id,
         "revision": document.revision,
         "runtime": document.body,
     })))
 }
 
-/// `PUT /api/config/hosts/{host_id}/labels` body.
+/// `PUT /api/config/nodes/{node_id}/labels` body.
 #[derive(Debug, Deserialize)]
-pub(crate) struct PutHostLabels {
-    /// The host's complete operator label set.
+pub(crate) struct PutNodeLabels {
+    /// The node's complete operator label set.
     labels: Vec<String>,
 }
 
-/// `PUT /api/config/hosts/{host_id}/labels`: replace a host's placement
+/// `PUT /api/config/nodes/{node_id}/labels`: replace a node's placement
 /// labels. The scheduler re-plans on the wakeup this publishes.
-pub async fn put_host_labels(
+pub async fn put_node_labels(
     State(state): State<Arc<AppState>>,
-    axum::extract::Path(host_id): axum::extract::Path<String>,
-    Json(body): Json<PutHostLabels>,
+    axum::extract::Path(node_id): axum::extract::Path<String>,
+    Json(body): Json<PutNodeLabels>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let cfg = state.config.read().await.clone();
-    let this_host = this_host_id(&cfg)?;
+    let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let host = bookclerk_library::control_plane::set_host_labels(
+    let node = bookclerk_library::control_plane::set_node_labels(
         &library,
         &operator_actor(),
-        host_id.trim(),
+        node_id.trim(),
         &body.labels,
     )
     .await
     .map_err(events_error)?;
-    let statuses = host_statuses(&library).await?;
-    let runtime = host_runtime_or_default(&library, &host.host_id).await?;
-    Ok(Json(host_json(
-        &host,
-        &this_host,
-        statuses.get(&host.host_id),
+    let statuses = node_statuses(&library).await?;
+    let runtime = node_runtime_or_default(&library, &node.node_id).await?;
+    Ok(Json(node_json(
+        &node,
+        &this_node,
+        statuses.get(&node.node_id),
         &runtime,
     )))
 }
@@ -1104,7 +1104,7 @@ pub async fn put_host_labels(
 /// `PUT /api/config/plugin-instances/{id}/placement` body.
 #[derive(Debug, Deserialize)]
 pub(crate) struct PutPluginPlacement {
-    /// Hosts that should run the instance: a number (0 stops every
+    /// Nodes that should run the instance: a number (0 stops every
     /// replica) or `"all"`.
     replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints (`name`, `name=value`, `!name`).
@@ -1185,7 +1185,7 @@ pub async fn get_plugin_schemas(
                 "schema_sha256": pinned.schema_sha256,
                 "package_version": pinned.package_version,
                 "recorded_at": pinned.recorded_at,
-                "recorded_by_host": pinned.recorded_by_host,
+                "recorded_by_node": pinned.recorded_by_node,
                 "settings": pinned.schema.settings,
             })
         })
@@ -1269,7 +1269,6 @@ pub(crate) fn control_plane_test_state(
         last_bound_listen: RwLock::new(None),
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
-        event_node_id: OnceLock::new(),
         deployment_runtime: OnceLock::new(),
     }
 }
@@ -1674,7 +1673,7 @@ mod tests {
             &store,
             &actor,
             &instance.id,
-            &session.host.host_id,
+            &session.node.node_id,
             DesiredState::Present,
         )
         .await
@@ -1691,7 +1690,7 @@ mod tests {
             .await
             .expect("daemon reconcile");
 
-        let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+        let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
             .await
             .unwrap()
             .expect("observation");
@@ -1701,7 +1700,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(desired.desired, DesiredState::Present);
-        // The operator package became the active cluster release; the host
+        // The operator package became the active cluster release; the node
         // runs it from the digest cache and wrote no receipt or ledger row.
         let release =
             bookclerk_library::control_plane::load_active_release(&store, &instance.plugin_key)
@@ -1846,7 +1845,7 @@ mod tests {
                 &store,
                 &actor,
                 &instance.id,
-                &session.host.host_id,
+                &session.node.node_id,
                 DesiredState::Present,
             )
             .await
@@ -1872,7 +1871,7 @@ mod tests {
             .await
             .expect("daemon reconcile");
         for deployment_id in &deployment_ids {
-            let obs = load_observation(&store, deployment_id, &session.host.host_id)
+            let obs = load_observation(&store, deployment_id, &session.node.node_id)
                 .await
                 .unwrap()
                 .expect("observation");
@@ -1992,7 +1991,7 @@ mod tests {
             &store,
             &actor,
             &instance.id,
-            &session.host.host_id,
+            &session.node.node_id,
             DesiredState::Present,
         )
         .await
@@ -2008,7 +2007,7 @@ mod tests {
         super::reconcile_deployments(&state)
             .await
             .expect("daemon reconcile");
-        let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+        let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
             .await
             .unwrap()
             .expect("observation");
@@ -2041,7 +2040,7 @@ mod tests {
 
         // Re-enrollment adopted the existing instance rather than minting one.
         let instances =
-            crate::config_authority::list_plugin_instance_views(&store, &session.host.host_id)
+            crate::config_authority::list_plugin_instance_views(&store, &session.node.node_id)
                 .await
                 .expect("instance views");
         let ours: Vec<_> = instances
@@ -2055,8 +2054,8 @@ mod tests {
         let local = ours[0]
             .deployments
             .iter()
-            .find(|row| row.host_id == session.host.host_id)
-            .expect("this host's deployment");
+            .find(|row| row.node_id == session.node.node_id)
+            .expect("this node's deployment");
         assert_eq!(local.status.as_deref(), Some("healthy"));
 
         crate::api::reload_daemon_config(&state)

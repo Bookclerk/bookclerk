@@ -1,16 +1,16 @@
-//! This host's periodic heartbeat into `host_status`.
+//! This node's periodic heartbeat into `node_status`.
 //!
-//! Every [`HOST_HEARTBEAT_INTERVAL`] the daemon samples detected capacity and
-//! measured use, and the library adds this host's budget (`host.runtime`),
+//! Every [`NODE_HEARTBEAT_INTERVAL`] the daemon samples detected capacity and
+//! measured use, and the library adds this node's budget (`node.runtime`),
 //! the reservations of its running guests, and the availability average.
-//! Other hosts and the placement scheduler read the row from the shared
-//! database; hosts never contact each other.
+//! Other nodes and the placement scheduler read the row from the shared
+//! database; nodes never contact each other.
 
 use std::sync::Arc;
 
 use bookclerk_library::control_plane::{
-    load_or_create_host_identity, record_host_heartbeat, HostSampler, HostStatus,
-    HOST_HEARTBEAT_INTERVAL,
+    load_or_create_node_identity, record_node_heartbeat, NodeSampler, NodeStatus,
+    NODE_HEARTBEAT_INTERVAL,
 };
 use tracing::warn;
 
@@ -20,16 +20,16 @@ use crate::api::AppState;
 pub fn spawn_heartbeat(state: Arc<AppState>) {
     tokio::spawn(async move {
         let files_dir = state.config.read().await.paths().files_dir.clone();
-        let mut sampler = Some(HostSampler::new(&files_dir));
+        let mut sampler = Some(NodeSampler::new(&files_dir));
         loop {
             if let Some(taken) = sampler.take() {
                 let (back, status) = beat(&state, taken).await;
                 sampler = Some(back);
                 if let Err(err) = status {
-                    warn!(error = %err, "host heartbeat failed");
+                    warn!(error = %err, "node heartbeat failed");
                 }
             }
-            tokio::time::sleep(HOST_HEARTBEAT_INTERVAL).await;
+            tokio::time::sleep(NODE_HEARTBEAT_INTERVAL).await;
         }
     });
 }
@@ -37,8 +37,8 @@ pub fn spawn_heartbeat(state: Arc<AppState>) {
 /// Samples on a blocking thread, then records the heartbeat.
 async fn beat(
     state: &AppState,
-    mut sampler: HostSampler,
-) -> (HostSampler, anyhow::Result<HostStatus>) {
+    mut sampler: NodeSampler,
+) -> (NodeSampler, anyhow::Result<NodeStatus>) {
     let (sampler, heartbeat) = match tokio::task::spawn_blocking(move || {
         let heartbeat = sampler.sample();
         (sampler, heartbeat)
@@ -49,18 +49,18 @@ async fn beat(
         Err(err) => {
             let files_dir = state.config.read().await.paths().files_dir.clone();
             return (
-                HostSampler::new(&files_dir),
+                NodeSampler::new(&files_dir),
                 Err(anyhow::anyhow!("heartbeat sample panicked: {err}")),
             );
         }
     };
     let files_dir = state.config.read().await.paths().files_dir.clone();
-    let host_id = match load_or_create_host_identity(&files_dir) {
-        Ok(identity) => identity.host_id,
+    let node_id = match load_or_create_node_identity(&files_dir) {
+        Ok(identity) => identity.node_id,
         Err(err) => return (sampler, Err(err.into())),
     };
     let library = state.library_snapshot().await;
-    let status = record_host_heartbeat(&library, &host_id, &heartbeat)
+    let status = record_node_heartbeat(&library, &node_id, &heartbeat)
         .await
         .map_err(anyhow::Error::from);
     (sampler, status)

@@ -53,46 +53,46 @@ async fn bootstrap_pair(store: &LibraryStore, files: &Path) -> ControlPlaneSessi
 }
 
 #[tokio::test]
-async fn host_identity_is_stable_and_distinct() {
+async fn node_identity_is_stable_and_distinct() {
     let dir = tempdir().unwrap();
-    let first = load_or_create_host_identity(dir.path()).unwrap();
-    let again = load_or_create_host_identity(dir.path()).unwrap();
-    assert_eq!(first.host_id, again.host_id);
-    assert!(Uuid::parse_str(&first.host_id).is_ok());
+    let first = load_or_create_node_identity(dir.path()).unwrap();
+    let again = load_or_create_node_identity(dir.path()).unwrap();
+    assert_eq!(first.node_id, again.node_id);
+    assert!(Uuid::parse_str(&first.node_id).is_ok());
     let hostname = std::env::var("HOSTNAME").unwrap_or_default();
-    assert_ne!(first.host_id, hostname);
+    assert_ne!(first.node_id, hostname);
 
     let other = tempdir().unwrap();
-    let second = load_or_create_host_identity(other.path()).unwrap();
-    assert_ne!(first.host_id, second.host_id);
+    let second = load_or_create_node_identity(other.path()).unwrap();
+    assert_ne!(first.node_id, second.node_id);
 
     let copied = tempdir().unwrap();
     std::fs::copy(
-        host_identity_path(dir.path()),
-        host_identity_path(copied.path()),
+        node_identity_path(dir.path()),
+        node_identity_path(copied.path()),
     )
     .unwrap();
-    let from_copy = load_or_create_host_identity(copied.path()).unwrap();
-    assert_eq!(from_copy.host_id, first.host_id);
+    let from_copy = load_or_create_node_identity(copied.path()).unwrap();
+    assert_eq!(from_copy.node_id, first.node_id);
 }
 
 #[tokio::test]
-async fn restart_keeps_host_id_and_distinct_hosts_stay_distinct() {
+async fn restart_keeps_node_id_and_distinct_nodes_stay_distinct() {
     let _guard = master_key_test_lock_async().await;
     let store = memory_store().await;
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
     let first = bootstrap_pair(&store, dir_a.path()).await;
     let restarted = bootstrap_pair(&store, dir_a.path()).await;
-    assert_eq!(first.host.host_id, restarted.host.host_id);
-    assert_eq!(first.host.created_at, restarted.host.created_at);
+    assert_eq!(first.node.node_id, restarted.node.node_id);
+    assert_eq!(first.node.created_at, restarted.node.created_at);
     assert_eq!(first.cluster_id, restarted.cluster_id);
 
     std::fs::copy(master_key_path(dir_a.path()), master_key_path(dir_b.path())).unwrap();
     let second = bootstrap_pair(&store, dir_b.path()).await;
-    assert_ne!(first.host.host_id, second.host.host_id);
+    assert_ne!(first.node.node_id, second.node.node_id);
     assert_eq!(first.cluster_id, second.cluster_id);
-    let ids = super::identity::list_host_ids(&store).await.unwrap();
+    let ids = super::identity::list_node_ids(&store).await.unwrap();
     assert_eq!(ids.len(), 2);
 }
 
@@ -112,8 +112,8 @@ async fn copied_identity_rejects_a_different_cluster() {
         .unwrap()
         .secret_fingerprint;
     std::fs::copy(
-        host_identity_path(dir_a.path()),
-        host_identity_path(dir_b.path()),
+        node_identity_path(dir_a.path()),
+        node_identity_path(dir_b.path()),
     )
     .unwrap();
     let scratch_b = dir_b.path().join("cache");
@@ -133,7 +133,7 @@ async fn copied_identity_rejects_a_different_cluster() {
         .unwrap();
     assert_eq!(after.cluster_id, session_b.cluster_id);
     assert_eq!(after.secret_fingerprint, fingerprint);
-    let file = load_or_create_host_identity(dir_b.path()).unwrap();
+    let file = load_or_create_node_identity(dir_b.path()).unwrap();
     assert_eq!(
         file.cluster_id.as_deref(),
         Some(session_a.cluster_id.as_str())
@@ -141,7 +141,7 @@ async fn copied_identity_rejects_a_different_cluster() {
 }
 
 #[tokio::test]
-async fn independent_connections_share_cluster_events_and_isolate_hosts() {
+async fn independent_connections_share_cluster_events_and_isolate_nodes() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempdir().unwrap();
     let path = dir.path().join("library.db");
@@ -159,33 +159,33 @@ async fn independent_connections_share_cluster_events_and_isolate_hosts() {
     assert_eq!(session_a.cluster_id, session_b.cluster_id);
     assert_eq!(session_a.events.body, session_b.events.body);
 
-    let label_a = HostRuntimeSettingsV1 {
+    let label_a = NodeRuntimeSettingsV1 {
         label: "alpha".into(),
-        ..HostRuntimeSettingsV1::new()
+        ..NodeRuntimeSettingsV1::new()
     };
-    let applied = replace_host_runtime(
+    let applied = replace_node_runtime(
         &store_a,
         &operator(),
-        &session_a.host.host_id,
-        session_a.host_runtime.revision,
+        &session_a.node.node_id,
+        session_a.node_runtime.revision,
         &label_a,
-        "host-a-label",
+        "node-a-label",
     )
     .await
     .unwrap();
-    let HostRuntimeReplace::Applied(doc_a) = applied else {
+    let NodeRuntimeReplace::Applied(doc_a) = applied else {
         panic!("expected apply");
     };
-    let seen_by_b = load_host_runtime(&store_b, &session_a.host.host_id)
+    let seen_by_b = load_node_runtime(&store_b, &session_a.node.node_id)
         .await
         .unwrap();
     assert_eq!(seen_by_b.body.label, "alpha");
-    let local_b = load_host_runtime(&store_b, &session_b.host.host_id)
+    let local_b = load_node_runtime(&store_b, &session_b.node.node_id)
         .await
         .unwrap();
     assert_ne!(local_b.body.label, doc_a.body.label);
-    assert_eq!(local_b.scope_id, session_b.host.host_id);
-    assert_eq!(doc_a.scope_id, session_a.host.host_id);
+    assert_eq!(local_b.scope_id, session_b.node.node_id);
+    assert_eq!(doc_a.scope_id, session_a.node.node_id);
 }
 
 #[tokio::test]
@@ -937,23 +937,23 @@ async fn first_and_concurrent_secret_initialization_keep_one_root() {
 }
 
 #[tokio::test]
-async fn single_host_sqlite_bootstrap_is_one_host_and_one_events_document() {
+async fn single_node_sqlite_bootstrap_is_one_node_and_one_events_document() {
     let _guard = master_key_test_lock_async().await;
     let store = memory_store().await;
     let files = tempdir().unwrap();
     let session = bootstrap_pair(&store, files.path()).await;
-    assert!(session.host.compatible);
-    assert!(session.host.schema_state.starts_with("unreleased@base0+"));
+    assert!(session.node.compatible);
+    assert!(session.node.schema_state.starts_with("unreleased@base0+"));
     assert_eq!(session.events.namespace, EVENTS_NAMESPACE);
     assert_eq!(session.events.scope_type, CLUSTER_SCOPE_TYPE);
     assert_eq!(session.events.scope_id, CLUSTER_SCOPE_ID);
-    assert_eq!(session.host_runtime.scope_id, session.host.host_id);
+    assert_eq!(session.node_runtime.scope_id, session.node.node_id);
     assert_eq!(
-        super::identity::list_host_ids(&store).await.unwrap().len(),
+        super::identity::list_node_ids(&store).await.unwrap().len(),
         1
     );
     assert!(master_key_path(files.path()).is_file());
-    assert!(host_identity_path(files.path()).is_file());
+    assert!(node_identity_path(files.path()).is_file());
 }
 
 fn postgres_tests_enabled() -> bool {
@@ -1035,7 +1035,7 @@ async fn postgres_control_plane_two_pools_share_events_and_reject_one_cas() {
     .unwrap();
     let other = bootstrap_pair(&store_b, files_b.path()).await;
     assert_eq!(session.cluster_id, other.cluster_id);
-    assert_ne!(session.host.host_id, other.host.host_id);
+    assert_ne!(session.node.node_id, other.node.node_id);
 
     let expected = session.events.revision;
     let left = {
@@ -1202,31 +1202,31 @@ async fn heartbeat_persists_fake_cgroup_observations() {
     std::fs::write(cgroup.path().join("memory.current"), "4096\n").unwrap();
     std::fs::write(cgroup.path().join("memory.stat"), "anon 2048\nfile 10\n").unwrap();
     let observation =
-        super::identity::sample_host_observation(Some(cgroup.path()), files.path(), &scratch);
-    let host = super::identity::register_and_heartbeat(
+        super::identity::sample_node_observation(Some(cgroup.path()), files.path(), &scratch);
+    let node = super::identity::register_and_heartbeat(
         &store,
-        &session.host.host_id,
+        &session.node.node_id,
         &session.cluster_id,
         "incarnation-obs",
         &observation,
     )
     .await
     .unwrap();
-    assert_eq!(host.cpu_max_quota_us, Some(100_000));
-    assert_eq!(host.cpu_max_period_us, Some(100_000));
-    assert_eq!(host.memory_max_bytes, Some(1_073_741_824));
-    assert_eq!(host.memory_current_bytes, Some(4096));
-    assert_eq!(host.memory_anon_bytes, Some(2048));
-    assert_eq!(host.scratch_bytes, Some(32));
+    assert_eq!(node.cpu_max_quota_us, Some(100_000));
+    assert_eq!(node.cpu_max_period_us, Some(100_000));
+    assert_eq!(node.memory_max_bytes, Some(1_073_741_824));
+    assert_eq!(node.memory_current_bytes, Some(4096));
+    assert_eq!(node.memory_anon_bytes, Some(2048));
+    assert_eq!(node.scratch_bytes, Some(32));
     // `filesystem_free_bytes` is implemented on Linux and macOS. Windows has no
     // populated value, so the heartbeat stores None there.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    assert!(host.files_dir_free_bytes.is_some());
+    assert!(node.files_dir_free_bytes.is_some());
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    assert!(host.files_dir_free_bytes.is_none());
-    assert!(host.logical_cpus.is_some());
-    assert_eq!(host.created_at, session.host.created_at);
-    assert_eq!(host.incarnation, "incarnation-obs");
+    assert!(node.files_dir_free_bytes.is_none());
+    assert!(node.logical_cpus.is_some());
+    assert_eq!(node.created_at, session.node.created_at);
+    assert_eq!(node.incarnation, "incarnation-obs");
 }
 
 /// Minimal `[[settings]]` schema for the Postgres instance-document proof.
@@ -1267,7 +1267,7 @@ async fn postgres_two_pools_observe_one_instance_document() {
     .unwrap();
     let session_b = bootstrap_pair(&store_b, files_b.path()).await;
     assert_eq!(session_a.cluster_id, session_b.cluster_id);
-    assert_ne!(session_a.host.host_id, session_b.host.host_id);
+    assert_ne!(session_a.node.node_id, session_b.node.node_id);
 
     let key = "platform:bookclerk/pg-shared-fixture";
     let schema = instance_schema();
@@ -1358,7 +1358,7 @@ async fn postgres_two_pools_observe_one_instance_document() {
 
 #[tokio::test]
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
-async fn postgres_kv_and_host_queues_cross_two_pools() {
+async fn postgres_kv_and_node_queues_cross_two_pools() {
     if !postgres_tests_enabled() {
         return;
     }
@@ -1444,14 +1444,14 @@ async fn postgres_kv_and_host_queues_cross_two_pools() {
     assert_eq!(store_b.kv_count(plugin, "sync.cursors").await.unwrap(), 1);
     assert_eq!(store_a.kv_prune_expired().await.unwrap(), 1);
 
-    // Host queues: a deployment written through pool A for host B lands on
-    // `host.<B>`; a configuration write reaches both registered hosts.
+    // Node queues: a deployment written through pool A for node B lands on
+    // `node.<B>`; a configuration write reaches both registered nodes.
     let instance = create_plugin_instance(
         &store_a,
         &ConfigActor::Operator {
             id: "operator".into(),
         },
-        "platform:bookclerk/pg-host-queue",
+        "platform:bookclerk/pg-node-queue",
         "",
     )
     .await
@@ -1462,20 +1462,20 @@ async fn postgres_kv_and_host_queues_cross_two_pools() {
             id: "operator".into(),
         },
         &instance.id,
-        &session_b.host.host_id,
+        &session_b.node.node_id,
         DesiredState::Present,
     )
     .await
     .unwrap();
     let on_b = store_b
-        .list_domain_events_for_queue(&host_queue_name(&session_b.host.host_id), 10)
+        .list_domain_events_for_queue(&node_queue_name(&session_b.node.node_id), 10)
         .await
         .unwrap();
     assert_eq!(on_b.len(), 1);
-    let message: HostMessage = serde_json::from_str(&on_b[0].payload).unwrap();
+    let message: NodeMessage = serde_json::from_str(&on_b[0].payload).unwrap();
     assert_eq!(
         message,
-        HostMessage::DeploymentChanged {
+        NodeMessage::DeploymentChanged {
             deployment_id: deployment.deployment_id.clone(),
             plugin_instance_id: instance.id.as_str().to_string(),
             desired: DesiredState::Present.as_str().into(),
@@ -1489,20 +1489,20 @@ async fn postgres_kv_and_host_queues_cross_two_pools() {
         },
         session_a.events.revision,
         &events(11),
-        "pg-host-queue-events",
+        "pg-node-queue-events",
     )
     .await
     .unwrap();
     assert!(matches!(applied, EventsReplace::Applied(_)), "{applied:?}");
-    for host in [&session_a.host.host_id, &session_b.host.host_id] {
+    for node in [&session_a.node.node_id, &session_b.node.node_id] {
         let rows = store_a
-            .list_domain_events_for_queue(&host_queue_name(host), 10)
+            .list_domain_events_for_queue(&node_queue_name(node), 10)
             .await
             .unwrap();
         assert!(
             rows.iter()
                 .any(|row| row.payload.contains("configuration.changed")),
-            "host {host} was woken"
+            "node {node} was woken"
         );
     }
 }
@@ -1510,7 +1510,7 @@ async fn postgres_kv_and_host_queues_cross_two_pools() {
 #[tokio::test]
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_scheduler_lease_and_placement_cross_two_pools() {
-    use super::placement_tests::{heartbeat_consumer, present_hosts};
+    use super::placement_tests::{heartbeat_consumer, present_nodes};
 
     if !postgres_tests_enabled() {
         return;
@@ -1526,12 +1526,12 @@ async fn postgres_scheduler_lease_and_placement_cross_two_pools() {
     )
     .unwrap();
     let session_b = bootstrap_pair(&store_b, files_b.path()).await;
-    let host_a = session_a.host.host_id.clone();
-    let host_b = session_b.host.host_id.clone();
-    for host in [&host_a, &host_b] {
-        heartbeat_consumer(&store_a, host, std::time::Duration::ZERO).await;
+    let node_a = session_a.node.node_id.clone();
+    let node_b = session_b.node.node_id.clone();
+    for node in [&node_a, &node_b] {
+        heartbeat_consumer(&store_a, node, std::time::Duration::ZERO).await;
     }
-    set_host_labels(&store_a, &operator(), &host_b, &["nas".to_string()])
+    set_node_labels(&store_a, &operator(), &node_b, &["nas".to_string()])
         .await
         .unwrap();
     let instance =
@@ -1553,8 +1553,8 @@ async fn postgres_scheduler_lease_and_placement_cross_two_pools() {
 
     // Both pools race for the scheduler lease; exactly one wins.
     let (lease_a, lease_b) = tokio::join!(
-        acquire_lease(&store_a, SCHEDULER_LEASE, &host_a, SCHEDULER_LEASE_TTL),
-        acquire_lease(&store_b, SCHEDULER_LEASE, &host_b, SCHEDULER_LEASE_TTL),
+        acquire_lease(&store_a, SCHEDULER_LEASE, &node_a, SCHEDULER_LEASE_TTL),
+        acquire_lease(&store_b, SCHEDULER_LEASE, &node_b, SCHEDULER_LEASE_TTL),
     );
     let (lease_a, lease_b) = (lease_a.unwrap(), lease_b.unwrap());
     assert_eq!(
@@ -1570,18 +1570,18 @@ async fn postgres_scheduler_lease_and_placement_cross_two_pools() {
     let report = schedule_placements(winner).await.unwrap();
     assert_eq!(report.added, 1);
     let mut expected = std::collections::BTreeSet::new();
-    expected.insert(host_b.clone());
-    assert_eq!(present_hosts(other, &instance.id).await, expected);
+    expected.insert(node_b.clone());
+    assert_eq!(present_nodes(other, &instance.id).await, expected);
     assert!(ensure_hand_managed(other, &instance.id).await.is_err());
-    assert_eq!(load_host(other, &host_b).await.unwrap().labels, ["nas"]);
+    assert_eq!(load_node(other, &node_b).await.unwrap().labels, ["nas"]);
 
     // A real heartbeat written through one pool is the other pool's view of
-    // that host: capacity, the default budget, and its availability.
-    let beat = HostSampler::new(files_a.path()).sample();
-    let written = record_host_heartbeat(&store_a, &host_a, &beat)
+    // that node: capacity, the default budget, and its availability.
+    let beat = NodeSampler::new(files_a.path()).sample();
+    let written = record_node_heartbeat(&store_a, &node_a, &beat)
         .await
         .unwrap();
-    let read = load_host_status(&store_b, &host_a).await.unwrap().unwrap();
+    let read = load_node_status(&store_b, &node_a).await.unwrap().unwrap();
     assert_eq!(read, written);
     assert_eq!(
         read.cpu_budget_millicores,

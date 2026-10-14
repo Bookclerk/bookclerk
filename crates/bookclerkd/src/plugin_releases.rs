@@ -5,7 +5,7 @@
 //! `plugin-packages/`; `PUT …/{key}/active` moves the pointer (activate,
 //! update, rollback); `DELETE …/{key}/active` clears it and sets every
 //! deployment absent; `POST …/{key}/{version}/approve` records consent.
-//! Hosts apply every change when their `host.<host_id>` queue wakes them.
+//! Nodes apply every change when their `node.<node_id>` queue wakes them.
 
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use axum::Json;
 use bookclerk_library::control_plane::{
     activate_release, approve_release_grant, clear_active_release, delete_plugin_placement,
     list_deployments_for_instance, list_plugin_instances_for_key, list_release_pointers,
-    list_releases, load_or_create_host_identity, load_release, replace_plugin_deployment,
+    list_releases, load_or_create_node_identity, load_release, replace_plugin_deployment,
     ConfigActor, DesiredState, PluginRelease,
 };
 use bookclerk_plugin_catalog::{
@@ -156,9 +156,9 @@ pub async fn post_plugin_release(
             format!("{err} (API: set `allow_unverified_publisher: true` in the request body)"),
         )
     })?;
-    let host_id = load_or_create_host_identity(&files_dir)
+    let node_id = load_or_create_node_identity(&files_dir)
         .map_err(library_error)?
-        .host_id;
+        .node_id;
     let library = state.library_snapshot().await;
     let (package, coordinate, archive) = match (body.coordinate.as_deref(), body.package.as_deref())
     {
@@ -202,7 +202,7 @@ pub async fn post_plugin_release(
         &library,
         &operator_actor(),
         &files_dir,
-        &host_id,
+        &node_id,
         InstallRequest {
             package,
             coordinate,
@@ -237,16 +237,16 @@ pub async fn put_active_release(
     Json(body): Json<PutActiveRelease>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let config = state.config.read().await.clone();
-    let host_id = load_or_create_host_identity(&config.paths().files_dir)
+    let node_id = load_or_create_node_identity(&config.paths().files_dir)
         .map_err(library_error)?
-        .host_id;
+        .node_id;
     let library = state.library_snapshot().await;
     let (pointer, _) = activate_release(
         &library,
         &operator_actor(),
         &key,
         body.version.trim(),
-        &host_id,
+        &node_id,
     )
     .await
     .map_err(library_error)?;

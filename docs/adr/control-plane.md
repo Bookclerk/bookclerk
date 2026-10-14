@@ -40,7 +40,7 @@ database and unlock its secret root:
 | Database target | `[database]` in `config.toml`, or `BOOKCLERK_DATABASE_*` / D1 / Postgres env | The process needs it to open the connection that would store later configuration |
 | Auth password | `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | Unwraps `master.key`; not itself a library secret |
 | Secret root | `$BOOKCLERK_FILES_DIR/master.key` (`BCK1` or `BCK2`) | Decrypts `encrypted_secrets` and is the cluster DEK |
-| Host enrollment | `$BOOKCLERK_FILES_DIR/host-identity.json` | Stable `HostId` and the cluster id this files directory has joined |
+| Host enrollment | `$BOOKCLERK_FILES_DIR/node-identity.json` | Stable `HostId` and the cluster id this files directory has joined |
 
 `[database].plugin`, the SQLite path, the D1 account/database ids, the D1 API
 token, and the Postgres URL stay bootstrap. Moving them into the database
@@ -65,7 +65,7 @@ it serves HTTP. It is transitional, not a second copy of `core.events`.
 2. Open the database plugin and apply the host schema. This does not require
    the DEK.
 3. Align the secret root (below). Only then cache the DEK.
-4. Load or create `host-identity.json`, bind it to the database cluster id,
+4. Load or create `node-identity.json`, bind it to the database cluster id,
    and heartbeat.
 5. Import `core.events` when the row is absent, using the TOML/environment
    seed. When the row exists, keep it and overlay it onto the in-memory
@@ -81,7 +81,7 @@ still prefers the TOML events table.
 - **Cluster** — one logical Bookclerk service, identified by `cluster_id` in
   the singleton `cluster_identity` row. The cluster is the database that holds
   that row, not a hostname and not a particular SQLite file path.
-- **HostId** — a UUID stored in `host-identity.json`. It is not derived from
+- **HostId** — a UUID stored in `node-identity.json`. It is not derived from
   the hostname. Restart reads the same file. A new file is a new host.
   Copying the file copies the host. Two processes with different files are
   different hosts even when they share the database.
@@ -123,13 +123,13 @@ Physical table `configuration_documents`, one row per
 | `updated_at` / `updated_by` | Audit time and actor |
 | `write_operation_id` | Idempotency token of the commit that produced this revision |
 
-The public API is typed: `EventsSettingsV1` and `HostRuntimeSettingsV1`.
+The public API is typed: `EventsSettingsV1` and `NodeRuntimeSettingsV1`.
 Callers do not get a general settings key/value service.
 
 Namespaces in this spike:
 
 - `core.events` — cluster scope. The migrated `[events]` domain.
-- `host.runtime` — host scope, one `label` field. Effective runtime for a
+- `node.runtime` — host scope, one `label` field. Effective runtime for a
   process is that host's row only. Another host's label is readable by
   address and is not applied locally.
 
@@ -190,7 +190,7 @@ replace. It is a notice that a revision committed. Plugin subscriptions are
 not used to wake hosts: a host with no matching plugin subscription would
 never see the event. Since Phase 3 step 3, every committed document also
 publishes a `configuration.changed` message to each registered host's own
-queue (`host.<host_id>`, consumed only by that host's daemon); see
+queue (`node.<node_id>`, consumed only by that node's daemon); see
 *Implementation notes* below.
 
 Every process:
@@ -218,7 +218,7 @@ notice, and are not logged as applied.
 capacity columns (`logical_cpus`, `cpu_max_quota_us`, `cpu_max_period_us`,
 `memory_max_bytes`, `memory_current_bytes`, `memory_anon_bytes`,
 `files_dir_free_bytes`, `scratch_bytes`) are observations from the last
-heartbeat. They are not a `host.runtime` document and they are not a second
+heartbeat. They are not a `node.runtime` document and they are not a second
 copy of `media.workers`. Physical plugin install files and the host install
 ledger stay on the host. This spike does not reconcile desired plugin
 deployments.
@@ -240,7 +240,7 @@ fingerprint.
 
 There is no KMS or Vault provider. Joining a host means copying `master.key`
 (and the auth password when the file is `BCK2`) plus the database bootstrap
-settings, and **not** copying `host-identity.json` when the new process should
+settings, and **not** copying `node-identity.json` when the new process should
 be a distinct host.
 
 ### Schema compatibility
@@ -343,7 +343,7 @@ that the guest receives `CONFIG`; it carries no defaults.
 `plugin_deployments` holds `desired ∈ {present, absent}` per (instance, host).
 "Enabled on this host" means a present deployment. `bookclerk plugins
 enable|disable [--host]`, `PUT /api/config/plugin-instances/{id}/deployments/
-{host_id}`, and the Settings page switch write that row; nothing reads an
+{node_id}`, and the Settings page switch write that row; nothing reads an
 `enabled` key from TOML. The host's reconciler spawns present deployments,
 retires a running guest when desired flips to absent, and records
 observations (`installed`, `running`, `healthy`, `error`, `retired`). A
@@ -411,7 +411,7 @@ document, not from TOML. Store passwords reach a guest only as the sealed
 secret stored when the account is connected.
 
 Bootstrap stays in TOML and env: `[database]`, `master.key`,
-`host-identity.json`, `daemon.listen`. Database-adapter plugins are not
+`node-identity.json`, `daemon.listen`. Database-adapter plugins are not
 instances in this phase. The shared `[output]` table (format, Widevine,
 naming profile, sidecars, multi-destination policy) also stays in TOML for
 now; moving it to a `core.output` cluster document is deferred.
@@ -554,7 +554,7 @@ depends on hosts agreeing on a schema.
    RPC; SDK surface; size and count limits in `[[kv_namespaces]]`; a
    two-connection test proving an instance moved to another host reads its
    own cursor.
-3. **Host subsystems as consumers.** `host.<host_id>` queues; the reconciler
+3. **Node subsystems as consumers.** `node.<node_id>` queues; the reconciler
    and the configuration-change wakeup consume them instead of the 5 s tick;
    `deployment.changed` published on every deployment write; the CLI stays a
    producer only.
@@ -631,16 +631,16 @@ section is the record.
   `plugin_deployments` (its per-host output). A count stored on every host
   row could disagree between rows.
 - **Liveness (step 5).** The scheduler first treated a host as live when
-  its `host:<host_id>` queue consumer refreshed its event-catalog row
-  within 60 s. `hosts.heartbeat_at` is written only at bootstrap, so it
+  its `node:<node_id>` queue consumer refreshed its event-catalog row
+  within 60 s. `nodes.heartbeat_at` is written only at bootstrap, so it
   cannot tell a running daemon from a host where the CLI once ran. The
   periodic host heartbeat below replaced both.
 - **Labels and targets (step 5).** Labels are `name` or `name=value`; every
-  host also carries `host=<id>` and `target=<target>`; a constraint may
+  host also carries `node=<id>` and `target=<target>`; a constraint may
   exclude with `!`. Beyond the constraints, the scheduler skips a host
   whose target has no artifact in the active release (an `any` artifact
-  matches every host). Labels are set with `bookclerk hosts label` and
-  `PUT /api/config/hosts/{host_id}/labels`.
+  matches every host). Labels are set with `bookclerk nodes label` and
+  `PUT /api/config/nodes/{node_id}/labels`.
 - **Scheduler lease (step 5).** The singleton is the `scheduler` row in a
   new `cluster_leases` table (holder, fencing token, expiry). Renewal keeps
   the token; takeover after expiry bumps it. Deployment writes stay
@@ -654,34 +654,34 @@ section is the record.
 
 ### Resource-aware scheduling and routing
 
-The first placement pass spread replicas by how many deployments each host
-already ran, and nothing routed calls. A cluster of unequal hosts (a small
+The first placement pass spread replicas by how many deployments each node
+already ran, and nothing routed calls. A cluster of unequal nodes (a small
 always-on VPS and desktops that are often off, none able to reach another)
-needs the scheduler to know each host's capacity, what is committed there,
-and how reliably it is up, and needs calls to land on the best host
-running a plugin. Hosts still only share the database.
+needs the scheduler to know each node's capacity, what is committed there,
+and how reliably it is up, and needs calls to land on the best node
+running a plugin. Nodes still only share the database.
 
 - **Whose decision a deployment is.** `plugin_deployments.desired` is
   `present | absent` (operator) or `placed | unplaced` (scheduler). Reusing
-  `absent` for "the scheduler took it off this host" read as an operator
+  `absent` for "the scheduler took it off this node" read as an operator
   decision and lost the distinction on hand-back. The library refuses a
   scheduler write of an operator state and the reverse; bootstrap
   enrollment may write `unplaced` for a placed instance.
-- **A periodic host heartbeat.** There was no heartbeat to remove: host
-  capacity was sampled at bootstrap and reload only (into `hosts`), and
+- **A periodic node heartbeat.** There was no heartbeat to remove: node
+  capacity was sampled at bootstrap and reload only (into `nodes`), and
   liveness came from the event-catalog row. Every daemon now writes
-  `host_status` every 15 s: detected capacity (CPUs and memory, capped by
+  `node_status` every 15 s: detected capacity (CPUs and memory, capped by
   its cgroup), its budget, the reservations of the guests it runs, measured
   CPU and available memory, free disk, and availability. Live means a
   heartbeat within three intervals. Only the daemon writes it; the CLI
-  never makes a host live.
-- **Budgets are operator configuration.** `host.runtime` gains
+  never makes a node live.
+- **Budgets are operator configuration.** `node.runtime` gains
   `cpu_budget_percent` (default 80), `memory_budget_percent` (75), and
   `schedulable` (drain). The heartbeat turns them into absolute budgets
   against what it detected, so a budget follows a resized VM or cgroup
-  without an edit. Edited through `bookclerk hosts set`, `PUT
-  /api/config/hosts/{id}/runtime`, and Settings → Hosts.
-- **Accounting by ceilings.** A host's reservations are the sum of the jail
+  without an edit. Edited through `bookclerk nodes set`, `PUT
+  /api/config/nodes/{id}/runtime`, and Settings → Nodes.
+- **Accounting by ceilings.** A node's reservations are the sum of the jail
   ceilings (after `[plugins.jail]`) of its running guests, recorded on each
   deployment observation when the reconciler spawns the guest. Ceilings,
   not samples, because the jail enforces them and a guest's peak is what
@@ -690,32 +690,32 @@ running a plugin. Hosts still only share the database.
   is never more than the machine has free.
 - **Availability.** A decaying average of time online (time constant one
   day), updated from the gap between heartbeats. It discounts, rather than
-  excludes, hosts that come and go.
+  excludes, nodes that come and go.
 - **Placement by headroom.** An instance's demand is the largest ceiling
-  any host recorded for it, else its release grant, else the grant
-  defaults. A host's score is how many more such guests fit its CPU and
+  any node recorded for it, else its release grant, else the grant
+  defaults. A node's score is how many more such guests fit its CPU and
   memory headroom, times `0.5 + 0.5 × availability`. Memory is a hard fit
   (a guest over its ceiling is killed); CPU only ranks. Replicas stay
-  while their host qualifies; scale-down drops the least room first; one
-  replica per instance per pass moves off a host that is over its memory
-  budget. A pass commits each added replica's demand against its host so
-  several instances do not land on one host in the same pass.
-  `replicas = all` (stored as NULL) runs on every qualifying host where the
+  while their node qualifies; scale-down drops the least room first; one
+  replica per instance per pass moves off a node that is over its memory
+  budget. A pass commits each added replica's demand against its node so
+  several instances do not land on one node in the same pass.
+  `replicas = all` (stored as NULL) runs on every qualifying node where the
   demand fits.
-- **Routing deliveries without host-to-host calls.** Every host that runs
-  an instance ranks the live hosts whose guest of it is up by the same
-  score, so all hosts compute the same order from the same rows. Rank `r`
+- **Routing deliveries without node-to-node calls.** Every node that runs
+  an instance ranks the live nodes whose guest of it is up by the same
+  score, so all nodes compute the same order from the same rows. Rank `r`
   claims a delivery only once its `run_after` is `r × 10 s` old
-  (`claim_next_event_delivery_due_by`). The best host takes work at once;
+  (`claim_next_event_delivery_due_by`). The best node takes work at once;
   if it is saturated, stalled, or gone, the next takes over after a short
   delay, and the claim's compare-and-swap still admits one runner.
-  Rejected: stamping a target host on each delivery at dispatch (the
+  Rejected: stamping a target node on each delivery at dispatch (the
   dispatcher would have to choose, and a dead target needs reassignment
-  logic) and forwarding between hosts (they cannot connect).
+  logic) and forwarding between nodes (they cannot connect).
 
 ## Consequences
 
-- New unreleased tables: `cluster_identity`, `hosts`,
+- New unreleased tables: `cluster_identity`, `nodes`,
   `configuration_documents`, `configuration_audit`,
   `configuration_changes`, `plugin_instances`, `plugin_instance_defaults`,
   `plugin_deployments`, `plugin_deployment_observations`, and
@@ -725,13 +725,13 @@ running a plugin. Hosts still only share the database.
   `ignored_titles`, and `account_links` carry `plugin_key`. Phase 3 adds
   `plugin_kv`, `plugin_releases`, `plugin_release_pointers`,
   `plugin_release_blobs`, `plugin_placements` (with nullable `replicas`
-  for "all"), `cluster_leases`, and `host_status`;
+  for "all"), `cluster_leases`, and `node_status`;
   `plugin_deployments.desired` allows `placed` and `unplaced`;
   `plugin_deployment_observations` gains the guest's reserved memory and
   CPU;
   `domain_events` gains `queue_name`, `content_type`, and `deliver_after`
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
-  `hosts` gains `target` and `labels_json`. Checksum of the
+  `nodes` gains `target` and `labels_json`. Checksum of the
   unreleased pack changes. Existing development databases fail closed until
   recreated (`cargo reset --yes` or a new database). That matches the
   unreleased-schema rule.
@@ -739,12 +739,12 @@ running a plugin. Hosts still only share the database.
   Plugin settings and enablement are `bookclerk plugins config` and
   `bookclerk plugins enable|disable`, also database. Releases are
   `bookclerk plugins install|update|rollback|remove|approve|releases` and
-  placement is `bookclerk plugins deploy` with `bookclerk hosts label|set`, all
+  placement is `bookclerk plugins deploy` with `bookclerk nodes label|set`, all
   database. The remaining `config` keys still edit `config.toml`.
 - `bookclerk config show` prints `events.authority = database` when the
   library can be read, and `transitional` when it cannot.
 - Single-host SQLite still starts by opening the local database, minting
-  `master.key` once, and writing `host-identity.json` once. The CLI does that
+  `master.key` once, and writing `node-identity.json` once. The CLI does that
   alignment inside the library open, not before command dispatch. `config
   master-key status` and `wrap` do not open the database and do not mint a
   missing key.
@@ -784,7 +784,7 @@ Not in this phase, and not claimed as production HA:
   on storage every placed host can read through its `file://` path.
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
-- Rolling upgrades and a cluster dashboard beyond Settings → Hosts
+- Rolling upgrades and a cluster dashboard beyond Settings → Nodes
   (Phase 5). Drain exists (`hosts set --drain`).
 - Schema pinning compares package versions, not schema contents: a newer
   package that only renames a key still drops the operator's value for the

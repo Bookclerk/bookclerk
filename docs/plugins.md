@@ -250,7 +250,7 @@ mutation lock for that host only.
 
 ```text
 $FILES_DIR/
-  host-identity.json             # this host's stable HostId
+  node-identity.json             # this host's stable HostId
   plugins/.releases/<digest>/    # materialized release tree (read-only, shared by instances)
   plugins/.staging/              # partial extracts; never spawned from
   plugins/<PluginKey fs-id>/     # host-local tree: platform guests, dev trees, older installs
@@ -1168,10 +1168,10 @@ instance** at enrollment, with a document seeded from the manifest's
 alias routes to the default instance, and jobs may pin another with
 `--instance`.
 
-**Enabled on a host** means the instance's deployment row for that host
+**Enabled on a node** means the instance's deployment row for that node
 says to run it. Each row's `desired` state also says whose decision it is:
 
-| `desired` | Written by | The host |
+| `desired` | Written by | The node |
 | --- | --- | --- |
 | `present` | an operator (`plugins enable`, the Settings switch) | runs it |
 | `absent` | an operator (`plugins disable`) | retires it |
@@ -1208,8 +1208,8 @@ The daemon exposes the same operations (operator session):
 | `GET` / `POST` | `/api/config/plugin-instances` (list; create `{plugin_key, display_name}`) |
 | `DELETE` | `/api/config/plugin-instances/{id}` (no deployments left) |
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/config` (`{expected_revision, settings, secret_refs, secrets}`; `secrets` are sealed server-side) |
-| `PUT` | `/api/config/plugin-instances/{id}/deployments/{host_id}` (`{desired, expected_revision}`) |
-| `GET` | `/api/config/hosts`, `/api/config/plugin-schemas` |
+| `PUT` | `/api/config/plugin-instances/{id}/deployments/{node_id}` (`{desired, expected_revision}`) |
+| `GET` | `/api/config/nodes`, `/api/config/plugin-schemas` |
 
 **Settings → Plugins** renders each instance from its pinned schema: the
 Enabled switch writes this host's deployment (after consent when needed),
@@ -1237,23 +1237,23 @@ offline and with the key's existing `plugin-grants.json` approval carried
 onto the release. The reconciler respawns a guest that has exited even when
 the last observation was healthy. The daemon keeps one guest map for the
 process.
-Config reload re-enrols the host and leaves running guests in place unless
+Config reload re-enrols the node and leaves running guests in place unless
 the database connection changed, in which case every guest is retired and
 the reconciler brings the present deployments back.
 
-**How a host hears about a change.** Each host consumes its own queue,
-`host.<host_id>`, on the outbox. Every committed deployment write (create,
+**How a node hears about a change.** Each node consumes its own queue,
+`node.<node_id>`, on the outbox. Every committed deployment write (create,
 desired-state change, delete) publishes a `deployment.changed` message to
-the deployment's host, and every committed configuration document (cluster
+the deployment's node, and every committed configuration document (cluster
 settings and instance documents) publishes `configuration.changed` to every
-registered host. The daemon's delivery worker claims those messages under
-the catalog id `host:<host_id>` and wakes the deployment and configuration
+registered node. The daemon's delivery worker claims those messages under
+the catalog id `node:<node_id>` and wakes the deployment and configuration
 reconcilers; there is no fixed 5-second re-read any more, only a 60-second
-backstop pass for a wakeup dispatched while the host's catalog row was not
+backstop pass for a wakeup dispatched while the node's catalog row was not
 live. Messages are wakeups, not state: the reconciler always re-reads the
 authoritative rows. The CLI only produces them (`bookclerk plugins enable
---host <id>` wakes that host), and `bookclerk queues list` shows each
-host queue with its `host:<id>` consumer.
+--node <id>` wakes that node), and `bookclerk queues list` shows each
+node queue with its `node:<id>` consumer.
 
 A deployed guest is registered under its plugin instance id. `bookclerk
 library scan` and `bookclerk library acquire` route a plugin key to its
@@ -1340,58 +1340,58 @@ published: they ship with the host.
 
 ## Placement
 
-By default an operator deploys an instance host by host with `plugins
-enable --host`. **Placement** hands that job to the cluster scheduler: the
-operator says how many hosts should run the instance and which hosts may,
-and the scheduler picks the hosts with the most room and writes the
-per-host deployments. Hosts never connect to each other; everything below
+By default an operator deploys an instance node by node with `plugins
+enable --node`. **Placement** hands that job to the cluster scheduler: the
+operator says how many nodes should run the instance and which nodes may,
+and the scheduler picks the nodes with the most room and writes the
+per-node deployments. Nodes never connect to each other; everything below
 travels through the shared library database.
 
 ```bash
-bookclerk hosts list                              # liveness, capacity, budget, use, labels
-bookclerk hosts set --memory-budget 50            # this host (or pass a host id)
-bookclerk hosts set <host-id> --drain             # move scheduled replicas away
-bookclerk hosts label --add nas --add zone=eu
+bookclerk nodes list                              # liveness, capacity, budget, use, labels
+bookclerk nodes set --memory-budget 50            # this node (or pass a node id)
+bookclerk nodes set <node-id> --drain             # move scheduled replicas away
+bookclerk nodes label --add nas --add zone=eu
 bookclerk plugins deploy example --replicas 2 --on nas --on '!slow'
-bookclerk plugins deploy example --replicas all   # every host with room
+bookclerk plugins deploy example --replicas all   # every node with room
 bookclerk plugins deploy example --replicas 0     # keep the placement, stop every replica
 bookclerk plugins deploy example --manual         # back to enable/disable by hand
 ```
 
 ### Heartbeats and budgets
 
-Every daemon writes a heartbeat row to `host_status` every 15 seconds. It
+Every daemon writes a heartbeat row to `node_status` every 15 seconds. It
 reports:
 
-- **Capacity** the host detects: logical CPUs and memory, each capped by the
+- **Capacity** the node detects: logical CPUs and memory, each capped by the
   daemon's cgroup (`cpu.max`, `memory.max`) when it runs in one.
 - **Budget**: the share of that capacity the scheduler may commit to plugin
-  guests, from the host's `host.runtime` document. Defaults are 80% of the
+  guests, from the node's `node.runtime` document. Defaults are 80% of the
   CPU and 75% of the memory, so a desktop keeps room for its user. Set them
-  with `bookclerk hosts set --cpu-budget/--memory-budget`, the hosts API,
-  or **Settings → Hosts**; the host applies a change at its next heartbeat.
+  with `bookclerk nodes set --cpu-budget/--memory-budget`, the nodes API,
+  or **Settings → Nodes**; the node applies a change at its next heartbeat.
 - **Reservations**: the sum of the jail ceilings (memory and CPU, after
   `[plugins.jail]` limits) of the guests running there. The reconciler
   records each guest's ceiling on its deployment observation when it
   spawns it.
 - **Measured use**: CPU busy since the previous heartbeat and memory
   available, from `/proc` and the cgroup.
-- **Availability**: how much of the recent past the host was up, as a
+- **Availability**: how much of the recent past the node was up, as a
   decaying average over about a day. A desktop that is off every night
   ends up around 60%; an always-on VPS stays near 100%.
 
 Memory and measured use are read on Linux only for now. On macOS and
 Windows a heartbeat reports the CPU count (and free disk on macOS); with no
-memory figure the scheduler cannot hold such a host to a memory budget and
+memory figure the scheduler cannot hold such a node to a memory budget and
 ranks it by CPU headroom alone.
 
-A host is **live** while its last heartbeat is younger than three
-intervals (45 s). A host where only the CLI ran has no heartbeat and is
-never live. **Draining** a host (`hosts set --drain`, the Drain button)
+A node is **live** while its last heartbeat is younger than three
+intervals (45 s). A node where only the CLI ran has no heartbeat and is
+never live. **Draining** a node (`nodes set --drain`, the Drain button)
 stops the scheduler placing anything there and moves its scheduled
 replicas elsewhere; deployments enabled by hand keep running.
 
-A host's **headroom** is its budget minus what is committed. For CPU,
+A node's **headroom** is its budget minus what is committed. For CPU,
 committed is the larger of the reservations and the measured use, so work
 outside Bookclerk on a shared desktop counts. For memory it is the budget
 minus the reservations, and never more than the memory the machine has
@@ -1399,62 +1399,62 @@ free.
 
 ### Candidates
 
-A host qualifies for an instance when:
+A node qualifies for an instance when:
 
 - it is live and not drained;
 - it carries every label the constraints name, and none a `!label`
   constraint names. Labels are `name` or `name=value` (lowercase letters,
-  digits, `._/-`). Every host also carries `host=<host_id>` and
-  `target=<target>` (`linux-x64-gnu`, …), so `--on host=<id>` pins an
+  digits, `._/-`). Every node also carries `node=<node_id>` and
+  `target=<target>` (`linux-x64-gnu`, …), so `--on node=<id>` pins an
   instance and `--on target=linux-arm64-gnu` restricts it to one platform;
-- for a released plugin, the active release has an artifact for the host's
+- for a released plugin, the active release has an artifact for the node's
   target, or a target-independent `any` artifact (workerd packages).
 
 ### Planning
 
 The scheduler estimates what one guest of the instance needs (its
-**demand**): the largest ceiling any host recorded for it, else the active
+**demand**): the largest ceiling any node recorded for it, else the active
 release's grant (`memoryMib`, `cpuRatePercent`), else the grant defaults
-(512 MiB, 0.8 cores). It scores each qualifying host by how many more such
+(512 MiB, 0.8 cores). It scores each qualifying node by how many more such
 guests fit its CPU and memory headroom, weighted by availability (an
-always-on host counts in full, a host that is never on counts half). Then:
+always-on node counts in full, a node that is never on counts half). Then:
 
-- replicas stay where they run while their host qualifies; hosts that
+- replicas stay where they run while their node qualifies; nodes that
   stopped qualifying (dead, drained, label removed) get `unplaced`;
-- new replicas go to the highest-scoring hosts, and only where the demand
+- new replicas go to the highest-scoring nodes, and only where the demand
   fits the memory headroom (memory is the hard limit, because a guest over
   its memory ceiling is killed; CPU only ranks);
-- a scale-down drops the replicas on the hosts with the least room first;
-- when a replica's host is over its memory budget and another qualifying
-  host has room, the replica moves there, at most one per instance per
+- a scale-down drops the replicas on the nodes with the least room first;
+- when a replica's node is over its memory budget and another qualifying
+  node has room, the replica moves there, at most one per instance per
   pass so the cluster does not thrash;
-- `--replicas all` runs the instance on every qualifying host where it fits.
+- `--replicas all` runs the instance on every qualifying node where it fits.
 
-Each pass commits the demand of every replica it adds against that host's
-headroom, so one pass does not stack several instances on the same host.
-When fewer hosts qualify or fit than requested, the scheduler places what
+Each pass commits the demand of every replica it adds against that node's
+headroom, so one pass does not stack several instances on the same node.
+When fewer nodes qualify or fit than requested, the scheduler places what
 it can and records why on the placement ("1 of 2 replica(s) placed: 2
-host(s) are live, schedulable, and match nas; 1 lack memory budget for 512
+node(s) are live, schedulable, and match nas; 1 lack memory budget for 512
 MiB").
-Each host's reconciler then converges on its own deployment rows exactly as
+Each node's reconciler then converges on its own deployment rows exactly as
 it does for hand-written ones.
 
 ### Routing deliveries
 
 Event and queue deliveries addressed to an instance go to the best live
-host running it, without any host contacting another. Every host that runs
-an instance ranks the live hosts whose guest of it is up (a `running` or
-`healthy` observation) by the same score placement uses, so all hosts agree
-on the order. The best host claims a delivery as soon as it is due; the
-host ranked `r` claims it only once it has been due for `r × 10 s`. A best
-host that is saturated, stalled, or gone therefore costs at most a short
+node running it, without any node contacting another. Every node that runs
+an instance ranks the live nodes whose guest of it is up (a `running` or
+`healthy` observation) by the same score placement uses, so all nodes agree
+on the order. The best node claims a delivery as soon as it is due; the
+node ranked `r` claims it only once it has been due for `r × 10 s`. A best
+node that is saturated, stalled, or gone therefore costs at most a short
 delay before the next one takes over, and the claim's compare-and-swap
 still guarantees one runner. Ranks are re-read every 10 seconds. Deliveries
-addressed to a plugin key or alias, and a host's own queue, are not routed.
+addressed to a plugin key or alias, and a node's own queue, are not routed.
 
-Jobs (scan, acquire) are not routed yet: whichever host claims a job runs
+Jobs (scan, acquire) are not routed yet: whichever node claims a job runs
 it with its own sources and destinations. A synchronous HTTP call runs on
-the host that receives it.
+the node that receives it.
 
 ### One scheduler
 
@@ -1462,7 +1462,7 @@ Every daemon runs the scheduler loop, but only the holder of the
 `scheduler` row in `cluster_leases` acts. The holder renews the lease
 (60 s) on every pass; when it stops, the next daemon to try takes over with
 a larger fencing token. A pass runs on a `placement.changed` or
-`release.changed` host-queue wakeup and at least every 20 seconds.
+`release.changed` node-queue wakeup and at least every 20 seconds.
 Deployment writes are compare-and-swap, so a holder that lost its lease
 mid-pass can at worst add one replica too many, which the next pass
 removes.
@@ -1471,9 +1471,9 @@ removes.
 
 `plugins enable|disable` and the deployment API refuse a placed instance
 (409), the Settings Enabled switch is read-only for it, and enrollment
-records a new host `unplaced` for it rather than `present`. `plugins deploy
+records a new node `unplaced` for it rather than `present`. `plugins deploy
 --manual` (or deleting the placement) hands the deployments back without
-changing what any host runs: `placed` becomes `present` and `unplaced`
+changing what any node runs: `placed` becomes `present` and `unplaced`
 becomes `absent`. Removing a plugin (`plugins remove`, `DELETE
 /api/config/plugin-releases/{key}/active`) drops its placements first.
 
@@ -1481,15 +1481,15 @@ becomes `absent`. Removing a plugin (`plugins remove`, `DELETE
 | --- | --- | --- |
 | `PUT` | `/api/config/plugin-instances/{id}/placement` | `{replicas, constraints, expected_revision}`; `replicas` is a count or `"all"`; `expected_revision` 0 (or omitted) creates; 409 on a stale revision |
 | `DELETE` | `/api/config/plugin-instances/{id}/placement` | back to hand-managed |
-| `GET` | `/api/config/hosts` | each host's `labels`, `implicit_labels`, `target`, `live`, `runtime` (budgets, drain) and `status` (latest heartbeat) |
-| `PUT` | `/api/config/hosts/{host_id}/runtime` | any of `{label, cpu_budget_percent, memory_budget_percent, schedulable}` |
-| `PUT` | `/api/config/hosts/{host_id}/labels` | `{labels}`: the host's complete operator label set |
+| `GET` | `/api/config/nodes` | each node's `labels`, `implicit_labels`, `target`, `live`, `runtime` (budgets, drain) and `status` (latest heartbeat) |
+| `PUT` | `/api/config/nodes/{node_id}/runtime` | any of `{label, cpu_budget_percent, memory_budget_percent, schedulable}` |
+| `PUT` | `/api/config/nodes/{node_id}/labels` | `{labels}`: the node's complete operator label set |
 
 `GET /api/config/plugin-instances` and the Settings plugin groups carry each
 instance's `placement` (requested and placed replicas, constraints, detail).
 **Settings → Plugins** shows "Placed n/m" on the row and, when expanded,
-replica and label fields plus **Manage by hand**. **Settings → Hosts** shows
-each host's heartbeat, reservations and measured use against its budget,
+replica and label fields plus **Manage by hand**. **Settings → Nodes** shows
+each node's heartbeat, reservations and measured use against its budget,
 and availability, with fields for the budgets and labels and a Drain
 switch.
 
@@ -1940,11 +1940,10 @@ late-joins already-`dispatched` events via a missing-pair anti-join (receipt
 pairs does a bounded empty `SELECT` and zero dispatch writes. Heartbeat of this
 node’s catalog runs **before** that reconcile so a catch-up page cannot starve
 the 60s TTL. Each tick dispatches at most 32 pending outbox rows, then always
-runs a claimed wake slice (UUID fence token, not `event_node_id`) even when
+runs a claimed wake slice (UUID fence token, not the node id) even when
 undispatched remain; accepting a wake clears `wake_event_type` /
 `wake_filter_json` / `wake_grants_json` so retry is not re-woken. A dispatch error clears the empty-reconcile skip cache; a bounded
-reconcile still runs at least every 60s as a backstop. The process-stable `event_node_id` is resolved once at runtime
-start. A `suspended` result is accepted only when a subscription matches
+reconcile still runs at least every 60s as a backstop. The catalog key is the node id from `node-identity.json`. A `suspended` result is accepted only when a subscription matches
 that exact `(type, schema_version)` and sets `supports_suspend = true`;
 otherwise it is stored as a permanent reject. Non-empty `wakeOnEventType` must
 also match a declared subscription type. The host derives wake grants from

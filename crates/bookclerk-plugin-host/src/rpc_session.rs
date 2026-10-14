@@ -3881,7 +3881,7 @@ impl StorageBackend for PluginStorage {
         // A plugin session key is configuration identity, not a node. Local
         // bytes behind the guest cannot be proved portable, so scans restart
         // on another host.
-        Some(bookclerk_storage::host_placement_id())
+        Some(bookclerk_storage::node_placement_id())
     }
 
     fn clone_box(&self) -> Box<dyn StorageBackend> {
