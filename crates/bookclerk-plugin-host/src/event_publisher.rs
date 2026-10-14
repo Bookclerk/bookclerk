@@ -148,6 +148,7 @@ impl OutboxEventPublisher {
             dedup_key,
             payload,
             ordering_key: String::new(),
+            ..PublishDomainEventSpec::default()
         })
     }
 }

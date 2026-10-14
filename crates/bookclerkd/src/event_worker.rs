@@ -369,6 +369,10 @@ fn catalog_from_manifest(
                 s.resource_class.clone()
             },
             filter: s.filter.clone().filter(|v| !v.is_null()),
+            queue: String::new(),
+            max_retries: s.max_retries,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
         })
         .collect()
 }
@@ -430,6 +434,10 @@ fn catalog_from_runtime(subs: &[EventSubscription]) -> Vec<EventCatalogSubscript
                 s.resource_class.clone()
             },
             filter: s.filter.clone(),
+            queue: String::new(),
+            max_retries: None,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
         })
         .collect()
 }
@@ -1036,6 +1044,9 @@ mod tests {
             dispatch_state: "dispatched".into(),
             created_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
             wake_pending: false,
+            queue_name: bookclerk_library::CORE_EVENTS_QUEUE.into(),
+            content_type: bookclerk_library::QUEUE_CONTENT_TYPE_JSON.into(),
+            deliver_after: None,
         }
     }
 
@@ -1066,6 +1077,7 @@ mod tests {
             wake_event_type: String::new(),
             wake_filter_json: String::new(),
             wake_grants_json: String::new(),
+            queue_name: bookclerk_library::CORE_EVENTS_QUEUE.into(),
         }
     }
 
@@ -1102,6 +1114,10 @@ mod tests {
                 supports_suspend: true,
                 resource_class: "network".into(),
                 filter: None,
+                queue: String::new(),
+                max_retries: None,
+                dead_letter_queue: None,
+                retry_delay_secs: 0,
             },
             EventCatalogSubscription {
                 event_type: "book_deleted".into(),
@@ -1109,6 +1125,10 @@ mod tests {
                 supports_suspend: false,
                 resource_class: "network".into(),
                 filter: None,
+                queue: String::new(),
+                max_retries: None,
+                dead_letter_queue: None,
+                retry_delay_secs: 0,
             },
         ];
         let mut admitted = std::collections::BTreeSet::new();
@@ -1134,6 +1154,10 @@ mod tests {
             supports_suspend: true,
             resource_class: "network".into(),
             filter: None,
+            queue: String::new(),
+            max_retries: None,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
         }];
         let mut admitted = std::collections::BTreeSet::new();
         admitted.insert(bookclerk_plugin_host::GrantedEventConsumer {
@@ -1156,6 +1180,10 @@ mod tests {
                 supports_suspend: false,
                 resource_class: "network".into(),
                 filter: None,
+                queue: String::new(),
+                max_retries: None,
+                dead_letter_queue: None,
+                retry_delay_secs: 0,
             },
             EventCatalogSubscription {
                 event_type: "book_acquired".into(),
@@ -1163,6 +1191,10 @@ mod tests {
                 supports_suspend: false,
                 resource_class: "network".into(),
                 filter: Some(serde_json::json!({"titleId":"u1"})),
+                queue: String::new(),
+                max_retries: None,
+                dead_letter_queue: None,
+                retry_delay_secs: 0,
             },
         ];
         let mut admitted = std::collections::BTreeSet::new();
@@ -1288,6 +1320,7 @@ mod tests {
             dedup_key: dedup.into(),
             payload: r#"{"titleId":"t","source":"audible"}"#.into(),
             ordering_key: String::new(),
+            ..PublishDomainEventSpec::default()
         }
     }
 

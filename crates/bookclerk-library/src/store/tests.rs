@@ -2968,6 +2968,7 @@ fn outbox_spec_account(
         dedup_key: dedup.into(),
         payload: payload.into(),
         ordering_key: ordering_key.into(),
+        ..PublishDomainEventSpec::default()
     }
 }
 
@@ -3072,6 +3073,205 @@ async fn publish_domain_event_dedupes_and_rejects_oversized_payload() {
         err.to_string().contains("exceeds"),
         "unexpected error: {err}"
     );
+}
+
+fn queue_spec(queue: &str, body: &str) -> PublishDomainEventSpec {
+    PublishDomainEventSpec {
+        queue_name: queue.into(),
+        dedup_key: uuid::Uuid::new_v4().to_string(),
+        payload: body.into(),
+        ..PublishDomainEventSpec::default()
+    }
+}
+
+#[tokio::test]
+async fn publish_accepts_plugin_key_sources_and_rejects_unknown_queues() {
+    let store = test_store().await;
+    let mut spec = outbox_spec("book_acquired", "book_acquired:pk", "{}");
+    spec.source = "registry:crates.io#bookclerk-plugin-source-libro".into();
+    expect_created(persist_outbox_event(&store, spec).await.unwrap());
+    let mut spec = outbox_spec("book_acquired", "book_acquired:path", "{}");
+    spec.source = "path:file:///opt/plugins/echo".into();
+    expect_created(persist_outbox_event(&store, spec).await.unwrap());
+    let mut spec = outbox_spec("book_acquired", "book_acquired:ws", "{}");
+    spec.source = "has space".into();
+    assert!(persist_outbox_event(&store, spec).await.is_err());
+
+    let err = persist_outbox_event(&store, queue_spec("Jobs", "{}"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("queue name"), "{err}");
+    let mut typed = queue_spec("jobs", "{}");
+    typed.event_type = "book_acquired".into();
+    let err = persist_outbox_event(&store, typed)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("must not carry an event type"), "{err}");
+    let mut bus_text = outbox_spec("book_acquired", "book_acquired:text", "hi");
+    bus_text.content_type = "text".into();
+    let err = persist_outbox_event(&store, bus_text)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("must be JSON"), "{err}");
+}
+
+#[tokio::test]
+async fn queue_messages_reach_queue_consumers_only_and_honor_retries() {
+    let store = test_store().await;
+    let mut jobs = EventCatalogSubscription::queue("jobs");
+    jobs.max_retries = Some(2);
+    store
+        .upsert_event_subscriber("node-a", "worker", &[jobs], true)
+        .await
+        .unwrap();
+    store
+        .upsert_event_subscriber(
+            "node-a",
+            "echo",
+            &[EventCatalogSubscription::new("book_acquired", vec![1])],
+            true,
+        )
+        .await
+        .unwrap();
+    let mut spec = queue_spec("jobs", "{\"n\":1}");
+    spec.delay_seconds = 3600;
+    spec.content_type = "json".into();
+    let id = expect_created(persist_outbox_event(&store, spec).await.unwrap());
+    let event = store.get_domain_event(&id).await.unwrap().unwrap();
+    assert_eq!(event.queue_name, "jobs");
+    assert!(event.is_queue_message());
+    assert!(event.deliver_after.is_some());
+
+    let created = store
+        .dispatch_catalog_matches(&event, "dispatch-jobs")
+        .await
+        .unwrap();
+    assert_eq!(created, 1, "only the queue consumer gets a delivery");
+    let delivery = store
+        .get_event_delivery(&format!("{id}:worker"))
+        .await
+        .unwrap()
+        .expect("queue delivery");
+    assert_eq!(delivery.queue_name, "jobs");
+    assert_eq!(delivery.max_attempts, 3, "max_retries + 1");
+    assert!(delivery.run_after > chrono::Utc::now() + chrono::Duration::minutes(30));
+    assert!(store
+        .get_event_delivery(&format!("{id}:echo"))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(
+        claim_delivery_for_opt(&store, "w", &["worker".into()])
+            .await
+            .is_none(),
+        "delayed message is not claimable yet"
+    );
+
+    let bus_id = expect_created(
+        persist_outbox_event(
+            &store,
+            outbox_spec("book_acquired", "book_acquired:q-iso", "{}"),
+        )
+        .await
+        .unwrap(),
+    );
+    let bus = store.get_domain_event(&bus_id).await.unwrap().unwrap();
+    assert_eq!(bus.queue_name, crate::CORE_EVENTS_QUEUE);
+    let created = store
+        .dispatch_catalog_matches(&bus, "dispatch-bus")
+        .await
+        .unwrap();
+    assert_eq!(created, 1, "the queue consumer does not see bus events");
+    assert!(store
+        .get_event_delivery(&format!("{bus_id}:worker"))
+        .await
+        .unwrap()
+        .is_none());
+
+    assert_eq!(
+        store.list_queue_names().await.unwrap(),
+        vec![crate::CORE_EVENTS_QUEUE.to_string(), "jobs".to_string()]
+    );
+    assert_eq!(
+        store
+            .count_queue_deliveries("jobs", "pending")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_domain_events_for_queue("jobs", 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_domain_events_for_queue("", 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn event_consumer_max_retries_sets_delivery_max_attempts() {
+    let store = test_store().await;
+    let mut sub = EventCatalogSubscription::new("book_acquired", vec![1]);
+    sub.max_retries = Some(0);
+    store
+        .upsert_event_subscriber("node-a", "echo", &[sub], true)
+        .await
+        .unwrap();
+    let id = expect_created(
+        persist_outbox_event(
+            &store,
+            outbox_spec("book_acquired", "book_acquired:mr", "{}"),
+        )
+        .await
+        .unwrap(),
+    );
+    let event = store.get_domain_event(&id).await.unwrap().unwrap();
+    store
+        .dispatch_catalog_matches(&event, "dispatch-mr")
+        .await
+        .unwrap();
+    let claimed = claim_delivery(&store, "mr-w").await;
+    assert_eq!(claimed.max_attempts, 1);
+    assert!(store
+        .retry_event_delivery(&claimed.fence(), chrono::Utc::now(), "once")
+        .await
+        .unwrap());
+    let row = store
+        .get_event_delivery(&claimed.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "dead_letter");
+}
+
+async fn claim_delivery_for_opt(
+    store: &LibraryStore,
+    owner: &str,
+    plugin_ids: &[String],
+) -> Option<crate::EventDeliveryRecord> {
+    store
+        .claim_next_event_delivery(
+            owner,
+            60,
+            &uuid::Uuid::new_v4().to_string(),
+            plugin_ids,
+            32,
+            "",
+        )
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -3950,6 +4150,39 @@ async fn postgres_event_outbox_publish_dispatch_claim() {
     let claimed = claim_delivery(&store, "pg-worker").await;
     assert_eq!(claimed.plugin_id, "echo");
     assert!(store.ack_event_delivery(&claimed.fence()).await.unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_queue_messages_dispatch_and_claim() {
+    let store = postgres_test_store().await;
+    let mut jobs = EventCatalogSubscription::queue("jobs");
+    jobs.max_retries = Some(1);
+    store
+        .upsert_event_subscriber("node-pg", "worker", &[jobs], true)
+        .await
+        .unwrap();
+    let id = expect_created(
+        persist_outbox_event(&store, queue_spec("jobs", "{\"pg\":true}"))
+            .await
+            .unwrap(),
+    );
+    let event = store.get_domain_event(&id).await.unwrap().unwrap();
+    assert_eq!(
+        store
+            .dispatch_catalog_matches(&event, "pg-dispatch-jobs")
+            .await
+            .unwrap(),
+        1
+    );
+    let claimed = claim_delivery_for(&store, "pg-worker", &["worker".into()]).await;
+    assert_eq!(claimed.queue_name, "jobs");
+    assert_eq!(claimed.max_attempts, 2);
+    assert!(store.ack_event_delivery(&claimed.fence()).await.unwrap());
+    assert_eq!(
+        store.count_queue_deliveries("jobs", "acked").await.unwrap(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -5298,6 +5531,7 @@ async fn wake_pages_more_than_page_size_same_account() {
             wake_event_type: sea_orm::ActiveValue::Set("book_acquired".into()),
             wake_filter_json: sea_orm::ActiveValue::Set(String::new()),
             wake_grants_json: sea_orm::ActiveValue::Set(String::new()),
+            queue_name: sea_orm::ActiveValue::Set(crate::CORE_EVENTS_QUEUE.into()),
         }
         .insert(store.db())
         .await
@@ -5390,8 +5624,11 @@ async fn per_plugin_in_flight_cap_blocks_second_claim() {
 async fn publish_rejects_invalid_source_and_accepts_empty() {
     let store = test_store().await;
     let mut bad = outbox_spec("book_acquired", "book_acquired:bad-src", "{}");
-    bad.source = "Not_Valid".into();
+    bad.source = "not valid".into();
     assert!(persist_outbox_event(&store, bad).await.is_err());
+    let mut quoted = outbox_spec("book_acquired", "book_acquired:quoted-src", "{}");
+    quoted.source = "a\"b".into();
+    assert!(persist_outbox_event(&store, quoted).await.is_err());
     let mut ok = outbox_spec("book_acquired", "book_acquired:ok-src", "{}");
     ok.source = "audible".into();
     let created = persist_outbox_event(&store, ok).await.unwrap();
@@ -5488,6 +5725,7 @@ async fn unknown_event_resource_class_is_rejected_and_does_not_block_claim() {
         wake_event_type: sea_orm::ActiveValue::Set(String::new()),
         wake_filter_json: sea_orm::ActiveValue::Set(String::new()),
         wake_grants_json: sea_orm::ActiveValue::Set(String::new()),
+        queue_name: sea_orm::ActiveValue::Set(crate::CORE_EVENTS_QUEUE.into()),
     }
     .insert(store.db())
     .await

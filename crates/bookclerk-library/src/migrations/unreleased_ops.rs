@@ -650,8 +650,14 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         wake_cursor_at TEXT NOT NULL DEFAULT '',
         wake_cursor_id TEXT NOT NULL DEFAULT '',
         dispatch_snapshot_json TEXT NOT NULL DEFAULT '',
-        UNIQUE(account_id, source, event_type, dedup_key)
+        queue_name TEXT NOT NULL DEFAULT 'core.events',
+        content_type TEXT NOT NULL DEFAULT 'json',
+        deliver_after TEXT NOT NULL DEFAULT '',
+        UNIQUE(queue_name, account_id, source, event_type, dedup_key)
     )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_domain_events_queue ON domain_events(queue_name, created_at, id)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch ON domain_events(dispatch_state, created_at)",
@@ -689,9 +695,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         wake_event_type TEXT NOT NULL DEFAULT '',
         wake_filter_json TEXT NOT NULL DEFAULT '',
         wake_grants_json TEXT NOT NULL DEFAULT '',
+        queue_name TEXT NOT NULL DEFAULT 'core.events',
         UNIQUE(event_id, plugin_id),
         FOREIGN KEY(event_id) REFERENCES domain_events(id) ON DELETE CASCADE
     )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_queue_state ON event_deliveries(queue_name, state)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_claim ON event_deliveries(state, run_after, created_at)",

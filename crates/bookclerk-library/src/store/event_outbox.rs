@@ -21,11 +21,13 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::models::{
     catalog_subscribers_for_event, collapse_live_subscriber_nodes, event_matches_wake_grants,
-    job_backoff_run_after, subscription_matches_event, AcquireStatus, DomainEventRecord,
-    EventCatalogSubscription, EventDeliveryFence, EventDeliveryMetrics, EventDeliveryRecord,
-    EventSubscriber, EventSubscriberCatalogRecord, EventSubscriberNodeRecord, PendingWakeProgress,
-    PublishDomainEventOutcome, PublishDomainEventSpec, EVENT_DELIVERY_MAX_ATTEMPTS,
-    EVENT_RESOURCE_CLASS_NETWORK, EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS,
+    is_valid_queue_name, job_backoff_run_after, queue_name_or_bus, subscription_matches_event,
+    AcquireStatus, DomainEventRecord, EventCatalogSubscription, EventDeliveryFence,
+    EventDeliveryMetrics, EventDeliveryRecord, EventSubscriber, EventSubscriberCatalogRecord,
+    EventSubscriberNodeRecord, PendingWakeProgress, PublishDomainEventOutcome,
+    PublishDomainEventSpec, CORE_EVENTS_QUEUE, EVENT_RESOURCE_CLASS_NETWORK,
+    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, QUEUE_CONTENT_TYPE_BYTES, QUEUE_CONTENT_TYPE_JSON,
+    QUEUE_CONTENT_TYPE_TEXT,
 };
 
 const STATE_PENDING: &str = "pending";
@@ -282,12 +284,27 @@ async fn wait_snapshot_claim_barrier() {
 async fn wait_snapshot_claim_barrier() {}
 
 fn parse_dispatch_snapshot(event_id: &str, json: &str) -> Result<Vec<EventSubscriber>> {
-    let ids: Vec<String> = serde_json::from_str(json).map_err(|err| {
+    /// One snapshot entry: a bare plugin id (legacy) or a subscriber object.
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Entry {
+        /// Legacy snapshot: plugin ids only.
+        Id(String),
+        /// Current snapshot: the subscriber as dispatched.
+        Subscriber(EventSubscriber),
+    }
+    let entries: Vec<Entry> = serde_json::from_str(json).map_err(|err| {
         LibraryError::Other(anyhow!(
             "domain event {event_id} has invalid dispatch_snapshot_json: {err}"
         ))
     })?;
-    Ok(ids.into_iter().map(EventSubscriber::plugin).collect())
+    Ok(entries
+        .into_iter()
+        .map(|entry| match entry {
+            Entry::Id(id) => EventSubscriber::plugin(id),
+            Entry::Subscriber(sub) => sub,
+        })
+        .collect())
 }
 
 /// Current dispatch chunk override, if any.
@@ -424,13 +441,7 @@ impl LibraryStore {
         if !row.dispatch_snapshot_json.trim().is_empty() {
             return parse_dispatch_snapshot(event_id, &row.dispatch_snapshot_json);
         }
-        let json = serde_json::to_string(
-            &subscribers
-                .iter()
-                .map(|s| s.plugin_id.as_str())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_else(|_| "[]".into());
+        let json = serde_json::to_string(subscribers).unwrap_or_else(|_| "[]".into());
         wait_snapshot_claim_barrier().await;
         let cas = domain_events::Entity::update_many()
             .col_expr(
@@ -1264,6 +1275,90 @@ impl LibraryStore {
             .collect()
     }
 
+    /// Recent outbox rows on one queue, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn list_domain_events_for_queue(
+        &self,
+        queue_name: &str,
+        limit: u64,
+    ) -> Result<Vec<DomainEventRecord>> {
+        domain_events::Entity::find()
+            .filter(domain_events::Column::QueueName.eq(queue_name_or_bus(queue_name)))
+            .order_by_desc(domain_events::Column::CreatedAt)
+            .limit(limit)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_event)
+            .collect()
+    }
+
+    /// Distinct queue names that hold at least one outbox row, sorted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn list_queue_names(&self) -> Result<Vec<String>> {
+        let names: Vec<String> = domain_events::Entity::find()
+            .select_only()
+            .column(domain_events::Column::QueueName)
+            .distinct()
+            .order_by_asc(domain_events::Column::QueueName)
+            .into_tuple()
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(names)
+    }
+
+    /// Delivery rows on one queue in `state`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn count_queue_deliveries(&self, queue_name: &str, state: &str) -> Result<i64> {
+        let n = super::lock_retry::retry_read_lock(|| async {
+            event_deliveries::Entity::find()
+                .filter(event_deliveries::Column::QueueName.eq(queue_name_or_bus(queue_name)))
+                .filter(event_deliveries::Column::State.eq(state))
+                .count(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)
+        })
+        .await?;
+        i64::try_from(n).map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))
+    }
+
+    /// Deliveries filtered by optional state and queue, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn list_event_deliveries_for_queue(
+        &self,
+        queue_name: &str,
+        state: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<EventDeliveryRecord>> {
+        let mut q = event_deliveries::Entity::find()
+            .filter(event_deliveries::Column::QueueName.eq(queue_name_or_bus(queue_name)));
+        if let Some(state) = state {
+            q = q.filter(event_deliveries::Column::State.eq(state));
+        }
+        q.order_by_desc(event_deliveries::Column::UpdatedAt)
+            .limit(limit)
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(map_delivery)
+            .collect()
+    }
+
     /// Deliveries filtered by optional state, newest first.
     ///
     /// # Errors
@@ -1672,32 +1767,43 @@ impl LibraryStore {
         &self,
         plugin_id: &str,
         event_types: &[String],
+        queues: &[String],
         created_after: &str,
         after: Option<(&str, &str)>,
         limit: u64,
     ) -> Result<Vec<DomainEventRecord>> {
-        if event_types.is_empty() || plugin_id.trim().is_empty() {
+        if (event_types.is_empty() && queues.is_empty()) || plugin_id.trim().is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders = event_types
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
+        let mut values: Vec<sea_orm::Value> = vec![created_after.to_string().into()];
+        let mut scope: Vec<String> = Vec::new();
+        if !event_types.is_empty() {
+            let placeholders = vec!["?"; event_types.len()].join(", ");
+            scope.push(format!(
+                "(e.queue_name = '{CORE_EVENTS_QUEUE}' AND e.event_type IN ({placeholders}))"
+            ));
+            for event_type in event_types {
+                values.push(event_type.clone().into());
+            }
+        }
+        if !queues.is_empty() {
+            let placeholders = vec!["?"; queues.len()].join(", ");
+            scope.push(format!("e.queue_name IN ({placeholders})"));
+            for queue in queues {
+                values.push(queue.clone().into());
+            }
+        }
+        let scope = scope.join(" OR ");
         let mut sql = format!(
             "SELECT e.id FROM domain_events e \
              WHERE e.dispatch_state = 'dispatched' \
                AND e.created_at > ? \
-               AND e.event_type IN ({placeholders}) \
+               AND ({scope}) \
                AND NOT EXISTS ( \
                  SELECT 1 FROM event_deliveries d \
                  WHERE d.event_id = e.id AND d.plugin_id = ? \
                )"
         );
-        let mut values: Vec<sea_orm::Value> = vec![created_after.to_string().into()];
-        for event_type in event_types {
-            values.push(event_type.clone().into());
-        }
         values.push(plugin_id.to_string().into());
         if let Some((created_at, id)) = after {
             sql.push_str(" AND (e.created_at > ? OR (e.created_at = ? AND e.id > ?))");
@@ -1752,11 +1858,20 @@ impl LibraryStore {
             let mut types: Vec<String> = row
                 .subscriptions
                 .iter()
+                .filter(|s| !s.is_queue())
                 .map(|s| s.event_type.clone())
                 .collect();
             types.sort();
             types.dedup();
-            if types.is_empty() {
+            let mut queues: Vec<String> = row
+                .subscriptions
+                .iter()
+                .filter(|s| s.is_queue())
+                .map(|s| s.queue_name().to_string())
+                .collect();
+            queues.sort();
+            queues.dedup();
+            if types.is_empty() && queues.is_empty() {
                 continue;
             }
             let mut after: Option<(String, String)> = None;
@@ -1765,6 +1880,7 @@ impl LibraryStore {
                     .list_missing_dispatched_events_for_plugin(
                         &row.plugin_id,
                         &types,
+                        &queues,
                         &cutoff,
                         after.as_ref().map(|(c, i)| (c.as_str(), i.as_str())),
                         RECONCILE_PAGE,
@@ -1976,8 +2092,9 @@ impl LibraryStore {
 /// # Errors
 ///
 /// Returns [`LibraryError::Other`] when the payload exceeds 64 KiB, when
-/// `event_type` / `dedup_key` are blank, or when `source` is not empty and
-/// fails the plugin-id grammar.
+/// `dedup_key` is blank, when a domain event (bus row) has no `event_type`
+/// or a queue message has one, when the queue name or content type is not
+/// recognised, or when `source` is not empty and fails the source grammar.
 pub fn prepare_publish_domain_event(
     mut spec: PublishDomainEventSpec,
 ) -> Result<PublishDomainEventSpec> {
@@ -1988,9 +2105,47 @@ pub fn prepare_publish_domain_event(
             spec.payload.len()
         )));
     }
-    if spec.event_type.trim().is_empty() || spec.dedup_key.trim().is_empty() {
+    spec.queue_name = queue_name_or_bus(&spec.queue_name).to_string();
+    if !is_valid_queue_name(&spec.queue_name) {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "domain event type and dedup_key are required"
+            "queue name `{}` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars",
+            spec.queue_name
+        )));
+    }
+    spec.content_type = if spec.content_type.trim().is_empty() {
+        QUEUE_CONTENT_TYPE_JSON.to_string()
+    } else {
+        spec.content_type.trim().to_string()
+    };
+    if !matches!(
+        spec.content_type.as_str(),
+        QUEUE_CONTENT_TYPE_JSON | QUEUE_CONTENT_TYPE_TEXT | QUEUE_CONTENT_TYPE_BYTES
+    ) {
+        return Err(LibraryError::Other(anyhow::anyhow!(
+            "queue message content type `{}` must be json, text, or bytes",
+            spec.content_type
+        )));
+    }
+    if spec.dedup_key.trim().is_empty() {
+        return Err(LibraryError::Other(anyhow::anyhow!(
+            "domain event dedup_key is required"
+        )));
+    }
+    if spec.queue_name == CORE_EVENTS_QUEUE {
+        if spec.event_type.trim().is_empty() {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "domain event type is required on the event bus"
+            )));
+        }
+        if spec.content_type != QUEUE_CONTENT_TYPE_JSON {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "domain events on the event bus must be JSON"
+            )));
+        }
+    } else if !spec.event_type.trim().is_empty() {
+        return Err(LibraryError::Other(anyhow::anyhow!(
+            "queue message on `{}` must not carry an event type",
+            spec.queue_name
         )));
     }
     validate_event_source(&spec.source)?;
@@ -2035,6 +2190,7 @@ pub(crate) fn book_acquired_spec(
         dedup_key: format!("book_acquired:{}", book.uuid),
         payload: serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()),
         ordering_key: book.uuid.clone(),
+        ..PublishDomainEventSpec::default()
     }
 }
 
@@ -2088,6 +2244,7 @@ pub(crate) async fn publish_domain_event_on<C: ConnectionTrait>(
     }
     let spec = prepare_publish_domain_event(spec)?;
     if let Some(existing) = domain_events::Entity::find()
+        .filter(domain_events::Column::QueueName.eq(&spec.queue_name))
         .filter(domain_events::Column::AccountId.eq(&spec.account_id))
         .filter(domain_events::Column::Source.eq(&spec.source))
         .filter(domain_events::Column::EventType.eq(&spec.event_type))
@@ -2101,11 +2258,13 @@ pub(crate) async fn publish_domain_event_on<C: ConnectionTrait>(
         });
     }
     let now = now_str();
+    let deliver_after = deliver_after_for(&spec, &now);
     let id = spec.id;
     let event_type = spec.event_type.clone();
     let dedup_key = spec.dedup_key.clone();
     let account_id = spec.account_id.clone();
     let source = spec.source.clone();
+    let queue_name = spec.queue_name.clone();
     let model = domain_events::ActiveModel {
         id: Set(id.clone()),
         event_type: Set(spec.event_type),
@@ -2126,11 +2285,15 @@ pub(crate) async fn publish_domain_event_on<C: ConnectionTrait>(
         wake_cursor_at: Set(String::new()),
         wake_cursor_id: Set(String::new()),
         dispatch_snapshot_json: Set(String::new()),
+        queue_name: Set(spec.queue_name),
+        content_type: Set(spec.content_type),
+        deliver_after: Set(deliver_after),
     };
     match model.insert(db).await {
         Ok(_) => Ok(PublishDomainEventOutcome::Created { id }),
         Err(err) if is_unique_violation(&err) => {
             if let Some(existing) = domain_events::Entity::find()
+                .filter(domain_events::Column::QueueName.eq(queue_name))
                 .filter(domain_events::Column::AccountId.eq(account_id))
                 .filter(domain_events::Column::Source.eq(source))
                 .filter(domain_events::Column::EventType.eq(event_type))
@@ -2330,6 +2493,11 @@ where
     let now = now_str();
     let first_dispatch = event.dispatch_state == STATE_PENDING;
     let created_at = parse_dt(&event.created_at);
+    let run_after = if event.deliver_after.is_empty() || event.deliver_after <= now {
+        now.clone()
+    } else {
+        event.deliver_after.clone()
+    };
     let mut created = 0u32;
     for sub in subscribers {
         if sub.plugin_id.trim().is_empty() {
@@ -2352,11 +2520,11 @@ where
             idempotency_key: Set(idempotency_key),
             state: Set(STATE_PENDING.into()),
             attempt_count: Set(0),
-            max_attempts: Set(EVENT_DELIVERY_MAX_ATTEMPTS),
+            max_attempts: Set(sub.max_attempts_or_default()),
             lease_owner: NotSet,
             lease_expires_at: NotSet,
             lease_generation: Set(0),
-            run_after: Set(now.clone()),
+            run_after: Set(run_after.clone()),
             invocation_sequence: Set(0),
             resume_pending: Set(0),
             checkpoint_json: NotSet,
@@ -2371,6 +2539,7 @@ where
             wake_event_type: Set(String::new()),
             wake_filter_json: Set(String::new()),
             wake_grants_json: Set(String::new()),
+            queue_name: Set(event.queue_name.clone()),
         };
         match model.insert(db).await {
             Ok(_) => created += 1,
@@ -2623,7 +2792,13 @@ async fn plugin_in_flight_at_cap<C: ConnectionTrait>(
     Ok(n >= u64::from(max_in_flight))
 }
 
-/// Empty is allowed; otherwise the same grammar as a plugin id.
+/// Longest `source` the outbox accepts (a canonical PluginKey can carry a
+/// `file://` URL).
+const MAX_EVENT_SOURCE_LEN: usize = 512;
+
+/// Empty is allowed; otherwise a plugin alias (`[a-z0-9_]`) or a canonical
+/// PluginKey (`registry:…#pkg`, `platform:…/pkg`, `path:file://…`): printable
+/// ASCII without whitespace, at most [`MAX_EVENT_SOURCE_LEN`] characters.
 fn validate_event_source(source: &str) -> Result<()> {
     if source.is_empty() {
         return Ok(());
@@ -2633,22 +2808,17 @@ fn validate_event_source(source: &str) -> Result<()> {
             "event source `{source}` must not have leading or trailing whitespace"
         )));
     }
-    if source.len() < 2 || source.len() > 32 {
+    if source.len() < 2 || source.len() > MAX_EVENT_SOURCE_LEN {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "event source `{source}` must be 2–32 characters"
+            "event source `{source}` must be 2–{MAX_EVENT_SOURCE_LEN} characters"
         )));
     }
     if !source
         .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        .all(|c| c.is_ascii_graphic() && c != '\'' && c != '"' && c != '\\')
     {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "event source `{source}` must be lowercase ascii letters, digits, or `_`"
-        )));
-    }
-    if source.starts_with('_') || source.ends_with('_') || source.contains("__") {
-        return Err(LibraryError::Other(anyhow::anyhow!(
-            "event source `{source}` must not start/end with `_` or contain `__`"
+            "event source `{source}` must be printable ASCII without whitespace or quotes"
         )));
     }
     Ok(())
@@ -2684,7 +2854,28 @@ fn map_event(m: domain_events::Model) -> Result<DomainEventRecord> {
         dispatch_state: m.dispatch_state,
         created_at: parse_dt(&m.created_at),
         wake_pending: m.wake_pending != 0,
+        queue_name: queue_name_or_bus(&m.queue_name).to_string(),
+        content_type: if m.content_type.is_empty() {
+            QUEUE_CONTENT_TYPE_JSON.into()
+        } else {
+            m.content_type
+        },
+        deliver_after: if m.deliver_after.is_empty() {
+            None
+        } else {
+            Some(parse_dt(&m.deliver_after))
+        },
     })
+}
+
+/// RFC 3339 earliest delivery time for `spec`; empty when it may deliver now.
+pub fn deliver_after_for(spec: &PublishDomainEventSpec, now: &str) -> String {
+    if spec.delay_seconds == 0 {
+        return String::new();
+    }
+    chrono::DateTime::parse_from_rfc3339(now)
+        .map(|dt| (dt + Duration::seconds(i64::from(spec.delay_seconds))).to_rfc3339())
+        .unwrap_or_default()
 }
 
 fn map_delivery(m: event_deliveries::Model) -> Result<EventDeliveryRecord> {
@@ -2718,6 +2909,7 @@ fn map_delivery(m: event_deliveries::Model) -> Result<EventDeliveryRecord> {
         wake_event_type: m.wake_event_type,
         wake_filter_json: m.wake_filter_json,
         wake_grants_json: m.wake_grants_json,
+        queue_name: queue_name_or_bus(&m.queue_name).to_string(),
     })
 }
 

@@ -185,6 +185,8 @@ fn validate_publish_domain_event(op: &DbAtomicParams) -> std::result::Result<(),
         event_type,
         dedup_key,
         payload,
+        queue_name,
+        content_type,
         ..
     } = op
     else {
@@ -197,10 +199,29 @@ fn validate_publish_domain_event(op: &DbAtomicParams) -> std::result::Result<(),
             payload.len()
         )));
     }
-    if event_type.trim().is_empty() || dedup_key.trim().is_empty() {
+    if dedup_key.trim().is_empty() {
+        return Err(DbErr::Custom("domain event dedup_key is required".into()));
+    }
+    let queue = crate::models::queue_name_or_bus(queue_name);
+    if !crate::models::is_valid_queue_name(queue) {
+        return Err(DbErr::Custom(format!("queue name `{queue}` is invalid")));
+    }
+    let on_bus = queue == crate::models::CORE_EVENTS_QUEUE;
+    if on_bus && event_type.trim().is_empty() {
         return Err(DbErr::Custom(
-            "domain event type and dedup_key are required".into(),
+            "domain event type is required on the event bus".into(),
         ));
+    }
+    if !on_bus && !event_type.trim().is_empty() {
+        return Err(DbErr::Custom(
+            "queue message must not carry an event type".into(),
+        ));
+    }
+    let content = content_type.trim();
+    if !content.is_empty() && !matches!(content, "json" | "text" | "bytes") {
+        return Err(DbErr::Custom(format!(
+            "queue message content type `{content}` must be json, text, or bytes"
+        )));
     }
     Ok(())
 }
@@ -350,6 +371,9 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
             dedup_key,
             payload,
             ordering_key,
+            queue_name,
+            content_type,
+            deliver_after,
         } => {
             let minted = if id.trim().is_empty() {
                 uuid::Uuid::new_v4().to_string()
@@ -357,16 +381,25 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
                 id.trim().to_string()
             };
             plan_publish_domain_event(
-                &minted,
-                event_type,
-                *schema_version,
-                account_id,
-                source,
-                correlation_id,
-                causation_id,
-                dedup_key,
-                payload,
-                ordering_key,
+                &PublishRow {
+                    id: &minted,
+                    event_type,
+                    schema_version: *schema_version,
+                    account_id,
+                    source,
+                    correlation_id,
+                    causation_id,
+                    dedup_key,
+                    payload,
+                    ordering_key,
+                    queue_name: crate::models::queue_name_or_bus(queue_name),
+                    content_type: if content_type.trim().is_empty() {
+                        "json"
+                    } else {
+                        content_type.trim()
+                    },
+                    deliver_after,
+                },
                 now,
             )
         }
@@ -1031,7 +1064,8 @@ fn event_delivery_json_object_tail() -> &'static str {
         'resource_class', COALESCE(resource_class, 'network'), \
         'wake_event_type', COALESCE(wake_event_type, ''), \
         'wake_filter_json', COALESCE(wake_filter_json, ''), \
-        'wake_grants_json', COALESCE(wake_grants_json, '')\
+        'wake_grants_json', COALESCE(wake_grants_json, ''), \
+        'queue_name', COALESCE(queue_name, 'core.events')\
      )"
 }
 
@@ -2162,76 +2196,99 @@ fn plan_reserve_job_temp(
     }
 }
 
-/// Insert a domain event unless `(account_id, source, event_type, dedup_key)` already exists.
-#[allow(clippy::too_many_arguments)]
-fn plan_publish_domain_event(
-    id: &str,
-    event_type: &str,
+/// One outbox row to insert through [`plan_publish_domain_event`].
+struct PublishRow<'a> {
+    /// Minted event id.
+    id: &'a str,
+    /// Event type (empty on plugin-owned queues).
+    event_type: &'a str,
+    /// Payload schema version.
     schema_version: i64,
-    account_id: &str,
-    source: &str,
-    correlation_id: &str,
-    causation_id: &str,
-    dedup_key: &str,
-    payload: &str,
-    ordering_key: &str,
-    now: &str,
-) -> AtomicPlan {
+    /// Tenant / account id.
+    account_id: &'a str,
+    /// Producer id.
+    source: &'a str,
+    /// Trace correlation id.
+    correlation_id: &'a str,
+    /// Causing id.
+    causation_id: &'a str,
+    /// Producer idempotency key.
+    dedup_key: &'a str,
+    /// Encoded payload.
+    payload: &'a str,
+    /// FIFO key.
+    ordering_key: &'a str,
+    /// Resolved queue name.
+    queue_name: &'a str,
+    /// Resolved content type.
+    content_type: &'a str,
+    /// RFC 3339 earliest delivery time, or empty.
+    deliver_after: &'a str,
+}
+
+/// Insert a domain event unless `(queue_name, account_id, source, event_type,
+/// dedup_key)` already exists.
+fn plan_publish_domain_event(row: &PublishRow<'_>, now: &str) -> AtomicPlan {
+    let dedup_binds = || {
+        vec![
+            j_str(row.queue_name),
+            j_str(row.account_id),
+            j_str(row.source),
+            j_str(row.event_type),
+            j_str(row.dedup_key),
+        ]
+    };
+    let mut insert_binds = vec![
+        j_str(row.id),
+        j_str(row.event_type),
+        j_i64(row.schema_version.max(1)),
+        j_str(now),
+        j_str(row.account_id),
+        j_str(row.source),
+        j_str(row.correlation_id),
+        j_str(row.causation_id),
+        j_str(row.dedup_key),
+        j_str(row.payload),
+        j_str(row.ordering_key),
+        j_str(now),
+        j_str(row.queue_name),
+        j_str(row.content_type),
+        j_str(row.deliver_after),
+    ];
+    insert_binds.extend(dedup_binds());
+    let mut status_binds = vec![j_str(row.id)];
+    status_binds.extend(dedup_binds());
     AtomicPlan {
         statements: vec![
             sql(
                 "INSERT INTO domain_events (\
                     id, event_type, schema_version, occurred_at, account_id, source, \
                     correlation_id, causation_id, dedup_key, payload, ordering_key, \
-                    dispatch_state, created_at, wake_pending\
-                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
+                    dispatch_state, created_at, wake_pending, queue_name, content_type, \
+                    deliver_after\
+                 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1, ?, ?, ? \
                  WHERE NOT EXISTS (\
                     SELECT 1 FROM domain_events \
-                    WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?\
+                    WHERE queue_name = ? AND account_id = ? AND source = ? \
+                      AND event_type = ? AND dedup_key = ?\
                  )",
-                vec![
-                    j_str(id),
-                    j_str(event_type),
-                    j_i64(schema_version.max(1)),
-                    j_str(now),
-                    j_str(account_id),
-                    j_str(source),
-                    j_str(correlation_id),
-                    j_str(causation_id),
-                    j_str(dedup_key),
-                    j_str(payload),
-                    j_str(ordering_key),
-                    j_str(now),
-                    j_str(account_id),
-                    j_str(source),
-                    j_str(event_type),
-                    j_str(dedup_key),
-                ],
+                insert_binds,
             ),
             sql(
                 "SELECT CASE \
                     WHEN EXISTS (SELECT 1 FROM domain_events WHERE id = ?) THEN 'ok' \
                     WHEN EXISTS (SELECT 1 FROM domain_events \
-                         WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?) \
+                         WHERE queue_name = ? AND account_id = ? AND source = ? \
+                           AND event_type = ? AND dedup_key = ?) \
                          THEN 'duplicate' \
                     ELSE 'notFound' END AS status",
-                vec![
-                    j_str(id),
-                    j_str(account_id),
-                    j_str(source),
-                    j_str(event_type),
-                    j_str(dedup_key),
-                ],
+                status_binds,
             ),
             sql(
                 "SELECT json_object('id', id) AS payload FROM domain_events \
-                 WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ? LIMIT 1",
-                vec![
-                    j_str(account_id),
-                    j_str(source),
-                    j_str(event_type),
-                    j_str(dedup_key),
-                ],
+                 WHERE queue_name = ? AND account_id = ? AND source = ? \
+                   AND event_type = ? AND dedup_key = ? LIMIT 1",
+                dedup_binds(),
             ),
         ],
         outcome_index: 1,
@@ -2283,7 +2340,8 @@ fn plan_set_acquire_status(
                  ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
                  WHERE ? != '' AND NOT EXISTS (\
                     SELECT 1 FROM domain_events \
-                    WHERE account_id = ? AND source = ? AND event_type = ? AND dedup_key = ?\
+                    WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
+                      AND event_type = ? AND dedup_key = ?\
                  ) AND EXISTS (SELECT 1 FROM books WHERE uuid = ?)",
                 vec![
                     j_str(event_id),
@@ -2349,6 +2407,12 @@ fn plan_dispatch_event_deliveries(
         if resource != "network" {
             continue;
         }
+        let max_attempts = sub
+            .get("maxAttempts")
+            .or_else(|| sub.get("max_attempts"))
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(crate::models::EVENT_DELIVERY_MAX_ATTEMPTS)
+            .max(1);
         let delivery_id = format!("{event_id}:{plugin_id}");
         page_plugins.push(plugin_id.to_string());
         statements.push(sql(
@@ -2357,10 +2421,13 @@ fn plan_dispatch_event_deliveries(
                 lease_owner, lease_expires_at, lease_generation, run_after, invocation_sequence, \
                 resume_pending, checkpoint_json, checkpoint_schema_version, ordering_key, \
                 outcome, error_message, created_at, updated_at, cancel_requested, resource_class, \
-                wake_event_type, wake_filter_json, wake_grants_json\
-             ) SELECT ?, ?, ?, ?, 'pending', 0, 8, NULL, NULL, 0, ?, 0, 0, NULL, 0, \
+                wake_event_type, wake_filter_json, wake_grants_json, queue_name\
+             ) SELECT ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, 0, \
+                MAX(?, COALESCE((SELECT deliver_after FROM domain_events WHERE id = ?), '')), \
+                0, 0, NULL, 0, \
                 COALESCE((SELECT ordering_key FROM domain_events WHERE id = ?), ''), \
-                NULL, NULL, ?, ?, 0, 'network', '', '', '' \
+                NULL, NULL, ?, ?, 0, 'network', '', '', '', \
+                COALESCE((SELECT queue_name FROM domain_events WHERE id = ?), 'core.events') \
              WHERE EXISTS (SELECT 1 FROM domain_events WHERE id = ?) \
              RETURNING id",
             vec![
@@ -2368,10 +2435,13 @@ fn plan_dispatch_event_deliveries(
                 j_str(event_id),
                 j_str(plugin_id),
                 j_str(&delivery_id),
+                j_i64(max_attempts),
                 j_str(now),
+                j_str(event_id),
                 j_str(event_id),
                 j_str(now),
                 j_str(now),
+                j_str(event_id),
                 j_str(event_id),
             ],
         ));
@@ -3231,6 +3301,9 @@ mod tests {
                 dedup_key: "book_acquired:hash".into(),
                 payload: "{}".into(),
                 ordering_key: String::new(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-hash-pub",
         );
@@ -4094,6 +4167,9 @@ mod tests {
                 dedup_key: "b64:YWJj".into(),
                 payload: "{}".into(),
                 ordering_key: String::new(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-b64-text",
         );
@@ -4245,6 +4321,9 @@ mod tests {
                 dedup_key: "book_acquired:u1".into(),
                 payload: r#"{"titleId":"u1"}"#.into(),
                 ordering_key: "u1".into(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-pub",
         );
@@ -4334,6 +4413,9 @@ mod tests {
                 dedup_key: "book_acquired:ns".into(),
                 payload: "{}".into(),
                 ordering_key: String::new(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-ns-a",
         );
@@ -4353,6 +4435,9 @@ mod tests {
                 dedup_key: "book_acquired:ns".into(),
                 payload: "{}".into(),
                 ordering_key: String::new(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-ns-b",
         );
@@ -4372,6 +4457,9 @@ mod tests {
                 dedup_key: "book_acquired:ns".into(),
                 payload: "{}".into(),
                 ordering_key: String::new(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-ns-src",
         );
@@ -4395,6 +4483,9 @@ mod tests {
                 dedup_key: "book_acquired:ns".into(),
                 payload: "{}".into(),
                 ordering_key: String::new(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-ns-dup",
         );
@@ -4425,6 +4516,9 @@ mod tests {
                 dedup_key: "book_acquired:late".into(),
                 payload: r#"{"titleId":"late"}"#.into(),
                 ordering_key: "late".into(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-late-pub",
         );
@@ -4497,6 +4591,9 @@ mod tests {
                     dedup_key: format!("book_acquired:{key}"),
                     payload: "{}".into(),
                     ordering_key: key.into(),
+                    queue_name: String::new(),
+                    content_type: String::new(),
+                    deliver_after: String::new(),
                 },
                 &format!("{id}-pub"),
             );
@@ -4644,6 +4741,9 @@ mod tests {
                 dedup_key: "book_acquired:mint".into(),
                 payload: r#"{"titleId":"mint"}"#.into(),
                 ordering_key: "mint".into(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-mint",
         );
@@ -4673,6 +4773,9 @@ mod tests {
                 dedup_key: "book_acquired:huge".into(),
                 payload: "x".repeat(65_537),
                 ordering_key: "huge".into(),
+                queue_name: String::new(),
+                content_type: String::new(),
+                deliver_after: String::new(),
             },
             "evt-huge",
         );
