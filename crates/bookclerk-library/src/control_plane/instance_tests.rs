@@ -902,17 +902,14 @@ fn bookclerk_library_events(retention: u64) -> EventsSettingsV1 {
 }
 
 #[test]
-fn node_queue_names_stay_valid_for_any_node_id() {
+fn node_ids_are_queue_name_suffixes() {
     let uuid = "3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b";
     assert_eq!(node_queue_name(uuid), format!("node.{uuid}"));
-    assert_eq!(node_queue_name("Node-A"), "node.node-a");
-    let odd = node_queue_name("a node/with spaces");
-    assert!(odd.starts_with("node.h-"), "{odd}");
-    assert!(crate::is_valid_queue_name(&odd), "{odd}");
-    assert_eq!(odd, node_queue_name("a node/with spaces"), "stable");
-    assert!(crate::is_valid_queue_name(&node_queue_name(
-        &"x".repeat(128)
-    )));
+    assert!(super::is_valid_node_id(uuid));
+    assert!(super::is_valid_node_id("node-b"));
+    for bad in ["", "Node-A", "a node/with spaces", &"x".repeat(59)] {
+        assert!(!super::is_valid_node_id(bad), "{bad}");
+    }
     assert_eq!(node_consumer_id(uuid), format!("node:{uuid}"));
     assert!(is_node_consumer_id(&node_consumer_id(uuid)));
     assert!(!is_node_consumer_id("path:file:///tmp/a#echo"));

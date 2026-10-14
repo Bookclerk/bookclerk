@@ -56,7 +56,7 @@ pub use instances::{
     list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
 };
 pub use node_queue::{
-    is_node_consumer_id, node_consumer_id, node_queue_name, publish_node_message,
+    is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
     publish_to_all_nodes, NodeMessage, NODE_CONSUMER_PREFIX,
 };
 pub use node_status::{

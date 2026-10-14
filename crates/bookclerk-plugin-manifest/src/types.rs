@@ -979,6 +979,10 @@ impl PluginManifest {
 
     /// Validates every `[[kv_namespaces]]` row: namespace grammar and limits
     /// within the ABI caps.
+    ///
+    /// # Errors
+    ///
+    /// Names the first row with a malformed namespace or an out-of-range limit.
     fn validate_kv_namespaces(&self) -> Result<()> {
         for (i, row) in self.kv_namespaces.iter().enumerate() {
             let namespace = row.namespace_name();
@@ -1006,6 +1010,10 @@ impl PluginManifest {
     /// Validates `[queues]`: queue-name grammar, reserved prefixes, one
     /// consumer per queue, bounded batch / retry knobs, and a dead-letter
     /// queue that is a different, unreserved queue.
+    ///
+    /// # Errors
+    ///
+    /// Names the first producer or consumer row that breaks one of those rules.
     fn validate_queues(&self) -> Result<()> {
         for (i, producer) in self.queues.producers.iter().enumerate() {
             validate_queue_name(&format!("queues.producers[{i}].queue"), &producer.queue)?;
@@ -1758,6 +1766,10 @@ impl PluginManifest {
 }
 
 /// Rejects an invalid or host-reserved queue name at `field`.
+///
+/// # Errors
+///
+/// When `name` breaks the queue grammar or uses a reserved prefix.
 fn validate_queue_name(field: &str, name: &str) -> Result<()> {
     if !is_valid_queue_name(name) {
         return Err(Error::message(format!(
