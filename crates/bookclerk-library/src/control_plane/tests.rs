@@ -1354,3 +1354,154 @@ async fn postgres_two_pools_observe_one_instance_document() {
     assert_eq!(on_a.config, on_b.config);
     assert_eq!(on_a.config_revision, from_a.revision);
 }
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_kv_and_host_queues_cross_two_pools() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let _guard = master_key_test_lock_async().await;
+    let (store_a, store_b) = postgres_stores().await;
+    let files_a = tempdir().unwrap();
+    let files_b = tempdir().unwrap();
+    let session_a = bootstrap_pair(&store_a, files_a.path()).await;
+    std::fs::copy(
+        master_key_path(files_a.path()),
+        master_key_path(files_b.path()),
+    )
+    .unwrap();
+    let session_b = bootstrap_pair(&store_b, files_b.path()).await;
+
+    // KV: a cursor written through one pool reads back through the other,
+    // limits and lazy expiry hold on Postgres too.
+    let plugin = "path:file:///tmp/pg-kv#kv";
+    let spec = |value: &[u8]| crate::KvWriteSpec {
+        value: value.to_vec(),
+        metadata: r#"{"page":1}"#.into(),
+        expires_at: None,
+        max_value_bytes: 64,
+        max_keys: 2,
+    };
+    assert_eq!(
+        store_a
+            .kv_put(plugin, "sync.cursors", "acct-1", spec(b"page-1"))
+            .await
+            .unwrap(),
+        crate::KvPutOutcome::Written
+    );
+    store_a
+        .kv_put(plugin, "sync.cursors", "acct-1", spec(b"page-2"))
+        .await
+        .unwrap();
+    let entry = store_b
+        .kv_get(plugin, "sync.cursors", "acct-1")
+        .await
+        .unwrap()
+        .expect("cursor follows the instance");
+    assert_eq!(entry.value, b"page-2");
+    assert_eq!(entry.metadata, r#"{"page":1}"#);
+    store_b
+        .kv_put(plugin, "sync.cursors", "acct-2", spec(b"x"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store_a
+            .kv_put(plugin, "sync.cursors", "acct-3", spec(b"x"))
+            .await
+            .unwrap(),
+        crate::KvPutOutcome::KeyLimitReached { max: 2 }
+    );
+    let page = store_b
+        .kv_list(plugin, "sync.cursors", "acct-", "", 1)
+        .await
+        .unwrap();
+    assert_eq!(page.keys.len(), 1);
+    assert!(!page.list_complete);
+    let rest = store_a
+        .kv_list(plugin, "sync.cursors", "acct-", &page.cursor, 10)
+        .await
+        .unwrap();
+    assert_eq!(rest.keys[0].key, "acct-2");
+    store_a
+        .kv_put(
+            plugin,
+            "sync.cursors",
+            "acct-2",
+            crate::KvWriteSpec {
+                expires_at: Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                ..spec(b"stale")
+            },
+        )
+        .await
+        .unwrap();
+    assert!(store_b
+        .kv_get(plugin, "sync.cursors", "acct-2")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(store_b.kv_count(plugin, "sync.cursors").await.unwrap(), 1);
+    assert_eq!(store_a.kv_prune_expired().await.unwrap(), 1);
+
+    // Host queues: a deployment written through pool A for host B lands on
+    // `host.<B>`; a configuration write reaches both registered hosts.
+    let instance = create_plugin_instance(
+        &store_a,
+        &ConfigActor::Operator {
+            id: "operator".into(),
+        },
+        "platform:bookclerk/pg-host-queue",
+        "",
+    )
+    .await
+    .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store_a,
+        &ConfigActor::Operator {
+            id: "operator".into(),
+        },
+        &instance.id,
+        &session_b.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
+    let on_b = store_b
+        .list_domain_events_for_queue(&host_queue_name(&session_b.host.host_id), 10)
+        .await
+        .unwrap();
+    assert_eq!(on_b.len(), 1);
+    let message: HostMessage = serde_json::from_str(&on_b[0].payload).unwrap();
+    assert_eq!(
+        message,
+        HostMessage::DeploymentChanged {
+            deployment_id: deployment.deployment_id.clone(),
+            plugin_instance_id: instance.id.as_str().to_string(),
+            desired: DESIRED_PRESENT.into(),
+            revision: 1,
+        }
+    );
+    let applied = replace_events(
+        &store_b,
+        &ConfigActor::Operator {
+            id: "operator".into(),
+        },
+        session_a.events.revision,
+        &events(11),
+        "pg-host-queue-events",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(applied, EventsReplace::Applied(_)), "{applied:?}");
+    for host in [&session_a.host.host_id, &session_b.host.host_id] {
+        let rows = store_a
+            .list_domain_events_for_queue(&host_queue_name(host), 10)
+            .await
+            .unwrap();
+        assert!(
+            rows.iter()
+                .any(|row| row.payload.contains("configuration.changed")),
+            "host {host} was woken"
+        );
+    }
+}

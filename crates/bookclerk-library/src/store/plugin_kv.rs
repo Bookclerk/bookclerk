@@ -1,8 +1,9 @@
 //! Durable per-plugin key/value storage (`plugin_kv`) behind the
 //! `[[kv_namespaces]]` binding.
 //!
-//! One row per `(plugin_key, namespace, key)`. Values are stored as base64
-//! text so every backend (SQLite, PostgreSQL, D1) carries them identically;
+//! One row per `(plugin_key, namespace, key)`, written through the SeaORM
+//! entity so every backend (SQLite, PostgreSQL, D1, the adapter proxy) gets
+//! its own statement shape. Values are stored as base64 text;
 //! expiry is lazy: an expired row reads as absent and is removed by the next
 //! write to the same key or by [`LibraryStore::kv_prune_expired`]. Limits
 //! (`max_value_bytes`, `max_keys`) come from the manifest row and are
@@ -12,7 +13,14 @@
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{
+    ActiveValue::Set, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect,
+};
+
 use super::{now_str, LibraryStore};
+use crate::entities::plugin_kv;
 use crate::error::{LibraryError, Result};
 
 /// Default page size for [`LibraryStore::kv_list`] when the caller passes 0.
@@ -88,26 +96,28 @@ impl LibraryStore {
         namespace: &str,
         key: &str,
     ) -> Result<Option<KvEntry>> {
-        let rows = bookclerk_db_exec::query_canonical(
-            self.db(),
-            "SELECT key, value, metadata, expires_at FROM plugin_kv \
-             WHERE plugin_key = ? AND namespace = ? AND key = ?",
-            [plugin_key.into(), namespace.into(), key.into()],
-        )
+        let row = plugin_kv::Entity::find_by_id((
+            plugin_key.to_string(),
+            namespace.to_string(),
+            key.to_string(),
+        ))
+        .one(self.db())
         .await
         .map_err(LibraryError::Orm)?;
         let now = Utc::now();
-        rows.first()
-            .map(row_to_entry)
-            .transpose()?
-            .filter(|entry| is_live(entry.expires_at, now))
-            .map_or(Ok(None), |entry| Ok(Some(entry)))
+        match row {
+            Some(row) => {
+                let entry = row_to_entry(row)?;
+                Ok(is_live(entry.expires_at, now).then_some(entry))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Writes one key, replacing any previous value, metadata, and expiry.
     ///
     /// Enforces `spec.max_value_bytes` and `spec.max_keys` (expired rows do
-    /// not count and the first expired row is reclaimed to make room).
+    /// not count and are reclaimed to make room).
     ///
     /// # Errors
     ///
@@ -129,37 +139,41 @@ impl LibraryStore {
         if !exists {
             let live = self.kv_count(plugin_key, namespace).await?;
             if live >= u64::from(spec.max_keys) {
-                // Reclaim expired rows before refusing: the count above only
-                // saw live keys, so a stale row may still hold the slot.
-                let pruned = self.kv_prune_expired_in(plugin_key, namespace).await?;
-                if pruned == 0 {
+                // The count only saw live keys; reclaim stale rows before
+                // refusing so an expired key never holds a slot.
+                self.kv_prune_expired_in(plugin_key, namespace).await?;
+                if self.kv_count(plugin_key, namespace).await? >= u64::from(spec.max_keys) {
                     return Ok(KvPutOutcome::KeyLimitReached { max: spec.max_keys });
                 }
             }
         }
-        let value = base64::engine::general_purpose::STANDARD.encode(&spec.value);
-        let expires_at = spec.expires_at.map(|t| t.to_rfc3339()).unwrap_or_default();
-        let now = now_str();
-        bookclerk_db_exec::execute_canonical(
-            self.db(),
-            "INSERT INTO plugin_kv \
-             (plugin_key, namespace, key, value, metadata, expires_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT (plugin_key, namespace, key) DO UPDATE SET \
-             value = excluded.value, metadata = excluded.metadata, \
-             expires_at = excluded.expires_at, updated_at = excluded.updated_at",
-            [
-                plugin_key.into(),
-                namespace.into(),
-                key.into(),
-                value.into(),
-                spec.metadata.into(),
-                expires_at.into(),
-                now.into(),
-            ],
-        )
-        .await
-        .map_err(LibraryError::Orm)?;
+        let model = plugin_kv::ActiveModel {
+            plugin_key: Set(plugin_key.to_string()),
+            namespace: Set(namespace.to_string()),
+            key: Set(key.to_string()),
+            value: Set(base64::engine::general_purpose::STANDARD.encode(&spec.value)),
+            metadata: Set(spec.metadata),
+            expires_at: Set(spec.expires_at.map(|t| t.to_rfc3339()).unwrap_or_default()),
+            updated_at: Set(now_str()),
+        };
+        plugin_kv::Entity::insert(model)
+            .on_conflict(
+                OnConflict::columns([
+                    plugin_kv::Column::PluginKey,
+                    plugin_kv::Column::Namespace,
+                    plugin_kv::Column::Key,
+                ])
+                .update_columns([
+                    plugin_kv::Column::Value,
+                    plugin_kv::Column::Metadata,
+                    plugin_kv::Column::ExpiresAt,
+                    plugin_kv::Column::UpdatedAt,
+                ])
+                .to_owned(),
+            )
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
         Ok(KvPutOutcome::Written)
     }
 
@@ -170,13 +184,13 @@ impl LibraryStore {
     /// Returns an error when the delete fails.
     pub async fn kv_delete(&self, plugin_key: &str, namespace: &str, key: &str) -> Result<bool> {
         let existed = self.kv_get(plugin_key, namespace, key).await?.is_some();
-        bookclerk_db_exec::execute_canonical(
-            self.db(),
-            "DELETE FROM plugin_kv WHERE plugin_key = ? AND namespace = ? AND key = ?",
-            [plugin_key.into(), namespace.into(), key.into()],
-        )
-        .await
-        .map_err(LibraryError::Orm)?;
+        plugin_kv::Entity::delete_many()
+            .filter(plugin_kv::Column::PluginKey.eq(plugin_key))
+            .filter(plugin_kv::Column::Namespace.eq(namespace))
+            .filter(plugin_kv::Column::Key.eq(key))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
         Ok(existed)
     }
 
@@ -200,58 +214,40 @@ impl LibraryStore {
         } else {
             limit
         };
-        let after = decode_cursor(cursor)?;
+        let mut after = decode_cursor(cursor)?;
         let now = Utc::now();
         let mut keys = Vec::with_capacity(limit as usize);
-        let mut after = after;
         // Expired rows are skipped after the query, so page until the live
-        // keys fill the limit or the table runs out.
+        // keys fill the limit or the namespace runs out.
         loop {
-            let rows = bookclerk_db_exec::query_canonical(
-                self.db(),
-                "SELECT key, metadata, expires_at FROM plugin_kv \
-                 WHERE plugin_key = ? AND namespace = ? AND key > ? \
-                 ORDER BY key ASC LIMIT ?",
-                [
-                    plugin_key.into(),
-                    namespace.into(),
-                    after.clone().into(),
-                    i64::from(limit + 1).into(),
-                ],
-            )
-            .await
-            .map_err(LibraryError::Orm)?;
-            if rows.is_empty() {
-                return Ok(KvListPage {
-                    keys,
-                    list_complete: true,
-                    cursor: String::new(),
-                });
-            }
+            let rows = plugin_kv::Entity::find()
+                .filter(plugin_kv::Column::PluginKey.eq(plugin_key))
+                .filter(plugin_kv::Column::Namespace.eq(namespace))
+                .filter(plugin_kv::Column::Key.gt(after.clone()))
+                .order_by_asc(plugin_kv::Column::Key)
+                .limit(u64::from(limit) + 1)
+                .all(self.db())
+                .await
+                .map_err(LibraryError::Orm)?;
             let exhausted = rows.len() <= limit as usize;
-            for row in &rows {
-                let key: String = row.try_get("", "key").map_err(LibraryError::Orm)?;
-                after.clone_from(&key);
-                if !key.starts_with(prefix) {
-                    if key.as_str() > prefix && !prefix.is_empty() {
+            for row in rows {
+                after.clone_from(&row.key);
+                if !row.key.starts_with(prefix) {
+                    if !prefix.is_empty() && row.key.as_str() > prefix {
                         // Lexically past every key with the prefix.
-                        return Ok(KvListPage {
-                            keys,
-                            list_complete: true,
-                            cursor: String::new(),
-                        });
+                        return Ok(complete(keys));
                     }
                     continue;
                 }
-                let expires_at =
-                    parse_expiry(row.try_get("", "expires_at").map_err(LibraryError::Orm)?);
+                let expires_at = parse_expiry(&row.expires_at);
                 if !is_live(expires_at, now) {
                     continue;
                 }
+                let key = row.key;
                 keys.push(KvEntry {
                     key: key.clone(),
                     value: Vec::new(),
-                    metadata: row.try_get("", "metadata").map_err(LibraryError::Orm)?,
+                    metadata: row.metadata,
                     expires_at,
                 });
                 if keys.len() == limit as usize {
@@ -263,11 +259,7 @@ impl LibraryStore {
                 }
             }
             if exhausted {
-                return Ok(KvListPage {
-                    keys,
-                    list_complete: true,
-                    cursor: String::new(),
-                });
+                return Ok(complete(keys));
             }
         }
     }
@@ -279,21 +271,17 @@ impl LibraryStore {
     /// Returns an error when the query fails.
     pub async fn kv_count(&self, plugin_key: &str, namespace: &str) -> Result<u64> {
         let now = Utc::now().to_rfc3339();
-        let rows = bookclerk_db_exec::query_canonical(
-            self.db(),
-            "SELECT COUNT(*) AS n FROM plugin_kv \
-             WHERE plugin_key = ? AND namespace = ? AND (expires_at = '' OR expires_at > ?)",
-            [plugin_key.into(), namespace.into(), now.into()],
-        )
-        .await
-        .map_err(LibraryError::Orm)?;
-        let n: i64 = rows
-            .first()
-            .map(|row| row.try_get("", "n"))
-            .transpose()
-            .map_err(LibraryError::Orm)?
-            .unwrap_or(0);
-        Ok(u64::try_from(n).unwrap_or(0))
+        plugin_kv::Entity::find()
+            .filter(plugin_kv::Column::PluginKey.eq(plugin_key))
+            .filter(plugin_kv::Column::Namespace.eq(namespace))
+            .filter(
+                Condition::any()
+                    .add(plugin_kv::Column::ExpiresAt.eq(""))
+                    .add(plugin_kv::Column::ExpiresAt.gt(now)),
+            )
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)
     }
 
     /// Removes expired rows of one namespace. Returns the rows removed.
@@ -303,15 +291,15 @@ impl LibraryStore {
     /// Returns an error when the delete fails.
     pub async fn kv_prune_expired_in(&self, plugin_key: &str, namespace: &str) -> Result<u64> {
         let now = Utc::now().to_rfc3339();
-        let result = bookclerk_db_exec::execute_canonical(
-            self.db(),
-            "DELETE FROM plugin_kv WHERE plugin_key = ? AND namespace = ? \
-             AND expires_at <> '' AND expires_at <= ?",
-            [plugin_key.into(), namespace.into(), now.into()],
-        )
-        .await
-        .map_err(LibraryError::Orm)?;
-        Ok(result.rows_affected())
+        let result = plugin_kv::Entity::delete_many()
+            .filter(plugin_kv::Column::PluginKey.eq(plugin_key))
+            .filter(plugin_kv::Column::Namespace.eq(namespace))
+            .filter(plugin_kv::Column::ExpiresAt.ne(""))
+            .filter(plugin_kv::Column::ExpiresAt.lte(now))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(result.rows_affected)
     }
 
     /// Removes every expired row across all plugins and namespaces.
@@ -321,14 +309,13 @@ impl LibraryStore {
     /// Returns an error when the delete fails.
     pub async fn kv_prune_expired(&self) -> Result<u64> {
         let now = Utc::now().to_rfc3339();
-        let result = bookclerk_db_exec::execute_canonical(
-            self.db(),
-            "DELETE FROM plugin_kv WHERE expires_at <> '' AND expires_at <= ?",
-            [now.into()],
-        )
-        .await
-        .map_err(LibraryError::Orm)?;
-        Ok(result.rows_affected())
+        let result = plugin_kv::Entity::delete_many()
+            .filter(plugin_kv::Column::ExpiresAt.ne(""))
+            .filter(plugin_kv::Column::ExpiresAt.lte(now))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(result.rows_affected)
     }
 
     /// Removes every row of one plugin (retire / uninstall).
@@ -337,14 +324,21 @@ impl LibraryStore {
     ///
     /// Returns an error when the delete fails.
     pub async fn kv_delete_plugin(&self, plugin_key: &str) -> Result<u64> {
-        let result = bookclerk_db_exec::execute_canonical(
-            self.db(),
-            "DELETE FROM plugin_kv WHERE plugin_key = ?",
-            [plugin_key.into()],
-        )
-        .await
-        .map_err(LibraryError::Orm)?;
-        Ok(result.rows_affected())
+        let result = plugin_kv::Entity::delete_many()
+            .filter(plugin_kv::Column::PluginKey.eq(plugin_key))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(result.rows_affected)
+    }
+}
+
+/// The final page of a listing.
+fn complete(keys: Vec<KvEntry>) -> KvListPage {
+    KvListPage {
+        keys,
+        list_complete: true,
+        cursor: String::new(),
     }
 }
 
@@ -354,28 +348,27 @@ fn is_live(expires_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
 }
 
 /// Parses the stored expiry text; empty or malformed means never.
-fn parse_expiry(text: String) -> Option<DateTime<Utc>> {
+fn parse_expiry(text: &str) -> Option<DateTime<Utc>> {
     if text.is_empty() {
         return None;
     }
-    DateTime::parse_from_rfc3339(&text)
+    DateTime::parse_from_rfc3339(text)
         .ok()
         .map(|t| t.with_timezone(&Utc))
 }
 
 /// Maps one `plugin_kv` row onto a [`KvEntry`].
-fn row_to_entry(row: &sea_orm::QueryResult) -> Result<KvEntry> {
-    let value: String = row.try_get("", "value").map_err(LibraryError::Orm)?;
+fn row_to_entry(row: plugin_kv::Model) -> Result<KvEntry> {
     let value = base64::engine::general_purpose::STANDARD
-        .decode(value.as_bytes())
+        .decode(row.value.as_bytes())
         .map_err(|err| {
             LibraryError::Other(anyhow::anyhow!("plugin_kv value is not base64: {err}"))
         })?;
     Ok(KvEntry {
-        key: row.try_get("", "key").map_err(LibraryError::Orm)?,
+        expires_at: parse_expiry(&row.expires_at),
+        key: row.key,
         value,
-        metadata: row.try_get("", "metadata").map_err(LibraryError::Orm)?,
-        expires_at: parse_expiry(row.try_get("", "expires_at").map_err(LibraryError::Orm)?),
+        metadata: row.metadata,
     })
 }
 
