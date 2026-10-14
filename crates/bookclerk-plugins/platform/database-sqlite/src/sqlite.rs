@@ -35,7 +35,8 @@ const SLOW_SQL_WARN_MS: u128 = 250;
 /// commit, which under `cargo test --workspace` turns into `SQLITE_BUSY`.
 const BEGIN_BUSY_SLICE: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// How long [`SqliteProxy::begin`] keeps retrying file-lock contention.
+/// How long [`SqliteProxy::begin`] and `COMMIT` keep retrying file-lock
+/// contention.
 ///
 /// Attempts sleep on the async runtime so the peer transaction can be
 /// scheduled. This is the bounded busy contract for two connections on one file.
@@ -714,16 +715,36 @@ impl ProxyDatabaseTrait for SqliteProxy {
             self.release_lease_if_idle(depth);
             return;
         }
-        let depth = {
-            let mut state = self.lock_state();
-            if let Err(err) = state.commit() {
-                note_commit_failed(format_rusqlite_error(&err));
-                tracing::error!(error = %err, "sqlite commit failed");
-                if let Err(rb) = state.rollback() {
-                    tracing::error!(error = %rb, "sqlite rollback after commit failure");
+        // The rollback journal makes `COMMIT` wait for every reader on the
+        // file to finish. A busy `COMMIT` leaves the transaction open, so it
+        // is retried on the async runtime within the same budget as `BEGIN`.
+        // The lease still holds the gate, so no other task's statement can
+        // run on this connection in between.
+        let started = Instant::now();
+        let depth = loop {
+            let busy = {
+                let mut state = self.lock_state();
+                match state.commit() {
+                    Ok(()) => break state.txn_depth,
+                    Err(err)
+                        if is_sqlite_lock_contention(&err)
+                            && !state.conn.is_autocommit()
+                            && self.begin_may_retry(started) =>
+                    {
+                        err
+                    }
+                    Err(err) => {
+                        note_commit_failed(format_rusqlite_error(&err));
+                        tracing::error!(error = %err, "sqlite commit failed");
+                        if let Err(rb) = state.rollback() {
+                            tracing::error!(error = %rb, "sqlite rollback after commit failure");
+                        }
+                        break state.txn_depth;
+                    }
                 }
-            }
-            state.txn_depth
+            };
+            tracing::debug!(error = %busy, "sqlite commit waiting for readers");
+            tokio::time::sleep(self.begin_retry_pause()).await;
         };
         self.release_lease_if_idle(depth);
     }
@@ -1218,6 +1239,7 @@ mod tests {
             .unwrap_or_else(|err| err.into_inner()) = None;
         let _ = bookclerk_db_exec::take_txn_fault();
         deadline_stops_a_contended_begin().await;
+        commit_waits_for_a_reader_on_another_connection().await;
         queued_begin_cancel_on_a_saturated_pool_keeps_the_runtime_alive().await;
     }
 
@@ -1370,6 +1392,40 @@ mod tests {
         let _ = bookclerk_db_exec::take_txn_fault();
         held.commit().await.expect("release holder");
         commit_marker(&waiter, "after_deadline").await;
+    }
+
+    /// A rollback journal makes `COMMIT` wait for every reader on the file.
+    /// A reader that outlasts one busy slice must delay the commit, not fail it.
+    /// Runs inside the single `BEGIN` test so no armed pause can catch it.
+    async fn commit_waits_for_a_reader_on_another_connection() {
+        use sea_orm::{ConnectionTrait, TransactionTrait};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("commit.db");
+        let db = super::open(&path).await.expect("open");
+        commit_marker(&db, "seen").await;
+        let reader = rusqlite::Connection::open(&path).expect("reader");
+        reader
+            .execute_batch("BEGIN; SELECT COUNT(*) FROM seen;")
+            .expect("reader holds a shared lock");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            reader.execute_batch("COMMIT").expect("reader ends");
+        });
+        let txn = db.begin().await.expect("begin");
+        txn.execute_unprepared("INSERT INTO seen (id) VALUES (1)")
+            .await
+            .expect("insert");
+        txn.commit().await.expect("commit waits for the reader");
+        release.join().expect("reader thread");
+        let row = db
+            .query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DbBackend::Sqlite,
+                "SELECT COUNT(*) AS n FROM seen",
+            ))
+            .await
+            .expect("count")
+            .expect("row");
+        assert_eq!(row.try_get::<i64>("", "n").expect("n"), 1);
     }
 
     #[test]

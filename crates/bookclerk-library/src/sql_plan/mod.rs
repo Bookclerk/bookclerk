@@ -48,11 +48,13 @@ pub use vectors_typed::{
 /// Compiled typed request plus host result-selection indexes.
 #[derive(Debug, Clone)]
 pub struct CompiledAtomic {
-    /// Typed request executed by the guest.
+    /// Typed request executed by the guest. Its wire `request_hash` is empty;
+    /// [`authorize_typed_request`] stamps the canonical Cap'n digest.
     pub request: ExecuteRequest,
     /// Host indexes used to interpret the typed reply.
     pub selection: AtomicSelection,
-    /// SHA-256 hex compared on receipt replay.
+    /// Domain receipt hash (SHA-256 hex) bound into the receipt SQL and
+    /// compared on receipt replay. Never sent as the wire `request_hash`.
     pub expected_hash: String,
 }
 
@@ -216,7 +218,8 @@ pub fn authorize_typed_request(
         {
             return Err(crate::LibraryError::Other(anyhow::anyhow!(
                 "statement {i} RETURNING maxRows={} is not provable from the SQL shape \
-                 (only a single-tuple INSERT … VALUES … RETURNING proves maxRows=1)",
+                 (only a single-row INSERT … VALUES or table-free INSERT … SELECT \
+                 … RETURNING proves maxRows=1)",
                 stmt.max_rows
             )));
         }
