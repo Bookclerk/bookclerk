@@ -157,7 +157,9 @@ pub fn is_host_schema_version_marker(sql: &str) -> bool {
 /// Expands `[stmt, …, version_marker]` at the adapter execution edge.
 ///
 /// Each incoming string is already one canonical statement. Adapters lower
-/// per statement and may insert identity companions; they do not split SQL.
+/// DDL per statement and may insert identity companions; they do not split
+/// SQL. Non-DDL statements stay canonical so their host proofs still bind
+/// when the executor lowers them.
 /// # Errors
 ///
 /// Returns when Postgres cannot type a `CREATE INDEX` key that needs
@@ -216,7 +218,14 @@ pub fn expand_host_schema_batch_grouped_with(
     let mut groups: Vec<usize> = Vec::new();
     let mut env = base.cloned().unwrap_or_default();
     for stmt in &batch[..batch.len() - 1] {
-        let lowered = schema_sql_for_backend_with(backend, stmt, Some(&env))?.into_owned();
+        // Only DDL is lowered here. Data statements (slot locks, seeds) keep
+        // their canonical text so the wire proof stays bound to them; the
+        // executor lowers non-DDL with that proof like any other DML.
+        let lowered = if bookclerk_plugin_abi::statement_is_ddl(stmt) {
+            schema_sql_for_backend_with(backend, stmt, Some(&env))?.into_owned()
+        } else {
+            stmt.clone()
+        };
         env.merge(
             &bookclerk_plugin_abi::sql_type_env_from_canonical_statements(std::iter::once(
                 stmt.as_str(),
@@ -666,6 +675,29 @@ mod tests {
                 .is_none(),
             "already-expanded identity companions must not be packed again"
         );
+    }
+
+    /// A frozen step is `[slot lock DML, …ops, marker]`. Lowering the slot
+    /// lock here would unbind its wire proof when no companion changes the
+    /// statement count, so DML must stay canonical for the executor.
+    #[test]
+    fn expand_host_schema_batch_keeps_dml_canonical() {
+        let slot = "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) VALUES ('schema:x', 0)";
+        let batch = vec![
+            slot.to_string(),
+            "UPDATE bookclerk_slots SET bump = bump + 1 WHERE slot_key = 'schema:x'".to_string(),
+            "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)"
+                .to_string(),
+            "INSERT INTO bookclerk_schema_migrations (version) VALUES (1)".to_string(),
+        ];
+        let expanded = expand_host_schema_batch(DatabaseBackend::Postgres, &batch)
+            .expect("lower")
+            .expect("schema batch");
+        assert_eq!(expanded.len(), batch.len(), "{expanded:?}");
+        assert_eq!(expanded[0], batch[0]);
+        assert_eq!(expanded[1], batch[1]);
+        assert!(expanded[2].contains("BIGINT PRIMARY KEY"), "{expanded:?}");
+        assert_eq!(expanded[3], batch[3]);
     }
 
     #[test]
