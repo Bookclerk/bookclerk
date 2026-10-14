@@ -44,7 +44,8 @@ use crate::generated::{
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
 use crate::limits::{
-    ScalarLimits, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
+    ScalarLimits, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES,
+    MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
     MAX_STREAM_WINDOW_BYTES,
 };
@@ -56,20 +57,22 @@ use crate::plugin_capnp::{
     event_consumer as event_consumer_capnp, event_publisher as event_publisher_capnp,
     event_result as event_result_capnp, get_reply, guest_database as guest_database_capnp,
     handle_reply, head_reply, health_reply, job_invocation, job_outcome,
-    job_runner as job_runner_capnp, list_reply, object_metadata, oidc as oidc_capnp,
-    oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
-    plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
-    plugin_migrations_reply, plugin_worker, progress_sink, pull_reply, put_reply,
-    queue_consumer as queue_consumer_capnp, queue_producer as queue_producer_capnp,
-    remote_library as remote_library_capnp, source as source_capnp, write_options,
+    job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
+    object_metadata, oidc as oidc_capnp, oidc_client_template, oidc_clients_reply, open_reply,
+    plugin_cli as plugin_cli_capnp, plugin_describe, plugin_error, plugin_migration,
+    plugin_migration_op, plugin_migrations_ok, plugin_migrations_reply, plugin_worker,
+    progress_sink, pull_reply, put_reply, queue_consumer as queue_consumer_capnp,
+    queue_producer as queue_producer_capnp, remote_library as remote_library_capnp,
+    source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
 use crate::roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, NamedQueueBinding, NeverCancel, Oidc, PluginCli, PluginWorker,
-    ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, Source,
+    JobController, JobRunner, KvNamespace, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc,
+    PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
+    Source,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
@@ -1537,6 +1540,18 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
             });
         }
     }
+    let mut kv: Vec<NamedKvBinding> = Vec::new();
+    if b.has_kv() {
+        for entry in b.get_kv()?.iter() {
+            kv.push(NamedKvBinding {
+                name: entry.get_name()?.to_str()?.to_string(),
+                namespace: entry.get_namespace()?.to_str()?.to_string(),
+                kv: Box::new(KvNamespaceClient {
+                    client: entry.get_kv()?,
+                }),
+            });
+        }
+    }
     Ok(Bindings {
         config,
         secrets,
@@ -1546,6 +1561,7 @@ fn read_bindings(b: bindings::Reader<'_>, window: u32) -> capnp::Result<Bindings
         cancel,
         storage,
         queues,
+        kv,
     })
 }
 
@@ -2435,6 +2451,106 @@ impl queue_producer_capnp::Server for QueueProducerServer {
     }
 }
 
+/// Host-side server for a [`KvNamespace`] handed to a guest on
+/// `Bindings.kv`. Key, value, and metadata caps are enforced here before the
+/// host store sees the call; the store applies the namespace's own tighter
+/// `max_value_bytes` and key-count limits.
+struct KvNamespaceServer {
+    inner: Arc<dyn KvNamespace>,
+}
+
+/// Fails closed when a KV key is empty or longer than `maxKvKeyBytes`.
+fn check_kv_key(key: &str) -> Result<()> {
+    if key.is_empty() {
+        return Err(PluginError::invalid_params("kv key must not be empty"));
+    }
+    if key.len() > MAX_KV_KEY_BYTES as usize {
+        return Err(PluginError::payload_too_large(format!(
+            "kv key of {} bytes exceeds {MAX_KV_KEY_BYTES}",
+            key.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Fails closed when a KV value or its metadata exceeds the ABI caps.
+fn check_kv_put(value: &[u8], options: &crate::KvPutOptions) -> Result<()> {
+    if value.len() > MAX_KV_VALUE_BYTES as usize {
+        return Err(PluginError::payload_too_large(format!(
+            "kv value of {} bytes exceeds {MAX_KV_VALUE_BYTES}",
+            value.len()
+        )));
+    }
+    if options.metadata.len() > MAX_KV_METADATA_BYTES as usize {
+        return Err(PluginError::payload_too_large(format!(
+            "kv metadata of {} bytes exceeds {MAX_KV_METADATA_BYTES}",
+            options.metadata.len()
+        )));
+    }
+    Ok(())
+}
+
+impl kv_namespace_capnp::Server for KvNamespaceServer {
+    async fn get(
+        self: Rc<Self>,
+        params: kv_namespace_capnp::GetParams,
+        mut results: kv_namespace_capnp::GetResults,
+    ) -> capnp::Result<()> {
+        let key = params.get()?.get_key()?.to_str()?.to_string();
+        let outcome = match check_kv_key(&key) {
+            Err(err) => Err(err),
+            Ok(()) => self.inner.get(key).await,
+        };
+        crate::generated::write_kv_get_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn put(
+        self: Rc<Self>,
+        params: kv_namespace_capnp::PutParams,
+        mut results: kv_namespace_capnp::PutResults,
+    ) -> capnp::Result<()> {
+        let p = params.get()?;
+        let key = p.get_key()?.to_str()?.to_string();
+        let value = p.get_value()?.to_vec();
+        let options = crate::generated::read_kv_put_options(p.get_options()?)?;
+        let outcome = match check_kv_key(&key).and_then(|()| check_kv_put(&value, &options)) {
+            Err(err) => Err(err),
+            Ok(()) => self.inner.put(key, value, options).await,
+        };
+        crate::generated::write_kv_put_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn delete(
+        self: Rc<Self>,
+        params: kv_namespace_capnp::DeleteParams,
+        mut results: kv_namespace_capnp::DeleteResults,
+    ) -> capnp::Result<()> {
+        let key = params.get()?.get_key()?.to_str()?.to_string();
+        let outcome = match check_kv_key(&key) {
+            Err(err) => Err(err),
+            Ok(()) => self.inner.delete(key).await,
+        };
+        crate::generated::write_kv_delete_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn list(
+        self: Rc<Self>,
+        params: kv_namespace_capnp::ListParams,
+        mut results: kv_namespace_capnp::ListResults,
+    ) -> capnp::Result<()> {
+        let options = crate::generated::read_kv_list_options(params.get()?.get_options()?)?;
+        let outcome = if options.limit > MAX_LIST_PAGE {
+            Err(PluginError::invalid_params(format!(
+                "kv list limit of {} exceeds {MAX_LIST_PAGE}",
+                options.limit
+            )))
+        } else {
+            self.inner.list(options).await
+        };
+        crate::generated::write_kv_list_reply(results.get().init_result(), &outcome)
+    }
+}
+
 struct DatabaseServer {
     inner: Arc<dyn Database>,
 }
@@ -2846,6 +2962,8 @@ pub struct HostBindings {
     pub storage: Option<Arc<dyn Destination>>,
     /// Named `[[queues.producers]]` producers as `(binding, queue, producer)`.
     pub queues: Vec<(String, String, Arc<dyn QueueProducer>)>,
+    /// Named `[[kv_namespaces]]` namespaces as `(binding, namespace, kv)`.
+    pub kv: Vec<(String, String, Arc<dyn KvNamespace>)>,
 }
 
 impl HostBindings {
@@ -2859,6 +2977,7 @@ impl HostBindings {
             cancel: Arc::new(NeverCancel),
             storage: None,
             queues: Vec::new(),
+            kv: Vec::new(),
         }
     }
 }
@@ -3011,6 +3130,17 @@ impl PluginClient {
                     entry.set_producer(capnp_rpc::new_client(QueueProducerServer {
                         inner: producer,
                     }));
+                }
+            }
+            if !bindings.kv.is_empty() {
+                let count = u32::try_from(bindings.kv.len())
+                    .map_err(|_| PluginError::invalid_params("too many kv bindings"))?;
+                let mut list = b.reborrow().init_kv(count);
+                for (i, (name, namespace, kv)) in bindings.kv.into_iter().enumerate() {
+                    let mut entry = list.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX));
+                    entry.set_name(&name);
+                    entry.set_namespace(&namespace);
+                    entry.set_kv(capnp_rpc::new_client(KvNamespaceServer { inner: kv }));
                 }
             }
         }
@@ -3647,6 +3777,73 @@ impl QueueConsumer for QueueConsumerClient {
             )));
         }
         Ok(ok.results)
+    }
+}
+
+/// Guest-side client for a host KV namespace binding ([`KvNamespace`]).
+#[derive(Clone)]
+pub struct KvNamespaceClient {
+    client: kv_namespace_capnp::Client,
+}
+
+impl KvNamespaceClient {
+    /// Wraps a `KvNamespace` capability client.
+    #[must_use]
+    pub fn new(client: kv_namespace_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl KvNamespace for KvNamespaceClient {
+    async fn get(&self, key: String) -> Result<crate::KvGetOk> {
+        check_kv_key(&key)?;
+        let mut req = self.client.get_request();
+        req.get().set_key(&key);
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_kv_get_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+
+    async fn put(
+        &self,
+        key: String,
+        value: Vec<u8>,
+        options: crate::KvPutOptions,
+    ) -> Result<crate::KvPutOk> {
+        check_kv_key(&key)?;
+        check_kv_put(&value, &options)?;
+        let mut req = self.client.put_request();
+        {
+            let mut p = req.get();
+            p.set_key(&key);
+            p.set_value(&value);
+            crate::generated::write_kv_put_options(p.init_options(), &options)
+                .map_err(from_capnp)?;
+        }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_kv_put_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+
+    async fn delete(&self, key: String) -> Result<crate::KvDeleteOk> {
+        check_kv_key(&key)?;
+        let mut req = self.client.delete_request();
+        req.get().set_key(&key);
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_kv_delete_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+
+    async fn list(&self, options: crate::KvListOptions) -> Result<crate::KvListOk> {
+        if options.limit > MAX_LIST_PAGE {
+            return Err(PluginError::invalid_params(format!(
+                "kv list limit of {} exceeds {MAX_LIST_PAGE}",
+                options.limit
+            )));
+        }
+        let mut req = self.client.list_request();
+        crate::generated::write_kv_list_options(req.get().init_options(), &options)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::generated::read_kv_list_reply(reply_result!(reply)).map_err(from_capnp)?
     }
 }
 
@@ -4700,6 +4897,217 @@ mod tests {
         });
     }
 
+    /// One stored row of [`MemoryKv`]: value, metadata, expiry.
+    type MemoryKvRow = (Vec<u8>, String, u64);
+
+    /// Host-side KV namespace fixture: an in-memory map that records calls.
+    struct MemoryKv {
+        rows: std::sync::Mutex<std::collections::BTreeMap<String, MemoryKvRow>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl KvNamespace for MemoryKv {
+        async fn get(&self, key: String) -> Result<crate::KvGetOk> {
+            let rows = self.rows.lock().expect("rows");
+            Ok(match rows.get(&key) {
+                Some((value, metadata, expiration)) => crate::KvGetOk {
+                    found: true,
+                    value: value.clone(),
+                    metadata: metadata.clone(),
+                    expiration_unix_ms: *expiration,
+                },
+                None => crate::KvGetOk::default(),
+            })
+        }
+
+        async fn put(
+            &self,
+            key: String,
+            value: Vec<u8>,
+            options: crate::KvPutOptions,
+        ) -> Result<crate::KvPutOk> {
+            let expiration = if options.expiration_unix_ms > 0 {
+                options.expiration_unix_ms
+            } else if options.expiration_ttl_seconds > 0 {
+                1_000 + options.expiration_ttl_seconds * 1_000
+            } else {
+                0
+            };
+            self.rows
+                .lock()
+                .expect("rows")
+                .insert(key, (value, options.metadata, expiration));
+            Ok(crate::KvPutOk {
+                expiration_unix_ms: expiration,
+            })
+        }
+
+        async fn delete(&self, key: String) -> Result<crate::KvDeleteOk> {
+            let existed = self.rows.lock().expect("rows").remove(&key).is_some();
+            Ok(crate::KvDeleteOk { existed })
+        }
+
+        async fn list(&self, options: crate::KvListOptions) -> Result<crate::KvListOk> {
+            let rows = self.rows.lock().expect("rows");
+            let keys = rows
+                .iter()
+                .filter(|(k, _)| k.starts_with(&options.prefix))
+                .map(|(k, (_, metadata, expiration))| crate::KvListKey {
+                    key: k.clone(),
+                    metadata: metadata.clone(),
+                    expiration_unix_ms: *expiration,
+                })
+                .collect();
+            Ok(crate::KvListOk {
+                keys,
+                list_complete: true,
+                cursor: String::new(),
+            })
+        }
+    }
+
+    /// Guest that exercises its granted `KV` binding from `open`.
+    struct KvPlugin;
+
+    #[async_trait::async_trait(?Send)]
+    impl PluginWorker for KvPlugin {
+        async fn describe(&self) -> Result<PluginDescribe> {
+            Ok(PluginDescribe {
+                api_version: PRODUCT_API_VERSION,
+                id: "kv_test".into(),
+                capabilities: PluginCapabilities {
+                    bindings: vec!["KV".into()],
+                    ..PluginCapabilities::default()
+                },
+                rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
+                scalar_limits: ScalarLimits::default().into(),
+                ..PluginDescribe::default()
+            })
+        }
+
+        async fn open(
+            &self,
+            _invocation: Invocation,
+            mut bindings: Bindings,
+        ) -> Result<Entrypoints> {
+            let kv = bindings
+                .take_named_kv("KV")
+                .ok_or_else(|| PluginError::internal("KV binding missing"))?;
+            if kv.namespace != "cursors" {
+                return Err(PluginError::internal(
+                    "KV binding names the wrong namespace",
+                ));
+            }
+            let missing = kv.kv.get("cursor".into()).await?;
+            if missing.found {
+                return Err(PluginError::internal("fresh namespace must be empty"));
+            }
+            let put = kv
+                .kv
+                .put(
+                    "cursor".into(),
+                    b"page-7".to_vec(),
+                    crate::KvPutOptions {
+                        expiration_ttl_seconds: 60,
+                        metadata: r#"{"page":7}"#.into(),
+                        ..crate::KvPutOptions::default()
+                    },
+                )
+                .await?;
+            if put.expiration_unix_ms != 61_000 {
+                return Err(PluginError::internal("ttl did not round-trip"));
+            }
+            let got = kv.kv.get("cursor".into()).await?;
+            if !got.found || got.value != b"page-7" || got.metadata != r#"{"page":7}"# {
+                return Err(PluginError::internal("value did not round-trip"));
+            }
+            kv.kv
+                .put(
+                    "other".into(),
+                    b"x".to_vec(),
+                    crate::KvPutOptions::default(),
+                )
+                .await?;
+            let page = kv
+                .kv
+                .list(crate::KvListOptions {
+                    prefix: "cur".into(),
+                    ..crate::KvListOptions::default()
+                })
+                .await?;
+            if page.keys.len() != 1 || page.keys[0].key != "cursor" || !page.list_complete {
+                return Err(PluginError::internal("list did not filter by prefix"));
+            }
+            let deleted = kv.kv.delete("other".into()).await?;
+            let deleted_again = kv.kv.delete("other".into()).await?;
+            if !deleted.existed || deleted_again.existed {
+                return Err(PluginError::internal("delete did not report existence"));
+            }
+            let oversize = kv
+                .kv
+                .put(
+                    "big".into(),
+                    vec![0u8; MAX_KV_VALUE_BYTES as usize + 1],
+                    crate::KvPutOptions::default(),
+                )
+                .await
+                .expect_err("oversize value is refused before the host sees it");
+            if oversize.code != crate::PluginErrorCode::PayloadTooLarge {
+                return Err(PluginError::internal("oversize value had the wrong code"));
+            }
+            let empty = kv.kv.get(String::new()).await.expect_err("empty key");
+            if empty.code != crate::PluginErrorCode::InvalidParams {
+                return Err(PluginError::internal("empty key had the wrong code"));
+            }
+            Ok(Entrypoints::default())
+        }
+    }
+
+    #[test]
+    fn kv_namespace_round_trip() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let (client_r, server_w) = tokio::io::duplex(64 * 1024);
+            let (server_r, client_w) = tokio::io::duplex(64 * 1024);
+            tokio::task::spawn_local(async move {
+                let _ = serve_plugin(Arc::new(KvPlugin), server_r, server_w, 64 * 1024).await;
+            });
+            let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            let kv = Arc::new(MemoryKv {
+                rows: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            });
+            client
+                .open(
+                    &Invocation {
+                        id: "kv".into(),
+                        ..Invocation::default()
+                    },
+                    HostBindings {
+                        kv: vec![(
+                            "KV".into(),
+                            "cursors".into(),
+                            Arc::clone(&kv) as Arc<dyn KvNamespace>,
+                        )],
+                        ..HostBindings::default()
+                    },
+                )
+                .await
+                .expect("open exercises the KV binding end to end");
+            let rows = kv.rows.lock().expect("rows").clone();
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows["cursor"].0, b"page-7");
+            assert!(
+                !rows.contains_key("big"),
+                "oversize put never reached the host"
+            );
+        });
+    }
+
     struct EventPlugin;
 
     #[async_trait::async_trait(?Send)]
@@ -5447,6 +5855,7 @@ mod tests {
                             cancel: Arc::new(TestCancel(Arc::new(AtomicBool::new(false)))),
                             storage: None,
                             queues: Vec::new(),
+                            kv: Vec::new(),
                         },
                     )
                     .await

@@ -231,6 +231,7 @@ def check_method_names() -> list[str]:
         "EventPublisher",
         "QueueConsumer",
         "QueueProducer",
+        "KvNamespace",
     ):
         match = re.search(rf"interface {interface} \{{(.*?)\n\}}", capnp_text, re.DOTALL)
         if not match:

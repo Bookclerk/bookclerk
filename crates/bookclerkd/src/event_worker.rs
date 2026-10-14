@@ -15,7 +15,7 @@ use bookclerk_library::{
 };
 use chrono::{TimeZone, Utc};
 use tokio::time::MissedTickBehavior;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -141,6 +141,13 @@ fn spawn_event_pruner(state: Arc<AppState>) {
                 .await
             {
                 warn!(error = %err, "event retention prune failed");
+            }
+            // Expired `[[kv_namespaces]]` rows read as absent already; this
+            // only reclaims their storage.
+            match library.kv_prune_expired().await {
+                Ok(0) => {}
+                Ok(pruned) => debug!(pruned, "pruned expired plugin kv rows"),
+                Err(err) => warn!(error = %err, "plugin kv expiry prune failed"),
             }
             idle.tick().await;
         }

@@ -1959,13 +1959,24 @@ mode = "deny"
     }
 
     #[test]
-    fn materialize_refuses_unimplemented_kv() {
+    fn materialize_accepts_kv_namespaces() {
         use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
 
+        // KV bindings are served through the bridge at open time, so the
+        // generated workerd config needs no static binding for them.
         let dir = tempfile::tempdir().expect("tempdir");
-        let body = workerd_manifest_with("[[kv_namespaces]]\nbinding = \"KV\"\n");
+        let _modules = create_dir_under(dir.path(), "modules");
+        write_under(
+            dir.path(),
+            Path::new("modules").join("index.js"),
+            "export default { async fetch() { return new Response('ok'); } };\n",
+        );
+        let body = workerd_manifest_with(
+            "[[kv_namespaces]]\nbinding = \"KV\"\n\n[[kv_namespaces]]\nbinding = \"CURSORS\"\nnamespace = \"sync.cursors\"\n",
+        );
         let manifest = PluginManifest::parse(&body).expect("kv manifest");
-        let err = materialize(
+        assert!(manifest.unimplemented_surface().is_none());
+        materialize(
             dir.path(),
             &manifest,
             &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
@@ -1975,15 +1986,7 @@ mode = "deny"
             "test-bridge-token",
             None,
         )
-        .err()
-        .expect("kv is refused");
-        let message = format!("{err:#}");
-        assert!(message.contains("not implemented yet"), "{message}");
-        assert!(message.contains("kv_namespaces"), "{message}");
-        assert!(
-            !message.to_ascii_lowercase().contains("database"),
-            "{message}"
-        );
+        .expect("kv materializes");
     }
 
     #[test]

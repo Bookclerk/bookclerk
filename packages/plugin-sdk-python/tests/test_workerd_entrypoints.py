@@ -367,6 +367,69 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options, {"delaySeconds": 3})
         self.assertEqual(messages, [{"body": {"seen": "jobs"}, "contentType": "json", "delaySeconds": 0}])
 
+    async def test_kv_binding_wraps_the_granted_stub(self) -> None:
+        from bookclerk_plugin_sdk.workerd import KvNamespace, QueueBatch
+
+        class _KvStub:
+            def __init__(self) -> None:
+                self.rows: dict = {}
+                self.calls: list = []
+
+            async def getWithMetadata(self, key, kind):
+                self.calls.append(("get", key, kind))
+                row = self.rows.get(key)
+                if row is None:
+                    return {"value": None, "metadata": None}
+                value = row[0].encode() if kind == "arrayBuffer" else row[0]
+                return {"value": value, "metadata": row[1]}
+
+            async def put(self, key, value, options):
+                self.calls.append(("put", key, options))
+                self.rows[key] = (value, options.get("metadata"))
+
+            async def delete(self, key):
+                self.calls.append(("delete", key))
+                self.rows.pop(key, None)
+
+            async def list(self, options):
+                self.calls.append(("list", options))
+                return {"keys": [{"name": k} for k in sorted(self.rows)], "list_complete": True}
+
+        stub = _KvStub()
+        seen: list = []
+
+        class Default(BookclerkEntrypoint):
+            async def queue(self, batch: QueueBatch) -> None:
+                kv = self.env.KV
+                assert isinstance(kv, KvNamespace)
+                seen.append(await kv.get("cursor"))
+                await kv.put("cursor", "page-7", expiration_ttl=60, metadata={"page": 7})
+                seen.append(await kv.get_with_metadata("cursor"))
+                seen.append(await kv.get("cursor", "bytes"))
+                seen.append(await kv.list(prefix="cur", limit=10))
+                await kv.delete("cursor")
+                seen.append(await kv.get("cursor"))
+                for msg in batch.messages:
+                    msg.ack()
+
+        await Default().bookclerkQueue(
+            {"kv": [{"name": "KV", "kv": stub}]},
+            {"queue": "jobs", "messages": [_queue_message("a")]},
+        )
+        self.assertEqual(
+            seen,
+            [
+                None,
+                ("page-7", {"page": 7}),
+                b"page-7",
+                {"keys": [{"name": "cursor"}], "list_complete": True},
+                None,
+            ],
+        )
+        self.assertIn(("put", "cursor", {"expirationTtl": 60, "metadata": {"page": 7}}), stub.calls)
+        self.assertIn(("list", {"prefix": "cur", "limit": 10}), stub.calls)
+        self.assertIn(("get", "cursor", "arrayBuffer"), stub.calls)
+
     async def test_queue_handler_exception_retries_undecided(self) -> None:
         from bookclerk_plugin_sdk.workerd import QueueBatch
 

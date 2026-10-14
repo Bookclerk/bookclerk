@@ -65,8 +65,8 @@
     "secrets": { "$ref": "#/$defs/NamedBinding" },
     "kv_namespaces": {
       "type": "array",
-      "description": "Durable KV bindings (default name KV). Legal to declare. Load and spawn fail with \"not implemented yet\". Distinct from [[databases]].",
-      "items": { "$ref": "#/$defs/NamedBinding" }
+      "description": "Durable KV bindings (default name KV) served from the library database: Workers KVNamespace-shaped get/put/delete/list with expiration and metadata, scoped to the plugin and the row's namespace. Distinct from [[databases]].",
+      "items": { "$ref": "#/$defs/KvNamespace" }
     },
     "queues": { "$ref": "#/$defs/Queues" },
     "work_fs": { "$ref": "#/$defs/NamedBinding" },
@@ -350,6 +350,21 @@
       "additionalProperties": false,
       "properties": {
         "binding": { "type": "string", "minLength": 1 }
+      }
+    },
+    "KvNamespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "binding": { "type": "string", "minLength": 1 },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "max_value_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576, "default": 65536 },
+        "max_keys": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 10000 }
       }
     },
     "WorkerdRuntime": {

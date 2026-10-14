@@ -1669,6 +1669,103 @@ pub struct QueueSendOk {
     pub message_ids: Vec<String>,
 }
 
+/// Expiration and metadata for `KvNamespace.put`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvPutOptions {
+    /// Absolute expiry (UTC Unix milliseconds); zero means none.
+    #[serde(default)]
+    pub expiration_unix_ms: u64,
+    /// Relative expiry in seconds from the write; zero means none. Ignored when
+    /// `expirationUnixMs` is set.
+    #[serde(default)]
+    pub expiration_ttl_seconds: u64,
+    /// Opaque JSON metadata text, at most `maxKvMetadataBytes`; empty means none.
+    #[serde(default)]
+    pub metadata: String,
+}
+
+/// Success payload of `KvNamespace.get`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvGetOk {
+    /// True when the key exists and has not expired.
+    #[serde(default)]
+    pub found: bool,
+    /// Stored value; empty when not found.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub value: Vec<u8>,
+    /// Stored metadata JSON text; empty when none.
+    #[serde(default)]
+    pub metadata: String,
+    /// Absolute expiry (UTC Unix milliseconds); zero means none.
+    #[serde(default)]
+    pub expiration_unix_ms: u64,
+}
+
+/// Success payload of `KvNamespace.put`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvPutOk {
+    /// Effective absolute expiry (UTC Unix milliseconds); zero means none.
+    #[serde(default)]
+    pub expiration_unix_ms: u64,
+}
+
+/// Success payload of `KvNamespace.delete`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvDeleteOk {
+    /// True when a live value existed before the delete.
+    #[serde(default)]
+    pub existed: bool,
+}
+
+/// Page request for `KvNamespace.list`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvListOptions {
+    /// Only keys starting with this prefix; empty means all.
+    #[serde(default)]
+    pub prefix: String,
+    /// Opaque cursor from a previous page; empty means the first page.
+    #[serde(default)]
+    pub cursor: String,
+    /// Most keys to return; zero means the host default, at most `maxListPage`.
+    #[serde(default)]
+    pub limit: u32,
+}
+
+/// One key on a `KvNamespace.list` page.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvListKey {
+    /// Key name.
+    #[serde(default)]
+    pub key: String,
+    /// Stored metadata JSON text; empty when none.
+    #[serde(default)]
+    pub metadata: String,
+    /// Absolute expiry (UTC Unix milliseconds); zero means none.
+    #[serde(default)]
+    pub expiration_unix_ms: u64,
+}
+
+/// Success payload of `KvNamespace.list`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvListOk {
+    /// Keys in lexical order.
+    #[serde(default)]
+    pub keys: Vec<KvListKey>,
+    /// True when no further page exists.
+    #[serde(default)]
+    pub list_complete: bool,
+    /// Cursor for the next page; empty when `listComplete`.
+    #[serde(default)]
+    pub cursor: String,
+}
+
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -4352,5 +4449,336 @@ pub fn read_queue_send_reply(
     match r.which()? {
         plugin_capnp::queue_send_reply::Ok(ok) => Ok(Ok(read_queue_send_ok(ok?)?)),
         plugin_capnp::queue_send_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`KvPutOptions`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_kv_put_options(
+    mut b: plugin_capnp::kv_put_options::Builder<'_>,
+    v: &KvPutOptions,
+) -> capnp::Result<()> {
+    b.set_expiration_unix_ms(v.expiration_unix_ms);
+    b.set_expiration_ttl_seconds(v.expiration_ttl_seconds);
+    b.set_metadata(&v.metadata);
+    Ok(())
+}
+
+/// Decode a [`KvPutOptions`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_kv_put_options(
+    r: plugin_capnp::kv_put_options::Reader<'_>,
+) -> capnp::Result<KvPutOptions> {
+    Ok(KvPutOptions {
+        expiration_unix_ms: r.get_expiration_unix_ms(),
+        expiration_ttl_seconds: r.get_expiration_ttl_seconds(),
+        metadata: r.get_metadata()?.to_string()?,
+    })
+}
+
+/// Encode a [`KvGetOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_kv_get_ok(
+    mut b: plugin_capnp::kv_get_ok::Builder<'_>,
+    v: &KvGetOk,
+) -> capnp::Result<()> {
+    b.set_found(v.found);
+    b.set_value(&v.value);
+    b.set_metadata(&v.metadata);
+    b.set_expiration_unix_ms(v.expiration_unix_ms);
+    Ok(())
+}
+
+/// Decode a [`KvGetOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_kv_get_ok(r: plugin_capnp::kv_get_ok::Reader<'_>) -> capnp::Result<KvGetOk> {
+    Ok(KvGetOk {
+        found: r.get_found(),
+        value: r.get_value()?.to_vec(),
+        metadata: r.get_metadata()?.to_string()?,
+        expiration_unix_ms: r.get_expiration_unix_ms(),
+    })
+}
+
+/// Encode a `KvGetReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_kv_get_reply(
+    b: plugin_capnp::kv_get_reply::Builder<'_>,
+    v: &Result<KvGetOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_kv_get_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `KvGetReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_kv_get_reply(
+    r: plugin_capnp::kv_get_reply::Reader<'_>,
+) -> capnp::Result<Result<KvGetOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::kv_get_reply::Ok(ok) => Ok(Ok(read_kv_get_ok(ok?)?)),
+        plugin_capnp::kv_get_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`KvPutOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_kv_put_ok(
+    mut b: plugin_capnp::kv_put_ok::Builder<'_>,
+    v: &KvPutOk,
+) -> capnp::Result<()> {
+    b.set_expiration_unix_ms(v.expiration_unix_ms);
+    Ok(())
+}
+
+/// Decode a [`KvPutOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_kv_put_ok(r: plugin_capnp::kv_put_ok::Reader<'_>) -> capnp::Result<KvPutOk> {
+    Ok(KvPutOk {
+        expiration_unix_ms: r.get_expiration_unix_ms(),
+    })
+}
+
+/// Encode a [`KvDeleteOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_kv_delete_ok(
+    mut b: plugin_capnp::kv_delete_ok::Builder<'_>,
+    v: &KvDeleteOk,
+) -> capnp::Result<()> {
+    b.set_existed(v.existed);
+    Ok(())
+}
+
+/// Decode a [`KvDeleteOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_kv_delete_ok(r: plugin_capnp::kv_delete_ok::Reader<'_>) -> capnp::Result<KvDeleteOk> {
+    Ok(KvDeleteOk {
+        existed: r.get_existed(),
+    })
+}
+
+/// Encode a `KvPutReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_kv_put_reply(
+    b: plugin_capnp::kv_put_reply::Builder<'_>,
+    v: &Result<KvPutOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_kv_put_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `KvPutReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_kv_put_reply(
+    r: plugin_capnp::kv_put_reply::Reader<'_>,
+) -> capnp::Result<Result<KvPutOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::kv_put_reply::Ok(ok) => Ok(Ok(read_kv_put_ok(ok?)?)),
+        plugin_capnp::kv_put_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a `KvDeleteReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_kv_delete_reply(
+    b: plugin_capnp::kv_delete_reply::Builder<'_>,
+    v: &Result<KvDeleteOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_kv_delete_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `KvDeleteReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_kv_delete_reply(
+    r: plugin_capnp::kv_delete_reply::Reader<'_>,
+) -> capnp::Result<Result<KvDeleteOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::kv_delete_reply::Ok(ok) => Ok(Ok(read_kv_delete_ok(ok?)?)),
+        plugin_capnp::kv_delete_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`KvListOptions`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_kv_list_options(
+    mut b: plugin_capnp::kv_list_options::Builder<'_>,
+    v: &KvListOptions,
+) -> capnp::Result<()> {
+    b.set_prefix(&v.prefix);
+    b.set_cursor(&v.cursor);
+    b.set_limit(v.limit);
+    Ok(())
+}
+
+/// Decode a [`KvListOptions`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_kv_list_options(
+    r: plugin_capnp::kv_list_options::Reader<'_>,
+) -> capnp::Result<KvListOptions> {
+    Ok(KvListOptions {
+        prefix: r.get_prefix()?.to_string()?,
+        cursor: r.get_cursor()?.to_string()?,
+        limit: r.get_limit(),
+    })
+}
+
+/// Encode a [`KvListKey`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_kv_list_key(
+    mut b: plugin_capnp::kv_list_key::Builder<'_>,
+    v: &KvListKey,
+) -> capnp::Result<()> {
+    b.set_key(&v.key);
+    b.set_metadata(&v.metadata);
+    b.set_expiration_unix_ms(v.expiration_unix_ms);
+    Ok(())
+}
+
+/// Decode a [`KvListKey`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_kv_list_key(r: plugin_capnp::kv_list_key::Reader<'_>) -> capnp::Result<KvListKey> {
+    Ok(KvListKey {
+        key: r.get_key()?.to_string()?,
+        metadata: r.get_metadata()?.to_string()?,
+        expiration_unix_ms: r.get_expiration_unix_ms(),
+    })
+}
+
+/// Encode a [`KvListOk`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_kv_list_ok(
+    mut b: plugin_capnp::kv_list_ok::Builder<'_>,
+    v: &KvListOk,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_keys(list_len(v.keys.len())?);
+        for (i, item) in v.keys.iter().enumerate() {
+            write_kv_list_key(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    b.set_list_complete(v.list_complete);
+    b.set_cursor(&v.cursor);
+    Ok(())
+}
+
+/// Decode a [`KvListOk`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_kv_list_ok(r: plugin_capnp::kv_list_ok::Reader<'_>) -> capnp::Result<KvListOk> {
+    Ok(KvListOk {
+        keys: r
+            .get_keys()?
+            .iter()
+            .map(|item| read_kv_list_key(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        list_complete: r.get_list_complete(),
+        cursor: r.get_cursor()?.to_string()?,
+    })
+}
+
+/// Encode a `KvListReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_kv_list_reply(
+    b: plugin_capnp::kv_list_reply::Builder<'_>,
+    v: &Result<KvListOk, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_kv_list_ok(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `KvListReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_kv_list_reply(
+    r: plugin_capnp::kv_list_reply::Reader<'_>,
+) -> capnp::Result<Result<KvListOk, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::kv_list_reply::Ok(ok) => Ok(Ok(read_kv_list_ok(ok?)?)),
+        plugin_capnp::kv_list_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
     }
 }

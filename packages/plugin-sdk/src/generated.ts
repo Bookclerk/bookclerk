@@ -288,6 +288,11 @@ export interface Bindings {
    * manifest declares none.
    */
   queues: NamedQueue[];
+  /**
+   * Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
+   * binding, scoped to this plugin. Empty when the manifest declares none.
+   */
+  kv: NamedKv[];
 }
 
 /**
@@ -898,6 +903,58 @@ export interface NamedQueue {
    * Null when the guest does not export this capability.
    */
   producer?: QueueProducer | null;
+}
+
+/**
+ * Durable key/value namespace: a Workers `KVNamespace`-shaped binding the host
+ * serves from the library database, scoped to the plugin and the namespace a
+ * `[[kv_namespaces]]` row names, granted through `Bindings.kv`. Values live in
+ * the cluster, so an instance moved to another host reads its own keys.
+ */
+export interface KvNamespace {
+  /**
+   * Read one key; `found = false` when absent or expired.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @returns {@link KvGetReply}
+   */
+  get(key: string): Promise<KvGetReply>;
+  /**
+   * Write one key, replacing any previous value and metadata.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @param value - Value, at most the namespace's `max_value_bytes`.
+   * @param options - Expiration and metadata.
+   * @returns {@link KvPutReply}
+   */
+  put(key: string, value: Uint8Array, options: KvPutOptions): Promise<KvPutReply>;
+  /**
+   * Delete one key; a missing key is not an error.
+   *
+   * @param key - Key to delete.
+   * @returns {@link KvDeleteReply}
+   */
+  delete(key: string): Promise<KvDeleteReply>;
+  /**
+   * List keys in lexical order, one page at a time.
+   *
+   * @param options - Prefix, cursor, and page size.
+   * @returns {@link KvListReply}
+   */
+  list(options: KvListOptions): Promise<KvListReply>;
+}
+
+/** One named durable namespace delivered on `Bindings.kv`. */
+export interface NamedKv {
+  /** Binding name from `plugin.toml` `[[kv_namespaces]]`. */
+  name: string;
+  /** Namespace the binding is scoped to. */
+  namespace: string;
+  /**
+   * Host-served namespace.
+   * Null when the guest does not export this capability.
+   */
+  kv?: KvNamespace | null;
 }
 
 /**
@@ -2263,6 +2320,93 @@ export interface QueueSendOk {
 /** Result union of `QueueProducer.send` / `sendBatch`. */
 export type QueueSendReply =
   | { kind: "ok"; value: QueueSendOk } // Success: the ids the host assigned.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Expiration and metadata for `KvNamespace.put`. */
+export interface KvPutOptions {
+  /** Absolute expiry (UTC Unix milliseconds); zero means none. */
+  expirationUnixMs: number;
+  /**
+   * Relative expiry in seconds from the write; zero means none. Ignored when
+   * `expirationUnixMs` is set.
+   */
+  expirationTtlSeconds: number;
+  /** Opaque JSON metadata text, at most `maxKvMetadataBytes`; empty means none. */
+  metadata: string;
+}
+
+/** Success payload of `KvNamespace.get`. */
+export interface KvGetOk {
+  /** True when the key exists and has not expired. */
+  found: boolean;
+  /** Stored value; empty when not found. */
+  value: Uint8Array;
+  /** Stored metadata JSON text; empty when none. */
+  metadata: string;
+  /** Absolute expiry (UTC Unix milliseconds); zero means none. */
+  expirationUnixMs: number;
+}
+
+/** Result union of `KvNamespace.get`. */
+export type KvGetReply =
+  | { kind: "ok"; value: KvGetOk } // Success: the value, when found.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Success payload of `KvNamespace.put`. */
+export interface KvPutOk {
+  /** Effective absolute expiry (UTC Unix milliseconds); zero means none. */
+  expirationUnixMs: number;
+}
+
+/** Success payload of `KvNamespace.delete`. */
+export interface KvDeleteOk {
+  /** True when a live value existed before the delete. */
+  existed: boolean;
+}
+
+/** Result union of `KvNamespace.put`. */
+export type KvPutReply =
+  | { kind: "ok"; value: KvPutOk } // Success: the write is durable.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Result union of `KvNamespace.delete`. */
+export type KvDeleteReply =
+  | { kind: "ok"; value: KvDeleteOk } // Success: the key is gone (or never existed).
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Page request for `KvNamespace.list`. */
+export interface KvListOptions {
+  /** Only keys starting with this prefix; empty means all. */
+  prefix: string;
+  /** Opaque cursor from a previous page; empty means the first page. */
+  cursor: string;
+  /** Most keys to return; zero means the host default, at most `maxListPage`. */
+  limit: number;
+}
+
+/** One key on a `KvNamespace.list` page. */
+export interface KvListKey {
+  /** Key name. */
+  key: string;
+  /** Stored metadata JSON text; empty when none. */
+  metadata: string;
+  /** Absolute expiry (UTC Unix milliseconds); zero means none. */
+  expirationUnixMs: number;
+}
+
+/** Success payload of `KvNamespace.list`. */
+export interface KvListOk {
+  /** Keys in lexical order. */
+  keys: KvListKey[];
+  /** True when no further page exists. */
+  listComplete: boolean;
+  /** Cursor for the next page; empty when `listComplete`. */
+  cursor: string;
+}
+
+/** Result union of `KvNamespace.list`. */
+export type KvListReply =
+  | { kind: "ok"; value: KvListOk } // Success: one page of keys.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One typed SQL cell or bind parameter. */

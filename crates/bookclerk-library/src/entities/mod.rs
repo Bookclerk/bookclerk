@@ -36,6 +36,7 @@ pub mod operator_sessions;
 pub mod plugin_deployment_observations;
 pub mod plugin_deployments;
 pub mod plugin_instances;
+pub mod plugin_kv;
 pub mod plugin_schemas;
 pub mod portal_identities;
 pub mod portal_sessions;

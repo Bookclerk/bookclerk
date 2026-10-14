@@ -51,6 +51,7 @@ mod host_control_plane;
 mod install_preflight;
 mod instance_bindings;
 mod jail;
+mod kv_binding;
 mod manifest;
 mod queue_producer;
 mod registry;
@@ -141,6 +142,7 @@ pub use instance_bindings::{
     binding_grant_flags, prepare_open_for_instance, prepared_open_from_resolved, PreparedOpen,
 };
 pub use jail::plugin_data_dir;
+pub use kv_binding::{KvNamespaces, LibraryKvNamespace, KV_GRANT_BINDING};
 pub use manifest::{
     embedded_logo_api_path, entrypoint_family, logo_content_type, validate_logo,
     BindingCapabilities, CapabilitiesManifest, DatabaseBindingManifest, Entrypoint, EventConsumer,

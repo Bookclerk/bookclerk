@@ -74,10 +74,11 @@ export type Manifest = {
   /** `[secrets]` — sealed operator secrets binding (default name `SECRETS`). */
   secrets?: { binding?: string };
   /**
-   * `[[kv_namespaces]]` — durable KV bindings (default name `KV`).
-   * Legal to declare. Not implemented yet; distinct from `databases`.
+   * `[[kv_namespaces]]` — durable KV bindings (default name `KV`) served
+   * from the library database; distinct from `databases`. `namespace`
+   * defaults to the binding name lowercased.
    */
-  kv_namespaces?: Array<{ binding?: string }>;
+  kv_namespaces?: Array<{ binding?: string; namespace?: string; max_value_bytes?: number; max_keys?: number }>;
   /**
    * `[queues]` — Workers Queues: producers are `env` send bindings,
    * consumers are `queue(batch)` triggers on the host outbox.
@@ -173,6 +174,30 @@ function validateQueueName(field: string, name: unknown): void {
   }
   if (RESERVED_QUEUE_PREFIXES.some((prefix) => text.startsWith(prefix))) {
     throw new Error(`plugin.toml: ${field} \`${text}\` uses a host-reserved prefix (\`core.\`, \`host.\`)`);
+  }
+}
+
+/** Largest `max_value_bytes` a `[[kv_namespaces]]` row may declare (1 MiB). */
+export const MAX_KV_NAMESPACE_VALUE_BYTES = 1_048_576;
+/** Largest `max_keys` a `[[kv_namespaces]]` row may declare. */
+export const MAX_KV_NAMESPACE_KEYS = 1_000_000;
+
+function validateKvNamespaces(m: Manifest): void {
+  for (const [i, row] of (m.kv_namespaces ?? []).entries()) {
+    const namespace = row.namespace ?? String(row.binding || "KV").toLowerCase();
+    if (!isValidQueueName(namespace)) {
+      throw new Error(
+        `plugin.toml: kv_namespaces[${i}].namespace \`${namespace}\` must be \`[a-z0-9][a-z0-9._-]*\` and at most ${MAX_QUEUE_NAME_LEN} chars`,
+      );
+    }
+    const maxValue = row.max_value_bytes ?? 65_536;
+    if (!Number.isInteger(maxValue) || maxValue < 1 || maxValue > MAX_KV_NAMESPACE_VALUE_BYTES) {
+      throw new Error(`plugin.toml: kv_namespaces[${i}].max_value_bytes must be 1..=${MAX_KV_NAMESPACE_VALUE_BYTES}`);
+    }
+    const maxKeys = row.max_keys ?? 10_000;
+    if (!Number.isInteger(maxKeys) || maxKeys < 1 || maxKeys > MAX_KV_NAMESPACE_KEYS) {
+      throw new Error(`plugin.toml: kv_namespaces[${i}].max_keys must be 1..=${MAX_KV_NAMESPACE_KEYS}`);
+    }
   }
 }
 
@@ -572,6 +597,7 @@ function validateSurface(m: Manifest): void {
     );
   }
   validateQueues(m);
+  validateKvNamespaces(m);
   for (const consumer of consumers) {
     if (!consumer.type || !String(consumer.type).trim()) {
       throw new Error("plugin.toml: [[events.consumers]] `type` is required");
@@ -773,18 +799,16 @@ export function declaresPython(m: Manifest): boolean {
 }
 
 /**
- * Spawn/load message when KV is declared.
+ * Spawn/load refusal for a declared-but-unbuilt surface.
  *
- * The refusal is runtime-agnostic: a native plugin that declares KV fails
- * spawn the same way a workerd plugin does.
+ * Every manifest surface is implemented today (`[[kv_namespaces]]` and
+ * `[queues]` included); the hook stays so a future table can refuse load
+ * with "not implemented yet" without touching the callers.
  *
- * @param m - Manifest that may declare unimplemented surfaces.
- * @returns The refusal, or `null` when KV is not declared.
+ * @param _m - Manifest to inspect.
+ * @returns The refusal, or `null` when load may continue.
  */
-export function unimplementedSurface(m: Manifest): string | null {
-  if ((m.kv_namespaces?.length ?? 0) > 0) {
-    return "[[kv_namespaces]] is not implemented yet";
-  }
+export function unimplementedSurface(_m: Manifest): string | null {
   return null;
 }
 

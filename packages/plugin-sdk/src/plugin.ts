@@ -22,7 +22,14 @@
 
 import "./cloudflare-workers.d.ts";
 import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
-import { MAX_CHECKPOINT_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE } from "./abi.js";
+import {
+  MAX_CHECKPOINT_BYTES,
+  MAX_EVENT_PAYLOAD_BYTES,
+  MAX_KV_KEY_BYTES,
+  MAX_KV_METADATA_BYTES,
+  MAX_KV_VALUE_BYTES,
+  MAX_LIST_PAGE,
+} from "./abi.js";
 import {
   createDatabaseBinding,
   decodeExecuteResultReply,
@@ -36,6 +43,12 @@ import type {
   BookclerkEnv,
   EventPublisherBinding,
   JsonObject,
+  KvListOptionsBinding,
+  KvListResultBinding,
+  KvNamespaceBinding,
+  KvPutOptionsBinding,
+  KvValueType,
+  KvValueWithMetadata,
   PublishEvent,
   QueueBinding,
   QueueSendBatchEntry,
@@ -505,6 +518,16 @@ export interface GrantedContext {
   databases?: NamedDatabase[];
   /** `[[queues.producers]]` bindings, when granted. */
   queues?: NamedQueue[];
+  /** `[[kv_namespaces]]` bindings, when granted. */
+  kv?: NamedKv[];
+}
+
+/** One granted `[[kv_namespaces]]` binding on the granted context. */
+export interface NamedKv {
+  /** Binding name (`env.<name>`). */
+  name: string;
+  /** Ready namespace (crosses the adapter → author RPC boundary). */
+  kv: KvNamespaceBinding;
 }
 
 /** One granted `[[queues.producers]]` binding on the granted context. */
@@ -551,13 +574,15 @@ export interface NamedDatabase {
  * plus the grant tokens the adapter exchanges for the author's `EVENTS` and
  * `env.<BINDING>` stubs. Authors never receive this shape.
  */
-export interface BridgeContext extends Omit<GrantedContext, "databases" | "queues"> {
+export interface BridgeContext extends Omit<GrantedContext, "databases" | "queues" | "kv"> {
   /** Granted-channel bearer for `env.EVENTS.publish`; stripped before dispatch. */
   eventsToken?: string;
   /** Named `[[databases]]` binding → database-only bearer for `/db/execute`. */
   databases?: Record<string, string>;
   /** `[[queues.producers]]` binding → queue-only bearer for `/queues/send`. */
   queues?: Record<string, string>;
+  /** `[[kv_namespaces]]` binding → kv-only bearer for `/kv/*`. */
+  kv?: Record<string, string>;
 }
 
 /** Job-runner bridge context: the durable job id plus {@link GrantedContext}. */
@@ -655,6 +680,12 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
       for (const entry of context.queues) {
         if (!entry || typeof entry.name !== "string" || !entry.name || !entry.queue) continue;
         merged[entry.name] = entry.queue;
+      }
+    }
+    if (Array.isArray(context.kv)) {
+      for (const entry of context.kv) {
+        if (!entry || typeof entry.name !== "string" || !entry.name || !entry.kv) continue;
+        merged[entry.name] = entry.kv;
       }
     }
   }
@@ -2504,6 +2535,173 @@ class GrantedQueue extends RpcTarget implements QueueBinding {
   }
 }
 
+/** Fails closed on an empty key or one longer than `maxKvKeyBytes`. */
+function checkKvKey(key: unknown): string {
+  if (typeof key !== "string" || key.length === 0) {
+    throw PluginError.fromWire("invalid_params", "kv key must be a non-empty string");
+  }
+  const bytes = new TextEncoder().encode(key).byteLength;
+  if (bytes > MAX_KV_KEY_BYTES) {
+    throw PluginError.fromWire("payload_too_large", `kv key of ${bytes} bytes exceeds ${MAX_KV_KEY_BYTES}`);
+  }
+  return key;
+}
+
+/** Stored metadata text → value (`null` when none or unparsable). */
+function parseKvMetadata(text: unknown): unknown {
+  if (typeof text !== "string" || text === "") return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decode a stored value per {@link KvValueType}.
+ *
+ * @param bytes - Stored bytes.
+ * @param type - Requested decoding.
+ * @returns Decoded value.
+ */
+function decodeKvValue(bytes: Uint8Array, type: KvValueType): unknown {
+  if (type === "arrayBuffer") {
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+  const text = new TextDecoder().decode(bytes);
+  if (type === "json") return JSON.parse(text) as unknown;
+  return text;
+}
+
+/**
+ * `[[kv_namespaces]]` binding handed to the author: the adapter exchanges the
+ * binding's kv-only grant token on `POST /kv/<op>`, so the author isolate
+ * never holds the bearer itself. Key, value, and metadata caps are checked
+ * here before the request leaves; the host applies the namespace's own
+ * `max_value_bytes` and `max_keys`.
+ */
+class GrantedKv extends RpcTarget implements KvNamespaceBinding {
+  #granted: GrantedFetcher;
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the kv grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  async #call(op: string, body: unknown): Promise<Record<string, unknown>> {
+    const resp = await this.#granted.fetch(`http://granted/kv/${op}`, {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(toBridgeJson(body)),
+    });
+    const value = (await resp.json().catch(() => ({}))) as Record<string, unknown> & {
+      error?: { code?: string; message?: string };
+    };
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `kv ${op} HTTP ${resp.status}`);
+    }
+    return value ?? {};
+  }
+
+  get(key: string, type?: "text"): Promise<string | null>;
+  get<T = unknown>(key: string, type: "json"): Promise<T | null>;
+  get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
+  async get(key: string, type: KvValueType = "text"): Promise<unknown> {
+    const found = await this.#read(key, type);
+    return found.value;
+  }
+
+  getWithMetadata(key: string, type?: "text"): Promise<KvValueWithMetadata<string>>;
+  getWithMetadata<T = unknown>(key: string, type: "json"): Promise<KvValueWithMetadata<T>>;
+  getWithMetadata(key: string, type: "arrayBuffer"): Promise<KvValueWithMetadata<ArrayBuffer>>;
+  async getWithMetadata(key: string, type: KvValueType = "text"): Promise<KvValueWithMetadata<unknown>> {
+    return this.#read(key, type);
+  }
+
+  async #read(key: string, type: KvValueType): Promise<KvValueWithMetadata<unknown>> {
+    const reply = await this.#call("get", { key: checkKvKey(key) });
+    if (!reply.found) return { value: null, metadata: null };
+    const bytes = typeof reply.value === "string" ? base64ToBytes(reply.value) : new Uint8Array();
+    return { value: decodeKvValue(bytes, type), metadata: parseKvMetadata(reply.metadata) };
+  }
+
+  async put(
+    key: string,
+    value: string | ArrayBuffer | ArrayBufferView,
+    options?: KvPutOptionsBinding,
+  ): Promise<void> {
+    let bytes: Uint8Array;
+    if (typeof value === "string") {
+      bytes = new TextEncoder().encode(value);
+    } else if (value instanceof ArrayBuffer) {
+      bytes = new Uint8Array(value);
+    } else if (ArrayBuffer.isView(value)) {
+      bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    } else {
+      throw PluginError.fromWire("invalid_params", "kv value must be a string, ArrayBuffer, or view");
+    }
+    if (bytes.byteLength > MAX_KV_VALUE_BYTES) {
+      throw PluginError.fromWire(
+        "payload_too_large",
+        `kv value of ${bytes.byteLength} bytes exceeds ${MAX_KV_VALUE_BYTES}`,
+      );
+    }
+    const metadata = options?.metadata === undefined ? "" : JSON.stringify(options.metadata);
+    const metadataBytes = new TextEncoder().encode(metadata).byteLength;
+    if (metadataBytes > MAX_KV_METADATA_BYTES) {
+      throw PluginError.fromWire(
+        "payload_too_large",
+        `kv metadata of ${metadataBytes} bytes exceeds ${MAX_KV_METADATA_BYTES}`,
+      );
+    }
+    const expiration = Math.max(0, Math.floor(Number(options?.expiration ?? 0) || 0));
+    const ttl = Math.max(0, Math.floor(Number(options?.expirationTtl ?? 0) || 0));
+    await this.#call("put", {
+      key: checkKvKey(key),
+      value: bytes,
+      options: { expirationUnixMs: expiration * 1000, expirationTtlSeconds: ttl, metadata },
+    });
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.#call("delete", { key: checkKvKey(key) });
+  }
+
+  async list(options?: KvListOptionsBinding): Promise<KvListResultBinding> {
+    const limit = Math.max(0, Math.floor(Number(options?.limit ?? 0) || 0));
+    if (limit > MAX_LIST_PAGE) {
+      throw PluginError.fromWire("invalid_params", `kv list limit of ${limit} exceeds ${MAX_LIST_PAGE}`);
+    }
+    const reply = await this.#call("list", {
+      options: { prefix: options?.prefix ?? "", cursor: options?.cursor ?? "", limit },
+    });
+    const keys = Array.isArray(reply.keys) ? (reply.keys as Array<Record<string, unknown>>) : [];
+    const cursor = typeof reply.cursor === "string" && reply.cursor ? reply.cursor : undefined;
+    return {
+      keys: keys.map((entry) => {
+        const ms = Number(entry.expirationUnixMs ?? 0) || 0;
+        const metadata = parseKvMetadata(entry.metadata);
+        return {
+          name: String(entry.key ?? ""),
+          ...(ms > 0 ? { expiration: Math.floor(ms / 1000) } : {}),
+          ...(metadata !== null ? { metadata } : {}),
+        };
+      }),
+      list_complete: Boolean(reply.listComplete),
+      ...(cursor ? { cursor } : {}),
+    };
+  }
+}
+
 /**
  * Named `[[databases]]` binding transport handed to the author: the adapter
  * exchanges the binding's database-only grant token on `POST /db/execute`,
@@ -2812,7 +3010,7 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx: BridgeContext | undefined): GrantedContext {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, queues, ...rest } = source;
+      const { eventsToken, databases, queues, kv, ...rest } = source;
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -2838,6 +3036,14 @@ function createInvocationAdapter() {
           named.push({ name, queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` }) });
         }
         if (named.length > 0) bound.queues = named;
+      }
+      if (kv && typeof kv === "object" && !Array.isArray(kv) && granted) {
+        const named: NamedKv[] = [];
+        for (const [name, token] of Object.entries(kv)) {
+          if (!name || typeof token !== "string" || !token) continue;
+          named.push({ name, kv: new GrantedKv(granted, { Authorization: `Bearer ${token}` }) });
+        }
+        if (named.length > 0) bound.kv = named;
       }
       return bound;
     }

@@ -922,7 +922,7 @@
       "name": "Bindings",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 8,
+      "pointerCount": 9,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -1011,6 +1011,19 @@
             }
           },
           "offset": 7
+        },
+        {
+          "name": "kv",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "NamedKv"
+            }
+          },
+          "offset": 8
         }
       ]
     },
@@ -5961,6 +5974,538 @@
         }
       ]
     },
+    "KvDeleteOk": {
+      "name": "KvDeleteOk",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "existed",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvDeleteReply": {
+      "name": "KvDeleteReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "KvDeleteOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvGetOk": {
+      "name": "KvGetOk",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "found",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 0
+        },
+        {
+          "name": "metadata",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "expirationUnixMs",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "KvGetReply": {
+      "name": "KvGetReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "KvGetOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvListKey": {
+      "name": "KvListKey",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "key",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "metadata",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "expirationUnixMs",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvListOk": {
+      "name": "KvListOk",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "keys",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "KvListKey"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "listComplete",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "cursor",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "KvListOptions": {
+      "name": "KvListOptions",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "prefix",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "cursor",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "limit",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvListReply": {
+      "name": "KvListReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "KvListOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvNamespace.delete$Params": {
+      "name": "KvNamespace.delete$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "key",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvNamespace.delete$Results": {
+      "name": "KvNamespace.delete$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "KvDeleteReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvNamespace.get$Params": {
+      "name": "KvNamespace.get$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "key",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvNamespace.get$Results": {
+      "name": "KvNamespace.get$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "KvGetReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvNamespace.list$Params": {
+      "name": "KvNamespace.list$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "options",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "KvListOptions"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvNamespace.list$Results": {
+      "name": "KvNamespace.list$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "KvListReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvNamespace.put$Params": {
+      "name": "KvNamespace.put$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "key",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "data"
+          },
+          "offset": 1
+        },
+        {
+          "name": "options",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "KvPutOptions"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "KvNamespace.put$Results": {
+      "name": "KvNamespace.put$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "KvPutReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvPutOk": {
+      "name": "KvPutOk",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "expirationUnixMs",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvPutOptions": {
+      "name": "KvPutOptions",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "expirationUnixMs",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        },
+        {
+          "name": "expirationTtlSeconds",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        },
+        {
+          "name": "metadata",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "KvPutReply": {
+      "name": "KvPutReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "KvPutOk"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "ListDealsParams": {
       "name": "ListDealsParams",
       "file": "plugin.capnp",
@@ -6496,6 +7041,44 @@
             "name": "GuestDatabase"
           },
           "offset": 1
+        }
+      ]
+    },
+    "NamedKv": {
+      "name": "NamedKv",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "namespace",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "kv",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "KvNamespace"
+          },
+          "offset": 2
         }
       ]
     },
@@ -10574,6 +11157,36 @@
         }
       ]
     },
+    "KvNamespace": {
+      "name": "KvNamespace",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "get",
+          "ordinal": 0,
+          "params": "KvNamespace.get$Params",
+          "results": "KvNamespace.get$Results"
+        },
+        {
+          "name": "put",
+          "ordinal": 1,
+          "params": "KvNamespace.put$Params",
+          "results": "KvNamespace.put$Results"
+        },
+        {
+          "name": "delete",
+          "ordinal": 2,
+          "params": "KvNamespace.delete$Params",
+          "results": "KvNamespace.delete$Results"
+        },
+        {
+          "name": "list",
+          "ordinal": 3,
+          "params": "KvNamespace.list$Params",
+          "results": "KvNamespace.list$Results"
+        }
+      ]
+    },
     "Oidc": {
       "name": "Oidc",
       "file": "plugin.capnp",
@@ -10783,6 +11396,21 @@
       "name": "maxIdentifierBytes",
       "file": "plugin.capnp",
       "value": 64
+    },
+    "maxKvKeyBytes": {
+      "name": "maxKvKeyBytes",
+      "file": "plugin.capnp",
+      "value": 512
+    },
+    "maxKvMetadataBytes": {
+      "name": "maxKvMetadataBytes",
+      "file": "plugin.capnp",
+      "value": 1024
+    },
+    "maxKvValueBytes": {
+      "name": "maxKvValueBytes",
+      "file": "plugin.capnp",
+      "value": 1048576
     },
     "maxListPage": {
       "name": "maxListPage",

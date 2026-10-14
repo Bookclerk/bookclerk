@@ -30,6 +30,17 @@ MAX_CONFIG_PAYLOAD_BYTES: int = 65536
 MAX_EVENT_PAYLOAD_BYTES: int = 65536
 """Maximum decoded size of a domain-event scalar payload (not a stream)."""
 
+MAX_KV_VALUE_BYTES: int = 1048576
+"""Largest `KvNamespace` value in bytes; a `[[kv_namespaces]]` row may lower
+its own cap but never raise it past this.
+"""
+
+MAX_KV_KEY_BYTES: int = 512
+"""Longest `KvNamespace` key in UTF-8 bytes."""
+
+MAX_KV_METADATA_BYTES: int = 1024
+"""Largest `KvNamespace` metadata JSON text in bytes."""
+
 MAX_PLUGIN_MIGRATION_OPS: int = 256
 """Maximum already-separated operations in one plugin-owned migration."""
 
@@ -140,6 +151,9 @@ __all__ = [
     "MAX_IDENTIFIER_BYTES",
     "MAX_CONFIG_PAYLOAD_BYTES",
     "MAX_EVENT_PAYLOAD_BYTES",
+    "MAX_KV_VALUE_BYTES",
+    "MAX_KV_KEY_BYTES",
+    "MAX_KV_METADATA_BYTES",
     "MAX_PLUGIN_MIGRATION_OPS",
     "MAX_PLUGIN_MIGRATION_TOTAL_OPS",
     "MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES",

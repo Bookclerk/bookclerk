@@ -229,6 +229,9 @@ export function formatManifest(m: Manifest): string {
   emitNamedBinding(lines, "[secrets]", m.secrets);
   for (const kv of m.kv_namespaces ?? []) {
     emitNamedBinding(lines, "[[kv_namespaces]]", kv);
+    if (kv.namespace != null) lines.push(`namespace = ${esc(kv.namespace)}`);
+    if (kv.max_value_bytes != null) lines.push(`max_value_bytes = ${kv.max_value_bytes}`);
+    if (kv.max_keys != null) lines.push(`max_keys = ${kv.max_keys}`);
   }
   emitQueues(lines, m.queues);
   emitNamedBinding(lines, "[work_fs]", m.work_fs);

@@ -383,6 +383,8 @@ class Bindings(TypedDict):
         queues: Named `[[queues.producers]]` bindings: one host-served producer per
             binding, each sending into the queue the row names. Empty when the manifest
             declares none.
+        kv: Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
+            binding, scoped to this plugin. Empty when the manifest declares none.
     """
 
     config: ExtensibleConfig
@@ -393,6 +395,7 @@ class Bindings(TypedDict):
     cancel: NotRequired[Cancellation | None]
     storage: NotRequired[Destination | None]
     queues: list[NamedQueue]
+    kv: list[NamedKv]
 
 
 class Entrypoints(TypedDict):
@@ -1701,6 +1704,74 @@ class NamedQueue(TypedDict):
     name: str
     queue: str
     producer: NotRequired[QueueProducer | None]
+
+
+class KvNamespace(Protocol):
+    """Durable key/value namespace: a Workers `KVNamespace`-shaped binding the host
+    serves from the library database, scoped to the plugin and the namespace a
+    `[[kv_namespaces]]` row names, granted through `Bindings.kv`. Values live in
+    the cluster, so an instance moved to another host reads its own keys.
+    """
+
+    async def get(self, key: str) -> KvGetReply:
+        """Read one key; `found = false` when absent or expired.
+
+        Args:
+            key: Key, at most `maxKvKeyBytes` UTF-8 bytes.
+
+        Returns:
+            ``KvGetReply``
+        """
+        ...
+
+    async def put(self, key: str, value: bytes, options: KvPutOptions) -> KvPutReply:
+        """Write one key, replacing any previous value and metadata.
+
+        Args:
+            key: Key, at most `maxKvKeyBytes` UTF-8 bytes.
+            value: Value, at most the namespace's `max_value_bytes`.
+            options: Expiration and metadata.
+
+        Returns:
+            ``KvPutReply``
+        """
+        ...
+
+    async def delete(self, key: str) -> KvDeleteReply:
+        """Delete one key; a missing key is not an error.
+
+        Args:
+            key: Key to delete.
+
+        Returns:
+            ``KvDeleteReply``
+        """
+        ...
+
+    async def list(self, options: KvListOptions) -> KvListReply:
+        """List keys in lexical order, one page at a time.
+
+        Args:
+            options: Prefix, cursor, and page size.
+
+        Returns:
+            ``KvListReply``
+        """
+        ...
+
+
+class NamedKv(TypedDict):
+    """One named durable namespace delivered on `Bindings.kv`.
+
+    Attributes:
+        name: Binding name from `plugin.toml` `[[kv_namespaces]]`.
+        namespace: Namespace the binding is scoped to.
+        kv: Host-served namespace. Null when the guest does not export this capability.
+    """
+
+    name: str
+    namespace: str
+    kv: NotRequired[KvNamespace | None]
 
 
 class ContentSource(Protocol):
@@ -3622,6 +3693,241 @@ QueueSendReply = Union[
 """Result union of `QueueProducer.send` / `sendBatch`."""
 
 
+class KvPutOptions(TypedDict):
+    """Expiration and metadata for `KvNamespace.put`.
+
+    Attributes:
+        expirationUnixMs: Absolute expiry (UTC Unix milliseconds); zero means none.
+        expirationTtlSeconds: Relative expiry in seconds from the write; zero means
+            none. Ignored when `expirationUnixMs` is set.
+        metadata: Opaque JSON metadata text, at most `maxKvMetadataBytes`; empty means
+            none.
+    """
+
+    expirationUnixMs: int
+    expirationTtlSeconds: int
+    metadata: str
+
+
+class KvGetOk(TypedDict):
+    """Success payload of `KvNamespace.get`.
+
+    Attributes:
+        found: True when the key exists and has not expired.
+        value: Stored value; empty when not found.
+        metadata: Stored metadata JSON text; empty when none.
+        expirationUnixMs: Absolute expiry (UTC Unix milliseconds); zero means none.
+    """
+
+    found: bool
+    value: bytes
+    metadata: str
+    expirationUnixMs: int
+
+
+class KvGetReplyOk(TypedDict):
+    """``KvGetReply`` member ``ok``.
+
+    Success: the value, when found.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the value, when found.
+    """
+
+    kind: Literal["ok"]
+    value: KvGetOk
+
+
+class KvGetReplyErr(TypedDict):
+    """``KvGetReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+KvGetReply = Union[
+    KvGetReplyOk,
+    KvGetReplyErr,
+]
+"""Result union of `KvNamespace.get`."""
+
+
+class KvPutOk(TypedDict):
+    """Success payload of `KvNamespace.put`.
+
+    Attributes:
+        expirationUnixMs: Effective absolute expiry (UTC Unix milliseconds); zero means
+            none.
+    """
+
+    expirationUnixMs: int
+
+
+class KvDeleteOk(TypedDict):
+    """Success payload of `KvNamespace.delete`.
+
+    Attributes:
+        existed: True when a live value existed before the delete.
+    """
+
+    existed: bool
+
+
+class KvPutReplyOk(TypedDict):
+    """``KvPutReply`` member ``ok``.
+
+    Success: the write is durable.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the write is durable.
+    """
+
+    kind: Literal["ok"]
+    value: KvPutOk
+
+
+class KvPutReplyErr(TypedDict):
+    """``KvPutReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+KvPutReply = Union[
+    KvPutReplyOk,
+    KvPutReplyErr,
+]
+"""Result union of `KvNamespace.put`."""
+
+
+class KvDeleteReplyOk(TypedDict):
+    """``KvDeleteReply`` member ``ok``.
+
+    Success: the key is gone (or never existed).
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the key is gone (or never existed).
+    """
+
+    kind: Literal["ok"]
+    value: KvDeleteOk
+
+
+class KvDeleteReplyErr(TypedDict):
+    """``KvDeleteReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+KvDeleteReply = Union[
+    KvDeleteReplyOk,
+    KvDeleteReplyErr,
+]
+"""Result union of `KvNamespace.delete`."""
+
+
+class KvListOptions(TypedDict):
+    """Page request for `KvNamespace.list`.
+
+    Attributes:
+        prefix: Only keys starting with this prefix; empty means all.
+        cursor: Opaque cursor from a previous page; empty means the first page.
+        limit: Most keys to return; zero means the host default, at most `maxListPage`.
+    """
+
+    prefix: str
+    cursor: str
+    limit: int
+
+
+class KvListKey(TypedDict):
+    """One key on a `KvNamespace.list` page.
+
+    Attributes:
+        key: Key name.
+        metadata: Stored metadata JSON text; empty when none.
+        expirationUnixMs: Absolute expiry (UTC Unix milliseconds); zero means none.
+    """
+
+    key: str
+    metadata: str
+    expirationUnixMs: int
+
+
+class KvListOk(TypedDict):
+    """Success payload of `KvNamespace.list`.
+
+    Attributes:
+        keys: Keys in lexical order.
+        listComplete: True when no further page exists.
+        cursor: Cursor for the next page; empty when `listComplete`.
+    """
+
+    keys: list[KvListKey]
+    listComplete: bool
+    cursor: str
+
+
+class KvListReplyOk(TypedDict):
+    """``KvListReply`` member ``ok``.
+
+    Success: one page of keys.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one page of keys.
+    """
+
+    kind: Literal["ok"]
+    value: KvListOk
+
+
+class KvListReplyErr(TypedDict):
+    """``KvListReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+KvListReply = Union[
+    KvListReplyOk,
+    KvListReplyErr,
+]
+"""Result union of `KvNamespace.list`."""
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -4870,6 +5176,8 @@ __all__ = [
     "QueueConsumer",
     "QueueProducer",
     "NamedQueue",
+    "KvNamespace",
+    "NamedKv",
     "ContentSource",
     "RemoteLibrary",
     "PluginCli",
@@ -4981,6 +5289,25 @@ __all__ = [
     "QueueSendReplyOk",
     "QueueSendReplyErr",
     "QueueSendReply",
+    "KvPutOptions",
+    "KvGetOk",
+    "KvGetReplyOk",
+    "KvGetReplyErr",
+    "KvGetReply",
+    "KvPutOk",
+    "KvDeleteOk",
+    "KvPutReplyOk",
+    "KvPutReplyErr",
+    "KvPutReply",
+    "KvDeleteReplyOk",
+    "KvDeleteReplyErr",
+    "KvDeleteReply",
+    "KvListOptions",
+    "KvListKey",
+    "KvListOk",
+    "KvListReplyOk",
+    "KvListReplyErr",
+    "KvListReply",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

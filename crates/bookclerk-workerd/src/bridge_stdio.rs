@@ -169,6 +169,7 @@ impl WorkerdRoot {
             events_token: None,
             databases: BTreeMap::new(),
             queues: BTreeMap::new(),
+            kv: BTreeMap::new(),
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -200,6 +201,11 @@ impl WorkerdRoot {
                 .queues
                 .into_iter()
                 .map(|q| (q.name, q.queue, Arc::from(q.producer)))
+                .collect(),
+            kv: bindings
+                .kv
+                .into_iter()
+                .map(|k| (k.name, k.namespace, Arc::from(k.kv)))
                 .collect(),
         };
         let opened = client.open(&invocation, host_bindings).await?;
@@ -274,6 +280,26 @@ impl WorkerdRoot {
             });
             queues.insert(named.name, token);
         }
+        // One kv-only grant token per `[[kv_namespaces]]` binding: the adapter
+        // isolate reaches the namespace over `/kv/*` with that token and
+        // installs a Workers `KVNamespace`-shaped binding on the author's `env`.
+        let mut kv = BTreeMap::new();
+        let mut kv_grants = Vec::with_capacity(bindings.kv.len());
+        for named in bindings.kv {
+            let token = format!("{:032x}", rand::random::<u128>());
+            self.table.borrow_mut().insert(
+                token.clone(),
+                GrantedSlot::kv_only(
+                    Rc::from(named.kv),
+                    grant_expiry(invocation.deadline_unix_ms),
+                ),
+            );
+            kv_grants.push(RevokeGrant {
+                table: Rc::clone(&self.table),
+                grant: token.clone(),
+            });
+            kv.insert(named.name, token);
+        }
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
@@ -281,12 +307,14 @@ impl WorkerdRoot {
             events_token,
             databases,
             queues,
+            kv,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
             _events: events_grant,
             _databases: database_grants,
             _queues: queue_grants,
+            _kv: kv_grants,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -418,6 +446,9 @@ struct BridgeContext {
     /// `[[queues.producers]]` binding → queue-only bearer for `/queues/send`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     queues: BTreeMap<String, String>,
+    /// `[[kv_namespaces]]` binding → kv-only bearer for `/kv/*`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    kv: BTreeMap<String, String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -436,6 +467,7 @@ struct OpenGrants {
     _events: Option<Rc<RevokeGrant>>,
     _databases: Vec<RevokeGrant>,
     _queues: Vec<RevokeGrant>,
+    _kv: Vec<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -677,6 +709,7 @@ impl JobRunner for InvokeJobRunner {
                 max_request_bytes,
                 events: None,
                 queue: None,
+                kv: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -778,6 +811,7 @@ mod tests {
             events_token: Some("ev".into()),
             databases: BTreeMap::from([("DB".to_string(), "tok".to_string())]),
             queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
+            kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,
@@ -790,6 +824,7 @@ mod tests {
         assert_eq!(v["eventsToken"], "ev");
         assert_eq!(v["databases"]["DB"], "tok");
         assert_eq!(v["queues"]["NOTIFY"], "qtok");
+        assert_eq!(v["kv"]["KV"], "ktok");
         assert!(v.get("config").is_some());
     }
 }

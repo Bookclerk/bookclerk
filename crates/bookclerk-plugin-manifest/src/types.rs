@@ -217,9 +217,9 @@ pub struct BindingCapabilities {
     pub config: bool,
     /// Guest may read sealed secrets / credentials via host bindings (`[secrets]`).
     pub secrets: bool,
-    /// `[[kv_namespaces]]` is declared. Durable KV is not implemented yet;
-    /// load and spawn refuse the guest instead of injecting an empty `env.KV`.
-    /// This is a different capability from [`Self::databases`].
+    /// `[[kv_namespaces]]` is declared: the host grants one durable
+    /// key/value namespace per row, served from the library database. This
+    /// is a different capability from [`Self::databases`].
     pub plugin_kv: bool,
     /// Guest may use host-mediated work filesystem (`[work_fs]`).
     pub work_fs: bool,
@@ -272,6 +272,110 @@ impl NamedBinding {
             &self.binding
         }
     }
+}
+
+/// One `[[kv_namespaces]]` row — a durable key/value namespace the host
+/// serves from the library database, scoped to this plugin.
+///
+/// The `binding` key names the property on `env` (default `KV`). The
+/// `namespace` defaults to the binding name lowercased, so two rows are
+/// distinct stores unless they name the same namespace on purpose. Values
+/// live in the cluster: an instance moved to another host reads its own keys.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct KvNamespaceManifest {
+    /// Binding name exposed on `env`; empty means `KV`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub binding: String,
+    /// Namespace the binding is scoped to (`[a-z0-9][a-z0-9._-]*`); empty
+    /// means the binding name lowercased.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
+    /// Largest value in bytes (default [`DEFAULT_KV_MAX_VALUE_BYTES`], at
+    /// most [`MAX_KV_VALUE_BYTES`]).
+    #[serde(
+        default = "default_kv_max_value_bytes",
+        skip_serializing_if = "is_default_kv_max_value_bytes"
+    )]
+    pub max_value_bytes: u32,
+    /// Most live keys in the namespace (default [`DEFAULT_KV_MAX_KEYS`], at
+    /// most [`MAX_KV_KEYS`]); a `put` past the cap fails with `forbidden`.
+    #[serde(
+        default = "default_kv_max_keys",
+        skip_serializing_if = "is_default_kv_max_keys"
+    )]
+    pub max_keys: u32,
+}
+
+impl Default for KvNamespaceManifest {
+    fn default() -> Self {
+        Self {
+            binding: String::new(),
+            namespace: String::new(),
+            max_value_bytes: DEFAULT_KV_MAX_VALUE_BYTES,
+            max_keys: DEFAULT_KV_MAX_KEYS,
+        }
+    }
+}
+
+impl KvNamespaceManifest {
+    /// Resolves the binding name, falling back to `default`.
+    #[must_use]
+    pub fn name_or<'a>(&'a self, default: &'a str) -> &'a str {
+        if self.binding.is_empty() {
+            default
+        } else {
+            &self.binding
+        }
+    }
+
+    /// Binding name on `env` (`KV` when omitted).
+    #[must_use]
+    pub fn binding_name(&self) -> &str {
+        self.name_or(DEFAULT_KV_BINDING)
+    }
+
+    /// Namespace the binding is scoped to: the declared name, or the binding
+    /// name lowercased.
+    #[must_use]
+    pub fn namespace_name(&self) -> String {
+        if self.namespace.is_empty() {
+            self.binding_name().to_ascii_lowercase()
+        } else {
+            self.namespace.clone()
+        }
+    }
+}
+
+/// Default `max_value_bytes` for `[[kv_namespaces]]`: 64 KiB.
+pub const DEFAULT_KV_MAX_VALUE_BYTES: u32 = 65_536;
+/// Largest `max_value_bytes` a namespace may declare: 1 MiB (the ABI cap).
+pub const MAX_KV_VALUE_BYTES: u32 = 1_048_576;
+/// Default `max_keys` for `[[kv_namespaces]]`.
+pub const DEFAULT_KV_MAX_KEYS: u32 = 10_000;
+/// Largest `max_keys` a namespace may declare.
+pub const MAX_KV_KEYS: u32 = 1_000_000;
+
+/// Serde default for `KvNamespaceManifest::max_value_bytes`.
+fn default_kv_max_value_bytes() -> u32 {
+    DEFAULT_KV_MAX_VALUE_BYTES
+}
+
+/// Serde default for `KvNamespaceManifest::max_keys`.
+fn default_kv_max_keys() -> u32 {
+    DEFAULT_KV_MAX_KEYS
+}
+
+/// Keeps `format_manifest` output minimal for the default value cap.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_kv_max_value_bytes(value: &u32) -> bool {
+    *value == DEFAULT_KV_MAX_VALUE_BYTES
+}
+
+/// Keeps `format_manifest` output minimal for the default key cap.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_kv_max_keys(value: &u32) -> bool {
+    *value == DEFAULT_KV_MAX_KEYS
 }
 
 /// Default `binding` for `[secrets]`.
@@ -746,11 +850,12 @@ pub struct PluginManifest {
     pub secrets: Option<NamedBinding>,
     /// Per-plugin key/value storage bindings (`[[kv_namespaces]]`).
     ///
-    /// Durable `env.<BINDING>` (default `KV`), distinct from [`Self::databases`].
-    /// The declaration stays legal. Load and spawn fail with "not implemented
-    /// yet" until the host store exists. Do not treat this as a hint to use SQL.
+    /// Durable `env.<BINDING>` (default `KV`) served from the library
+    /// database, distinct from [`Self::databases`]: a Workers `KVNamespace`
+    /// surface (`get` / `put` / `delete` / `list`, expiration, metadata) that
+    /// follows the instance across hosts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kv_namespaces: Vec<NamedBinding>,
+    pub kv_namespaces: Vec<KvNamespaceManifest>,
     /// Workers Queues (`[queues]` with `[[queues.producers]]` /
     /// `[[queues.consumers]]`): send bindings and `queue(batch)` triggers on
     /// the host outbox. The domain-event bus (`[events]`) is the host's own
@@ -858,6 +963,32 @@ impl PluginManifest {
         })
     }
 
+    /// Validates every `[[kv_namespaces]]` row: namespace grammar and limits
+    /// within the ABI caps.
+    fn validate_kv_namespaces(&self) -> Result<()> {
+        for (i, row) in self.kv_namespaces.iter().enumerate() {
+            let namespace = row.namespace_name();
+            if !is_valid_queue_name(&namespace) {
+                return Err(Error::message(format!(
+                    "plugin.toml: kv_namespaces[{i}].namespace `{namespace}` must be \
+                     `[a-z0-9][a-z0-9._-]*` and at most {MAX_QUEUE_NAME_LEN} chars"
+                )));
+            }
+            if row.max_value_bytes == 0 || row.max_value_bytes > MAX_KV_VALUE_BYTES {
+                return Err(Error::message(format!(
+                    "plugin.toml: kv_namespaces[{i}].max_value_bytes must be \
+                     1..={MAX_KV_VALUE_BYTES}"
+                )));
+            }
+            if row.max_keys == 0 || row.max_keys > MAX_KV_KEYS {
+                return Err(Error::message(format!(
+                    "plugin.toml: kv_namespaces[{i}].max_keys must be 1..={MAX_KV_KEYS}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Validates `[queues]`: queue-name grammar, reserved prefixes, one
     /// consumer per queue, bounded batch / retry knobs, and a dead-letter
     /// queue that is a different, unreserved queue.
@@ -924,21 +1055,16 @@ impl PluginManifest {
     /// Spawn/load error when the manifest declares a surface the host cannot
     /// run yet.
     ///
-    /// The refusal is runtime-agnostic: a native plugin that declares KV
-    /// fails spawn the same way a workerd plugin does. `[[kv_namespaces]]`
-    /// stays in the schema. The message contains "not implemented yet" and
-    /// does not suggest `[[databases]]` or events as a substitute. `None`
-    /// means load may continue.
+    /// Every manifest surface is implemented today (`[[kv_namespaces]]` and
+    /// `[queues]` included); the hook stays so a future declared-but-unbuilt
+    /// table can refuse load with "not implemented yet" without touching the
+    /// spawn sites.
     ///
     /// # Returns
     ///
-    /// The first unimplemented surface, or `None` when the manifest does not
-    /// declare KV.
+    /// The first unimplemented surface, or `None` when load may continue.
     #[must_use]
     pub fn unimplemented_surface(&self) -> Option<String> {
-        if !self.kv_namespaces.is_empty() {
-            return Some("[[kv_namespaces]] is not implemented yet".to_string());
-        }
         None
     }
 
@@ -1565,6 +1691,7 @@ impl PluginManifest {
             }
         }
         self.validate_queues()?;
+        self.validate_kv_namespaces()?;
         Ok(())
     }
 
@@ -2474,17 +2601,41 @@ mode = "deny"
     }
 
     #[test]
-    fn kv_namespace_stays_parseable_and_spawn_says_not_implemented() {
+    fn kv_namespace_is_implemented_and_validates_its_rows() {
         let m = PluginManifest::parse(&workerd_body(
             "\n[[kv_namespaces]]\nbinding = \"KV\"\n[[databases]]\nbinding = \"DB\"\n",
         ))
-        .expect("kv declaration stays legal");
-        let message = m.unimplemented_surface().expect("kv refuses spawn");
-        assert!(message.contains("not implemented yet"), "{message}");
-        assert!(
-            !message.to_ascii_lowercase().contains("database"),
-            "{message}"
+        .expect("kv declaration is legal");
+        assert!(m.unimplemented_surface().is_none(), "kv spawns");
+        assert!(m.bindings().plugin_kv);
+        let row = &m.kv_namespaces[0];
+        assert_eq!(row.binding_name(), "KV");
+        assert_eq!(
+            row.namespace_name(),
+            "kv",
+            "namespace defaults to the lowercased binding"
         );
+        assert_eq!(row.max_value_bytes, DEFAULT_KV_MAX_VALUE_BYTES);
+        assert_eq!(row.max_keys, DEFAULT_KV_MAX_KEYS);
+        let explicit = PluginManifest::parse(&workerd_body(
+            "\n[[kv_namespaces]]\nbinding = \"CURSORS\"\nnamespace = \"sync.cursors\"\n\
+             max_value_bytes = 1024\nmax_keys = 50\n",
+        ))
+        .expect("explicit row");
+        assert_eq!(explicit.kv_namespaces[0].namespace_name(), "sync.cursors");
+        assert_eq!(explicit.kv_namespaces[0].max_value_bytes, 1024);
+        for (extra, needle) in [
+            ("namespace = \"Bad Name\"", "namespace"),
+            ("max_value_bytes = 0", "max_value_bytes"),
+            ("max_value_bytes = 2000000", "max_value_bytes"),
+            ("max_keys = 0", "max_keys"),
+        ] {
+            let err = PluginManifest::parse(&workerd_body(&format!(
+                "\n[[kv_namespaces]]\nbinding = \"KV\"\n{extra}\n"
+            )))
+            .expect_err(needle);
+            assert!(err.to_string().contains(needle), "{needle}: {err}");
+        }
         let collide =
             PluginManifest::parse(&workerd_body("\n[[kv_namespaces]]\nbinding = \"EVENTS\"\n"))
                 .expect_err("KV must not use EVENTS");

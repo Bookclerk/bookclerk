@@ -942,4 +942,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_plugin_deployment_observations_host_id
         ON plugin_deployment_observations(host_id)",
     ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_kv (
+        plugin_key TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        metadata TEXT NOT NULL DEFAULT '',
+        expires_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, namespace, key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_kv_expires
+        ON plugin_kv(expires_at)",
+    ),
 ];

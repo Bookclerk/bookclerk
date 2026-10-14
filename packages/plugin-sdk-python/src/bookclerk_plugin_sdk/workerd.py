@@ -100,6 +100,7 @@ __all__ = [
     "EventMessage",
     "GuestDatabase",
     "JobController",
+    "KvNamespace",
     "NamedEntrypoint",
     "OidcEntrypoint",
     "PluginError",
@@ -119,6 +120,7 @@ __all__ = [
     "py",
     "queue_batch_results",
     "transport_database",
+    "transport_kv",
     "transport_queue",
 ]
 
@@ -398,6 +400,14 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
             if not isinstance(name, str) or not name or queue is None:
                 continue
             granted[name] = transport_queue(queue)
+    kv = _get(ctx, "kv")
+    if kv is not None:
+        for entry in kv:
+            name = _get(entry, "name")
+            namespace = _get(entry, "kv")
+            if not isinstance(name, str) or not name or namespace is None:
+                continue
+            granted[name] = transport_kv(namespace)
     return _EnvView(raw_env, granted)
 
 
@@ -831,6 +841,117 @@ def transport_queue(stub: Any) -> QueueBinding:
         The author-facing binding.
     """
     return QueueBinding(stub)
+
+
+class KvNamespace:
+    """``[[kv_namespaces]]`` binding (``env.<BINDING>``): Workers ``KVNamespace``-shaped storage.
+
+    The host serves the namespace from the library database, scoped to this
+    plugin and the namespace the row names, so values follow the instance
+    across hosts. The adapter isolate owns the kv grant; this wrapper converts
+    Python values into the JS values the adapter stub expects.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def get(self, key: str, type: str = "text") -> Any:
+        """Read one key.
+
+        Args:
+            key: Key, at most ``MAX_KV_KEY_BYTES`` UTF-8 bytes.
+            type: ``text`` (``str``), ``json`` (decoded value), or ``bytes``.
+
+        Returns:
+            The value, or ``None`` when absent or expired.
+        """
+        value, _ = await self.get_with_metadata(key, type)
+        return value
+
+    async def get_with_metadata(self, key: str, type: str = "text") -> tuple[Any, Any]:
+        """Read one key with its metadata.
+
+        Args:
+            key: Key to read.
+            type: ``text``, ``json``, or ``bytes``.
+
+        Returns:
+            ``(value, metadata)``; both ``None`` when absent.
+        """
+        js_type = "arrayBuffer" if type == "bytes" else type
+        if js_type not in ("text", "json", "arrayBuffer"):
+            raise ValueError(f"unknown kv value type `{type}`")
+        reply = py(await self._stub.getWithMetadata(key, js_type)) or {}
+        value = _get(reply, "value")
+        if js_type == "arrayBuffer" and value is not None and not isinstance(value, bytes):
+            value = bytes(py(value) or b"")
+        return value, _get(reply, "metadata")
+
+    async def put(
+        self,
+        key: str,
+        value: str | bytes,
+        *,
+        expiration: int | None = None,
+        expiration_ttl: int | None = None,
+        metadata: Any = None,
+    ) -> None:
+        """Write one key, replacing any previous value and metadata.
+
+        Args:
+            key: Key to write.
+            value: ``str`` (stored as UTF-8) or ``bytes``.
+            expiration: Absolute expiry in seconds since the Unix epoch.
+            expiration_ttl: Relative expiry in seconds from the write.
+            metadata: JSON-serializable metadata.
+        """
+        options: dict[str, Any] = {}
+        if expiration is not None:
+            options["expiration"] = int(expiration)
+        if expiration_ttl is not None:
+            options["expirationTtl"] = int(expiration_ttl)
+        if metadata is not None:
+            options["metadata"] = metadata
+        await self._stub.put(key, js(value), js(options))
+
+    async def delete(self, key: str) -> None:
+        """Delete one key; a missing key is not an error."""
+        await self._stub.delete(key)
+
+    async def list(
+        self, *, prefix: str = "", cursor: str = "", limit: int = 0
+    ) -> dict[str, Any]:
+        """List keys in lexical order, one page at a time.
+
+        Args:
+            prefix: Only keys starting with this prefix.
+            cursor: Cursor from a previous page.
+            limit: Most keys to return (host default when 0).
+
+        Returns:
+            ``{"keys": [{"name", "expiration"?, "metadata"?}], "list_complete": bool, "cursor"?: str}``.
+        """
+        options: dict[str, Any] = {}
+        if prefix:
+            options["prefix"] = prefix
+        if cursor:
+            options["cursor"] = cursor
+        if limit:
+            options["limit"] = int(limit)
+        reply = py(await self._stub.list(js(options))) or {}
+        return dict(reply) if isinstance(reply, dict) else {"keys": [], "list_complete": True}
+
+
+def transport_kv(stub: Any) -> KvNamespace:
+    """Wrap the adapter's granted KV stub as a :class:`KvNamespace`.
+
+    Args:
+        stub: ``KvNamespaceBinding``-shaped JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return KvNamespace(stub)
 
 
 # ---------------------------------------------------------------------------

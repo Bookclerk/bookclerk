@@ -1,5 +1,5 @@
 api_version = 3
-id = "not_implemented_kv"
+id = "valid_kv"
 version = "0.1.0"
 runtime = "workerd"
 entrypoints = ["cli"]
@@ -12,6 +12,12 @@ entrypoint = "default"
 
 [[kv_namespaces]]
 binding = "KV"
+
+[[kv_namespaces]]
+binding = "CURSORS"
+namespace = "sync.cursors"
+max_value_bytes = 4096
+max_keys = 500
 
 [capabilities.network]
 mode = "deny"

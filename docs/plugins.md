@@ -984,8 +984,8 @@ from it. When they do, a behavior change ships with an enable date in a
 Bookclerk release, and a plugin gets the behavior of the date this release
 actually applied — not a second calendar, and not the raw author date when it
 is past the pin. `[[kv_namespaces]]` is a
-durable KV binding: declaring it is legal, and load or spawn fails with
-"not implemented yet". `[[databases]]` does not replace it. `[queues]` is
+durable KV binding on the host library (see [KV namespaces](#kv-namespaces)).
+`[[databases]]` does not replace it. `[queues]` is
 typed: `[[queues.producers]]` rows are `env` send bindings and
 `[[queues.consumers]]` rows are `queue(batch)` triggers, both on the host
 outbox (see [Queues](#queues)). It is not a substitute for
@@ -1372,7 +1372,7 @@ export `cli` (and optional event/job triggers) — not a `kind = "integration"`.
 | `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `queue` / `job` triggers) |
 | Named `export class` entrypoints | `entrypoints = ["storefront", …]` + matching `*Entrypoint` subclass |
 | `env.DB` | `[[databases]]` → granted on `env` |
-| `env.KV` | `[[kv_namespaces]]` durable KV binding. Not implemented yet. |
+| `env.KV` | `[[kv_namespaces]]` → `get` / `getWithMetadata` / `put` / `delete` / `list` with `expiration`, `expirationTtl`, and `metadata` |
 | `env.SECRETS` | `[secrets]` → granted on `env` |
 | `[[queues.producers]]` / `[[queues.consumers]]` | `env.<BINDING>.send` / `sendBatch` and `queue(batch)` with per-message `ack` / `retry` |
 | `[[events.consumers]]` | `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend` |
@@ -1429,6 +1429,60 @@ a `GrantedEvents` `RpcTarget`; `publish()` POSTs the event to
 database-only grants are `forbidden`) and enforces the payload cap before
 forwarding to the host publisher. Author isolates never see `GRANTED` or the
 grant token.
+
+## KV namespaces
+
+`[[kv_namespaces]]` gives a plugin Workers `KVNamespace`-shaped storage
+that the host serves from the library database (`plugin_kv`). Every row is
+scoped to the plugin's PluginKey and to the namespace the manifest row
+names, so the values follow the instance: a sync cursor written on one host
+is what the same instance reads after it moves to another.
+
+```toml
+[[kv_namespaces]]                # env.KV, namespace "kv"
+
+[[kv_namespaces]]
+binding = "CURSORS"              # env.CURSORS
+namespace = "sync.cursors"       # [a-z0-9][a-z0-9._-]*; default: binding lowercased
+max_value_bytes = 4096           # default 65536, at most 1 MiB
+max_keys = 500                   # default 10000, at most 1000000
+```
+
+```ts
+await env.CURSORS.put(`audible:${accountId}`, page, {
+  expirationTtl: 86_400,          // or `expiration` (seconds since epoch)
+  metadata: { scannedAt: Date.now() },
+});
+const cursor = await env.CURSORS.get(`audible:${accountId}`); // string | null
+const { value, metadata } = await env.CURSORS.getWithMetadata(key, "json");
+const page = await env.KV.list({ prefix: "audible:", limit: 100 }); // { keys, list_complete, cursor? }
+await env.KV.delete(key);
+```
+
+Rules:
+
+- **Scope.** The guest never chooses the plugin key or namespace; both come
+  from the manifest row and the spawned identity. Two rows are separate
+  stores unless they name the same `namespace`.
+- **Consent.** Declaring any row adds the `plugin_kv` binding token to the
+  consent request; without it no `env.<BINDING>` appears.
+- **Limits.** Keys are 1–512 UTF-8 bytes (`MAX_KV_KEY_BYTES`), metadata is
+  JSON of at most 1 KiB (`MAX_KV_METADATA_BYTES`), and a value is at most the
+  row's `max_value_bytes` (`payload_too_large` otherwise). A `put` of a new
+  key into a namespace already holding `max_keys` live keys fails with
+  `forbidden`; rewriting an existing key never counts against the cap.
+- **Expiry.** Expiry is lazy: an expired key reads as absent, does not
+  count against `max_keys`, and is removed by the next write that needs the
+  slot or by the host's periodic prune.
+- **Consistency.** Reads see the latest committed write (it is a library
+  row, not an edge cache), so there is no Workers-style 60-second
+  propagation window.
+- **Transports.** Native guests receive `Bindings.kv` (`NamedKv`) as Cap'n
+  Proto `KvNamespace` capabilities. Under workerd the adapter isolate mints
+  one kv-only grant token per binding and the author's `env.<BINDING>`
+  calls `POST /kv/get|put|delete|list` on the launcher's `GRANTED` channel.
+  Python guests get the same surface as `KvNamespace` (`get`,
+  `get_with_metadata`, `put`, `delete`, `list`).
 
 ## Queues
 

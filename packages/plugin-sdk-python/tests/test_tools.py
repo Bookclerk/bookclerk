@@ -245,25 +245,48 @@ def test_check_rejects_typescript_main():
 
 
 def test_check_accepts_kv_and_queues_declarations():
-    assert "not_implemented_kv" in check_plugin(FIXTURES / "not-implemented-kv")
+    assert "valid_kv" in check_plugin(FIXTURES / "valid-kv")
     assert "valid_queues" in check_plugin(FIXTURES / "valid-queues")
 
 
-def test_materialize_refuses_kv_fixture():
+def test_check_rejects_bad_kv_namespace():
+    with pytest.raises(ValueError, match="namespace"):
+        check_plugin(FIXTURES / "invalid-kv-namespace")
+
+
+def test_materialize_accepts_kv_fixture():
     import tomllib
 
     from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
 
     manifest = tomllib.loads(
-        (FIXTURES / "not-implemented-kv" / "plugin.toml").read_text(encoding="utf-8")
+        (FIXTURES / "valid-kv" / "plugin.toml").read_text(encoding="utf-8")
     )
-    with pytest.raises(ValueError, match="not implemented yet"):
-        materialize_config(
-            FIXTURES / "not-implemented-kv",
-            manifest,
-            listen_port=0,
-            bridge_token="token",
-        )
+    materialize_config(
+        FIXTURES / "valid-kv",
+        manifest,
+        listen_port=0,
+        bridge_token="token",
+    )
+
+
+def test_kv_rows_format_and_type():
+    import tomllib
+
+    from bookclerk_plugin_sdk.tools import render_env_types
+
+    manifest = tomllib.loads(
+        (FIXTURES / "valid-kv" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    rendered = format_manifest(manifest)
+    assert 'namespace = "sync.cursors"' in rendered
+    assert "max_value_bytes = 4096" in rendered
+    assert "max_keys = 500" in rendered
+    stub = render_env_types(manifest)
+    assert "from bookclerk_plugin_sdk.workerd import KvNamespace" in stub
+    assert "    KV: KvNamespace" in stub
+    assert "    CURSORS: KvNamespace" in stub
+    assert "sync.cursors" in stub
 
 
 def test_format_keeps_queues_declaration():

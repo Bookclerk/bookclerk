@@ -422,6 +422,80 @@ export interface QueueProducerSendBatchResults {
 }
 
 /**
+ * Params envelope of `KvNamespace.get`.
+ *
+ * @internal
+ */
+export interface KvNamespaceGetParams {
+  key: string;
+}
+
+/**
+ * Results envelope of `KvNamespace.get`.
+ *
+ * @internal
+ */
+export interface KvNamespaceGetResults {
+  result: T.KvGetReply;
+}
+
+/**
+ * Params envelope of `KvNamespace.put`.
+ *
+ * @internal
+ */
+export interface KvNamespacePutParams {
+  key: string;
+  value: Uint8Array;
+  options: T.KvPutOptions;
+}
+
+/**
+ * Results envelope of `KvNamespace.put`.
+ *
+ * @internal
+ */
+export interface KvNamespacePutResults {
+  result: T.KvPutReply;
+}
+
+/**
+ * Params envelope of `KvNamespace.delete`.
+ *
+ * @internal
+ */
+export interface KvNamespaceDeleteParams {
+  key: string;
+}
+
+/**
+ * Results envelope of `KvNamespace.delete`.
+ *
+ * @internal
+ */
+export interface KvNamespaceDeleteResults {
+  result: T.KvDeleteReply;
+}
+
+/**
+ * Params envelope of `KvNamespace.list`.
+ *
+ * @internal
+ */
+export interface KvNamespaceListParams {
+  options: T.KvListOptions;
+}
+
+/**
+ * Results envelope of `KvNamespace.list`.
+ *
+ * @internal
+ */
+export interface KvNamespaceListResults {
+  result: T.KvListReply;
+}
+
+/**
  * Params envelope of `ContentSource.login`.
  *
  * @internal
@@ -1600,13 +1674,13 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `Bindings` (0 data words, 8 pointers).
+ * Wire codec for `Bindings` (0 data words, 9 pointers).
  *
  * @internal
  */
 export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
-  pointerCount: 8,
+  pointerCount: 9,
   write(s, v, caps) {
     if (v.config != null) {
       ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
@@ -1640,6 +1714,13 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
         NamedQueueCodec.write(items[i]!, list[i]!, caps);
       }
     }
+    {
+      const list = v.kv ?? [];
+      const items = s.initStructList(8, list.length, 0, 3);
+      for (let i = 0; i < items.length; i++) {
+        NamedKvCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
   },
   read(s, caps) {
     const out: T.Bindings = {
@@ -1648,6 +1729,7 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
       adapter: DatabaseAdapterConfigCodec.read(s.getStruct(2, 1, 4), caps),
       databases: s.getStructList(4, 0, 2).map((item) => NamedDatabaseCodec.read(item, caps)),
       queues: s.getStructList(7, 0, 3).map((item) => NamedQueueCodec.read(item, caps)),
+      kv: s.getStructList(8, 0, 3).map((item) => NamedKvCodec.read(item, caps)),
     };
     const eventsValue = caps.importCap(s.getCapIndex(3)) as T.EventPublisher;
     if (!(eventsValue == null)) {
@@ -3012,6 +3094,34 @@ export const NamedQueueCodec: StructCodec<T.NamedQueue> = {
     const producerValue = caps.importCap(s.getCapIndex(2)) as T.QueueProducer;
     if (!(producerValue == null)) {
       out.producer = producerValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `NamedKv` (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const NamedKvCodec: StructCodec<T.NamedKv> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.name ?? "");
+    s.setText(1, v.namespace ?? "");
+    if (v.kv != null) {
+      s.setCap(2, caps.exportCap(v.kv));
+    }
+  },
+  read(s, caps) {
+    const out: T.NamedKv = {
+      name: s.getText(0),
+      namespace: s.getText(1),
+    };
+    const kvValue = caps.importCap(s.getCapIndex(2)) as T.KvNamespace;
+    if (!(kvValue == null)) {
+      out.kv = kvValue;
     }
     return out;
   },
@@ -5705,6 +5815,328 @@ export const QueueSendReplyCodec: StructCodec<T.QueueSendReply> = {
 };
 
 /**
+ * Wire codec for `KvPutOptions` (2 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvPutOptionsCodec: StructCodec<T.KvPutOptions> = {
+  dataWords: 2,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setUint64(0, BigInt(v.expirationUnixMs ?? 0));
+    s.setUint64(1, BigInt(v.expirationTtlSeconds ?? 0));
+    s.setText(0, v.metadata ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      expirationUnixMs: Number(s.getUint64(0)),
+      expirationTtlSeconds: Number(s.getUint64(1)),
+      metadata: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KvGetOk` (2 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const KvGetOkCodec: StructCodec<T.KvGetOk> = {
+  dataWords: 2,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.found ?? false);
+    s.setData(0, v.value ?? EMPTY_BYTES);
+    s.setText(1, v.metadata ?? "");
+    s.setUint64(1, BigInt(v.expirationUnixMs ?? 0));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      found: s.getBool(0),
+      value: s.getData(0),
+      metadata: s.getText(1),
+      expirationUnixMs: Number(s.getUint64(1)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KvGetReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvGetReplyCodec: StructCodec<T.KvGetReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          KvGetOkCodec.write(s.initStruct(0, 2, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("KvGetReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: KvGetOkCodec.read(s.getStruct(0, 2, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("KvGetReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `KvPutOk` (1 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const KvPutOkCodec: StructCodec<T.KvPutOk> = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setUint64(0, BigInt(v.expirationUnixMs ?? 0));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      expirationUnixMs: Number(s.getUint64(0)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KvDeleteOk` (1 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const KvDeleteOkCodec: StructCodec<T.KvDeleteOk> = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.existed ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      existed: s.getBool(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KvPutReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvPutReplyCodec: StructCodec<T.KvPutReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          KvPutOkCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("KvPutReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: KvPutOkCodec.read(s.getStruct(0, 1, 0), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("KvPutReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `KvDeleteReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvDeleteReplyCodec: StructCodec<T.KvDeleteReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          KvDeleteOkCodec.write(s.initStruct(0, 1, 0), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("KvDeleteReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: KvDeleteOkCodec.read(s.getStruct(0, 1, 0), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("KvDeleteReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `KvListOptions` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const KvListOptionsCodec: StructCodec<T.KvListOptions> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.prefix ?? "");
+    s.setText(1, v.cursor ?? "");
+    s.setUint32(0, v.limit ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      prefix: s.getText(0),
+      cursor: s.getText(1),
+      limit: s.getUint32(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KvListKey` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const KvListKeyCodec: StructCodec<T.KvListKey> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.key ?? "");
+    s.setText(1, v.metadata ?? "");
+    s.setUint64(0, BigInt(v.expirationUnixMs ?? 0));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      key: s.getText(0),
+      metadata: s.getText(1),
+      expirationUnixMs: Number(s.getUint64(0)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KvListOk` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const KvListOkCodec: StructCodec<T.KvListOk> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.keys ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        KvListKeyCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setBool(0, v.listComplete ?? false);
+    s.setText(1, v.cursor ?? "");
+  },
+  read(s, caps) {
+    return {
+      keys: s.getStructList(0, 1, 2).map((item) => KvListKeyCodec.read(item, caps)),
+      listComplete: s.getBool(0),
+      cursor: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `KvListReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvListReplyCodec: StructCodec<T.KvListReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          KvListOkCodec.write(s.initStruct(0, 1, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("KvListReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: KvListOkCodec.read(s.getStruct(0, 1, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("KvListReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -7686,6 +8118,170 @@ export const QueueProducerSendBatchResultsCodec: StructCodec<QueueProducerSendBa
 };
 
 /**
+ * Wire codec for the `KvNamespace.get` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvNamespaceGetParamsCodec: StructCodec<KvNamespaceGetParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.key ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      key: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `KvNamespace.get` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvNamespaceGetResultsCodec: StructCodec<KvNamespaceGetResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      KvGetReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: KvGetReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `KvNamespace.put` params envelope (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const KvNamespacePutParamsCodec: StructCodec<KvNamespacePutParams> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.key ?? "");
+    s.setData(1, v.value ?? EMPTY_BYTES);
+    if (v.options != null) {
+      KvPutOptionsCodec.write(s.initStruct(2, 2, 1), v.options, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      key: s.getText(0),
+      value: s.getData(1),
+      options: KvPutOptionsCodec.read(s.getStruct(2, 2, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `KvNamespace.put` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvNamespacePutResultsCodec: StructCodec<KvNamespacePutResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      KvPutReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: KvPutReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `KvNamespace.delete` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvNamespaceDeleteParamsCodec: StructCodec<KvNamespaceDeleteParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.key ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      key: s.getText(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `KvNamespace.delete` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvNamespaceDeleteResultsCodec: StructCodec<KvNamespaceDeleteResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      KvDeleteReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: KvDeleteReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `KvNamespace.list` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvNamespaceListParamsCodec: StructCodec<KvNamespaceListParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.options != null) {
+      KvListOptionsCodec.write(s.initStruct(0, 1, 2), v.options, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      options: KvListOptionsCodec.read(s.getStruct(0, 1, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `KvNamespace.list` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const KvNamespaceListResultsCodec: StructCodec<KvNamespaceListResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      KvListReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: KvListReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `ContentSource.login` params envelope (0 data words, 1 pointers).
  *
  * @internal
@@ -9262,13 +9858,13 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
       InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
-      BindingsCodec.write(s.initStruct(1, 0, 8), v.bindings, caps);
+      BindingsCodec.write(s.initStruct(1, 0, 9), v.bindings, caps);
     }
   },
   read(s, caps) {
     return {
       invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
-      bindings: BindingsCodec.read(s.getStruct(1, 0, 8), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 9), caps),
     };
   },
 };

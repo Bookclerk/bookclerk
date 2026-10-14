@@ -178,6 +178,37 @@ pub trait QueueProducer {
     ) -> Result<crate::QueueSendOk>;
 }
 
+/// Durable key/value namespace: Workers `KVNamespace`-shaped binding the host
+/// serves from the library database, scoped to the plugin and the namespace a
+/// `[[kv_namespaces]]` row names. Values live in the cluster, so an instance
+/// moved to another host reads its own keys.
+#[async_trait::async_trait(?Send)]
+pub trait KvNamespace {
+    /// Reads one key; `found = false` when absent or expired.
+    async fn get(&self, key: String) -> Result<crate::KvGetOk>;
+    /// Writes one key, replacing any previous value and metadata.
+    async fn put(
+        &self,
+        key: String,
+        value: Vec<u8>,
+        options: crate::KvPutOptions,
+    ) -> Result<crate::KvPutOk>;
+    /// Deletes one key; a missing key is not an error.
+    async fn delete(&self, key: String) -> Result<crate::KvDeleteOk>;
+    /// Lists keys in lexical order, one page at a time.
+    async fn list(&self, options: crate::KvListOptions) -> Result<crate::KvListOk>;
+}
+
+/// One granted `[[kv_namespaces]]` binding on [`Bindings::kv`].
+pub struct NamedKvBinding {
+    /// Binding name on `env` (`[[kv_namespaces]] binding`).
+    pub name: String,
+    /// Namespace the binding is scoped to.
+    pub namespace: String,
+    /// Host-served namespace.
+    pub kv: Box<dyn KvNamespace>,
+}
+
 /// One granted `[[queues.producers]]` binding on [`Bindings::queues`].
 pub struct NamedQueueBinding {
     /// Binding name on `env` (`[[queues.producers]] binding`).
@@ -502,6 +533,8 @@ pub struct Bindings {
     pub storage: Option<Box<dyn Destination>>,
     /// Named `[[queues.producers]]` bindings; empty when none is granted.
     pub queues: Vec<NamedQueueBinding>,
+    /// Named `[[kv_namespaces]]` bindings; empty when none is granted.
+    pub kv: Vec<NamedKvBinding>,
 }
 
 impl Bindings {
@@ -518,6 +551,7 @@ impl Bindings {
             cancel: Box::new(NeverCancel),
             storage: None,
             queues: Vec::new(),
+            kv: Vec::new(),
         }
     }
 
@@ -526,6 +560,13 @@ impl Bindings {
     pub fn take_named_queue(&mut self, name: &str) -> Option<NamedQueueBinding> {
         let idx = self.queues.iter().position(|q| q.name == name)?;
         Some(self.queues.swap_remove(idx))
+    }
+
+    /// Takes the named KV namespace binding `name`, if granted.
+    #[must_use]
+    pub fn take_named_kv(&mut self, name: &str) -> Option<NamedKvBinding> {
+        let idx = self.kv.iter().position(|k| k.name == name)?;
+        Some(self.kv.swap_remove(idx))
     }
 
     /// Plain-data view (`config` / `secrets` / `adapter`).

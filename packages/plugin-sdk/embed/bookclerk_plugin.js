@@ -18,6 +18,9 @@ var MAX_STREAM_WINDOW_BYTES = 1048576;
 var MAX_LIST_PAGE = 256;
 var MAX_CHECKPOINT_BYTES = 65536;
 var MAX_EVENT_PAYLOAD_BYTES = 65536;
+var MAX_KV_VALUE_BYTES = 1048576;
+var MAX_KV_KEY_BYTES = 512;
+var MAX_KV_METADATA_BYTES = 1024;
 var MAX_PLUGIN_MIGRATION_OPS = 256;
 var MAX_PLUGIN_MIGRATION_TOTAL_OPS = 2048;
 var MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
@@ -7431,6 +7434,13 @@ function invocationEnv(rawEnv, context) {
         merged[entry.name] = entry.queue;
       }
     }
+    if (Array.isArray(context.kv)) {
+      for (const entry of context.kv) {
+        if (!entry || typeof entry.name !== "string" || !entry.name || !entry.kv)
+          continue;
+        merged[entry.name] = entry.kv;
+      }
+    }
   }
   return Object.freeze(merged);
 }
@@ -8749,6 +8759,130 @@ var GrantedQueue = class extends RpcTarget {
     return { messageIds: Array.isArray(value.messageIds) ? value.messageIds.map((id) => String(id)) : [] };
   }
 };
+function checkKvKey(key) {
+  if (typeof key !== "string" || key.length === 0) {
+    throw PluginError.fromWire("invalid_params", "kv key must be a non-empty string");
+  }
+  const bytes = new TextEncoder().encode(key).byteLength;
+  if (bytes > MAX_KV_KEY_BYTES) {
+    throw PluginError.fromWire("payload_too_large", `kv key of ${bytes} bytes exceeds ${MAX_KV_KEY_BYTES}`);
+  }
+  return key;
+}
+function parseKvMetadata(text) {
+  if (typeof text !== "string" || text === "")
+    return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+function decodeKvValue(bytes, type) {
+  if (type === "arrayBuffer") {
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+  const text = new TextDecoder().decode(bytes);
+  if (type === "json")
+    return JSON.parse(text);
+  return text;
+}
+var GrantedKv = class extends RpcTarget {
+  #granted;
+  #auth;
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the kv grant.
+   */
+  constructor(granted, auth) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+  async #call(op, body) {
+    const resp = await this.#granted.fetch(`http://granted/kv/${op}`, {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(toBridgeJson(body))
+    });
+    const value = await resp.json().catch(() => ({}));
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `kv ${op} HTTP ${resp.status}`);
+    }
+    return value ?? {};
+  }
+  async get(key, type = "text") {
+    const found = await this.#read(key, type);
+    return found.value;
+  }
+  async getWithMetadata(key, type = "text") {
+    return this.#read(key, type);
+  }
+  async #read(key, type) {
+    const reply = await this.#call("get", { key: checkKvKey(key) });
+    if (!reply.found)
+      return { value: null, metadata: null };
+    const bytes = typeof reply.value === "string" ? base64ToBytes(reply.value) : new Uint8Array();
+    return { value: decodeKvValue(bytes, type), metadata: parseKvMetadata(reply.metadata) };
+  }
+  async put(key, value, options) {
+    let bytes;
+    if (typeof value === "string") {
+      bytes = new TextEncoder().encode(value);
+    } else if (value instanceof ArrayBuffer) {
+      bytes = new Uint8Array(value);
+    } else if (ArrayBuffer.isView(value)) {
+      bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    } else {
+      throw PluginError.fromWire("invalid_params", "kv value must be a string, ArrayBuffer, or view");
+    }
+    if (bytes.byteLength > MAX_KV_VALUE_BYTES) {
+      throw PluginError.fromWire("payload_too_large", `kv value of ${bytes.byteLength} bytes exceeds ${MAX_KV_VALUE_BYTES}`);
+    }
+    const metadata = options?.metadata === void 0 ? "" : JSON.stringify(options.metadata);
+    const metadataBytes = new TextEncoder().encode(metadata).byteLength;
+    if (metadataBytes > MAX_KV_METADATA_BYTES) {
+      throw PluginError.fromWire("payload_too_large", `kv metadata of ${metadataBytes} bytes exceeds ${MAX_KV_METADATA_BYTES}`);
+    }
+    const expiration = Math.max(0, Math.floor(Number(options?.expiration ?? 0) || 0));
+    const ttl = Math.max(0, Math.floor(Number(options?.expirationTtl ?? 0) || 0));
+    await this.#call("put", {
+      key: checkKvKey(key),
+      value: bytes,
+      options: { expirationUnixMs: expiration * 1e3, expirationTtlSeconds: ttl, metadata }
+    });
+  }
+  async delete(key) {
+    await this.#call("delete", { key: checkKvKey(key) });
+  }
+  async list(options) {
+    const limit = Math.max(0, Math.floor(Number(options?.limit ?? 0) || 0));
+    if (limit > MAX_LIST_PAGE) {
+      throw PluginError.fromWire("invalid_params", `kv list limit of ${limit} exceeds ${MAX_LIST_PAGE}`);
+    }
+    const reply = await this.#call("list", {
+      options: { prefix: options?.prefix ?? "", cursor: options?.cursor ?? "", limit }
+    });
+    const keys = Array.isArray(reply.keys) ? reply.keys : [];
+    const cursor = typeof reply.cursor === "string" && reply.cursor ? reply.cursor : void 0;
+    return {
+      keys: keys.map((entry) => {
+        const ms = Number(entry.expirationUnixMs ?? 0) || 0;
+        const metadata = parseKvMetadata(entry.metadata);
+        return {
+          name: String(entry.key ?? ""),
+          ...ms > 0 ? { expiration: Math.floor(ms / 1e3) } : {},
+          ...metadata !== null ? { metadata } : {}
+        };
+      }),
+      list_complete: Boolean(reply.listComplete),
+      ...cursor ? { cursor } : {}
+    };
+  }
+};
 var GrantedDatabase = class extends RpcTarget {
   #granted;
   #auth;
@@ -8963,7 +9097,7 @@ function createInvocationAdapter() {
      */
     #bindContext(ctx) {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, queues, ...rest } = source;
+      const { eventsToken, databases, queues, kv, ...rest } = source;
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -8993,6 +9127,16 @@ function createInvocationAdapter() {
         }
         if (named2.length > 0)
           bound.queues = named2;
+      }
+      if (kv && typeof kv === "object" && !Array.isArray(kv) && granted) {
+        const named2 = [];
+        for (const [name, token] of Object.entries(kv)) {
+          if (!name || typeof token !== "string" || !token)
+            continue;
+          named2.push({ name, kv: new GrantedKv(granted, { Authorization: `Bearer ${token}` }) });
+        }
+        if (named2.length > 0)
+          bound.kv = named2;
       }
       return bound;
     }
