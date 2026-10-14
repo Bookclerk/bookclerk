@@ -2368,8 +2368,9 @@ pub fn guest_statement_kind(sql: &str) -> DbPlanStatementKind {
 /// Conservative and fail-closed — a caller-asserted `maxRows` is never
 /// trusted. A single-statement `INSERT` (after any leading CTE list) is
 /// proven when its row source is exactly one top-level `VALUES` tuple, or a
-/// table-free `SELECT` that cannot return a set (see
-/// [`select_row_source_is_single_row`]). `INSERT … SELECT … FROM`,
+/// table-free `SELECT` with no compound or grouping whose select list holds
+/// only placeholders, literals, operators, `COALESCE`, and scalar
+/// subqueries, so it cannot return a set. `INSERT … SELECT … FROM`,
 /// `UPDATE … RETURNING`, `DELETE … RETURNING`, and multi-tuple `VALUES` are
 /// never proven, because the SQL text does not bound how many rows they
 /// touch.
