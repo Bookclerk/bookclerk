@@ -219,7 +219,12 @@ When exercising real store credentials in this cloud environment:
   default instance; `bookclerk plugins config get|set|unset <plugin> <key>`
   edits the instance document (`--secret` reads the value from stdin and
   seals it); `bookclerk plugins enable|disable <plugin> [--host]` sets the
-  deployment (`present` = enabled on that host). There are no `[sources.*]`,
+  deployment (`present` = enabled on that host). `bookclerk plugins deploy
+  <plugin> --replicas N --on <label>` hands an instance to the cluster
+  scheduler instead (labels via `bookclerk hosts label`); enable/disable
+  then refuse it until `plugins deploy --manual`. `bookclerk plugins
+  install` publishes a cluster release (hosts materialize it under
+  `plugins/.releases/<digest>`); it no longer writes `plugins/<fs-id>`. There are no `[sources.*]`,
   `[output.local]`, `[output.s3]`, or `[integrations.<id>]` tables and no
   `BOOKCLERK_SOURCE_*` / `BOOKCLERK_OUTPUT_*` / `BOOKCLERK_S3_*` /
   `BOOKCLERK_AWS_*` / `BOOKCLERK_ABS_*` env overrides. Only `[database]`,

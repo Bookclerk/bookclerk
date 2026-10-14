@@ -1,9 +1,9 @@
 # ADR: Control plane — bootstrap, host identity, and database configuration
 
 - **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided and
-  in progress (Refs #192)
+  implemented (Refs #192)
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
-  releases decision: 2026-10-14)
+  releases decision and the Phase 3 implementation: 2026-10-14)
 - **Related:** [SQL database contract](sql-database-contract.md),
   [schema versioning](schema-versioning.md),
   [plugin capabilities v3](plugin-capabilities-v3.md),
@@ -186,26 +186,30 @@ That split is deliberate for this spike.
 ### Propagation
 
 `configuration_changes` is inserted in the same transaction as a successful
-replace. It is a notice that a revision committed. Plugin outbox delivery is
+replace. It is a notice that a revision committed. Plugin subscriptions are
 not used to wake hosts: a host with no matching plugin subscription would
-never see the event, and a missed delivery would look like a lost
-configuration change.
+never see the event. Since Phase 3 step 3, every committed document also
+publishes a `configuration.changed` message to each registered host's own
+queue (`host.<host_id>`, consumed only by that host's daemon); see
+*Implementation notes* below.
 
 Every process:
 
 - reads the document revision at startup (an offline process catches up by
   reading the current row, not by replaying notices);
-- re-reads at `CONFIG_RECONCILE_INTERVAL` (5 seconds) and overlays a newer
-  revision of the **same cluster id** onto `Config.events`. A stale read
-  cannot replace a newer body. Revisions from a different cluster are not
-  compared. Switching databases is an explicit swap and installs that
-  cluster's document even when its revision number is lower;
+- re-reads when its host queue wakes it, and on a 60 second backstop pass,
+  and overlays a newer revision of the **same cluster id** onto
+  `Config.events`. A stale read cannot replace a newer body. Revisions from
+  a different cluster are not compared. Switching databases is an explicit
+  swap and installs that cluster's document even when its revision number
+  is lower;
 - applies its own successful write immediately, under the same monotonic rule.
 
 A database connection observes a committed revision as soon as the batch
-commits. The 5 second interval is only the in-memory apply bound for a
-process that was already running. Failed validation and revision conflicts
-do not commit, do not write a change notice, and are not logged as applied.
+commits. The wakeup only bounds when a running process applies it in
+memory; a lost wakeup costs at most the backstop interval. Failed
+validation and revision conflicts do not commit, do not write a change
+notice, and are not logged as applied.
 
 ### Desired state versus observations
 
@@ -572,6 +576,80 @@ depends on hosts agreeing on a schema.
 
 Steps 1, 2, and 4 are independent of each other and of 3; 5 needs 3 and 4.
 
+### Implementation notes and deviations
+
+All six steps landed. Where the code differs from the plan above, this
+section is the record.
+
+- **Queues (step 1).** As planned. A queue message carries no
+  `event_type`; the outbox dedup key includes `queue_name`. Operators read
+  queues through the daemon (`bookclerk queues list|inspect`,
+  `GET /api/queues`).
+- **Host-emitted events.** Event types the host emits itself
+  (`book_acquired`) are reserved: manifest validation, both SDK validators,
+  and the outbox refuse a plugin producer for them. When a storefront's
+  acquire handler returns, the host publishes `book_acquired` in the same
+  transaction that records the acquire status; the plugin never emits it.
+- **KV (step 2).** As planned. Rows are written through the SeaORM entity
+  (canonical `?` SQL only runs through the adapter proxy, not on a direct
+  PostgreSQL pool). Expired keys read as missing and the daemon prunes them
+  hourly.
+- **Host queues (step 3).** The deployment and configuration reconcilers
+  are woken by their host queue and keep a 60 second backstop pass (the
+  5 second tick is gone). Wakeups are best effort after commit: a publish
+  failure is logged, not returned, because the write already committed.
+- **Release cache path (step 4).** Materialized trees live under
+  `plugins/.releases/<payload-digest>` and partial extracts under
+  `plugins/.staging/release-<digest>.<pid>`, not `plugins/<digest>`. The
+  leading dot keeps discovery and alias scanning, which walk `plugins/`,
+  from treating a cache entry as an installed plugin.
+- **Host-local trees remain (step 4).** The ledger, receipts, and
+  `plugin-grants.json` retire for released plugins only. Platform guests,
+  development trees staged by `cargo stage-plugins`, and installs made
+  before releases still run from `plugins/<fs-id>` with a host grant. No
+  operator command writes a host-local install any more. The reconciler
+  persists a verified platform guest's grant before its first spawn
+  instead of refusing for want of one.
+- **Operator packages (step 4).** A package under `plugin-packages/` is
+  published as a release the first time a present deployment needs it,
+  offline, carrying the key's existing host grant onto the release row.
+  `POST /api/config/plugin-releases` publishes one by directory name.
+- **Artifact location (step 4).** Archives up to 1 MiB are stored in
+  `plugin_release_blobs` (`blob:sha256:<hex>`). A larger local archive is
+  referenced in place as `file://`, which only hosts that see the path can
+  materialize. A shared artifact store is not part of this phase.
+- **Local archive keys (step 4).** A local archive's path-derived key
+  names its first publish only; a later archive of an alias that is
+  already published reuses that alias's key, so `install --archive` of a
+  new version is an update rather than a second plugin. `plugins update`
+  skips a release with no recorded coordinate.
+- **Install flags (step 4).** `install --replace` is kept as an alias of
+  `--activate`. `releases`, `deploy`, `instances`, `config`, and `db` were
+  added to the reserved `plugins` verbs so a plugin CLI cannot shadow them.
+- **Placement input (step 5).** Replicas and constraints live on a new
+  `plugin_placements` row per instance (the scheduler's input), not on
+  `plugin_deployments` (its per-host output). A count stored on every host
+  row could disagree between rows.
+- **Liveness (step 5).** The scheduler treats a host as live when its
+  `host:<host_id>` queue consumer heartbeated within the event catalog TTL
+  (60 s). `hosts.heartbeat_at` is written only at bootstrap, so it cannot
+  tell a running daemon from a host where the CLI once ran.
+- **Labels and targets (step 5).** Labels are `name` or `name=value`; every
+  host also carries `host=<id>` and `target=<target>`; a constraint may
+  exclude with `!`. Beyond the constraints, the scheduler skips a host
+  whose target has no artifact in the active release (an `any` artifact
+  matches every host). Labels are set with `bookclerk hosts label` and
+  `PUT /api/config/hosts/{host_id}/labels`.
+- **Scheduler lease (step 5).** The singleton is the `scheduler` row in a
+  new `cluster_leases` table (holder, fencing token, expiry). Renewal keeps
+  the token; takeover after expiry bumps it. Deployment writes stay
+  compare-and-swap, so a holder whose lease lapsed mid-pass can at worst
+  add one replica that the next pass removes.
+- **Hand-managed versus placed (step 5).** A placed instance refuses
+  `enable`/`disable` and the deployment API (409), enrollment writes a new
+  host's row `absent` for it, and `plugins deploy --manual` hands the
+  deployments back unchanged. Removing a plugin drops its placements first.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `hosts`,
@@ -581,14 +659,21 @@ Steps 1, 2, and 4 are independent of each other and of 3; 5 needs 3 and 4.
   `plugin_schemas`. `plugin_instance_defaults` names the plugin's default
   instance; explicit create adds further instances of the same key.
   `accounts` is unique on `(plugin_key, account_id)`; `books`,
-  `ignored_titles`, and `account_links` carry `plugin_key`. Checksum of the
+  `ignored_titles`, and `account_links` carry `plugin_key`. Phase 3 adds
+  `plugin_kv`, `plugin_releases`, `plugin_release_pointers`,
+  `plugin_release_blobs`, `plugin_placements`, and `cluster_leases`;
+  `domain_events` gains `queue_name`, `content_type`, and `deliver_after`
+  (dedup is unique per queue); `event_deliveries` gains `queue_name`;
+  `hosts` gains `target` and `labels_json`. Checksum of the
   unreleased pack changes. Existing development databases fail closed until
   recreated (`cargo reset --yes` or a new database). That matches the
   unreleased-schema rule.
 - `bookclerk config get/set` for `events.*` reads and writes the database.
   Plugin settings and enablement are `bookclerk plugins config` and
-  `bookclerk plugins enable|disable`, also database. The remaining `config`
-  keys still edit `config.toml`.
+  `bookclerk plugins enable|disable`, also database. Releases are
+  `bookclerk plugins install|update|rollback|remove|approve|releases` and
+  placement is `bookclerk plugins deploy` with `bookclerk hosts label`, all
+  database. The remaining `config` keys still edit `config.toml`.
 - `bookclerk config show` prints `events.authority = database` when the
   library can be read, and `transitional` when it cannot.
 - Single-host SQLite still starts by opening the local database, minting
@@ -607,16 +692,20 @@ Not in this phase, and not claimed as production HA:
 - Moving the rest of `config.toml` (library, jobs, media, plugins,
   diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap is part
   of that.
-- Job placement, cluster semaphores, and singleton maintenance leases
-  (Phase 3). Heartbeats do not claim jobs. Do not run two daemons against one
-  database and expect safe active/active acquire. A notification-driven
-  wakeup for configuration changes is also Phase 3; today every process
-  re-reads documents on a 5 s tick. The Phase 3 decision above fixes the
-  shape: Queues and KV on the library database, host subsystems as
-  consumers, a scheduler that writes deployments.
-- Multi-host reconciliation, placement, rollouts, and uninstall: a host only
-  reconciles its own deployments. Database-adapter plugins as instances and
-  multiple database targets (Phase 4).
+- Job placement and cluster semaphores. Heartbeats do not claim jobs. Do
+  not run two daemons against one database and expect safe active/active
+  acquire. `cluster_leases` exists now (the scheduler uses it) and is the
+  place for further singleton maintenance work.
+- Rollouts: moving a release pointer updates every placed host on its next
+  wakeup at once; there is no staged or health-gated rollout across
+  replicas. The scheduler does not read observations, so a replica on a
+  host that keeps failing health stays there until its labels or liveness
+  change. Placement spreads by present-deployment count only.
+- A shared artifact location for releases larger than the 1 MiB blob cap
+  (an operator bucket, or KV-backed chunks). Today such an archive must sit
+  on storage every placed host can read through its `file://` path.
+- Database-adapter plugins as instances and multiple database targets
+  (Phase 4).
 - Dashboard, drain, and rolling upgrades (Phase 5).
 - Schema pinning compares package versions, not schema contents: a newer
   package that only renames a key still drops the operator's value for the
@@ -627,12 +716,11 @@ Not in this phase, and not claimed as production HA:
 - Resizing the local event delivery task count without a process restart.
 - A general key-management provider. Operators copy `master.key`.
 - The host-local install path (receipts, `install-ledger.json`, in-place
-  replace of `plugins/<fs-id>`, health before commit) still has a crash
-  window between stage and commit, and the reconciler still holds the
-  process-wide plugin mutation lock across extract and the health await. It
-  is not being hardened: Phase 3 step 4 retires it for releases and a
-  content-addressed cache. #255 (a stage-and-commit installer) was closed
-  for that reason.
+  replace of `plugins/<fs-id>`) remains for platform guests, development
+  staging, and installs made before releases. It keeps its stage-and-commit
+  crash window, but no operator command writes it any more; releases and the
+  digest cache replaced it for everything an operator installs. #255 (a
+  stage-and-commit installer) was closed for that reason.
 - D1 multi-host execution. The executing D1 tests in this repository are an
   HTTP mock over one SQLite connection. The shared-database proof is two
   PostgreSQL pools plus two SQLite connections. A live D1 database was not

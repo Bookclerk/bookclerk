@@ -1169,11 +1169,14 @@ alias routes to the default instance, and jobs may pin another with
 `--instance`.
 
 **Enabled on a host** means a `present` deployment row for that instance and
-that host. The reconciler spawns present deployments, retires the guest when
-the row flips to `absent`, and records observations (`installed`, `running`,
-`healthy`, `error`, `retired`). Third-party plugins enrol `absent` until an
-operator approves their grant and enables them; platform guests (`local`,
-`sqlite`) auto-grant and come up enabled.
+that host. An operator writes those rows by hand (below) or hands them to
+the cluster scheduler with [placement](#placement). The reconciler spawns
+present deployments, retires the guest when the row flips to `absent`, and
+records observations (`installed`, `running`, `healthy`, `error`,
+`retired`). Third-party plugins enrol `absent` until an operator approves
+their grant and enables them; platform guests (`local`, `sqlite`)
+auto-grant (the reconciler persists that grant before the first spawn) and
+come up enabled.
 
 ```bash
 bookclerk plugins list                                  # instances + deployments
@@ -1325,6 +1328,72 @@ The daemon exposes the same operations (operator session):
 
 `{key}` is the percent-encoded PluginKey. Platform guests are never
 published: they ship with the host.
+
+## Placement
+
+By default an operator deploys an instance host by host with `plugins
+enable --host`. **Placement** hands that job to the cluster scheduler: the
+operator says how many hosts should run the instance and which hosts may,
+and the scheduler writes the per-host deployments.
+
+```bash
+bookclerk hosts list                              # liveness, target, labels
+bookclerk hosts label --add nas --add zone=eu     # this host (or pass a host id)
+bookclerk hosts label <host-id> --remove zone=eu
+bookclerk plugins deploy example --replicas 2 --on nas --on '!slow'
+bookclerk plugins deploy example --replicas 0     # keep the placement, stop every replica
+bookclerk plugins deploy example --manual         # back to enable/disable by hand
+```
+
+**Candidates.** A host qualifies for an instance when:
+
+- its daemon is live: its `host:<host_id>` queue consumer heartbeated within
+  the event catalog TTL (60 s). A host where only the CLI ran is not live;
+- it carries every label the constraints name, and none a `!label`
+  constraint names. Labels are `name` or `name=value` (lowercase letters,
+  digits, `._/-`). Every host also carries `host=<host_id>` and
+  `target=<target>` (`linux-x64-gnu`, …), so `--on host=<id>` pins an
+  instance and `--on target=linux-arm64-gnu` restricts it to one platform;
+- for a released plugin, the active release has an artifact for the host's
+  target, or a target-independent `any` artifact (workerd packages).
+
+**Planning.** The scheduler keeps replicas where they already run, sets
+`absent` on hosts that stopped qualifying (a dead daemon, a removed label),
+scales down from the most loaded host, and fills the rest on the least
+loaded candidates (load is the host's count of present deployments). When
+fewer hosts qualify than requested it places what it can and records why on
+the placement ("1 of 2 replica(s) placed: 1 live host(s) satisfy nas").
+Each host's reconciler then converges on its own deployment rows exactly as
+it does for hand-written ones.
+
+**One scheduler.** Every daemon runs the scheduler loop, but only the holder
+of the `scheduler` row in `cluster_leases` acts. The holder renews the lease
+(60 s) on every pass; when it stops, the next daemon to try takes over with
+a larger fencing token. A pass runs on a `placement.changed` or
+`release.changed` host-queue wakeup and at least every 20 seconds.
+Deployment writes are compare-and-swap, so a holder that lost its lease
+mid-pass can at worst add one replica too many, which the next pass
+removes.
+
+**Placed instances are the scheduler's.** `plugins enable|disable` and the
+deployment API refuse a placed instance (409), the Settings Enabled switch
+is read-only for it, and enrollment records a new host `absent` for it
+rather than `present`. `plugins deploy --manual` (or deleting the placement)
+leaves the deployments as they are and hands them back. Removing a plugin
+(`plugins remove`, `DELETE /api/config/plugin-releases/{key}/active`) drops
+its placements first.
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| `PUT` | `/api/config/plugin-instances/{id}/placement` | `{replicas, constraints, expected_revision}` (0 or omitted creates); 409 on a stale revision |
+| `DELETE` | `/api/config/plugin-instances/{id}/placement` | back to hand-managed |
+| `GET` | `/api/config/hosts` | each host's `labels`, `implicit_labels`, `target`, and `live` |
+| `PUT` | `/api/config/hosts/{host_id}/labels` | `{labels}`: the host's complete operator label set |
+
+`GET /api/config/plugin-instances` and the Settings plugin groups carry each
+instance's `placement` (requested and placed replicas, constraints, detail).
+**Settings → Plugins** shows "Placed n/m" on the row and, when expanded,
+replica and label fields plus **Manage by hand**.
 
 ## ABI (api_version = 3, object-capability Workers RPC)
 
