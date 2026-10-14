@@ -41,6 +41,17 @@ pub enum HostMessage {
         /// Revision after the write (0 for a delete).
         revision: i64,
     },
+    /// The active release of a plugin moved (install, update, rollback,
+    /// remove) or its consent grant changed.
+    #[serde(rename = "release.changed", rename_all = "camelCase")]
+    ReleaseChanged {
+        /// Canonical plugin key.
+        plugin_key: String,
+        /// Active version; empty when the pointer was cleared.
+        version: String,
+        /// Pointer revision (0 for a grant change or a clear).
+        revision: i64,
+    },
     /// A configuration document changed (cluster settings or an instance
     /// document).
     #[serde(rename = "configuration.changed", rename_all = "camelCase")]
@@ -73,6 +84,16 @@ impl HostMessage {
                 namespace,
                 revision,
             } => format!("configuration.changed:{scope_type}:{scope_id}:{namespace}:{revision}"),
+            // Grant approvals and clears carry revision 0; a fresh id keeps
+            // each one a distinct wakeup.
+            Self::ReleaseChanged {
+                plugin_key,
+                version,
+                revision,
+            } => format!(
+                "release.changed:{plugin_key}:{version}:{revision}:{}",
+                uuid::Uuid::new_v4()
+            ),
         }
     }
 }

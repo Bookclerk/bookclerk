@@ -958,4 +958,36 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_plugin_kv_expires
         ON plugin_kv(expires_at)",
     ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_releases (
+        plugin_key TEXT NOT NULL,
+        version TEXT NOT NULL,
+        manifest_id TEXT NOT NULL,
+        manifest_toml TEXT NOT NULL,
+        settings_json TEXT NOT NULL,
+        artifacts_json TEXT NOT NULL,
+        publisher_verified INTEGER NOT NULL,
+        grant_json TEXT NOT NULL DEFAULT '',
+        published_at TEXT NOT NULL,
+        published_by TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, version)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_release_pointers (
+        plugin_key TEXT PRIMARY KEY NOT NULL,
+        version TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_release_blobs (
+        sha256 TEXT PRIMARY KEY NOT NULL,
+        data TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )",
+    ),
 ];

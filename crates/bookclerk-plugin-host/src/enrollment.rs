@@ -142,6 +142,12 @@ pub async fn enroll_one(
             version = %package_version,
             "plugin schema changed without a version bump; re-pinned"
         ),
+        SchemaPinChange::RolledBack { previous_version } => tracing::info!(
+            plugin_key = %key,
+            from = %previous_version,
+            to = %package_version,
+            "plugin schema pin rolled back with the active release"
+        ),
         SchemaPinChange::Pinned | SchemaPinChange::Unchanged => {}
     }
     // Every pass reconciles the documents against the pinned schema, not

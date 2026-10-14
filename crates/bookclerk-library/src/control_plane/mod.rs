@@ -13,6 +13,7 @@ mod host_queue;
 mod identity;
 mod instance_config;
 mod instances;
+mod releases;
 mod schemas;
 mod secret;
 
@@ -55,10 +56,16 @@ pub use instances::{
     ensure_plugin_instance, find_plugin_instance_by_key, list_all_plugin_instances,
     list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
 };
+pub use releases::{
+    activate_release, approve_release_grant, clear_active_release, list_release_pointers,
+    list_releases, load_active_release, load_release, load_release_blob, load_release_pointer,
+    publish_release, put_release_blob, PluginRelease, PublishRelease, ReleaseArtifact,
+    ReleasePointer, MAX_RELEASE_BLOB_BYTES, RELEASE_BLOB_SCHEME,
+};
 pub use schemas::{
-    list_plugin_schemas, load_plugin_schema, pin_plugin_schema, require_plugin_schema,
-    schema_fingerprint, stale_against_pin, PinnedPluginSchema, SchemaPin, SchemaPinChange,
-    SchemaPinOutcome,
+    list_plugin_schemas, load_plugin_schema, pin_plugin_schema, pin_release_schema,
+    require_plugin_schema, schema_fingerprint, stale_against_pin, PinnedPluginSchema, SchemaPin,
+    SchemaPinChange, SchemaPinOutcome,
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
 

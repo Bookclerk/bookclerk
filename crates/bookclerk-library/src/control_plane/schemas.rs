@@ -82,6 +82,12 @@ pub enum SchemaPinChange {
         /// The local manifest's version.
         local_version: String,
     },
+    /// The active release moved to an older version (a rollback); the row
+    /// follows it. Callers prune instance documents as for an upgrade.
+    RolledBack {
+        /// Version the row carried before this pin.
+        previous_version: String,
+    },
 }
 
 /// Outcome of [`pin_plugin_schema`]: the row that is now pinned and how it
@@ -125,6 +131,31 @@ pub async fn pin_plugin_schema(
     store: &LibraryStore,
     pin: &SchemaPin<'_>,
 ) -> Result<SchemaPinOutcome> {
+    pin_schema(store, pin, false).await
+}
+
+/// Pins the schema of the plugin's active release.
+///
+/// The pinned schema of a released plugin is the active release's schema,
+/// so an older version is pinned too ([`SchemaPinChange::RolledBack`])
+/// instead of being refused as stale.
+///
+/// # Errors
+///
+/// As [`pin_plugin_schema`].
+pub async fn pin_release_schema(
+    store: &LibraryStore,
+    pin: &SchemaPin<'_>,
+) -> Result<SchemaPinOutcome> {
+    pin_schema(store, pin, true).await
+}
+
+/// Shared compare-and-swap loop; `follow_release` pins an older version.
+async fn pin_schema(
+    store: &LibraryStore,
+    pin: &SchemaPin<'_>,
+    follow_release: bool,
+) -> Result<SchemaPinOutcome> {
     let local_version = parse_package_version(pin.package_version)
         .map_err(|detail| LibraryError::Schema(format!("plugin `{}`: {detail}", pin.plugin_key)))?
         .to_string();
@@ -167,6 +198,9 @@ pub async fn pin_plugin_schema(
                 LibraryError::Schema(format!("plugin `{}`: {detail}", pin.plugin_key))
             })?;
         let change = match order {
+            Ordering::Less if follow_release => SchemaPinChange::RolledBack {
+                previous_version: existing.package_version.clone(),
+            },
             Ordering::Less => {
                 return Ok(SchemaPinOutcome {
                     schema: existing,

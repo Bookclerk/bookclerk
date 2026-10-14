@@ -44,7 +44,9 @@ pub async fn config_wakeup() {
 /// so a wakeup that lands mid-pass runs one more pass afterwards.
 pub fn wake_for(message: &HostMessage) {
     match message {
-        HostMessage::DeploymentChanged { .. } => DEPLOYMENT_WAKEUP.notify_one(),
+        HostMessage::DeploymentChanged { .. } | HostMessage::ReleaseChanged { .. } => {
+            DEPLOYMENT_WAKEUP.notify_one();
+        }
         HostMessage::ConfigurationChanged { .. } => {
             // Cluster settings feed the config reconciler; instance documents
             // change what a running guest was spawned with.
