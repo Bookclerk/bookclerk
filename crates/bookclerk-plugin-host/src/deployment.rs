@@ -226,14 +226,20 @@ impl<'a> SharedPlugins<'a> {
     ///
     /// Panics when the discovery cache lock is poisoned.
     fn root(&self, canonical: &str) -> Option<PathBuf> {
+        self.plugin(canonical).map(|plugin| plugin.root)
+    }
+
+    /// The discovered plugin for `canonical`, if this host has its tree.
+    fn plugin(&self, canonical: &str) -> Option<crate::DiscoveredPlugin> {
         let mut cached = self.cached.lock().expect("shared plugin discovery");
         if cached.is_none() {
             *cached = Some(crate::discover_plugins(self.config).unwrap_or_default());
         }
         cached.as_ref().and_then(|plugins| {
-            plugins.iter().find_map(|plugin| {
-                (plugin.plugin_key().canonical() == canonical).then(|| plugin.root.clone())
-            })
+            plugins
+                .iter()
+                .find(|plugin| plugin.plugin_key().canonical() == canonical)
+                .cloned()
         })
     }
 }
@@ -514,7 +520,18 @@ async fn reconcile_one(
             return Ok(());
         };
         let grants = PluginGrantStore::load(&files_dir)?;
-        let Some(grant) = grants.get_by_plugin_key(&instance.plugin_key).cloned() else {
+        let grant = match grants.get_by_plugin_key(&instance.plugin_key).cloned() {
+            Some(grant) => Some(grant),
+            // A verified platform guest grants itself (the rule enrollment
+            // used to deploy it `present`); persist that grant before the
+            // first spawn instead of refusing for want of it.
+            // `ensure_platform_grant` refuses anything but a verified
+            // platform artifact inside the installer envelope.
+            None => discovered
+                .plugin(plugin_key.canonical())
+                .and_then(|plugin| crate::consent::ensure_platform_grant(&files_dir, &plugin).ok()),
+        };
+        let Some(grant) = grant else {
             note(
                 DeploymentStatus::Error,
                 "plugin grant is missing; deployment was not spawned".into(),

@@ -1791,3 +1791,103 @@ async fn an_operator_package_older_than_the_pin_is_not_activated() {
         obs.detail
     );
 }
+
+#[tokio::test]
+async fn a_verified_platform_guest_without_a_grant_file_persists_its_grant_and_spawns() {
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path().to_path_buf();
+    std::fs::write(files.join("config.toml"), "").unwrap();
+    let config =
+        Config::load(Some(files.clone()), Some(files.join("config.toml"))).expect("config");
+    let store = file_store(&files.join("library.db")).await;
+    let session = bookclerk_library::control_plane::bootstrap_control_plane(
+        &store,
+        &files,
+        &files.join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .expect("bootstrap");
+
+    // A host-stamped `local` platform tree inside the installer envelope.
+    let key = PluginKey::platform("bookclerk-plugin-destination-local", "local").unwrap();
+    let root = files.join("plugins").join(key.fs_id());
+    std::fs::create_dir_all(&root).unwrap();
+    let text = "api_version = 3\nid = \"local\"\nversion = \"0.1.0\"\nruntime = \"native\"\n\
+                command = \"./guest\"\nentrypoints = [\"storage\"]\n\n\
+                [capabilities.network]\nmode = \"deny\"\n\n[vars]\n\n[work_fs]\n";
+    std::fs::write(root.join("plugin.toml"), text).unwrap();
+    std::fs::write(root.join("guest"), b"#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root.join("guest"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+    let manifest = bookclerk_plugin_manifest::parse(text).unwrap();
+    bookclerk_plugin_catalog::stamp_platform_receipt(
+        &root,
+        &files,
+        "bookclerk-plugin-destination-local",
+        &manifest,
+        "0.1.0",
+    )
+    .expect("stamp");
+
+    let actor = ConfigActor::Bootstrap;
+    let instance = create_plugin_instance(&store, &actor, key.canonical(), "")
+        .await
+        .expect("instance");
+    import_instance_config_if_absent(
+        &store,
+        &actor,
+        &instance.id,
+        &manifest.settings_schema(),
+        &PluginInstanceConfigV1::empty(),
+        "import-platform-local",
+    )
+    .await
+    .expect("document");
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &actor,
+        &instance.id,
+        &session.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .expect("deployment");
+    assert!(
+        PluginGrantStore::load(&files)
+            .unwrap()
+            .get_by_plugin_key(key.canonical())
+            .is_none(),
+        "no grant file entry yet"
+    );
+
+    let probe = Probe::new(files.clone(), false);
+    reconcile_local_deployments(
+        &store,
+        &config,
+        &session.host.host_id,
+        &AuthorizedLocalPackages::default(),
+        &probe,
+    )
+    .await
+    .expect("reconcile");
+    let obs = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+        .await
+        .unwrap()
+        .expect("observation");
+    assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+    assert_eq!(probe.spawns.lock().unwrap().len(), 1);
+    assert!(
+        PluginGrantStore::load(&files)
+            .unwrap()
+            .get_by_plugin_key(key.canonical())
+            .is_some(),
+        "the platform grant is persisted before the first spawn"
+    );
+}
