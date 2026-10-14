@@ -3,7 +3,7 @@
 //! Plugin enablement and settings do not live here. A plugin is enabled by a
 //! `plugin_deployments` row for a host, and its settings are the plugin
 //! instance document validated against the `[[settings]]` the plugin
-//! declares in `plugin.toml` (`bookclerk plugins enable|config`, the
+//! declares in `plugin.toml` (`bookclerk plugins deploy|config`, the
 //! Settings page). `[integrations]` keeps only the portal knobs. See
 //! `docs/plugins.md`.
 

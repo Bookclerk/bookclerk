@@ -143,7 +143,7 @@ pub async fn pin_plugin_schema(
 /// # Errors
 ///
 /// As [`pin_plugin_schema`].
-pub async fn pin_release_schema(
+pub async fn pin_version_schema(
     store: &LibraryStore,
     pin: &SchemaPin<'_>,
 ) -> Result<SchemaPinOutcome> {

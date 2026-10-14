@@ -932,7 +932,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         deployment_id TEXT NOT NULL,
         node_id TEXT NOT NULL,
         incarnation TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('installed', 'running', 'healthy', 'error', 'retired')),
+        status TEXT NOT NULL CHECK (status IN ('materialized', 'running', 'healthy', 'error', 'retired')),
         detail TEXT NOT NULL,
         applied_config_revision INTEGER,
         observed_at TEXT NOT NULL,
@@ -963,7 +963,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         ON plugin_kv(expires_at)",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS plugin_releases (
+        r"CREATE TABLE IF NOT EXISTS plugin_versions (
         plugin_key TEXT NOT NULL,
         version TEXT NOT NULL,
         manifest_id TEXT NOT NULL,
@@ -973,13 +973,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         publisher_verified INTEGER NOT NULL,
         grant_json TEXT NOT NULL DEFAULT '',
         coordinate TEXT NOT NULL DEFAULT '',
-        published_at TEXT NOT NULL,
-        published_by TEXT NOT NULL,
+        installed_at TEXT NOT NULL,
+        installed_by TEXT NOT NULL,
         PRIMARY KEY (plugin_key, version)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS plugin_release_pointers (
+        r"CREATE TABLE IF NOT EXISTS plugin_installs (
         plugin_key TEXT PRIMARY KEY NOT NULL,
         version TEXT NOT NULL,
         revision INTEGER NOT NULL,
@@ -1034,7 +1034,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS plugin_release_blobs (
+        r"CREATE TABLE IF NOT EXISTS plugin_artifacts (
         sha256 TEXT PRIMARY KEY NOT NULL,
         data TEXT NOT NULL,
         size INTEGER NOT NULL,

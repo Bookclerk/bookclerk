@@ -114,7 +114,7 @@ native flat layout. See `bookclerk export postgres --help`.
 ## After migrate
 
 1. `bookclerk plugins list` — enable only the stores you use
-   (`bookclerk plugins disable <id>` retires the rest on this host).
+   (`bookclerk plugins undeploy <id>` retires the rest on this host).
 2. Confirm accounts: `bookclerk library accounts` / `library status`.
 3. Check destination settings (`bookclerk plugins config get local`; the
    imported books root is seeded there).

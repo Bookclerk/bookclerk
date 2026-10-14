@@ -1,6 +1,6 @@
-//! Current-host deployment reconcile: operator packages published as
-//! releases, materialization by digest (also on a second host), release
-//! pointer moves, a host-local ledger hit, revision apply, foreign host,
+//! Current-node deployment reconcile: operator packages installed as
+//! versions, materialization by digest (also on a second node), activation
+//! of another version, a host-local ledger hit, revision apply, foreign host,
 //! secrets, desired `absent`, and instance document resolution against the
 //! installed `[[settings]]` schema.
 
@@ -24,7 +24,7 @@ use crate::{
 use async_trait::async_trait;
 use bookclerk_config::{Config, EventsConfig, Isolation};
 use bookclerk_library::control_plane::{
-    activate_release, load_active_release, RELEASE_BLOB_SCHEME,
+    activate_version, load_active_version, ARTIFACT_BLOB_SCHEME,
 };
 use bookclerk_library::control_plane::{
     create_plugin_instance, ensure_plugin_deployment, import_instance_config_if_absent,
@@ -420,7 +420,7 @@ async fn foreign_node_deployment_does_not_install_or_observe() {
 }
 
 #[tokio::test]
-async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
+async fn an_operator_package_becomes_the_active_version_and_reaches_healthy() {
     let _guard = TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
@@ -433,22 +433,22 @@ async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
     )
     .await
     .expect("reconcile");
-    let release = load_active_release(&world.store, &world.key)
+    let release = load_active_version(&world.store, &world.key)
         .await
         .unwrap()
-        .expect("the package was published as the active release");
+        .expect("the package was installed as the active version");
     assert_eq!(release.version, "0.1.0");
     assert!(
         release.grant_json.contains("fxdep"),
-        "the approved grant rides on the release"
+        "the approved grant rides on the installed version"
     );
     let artifact = crate::host_artifact(&release).unwrap();
     assert!(
-        artifact.url.starts_with(RELEASE_BLOB_SCHEME),
+        artifact.url.starts_with(ARTIFACT_BLOB_SCHEME),
         "a small archive is stored in the library: {}",
         artifact.url
     );
-    let cache = crate::release_cache_path(&world.files, &artifact.payload_root_sha256);
+    let cache = crate::version_cache_path(&world.files, &artifact.payload_root_sha256);
     assert!(
         cache.join("plugin.toml").is_file(),
         "materialized by digest"
@@ -457,7 +457,7 @@ async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
     assert_eq!(spawns.len(), 1);
     assert_eq!(spawns[0].plugin_root.as_deref(), Some(cache.as_path()));
     assert_eq!(
-        spawns[0].release.as_ref().map(|r| r.version.as_str()),
+        spawns[0].installed.as_ref().map(|r| r.version.as_str()),
         Some("0.1.0")
     );
     // Nothing host-local was written: no ledger row, no receipt, no
@@ -474,7 +474,7 @@ async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
     assert_eq!(obs.applied_config_revision, Some(1));
 
     // Health is an observation, not a gate: a failing guest leaves the
-    // release active and the digest cached, and nothing is rolled back.
+    // version active and the digest cached, and nothing is rolled back.
     let failed = open_world(false).await;
     let probe = Probe::new(failed.files.clone(), true);
     reconcile_local_deployments(
@@ -493,12 +493,12 @@ async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
         "{}",
         obs.detail
     );
-    let release = load_active_release(&failed.store, &failed.key)
+    let release = load_active_version(&failed.store, &failed.key)
         .await
         .unwrap()
         .expect("still active");
     let artifact = crate::host_artifact(&release).unwrap();
-    assert!(crate::release_cache_path(&failed.files, &artifact.payload_root_sha256).is_dir());
+    assert!(crate::version_cache_path(&failed.files, &artifact.payload_root_sha256).is_dir());
     assert_eq!(
         load_deployment(&failed.store, &failed.deployment_id)
             .await
@@ -509,7 +509,7 @@ async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
     );
 }
 
-/// Publishes `version` of the fixture plugin as a release of `world.key`.
+/// Installs `version` of the fixture plugin as a version of `world.key`.
 async fn publish_version(world: &World, version: &str, activate: crate::Activate) {
     let stage = world.files.join(format!("v{version}-stage"));
     std::fs::create_dir_all(&stage).unwrap();
@@ -533,12 +533,12 @@ async fn publish_version(world: &World, version: &str, activate: crate::Activate
         .unwrap()
         .get_by_plugin_key(&world.key)
         .cloned();
-    crate::publish_package_release(
+    crate::add_package_version(
         &world.store,
         &ConfigActor::Operator { id: "cli".into() },
         &world.files,
         &world.node_id,
-        crate::ReleaseRequest {
+        crate::VersionRequest {
             plugin_key: world.key.clone(),
             package: package_manifest("fxdep"),
             archive: Some(archive),
@@ -555,7 +555,7 @@ async fn publish_version(world: &World, version: &str, activate: crate::Activate
 }
 
 #[tokio::test]
-async fn moving_the_release_pointer_respawns_from_the_new_digest() {
+async fn moving_the_active_version_respawns_from_the_new_digest() {
     let _guard = TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
@@ -591,7 +591,7 @@ async fn moving_the_release_pointer_respawns_from_the_new_digest() {
             .unwrap()
             .last()
             .unwrap()
-            .release
+            .installed
             .as_ref()
             .unwrap()
             .version,
@@ -599,7 +599,7 @@ async fn moving_the_release_pointer_respawns_from_the_new_digest() {
     );
 
     // Rollback is a pointer move; the old digest is still cached.
-    activate_release(
+    activate_version(
         &world.store,
         &ConfigActor::Operator { id: "cli".into() },
         &world.key,
@@ -615,9 +615,9 @@ async fn moving_the_release_pointer_respawns_from_the_new_digest() {
 }
 
 #[tokio::test]
-async fn a_release_published_on_one_node_is_materialized_and_spawned_on_another() {
+async fn a_version_installed_on_one_node_is_materialized_and_spawned_on_another() {
     let _guard = TEST_LOCK.lock().await;
-    // Host A publishes the operator package as a release and runs it.
+    // Node A installs the operator package and runs it.
     let world = open_world(false).await;
     let probe_a = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
@@ -629,7 +629,7 @@ async fn a_release_published_on_one_node_is_materialized_and_spawned_on_another(
     )
     .await
     .expect("host a");
-    let release = load_active_release(&world.store, &world.key)
+    let release = load_active_version(&world.store, &world.key)
         .await
         .unwrap()
         .expect("published");
@@ -680,7 +680,7 @@ async fn a_release_published_on_one_node_is_materialized_and_spawned_on_another(
     )
     .await
     .expect("host b");
-    let cache_b = crate::release_cache_path(&files_b, &digest);
+    let cache_b = crate::version_cache_path(&files_b, &digest);
     assert!(
         cache_b.join("plugin.toml").is_file(),
         "host b materialized the digest"
@@ -704,7 +704,7 @@ async fn a_release_published_on_one_node_is_materialized_and_spawned_on_another(
     assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
     assert!(
         !files_b.join("plugin-grants.json").exists(),
-        "host b trusts the release grant, not a host file"
+        "node b trusts the version grant, not a host file"
     );
 }
 
@@ -964,7 +964,7 @@ async fn ledger_hit_skips_install_and_still_reaches_healthy() {
     .await
     .expect("reconcile");
     assert!(
-        load_active_release(&world.store, &world.key)
+        load_active_version(&world.store, &world.key)
             .await
             .unwrap()
             .is_none(),
@@ -1580,7 +1580,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
 }
 
 #[tokio::test]
-async fn broken_guest_health_is_an_error_observation_and_keeps_the_release() {
+async fn broken_guest_health_is_an_error_observation_and_keeps_the_version() {
     let _guard = TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let mut config = world.config.clone();
@@ -1598,11 +1598,11 @@ async fn broken_guest_health_is_an_error_observation_and_keeps_the_release() {
     let obs = observation(&world).await;
     assert_eq!(obs.status, DeploymentStatus::Error, "{}", obs.detail);
     assert!(
-        load_active_release(&world.store, &world.key)
+        load_active_version(&world.store, &world.key)
             .await
             .unwrap()
             .is_some(),
-        "health never rolls a release back"
+        "health never rolls a version back"
     );
     assert_eq!(
         load_deployment(&world.store, &world.deployment_id)
@@ -1778,7 +1778,7 @@ async fn an_operator_package_older_than_the_pin_is_not_activated() {
     .await
     .expect("reconcile");
     assert!(probe.spawns.lock().unwrap().is_empty());
-    assert!(load_active_release(&world.store, &world.key)
+    assert!(load_active_version(&world.store, &world.key)
         .await
         .unwrap()
         .is_none());

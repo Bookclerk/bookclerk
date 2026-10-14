@@ -16,9 +16,9 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, default_instance_for_key,
-    list_deployments_for_node, load_active_release, load_instance_config, load_observation,
+    list_deployments_for_node, load_active_version, load_instance_config, load_observation,
     load_plugin_instance, resolve_instance_bindings, stale_against_pin, upsert_observation,
-    ConfigActor, DeploymentObservation, DeploymentStatus, PluginRelease,
+    ConfigActor, DeploymentObservation, DeploymentStatus, PluginVersion,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{InstallLedger, Installer, PluginKey};
@@ -109,9 +109,9 @@ pub struct DeploymentSpawn {
     pub secrets: ExtensibleConfig,
     /// Document revision the spawn applies.
     pub config_revision: i64,
-    /// Cluster release the tree was materialized from; `None` for a
+    /// Installed version the tree was materialized from; `None` for a
     /// host-local tree.
-    pub release: Option<Arc<PluginRelease>>,
+    pub installed: Option<Arc<PluginVersion>>,
 }
 
 /// Result of spawn plus the health RPC.
@@ -318,19 +318,19 @@ pub async fn reconcile_local_deployments(
             runtime.retire_instance(&instance_id).await;
         }
     }
-    sweep_unreferenced_releases(store, config, &present).await;
+    sweep_unreferenced_versions(store, config, &present).await;
     Ok(())
 }
 
-/// Removes cached release digests no present deployment on this node
-/// still runs (after [`crate::RELEASE_CACHE_GRACE`]).
-async fn sweep_unreferenced_releases(
+/// Removes cached version digests no present deployment on this node
+/// still runs (after [`crate::VERSION_CACHE_GRACE`]).
+async fn sweep_unreferenced_versions(
     store: &LibraryStore,
     config: &Config,
     present: &std::collections::BTreeSet<String>,
 ) {
     let files_dir = config.paths().files_dir.clone();
-    if !crate::release_cache_root(&files_dir).is_dir() {
+    if !crate::version_cache_root(&files_dir).is_dir() {
         return;
     }
     let mut keep = std::collections::BTreeSet::new();
@@ -341,21 +341,21 @@ async fn sweep_unreferenced_releases(
         let Ok(Some(instance)) = load_plugin_instance(store, &id).await else {
             continue;
         };
-        if let Ok(Some(release)) = load_active_release(store, &instance.plugin_key).await {
-            if let Ok(artifact) = crate::host_artifact(&release) {
+        if let Ok(Some(version)) = load_active_version(store, &instance.plugin_key).await {
+            if let Ok(artifact) = crate::host_artifact(&version) {
                 keep.insert(artifact.payload_root_sha256.clone());
             }
         }
     }
     let swept = tokio::task::spawn_blocking(move || {
-        crate::sweep_release_cache(&files_dir, &keep, crate::RELEASE_CACHE_GRACE)
+        crate::sweep_version_cache(&files_dir, &keep, crate::VERSION_CACHE_GRACE)
     })
     .await;
     match swept {
         Ok(Ok(0)) => {}
-        Ok(Ok(removed)) => tracing::info!(removed, "swept unreferenced release cache entries"),
-        Ok(Err(err)) => tracing::warn!(error = %err, "release cache sweep failed"),
-        Err(err) => tracing::warn!(error = %err, "release cache sweep task failed"),
+        Ok(Ok(removed)) => tracing::info!(removed, "swept unreferenced version cache entries"),
+        Ok(Err(err)) => tracing::warn!(error = %err, "version cache sweep failed"),
+        Err(err) => tracing::warn!(error = %err, "version cache sweep task failed"),
     }
 }
 
@@ -432,10 +432,10 @@ async fn reconcile_one(
         }
     }
 
-    // The active cluster release names what runs; a host-local tree (a
+    // The active installed version names what runs; a host-local tree (a
     // platform guest, a development tree) is used only for a plugin with no
-    // release.
-    let mut active = match load_active_release(store, &instance.plugin_key).await {
+    // cluster install.
+    let mut active = match load_active_version(store, &instance.plugin_key).await {
         Ok(active) => active,
         Err(err) => {
             note(DeploymentStatus::Error, err.to_string(), None).await;
@@ -456,14 +456,14 @@ async fn reconcile_one(
                 note(DeploymentStatus::Error, "not installed".into(), None).await;
                 return Ok(());
             };
-            // An operator-placed package becomes a cluster release this node
-            // publishes; every node placed on it then materializes the same
+            // An operator-placed package becomes a cluster install from this
+            // node; every node placed on it then materializes the same
             // digest. The consent the operator approved for the key rides on
-            // the release.
+            // the installed version.
             let grant = PluginGrantStore::load(&files_dir)?
                 .get_by_plugin_key(&instance.plugin_key)
                 .cloned();
-            let request = crate::ReleaseRequest {
+            let request = crate::VersionRequest {
                 plugin_key: instance.plugin_key.clone(),
                 package: package.manifest.clone(),
                 archive: Some(package.archive.clone()),
@@ -474,7 +474,7 @@ async fn reconcile_one(
                 grant,
                 activate: crate::Activate::IfNone,
             };
-            if let Err(err) = crate::publish_package_release(
+            if let Err(err) = crate::add_package_version(
                 store,
                 &ConfigActor::Bootstrap,
                 &files_dir,
@@ -486,7 +486,7 @@ async fn reconcile_one(
                 note(DeploymentStatus::Error, err.to_string(), None).await;
                 return Ok(());
             }
-            active = match load_active_release(store, &instance.plugin_key).await {
+            active = match load_active_version(store, &instance.plugin_key).await {
                 Ok(active) => active,
                 Err(err) => {
                     note(DeploymentStatus::Error, err.to_string(), None).await;
@@ -498,22 +498,22 @@ async fn reconcile_one(
         }
     }
 
-    let (grant, root, release) = if let Some(release) = active {
-        let grant = match crate::release_grant(&release) {
+    let (grant, root, installed) = if let Some(version) = active {
+        let grant = match crate::version_grant(&version) {
             Ok(grant) => grant,
             Err(err) => {
                 note(DeploymentStatus::Error, err.to_string(), None).await;
                 return Ok(());
             }
         };
-        let root = match crate::materialize_release(store, &files_dir, &release).await {
+        let root = match crate::materialize_version(store, &files_dir, &version).await {
             Ok(root) => root,
             Err(err) => {
                 note(DeploymentStatus::Error, err.to_string(), None).await;
                 return Ok(());
             }
         };
-        (grant, root, Some(Arc::new(release)))
+        (grant, root, Some(Arc::new(version)))
     } else {
         let Some(root) = local_root else {
             note(DeploymentStatus::Error, "not installed".into(), None).await;
@@ -542,7 +542,7 @@ async fn reconcile_one(
         };
         // Cheap checks first. A host-local package older than the pinned
         // schema version is not spawned (its documents may already carry the
-        // newer shape). A released plugin's pin is its active release.
+        // newer shape). An installed plugin's pin is its active version.
         let local_version = match discovered.installed_version(&root) {
             Ok(version) => version,
             Err(err) => {
@@ -594,7 +594,7 @@ async fn reconcile_one(
             && runtime
                 .guest_still_running(deployment.plugin_instance_id.as_str())
                 .await
-            // A moved release pointer changes the tree; the guest is
+            // A newly activated version changes the tree; the guest is
             // respawned from the new digest.
             && runtime
                 .guest_root(deployment.plugin_instance_id.as_str())
@@ -621,14 +621,14 @@ async fn reconcile_one(
             return Ok(());
         }
     };
-    note(DeploymentStatus::Installed, String::new(), None).await;
+    note(DeploymentStatus::Materialized, String::new(), None).await;
     // The ceilings this guest's jail will enforce; the heartbeat sums them
     // into the node's reservations.
     let reservation = installed_manifest(&root).ok().map(|manifest| {
         crate::jail::guest_reservation(&manifest, Some(&grant), &config.plugins.jail)
     });
     request.plugin_root = Some(root);
-    request.release = release;
+    request.installed = installed;
     note(
         DeploymentStatus::Running,
         String::new(),
@@ -697,7 +697,7 @@ async fn resolve_spawn(
         config: bindings.config,
         secrets: bindings.secrets,
         config_revision: bindings.config_revision,
-        release: None,
+        installed: None,
     })
 }
 
@@ -1117,9 +1117,9 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
                 detail: "installed plugin was not discovered".into(),
             };
         };
-        let opened = match &request.release {
-            Some(release) => {
-                crate::open_released_plugin(root, release).map_err(|err| err.to_string())
+        let opened = match &request.installed {
+            Some(version) => {
+                crate::open_installed_plugin(root, version).map_err(|err| err.to_string())
             }
             None => open_installed_plugin(root, &config.paths().files_dir),
         };

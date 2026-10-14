@@ -16,7 +16,7 @@ pub struct Model {
     pub node_id: String,
     /// Process incarnation that recorded the row.
     pub incarnation: String,
-    /// `installed`, `running`, `healthy`, `error`, or `retired`.
+    /// `materialized`, `running`, `healthy`, `error`, or `retired`.
     pub status: String,
     /// Bounded detail. Empty when the status is `healthy`.
     pub detail: String,

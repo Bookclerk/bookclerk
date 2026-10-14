@@ -1,11 +1,11 @@
-//! SeaORM entity for `plugin_release_blobs`: small release archives stored
+//! SeaORM entity for `plugin_artifacts`: small version archives stored
 //! in the library when no shared artifact location exists.
 
 use sea_orm::entity::prelude::*;
 
 /// Row shape for this table (`DeriveEntityModel`).
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-#[sea_orm(table_name = "plugin_release_blobs")]
+#[sea_orm(table_name = "plugin_artifacts")]
 pub struct Model {
     /// Lowercase hex SHA-256 of the archive bytes.
     #[sea_orm(primary_key, auto_increment = false)]

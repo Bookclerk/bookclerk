@@ -1,5 +1,5 @@
-//! `bookclerk plugins install|approve|releases|rollback|remove` publish and
-//! move cluster releases without touching this host's plugin tree.
+//! `bookclerk plugins install|approve|versions|rollback|remove` install and
+//! move cluster versions without touching this host's plugin tree.
 
 mod common;
 
@@ -61,7 +61,7 @@ fn json(output: &std::process::Output) -> serde_json::Value {
 }
 
 #[test]
-fn install_publishes_releases_and_rollback_and_remove_move_the_pointer() {
+fn install_rollback_and_uninstall_move_the_active_version() {
     let files_dir = tempfile::tempdir().unwrap();
     let files = files_dir.path();
     write_config(files);
@@ -99,7 +99,7 @@ fn install_publishes_releases_and_rollback_and_remove_move_the_pointer() {
         &["--allow-unverified-publisher"],
     ));
     assert_eq!(first["version"], "0.1.0");
-    assert_eq!(first["active"], true, "the first release becomes active");
+    assert_eq!(first["active"], true, "the first version becomes active");
     assert_eq!(first["approved"], false, "consent is pending");
     assert!(
         first["artifacts"][0]["url"]
@@ -112,7 +112,7 @@ fn install_publishes_releases_and_rollback_and_remove_move_the_pointer() {
     let approve = run_bookclerk(files, &["plugins", "approve", "fxcli", "--yes"], &[]);
     assert!(approve.status.success(), "{}", stderr(&approve));
 
-    // A second version publishes without moving the pointer, then
+    // A second version installs without moving the pointer, then
     // `--activate` moves it and carries the approval forward.
     let parked = json(&install(
         &archive_2,
@@ -127,17 +127,17 @@ fn install_publishes_releases_and_rollback_and_remove_move_the_pointer() {
     ));
     assert_eq!(
         second["created"], false,
-        "same content is not published twice"
+        "same content is not installed twice"
     );
     assert_eq!(second["active"], true);
     assert_eq!(second["approved"], true, "unchanged consent carries over");
 
-    let releases = json(&run_bookclerk(
+    let versions = json(&run_bookclerk(
         files,
-        &["--format", "json", "plugins", "releases", "fxcli"],
+        &["--format", "json", "plugins", "versions", "fxcli"],
         &[],
     ));
-    let rows = releases.as_array().unwrap();
+    let rows = versions.as_array().unwrap();
     assert_eq!(rows.len(), 2);
     let active: Vec<_> = rows.iter().filter(|r| r["active"] == true).collect();
     assert_eq!(active.len(), 1);
@@ -150,18 +150,18 @@ fn install_publishes_releases_and_rollback_and_remove_move_the_pointer() {
     ));
     assert_eq!(rollback["version"], "0.1.0");
 
-    let enable = run_bookclerk(files, &["plugins", "enable", "fxcli"], &[]);
-    assert!(enable.status.success(), "{}", stderr(&enable));
+    let deploy = run_bookclerk(files, &["plugins", "deploy", "fxcli"], &[]);
+    assert!(deploy.status.success(), "{}", stderr(&deploy));
 
-    let removed = json(&run_bookclerk(
+    let uninstalled = json(&run_bookclerk(
         files,
-        &["--format", "json", "plugins", "remove", "fxcli"],
+        &["--format", "json", "plugins", "uninstall", "fxcli"],
         &[],
     ));
-    assert_eq!(removed["deployments_disabled"], 1);
+    assert_eq!(uninstalled["deployments_undeployed"], 1);
     let after = json(&run_bookclerk(
         files,
-        &["--format", "json", "plugins", "releases", "fxcli"],
+        &["--format", "json", "plugins", "versions", "fxcli"],
         &[],
     ));
     assert!(after

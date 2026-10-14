@@ -5,7 +5,7 @@
 //! `scheduler` lease acts; the others find the lease held and wait. The
 //! holder renews it on every pass, so a dead holder's lease expires and the
 //! next daemon to try takes over with a larger fencing token. A pass runs on
-//! a `placement.changed` or `release.changed` wakeup and at least every
+//! a `placement.changed` or `install.changed` wakeup and at least every
 //! [`PLACEMENT_INTERVAL`], which also notices nodes whose daemons stopped
 //! heartbeating.
 

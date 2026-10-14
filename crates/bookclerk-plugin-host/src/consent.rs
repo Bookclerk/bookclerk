@@ -2037,13 +2037,13 @@ pub fn spawn_grant(
     files_dir: &Path,
     plugin: &crate::discover::DiscoveredPlugin,
 ) -> Result<PluginGrant> {
-    if let Some(release_grant) = &plugin.release_grant {
+    if let Some(version_grant) = &plugin.version_grant {
         // A released plugin's consent is the grant recorded on its release
         // row (approved once for the cluster), checked against this tree's
         // manifest exactly as a host grant would be.
         let requested = consent_request(&plugin.manifest, plugin.plugin_key());
-        return if grant_covers(release_grant, &requested) {
-            Ok(effective_grant(release_grant, &requested))
+        return if grant_covers(version_grant, &requested) {
+            Ok(effective_grant(version_grant, &requested))
         } else {
             Err(PluginError::message(format!(
                 "plugin `{}` release grant does not cover this release; re-approve with \
@@ -2664,7 +2664,7 @@ mod tests {
         let key = bookclerk_plugin_catalog::PluginKey::platform(package, id).unwrap();
         plugin.identity.plugin_key = key.clone();
         plugin.identity.artifact.plugin_key = key;
-        plugin.identity.provenance = PluginProvenance::VerifiedInstalled;
+        plugin.identity.provenance = PluginProvenance::VerifiedStaged;
         plugin
     }
 

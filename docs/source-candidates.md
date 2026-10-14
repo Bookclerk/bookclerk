@@ -24,7 +24,7 @@ community tooling ([audiobook-dl](https://github.com/jo1gi/audiobook-dl),
 | Config plugins | Plugin instance document (`[[settings]]` schema); enablement is a deployment per host |
 | Diagnostics | Top-level `[diagnostics]` only (not an integration plugin) |
 
-Sources are plugin instances: `bookclerk plugins disable chirp` keeps this
+Sources are plugin instances: `bookclerk plugins undeploy chirp` keeps this
 host from loading that store. Store-specific knobs (`bitrate`, `container`,
 `access` as applicable) are the plugin's declared settings. Crash/error-burst
 reporting stays under `[diagnostics]` — distinct from `[integrations.*]`.
@@ -370,7 +370,7 @@ bookclerk plugins config set graphicaudio bitrate hi       # hi | lo (device)
 bookclerk plugins config set graphicaudio container auto   # auto | m4b | mp3 | flac (zip)
 ```
 
-Disable with `bookclerk plugins disable graphicaudio`. There is no ZIP→Browser→App cascade —
+Disable with `bookclerk plugins undeploy graphicaudio`. There is no ZIP→Browser→App cascade —
 pick one path explicitly (default web).
 
 ### Live purchase probe (Sons of Ares Vol. 1, product `5273`)

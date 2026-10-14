@@ -3,7 +3,7 @@
 //! An operator writes intent per instance in `plugin_placements`: a replica
 //! count and label constraints. The scheduler, a singleton that holds the
 //! [`SCHEDULER_LEASE`] cluster lease, turns that intent into
-//! `plugin_deployments` rows (the same rows `plugins enable` writes by
+//! `plugin_deployments` rows (the same rows `plugins deploy` writes by
 //! hand), and each node's reconciler converges on its own rows as before.
 //! An instance with no placement row is managed by hand; the scheduler never
 //! touches it.
@@ -40,7 +40,7 @@ use super::identity::{list_nodes, load_node, NodeRecord};
 use super::instances::{load_plugin_instance, PluginInstanceId};
 use super::node_queue::{notify_all_nodes, NodeMessage};
 use super::node_status::{GuestReservation, NodeStatus};
-use super::releases::load_active_release;
+use super::versions::load_active_version;
 use crate::entities::{cluster_leases, nodes, plugin_placements};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -230,7 +230,7 @@ pub enum PlacementWrite {
 
 /// Error for a value outside the placement grammar.
 fn invalid(detail: &str) -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!("invalid configuration: {detail}"))
+    LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }
 
 /// Only an operator writes placement intent and node labels.
@@ -240,9 +240,9 @@ fn authorize(actor: &ConfigActor) -> Result<()> {
         ConfigActor::Bootstrap
         | ConfigActor::Scheduler
         | ConfigActor::Administrator { .. }
-        | ConfigActor::Member { .. } => Err(LibraryError::Other(anyhow::anyhow!(
-            "unauthorized configuration write: operator authority is required"
-        ))),
+        | ConfigActor::Member { .. } => Err(LibraryError::Forbidden(
+            "unauthorized configuration write: operator authority is required".into(),
+        )),
     }
 }
 
@@ -856,7 +856,7 @@ pub struct PlacementPlan {
 
 /// Plans one instance.
 ///
-/// `release_targets` is the active release's artifact targets (`None` for a
+/// `version_targets` is the active release's artifact targets (`None` for a
 /// plugin with no release), `demand` what one guest of the instance needs,
 /// and `present` the nodes that already run it.
 ///
@@ -871,15 +871,15 @@ pub struct PlacementPlan {
 #[must_use]
 pub fn plan_placement(
     spec: &PlacementSpec,
-    release_targets: Option<&BTreeSet<String>>,
+    version_targets: Option<&BTreeSet<String>>,
     demand: GuestReservation,
     nodes: &[NodeCandidate],
     present: &BTreeSet<String>,
 ) -> PlacementPlan {
-    // Same rule as `PluginRelease::artifact_for`: an exact target, or a
+    // Same rule as `PluginVersion::artifact_for`: an exact target, or a
     // target-independent (`any`) artifact. A node that has not reported its
     // target is not excluded; its reconciler reports a missing artifact.
-    let target_ok = |node: &NodeCandidate| match release_targets {
+    let target_ok = |node: &NodeCandidate| match version_targets {
         Some(targets) => {
             node.target.is_empty() || targets.contains(&node.target) || targets.contains("any")
         }
@@ -1022,7 +1022,7 @@ fn shortfall(
 async fn placement_demand(
     store: &LibraryStore,
     instance_id: &PluginInstanceId,
-    release: Option<&super::releases::PluginRelease>,
+    release: Option<&super::versions::PluginVersion>,
 ) -> Result<GuestReservation> {
     if let Some(observed) = super::node_status::instance_demand(store, instance_id).await? {
         return Ok(observed);
@@ -1141,8 +1141,8 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         let Some(instance) = load_plugin_instance(store, instance_id).await? else {
             continue;
         };
-        let release = load_active_release(store, &instance.plugin_key).await?;
-        let release_targets = release.as_ref().map(|release| {
+        let release = load_active_version(store, &instance.plugin_key).await?;
+        let version_targets = release.as_ref().map(|release| {
             release
                 .artifacts
                 .iter()
@@ -1159,7 +1159,7 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         let nodes: Vec<NodeCandidate> = candidates.values().cloned().collect();
         let plan = plan_placement(
             &placement.spec,
-            release_targets.as_ref(),
+            version_targets.as_ref(),
             demand,
             &nodes,
             &present,

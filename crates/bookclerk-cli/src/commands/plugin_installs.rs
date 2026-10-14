@@ -1,41 +1,41 @@
-//! `bookclerk plugins install|update|rollback|remove|approve|releases` for
-//! cluster releases.
+//! `bookclerk plugins install|update|rollback|remove|approve|versions` for
+//! cluster versions.
 //!
-//! Installing publishes a release: the package is resolved and verified once
+//! Installing installs a version: the package is resolved and verified once
 //! (publisher trust, archive and payload digests, `plugin.toml`), recorded
 //! in the library with the operator's consent, and on a first install or
-//! `--activate` made the active release. Nothing under this host's
+//! `--activate` made the active version. Nothing under this host's
 //! `plugins/` changes; every host placed on the plugin materializes the
-//! release by digest. The CLI only writes records; a running daemon applies
+//! version by digest. The CLI only writes records; a running daemon applies
 //! them when its host queue wakes it.
 
 use std::path::Path;
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    activate_release, approve_release_grant, clear_active_release, delete_plugin_placement,
-    list_deployments_for_instance, list_plugin_instances_for_key, list_plugin_schemas,
-    list_release_pointers, list_releases, load_active_release, load_release,
-    replace_plugin_deployment, ConfigActor, DeploymentReplace, DesiredState, PluginRelease,
+    activate_version, approve_version_grant, clear_install, delete_plugin_placement,
+    list_deployments_for_instance, list_installs, list_plugin_instances_for_key,
+    list_plugin_schemas, list_versions, load_active_version, load_version,
+    replace_plugin_deployment, ConfigActor, DeploymentReplace, DesiredState, PluginVersion,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
     BookclerkPackageManifest, Installer, PackageCoordinate, TrustPolicy,
 };
 use bookclerk_plugin_host::{
-    consent_summary, grant_covers_release, host_artifact, install_release, publish_package_release,
-    release_consent_request, Activate, InstallRequest, InstalledRelease, ReleaseRequest,
+    add_package_version, consent_summary, grant_covers_version, host_artifact, install_version,
+    version_consent_request, Activate, InstallRequest, InstalledVersion, VersionRequest,
 };
 use serde_json::json;
 
 use crate::format_out::{emit, OutputFormat};
 
-/// Operator actor recorded on release writes from the CLI.
+/// Operator actor recorded on version writes from the CLI.
 fn cli_actor() -> ConfigActor {
     ConfigActor::Operator { id: "cli".into() }
 }
 
-/// What `plugins install` was asked to publish.
+/// What `plugins install` was asked to install.
 pub struct InstallArgs<'a> {
     /// Coordinate text (ignored with `--archive`).
     pub coordinate: &'a str,
@@ -45,7 +45,7 @@ pub struct InstallArgs<'a> {
     pub manifest: Option<&'a Path>,
     /// Target of the local archive.
     pub target: Option<String>,
-    /// Make this the active release even when another is active.
+    /// Make this the active version even when another is active.
     pub activate: bool,
     /// Record the requested consent as approved.
     pub approve_capabilities: bool,
@@ -57,17 +57,17 @@ pub struct InstallArgs<'a> {
     pub offline: bool,
 }
 
-/// The active release a plugin alias or key names, if any.
+/// The active version a plugin alias or key names, if any.
 ///
 /// # Errors
 ///
 /// Returns an error when a library read fails.
-pub async fn active_release_for(
+pub async fn active_version_for(
     store: &LibraryStore,
     needle: &str,
-) -> anyhow::Result<Option<PluginRelease>> {
-    if let Some(release) = load_active_release(store, needle).await? {
-        return Ok(Some(release));
+) -> anyhow::Result<Option<PluginVersion>> {
+    if let Some(version) = load_active_version(store, needle).await? {
+        return Ok(Some(version));
     }
     let schemas = list_plugin_schemas(store).await?;
     let keys: Vec<_> = schemas
@@ -76,14 +76,14 @@ pub async fn active_release_for(
         .map(|s| s.plugin_key.clone())
         .collect();
     for key in keys {
-        if let Some(release) = load_active_release(store, &key).await? {
-            return Ok(Some(release));
+        if let Some(version) = load_active_version(store, &key).await? {
+            return Ok(Some(version));
         }
     }
     Ok(None)
 }
 
-/// `plugins install`: publish a release.
+/// `plugins install`: install a version.
 ///
 /// # Errors
 ///
@@ -128,13 +128,13 @@ pub async fn run_install(
         });
         return emit(format, &payload, || {
             println!(
-                "dry-run: would publish {} ({}) as a release of {key}",
+                "dry-run: would install {} ({}) as a version of {key}",
                 package.id, coordinate
             );
         });
     }
     let plane = crate::registry::open_host(config).await?;
-    let installed = install_release(
+    let installed = install_version(
         &plane.store,
         &cli_actor(),
         &config.paths().files_dir,
@@ -150,22 +150,22 @@ pub async fn run_install(
         },
     )
     .await?;
-    let InstalledRelease {
-        release,
+    let InstalledVersion {
+        version,
         created,
         active,
         instance,
     } = installed;
-    let approved = !release.grant_json.is_empty();
+    let approved = !version.grant_json.is_empty();
     let payload = json!({
-        "plugin_key": release.plugin_key,
-        "id": release.manifest_id,
-        "version": release.version,
+        "plugin_key": version.plugin_key,
+        "id": version.manifest_id,
+        "version": version.version,
         "created": created,
         "active": active,
         "approved": approved,
         "plugin_instance_id": instance.id.to_string(),
-        "artifacts": release.artifacts.iter().map(|a| json!({
+        "artifacts": version.artifacts.iter().map(|a| json!({
             "target": a.target,
             "url": a.url,
             "archive_sha256": a.archive_sha256,
@@ -174,11 +174,11 @@ pub async fn run_install(
     });
     emit(format, &payload, || {
         println!(
-            "published {} {} ({}){}{}",
-            release.manifest_id,
-            release.version,
-            release.plugin_key,
-            if created { "" } else { " (already published)" },
+            "installed {} {} ({}){}{}",
+            version.manifest_id,
+            version.version,
+            version.plugin_key,
+            if created { "" } else { " (already installed)" },
             if active {
                 "; active"
             } else {
@@ -188,22 +188,22 @@ pub async fn run_install(
         if !approved {
             println!(
                 "consent pending: run `bookclerk plugins approve {}`",
-                release.manifest_id
+                version.manifest_id
             );
         }
         println!(
-            "enable it with `bookclerk plugins enable {}`; hosts materialize it by digest",
-            release.manifest_id
+            "deploy it with `bookclerk plugins deploy {}`; nodes materialize it by digest",
+            version.manifest_id
         );
     })
 }
 
-/// `plugins update` for released plugins. Returns false when `id` names no
-/// released plugin (the caller falls back to host-local receipts).
+/// `plugins update` for installed plugins. Returns false when `id` names no
+/// installed plugin (the caller falls back to host-local receipts).
 ///
 /// # Errors
 ///
-/// Returns an error when resolution, publishing, or activation fails.
+/// Returns an error when resolution, installing, or activation fails.
 pub async fn run_update(
     config: &Config,
     id: Option<&str>,
@@ -218,16 +218,16 @@ pub async fn run_update(
     let store = &store.store;
     let mut targets = Vec::new();
     match id {
-        Some(needle) => match active_release_for(store, needle).await? {
-            Some(release) => targets.push(release),
+        Some(needle) => match active_version_for(store, needle).await? {
+            Some(version) => targets.push(version),
             None => return Ok(false),
         },
         None => {
-            for pointer in list_release_pointers(store).await? {
-                if let Some(release) =
-                    load_release(store, &pointer.plugin_key, &pointer.version).await?
+            for pointer in list_installs(store).await? {
+                if let Some(version) =
+                    load_version(store, &pointer.plugin_key, &pointer.version).await?
                 {
-                    targets.push(release);
+                    targets.push(version);
                 }
             }
             if targets.is_empty() {
@@ -246,7 +246,7 @@ pub async fn run_update(
             results.push(json!({
                 "id": current.manifest_id,
                 "version": current.version,
-                "skipped": "published from a local archive; publish the new archive with `plugins install --archive … --activate`",
+                "skipped": "installed from a local archive; install the new archive with `plugins install --archive … --activate`",
             }));
             continue;
         }
@@ -276,12 +276,12 @@ pub async fn run_update(
         }
         trust.check_unverified_publisher_allowed()?;
         let package = bookclerk_plugin_catalog::fetch_manifest_for_coordinate(&coordinate, &[])?;
-        let published = publish_package_release(
+        let installed = add_package_version(
             store,
             &cli_actor(),
             &config.paths().files_dir,
             &node_id,
-            ReleaseRequest {
+            VersionRequest {
                 plugin_key: current.plugin_key.clone(),
                 package,
                 archive: None,
@@ -294,30 +294,30 @@ pub async fn run_update(
             },
         )
         .await?;
-        let mut release = published.release;
+        let mut version = installed.version;
         let carried = serde_json::from_str(&current.grant_json)
             .ok()
-            .filter(|grant| grant_covers_release(grant, &release));
+            .filter(|grant| grant_covers_version(grant, &version));
         let grant = match carried {
             Some(grant) => Some(grant),
-            None if approve_capabilities => Some(release_consent_request(&release)?),
+            None if approve_capabilities => Some(version_consent_request(&version)?),
             None => None,
         };
         if let Some(grant) = grant {
-            release = approve_release_grant(
+            version = approve_version_grant(
                 store,
                 &cli_actor(),
-                &release.plugin_key,
-                &release.version,
+                &version.plugin_key,
+                &version.version,
                 &serde_json::to_string(&grant)?,
             )
             .await?;
         }
         results.push(json!({
-            "id": release.manifest_id,
+            "id": version.manifest_id,
             "from": current.version,
-            "to": release.version,
-            "approved": !release.grant_json.is_empty(),
+            "to": version.version,
+            "approved": !version.grant_json.is_empty(),
         }));
     }
     emit(format, &results, || {
@@ -354,7 +354,7 @@ pub async fn run_update(
 ///
 /// # Errors
 ///
-/// Returns an error when the plugin or version is not published.
+/// Returns an error when the plugin or version is not installed.
 pub async fn run_rollback(
     config: &Config,
     id: &str,
@@ -363,10 +363,10 @@ pub async fn run_rollback(
 ) -> anyhow::Result<()> {
     let plane = crate::registry::open_host(config).await?;
     let store = &plane.store;
-    let current = active_release_for(store, id)
+    let current = active_version_for(store, id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("plugin `{id}` has no active release"))?;
-    let (pointer, _) = activate_release(
+        .ok_or_else(|| anyhow::anyhow!("plugin `{id}` has no active version"))?;
+    let (pointer, _) = activate_version(
         store,
         &cli_actor(),
         &current.plugin_key,
@@ -382,26 +382,30 @@ pub async fn run_rollback(
     });
     emit(format, &payload, || {
         println!(
-            "{} active release {} -> {}; hosts with the digest cached switch at once",
+            "{} active version {} -> {}; hosts with the digest cached switch at once",
             current.manifest_id, current.version, pointer.version
         );
     })
 }
 
-/// `plugins remove` for a released plugin. Returns false when `id` names
-/// no released plugin.
+/// `plugins uninstall` for a installed plugin. Returns false when `id` names
+/// no installed plugin.
 ///
 /// # Errors
 ///
 /// Returns an error when a library write fails.
-pub async fn run_remove(config: &Config, id: &str, format: OutputFormat) -> anyhow::Result<bool> {
+pub async fn run_uninstall(
+    config: &Config,
+    id: &str,
+    format: OutputFormat,
+) -> anyhow::Result<bool> {
     let plane = crate::registry::open_host(config).await?;
     let store = &plane.store;
-    let Some(release) = active_release_for(store, id).await? else {
+    let Some(version) = active_version_for(store, id).await? else {
         return Ok(false);
     };
     let mut disabled = 0;
-    for instance in list_plugin_instances_for_key(store, &release.plugin_key).await? {
+    for instance in list_plugin_instances_for_key(store, &version.plugin_key).await? {
         // The scheduler would redeploy a placed instance; drop its placement.
         delete_plugin_placement(store, &cli_actor(), &instance.id).await?;
         for deployment in list_deployments_for_instance(store, &instance.id).await? {
@@ -425,24 +429,25 @@ pub async fn run_remove(config: &Config, id: &str, format: OutputFormat) -> anyh
             }
         }
     }
-    clear_active_release(store, &cli_actor(), &release.plugin_key).await?;
+    clear_install(store, &cli_actor(), &version.plugin_key).await?;
     let payload = json!({
-        "plugin_key": release.plugin_key,
-        "id": release.manifest_id,
-        "deployments_disabled": disabled,
+        "plugin_key": version.plugin_key,
+        "id": version.manifest_id,
+        "uninstalled": true,
+        "deployments_undeployed": disabled,
     });
     emit(format, &payload, || {
         println!(
-            "removed {} ({}): {disabled} deployment(s) set absent, active release cleared; \
-             hosts retire the guest and sweep the cached digest",
-            release.manifest_id, release.plugin_key
+            "uninstalled {} ({}): undeployed from {disabled} node(s); \
+             nodes retire the guest and sweep the cached digest",
+            version.manifest_id, version.plugin_key
         );
     })?;
     Ok(true)
 }
 
-/// `plugins approve` for a released plugin. Returns false when `id` names
-/// no released plugin.
+/// `plugins approve` for an installed plugin. Returns false when `id` names
+/// no installed plugin.
 ///
 /// # Errors
 ///
@@ -457,10 +462,10 @@ pub async fn run_approve(
 
     let plane = crate::registry::open_host(config).await?;
     let store = &plane.store;
-    let Some(release) = active_release_for(store, id).await? else {
+    let Some(version) = active_version_for(store, id).await? else {
         return Ok(false);
     };
-    let grant = release_consent_request(&release)?;
+    let grant = version_consent_request(&version)?;
     let summary = consent_summary(&grant);
     for line in &summary {
         println!("{line}");
@@ -469,12 +474,12 @@ pub async fn run_approve(
         if !io::stdin().is_terminal() {
             anyhow::bail!(
                 "stdin is not a TTY; pass --yes to approve plugin `{}` non-interactively",
-                release.manifest_id
+                version.manifest_id
             );
         }
         eprint!(
             "Approve these permissions for `{}` {} on every host? [y/N] ",
-            release.manifest_id, release.version
+            version.manifest_id, version.version
         );
         io::stderr().flush()?;
         let mut answer = String::new();
@@ -483,31 +488,31 @@ pub async fn run_approve(
             anyhow::bail!("approval cancelled");
         }
     }
-    approve_release_grant(
+    approve_version_grant(
         store,
         &cli_actor(),
-        &release.plugin_key,
-        &release.version,
+        &version.plugin_key,
+        &version.version,
         &serde_json::to_string(&grant)?,
     )
     .await?;
     let payload = json!({
-        "id": release.manifest_id,
-        "version": release.version,
+        "id": version.manifest_id,
+        "version": version.version,
         "approved": true,
         "grant": grant,
         "summary": summary,
     });
     emit(format, &payload, || {
         println!(
-            "approved permissions for `{}` {} (recorded on the release for every host)",
-            release.manifest_id, release.version
+            "approved permissions for `{}` {} (recorded on the version for every host)",
+            version.manifest_id, version.version
         );
     })?;
     Ok(true)
 }
 
-/// `plugins releases [plugin]`: published versions and the active pointer.
+/// `plugins versions [plugin]`: installed versions and the active pointer.
 ///
 /// # Errors
 ///
@@ -520,16 +525,16 @@ pub async fn run_list(
     let store = crate::registry::open_library(config).await?;
     let key = match id {
         Some(needle) => Some(
-            active_release_for(&store, needle)
+            active_version_for(&store, needle)
                 .await?
                 .map(|r| r.plugin_key)
                 .unwrap_or_else(|| needle.to_string()),
         ),
         None => None,
     };
-    let releases = list_releases(&store, key.as_deref()).await?;
-    let pointers = list_release_pointers(&store).await?;
-    let rows: Vec<_> = releases
+    let versions = list_versions(&store, key.as_deref()).await?;
+    let pointers = list_installs(&store).await?;
+    let rows: Vec<_> = versions
         .iter()
         .map(|r| {
             let active = pointers
@@ -542,8 +547,8 @@ pub async fn run_list(
                 "active": active,
                 "approved": !r.grant_json.is_empty(),
                 "publisher_verified": r.publisher_verified,
-                "published_at": r.published_at,
-                "published_by": r.published_by,
+                "installed_at": r.installed_at,
+                "installed_by": r.installed_by,
                 "node_target": host_artifact(r).ok().map(|a| a.payload_root_sha256.clone()),
                 "targets": r.artifacts.iter().map(|a| a.target.clone()).collect::<Vec<_>>(),
             })
@@ -551,7 +556,7 @@ pub async fn run_list(
         .collect();
     emit(format, &rows, || {
         if rows.is_empty() {
-            println!("no releases");
+            println!("no versions");
         }
         for row in &rows {
             println!(

@@ -417,7 +417,7 @@ struct PluginSettingsGroup {
     /// Provenance-qualified PluginKey when this row came from a discovered install.
     #[serde(skip_serializing_if = "Option::is_none")]
     plugin_key: Option<String>,
-    /// Host-evaluated provenance (`platform_bundled`, `verified_installed`, …).
+    /// Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     provenance: Option<String>,
     /// Google favicon (or portal brand) URL for Settings list rows.
@@ -901,22 +901,22 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             put(crate::config_authority::put_node_runtime),
         )
         .route(
-            "/api/config/plugin-releases",
-            get(crate::plugin_releases::get_plugin_releases)
-                .post(crate::plugin_releases::post_plugin_release),
+            "/api/config/plugins",
+            get(crate::plugin_installs::get_plugins)
+                .post(crate::plugin_installs::post_plugin_install),
         )
         .route(
-            "/api/config/plugin-releases/{key}/active",
-            put(crate::plugin_releases::put_active_release)
-                .delete(crate::plugin_releases::delete_active_release),
+            "/api/config/plugins/{key}",
+            get(crate::plugin_installs::get_plugin)
+                .delete(crate::plugin_installs::delete_plugin_install),
         )
         .route(
-            "/api/config/plugin-releases/{key}/{version}/approve",
-            post(crate::plugin_releases::approve_plugin_release),
+            "/api/config/plugins/{key}/active",
+            put(crate::plugin_installs::put_active_version),
         )
         .route(
-            "/api/config/plugin-schemas",
-            get(crate::config_authority::get_plugin_schemas),
+            "/api/config/plugins/{key}/versions/{version}/approve",
+            post(crate::plugin_installs::approve_plugin_version),
         )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
@@ -3039,7 +3039,7 @@ async fn patch_settings(
 
     let mut enabling = newly_enabled_plugin_ids(&updates, &editable_plugin_options);
     // Direct `database.plugin` (and exclusive `database.<id>.enabled`) switches
-    // must not bypass consent — same bar as `bookclerk plugins enable`.
+    // must not bypass consent — same bar as `bookclerk plugins deploy`.
     for id in database_backends_requiring_grant(&updates, &current_database_plugin) {
         if !enabling.iter().any(|e| e.eq_ignore_ascii_case(&id)) {
             enabling.push(id);

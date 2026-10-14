@@ -29,7 +29,7 @@ interface PlacementPanelProps {
 }
 
 /**
- * Where a plugin instance runs: by hand on this node (the Enabled switch), or
+ * Where a plugin instance runs: by hand on this node (the Deployed switch), or
  * on `replicas` nodes the cluster scheduler picks among those carrying every
  * label constraint.
  */
@@ -123,8 +123,8 @@ export function PlacementPanel({ plugin, onChanged, onError, onSessionExpired }:
               placement.replicas === "all" ? " (every node with room)" : ` of ${placement.replicas}`
             } node(s)${
               placement.constraints.length ? ` labelled ${placement.constraints.join(", ")}` : ""
-            }, choosing the live nodes with the most budget headroom. The Enabled switch does not apply while it is placed.`
-          : "Managed by hand: the Enabled switch runs it on this node. Place it to let the scheduler pick nodes."}
+            }, choosing the live nodes with the most budget headroom. The Deployed switch does not apply while it is placed.`
+          : "Managed by hand: the Deployed switch runs it on this node. Place it to let the scheduler pick nodes."}
       </p>
       {placement?.detail ? <p className="mt-1 text-xs text-brick">{placement.detail}</p> : null}
       {runningOn.length ? (

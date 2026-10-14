@@ -15,10 +15,10 @@ mod instances;
 mod node_queue;
 mod node_status;
 mod placement;
-mod releases;
 mod routing;
 mod schemas;
 mod secret;
+mod versions;
 
 use std::path::Path;
 
@@ -74,19 +74,19 @@ pub use placement::{
     MAX_NODE_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE,
     SCHEDULER_LEASE_TTL, TARGET_LABEL,
 };
-pub use releases::{
-    activate_release, approve_release_grant, clear_active_release, list_release_pointers,
-    list_releases, load_active_release, load_release, load_release_blob, load_release_pointer,
-    publish_release, put_release_blob, PluginRelease, PublishRelease, ReleaseArtifact,
-    ReleasePointer, MAX_RELEASE_BLOB_BYTES, RELEASE_BLOB_SCHEME,
-};
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{
-    list_plugin_schemas, load_plugin_schema, pin_plugin_schema, pin_release_schema,
+    list_plugin_schemas, load_plugin_schema, pin_plugin_schema, pin_version_schema,
     require_plugin_schema, schema_fingerprint, stale_against_pin, PinnedPluginSchema, SchemaPin,
     SchemaPinChange, SchemaPinOutcome,
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
+pub use versions::{
+    activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
+    list_versions, load_active_version, load_artifact_blob, load_install, load_version,
+    put_artifact_blob, AddVersion, PluginArtifact, PluginInstall, PluginVersion,
+    ARTIFACT_BLOB_SCHEME, MAX_ARTIFACT_BLOB_BYTES,
+};
 
 use documents::{import_if_absent, load_document, replace_document};
 use identity::heartbeat_process;
@@ -417,7 +417,7 @@ pub async fn import_events_if_absent(
         }
     };
     let json = serde_json::to_string(&body)
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("invalid configuration: {err}")))?;
+        .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
     let stored = import_if_absent(
         store,
         actor,
@@ -444,7 +444,7 @@ pub async fn replace_events(
 ) -> Result<EventsReplace> {
     body.validate()?;
     let json = serde_json::to_string(body)
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("invalid configuration: {err}")))?;
+        .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
     match replace_document(
         store,
         actor,
@@ -514,7 +514,7 @@ pub async fn import_node_runtime_if_absent(
 ) -> Result<ConfigurationDocument<NodeRuntimeSettingsV1>> {
     body.validate()?;
     let json = serde_json::to_string(body)
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("invalid configuration: {err}")))?;
+        .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
     let stored = import_if_absent(
         store,
         actor,
@@ -542,7 +542,7 @@ pub async fn replace_node_runtime(
 ) -> Result<NodeRuntimeReplace> {
     body.validate()?;
     let json = serde_json::to_string(body)
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("invalid configuration: {err}")))?;
+        .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
     match replace_document(
         store,
         actor,
@@ -649,7 +649,7 @@ fn parse_events(stored: StoredDocument) -> Result<ConfigurationDocument<EventsSe
         ));
     }
     let body: EventsSettingsV1 = serde_json::from_str(&stored.document_json)
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("invalid configuration: {err}")))?;
+        .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
     body.validate()?;
     Ok(document(stored, body))
 }
@@ -665,7 +665,7 @@ fn parse_node_runtime(
         ));
     }
     let body: NodeRuntimeSettingsV1 = serde_json::from_str(&stored.document_json)
-        .map_err(|err| LibraryError::Other(anyhow::anyhow!("invalid configuration: {err}")))?;
+        .map_err(|err| LibraryError::Invalid(format!("invalid configuration: {err}")))?;
     body.validate()?;
     Ok(document(stored, body))
 }
@@ -686,7 +686,7 @@ fn document<T>(stored: StoredDocument, body: T) -> ConfigurationDocument<T> {
 
 /// Error for an events or node-runtime value outside the domain bounds.
 fn invalid_events(detail: &str) -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!("invalid configuration: {detail}"))
+    LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }
 
 #[cfg(test)]

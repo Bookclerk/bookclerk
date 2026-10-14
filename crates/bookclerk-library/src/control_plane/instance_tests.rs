@@ -1326,16 +1326,16 @@ async fn concurrent_pins_never_leave_an_older_version_on_top() {
         .is_some());
 }
 
-fn release_fixture(version: &str, payload: char) -> PluginRelease {
-    PluginRelease {
+fn version_fixture(version: &str, payload: char) -> PluginVersion {
+    PluginVersion {
         plugin_key: "cargo:https://index.crates.io/#bookclerk-plugin-demo".into(),
         version: version.into(),
         manifest_id: "demo".into(),
         manifest_toml: format!("id = \"demo\"\nversion = \"{version}\"\n"),
         settings: fixture_schema(),
-        artifacts: vec![ReleaseArtifact {
+        artifacts: vec![PluginArtifact {
             target: "any".into(),
-            url: format!("{RELEASE_BLOB_SCHEME}{}", "a".repeat(64)),
+            url: format!("{ARTIFACT_BLOB_SCHEME}{}", "a".repeat(64)),
             format: "tar.gz".into(),
             archive_root: ".".into(),
             archive_sha256: "a".repeat(64),
@@ -1345,51 +1345,51 @@ fn release_fixture(version: &str, payload: char) -> PluginRelease {
         publisher_verified: true,
         grant_json: String::new(),
         coordinate: String::new(),
-        published_at: String::new(),
-        published_by: String::new(),
+        installed_at: String::new(),
+        installed_by: String::new(),
     }
 }
 
 #[tokio::test]
-async fn releases_publish_activate_roll_back_and_wake_every_node() {
+async fn installs_activate_roll_back_and_wake_every_node() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(dir.path().join("library.db").as_path()).await;
     let session = bootstrap(&store, dir.path()).await;
     let node = session.node.node_id.clone();
-    let key = release_fixture("1.0.0", 'b').plugin_key;
+    let key = version_fixture("1.0.0", 'b').plugin_key;
 
-    let created = publish_release(&store, &operator(), release_fixture("1.0.0", 'b'))
+    let created = add_plugin_version(&store, &operator(), version_fixture("1.0.0", 'b'))
         .await
         .unwrap();
-    assert!(matches!(created, PublishRelease::Created(_)));
-    assert_eq!(created.release().published_by, "operator");
-    let again = publish_release(&store, &operator(), release_fixture("1.0.0", 'b'))
+    assert!(matches!(created, AddVersion::Created(_)));
+    assert_eq!(created.version().installed_by, "operator");
+    let again = add_plugin_version(&store, &operator(), version_fixture("1.0.0", 'b'))
         .await
         .unwrap();
     assert!(
-        matches!(again, PublishRelease::Existing(_)),
+        matches!(again, AddVersion::Existing(_)),
         "same content is a no-op"
     );
-    let err = publish_release(&store, &operator(), release_fixture("1.0.0", 'c'))
+    let err = add_plugin_version(&store, &operator(), version_fixture("1.0.0", 'c'))
         .await
         .expect_err("a version never changes content");
     assert!(err.to_string().contains("different content"), "{err}");
     let member = ConfigActor::Member { id: "u".into() };
     assert!(
-        publish_release(&store, &member, release_fixture("9.0.0", 'd'))
+        add_plugin_version(&store, &member, version_fixture("9.0.0", 'd'))
             .await
             .is_err()
     );
 
-    assert!(load_active_release(&store, &key).await.unwrap().is_none());
-    let (pointer, pin) = activate_release(&store, &operator(), &key, "1.0.0", &node)
+    assert!(load_active_version(&store, &key).await.unwrap().is_none());
+    let (pointer, pin) = activate_version(&store, &operator(), &key, "1.0.0", &node)
         .await
         .unwrap();
     assert_eq!((pointer.version.as_str(), pointer.revision), ("1.0.0", 1));
     assert_eq!(pin.change, SchemaPinChange::Pinned);
     assert_eq!(
-        load_active_release(&store, &key)
+        load_active_version(&store, &key)
             .await
             .unwrap()
             .unwrap()
@@ -1397,16 +1397,16 @@ async fn releases_publish_activate_roll_back_and_wake_every_node() {
         "1.0.0"
     );
 
-    publish_release(&store, &operator(), release_fixture("1.1.0", 'e'))
+    add_plugin_version(&store, &operator(), version_fixture("1.1.0", 'e'))
         .await
         .unwrap();
-    let (pointer, pin) = activate_release(&store, &operator(), &key, "1.1.0", &node)
+    let (pointer, pin) = activate_version(&store, &operator(), &key, "1.1.0", &node)
         .await
         .unwrap();
     assert_eq!(pointer.revision, 2);
     assert!(matches!(pin.change, SchemaPinChange::Upgraded { .. }));
     // Rollback: the pointer and the schema pin follow the older release.
-    let (pointer, pin) = activate_release(&store, &operator(), &key, "1.0.0", &node)
+    let (pointer, pin) = activate_version(&store, &operator(), &key, "1.0.0", &node)
         .await
         .unwrap();
     assert_eq!((pointer.version.as_str(), pointer.revision), ("1.0.0", 3));
@@ -1417,83 +1417,79 @@ async fn releases_publish_activate_roll_back_and_wake_every_node() {
         }
     );
     // Re-activating the active version changes nothing.
-    let (same, _) = activate_release(&store, &operator(), &key, "1.0.0", &node)
+    let (same, _) = activate_version(&store, &operator(), &key, "1.0.0", &node)
         .await
         .unwrap();
     assert_eq!(same.revision, 3);
-    assert!(activate_release(&store, &operator(), &key, "7.0.0", &node)
+    assert!(activate_version(&store, &operator(), &key, "7.0.0", &node)
         .await
         .is_err());
 
-    let approved = approve_release_grant(&store, &operator(), &key, "1.0.0", "{\"ok\":true}")
+    let approved = approve_version_grant(&store, &operator(), &key, "1.0.0", "{\"ok\":true}")
         .await
         .unwrap();
     assert_eq!(approved.grant_json, "{\"ok\":true}");
-    assert_eq!(list_releases(&store, Some(&key)).await.unwrap().len(), 2);
+    assert_eq!(list_versions(&store, Some(&key)).await.unwrap().len(), 2);
 
-    assert!(clear_active_release(&store, &operator(), &key)
-        .await
-        .unwrap());
-    assert!(load_active_release(&store, &key).await.unwrap().is_none());
-    assert!(!clear_active_release(&store, &operator(), &key)
-        .await
-        .unwrap());
+    assert!(clear_install(&store, &operator(), &key).await.unwrap());
+    assert!(load_active_version(&store, &key).await.unwrap().is_none());
+    assert!(!clear_install(&store, &operator(), &key).await.unwrap());
 
     let messages = node_messages(&store, &node).await;
-    let release_moves: Vec<_> = messages
+    let version_moves: Vec<_> = messages
         .iter()
         .filter_map(|m| match m {
-            NodeMessage::ReleaseChanged { version, .. } => Some(version.as_str()),
+            NodeMessage::InstallChanged { version, .. } => Some(version.as_str()),
             _ => None,
         })
         .collect();
     assert_eq!(
-        release_moves,
+        version_moves,
         ["1.0.0", "1.1.0", "1.0.0", "1.0.0", ""],
         "activate, update, rollback, grant approval, clear"
     );
 }
 
 #[tokio::test]
-async fn release_blobs_are_capped_and_digest_checked() {
+async fn artifact_blobs_are_capped_and_digest_checked() {
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(dir.path().join("library.db").as_path()).await;
-    let url = put_release_blob(&store, b"archive bytes").await.unwrap();
-    let sha = url.strip_prefix(RELEASE_BLOB_SCHEME).expect("blob url");
+    let url = put_artifact_blob(&store, b"archive bytes").await.unwrap();
+    let sha = url.strip_prefix(ARTIFACT_BLOB_SCHEME).expect("blob url");
     assert_eq!(
-        load_release_blob(&store, sha).await.unwrap().as_deref(),
+        load_artifact_blob(&store, sha).await.unwrap().as_deref(),
         Some(&b"archive bytes"[..])
     );
     assert_eq!(
-        put_release_blob(&store, b"archive bytes").await.unwrap(),
+        put_artifact_blob(&store, b"archive bytes").await.unwrap(),
         url
     );
-    assert!(load_release_blob(&store, &"0".repeat(64))
+    assert!(load_artifact_blob(&store, &"0".repeat(64))
         .await
         .unwrap()
         .is_none());
-    let too_big = vec![0u8; MAX_RELEASE_BLOB_BYTES + 1];
-    assert!(put_release_blob(&store, &too_big).await.is_err());
+    let too_big = vec![0u8; MAX_ARTIFACT_BLOB_BYTES + 1];
+    assert!(put_artifact_blob(&store, &too_big).await.is_err());
 }
 
 #[tokio::test]
-async fn a_release_published_through_one_connection_is_active_on_another() {
+async fn a_version_installed_through_one_connection_is_active_on_another() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("library.db");
     let node_a = file_store(&path).await;
     let session = bootstrap(&node_a, dir.path()).await;
-    let release = release_fixture("2.0.0", 'f');
+    let release = version_fixture("2.0.0", 'f');
     let key = release.plugin_key.clone();
-    publish_release(&node_a, &operator(), release)
+    add_plugin_version(&node_a, &operator(), release)
         .await
         .unwrap();
-    activate_release(&node_a, &operator(), &key, "2.0.0", &session.node.node_id)
+    activate_version(&node_a, &operator(), &key, "2.0.0", &session.node.node_id)
         .await
         .unwrap();
     drop(node_a);
     let node_b = file_store(&path).await;
-    let active = load_active_release(&node_b, &key)
+    let active = load_active_version(&node_b, &key)
         .await
         .unwrap()
         .expect("the pointer is a cluster record");

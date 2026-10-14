@@ -3,7 +3,8 @@
 - **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided and
   implemented (Refs #192)
 - **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
-  releases decision and the Phase 3 implementation: 2026-10-14)
+  cluster-install decision, the Phase 3 implementation, and the node and
+  install/deploy terminology: 2026-10-14)
 - **Related:** [SQL database contract](sql-database-contract.md),
   [schema versioning](schema-versioning.md),
   [plugin capabilities v3](plugin-capabilities-v3.md),
@@ -342,11 +343,11 @@ that the guest receives `CONFIG`; it carries no defaults.
 
 `plugin_deployments` holds `desired ∈ {present, absent}` per (instance, host).
 "Enabled on this host" means a present deployment. `bookclerk plugins
-enable|disable [--host]`, `PUT /api/config/plugin-instances/{id}/deployments/
+enable|disable [--node]`, `PUT /api/config/plugin-instances/{id}/deployments/
 {node_id}`, and the Settings page switch write that row; nothing reads an
 `enabled` key from TOML. The host's reconciler spawns present deployments,
 retires a running guest when desired flips to absent, and records
-observations (`installed`, `running`, `healthy`, `error`, `retired`). A
+observations (`materialized`, `running`, `healthy`, `error`, `retired`). A
 desired write never updates observations.
 
 Enrollment is generic and idempotent, and runs in both the CLI and the daemon
@@ -468,56 +469,57 @@ second way to declare interest.
   destination is bound to a disk, a workerd-only plugin to a host with the
   pinned runtime). Enrollment stops writing "this host, present" once a
   scheduler exists; until then it keeps doing so.
-- **Releases, not installs.** "Installed" is a cluster record, the way a
-  Workers version is a record and every colo materializes it on demand. A
-  `plugin_releases` row per `(plugin_key, version)` carries the manifest, the
-  settings schema, one artifact per target with its digest, the publisher
-  verification result, and the consent grant; a pointer names the active
-  release per plugin key. The host's `plugins/` tree is a content-addressed,
-  immutable cache of release artifacts. There is no in-place replace, no
+- **Cluster installs, not host installs.** "Installed" is a cluster
+  record, the way a Workers version is a record and every colo materializes
+  it on demand. A `plugin_versions` row per `(plugin_key, version)` carries
+  the manifest, the settings schema, one artifact per target with its
+  digest, the publisher verification result, and the consent grant; a
+  `plugin_installs` row names the active version per plugin key. The node's
+  `plugins/` tree is a content-addressed, immutable cache of version
+  artifacts. There is no in-place replace, no
   host install ledger to repair, and no pre-commit health gate: health is
   the deployment observation it already is, and rollback is a pointer flip.
   Decided 2026-10-14 after reviewing the stage-and-commit installer in #255
   (closed): its crash window had moved to the commit step and its machinery
   (pending markers, backups, ledger repair) is not needed once the record of
-  truth is the database. See *Releases and materialization* below.
+  truth is the database. See *Installs and materialization* below.
 - **Out of scope.** Durable Objects, R2 (destinations are the storage
   abstraction), and cron triggers (jobs cover them). Database adapters as
   instances stay Phase 4.
 
-### Releases and materialization
+### Installs and materialization
 
-A release is published once and materialized by every host that is placed on
-it. `bookclerk plugins install <coordinate|--archive>` becomes "publish a
-release": resolve and verify the package exactly as the installer does today
-(publisher trust, archive digests, manifest validation, `[[settings]]`
-schema), record the consent grant the operator approved, write the
-`plugin_releases` row and, on a first install or `--activate`, the active
-pointer. Nothing on the publishing host's disk changes. The artifact bytes
-stay where the release row points: the registry URL, an operator bucket, the
+A version is installed once and materialized by every node that is placed
+on it. `bookclerk plugins install <coordinate|--archive>` resolves and
+verifies the package exactly as the host-local installer did (publisher
+trust, archive digests, manifest validation, `[[settings]]` schema), records
+the consent grant the operator approved, and writes the `plugin_versions`
+row and, on a first install or `--activate`, the active install. Nothing on
+the installing node's disk changes. The artifact bytes stay where the
+version row points: the registry URL, an operator bucket, the
 `plugin-packages/` directory, or the KV store once it exists. Blobs in the
 database are a fallback for small packages only (D1 rows are capped well
 below a Rust guest binary).
 
-A host materializes a release when its reconciler sees a present deployment
-whose active release it has not cached: fetch the artifact for its target
+A node materializes a version when its reconciler sees a present deployment
+whose active version it has not cached: fetch the artifact for its target
 (no artifact for this target is an `error` observation naming the target, so
 placement constraints can exclude the host), extract under
 `plugins/.staging/<digest>.<pid>`, verify the payload-root digest against
-the release row, rename to `plugins/<digest>`, and spawn from there. A
+the version row, rename to `plugins/<digest>`, and spawn from there. A
 partial extract never reaches the final path, so a crash leaves only
 `.staging` garbage to sweep; a cached digest is immutable and reused by every
-instance of that release on the host. Digests no deployment references are
+instance of that version on the node. Digests no deployment references are
 collected after a grace period.
 
 What changes in the trust model: a host trusts the database, which is
 already the authority for configuration and secrets, instead of its own
 `install-ledger.json`. Publisher verification and
-`allow_unverified_publisher` happen once at publish time and are recorded on
-the release. `evaluate_install_in` becomes "payload digest matches the
-release row"; `require_key_derived_install_path` and the receipt file go
+`allow_unverified_publisher` happen once at install time and are recorded on
+the version. `evaluate_install_in` becomes "payload digest matches the
+version row"; `require_key_derived_install_path` and the receipt file go
 with the ledger. Consent moves from the per-host `plugin-grants.json` into
-the release record (approved once; a new version whose requested
+the version record (approved once; a new version whose requested
 capabilities widen needs re-approval, as `grant_covers` enforces today).
 
 What stays host-local: platform-bundled guests beside the binary (`sqlite`,
@@ -526,15 +528,15 @@ the database is open. The bootstrap exception already records both. The
 local mutation lock still serializes materialization and sweeping on one
 host; `require_mutable_child` keeps guarding every path under `plugins/`.
 
-Schema pinning simplifies: the pinned schema is the active release's schema.
-A host no longer has "an installed version" independent of the cluster, so
+Schema pinning simplifies: the pinned schema is the active version's schema.
+A node no longer has "an installed version" independent of the cluster, so
 the newer-re-pins / older-is-stale comparison from Phase 2 reduces to
-"materialize the active release". The comparison code stays until the
-release path lands, then goes.
+"materialize the active version". The comparison code stays until the
+cluster install path lands, then goes.
 
-`bookclerk plugins update` publishes a new version and moves the pointer;
-`bookclerk plugins rollback <plugin> <version>` moves it back, which is
-instant on hosts that still cache the digest. `bookclerk plugins remove`
+`bookclerk plugins update` installs a new version and activates it;
+`bookclerk plugins rollback <plugin> <version>` activates an earlier one,
+which is instant on nodes that still cache the digest. `bookclerk plugins uninstall`
 clears the pointer and deployments; the cache sweep removes the files.
 
 ### Implementation plan (stacked PR)
@@ -558,12 +560,12 @@ depends on hosts agreeing on a schema.
    and the configuration-change wakeup consume them instead of the 5 s tick;
    `deployment.changed` published on every deployment write; the CLI stays a
    producer only.
-4. **Releases and materialization.** `plugin_releases` and the active
-   pointer; publish from `bookclerk plugins install|update|rollback` and
-   `POST /api/config/plugin-releases`; the reconciler materializes by digest
+4. **Installs and materialization.** `plugin_versions` and the active
+   install; install from `bookclerk plugins install|update|rollback` and
+   `POST /api/config/plugins`; the reconciler materializes by digest
    under `plugins/<digest>` and spawns from the cache; `install-ledger.json`,
    `receipt.json`, and per-host `plugin-grants.json` retire; a
-   two-connection test proving a release published on one host is
+   two-connection test proving a version installed from one node is
    materialized and spawned on another.
 5. **Placement.** `replicas` and `constraints` on `plugin_deployments`;
    `hosts.labels`; `bookclerk plugins deploy <plugin> --replicas N --on
@@ -571,7 +573,7 @@ depends on hosts agreeing on a schema.
    is a singleton maintenance lease (already listed under Phase 3) that
    writes deployments; each host's reconciler converges as today.
 6. **Docs and ADR.** `plugins.md` loses "not implemented yet" for KV and
-   Queues and describes releases instead of installs; this section records
+   Queues and describes cluster installs instead of host installs; this section records
    any deviation.
 
 Steps 1, 2, and 4 are independent of each other and of 3; 5 needs 3 and 4.
@@ -598,34 +600,48 @@ section is the record.
   are woken by their host queue and keep a 60 second backstop pass (the
   5 second tick is gone). Wakeups are best effort after commit: a publish
   failure is logged, not returned, because the write already committed.
-- **Release cache path (step 4).** Materialized trees live under
-  `plugins/.releases/<payload-digest>` and partial extracts under
-  `plugins/.staging/release-<digest>.<pid>`, not `plugins/<digest>`. The
+- **Version cache path (step 4).** Materialized trees live under
+  `plugins/.versions/<payload-digest>` and partial extracts under
+  `plugins/.staging/version-<digest>.<pid>`, not `plugins/<digest>`. The
   leading dot keeps discovery and alias scanning, which walk `plugins/`,
   from treating a cache entry as an installed plugin.
 - **Host-local trees remain (step 4).** The ledger, receipts, and
-  `plugin-grants.json` retire for released plugins only. Platform guests,
-  development trees staged by `cargo stage-plugins`, and installs made
-  before releases still run from `plugins/<fs-id>` with a host grant. No
+  `plugin-grants.json` retire for cluster-installed plugins only. Platform
+  guests, development trees staged by `cargo stage-plugins`, and host-local
+  installs made before cluster installs still run from `plugins/<fs-id>`
+  with a host grant. No
   operator command writes a host-local install any more. The reconciler
   persists a verified platform guest's grant before its first spawn
   instead of refusing for want of one.
 - **Operator packages (step 4).** A package under `plugin-packages/` is
-  published as a release the first time a present deployment needs it,
-  offline, carrying the key's existing host grant onto the release row.
-  `POST /api/config/plugin-releases` publishes one by directory name.
+  installed as a version the first time a present deployment needs it,
+  offline, carrying the key's existing host grant onto the version row.
+  `POST /api/config/plugins` installs one by directory name.
 - **Artifact location (step 4).** Archives up to 1 MiB are stored in
-  `plugin_release_blobs` (`blob:sha256:<hex>`). A larger local archive is
+  `plugin_artifacts` (`blob:sha256:<hex>`). A larger local archive is
   referenced in place as `file://`, which only hosts that see the path can
   materialize. A shared artifact store is not part of this phase.
 - **Local archive keys (step 4).** A local archive's path-derived key
-  names its first publish only; a later archive of an alias that is
-  already published reuses that alias's key, so `install --archive` of a
+  names its first install only; a later archive of an alias that is
+  already installed reuses that alias's key, so `install --archive` of a
   new version is an update rather than a second plugin. `plugins update`
-  skips a release with no recorded coordinate.
+  skips a version with no recorded coordinate.
 - **Install flags (step 4).** `install --replace` is kept as an alias of
-  `--activate`. `releases`, `deploy`, `instances`, `config`, and `db` were
-  added to the reserved `plugins` verbs so a plugin CLI cannot shadow them.
+  `--activate`. `versions`, `deploy`, `undeploy`, `uninstall`, `instances`,
+  `config`, and `db` are reserved `plugins` verbs so a plugin CLI cannot
+  shadow them.
+- **Terminology.** The first cut said "release" and "publish" for a
+  cluster install and "host" for a cluster member. Both read as
+  infrastructure jargon, so the code, schema, API, and CLI say *install* (a
+  `plugin_versions` row; `plugin_installs` names the active one;
+  `plugin_artifacts` holds small archives), *deploy* (a deployment row on a
+  node), and *node* (`nodes`, `node_status`, `node.runtime`,
+  `node-identity.json`, `node.<id>` queues). `plugins enable|disable` folded
+  into `plugins deploy|undeploy [--node <id>]`, `remove` became
+  `uninstall`, and `releases` became `versions`. The operator API is
+  `/api/config/plugins` (list and install), `/api/config/plugins/{key}`
+  (read and uninstall), `/api/config/plugins/{key}/active` (activate), and
+  `/api/config/plugins/{key}/versions/{version}/approve`.
 - **Placement input (step 5).** Replicas and constraints live on a new
   `plugin_placements` row per instance (the scheduler's input), not on
   `plugin_deployments` (its per-host output). A count stored on every host
@@ -638,7 +654,7 @@ section is the record.
 - **Labels and targets (step 5).** Labels are `name` or `name=value`; every
   host also carries `node=<id>` and `target=<target>`; a constraint may
   exclude with `!`. Beyond the constraints, the scheduler skips a host
-  whose target has no artifact in the active release (an `any` artifact
+  whose target has no artifact in the active version (an `any` artifact
   matches every host). Labels are set with `bookclerk nodes label` and
   `PUT /api/config/nodes/{node_id}/labels`.
 - **Scheduler lease (step 5).** The singleton is the `scheduler` row in a
@@ -647,10 +663,10 @@ section is the record.
   compare-and-swap, so a holder whose lease lapsed mid-pass can at worst
   add one replica that the next pass removes.
 - **Hand-managed versus placed (step 5).** A placed instance refuses
-  `enable`/`disable` and the deployment API (409), enrollment writes a new
-  host's row `unplaced` for it, and `plugins deploy --manual` hands the
-  deployments back unchanged (`placed` → `present`, `unplaced` →
-  `absent`). Removing a plugin drops its placements first.
+  per-node `deploy`/`undeploy` and the deployment API (409), enrollment
+  writes a new node's row `unplaced` for it, and `plugins deploy --manual`
+  hands the deployments back unchanged (`placed` → `present`, `unplaced` →
+  `absent`). Uninstalling a plugin drops its placements first.
 
 ### Resource-aware scheduling and routing
 
@@ -692,7 +708,7 @@ running a plugin. Nodes still only share the database.
   day), updated from the gap between heartbeats. It discounts, rather than
   excludes, nodes that come and go.
 - **Placement by headroom.** An instance's demand is the largest ceiling
-  any node recorded for it, else its release grant, else the grant
+  any node recorded for it, else its version grant, else the grant
   defaults. A node's score is how many more such guests fit its CPU and
   memory headroom, times `0.5 + 0.5 × availability`. Memory is a hard fit
   (a guest over its ceiling is killed); CPU only ranks. Replicas stay
@@ -723,8 +739,8 @@ running a plugin. Nodes still only share the database.
   instance; explicit create adds further instances of the same key.
   `accounts` is unique on `(plugin_key, account_id)`; `books`,
   `ignored_titles`, and `account_links` carry `plugin_key`. Phase 3 adds
-  `plugin_kv`, `plugin_releases`, `plugin_release_pointers`,
-  `plugin_release_blobs`, `plugin_placements` (with nullable `replicas`
+  `plugin_kv`, `plugin_versions`, `plugin_installs`,
+  `plugin_artifacts`, `plugin_placements` (with nullable `replicas`
   for "all"), `cluster_leases`, and `node_status`;
   `plugin_deployments.desired` allows `placed` and `unplaced`;
   `plugin_deployment_observations` gains the guest's reserved memory and
@@ -737,8 +753,8 @@ running a plugin. Nodes still only share the database.
   unreleased-schema rule.
 - `bookclerk config get/set` for `events.*` reads and writes the database.
   Plugin settings and enablement are `bookclerk plugins config` and
-  `bookclerk plugins enable|disable`, also database. Releases are
-  `bookclerk plugins install|update|rollback|remove|approve|releases` and
+  `bookclerk plugins deploy|undeploy`, also database. Installs are
+  `bookclerk plugins install|update|rollback|uninstall|approve|versions` and
   placement is `bookclerk plugins deploy` with `bookclerk nodes label|set`, all
   database. The remaining `config` keys still edit `config.toml`.
 - `bookclerk config show` prints `events.authority = database` when the
@@ -774,18 +790,18 @@ Not in this phase, and not claimed as production HA:
 - Memory and measured use are read on Linux only. On macOS and Windows a
   heartbeat carries the CPU count, so those hosts are ranked by CPU alone
   and not held to a memory budget.
-- Rollouts: moving a release pointer updates every placed host on its next
+- Rollouts: activating a version updates every placed node on its next
   wakeup at once; there is no staged or health-gated rollout across
   replicas. Placement does not read health: a replica on a host whose guest
   keeps failing stays until the host stops qualifying (routing already
   skips a host whose guest is not up).
-- A shared artifact location for releases larger than the 1 MiB blob cap
+- A shared artifact location for versions larger than the 1 MiB blob cap
   (an operator bucket, or KV-backed chunks). Today such an archive must sit
   on storage every placed host can read through its `file://` path.
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
 - Rolling upgrades and a cluster dashboard beyond Settings → Nodes
-  (Phase 5). Drain exists (`hosts set --drain`).
+  (Phase 5). Drain exists (`nodes set --drain`).
 - Schema pinning compares package versions, not schema contents: a newer
   package that only renames a key still drops the operator's value for the
   old name. A declared per-key migration in `[[settings]]` is a possible
@@ -796,9 +812,10 @@ Not in this phase, and not claimed as production HA:
 - A general key-management provider. Operators copy `master.key`.
 - The host-local install path (receipts, `install-ledger.json`, in-place
   replace of `plugins/<fs-id>`) remains for platform guests, development
-  staging, and installs made before releases. It keeps its stage-and-commit
-  crash window, but no operator command writes it any more; releases and the
-  digest cache replaced it for everything an operator installs. #255 (a
+  staging, and host-local installs made before cluster installs. It keeps
+  its stage-and-commit crash window, but no operator command writes it any
+  more; cluster installs and the digest cache replaced it for everything an
+  operator installs. #255 (a
   stage-and-commit installer) was closed for that reason.
 - D1 multi-host execution. The executing D1 tests in this repository are an
   HTTP mock over one SQLite connection. The shared-database proof is two

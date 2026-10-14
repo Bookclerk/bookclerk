@@ -1632,7 +1632,7 @@ export interface PluginDeploymentView {
    */
   desired: "present" | "absent" | "placed" | "unplaced" | string;
   revision: number;
-  /** `installed`, `running`, `healthy`, `error`, or `retired` when observed. */
+  /** `materialized`, `running`, `healthy`, `error`, or `retired` when observed. */
   status?: string;
   detail?: string;
   applied_config_revision?: number;
@@ -1670,7 +1670,7 @@ export interface PluginSettingsGroup {
   family: string;
   /** Provenance-qualified PluginKey when this row came from a discovered install. */
   plugin_key?: string;
-  /** Host-evaluated provenance (`platform_bundled`, `verified_installed`, …). */
+  /** Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …). */
   provenance?: string;
   /** Google favicon (or portal brand) URL for Settings list rows. */
   logo?: string;

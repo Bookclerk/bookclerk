@@ -54,8 +54,8 @@ pub fn wake_for(message: &NodeMessage) {
         NodeMessage::DeploymentChanged { .. } => {
             DEPLOYMENT_WAKEUP.notify_one();
         }
-        NodeMessage::ReleaseChanged { .. } => {
-            // A new release can add or drop targets, so placements may move.
+        NodeMessage::InstallChanged { .. } => {
+            // A new install can add or drop targets, so placements may move.
             DEPLOYMENT_WAKEUP.notify_one();
             PLACEMENT_WAKEUP.notify_one();
         }

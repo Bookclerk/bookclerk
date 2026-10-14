@@ -162,7 +162,7 @@ See [plugins.md — Isolated plugin database bindings](plugins.md#isolated-plugi
 ### Switching backends (opt-in migration)
 
 Changing `[database].plugin` does **not** copy library data automatically.
-After editing config (or `bookclerk plugins enable <id>`), use one of:
+After editing config (or `bookclerk plugins deploy <id>`), use one of:
 
 ```bash
 # Preview row counts

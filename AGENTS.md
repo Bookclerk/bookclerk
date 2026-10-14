@@ -218,16 +218,17 @@ When exercising real store credentials in this cloud environment:
   older installed package is not enrolled or spawned) and creates the
   default instance; `bookclerk plugins config get|set|unset <plugin> <key>`
   edits the instance document (`--secret` reads the value from stdin and
-  seals it); `bookclerk plugins enable|disable <plugin> [--host]` sets the
-  deployment (`present` = enabled on that host). `bookclerk plugins deploy
+  seals it); `bookclerk plugins deploy|undeploy <plugin> [--node <id>]` sets
+  the deployment (`present` = runs on that node). `bookclerk plugins deploy
   <plugin> --replicas N|all --on <label>` hands an instance to the cluster
   scheduler instead, which writes `placed`/`unplaced` rows on the live nodes
   with the most budget headroom (each daemon heartbeats capacity, budget,
   reservations, and use into `node_status` every 15 s; budgets and drain
   via `bookclerk nodes set`, labels via `bookclerk nodes label`);
-  enable/disable then refuse it until `plugins deploy --manual`. `bookclerk plugins
-  install` publishes a cluster release (hosts materialize it under
-  `plugins/.releases/<digest>`); it no longer writes `plugins/<fs-id>`. There are no `[sources.*]`,
+  per-node deploy/undeploy then refuse it until `plugins deploy --manual`.
+  `bookclerk plugins install` records a cluster-wide installed version (nodes
+  materialize it under `plugins/.versions/<digest>`); it no longer writes
+  `plugins/<fs-id>`. There are no `[sources.*]`,
   `[output.local]`, `[output.s3]`, or `[integrations.<id>]` tables and no
   `BOOKCLERK_SOURCE_*` / `BOOKCLERK_OUTPUT_*` / `BOOKCLERK_S3_*` /
   `BOOKCLERK_AWS_*` / `BOOKCLERK_ABS_*` env overrides. Only `[database]`,

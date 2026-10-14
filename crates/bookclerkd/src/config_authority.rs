@@ -309,9 +309,9 @@ async fn publish_events(
 async fn cluster_id_of(library: &LibraryStore) -> Result<String, Response> {
     let row = load_cluster_row(library).await.map_err(events_error)?;
     row.map(|row| row.cluster_id).ok_or_else(|| {
-        events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
-            "cluster identity is not initialized"
-        )))
+        events_error(bookclerk_library::LibraryError::NotFound(
+            "cluster identity is not initialized".into(),
+        ))
     })
 }
 
@@ -787,13 +787,13 @@ pub async fn put_plugin_instance_config(
     // ciphertext is sealed only after the compare-and-swap succeeds.
     for (key, plaintext) in &body.secrets {
         pinned.schema.check_secret_key(key).map_err(|err| {
-            events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+            events_error(bookclerk_library::LibraryError::Invalid(format!(
                 "invalid configuration: {err}"
             )))
         })?;
         if plaintext.is_empty() {
-            return Err(events_error(bookclerk_library::LibraryError::Other(
-                anyhow::anyhow!("invalid configuration: secret `{key}` is empty"),
+            return Err(events_error(bookclerk_library::LibraryError::Invalid(
+                format!("invalid configuration: secret `{key}` is empty"),
             )));
         }
         set_secret_ref(&mut document, key);
@@ -851,7 +851,7 @@ pub(crate) struct PutPluginDeployment {
 }
 
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}`: the
-/// enable/disable switch. Creates the row when the node has none.
+/// Deployed switch. Creates the row when the node has none.
 pub async fn put_plugin_deployment(
     State(state): State<Arc<AppState>>,
     axum::extract::Path((id, node_id)): axum::extract::Path<(String, String)>,
@@ -1150,7 +1150,7 @@ pub async fn put_plugin_placement_route(
 }
 
 /// `DELETE /api/config/plugin-instances/{id}/placement`: return the
-/// instance to hand-managed enable/disable; its deployments stay as they
+/// instance to hand-managed deployments; its deployments stay as they
 /// are.
 pub async fn delete_plugin_placement_route(
     State(state): State<Arc<AppState>>,
@@ -1168,31 +1168,6 @@ pub async fn delete_plugin_placement_route(
     })))
 }
 
-/// `GET /api/config/plugin-schemas`: every pinned settings schema.
-pub async fn get_plugin_schemas(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, Response> {
-    let library = state.library_snapshot().await;
-    let schemas = bookclerk_library::control_plane::list_plugin_schemas(&library)
-        .await
-        .map_err(events_error)?;
-    let rows: Vec<serde_json::Value> = schemas
-        .into_iter()
-        .map(|pinned| {
-            json!({
-                "plugin_key": pinned.plugin_key,
-                "manifest_id": pinned.manifest_id,
-                "schema_sha256": pinned.schema_sha256,
-                "package_version": pinned.package_version,
-                "recorded_at": pinned.recorded_at,
-                "recorded_by_node": pinned.recorded_by_node,
-                "settings": pinned.schema.settings,
-            })
-        })
-        .collect();
-    Ok(Json(json!({ "schemas": rows })))
-}
-
 /// 409 body carrying the revision that won.
 fn conflict(current_revision: i64) -> Response {
     (
@@ -1205,26 +1180,25 @@ fn conflict(current_revision: i64) -> Response {
         .into_response()
 }
 
+/// HTTP status for a library error, by its variant.
+pub(crate) fn library_status(err: &bookclerk_library::LibraryError) -> StatusCode {
+    use bookclerk_library::LibraryError;
+    match err {
+        LibraryError::Conflict(_) => StatusCode::CONFLICT,
+        LibraryError::Forbidden(_) => StatusCode::FORBIDDEN,
+        LibraryError::Invalid(_) | LibraryError::InvalidEmail => StatusCode::BAD_REQUEST,
+        LibraryError::NotFound(_) => StatusCode::NOT_FOUND,
+        LibraryError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 /// Maps a library configuration error onto an HTTP status.
-fn events_error(err: bookclerk_library::LibraryError) -> Response {
-    let message = err.to_string();
-    let status = if matches!(err, bookclerk_library::LibraryError::Conflict(_)) {
-        StatusCode::CONFLICT
-    } else if message.contains("unauthorized configuration write") {
-        StatusCode::FORBIDDEN
-    } else if message.contains("unsupported configuration schema")
-        || message.contains("invalid configuration")
-    {
-        StatusCode::BAD_REQUEST
-    } else if message.contains("not initialized") || message.contains("not found") {
-        StatusCode::NOT_FOUND
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
-    };
+pub(crate) fn events_error(err: bookclerk_library::LibraryError) -> Response {
     (
-        status,
+        library_status(&err),
         Json(json!({
-            "error": message,
+            "error": err.to_string(),
         })),
     )
         .into_response()
@@ -1612,7 +1586,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_reconcile_publishes_and_runs_a_local_archive_release() {
+    async fn daemon_reconcile_installs_and_runs_a_local_archive() {
         use std::collections::BTreeMap;
         use std::path::PathBuf;
 
@@ -1703,7 +1677,7 @@ mod tests {
         // The operator package became the active cluster release; the node
         // runs it from the digest cache and wrote no receipt or ledger row.
         let release =
-            bookclerk_library::control_plane::load_active_release(&store, &instance.plugin_key)
+            bookclerk_library::control_plane::load_active_version(&store, &instance.plugin_key)
                 .await
                 .unwrap()
                 .expect("active release");
@@ -1713,7 +1687,7 @@ mod tests {
             "a guest binary over the blob cap is referenced in place: {}",
             artifact.url
         );
-        assert!(bookclerk_plugin_host::release_cache_path(
+        assert!(bookclerk_plugin_host::version_cache_path(
             files_path,
             &artifact.payload_root_sha256
         )

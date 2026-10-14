@@ -1,11 +1,13 @@
-//! `/api/config/plugin-releases`: the daemon's view of cluster releases.
+//! `/api/config/plugins`: plugins installed in the cluster.
 //!
-//! `GET` lists releases with the active pointer; `POST` publishes from a
-//! registry coordinate or an operator-placed package directory under
-//! `plugin-packages/`; `PUT …/{key}/active` moves the pointer (activate,
-//! update, rollback); `DELETE …/{key}/active` clears it and sets every
-//! deployment absent; `POST …/{key}/{version}/approve` records consent.
-//! Nodes apply every change when their `node.<node_id>` queue wakes them.
+//! `GET` lists installed plugins with their versions; `POST` installs a
+//! version from a registry coordinate or an operator-placed package
+//! directory under `plugin-packages/`. `GET …/{key}` reads one plugin and
+//! its pinned settings schema; `DELETE …/{key}` uninstalls it (clears the
+//! active version and undeploys it everywhere). `PUT …/{key}/active` moves
+//! the active version (update or rollback), and
+//! `POST …/{key}/versions/{version}/approve` records consent. Nodes apply
+//! every change when their `node.<node_id>` queue wakes them.
 
 use std::sync::Arc;
 
@@ -14,23 +16,25 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    activate_release, approve_release_grant, clear_active_release, delete_plugin_placement,
-    list_deployments_for_instance, list_plugin_instances_for_key, list_release_pointers,
-    list_releases, load_or_create_node_identity, load_release, replace_plugin_deployment,
-    ConfigActor, DesiredState, PluginRelease,
+    activate_version, approve_version_grant, clear_install, delete_plugin_placement,
+    list_deployments_for_instance, list_installs, list_plugin_instances_for_key, list_versions,
+    load_install, load_or_create_node_identity, load_plugin_schema, load_version,
+    replace_plugin_deployment, ConfigActor, DesiredState, PluginInstall, PluginVersion,
 };
 use bookclerk_plugin_catalog::{
     safe_join, BookclerkPackageManifest, Installer, PackageCoordinate, TrustPolicy,
 };
 use bookclerk_plugin_host::{
-    host_artifact, install_release, release_consent_request, InstallRequest, AUTHORIZED_PACKAGE_DIR,
+    host_artifact, install_version, version_consent_request, InstallRequest, PluginError,
+    AUTHORIZED_PACKAGE_DIR,
 };
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::api::AppState;
+use crate::config_authority::events_error as library_error;
 
-/// Operator actor recorded on release writes from the daemon.
+/// Operator actor recorded on install writes from the daemon.
 fn operator_actor() -> ConfigActor {
     ConfigActor::Operator {
         id: "operator".into(),
@@ -42,52 +46,32 @@ fn error(status: StatusCode, message: impl std::fmt::Display) -> Response {
     (status, Json(json!({ "error": message.to_string() }))).into_response()
 }
 
-/// Maps a library error onto an HTTP status.
-fn library_error(err: bookclerk_library::LibraryError) -> Response {
-    let message = err.to_string();
-    let status = if message.contains("unauthorized configuration write") {
-        StatusCode::FORBIDDEN
-    } else if message.contains("not found") || message.contains("NotFound") {
-        StatusCode::NOT_FOUND
-    } else if message.contains("already published with different content") {
-        StatusCode::CONFLICT
-    } else if message.contains("invalid") {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
+/// Maps an install failure onto an HTTP status by its kind: a clash with
+/// an existing version or alias is a conflict, anything else a bad request.
+fn install_error(err: PluginError) -> Response {
+    let status = match &err {
+        PluginError::Conflict(_) => StatusCode::CONFLICT,
+        PluginError::NotFound(_) => StatusCode::NOT_FOUND,
+        PluginError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::BAD_REQUEST,
     };
-    error(status, message)
+    error(status, err)
 }
 
-/// Maps an install failure onto an HTTP status: an alias or content clash
-/// with an existing release is a conflict, anything else a bad request.
-fn publish_error(err: bookclerk_plugin_host::PluginError) -> Response {
-    let message = err.to_string();
-    let status = if message.contains("already the active release")
-        || message.contains("published under several plugin keys")
-        || message.contains("already published with different content")
-    {
-        StatusCode::CONFLICT
-    } else {
-        StatusCode::BAD_REQUEST
-    };
-    error(status, message)
-}
-
-/// JSON projection of one release.
-fn release_json(release: &PluginRelease, active: bool) -> serde_json::Value {
+/// JSON projection of one installed version.
+fn version_json(version: &PluginVersion, active: bool) -> serde_json::Value {
     json!({
-        "plugin_key": release.plugin_key,
-        "id": release.manifest_id,
-        "version": release.version,
+        "plugin_key": version.plugin_key,
+        "id": version.manifest_id,
+        "version": version.version,
         "active": active,
-        "approved": !release.grant_json.is_empty(),
-        "publisher_verified": release.publisher_verified,
-        "coordinate": release.coordinate,
-        "published_at": release.published_at,
-        "published_by": release.published_by,
-        "host_payload_root_sha256": host_artifact(release).ok().map(|a| a.payload_root_sha256.clone()),
-        "artifacts": release.artifacts.iter().map(|a| json!({
+        "approved": !version.grant_json.is_empty(),
+        "publisher_verified": version.publisher_verified,
+        "coordinate": version.coordinate,
+        "installed_at": version.installed_at,
+        "installed_by": version.installed_by,
+        "host_payload_root_sha256": host_artifact(version).ok().map(|a| a.payload_root_sha256.clone()),
+        "artifacts": version.artifacts.iter().map(|a| json!({
             "target": a.target,
             "url": a.url,
             "archive_sha256": a.archive_sha256,
@@ -96,38 +80,98 @@ fn release_json(release: &PluginRelease, active: bool) -> serde_json::Value {
     })
 }
 
-/// `GET /api/config/plugin-releases`.
-pub async fn get_plugin_releases(
+/// JSON projection of one installed plugin: its active version and every
+/// installed version, newest first.
+fn plugin_json(
+    plugin_key: &str,
+    versions: &[&PluginVersion],
+    install: Option<&PluginInstall>,
+) -> serde_json::Value {
+    let active = install.map(|i| i.version.as_str());
+    let alias = versions
+        .iter()
+        .find(|v| Some(v.version.as_str()) == active)
+        .or_else(|| versions.first())
+        .map(|v| v.manifest_id.clone());
+    json!({
+        "plugin_key": plugin_key,
+        "id": alias,
+        "active_version": active,
+        "revision": install.map(|i| i.revision),
+        "versions": versions
+            .iter()
+            .map(|v| version_json(v, Some(v.version.as_str()) == active))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// `GET /api/config/plugins`: every installed plugin.
+pub async fn get_plugins(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
-    let pointers = list_release_pointers(&library)
-        .await
-        .map_err(library_error)?;
-    let releases = list_releases(&library, None).await.map_err(library_error)?;
-    let rows: Vec<_> = releases
-        .iter()
-        .map(|release| {
-            let active = pointers
-                .iter()
-                .any(|p| p.plugin_key == release.plugin_key && p.version == release.version);
-            release_json(release, active)
+    let installs = list_installs(&library).await.map_err(library_error)?;
+    let versions = list_versions(&library, None).await.map_err(library_error)?;
+    let mut keys: Vec<&str> = versions.iter().map(|v| v.plugin_key.as_str()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let plugins: Vec<_> = keys
+        .into_iter()
+        .map(|key| {
+            let of_key: Vec<&PluginVersion> =
+                versions.iter().filter(|v| v.plugin_key == key).collect();
+            plugin_json(key, &of_key, installs.iter().find(|i| i.plugin_key == key))
         })
         .collect();
-    Ok(Json(json!({ "releases": rows })))
+    Ok(Json(json!({ "plugins": plugins })))
 }
 
-/// `POST /api/config/plugin-releases` body: exactly one of `coordinate` or
+/// `GET /api/config/plugins/{key}`: one installed plugin with its pinned
+/// settings schema.
+pub async fn get_plugin(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let versions = list_versions(&library, Some(&key))
+        .await
+        .map_err(library_error)?;
+    if versions.is_empty() {
+        return Err(error(
+            StatusCode::NOT_FOUND,
+            format!("plugin {key} is not installed"),
+        ));
+    }
+    let install = load_install(&library, &key).await.map_err(library_error)?;
+    let of_key: Vec<&PluginVersion> = versions.iter().collect();
+    let mut body = plugin_json(&key, &of_key, install.as_ref());
+    let schema = load_plugin_schema(&library, &key)
+        .await
+        .map_err(library_error)?;
+    body["schema"] = schema.map_or(serde_json::Value::Null, |pinned| {
+        json!({
+            "manifest_id": pinned.manifest_id,
+            "schema_sha256": pinned.schema_sha256,
+            "package_version": pinned.package_version,
+            "recorded_at": pinned.recorded_at,
+            "recorded_by_node": pinned.recorded_by_node,
+            "settings": pinned.schema.settings,
+        })
+    });
+    Ok(Json(body))
+}
+
+/// `POST /api/config/plugins` body: exactly one of `coordinate` or
 /// `package` (a directory name under `plugin-packages/`).
 #[derive(Debug, Deserialize)]
-pub(crate) struct PostPluginRelease {
+pub(crate) struct PostPluginInstall {
     /// Registry coordinate (`cargo:…@v`, `registry:…#name@v`).
     #[serde(default)]
     coordinate: Option<String>,
     /// Operator-placed package directory under `plugin-packages/`.
     #[serde(default)]
     package: Option<String>,
-    /// Make the new release active even when another is.
+    /// Make the new version active even when another is.
     #[serde(default)]
     activate: bool,
     /// Record the requested consent as approved.
@@ -138,10 +182,10 @@ pub(crate) struct PostPluginRelease {
     allow_unverified_publisher: bool,
 }
 
-/// `POST /api/config/plugin-releases`: publish (and maybe activate) a release.
-pub async fn post_plugin_release(
+/// `POST /api/config/plugins`: install (and maybe activate) a version.
+pub async fn post_plugin_install(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<PostPluginRelease>,
+    Json(body): Json<PostPluginInstall>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let config = state.config.read().await.clone();
     let files_dir = config.paths().files_dir.clone();
@@ -198,7 +242,7 @@ pub async fn post_plugin_release(
             ))
         }
     };
-    let installed = install_release(
+    let installed = install_version(
         &library,
         &operator_actor(),
         &files_dir,
@@ -214,34 +258,33 @@ pub async fn post_plugin_release(
         },
     )
     .await
-    .map_err(publish_error)?;
+    .map_err(install_error)?;
     Ok(Json(json!({
         "created": installed.created,
         "plugin_instance_id": installed.instance.id.to_string(),
-        "release": release_json(&installed.release, installed.active),
+        "version": version_json(&installed.version, installed.active),
     })))
 }
 
-/// `PUT /api/config/plugin-releases/{key}/active` body.
+/// `PUT /api/config/plugins/{key}/active` body.
 #[derive(Debug, Deserialize)]
-pub(crate) struct PutActiveRelease {
-    /// Published version to activate.
+pub(crate) struct PutActiveVersion {
+    /// Installed version to activate.
     version: String,
 }
 
-/// `PUT /api/config/plugin-releases/{key}/active`: activate, update, or
-/// roll back.
-pub async fn put_active_release(
+/// `PUT /api/config/plugins/{key}/active`: activate, update, or roll back.
+pub async fn put_active_version(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
-    Json(body): Json<PutActiveRelease>,
+    Json(body): Json<PutActiveVersion>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let config = state.config.read().await.clone();
     let node_id = load_or_create_node_identity(&config.paths().files_dir)
         .map_err(library_error)?
         .node_id;
     let library = state.library_snapshot().await;
-    let (pointer, _) = activate_release(
+    let (pointer, _) = activate_version(
         &library,
         &operator_actor(),
         &key,
@@ -257,9 +300,9 @@ pub async fn put_active_release(
     })))
 }
 
-/// `DELETE /api/config/plugin-releases/{key}/active`: remove the plugin from
-/// the cluster (pointer cleared, every deployment absent).
-pub async fn delete_active_release(
+/// `DELETE /api/config/plugins/{key}`: uninstall the plugin (active version
+/// cleared, placements dropped, every deployment `absent`).
+pub async fn delete_plugin_install(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
 ) -> Result<Json<serde_json::Value>, Response> {
@@ -294,37 +337,36 @@ pub async fn delete_active_release(
             disabled += 1;
         }
     }
-    let cleared = clear_active_release(&library, &operator_actor(), &key)
+    let cleared = clear_install(&library, &operator_actor(), &key)
         .await
         .map_err(library_error)?;
     Ok(Json(json!({
         "plugin_key": key,
-        "cleared": cleared,
-        "deployments_disabled": disabled,
+        "uninstalled": cleared,
+        "deployments_undeployed": disabled,
     })))
 }
 
-/// `POST /api/config/plugin-releases/{key}/{version}/approve`: record the
-/// release's requested consent as approved for every host.
-pub async fn approve_plugin_release(
+/// `POST /api/config/plugins/{key}/versions/{version}/approve`: record the
+/// version's requested consent as approved for every node.
+pub async fn approve_plugin_version(
     State(state): State<Arc<AppState>>,
     Path((key, version)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
-    let release = load_release(&library, &key, &version)
+    let row = load_version(&library, &key, &version)
         .await
         .map_err(library_error)?
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, format!("release {key} {version}")))?;
-    let grant =
-        release_consent_request(&release).map_err(|err| error(StatusCode::BAD_REQUEST, err))?;
+        .ok_or_else(|| error(StatusCode::NOT_FOUND, format!("version {key} {version}")))?;
+    let grant = version_consent_request(&row).map_err(|err| error(StatusCode::BAD_REQUEST, err))?;
     let grant_json = serde_json::to_string(&grant)
         .map_err(|err| error(StatusCode::INTERNAL_SERVER_ERROR, err))?;
-    let release = approve_release_grant(&library, &operator_actor(), &key, &version, &grant_json)
+    let row = approve_version_grant(&library, &operator_actor(), &key, &version, &grant_json)
         .await
         .map_err(library_error)?;
     Ok(Json(json!({
-        "plugin_key": release.plugin_key,
-        "version": release.version,
+        "plugin_key": row.plugin_key,
+        "version": row.version,
         "approved": true,
         "grant": grant,
     })))
@@ -339,14 +381,14 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use axum::routing::{get, post, put};
     use bookclerk_config::{Config, EventsConfig};
-    use bookclerk_library::control_plane::{bootstrap_control_plane, load_active_release};
+    use bookclerk_library::control_plane::{bootstrap_control_plane, load_active_version};
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
     /// Writes `plugin-packages/<dir>/{archive.tar.gz,package.json}` with the
     /// GraphicAudio `plugin.toml` at `version` and a placeholder executable
-    /// (publishing verifies the tree; it never runs the guest).
+    /// (installing verifies the tree; it never runs the guest).
     fn stage_package(files: &Path, dir: &str, version: &str) {
         let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../bookclerk-plugins/optional/source-graphicaudio/plugin.toml");
@@ -424,7 +466,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_routes_publish_activate_approve_and_clear() {
+    async fn plugin_routes_install_activate_approve_and_uninstall() {
         let files = tempfile::tempdir().unwrap();
         let files_path = files.path();
         std::fs::write(files_path.join("config.toml"), "").unwrap();
@@ -456,39 +498,43 @@ mod tests {
         ));
         let app = axum::Router::new()
             .route(
-                "/api/config/plugin-releases",
-                get(super::get_plugin_releases).post(super::post_plugin_release),
+                "/api/config/plugins",
+                get(super::get_plugins).post(super::post_plugin_install),
             )
             .route(
-                "/api/config/plugin-releases/{key}/active",
-                put(super::put_active_release).delete(super::delete_active_release),
+                "/api/config/plugins/{key}",
+                get(super::get_plugin).delete(super::delete_plugin_install),
             )
             .route(
-                "/api/config/plugin-releases/{key}/{version}/approve",
-                post(super::approve_plugin_release),
+                "/api/config/plugins/{key}/active",
+                put(super::put_active_version),
+            )
+            .route(
+                "/api/config/plugins/{key}/versions/{version}/approve",
+                post(super::approve_plugin_version),
             )
             .with_state(state);
 
-        // A first publish becomes the active release; approval is recorded.
+        // A first install becomes the active version; approval is recorded.
         let (status, first) = send(
             &app,
             "POST",
-            "/api/config/plugin-releases",
+            "/api/config/plugins",
             Some(json!({ "package": "ga1", "approve": true, "allow_unverified_publisher": true })),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{first}");
         assert_eq!(first["created"], true);
-        assert_eq!(first["release"]["active"], true);
-        assert_eq!(first["release"]["approved"], true);
-        assert_eq!(first["release"]["version"], "0.1.0");
-        let key = first["release"]["plugin_key"].as_str().unwrap().to_owned();
+        assert_eq!(first["version"]["active"], true);
+        assert_eq!(first["version"]["approved"], true);
+        assert_eq!(first["version"]["version"], "0.1.0");
+        let key = first["version"]["plugin_key"].as_str().unwrap().to_owned();
 
-        // Publishing the same package again is idempotent.
+        // Installing the same package again is idempotent.
         let (status, again) = send(
             &app,
             "POST",
-            "/api/config/plugin-releases",
+            "/api/config/plugins",
             Some(json!({ "package": "ga1", "allow_unverified_publisher": true })),
         )
         .await;
@@ -497,22 +543,26 @@ mod tests {
 
         // A newer local archive of the same alias lands under the same key,
         // carries the approval forward, and does not displace the active
-        // release without `activate`.
+        // version without `activate`.
         let (status, second) = send(
             &app,
             "POST",
-            "/api/config/plugin-releases",
+            "/api/config/plugins",
             Some(json!({ "package": "ga2", "allow_unverified_publisher": true })),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{second}");
-        assert_eq!(second["release"]["plugin_key"], key.as_str());
-        assert_eq!(second["release"]["active"], false);
-        assert_eq!(second["release"]["approved"], true);
+        assert_eq!(second["version"]["plugin_key"], key.as_str());
+        assert_eq!(second["version"]["active"], false);
+        assert_eq!(second["version"]["approved"], true);
 
-        let (status, listed) = send(&app, "GET", "/api/config/plugin-releases", None).await;
+        let (status, listed) = send(&app, "GET", "/api/config/plugins", None).await;
         assert_eq!(status, StatusCode::OK);
-        let rows = listed["releases"].as_array().unwrap();
+        let plugins = listed["plugins"].as_array().unwrap();
+        assert_eq!(plugins.len(), 1, "{listed}");
+        assert_eq!(plugins[0]["plugin_key"], key.as_str());
+        assert_eq!(plugins[0]["active_version"], "0.1.0");
+        let rows = plugins[0]["versions"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(
             rows.iter().filter(|r| r["active"] == true).count(),
@@ -520,8 +570,17 @@ mod tests {
             "{listed}"
         );
 
+        // One plugin carries its pinned settings schema; an unknown key is 404.
+        let plugin_uri = format!("/api/config/plugins/{}", segment(&key));
+        let (status, one) = send(&app, "GET", &plugin_uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{one}");
+        assert_eq!(one["id"], "graphicaudio");
+        assert!(one["schema"]["settings"].is_array(), "{one}");
+        let (status, _) = send(&app, "GET", "/api/config/plugins/path%3Anope", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
         // Moving the pointer updates; an unknown version is refused.
-        let active_uri = format!("/api/config/plugin-releases/{}/active", segment(&key));
+        let active_uri = format!("/api/config/plugins/{}/active", segment(&key));
         let (status, moved) = send(
             &app,
             "PUT",
@@ -532,7 +591,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{moved}");
         assert_eq!(moved["version"], "0.2.0");
         assert_eq!(
-            load_active_release(&store, &key)
+            load_active_version(&store, &key)
                 .await
                 .unwrap()
                 .unwrap()
@@ -549,23 +608,23 @@ mod tests {
         assert!(status.is_client_error(), "{status}");
 
         let approve_uri = format!(
-            "/api/config/plugin-releases/{}/0.1.0/approve",
+            "/api/config/plugins/{}/versions/0.1.0/approve",
             segment(&key)
         );
         let (status, approved) = send(&app, "POST", &approve_uri, None).await;
         assert_eq!(status, StatusCode::OK, "{approved}");
         assert_eq!(approved["approved"], true);
 
-        let (status, cleared) = send(&app, "DELETE", &active_uri, None).await;
-        assert_eq!(status, StatusCode::OK, "{cleared}");
-        assert_eq!(cleared["cleared"], true);
-        assert!(load_active_release(&store, &key).await.unwrap().is_none());
+        let (status, uninstalled) = send(&app, "DELETE", &plugin_uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uninstalled}");
+        assert_eq!(uninstalled["uninstalled"], true);
+        assert!(load_active_version(&store, &key).await.unwrap().is_none());
 
         // Without the operator override the publisher is refused.
         let (status, refused) = send(
             &app,
             "POST",
-            "/api/config/plugin-releases",
+            "/api/config/plugins",
             Some(json!({ "package": "ga1" })),
         )
         .await;
@@ -580,13 +639,8 @@ mod tests {
             json!({ "package": "ga1", "coordinate": "cargo:x@1.0.0" }),
         ] {
             body["allow_unverified_publisher"] = json!(true);
-            let (status, value) = send(
-                &app,
-                "POST",
-                "/api/config/plugin-releases",
-                Some(body.clone()),
-            )
-            .await;
+            let (status, value) =
+                send(&app, "POST", "/api/config/plugins", Some(body.clone())).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {value}");
         }
     }

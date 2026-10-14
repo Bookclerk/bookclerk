@@ -12,7 +12,7 @@
 //! 3. a [`PluginDeployment`] for this node exists. It is created `present`
 //!    when the plugin already has a covering grant (platform guests grant
 //!    themselves; an operator approved everything else), otherwise `absent`
-//!    until `bookclerk plugins enable` sets it.
+//!    until `bookclerk plugins deploy` sets it.
 //!
 //! Enrollment is idempotent and runs in both the CLI and the daemon, so the
 //! two see the same instances and deployments.

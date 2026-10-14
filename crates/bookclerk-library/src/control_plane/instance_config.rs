@@ -715,5 +715,5 @@ fn validate_setting_value(value: &SettingValue) -> Result<()> {
 
 /// Error for a plugin-instance document outside schema 1.
 fn invalid(detail: &str) -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!("invalid configuration: {detail}"))
+    LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }

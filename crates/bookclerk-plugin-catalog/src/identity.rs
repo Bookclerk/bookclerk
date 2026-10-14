@@ -596,14 +596,14 @@ pub enum PluginProvenance {
     /// Host-staged Bookclerk platform artifact; content hashes match the receipt.
     PlatformBundled,
     /// Installed from a registry/archive; receipt hashes still match.
-    VerifiedInstalled,
+    VerifiedStaged,
     /// Local/dev tree with no verified receipt (or path-only identity).
     LocalDevelopment,
     /// Receipt exists but the immutable payload no longer matches.
     Modified,
-    /// Materialized from a cluster release: the payload-root digest of the
-    /// cached tree matched the `plugin_releases` row the host trusts.
-    Released,
+    /// Materialized from a cluster install: the payload-root digest of the
+    /// cached tree matched the `plugin_versions` row the node trusts.
+    Installed,
 }
 
 impl PluginProvenance {
@@ -615,14 +615,14 @@ impl PluginProvenance {
 
     /// True when discovery verified the installed payload against the host ledger.
     ///
-    /// [`Self::PlatformBundled`], [`Self::VerifiedInstalled`], and
-    /// [`Self::Released`] qualify. [`Self::LocalDevelopment`] (no receipt)
+    /// [`Self::PlatformBundled`], [`Self::VerifiedStaged`], and
+    /// [`Self::Installed`] qualify. [`Self::LocalDevelopment`] (no receipt)
     /// and [`Self::Modified`] never do.
     #[must_use]
     pub fn is_verified_artifact(self) -> bool {
         matches!(
             self,
-            Self::PlatformBundled | Self::VerifiedInstalled | Self::Released
+            Self::PlatformBundled | Self::VerifiedStaged | Self::Installed
         )
     }
 }
@@ -631,10 +631,10 @@ impl fmt::Display for PluginProvenance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::PlatformBundled => "platform_bundled",
-            Self::VerifiedInstalled => "verified_installed",
+            Self::VerifiedStaged => "verified_staged",
             Self::LocalDevelopment => "local_development",
             Self::Modified => "modified",
-            Self::Released => "released",
+            Self::Installed => "installed",
         })
     }
 }

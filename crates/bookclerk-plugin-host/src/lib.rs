@@ -48,6 +48,7 @@ mod error;
 mod event_publisher;
 mod host;
 mod host_control_plane;
+mod install;
 mod install_preflight;
 mod instance_bindings;
 mod jail;
@@ -55,7 +56,6 @@ mod kv_binding;
 mod manifest;
 mod queue_producer;
 mod registry;
-mod release;
 mod rpc;
 mod rpc_session;
 mod spawn_plan;
@@ -135,6 +135,13 @@ pub use host_control_plane::{
     open_host_control_plane_with_store, refresh_present, HostControlPlane, NodeEnrollment,
     PresentDeployment,
 };
+pub use install::{
+    add_package_version, enroll_version, grant_covers_version, host_artifact, install_plugin_key,
+    install_version, materialize_version, open_installed_plugin, sweep_version_cache,
+    version_cache_path, version_cache_root, version_consent_request, version_grant, Activate,
+    AddedVersion, InstallRequest, InstalledVersion, VersionRequest, VERSION_CACHE_DIR,
+    VERSION_CACHE_GRACE,
+};
 pub use install_preflight::{
     configured_alias_occupants, install_from_manifest_with_configured_aliases,
     install_local_archive_with_configured_aliases, reject_configured_alias_collision,
@@ -156,13 +163,6 @@ pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
     family_keyword, host_target_triple, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,
-};
-pub use release::{
-    enroll_release, grant_covers_release, host_artifact, install_plugin_key, install_release,
-    materialize_release, open_released_plugin, publish_package_release, release_cache_path,
-    release_cache_root, release_consent_request, release_grant, sweep_release_cache, Activate,
-    InstallRequest, InstalledRelease, PublishedRelease, ReleaseRequest, RELEASE_CACHE_DIR,
-    RELEASE_CACHE_GRACE,
 };
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,

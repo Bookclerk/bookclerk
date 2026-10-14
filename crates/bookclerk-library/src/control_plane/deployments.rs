@@ -22,7 +22,7 @@ use crate::store::LibraryStore;
 /// What a deployment row asks its node to do, and who decided it.
 ///
 /// Operators write [`DesiredState::Present`] and [`DesiredState::Absent`]
-/// (`plugins enable|disable`, the Settings switch). The placement scheduler
+/// (`plugins deploy|undeploy`, the Settings switch). The placement scheduler
 /// writes [`DesiredState::Placed`] and [`DesiredState::Unplaced`] for an
 /// instance it owns. A node runs the instance for `present` and `placed`
 /// and retires it for `absent` and `unplaced`; the split only records whose
@@ -134,8 +134,9 @@ pub const MAX_OBSERVATION_DETAIL_BYTES: usize = 512;
 /// Observed deployment status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeploymentStatus {
-    /// Installer commit succeeded, or the ledger already had this plugin key.
-    Installed,
+    /// The node has the plugin's tree (materialized from the installed
+    /// version, or host-local); the spawn comes next.
+    Materialized,
     /// Session spawn returned. Health is not confirmed on this tick.
     Running,
     /// Health succeeded with the applied config revision.
@@ -151,7 +152,7 @@ impl DeploymentStatus {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Installed => "installed",
+            Self::Materialized => "materialized",
             Self::Running => "running",
             Self::Healthy => "healthy",
             Self::Error => "error",
@@ -166,7 +167,7 @@ impl DeploymentStatus {
     /// Returns an error when `raw` is not one of the five statuses.
     pub fn parse(raw: &str) -> Result<Self> {
         match raw {
-            "installed" => Ok(Self::Installed),
+            "materialized" => Ok(Self::Materialized),
             "running" => Ok(Self::Running),
             "healthy" => Ok(Self::Healthy),
             "error" => Ok(Self::Error),
@@ -918,7 +919,7 @@ fn authorize_replace(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
 fn unauthorized_state(actor: &ConfigActor, desired: DesiredState) -> LibraryError {
     match actor {
         ConfigActor::Operator { .. } | ConfigActor::Scheduler | ConfigActor::Bootstrap => {
-            LibraryError::Other(anyhow::anyhow!(
+            LibraryError::Forbidden(format!(
                 "unauthorized configuration write: {} may not set a deployment `{desired}`",
                 actor.audit_id()
             ))
@@ -945,14 +946,14 @@ fn validate_operation_id(operation_id: &str) -> Result<()> {
 
 /// Error for a write the actor is not allowed to perform.
 fn unauthorized() -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!(
-        "unauthorized configuration write: operator authority is required"
-    ))
+    LibraryError::Forbidden(
+        "unauthorized configuration write: operator authority is required".into(),
+    )
 }
 
 /// Error for a deployment value outside this slice.
 fn invalid(detail: &str) -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!("invalid configuration: {detail}"))
+    LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }
 
 /// JSON stored on the deployment receipt.

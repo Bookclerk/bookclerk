@@ -586,7 +586,7 @@ mode = "outbound"
         .unwrap();
         plugin.identity.plugin_key = key.clone();
         plugin.identity.artifact.plugin_key = key;
-        plugin.identity.provenance = PluginProvenance::VerifiedInstalled;
+        plugin.identity.provenance = PluginProvenance::VerifiedStaged;
         plugin
     }
 

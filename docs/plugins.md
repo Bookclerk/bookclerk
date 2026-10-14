@@ -195,7 +195,7 @@ aliases from different PluginKeys on the **same host** are invalid
 installation state (discovery fails closed). Instances, deployments, schemas,
 and accounts are keyed by PluginKey in the database; only the database
 adapter (`[database].plugin`) still occupies a `config.toml` key, and it
-upgrades a unique alias to its PluginKey when `bookclerk plugins enable`
+upgrades a unique alias to its PluginKey when `bookclerk plugins deploy`
 or a settings save touches it. A bare alias is accepted only when exactly
 one install on this host uses it.
 After registration, hosts talk **only**
@@ -244,14 +244,14 @@ choice made by whoever installs the plugin, not by whoever shipped the binary.
 
 What a plugin *is* (its release, consent, instances, settings, and where it
 is deployed) lives in the library database and is shared by every host in
-the cluster; see [Releases](#releases). What a host *runs* is host-local:
+the cluster; see [Releases](#installing-plugins). What a host *runs* is host-local:
 `$BOOKCLERK_FILES_DIR` holds the materialized trees, guest state, and the
 mutation lock for that host only.
 
 ```text
 $FILES_DIR/
   node-identity.json             # this host's stable HostId
-  plugins/.releases/<digest>/    # materialized release tree (read-only, shared by instances)
+  plugins/.versions/<digest>/    # materialized installed version (read-only, shared by instances)
   plugins/.staging/              # partial extracts; never spawned from
   plugins/<PluginKey fs-id>/     # host-local tree: platform guests, dev trees, older installs
   plugin-packages/<name>/        # operator-placed package.json + archive.tar.gz
@@ -791,7 +791,7 @@ inherited by the host and lands in the daemon log directly under the
 
 **Enable / spawn refused: run `bookclerk plugins approve` first** — consent grant is
 missing or the plugin widened `capabilities` since the last grant. Re-approve,
-then `bookclerk plugins enable <id>` (spawn also fails closed until the grant
+then `bookclerk plugins deploy <id>` (spawn also fails closed until the grant
 covers the current manifest).
 
 ## Two files, two jobs
@@ -1065,7 +1065,7 @@ CLI remains available (always approves the full request):
 ```bash
 bookclerk plugins approve echo          # interactive summary of network/bindings
 bookclerk plugins approve echo --yes    # non-interactive
-bookclerk plugins enable echo
+bookclerk plugins deploy echo
 ```
 
 Platform guests (`sqlite`, `local`) skip the consent UX and are enabled by
@@ -1076,11 +1076,11 @@ manifest stays within the installer envelope (deny network, `config` /
 `work_fs` only). A third-party package that reuses those ids gets no
 privilege.
 
-A released plugin's grant is stored on its release row, so one approval
-covers every host that runs the release (`bookclerk plugins approve`,
+An installed plugin's grant is stored on its version row, so one approval
+covers every node that runs that version (`bookclerk plugins approve`,
 `plugins install --approve-capabilities`, or
-`POST /api/config/plugin-releases/{key}/{version}/approve`); see
-[Releases](#releases). A host-local tree's grant is persisted under
+`POST /api/config/plugins/{key}/versions/{version}/approve`); see
+[Installing plugins](#installing-plugins). A host-local tree's grant is persisted under
 `$BOOKCLERK_FILES_DIR/plugin-grants.json`, keyed by provenance-qualified
 PluginKey. Saving that file is the operator mechanism for those trees
 (`bookclerk plugins approve` and `POST /api/plugins/{id}/consent`).
@@ -1173,15 +1173,15 @@ says to run it. Each row's `desired` state also says whose decision it is:
 
 | `desired` | Written by | The node |
 | --- | --- | --- |
-| `present` | an operator (`plugins enable`, the Settings switch) | runs it |
-| `absent` | an operator (`plugins disable`) | retires it |
+| `present` | an operator (`plugins deploy`, the Settings switch) | runs it |
+| `absent` | an operator (`plugins undeploy`) | retires it |
 | `placed` | the cluster scheduler ([placement](#placement)) | runs it |
 | `unplaced` | the cluster scheduler | retires it |
 
 Only an operator writes `present` / `absent` and only the scheduler writes
 `placed` / `unplaced`; the library refuses anything else. The reconciler
 spawns rows that run, retires the guest when a row stops running, and
-records observations (`installed`, `running`, `healthy`, `error`,
+records observations (`materialized`, `running`, `healthy`, `error`,
 `retired`). Third-party plugins enrol `absent` until an operator approves
 their grant and enables them; platform guests (`local`, `sqlite`)
 auto-grant (the reconciler persists that grant before the first spawn) and
@@ -1190,9 +1190,9 @@ come up enabled.
 ```bash
 bookclerk plugins list                                  # instances + deployments
 bookclerk plugins approve echo --yes                    # consent (third-party)
-bookclerk plugins enable echo                           # desired = present on this host
-bookclerk plugins enable echo --host <host-id>          # … on another cluster host
-bookclerk plugins disable echo
+bookclerk plugins deploy echo                           # desired = present on this host
+bookclerk plugins deploy echo --node <node-id>          # … on another cluster host
+bookclerk plugins undeploy echo
 bookclerk plugins instances list --plugin s3
 bookclerk plugins instances create s3 --name "Backup bucket"
 bookclerk plugins config get s3                         # defaults under the document
@@ -1209,10 +1209,10 @@ The daemon exposes the same operations (operator session):
 | `DELETE` | `/api/config/plugin-instances/{id}` (no deployments left) |
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/config` (`{expected_revision, settings, secret_refs, secrets}`; `secrets` are sealed server-side) |
 | `PUT` | `/api/config/plugin-instances/{id}/deployments/{node_id}` (`{desired, expected_revision}`) |
-| `GET` | `/api/config/nodes`, `/api/config/plugin-schemas` |
+| `GET` | `/api/config/nodes`; `/api/config/plugins/{key}` carries the pinned schema |
 
 **Settings → Plugins** renders each instance from its pinned schema: the
-Enabled switch writes this host's deployment (after consent when needed),
+Deployed switch writes this node's deployment (after consent when needed),
 secret fields are write-only, and Save writes the document with
 compare-and-swap. `PATCH /api/settings` only edits daemon, jail, and
 `[database]` keys now.
@@ -1227,7 +1227,7 @@ validates the document against the host's local manifest: unknown keys are
 dropped with a warning, and a missing `required` key is an `error`
 observation.
 
-The reconciler runs a plugin's active [release](#releases) when it has
+The reconciler runs a plugin's active [release](#installing-plugins) when it has
 one, materializing it by digest; it falls back to a host-local tree only for
 a plugin with no release. An operator package under
 `$BOOKCLERK_FILES_DIR/plugin-packages/<name>/` (`package.json` plus
@@ -1251,7 +1251,7 @@ the catalog id `node:<node_id>` and wakes the deployment and configuration
 reconcilers; there is no fixed 5-second re-read any more, only a 60-second
 backstop pass for a wakeup dispatched while the node's catalog row was not
 live. Messages are wakeups, not state: the reconciler always re-reads the
-authoritative rows. The CLI only produces them (`bookclerk plugins enable
+authoritative rows. The CLI only produces them (`bookclerk plugins deploy
 --node <id>` wakes that node), and `bookclerk queues list` shows each
 node queue with its `node:<id>` consumer.
 
@@ -1261,82 +1261,90 @@ default instance on this host; pass `--instance` to pin another. Accounts
 are keyed by plugin key, not instance: every instance of a plugin, on every
 host, serves the same connected accounts.
 
-## Releases
+## Installing plugins
 
-A third-party plugin runs from a **release**: a package resolved and
-verified once, recorded in the library database, and run byte-for-byte the
-same on every host. Installing publishes; it does not touch this host's
-`plugins/`.
+A third-party plugin is **installed** into the cluster once: a package
+version resolved and verified once, recorded in the library database, and
+run byte-for-byte the same on every node. Installing does not touch this
+node's `plugins/`; **deploying** decides which nodes run it (see
+[placement](#placement)).
 
 ```bash
 bookclerk plugins install cargo:bookclerk-plugin-source-example@1.2.0 --approve-capabilities
 bookclerk plugins install example --archive ./example.tar.gz \
   --manifest ./bookclerk-package.json --allow-unverified-publisher
-bookclerk plugins releases [example]         # every published version; * marks the active one
-bookclerk plugins update example [--to 1.3]  # publish a newer registry version and activate it
-bookclerk plugins rollback example 1.2.0     # move the active pointer back
-bookclerk plugins approve example --yes      # record consent on the active release
-bookclerk plugins enable example             # deploy the default instance on this host
-bookclerk plugins remove example             # clear the pointer; every deployment absent
+bookclerk plugins versions [example]         # every installed version; * marks the active one
+bookclerk plugins update example [--to 1.3]  # install a newer registry version and activate it
+bookclerk plugins rollback example 1.2.0     # activate an earlier installed version
+bookclerk plugins approve example --yes      # record consent on the active version
+bookclerk plugins deploy example             # run the default instance on this node
+bookclerk plugins uninstall example          # clear the active version; undeploy everywhere
 ```
 
-**Publishing** checks the trust policy, fetches each artifact, and verifies
+**Installing** checks the trust policy, fetches each artifact, and verifies
 it: a registry artifact must match the archive digest its package manifest
 declares, and a local archive's digest is computed from the operator's own
-file. The host then extracts the archive to scratch, parses `plugin.toml`,
+file. The node then extracts the archive to scratch, parses `plugin.toml`,
 checks the executable is present, and computes the payload-root digest. The
-release row records the PluginKey, the version from `plugin.toml`, the
+version row records the PluginKey, the version from `plugin.toml`, the
 manifest and settings schema, one artifact per target (URL, archive digest,
 payload-root digest), the coordinate it came from, and the consent grant.
-Publishing the same version twice is a no-op; publishing different bytes
-under a published version is refused. A local archive's path names no
-stable plugin, so a later archive of an alias that is already published
-reuses that alias's key. One alias names one plugin: a release may not take
-an alias another plugin's active release answers to.
+Installing the same version twice is a no-op; installing different bytes
+under an installed version is refused. A local archive's path names no
+stable plugin, so a later archive of an alias that is already installed
+reuses that alias's key. One alias names one plugin: a version may not take
+an alias another plugin's active version answers to.
 
 **Artifact URLs.** A registry artifact keeps its download URL. A local
 archive up to 1 MiB is stored in the database (`blob:sha256:<hex>`) so every
-host can materialize it. A larger local archive is referenced in place as a
-`file://` URL, which only hosts that see that path (shared storage) can
+node can materialize it. A larger local archive is referenced in place as a
+`file://` URL, which only nodes that see that path (shared storage) can
 materialize; the others record an `error` observation.
 
-**The active pointer.** Each PluginKey has at most one active release. The
-first release of a plugin becomes active; a later one becomes active with
-`install --activate`, `update`, or `rollback`. An automatic publish (an
-operator package, or `install` without `--activate`) never moves the pointer
-back to an older version. Moving the pointer publishes `release.changed`
-to every host queue, and each host respawns its deployments of that plugin
+**The active version.** Each PluginKey has at most one active version. The
+first installed version becomes active; a later one becomes active with
+`install --activate`, `update`, or `rollback`. An automatic install (an
+operator package, or `install` without `--activate`) never moves the active
+version back to an older one. Changing it publishes `install.changed` to
+every node queue, and each node respawns its deployments of that plugin
 from the new digest.
 
-**Consent rides on the release.** A release with no approved grant is
-recorded but not spawned; hosts report an `error` observation until it is
-approved. A new release carries the previous active release's grant forward
-when that grant still covers everything the new release requests; a release
+**Consent rides on the version.** A version with no approved grant is
+recorded but not spawned; nodes report an `error` observation until it is
+approved. A new version carries the previous active version's grant forward
+when that grant still covers everything the new version requests; a version
 that asks for more needs a fresh `approve`.
 
-**Materialization.** When a present deployment needs the active release, the
-host fetches the artifact for its own target, extracts it under
-`plugins/.staging/release-<digest>.<pid>`, verifies the payload-root digest
-against the row, and renames the tree to `plugins/.releases/<digest>`. A
+**Materialization.** When a present deployment needs the active version,
+the node fetches the artifact for its own target, extracts it under
+`plugins/.staging/version-<digest>.<pid>`, verifies the payload-root digest
+against the row, and renames the tree to `plugins/.versions/<digest>`. A
 partial extract never reaches the final path, a cached digest is immutable,
-and digests no deployment on the host references are swept after an hour.
+and digests no deployment on the node references are swept after an hour.
 
 **Health is an observation.** A guest that fails health records an `error`
-observation and the release stays active; nothing rolls back
-automatically. Use `plugins rollback` to move the pointer.
+observation and the version stays active; nothing rolls back
+automatically. Use `plugins rollback` to activate an earlier version.
+
+**Staged packages.** Platform guests (`local`, `sqlite`) ship with the node,
+and `cargo stage-plugins` stages development trees under `plugins/<fs-id>`.
+Those are staged on one machine, not installed into the cluster; their
+provenance is `platform_bundled`, `verified_staged`, or `local_development`,
+while an installed version is `installed`.
 
 The daemon exposes the same operations (operator session):
 
 | Method | Path | Body / result |
 | --- | --- | --- |
-| `GET` | `/api/config/plugin-releases` | every release with `active`, `approved`, and artifacts |
-| `POST` | `/api/config/plugin-releases` | `{coordinate}` or `{package}` (a directory under `plugin-packages/`), plus `activate`, `approve`, `allow_unverified_publisher` |
-| `PUT` | `/api/config/plugin-releases/{key}/active` | `{version}`: activate, update, or roll back |
-| `DELETE` | `/api/config/plugin-releases/{key}/active` | clear the pointer and set every deployment `absent` |
-| `POST` | `/api/config/plugin-releases/{key}/{version}/approve` | record the requested consent |
+| `GET` | `/api/config/plugins` | every installed plugin: `active_version` and its `versions` (each with `active`, `approved`, and artifacts) |
+| `POST` | `/api/config/plugins` | install: `{coordinate}` or `{package}` (a directory under `plugin-packages/`), plus `activate`, `approve`, `allow_unverified_publisher` |
+| `GET` | `/api/config/plugins/{key}` | one plugin with its versions and pinned settings `schema`; 404 when not installed |
+| `DELETE` | `/api/config/plugins/{key}` | uninstall: clear the active version, drop placements, undeploy everywhere |
+| `PUT` | `/api/config/plugins/{key}/active` | `{version}`: update or roll back |
+| `POST` | `/api/config/plugins/{key}/versions/{version}/approve` | record the requested consent |
 
-`{key}` is the percent-encoded PluginKey. Platform guests are never
-published: they ship with the host.
+`{key}` is the percent-encoded PluginKey. A conflict with an installed
+version or alias is `409`; an unknown plugin or version is `404`.
 
 ## Placement
 
@@ -1389,7 +1397,7 @@ A node is **live** while its last heartbeat is younger than three
 intervals (45 s). A node where only the CLI ran has no heartbeat and is
 never live. **Draining** a node (`nodes set --drain`, the Drain button)
 stops the scheduler placing anything there and moves its scheduled
-replicas elsewhere; deployments enabled by hand keep running.
+replicas elsewhere; deployments made by hand keep running.
 
 A node's **headroom** is its budget minus what is committed. For CPU,
 committed is the larger of the reservations and the measured use, so work
@@ -1462,20 +1470,20 @@ Every daemon runs the scheduler loop, but only the holder of the
 `scheduler` row in `cluster_leases` acts. The holder renews the lease
 (60 s) on every pass; when it stops, the next daemon to try takes over with
 a larger fencing token. A pass runs on a `placement.changed` or
-`release.changed` node-queue wakeup and at least every 20 seconds.
+`install.changed` node-queue wakeup and at least every 20 seconds.
 Deployment writes are compare-and-swap, so a holder that lost its lease
 mid-pass can at worst add one replica too many, which the next pass
 removes.
 
 ### Placed instances are the scheduler's
 
-`plugins enable|disable` and the deployment API refuse a placed instance
-(409), the Settings Enabled switch is read-only for it, and enrollment
+`plugins deploy|undeploy` and the deployment API refuse a placed instance
+(409), the Settings Deployed switch is read-only for it, and enrollment
 records a new node `unplaced` for it rather than `present`. `plugins deploy
 --manual` (or deleting the placement) hands the deployments back without
 changing what any node runs: `placed` becomes `present` and `unplaced`
-becomes `absent`. Removing a plugin (`plugins remove`, `DELETE
-/api/config/plugin-releases/{key}/active`) drops its placements first.
+becomes `absent`. Uninstalling a plugin (`plugins uninstall`, `DELETE
+/api/config/plugins/{key}`) drops its placements first.
 
 | Method | Path | Body / result |
 | --- | --- | --- |
@@ -2179,7 +2187,7 @@ not a SEA binary).
 ```bash
 bookclerk plugins approve echo --yes
 bookclerk plugins list
-bookclerk plugins enable echo          # deployment desired = present on this host
+bookclerk plugins deploy echo          # deployment desired = present on this host
 bookclerk plugins config set echo greeting hello
 bookclerk integrations status
 # echo enabled=true ok=true echo plugin ready
@@ -2196,10 +2204,10 @@ the target OS/arch.
 The operator’s Bookclerk install already includes `bookclerk-workerd`, the pinned
 Cloudflare `workerd` binary, and `bookclerk-jail`.
 
-Operators publish a package as a [release](#releases) (`bookclerk plugins
-install`, `POST /api/config/plugin-releases`, or a package directory under
+Operators [install](#installing-plugins) a package (`bookclerk plugins
+install`, `POST /api/config/plugins`, or a package directory under
 `plugin-packages/`), **approve** its capabilities, then deploy it with
-`bookclerk plugins enable`. A development tree unpacked under `plugins/` (or
+`bookclerk plugins deploy`. A development tree unpacked under `plugins/` (or
 a `BOOKCLERK_PLUGIN_DIRS` root) still runs as a host-local plugin. No
 rebuild of Bookclerk is required when `api_version` matches.
 

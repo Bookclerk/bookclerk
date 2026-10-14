@@ -291,7 +291,7 @@ impl Installer {
                 None,
                 &dest,
                 &incoming_key,
-                PluginProvenance::VerifiedInstalled,
+                PluginProvenance::VerifiedStaged,
                 true,
             )?;
             return Ok(InstallOutcome {
@@ -423,7 +423,7 @@ impl Installer {
             Some(exe_digest),
             &dest,
             &incoming_key,
-            PluginProvenance::VerifiedInstalled,
+            PluginProvenance::VerifiedStaged,
             false,
         ) {
             Ok(receipt) => receipt,
@@ -446,7 +446,7 @@ impl Installer {
                 &runtime.id,
                 &receipt.manifest_sha256,
                 &receipt.payload_root_sha256,
-                PluginProvenance::VerifiedInstalled,
+                PluginProvenance::VerifiedStaged,
             ) {
                 restore_tree(&backup);
                 let _ = restore_ledger_entry(dir, &incoming_key, previous_ledger.clone());

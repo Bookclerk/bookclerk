@@ -41,10 +41,10 @@ pub enum NodeMessage {
         /// Revision after the write (0 for a delete).
         revision: i64,
     },
-    /// The active release of a plugin moved (install, update, rollback,
-    /// remove) or its consent grant changed.
-    #[serde(rename = "release.changed", rename_all = "camelCase")]
-    ReleaseChanged {
+    /// The active version of a plugin moved (install, update, rollback,
+    /// uninstall) or its consent grant changed.
+    #[serde(rename = "install.changed", rename_all = "camelCase")]
+    InstallChanged {
         /// Canonical plugin key.
         plugin_key: String,
         /// Active version; empty when the pointer was cleared.
@@ -100,12 +100,12 @@ impl NodeMessage {
             ),
             // Grant approvals and clears carry revision 0; a fresh id keeps
             // each one a distinct wakeup.
-            Self::ReleaseChanged {
+            Self::InstallChanged {
                 plugin_key,
                 version,
                 revision,
             } => format!(
-                "release.changed:{plugin_key}:{version}:{revision}:{}",
+                "install.changed:{plugin_key}:{version}:{revision}:{}",
                 uuid::Uuid::new_v4()
             ),
         }

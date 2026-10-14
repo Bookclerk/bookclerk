@@ -11,7 +11,7 @@ the host running the job. Per-destination settings are the plugin's
 | Id | Package | Credentials | Default load |
 | --- | --- | --- | --- |
 | Local filesystem | `local` (platform) | none | Enabled on every host at enrollment (platform grant) |
-| S3 / MinIO | `s3` (optional) | `access_key_id` / `secret_access_key` secrets → AWS SDK chain | `absent` until `bookclerk plugins enable s3` |
+| S3 / MinIO | `s3` (optional) | `access_key_id` / `secret_access_key` secrets → AWS SDK chain | `absent` until `bookclerk plugins deploy s3` |
 
 External `storage` entrypoint plugins are loaded the same way. The local guest
 is granted write access only to its `root` (plus its private
@@ -48,7 +48,7 @@ bookclerk plugins config set s3 endpoint http://minio:9000
 bookclerk plugins config set s3 force_path_style true
 bookclerk plugins config set s3 access_key_id --secret       # value on stdin
 bookclerk plugins config set s3 secret_access_key --secret
-bookclerk plugins enable s3
+bookclerk plugins deploy s3
 ```
 
 Credentials come from the instance secrets when both keys are set. When they

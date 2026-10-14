@@ -744,19 +744,19 @@ fn replacement_hash(
 
 /// Error for a write the actor is not allowed to perform.
 fn unauthorized() -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!(
-        "unauthorized configuration write: operator authority is required"
-    ))
+    LibraryError::Forbidden(
+        "unauthorized configuration write: operator authority is required".into(),
+    )
 }
 
 /// Error for a document or operation id that fails validation.
 fn invalid(detail: &str) -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!("invalid configuration: {detail}"))
+    LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }
 
 /// Error for a domain schema version this binary does not apply.
 pub(super) fn unsupported(namespace: &str, version: i64) -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!(
+    LibraryError::Invalid(format!(
         "unsupported configuration schema version {version} for {namespace}"
     ))
 }

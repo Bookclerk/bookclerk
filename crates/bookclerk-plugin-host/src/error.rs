@@ -16,6 +16,13 @@ pub enum PluginError {
     /// Callers match this variant instead of the message text.
     #[error("{0}")]
     InstanceSelection(String),
+    /// The request conflicts with cluster state (an alias owned by another
+    /// plugin, a version installed with different content).
+    #[error("{0}")]
+    Conflict(String),
+    /// A plugin, version, or row the request names does not exist.
+    #[error("{0}")]
+    NotFound(String),
     /// Backend or plugin transport is temporarily unreachable; retry the same
     /// idempotency key when the caller still holds consume-once material.
     #[error("unavailable: {0}")]
@@ -58,6 +65,12 @@ impl PluginError {
     #[must_use]
     pub fn message(msg: impl Into<String>) -> Self {
         Self::Message(msg.into())
+    }
+
+    /// Builds a [`PluginError::Conflict`].
+    #[must_use]
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self::Conflict(msg.into())
     }
 
     /// Builds a structured unavailable error (lost RPC, timeout, incomplete reply).

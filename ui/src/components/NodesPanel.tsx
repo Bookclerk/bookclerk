@@ -351,7 +351,7 @@ export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
           shared database. The budget is the share of a node's CPU and memory the scheduler may
           commit to plugin guests; the bar shows what running guests reserve and the marker what
           the machine measures in use. Draining a node moves its scheduled plugins elsewhere;
-          plugins enabled by hand keep running.
+          plugins deployed by hand keep running.
         </p>
       </div>
       {nodes == null ? (

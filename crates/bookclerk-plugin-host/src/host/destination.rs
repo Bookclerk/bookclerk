@@ -580,7 +580,7 @@ mode = "outbound"
         let key = PluginKey::platform("bookclerk-plugin-destination-s3", "s3").unwrap();
         real.identity.plugin_key = key.clone();
         real.identity.artifact.plugin_key = key;
-        real.identity.provenance = PluginProvenance::VerifiedInstalled;
+        real.identity.provenance = PluginProvenance::VerifiedStaged;
         let twin = discovered(b.path());
         assert_eq!(real.alias(), twin.alias());
         assert_ne!(real.plugin_key(), twin.plugin_key());

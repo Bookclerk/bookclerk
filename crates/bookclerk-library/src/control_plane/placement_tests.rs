@@ -348,7 +348,7 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
 }
 
 #[tokio::test]
-async fn a_release_without_an_artifact_for_a_node_target_skips_that_node() {
+async fn a_version_without_an_artifact_for_a_node_target_skips_that_node() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(&dir.path().join("library.db")).await;
@@ -376,15 +376,15 @@ async fn a_release_without_an_artifact_for_a_node_target_skips_that_node() {
         heartbeat_consumer(&store, node, Duration::ZERO).await;
     }
     let key = "path:file:///tmp/x86-only#x86only";
-    let release = PluginRelease {
+    let release = PluginVersion {
         plugin_key: key.into(),
         version: "1.0.0".into(),
         manifest_id: "x86only".into(),
         manifest_toml: "id = \"x86only\"\nversion = \"1.0.0\"\n".into(),
         settings: bookclerk_plugin_abi::SettingsSchema::default(),
-        artifacts: vec![ReleaseArtifact {
+        artifacts: vec![PluginArtifact {
             target: node_target().into(),
-            url: format!("{RELEASE_BLOB_SCHEME}{}", "a".repeat(64)),
+            url: format!("{ARTIFACT_BLOB_SCHEME}{}", "a".repeat(64)),
             format: "tar.gz".into(),
             archive_root: ".".into(),
             archive_sha256: "a".repeat(64),
@@ -394,11 +394,13 @@ async fn a_release_without_an_artifact_for_a_node_target_skips_that_node() {
         publisher_verified: true,
         grant_json: String::new(),
         coordinate: String::new(),
-        published_at: String::new(),
-        published_by: String::new(),
+        installed_at: String::new(),
+        installed_by: String::new(),
     };
-    publish_release(&store, &operator(), release).await.unwrap();
-    activate_release(&store, &operator(), key, "1.0.0", &session.node.node_id)
+    add_plugin_version(&store, &operator(), release)
+        .await
+        .unwrap();
+    activate_version(&store, &operator(), key, "1.0.0", &session.node.node_id)
         .await
         .unwrap();
     let instance = create_plugin_instance(&store, &operator(), key, "")

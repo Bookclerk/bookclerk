@@ -36,9 +36,7 @@ impl PluginInstanceId {
     /// Returns an error when `raw` is not a UUID.
     pub fn parse(raw: &str) -> Result<Self> {
         let id = Uuid::parse_str(raw.trim()).map_err(|_| {
-            LibraryError::Other(anyhow::anyhow!(
-                "invalid plugin instance id: expected a UUID"
-            ))
+            LibraryError::Invalid("invalid plugin instance id: expected a UUID".into())
         })?;
         Ok(Self(id.hyphenated().to_string()))
     }
@@ -461,9 +459,9 @@ fn authorize_create(actor: &ConfigActor) -> Result<()> {
     match actor {
         ConfigActor::Operator { .. } | ConfigActor::Bootstrap => Ok(()),
         ConfigActor::Scheduler | ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => {
-            Err(LibraryError::Other(anyhow::anyhow!(
-                "unauthorized configuration write: operator authority is required"
-            )))
+            Err(LibraryError::Forbidden(
+                "unauthorized configuration write: operator authority is required".into(),
+            ))
         }
     }
 }
@@ -471,9 +469,7 @@ fn authorize_create(actor: &ConfigActor) -> Result<()> {
 /// Rejects an empty or oversized plugin key before insert.
 fn validate_display_name(name: &str) -> Result<()> {
     if name.len() > 64 || name.chars().any(char::is_control) {
-        return Err(LibraryError::Other(anyhow::anyhow!(
-            "invalid plugin instance: display_name must be at most 64 bytes without control characters"
-        )));
+        return Err(LibraryError::Invalid("invalid plugin instance: display_name must be at most 64 bytes without control characters".into()));
     }
     Ok(())
 }
@@ -481,9 +477,9 @@ fn validate_display_name(name: &str) -> Result<()> {
 /// Rejects an empty or oversized plugin key.
 fn validate_plugin_key(plugin_key: &str) -> Result<()> {
     if plugin_key.is_empty() || plugin_key.len() > 512 || plugin_key.contains('\u{0000}') {
-        return Err(LibraryError::Other(anyhow::anyhow!(
-            "invalid plugin instance: plugin_key must be 1..=512 characters without NUL"
-        )));
+        return Err(LibraryError::Invalid(
+            "invalid plugin instance: plugin_key must be 1..=512 characters without NUL".into(),
+        ));
     }
     Ok(())
 }

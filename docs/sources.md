@@ -4,7 +4,7 @@ Sources implement the shared `ContentSource` / storefront entrypoint: login,
 list accounts, scan library, fetch title. There is no plugin `kind = "source"`
 — storefront guests export `storefront` under `entrypoints` (see
 [plugins.md](plugins.md)). A store is enabled on a host by deploying its plugin
-instance there (`bookclerk plugins enable <id>` or **Settings → Plugins**);
+instance there (`bookclerk plugins deploy <id>` or **Settings → Plugins**);
 its knobs are the plugin's `[[settings]]`, stored in the instance document.
 Nothing about a store lives in `config.toml` or the environment.
 
@@ -158,8 +158,8 @@ paths. Full Magento/device notes: [source-candidates.md](source-candidates.md).
 ## Disabling a store
 
 ```bash
-bookclerk plugins disable chirp              # this host
-bookclerk plugins disable chirp --host <id>  # another cluster host
+bookclerk plugins undeploy chirp              # this host
+bookclerk plugins undeploy chirp --node <id>  # another cluster node
 ```
 
 The deployment row flips to `absent`, the reconciler retires the running

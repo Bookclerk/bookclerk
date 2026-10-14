@@ -31,7 +31,7 @@ pub struct DiscoveredPlugin {
     /// Consent grant recorded on the cluster release this tree was
     /// materialized from; `None` for host-local trees, whose grant lives in
     /// `plugin-grants.json`.
-    pub release_grant: Option<crate::PluginGrant>,
+    pub version_grant: Option<crate::PluginGrant>,
 }
 
 impl DiscoveredPlugin {
@@ -67,7 +67,7 @@ impl DiscoveredPlugin {
             root,
             command,
             identity,
-            release_grant: None,
+            version_grant: None,
         })
     }
 
@@ -82,7 +82,7 @@ impl DiscoveredPlugin {
             root,
             command,
             identity,
-            release_grant: None,
+            version_grant: None,
         }
     }
 
@@ -120,14 +120,14 @@ impl DiscoveredPlugin {
                 payload_root_sha256: payload_root_sha256.to_string(),
                 archive_sha256: Some(archive_sha256.to_string()),
             },
-            provenance: bookclerk_plugin_catalog::PluginProvenance::Released,
+            provenance: bookclerk_plugin_catalog::PluginProvenance::Installed,
         };
         Ok(Self {
             manifest,
             root,
             command,
             identity,
-            release_grant: Some(grant),
+            version_grant: Some(grant),
         })
     }
 
@@ -146,7 +146,7 @@ impl DiscoveredPlugin {
 
 /// First-party database adapter kind when provenance + PluginKey match.
 ///
-/// `PlatformBundled` (platform sqlite) and `VerifiedInstalled` (crates.io /
+/// `PlatformBundled` (platform sqlite) and `VerifiedStaged` (crates.io /
 /// platform postgres and D1) both qualify. `LocalDevelopment` and `Modified`
 /// never do. Alias text (`id = "sqlite"`) is not consulted.
 #[must_use]
@@ -524,7 +524,7 @@ fn kind_or_alias_match(left: &str, right: &str) -> bool {
 pub fn stamp_occupancy_plugin_key(config: &mut Config, plugin: &DiscoveredPlugin) -> Result<()> {
     if !plugin.manifest.families().contains(&PluginFamily::Database) {
         return Err(PluginError::message(format!(
-            "plugin `{}` is enabled per host with `bookclerk plugins enable`, not in config.toml",
+            "plugin `{}` is enabled per host with `bookclerk plugins deploy`, not in config.toml",
             plugin.alias()
         )));
     }
@@ -1044,7 +1044,7 @@ mode = "deny"
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("plugins enable"),
+            err.contains("plugins deploy"),
             "non-database plugins are deployed, not stamped into config.toml: {err}"
         );
         let s3 = resolve_plugin_ref(&found, "s3").unwrap();

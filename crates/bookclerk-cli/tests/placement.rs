@@ -179,7 +179,7 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
         "deploy replaces in place"
     );
 
-    let refused = run_bookclerk(files, &["plugins", "enable", "fxplace"], &[]);
+    let refused = run_bookclerk(files, &["plugins", "deploy", "fxplace"], &[]);
     assert!(!refused.status.success());
     assert!(
         stderr(&refused).contains("placed by the scheduler"),
@@ -214,8 +214,8 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
         &[],
     ));
     assert_eq!(manual["deleted"], true);
-    let enabled = run_bookclerk(files, &["plugins", "enable", "fxplace"], &[]);
-    assert!(enabled.status.success(), "{}", stderr(&enabled));
+    let deployed = run_bookclerk(files, &["plugins", "deploy", "fxplace"], &[]);
+    assert!(deployed.status.success(), "{}", stderr(&deployed));
 
     let cleared = json(&run_bookclerk(
         files,

@@ -1,8 +1,8 @@
 # Plugin registry (crates.io taxonomy + install without Rust)
 
-Third-party plugins are published as cluster releases and materialized on
-each host under `$BOOKCLERK_FILES_DIR/plugins/.releases/<payload digest>/`
-(see [plugins.md#releases](plugins.md#releases) and the ADR
+Third-party plugins are installed once for the cluster and materialized on
+each node under `$BOOKCLERK_FILES_DIR/plugins/.versions/<payload digest>/`
+(see [plugins.md#installing-plugins](plugins.md#installing-plugins) and the ADR
 [plugin-workers-rpc-workerd.md](adr/plugin-workers-rpc-workerd.md)):
 
 | Runtime | Archive contents |
@@ -80,19 +80,19 @@ These landed on the follow-up ecosystem track instead of expanding #74:
 | --- | --- |
 | crates.io crate | **Discovery index** + install URL metadata for plugin *authors* |
 | HTTPS downloadable archive | **Native:** per OS/arch binary + `plugin.toml`. **Workerd:** `plugin.toml` + `modules/` (portable) |
-| `plugin_releases` row + `$BOOKCLERK_FILES_DIR/plugins/.releases/<digest>/` | **Published** release (database) and its **materialized** tree on each host; the manifest `id` remains a display alias |
+| `plugin_versions` row + `$BOOKCLERK_FILES_DIR/plugins/.versions/<digest>/` | **Installed** version (database) and its **materialized** tree on each node; the manifest `id` remains a display alias |
 | Platform installer / `cargo package-platform` | **Hosts + jail + workerd + sqlite + local** — always bundled, not pulled from crates.io |
 
 Bookclerk never runs `cargo build` / `npm install` on the user’s machine to
 install a plugin. Installing downloads a release asset over HTTPS, verifies it,
-and records a release; each host then fetches the asset for its own target,
-verifies the payload digest, and unpacks it into its release cache. The asset host is
+and records an installed version; each node then fetches the asset for its own
+target, verifies the payload digest, and unpacks it into its version cache. The asset host is
 **not** tied to GitHub: S3/R2, GitLab/Forgejo/Codeberg releases, a CDN, or a
 self-hosted static directory all work as long as the URL is a direct download.
 
 **Automatic pull today:** nothing from crates.io. Platform plugins ship inside
-the host installer. Optional storefronts are published with
-`bookclerk plugins install`, `POST /api/config/plugin-releases`, or an
+the host installer. Optional storefronts are installed with
+`bookclerk plugins install`, `POST /api/config/plugins`, or an
 operator package under `plugin-packages/`.
 
 See [packaging.md](packaging.md) for `cargo package-*` aliases and GitHub Actions
@@ -310,10 +310,10 @@ is not required for install.
 5. Record a `plugin_releases` row; the first release of a plugin (or
    `--activate`) becomes the active release
 6. Enrol the plugin's default instance; the operator approves consent and
-   deploys it with `plugins enable`
+   deploys it with `plugins deploy`
 
 Each host materializes the active release for its own target when a present
-deployment needs it. See [plugins.md#releases](plugins.md#releases) for
+deployment needs it. See [plugins.md#installing-plugins](plugins.md#installing-plugins) for
 update, rollback, approval, and the daemon routes.
 
 Alias uniqueness is cluster-wide for releases:
@@ -338,9 +338,9 @@ No `cargo` / `rustc` on PATH is required.
 | --- | --- |
 | **A — Taxonomy (this doc + types)** | Draft-stable crate names; metadata schema continues to evolve with digests / federation |
 | **B — CLI catalog** | `bookclerk plugins search [query]` against crates.io; `info` shows registry metadata |
-| **C — CLI install** | Publish verified releases; `plugins update` / `rollback` / `remove` / `releases` |
-| **D — Daemon API** | Authenticated `/api/config/plugin-releases` (publish, activate, approve); a catalog search route is still planned |
-| **E — Dashboard browser** | Browse / configure / enable in the operator SPA |
+| **C — CLI install** | Install verified versions; `plugins update` / `rollback` / `uninstall` / `versions` |
+| **D — Daemon API** | Authenticated `/api/config/plugins` (install, activate, approve, uninstall); a catalog search route is still planned |
+| **E — Dashboard browser** | Browse / configure / deploy in the operator SPA |
 
 Phases D–E reuse the same catalog DTOs as the CLI. Settings live in the
 plugin instance document in the database, validated against the release's

@@ -113,7 +113,7 @@ pub fn resolve_source(
                 .collect();
             if known.is_empty() {
                 Err(anyhow::anyhow!(
-                    "{err} (no storefront is deployed on this node — `bookclerk plugins enable <plugin>`)"
+                    "{err} (no storefront is deployed on this node — `bookclerk plugins deploy <plugin>`)"
                 ))
             } else {
                 Err(anyhow::anyhow!("{err} (registered: {})", known.join(", ")))

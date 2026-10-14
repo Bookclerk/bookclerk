@@ -195,8 +195,8 @@ means `desired = present` on a host.
 
 ```bash
 bookclerk plugins list                               # instances, deployments, observations
-bookclerk plugins enable s3 [--host <id>]            # desired = present
-bookclerk plugins disable s3 [--host <id>]           # desired = absent → guest retired
+bookclerk plugins deploy s3 [--node <id>]            # desired = present
+bookclerk plugins undeploy s3 [--node <id>]           # desired = absent → guest retired
 bookclerk plugins config get s3                      # schema defaults under the document
 bookclerk plugins config set s3 bucket my-audiobooks
 bookclerk plugins config set s3 secret_access_key --secret   # stdin, sealed
@@ -207,7 +207,8 @@ bookclerk plugins instances create s3 --name "Backup bucket"
 The daemon's operator API mirrors this under `/api/config/plugin-instances`
 (list / create, `GET`/`PUT …/{id}/config` with `expected_revision`,
 `PUT …/{id}/deployments/{node_id}`), plus `/api/config/nodes` and
-`/api/config/plugin-schemas`. **Settings → Plugins** is built from the same
+`/api/config/plugins` (installed versions; `GET …/{key}` carries the pinned
+schema). **Settings → Plugins** is built from the same
 schema. `PATCH /api/settings` no longer accepts plugin keys.
 
 Writes are compare-and-swap on the document revision and validate against

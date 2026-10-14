@@ -143,7 +143,7 @@ fn stage_first_party_guest(id: &str) -> Option<StagedGuest> {
         let key = bookclerk_plugin_catalog::PluginKey::platform(&package, id).ok()?;
         plugin.identity.plugin_key = key.clone();
         plugin.identity.artifact.plugin_key = key;
-        plugin.identity.provenance = bookclerk_plugin_catalog::PluginProvenance::VerifiedInstalled;
+        plugin.identity.provenance = bookclerk_plugin_catalog::PluginProvenance::VerifiedStaged;
     }
     Some(StagedGuest {
         files,

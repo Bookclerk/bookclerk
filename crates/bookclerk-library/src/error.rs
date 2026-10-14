@@ -51,6 +51,15 @@ pub enum LibraryError {
     #[error("{0}")]
     Conflict(String),
 
+    /// The caller may not perform this write (for example a configuration
+    /// write without operator authority).
+    #[error("{0}")]
+    Forbidden(String),
+
+    /// The request or stored document failed validation.
+    #[error("{0}")]
+    Invalid(String),
+
     /// Catch-all for otherwise unclassified failures.
     #[error(transparent)]
     Other(#[from] anyhow::Error),

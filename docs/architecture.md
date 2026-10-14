@@ -117,7 +117,7 @@ BookclerkFiles/
   cache/
   search_index/
   plugins/            # host-local trees (immutable to guests)
-    .releases/<digest>/        # materialized cluster releases, shared by instances
+    .versions/<digest>/        # materialized installed versions, shared by instances
     <plugin-key-fs-id>/        # platform guests, dev trees, older installs
   plugin-state/       # host-local mutable guest state
     <plugin-key-fs-id>/data/   # one guest's HOME inside the jail

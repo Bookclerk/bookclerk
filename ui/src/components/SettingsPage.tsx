@@ -228,7 +228,7 @@ function pluginConsentKey(plugin: PluginSettingsGroup): string {
 /**
  * Prefer the standard `*.enabled` knob; fall back to an "Enabled" label.
  *
- * Instance groups have no such knob: their switch is the host deployment.
+ * Instance groups have no such knob: their switch is the node deployment.
  */
 function findEnabledOption(plugin: PluginSettingsGroup): PluginSettingOption | null {
   if (isInstanceGroup(plugin)) return null;
@@ -970,7 +970,7 @@ export function SettingsPage({
     try {
       await withRequestTimeout(
         putPluginDeployment(instanceId, nodeId, desired, plugin.deployment?.revision),
-        `${desired === "present" ? "Enable" : "Disable"} ${plugin.id}`,
+        `${desired === "present" ? "Deploy" : "Undeploy"} ${plugin.id}`,
       );
       const next = await withRequestTimeout(fetchSettings(), "Reload settings");
       applySavedSettings(next, daemonListen);
@@ -1739,7 +1739,7 @@ export function SettingsPage({
                   <h2 className="text-lg font-semibold text-ink">Plugins</h2>
                   <p className="text-sm text-ink/55">
                     Settings each plugin declares in its manifest, stored per instance in the
-                    database. Enabled means the instance runs on this node.
+                    database. Deployed means the instance runs on this node.
                   </p>
                 </div>
 
@@ -1836,7 +1836,13 @@ export function SettingsPage({
                                           : "bg-ink/5 text-ink/55 normal-case tracking-normal"
                                       }
                                     >
-                                      {enabled ? "Enabled" : "Disabled"}
+                                      {instanceGroup
+                                        ? enabled
+                                          ? "Deployed"
+                                          : "Not deployed"
+                                        : enabled
+                                          ? "Enabled"
+                                          : "Disabled"}
                                     </Badge>
                                     {deploymentStatus && deploymentStatus !== "Running" ? (
                                       <Badge
@@ -1870,7 +1876,7 @@ export function SettingsPage({
                                       id={`plugin-enabled-${rowKey}`}
                                       type="checkbox"
                                       className="h-4 w-4 accent-teal"
-                                      aria-label={`${plugin.display_name?.trim() || plugin.id} enabled`}
+                                      aria-label={`${plugin.display_name?.trim() || plugin.id} ${instanceGroup ? "deployed" : "enabled"}`}
                                       title={
                                         plugin.placement
                                           ? "Placed by the cluster scheduler; change its placement instead"
