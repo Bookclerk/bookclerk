@@ -426,6 +426,12 @@ fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
 }
 
 /// Typed [`ExecuteRequest`] plus domain result-selection indexes.
+///
+/// `expected_hash` is the domain receipt hash: it is already bound into the
+/// receipt SQL and is compared on replay via [`CompiledAtomic::expected_hash`].
+/// The wire `requestHash` stays empty so host authorization stamps the
+/// canonical Cap'n digest; a non-empty one is a guest retry token and must
+/// equal that digest, which a domain hash never does.
 fn compiled_from_inner(
     operation_id: &str,
     inner: AtomicPlan,
@@ -448,7 +454,7 @@ fn compiled_from_inner(
     CompiledAtomic {
         request: ExecuteRequest {
             operation_id: operation_id.to_string(),
-            request_hash: expected_hash.clone(),
+            request_hash: String::new(),
             statements,
             deadline_unix_ms: 0,
         },
@@ -2384,11 +2390,14 @@ fn plan_dispatch_event_deliveries(
              ) SELECT 1, 0, 0, 0, 0, 0, 0, 0 WHERE TRUE",
             vec![],
         ));
+        // Dispatch latency is clamped to 24 days so the millisecond value
+        // fits Postgres `int4`, which `CAST(… AS INTEGER)` lowers to there.
         statements.push(sql(
             "UPDATE event_outbox_stats SET \
                 dispatch_count = dispatch_count + 1, \
                 dispatch_latency_ms_sum = dispatch_latency_ms_sum + MAX(0, \
-                    CAST((julianday(?) - julianday((SELECT created_at FROM domain_events WHERE id = ?))) * 86400000 AS INTEGER)\
+                    CAST(MIN(julianday(?) - julianday((SELECT created_at FROM domain_events WHERE id = ?)), 24.0) \
+                        * 86400000 AS INTEGER)\
                 ) \
              WHERE id = 1 AND EXISTS (\
                 SELECT 1 FROM domain_events WHERE id = ? AND dispatch_state = 'pending'\
@@ -4977,5 +4986,166 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state, "dispatched");
+    }
+
+    /// One sample per [`DbAtomicParams`] variant (distinct `operationKind`s).
+    fn every_named_op() -> Vec<DbAtomicParams> {
+        let samples = vec![
+            DbAtomicParams::DeleteUser { user_id: 1 },
+            DbAtomicParams::SetUserStatus {
+                user_id: 1,
+                status: "disabled".into(),
+            },
+            DbAtomicParams::SetUserPasswordHash {
+                user_id: 1,
+                password_hash: Some("h".into()),
+            },
+            DbAtomicParams::SetUserRole {
+                user_id: 1,
+                role: "member".into(),
+            },
+            DbAtomicParams::RedeemClaimTicket {
+                token_hash: "tok".into(),
+                session_hash: "sess".into(),
+                expires_at: "2024-06-02T00:00:00Z".into(),
+                user_agent: Some("ua".into()),
+                device_type: None,
+                client_label: None,
+                new_password_hash: Some("argon2".into()),
+                password_fingerprint: Some("fp".into()),
+            },
+            DbAtomicParams::TakeOidcRpState {
+                state_hash: "state".into(),
+            },
+            DbAtomicParams::TakeWebauthnChallenge {
+                challenge_id: "chal".into(),
+                kind: "authentication".into(),
+            },
+            DbAtomicParams::EnqueueJob {
+                kind: "scan".into(),
+                payload_json: r#"{"v":1,"account":"a"}"#.into(),
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 10,
+                run_after: None,
+            },
+            DbAtomicParams::ClaimNextJob {
+                resource_class: "network".into(),
+                owner: "worker-1".into(),
+                lease_secs: 60,
+            },
+            DbAtomicParams::ReserveJobTemp {
+                job_id: "job-1".into(),
+                path: "/tmp/job-1".into(),
+                reserved_bytes: 1,
+                quota_bytes: 10,
+            },
+            confirm_totp_params(1),
+            DbAtomicParams::DisableUserTotp { user_id: 1 },
+            DbAtomicParams::PublishDomainEvent {
+                id: "evt-1".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                account_id: "acct".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "dedup".into(),
+                payload: "{}".into(),
+                ordering_key: String::new(),
+            },
+            DbAtomicParams::SetAcquireStatus {
+                book_uuid: "book-1".into(),
+                status: "done".into(),
+                storage_key: Some("key".into()),
+                error_message: None,
+                event_id: "evt-2".into(),
+                event_type: "book_acquired".into(),
+                schema_version: 1,
+                event_account_id: "acct".into(),
+                source: String::new(),
+                correlation_id: String::new(),
+                causation_id: String::new(),
+                dedup_key: "dedup-2".into(),
+                payload: "{}".into(),
+                ordering_key: String::new(),
+            },
+            DbAtomicParams::DispatchEventDeliveries {
+                event_id: "evt-1".into(),
+                subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
+                mark_dispatched: true,
+            },
+            DbAtomicParams::ClaimNextEventDelivery {
+                owner: "worker-1".into(),
+                lease_secs: 60,
+                plugin_ids_json: r#"["echo"]"#.into(),
+                max_in_flight: 1,
+            },
+        ];
+        let kinds: std::collections::BTreeSet<_> = samples.iter().map(operation_kind).collect();
+        assert_eq!(kinds.len(), samples.len(), "one sample per named op");
+        samples
+    }
+
+    /// The plugin host's `RpcAtomicBackend::send_compiled` runs every compiled
+    /// plan through [`crate::sql_plan::authorize_typed_request`], which treats a
+    /// non-empty wire `requestHash` as a retry token that must equal the
+    /// canonical Cap'n digest. The domain receipt hash belongs in the receipt
+    /// SQL and [`CompiledAtomic::expected_hash`], never on the wire.
+    #[test]
+    fn host_authorize_accepts_every_compiled_named_plan() {
+        let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+        let mut plans: Vec<(String, CompiledAtomic)> = every_named_op()
+            .iter()
+            .map(|op| {
+                let id = format!("authz-{}", operation_kind(op));
+                let compiled = compile_named_request(&id, op, "2024-06-01T00:00:00Z")
+                    .unwrap_or_else(|err| panic!("{id}: {err}"));
+                (id, compiled)
+            })
+            .collect();
+        plans.push((
+            "authz-claimEventDelivery".into(),
+            compile_claim_event_delivery(
+                "authz-claimEventDelivery",
+                "evt-1:echo",
+                "worker-1",
+                60,
+                "echo",
+                "network",
+                1,
+                "2024-06-01T00:00:00Z",
+            )
+            .unwrap(),
+        ));
+        // A dispatch page without network subscribers emits no delivery
+        // INSERT, so it isolates the wire-hash check for this op.
+        plans.push((
+            "authz-dispatchEventDeliveries-empty".into(),
+            compile_named_request(
+                "authz-dispatchEventDeliveries-empty",
+                &DbAtomicParams::DispatchEventDeliveries {
+                    event_id: "evt-1".into(),
+                    subscribers_json: "[]".into(),
+                    mark_dispatched: true,
+                },
+                "2024-06-01T00:00:00Z",
+            )
+            .unwrap(),
+        ));
+        for (id, compiled) in plans {
+            assert!(!compiled.expected_hash.is_empty(), "{id}: receipt hash");
+            crate::sql_plan::validate_plan(&compiled, &caps)
+                .unwrap_or_else(|err| panic!("{id}: {err}"));
+            let mut typed = compiled.clone().into_typed_request(id.clone());
+            typed.deadline_unix_ms = 1_717_200_120_000;
+            crate::sql_plan::authorize_typed_request(&mut typed, &caps)
+                .unwrap_or_else(|err| panic!("{id}: host-compiled plan rejected: {err}"));
+            assert_eq!(
+                typed.request_hash,
+                bookclerk_plugin_abi::canonical_execute_request_hash(&typed).unwrap(),
+                "{id}: authorize stamps the canonical wire hash"
+            );
+        }
     }
 }

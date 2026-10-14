@@ -476,7 +476,7 @@ fn sqlite_fns_to_postgres(sql: &str) -> String {
         "(resume_pending != 0)",
     );
     let sql = rewrite_substr(&sql);
-    rewrite_julianday_delta(&sql)
+    rewrite_julianday(&sql)
 }
 
 /// Casts `substr` start and length arguments to `INTEGER`.
@@ -655,7 +655,28 @@ fn rewrite_variadic_fn(sql: &str, name: &str, pg_name: &str) -> String {
                     .iter()
                     .map(|a| rewrite_variadic_fn(a, name, pg_name))
                     .collect();
-                if rewritten.len() >= 2 {
+                if rewritten.len() >= 2 && rewritten.iter().any(|a| a.contains('?')) {
+                    // Same NULL poisoning, but each argument is evaluated
+                    // once: writing it twice would bind its `?` twice.
+                    let names: Vec<String> =
+                        (0..rewritten.len()).map(|k| format!("_bc_m{k}")).collect();
+                    let nulls = names
+                        .iter()
+                        .map(|n| format!("{n} IS NULL"))
+                        .collect::<Vec<_>>()
+                        .join(" OR ");
+                    let columns = rewritten
+                        .iter()
+                        .zip(&names)
+                        .map(|(a, n)| format!("({a}) AS {n}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "(SELECT CASE WHEN {nulls} THEN NULL ELSE {pg_name}({}) END \
+                         FROM LATERAL (SELECT {columns}) AS _bc_mm)",
+                        names.join(", ")
+                    ));
+                } else if rewritten.len() >= 2 {
                     // SQLite scalar min/max: any NULL argument yields NULL.
                     // PostgreSQL LEAST/GREATEST skip NULLs; poison explicitly.
                     let nulls = rewritten
@@ -955,11 +976,43 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
     None
 }
 
-/// Rewrites the sqlite `julianday` dispatch-latency expression to `EXTRACT(EPOCH …)`.
-fn rewrite_julianday_delta(sql: &str) -> String {
-    const NEEDLE: &str = "CAST((julianday(?) - julianday((SELECT created_at FROM domain_events WHERE id = ?))) * 86400000 AS INTEGER)";
-    const REPL: &str = "CAST(EXTRACT(EPOCH FROM (?::timestamptz - (SELECT created_at::timestamptz FROM domain_events WHERE id = ?))) * 1000 AS BIGINT)";
-    replace_in_code(sql, NEEDLE, REPL)
+/// Rewrites every `julianday(x)` call to the same Julian day number computed
+/// from `EXTRACT(EPOCH …)`.
+///
+/// Each call is rewritten on its own, so the result does not depend on the
+/// surrounding text: the typed path wraps collations and overflow checks
+/// around operands before this mechanical pass runs.
+fn rewrite_julianday(sql: &str) -> String {
+    let mut i = 0;
+    let mut out = String::with_capacity(sql.len() + 64);
+    while i < sql.len() {
+        if let Some(len) = literal_or_comment_len(&sql[i..]) {
+            out.push_str(&sql[i..i + len]);
+            i += len;
+            continue;
+        }
+        if ident_call_at(sql, i, "julianday") {
+            let open = sql[i + "julianday".len()..]
+                .char_indices()
+                .find(|(_, c)| !c.is_whitespace())
+                .map(|(off, _)| i + "julianday".len() + off)
+                .unwrap_or(i + "julianday".len());
+            if let Some((args, rest)) = split_call_args(&sql[open + 1..]) {
+                if let [arg] = args.as_slice() {
+                    out.push_str(&format!(
+                        "(EXTRACT(EPOCH FROM CAST(({}) AS TIMESTAMPTZ)) / 86400.0 + 2440587.5)",
+                        rewrite_julianday(arg)
+                    ));
+                    i = sql.len() - rest.len();
+                    continue;
+                }
+            }
+        }
+        let ch = sql[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Mechanical SQLite→Postgres type/identity rewrites for one DDL statement.
@@ -2444,6 +2497,53 @@ mod tests {
             !portable.to_ascii_lowercase().contains("json_object("),
             "{portable}"
         );
+    }
+
+    #[test]
+    fn scalar_min_max_with_placeholders_binds_each_once() {
+        let sql = lower_canonical_sql(
+            DatabaseBackend::Postgres,
+            "UPDATE t SET n = MAX(0, ? - n), m = MIN(m, 5) WHERE id = ?",
+        );
+        // Two placeholders in, two out, in order.
+        assert_eq!(sql.matches('$').count(), 2, "{sql}");
+        assert!(sql.contains("GREATEST(_bc_m0, _bc_m1)"), "{sql}");
+        assert!(
+            sql.contains("FROM LATERAL (SELECT (0) AS _bc_m0, ($1 - n) AS _bc_m1)"),
+            "{sql}"
+        );
+        // Without placeholders the inline form is kept.
+        assert!(
+            sql.contains("CASE WHEN (m) IS NULL OR (5) IS NULL THEN NULL ELSE LEAST(m, 5) END"),
+            "{sql}"
+        );
+        assert!(sql.ends_with("WHERE id = $2"), "{sql}");
+    }
+
+    #[test]
+    fn julianday_lowers_per_call_whatever_wraps_its_operands() {
+        // The typed path collates and overflow-wraps operands before this
+        // pass, so a rewrite keyed on the surrounding text would miss.
+        let sql = lower_canonical_sql(
+            DatabaseBackend::Postgres,
+            "SELECT CAST(MIN(julianday(?) - julianday((SELECT (created_at COLLATE \"C\") \
+             FROM domain_events WHERE id = ?)), 24.0) * 86400000 AS INTEGER)",
+        );
+        assert!(!sql.to_ascii_lowercase().contains("julianday"), "{sql}");
+        assert_eq!(sql.matches("EXTRACT(EPOCH FROM CAST((").count(), 2, "{sql}");
+        assert!(sql.contains("LEAST("), "{sql}");
+        // Each placeholder is still bound exactly once.
+        assert_eq!(sql.matches('$').count(), 2, "{sql}");
+        // SQLite keeps its native function.
+        let sqlite = lower_canonical_sql(DatabaseBackend::Sqlite, "SELECT julianday(?)");
+        assert!(sqlite.contains("julianday("), "{sqlite}");
+        // Literals and longer identifiers are left alone.
+        let other = lower_canonical_sql(
+            DatabaseBackend::Postgres,
+            "SELECT 'julianday(x)', my_julianday(1)",
+        );
+        assert!(other.contains("'julianday(x)'"), "{other}");
+        assert!(other.contains("my_julianday(1)"), "{other}");
     }
 
     #[test]

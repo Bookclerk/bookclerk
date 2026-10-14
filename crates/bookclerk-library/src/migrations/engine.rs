@@ -856,7 +856,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
-    async fn apply_is_idempotent_on_postgres() {
+    async fn postgres_apply_migration_plan_is_idempotent() {
         if std::env::var("BOOKCLERK_TEST_POSTGRES_URL")
             .ok()
             .filter(|s| !s.trim().is_empty())
