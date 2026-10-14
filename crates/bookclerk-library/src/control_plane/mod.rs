@@ -28,8 +28,8 @@ pub use deployments::{
     list_deployments_for_instance, list_observations_for_deployment,
     list_present_deployments_for_host, load_deployment, load_deployment_for_host, load_observation,
     present_plugin_keys_for_host, replace_plugin_deployment, upsert_observation,
-    DeploymentObservation, DeploymentReplace, DeploymentStatus, PluginDeployment, DESIRED_ABSENT,
-    DESIRED_PRESENT, MAX_OBSERVATION_DETAIL_BYTES,
+    DeploymentObservation, DeploymentReplace, DeploymentStatus, DesiredState, PluginDeployment,
+    MAX_OBSERVATION_DETAIL_BYTES,
 };
 pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,
@@ -60,11 +60,11 @@ pub use instances::{
 pub use placement::{
     acquire_lease, delete_plugin_placement, effective_host_labels, ensure_hand_managed,
     labels_satisfy, list_plugin_placements, live_host_ids, load_lease, load_plugin_placement,
-    plan_placement, put_plugin_placement, release_lease, schedule_placements, scheduler_actor,
-    set_host_labels, validate_constraint, validate_host_label, validate_label, ClusterLease,
-    HostCandidate, PlacementPlan, PlacementSpec, PlacementWrite, PluginPlacement, ScheduleReport,
-    HOST_LABEL, MAX_HOST_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, SCHEDULER_ACTOR_ID,
-    SCHEDULER_LEASE, SCHEDULER_LEASE_TTL, TARGET_LABEL,
+    plan_placement, put_plugin_placement, release_lease, schedule_placements, set_host_labels,
+    validate_constraint, validate_host_label, validate_label, ClusterLease, HostCandidate,
+    PlacementPlan, PlacementSpec, PlacementWrite, PluginPlacement, ScheduleReport, HOST_LABEL,
+    MAX_HOST_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
+    TARGET_LABEL,
 };
 pub use releases::{
     activate_release, approve_release_grant, clear_active_release, list_release_pointers,

@@ -636,7 +636,7 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
         &ConfigActor::Bootstrap,
         &instance.id,
         &session.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -646,7 +646,7 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
         &ConfigActor::Bootstrap,
         &instance.id,
         &foreign_host,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -666,7 +666,7 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
         &ConfigActor::Bootstrap,
         &instance.id,
         &session.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -688,7 +688,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &operator(),
         &instance.id,
         &session.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -711,7 +711,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &operator(),
         &deployment.deployment_id,
         9,
-        DESIRED_PRESENT,
+        DesiredState::Present,
         "stale-deployment",
     )
     .await
@@ -727,7 +727,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &operator(),
         &deployment.deployment_id,
         1,
-        DESIRED_PRESENT,
+        DesiredState::Present,
         "replace-deployment",
     )
     .await
@@ -736,13 +736,13 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         panic!("expected apply");
     };
     assert_eq!(next.revision, 2);
-    assert_eq!(next.desired, DESIRED_PRESENT);
+    assert_eq!(next.desired, DesiredState::Present);
     let replay = replace_plugin_deployment(
         &store,
         &operator(),
         &deployment.deployment_id,
         1,
-        DESIRED_PRESENT,
+        DesiredState::Present,
         "replace-deployment",
     )
     .await
@@ -785,25 +785,41 @@ async fn deployment_and_document_writes_wake_hosts_through_their_queues() {
     let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
         .await
         .unwrap();
-    let deployment =
-        ensure_plugin_deployment(&store, &operator(), &instance.id, &local, DESIRED_PRESENT)
-            .await
-            .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &operator(),
+        &instance.id,
+        &local,
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
     // A second ensure of the same pair writes nothing and publishes nothing.
-    ensure_plugin_deployment(&store, &operator(), &instance.id, &local, DESIRED_PRESENT)
-        .await
-        .unwrap();
+    ensure_plugin_deployment(
+        &store,
+        &operator(),
+        &instance.id,
+        &local,
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
     // A deployment for another host wakes that host, not this one.
-    let foreign =
-        ensure_plugin_deployment(&store, &operator(), &instance.id, "host-b", DESIRED_PRESENT)
-            .await
-            .unwrap();
+    let foreign = ensure_plugin_deployment(
+        &store,
+        &operator(),
+        &instance.id,
+        "host-b",
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
     let absent = replace_plugin_deployment(
         &store,
         &operator(),
         &deployment.deployment_id,
         1,
-        DESIRED_ABSENT,
+        DesiredState::Absent,
         "set-absent",
     )
     .await
@@ -818,7 +834,7 @@ async fn deployment_and_document_writes_wake_hosts_through_their_queues() {
         &operator(),
         &deployment.deployment_id,
         1,
-        DESIRED_ABSENT,
+        DesiredState::Absent,
         "set-absent",
     )
     .await
@@ -835,8 +851,8 @@ async fn deployment_and_document_writes_wake_hosts_through_their_queues() {
     assert_eq!(
         host_messages(&store, &local).await,
         vec![
-            changed(DESIRED_PRESENT, 1),
-            changed(DESIRED_ABSENT, 2),
+            changed("present", 1),
+            changed("absent", 2),
             changed("deleted", 0),
         ]
     );
@@ -845,7 +861,7 @@ async fn deployment_and_document_writes_wake_hosts_through_their_queues() {
         vec![HostMessage::DeploymentChanged {
             deployment_id: foreign.deployment_id.clone(),
             plugin_instance_id: instance.id.as_str().to_string(),
-            desired: DESIRED_PRESENT.into(),
+            desired: DesiredState::Present.as_str().into(),
             revision: 1,
         }]
     );
@@ -1008,7 +1024,7 @@ async fn two_connections_observe_one_instance_document() {
         &ConfigActor::Bootstrap,
         &instance.id,
         &session_a.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -1017,7 +1033,7 @@ async fn two_connections_observe_one_instance_document() {
         &ConfigActor::Bootstrap,
         &instance.id,
         &session_b.host.host_id,
-        DESIRED_ABSENT,
+        DesiredState::Absent,
     )
     .await
     .unwrap();
@@ -1036,7 +1052,7 @@ async fn two_connections_observe_one_instance_document() {
         .await
         .unwrap()
         .expect("host B's row is visible from host A");
-    assert_eq!(b_row.desired, DESIRED_ABSENT);
+    assert_eq!(b_row.desired, DesiredState::Absent);
 }
 
 #[tokio::test]

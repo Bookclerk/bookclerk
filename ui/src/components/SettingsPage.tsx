@@ -194,9 +194,10 @@ function isInstanceGroup(plugin: PluginSettingsGroup): boolean {
   return Boolean(plugin.plugin_instance_id);
 }
 
-/** Enabled on this host = a `present` deployment. */
+/** Runs on this host: an operator `present` or a scheduler `placed` deployment. */
 function deploymentEnabled(plugin: PluginSettingsGroup): boolean {
-  return plugin.deployment?.desired === "present";
+  const desired = plugin.deployment?.desired;
+  return desired === "present" || desired === "placed";
 }
 
 function deploymentStatusLabel(deployment: PluginDeploymentView | undefined): string | null {

@@ -550,7 +550,7 @@ pub(crate) async fn list_plugin_instance_views(
             deployments.push(PluginDeploymentView {
                 deployment_id: deployment.deployment_id,
                 host_id: deployment.host_id,
-                desired: deployment.desired,
+                desired: deployment.desired.as_str().to_string(),
                 revision: deployment.revision,
                 status: observation.as_ref().map(|o| o.status.as_str().to_string()),
                 detail: observation
@@ -884,20 +884,17 @@ pub async fn put_plugin_deployment(
             format!("host {host_id}"),
         )));
     }
-    let desired = body.desired.trim().to_string();
+    let desired = bookclerk_library::control_plane::DesiredState::parse(&body.desired)
+        .map_err(events_error)?;
     let existing = load_deployment_for_host(&library, &instance_id, &host_id)
         .await
         .map_err(events_error)?;
     let row = match existing {
-        None => ensure_plugin_deployment(
-            &library,
-            &operator_actor(),
-            &instance_id,
-            &host_id,
-            &desired,
-        )
-        .await
-        .map_err(events_error)?,
+        None => {
+            ensure_plugin_deployment(&library, &operator_actor(), &instance_id, &host_id, desired)
+                .await
+                .map_err(events_error)?
+        }
         Some(current) if current.desired == desired && body.expected_revision.is_none() => current,
         Some(current) => {
             let expected = body.expected_revision.unwrap_or(current.revision);
@@ -906,7 +903,7 @@ pub async fn put_plugin_deployment(
                 &operator_actor(),
                 &current.deployment_id,
                 expected,
-                &desired,
+                desired,
                 &uuid::Uuid::new_v4().to_string(),
             )
             .await
@@ -924,7 +921,7 @@ pub async fn put_plugin_deployment(
         "deployment_id": row.deployment_id,
         "plugin_instance_id": row.plugin_instance_id.to_string(),
         "host_id": row.host_id,
-        "desired": row.desired,
+        "desired": row.desired.as_str(),
         "revision": row.revision,
     })))
 }
@@ -1525,7 +1522,7 @@ mod tests {
         use bookclerk_library::control_plane::{
             bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
             import_instance_config_if_absent, load_deployment, load_observation, ConfigActor,
-            DeploymentStatus, PluginInstanceConfigV1, SettingValue, DESIRED_PRESENT,
+            DeploymentStatus, DesiredState, PluginInstanceConfigV1, SettingValue,
         };
 
         let files = tempfile::tempdir().expect("files");
@@ -1579,7 +1576,7 @@ mod tests {
             &actor,
             &instance.id,
             &session.host.host_id,
-            DESIRED_PRESENT,
+            DesiredState::Present,
         )
         .await
         .expect("deployment");
@@ -1604,7 +1601,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(desired.desired, DESIRED_PRESENT);
+        assert_eq!(desired.desired, DesiredState::Present);
         // The operator package became the active cluster release; the host
         // runs it from the digest cache and wrote no receipt or ledger row.
         let release =
@@ -1695,7 +1692,7 @@ mod tests {
         use bookclerk_library::control_plane::{
             bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
             import_instance_config_if_absent, load_observation, ConfigActor, DeploymentStatus,
-            PluginInstanceConfigV1, SettingValue, DESIRED_PRESENT,
+            DesiredState, PluginInstanceConfigV1, SettingValue,
         };
 
         let files = tempfile::tempdir().expect("files");
@@ -1751,7 +1748,7 @@ mod tests {
                 &actor,
                 &instance.id,
                 &session.host.host_id,
-                DESIRED_PRESENT,
+                DesiredState::Present,
             )
             .await
             .expect("deployment");
@@ -1834,7 +1831,7 @@ mod tests {
         use bookclerk_library::control_plane::{
             bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
             import_instance_config_if_absent, load_observation, ConfigActor, DeploymentStatus,
-            PluginInstanceConfigV1, SettingValue, DESIRED_PRESENT,
+            DesiredState, PluginInstanceConfigV1, SettingValue,
         };
 
         let files = tempfile::tempdir().expect("files");
@@ -1897,7 +1894,7 @@ mod tests {
             &actor,
             &instance.id,
             &session.host.host_id,
-            DESIRED_PRESENT,
+            DesiredState::Present,
         )
         .await
         .expect("deployment");

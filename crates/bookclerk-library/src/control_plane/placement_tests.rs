@@ -67,7 +67,7 @@ pub(super) async fn present_hosts(
         .await
         .unwrap()
         .into_iter()
-        .filter(|d| d.desired == DESIRED_PRESENT)
+        .filter(|d| d.desired.runs())
         .map(|d| d.host_id)
         .collect()
 }
@@ -201,7 +201,7 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
     let b_messages = host_messages(&store_a, "host-b").await;
     assert!(b_messages.iter().any(|m| matches!(
         m,
-        HostMessage::DeploymentChanged { desired, .. } if desired == DESIRED_PRESENT
+        HostMessage::DeploymentChanged { desired, .. } if desired == "placed"
     )));
 
     // Host B's daemon stops heartbeating: its replica is set absent, and
@@ -249,12 +249,65 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
     schedule_placements(&store_b).await.unwrap();
     assert!(present_hosts(&store_a, &instance.id).await.is_empty());
 
-    // Dropping the placement hands the instance back to enable/disable and
-    // leaves its deployments as they are.
+    // Every row the scheduler wrote carries its own states, never the
+    // operator's, and only the scheduler may write them.
+    let rows = list_deployments_for_instance(&store_a, &instance.id)
+        .await
+        .unwrap();
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter().all(|d| d.desired == DesiredState::Unplaced),
+        "scaled to zero: {rows:?}"
+    );
+    assert!(
+        replace_plugin_deployment(
+            &store_a,
+            &operator(),
+            &rows[0].deployment_id,
+            rows[0].revision,
+            DesiredState::Placed,
+            "operator-may-not-place",
+        )
+        .await
+        .is_err(),
+        "an operator cannot write a scheduler state"
+    );
+    assert!(
+        replace_plugin_deployment(
+            &store_a,
+            &ConfigActor::Scheduler,
+            &rows[0].deployment_id,
+            rows[0].revision,
+            DesiredState::Present,
+            "scheduler-may-not-enable",
+        )
+        .await
+        .is_err(),
+        "the scheduler cannot write an operator state"
+    );
+
+    // Scale back to one so a replica is running when the placement goes.
+    put_plugin_placement(&store_a, &operator(), &instance.id, &spec(1, &[]), Some(3))
+        .await
+        .unwrap();
+    schedule_placements(&store_b).await.unwrap();
+    assert_eq!(present_hosts(&store_a, &instance.id).await.len(), 1);
+
+    // Dropping the placement hands the instance back to enable/disable:
+    // `placed` becomes `present`, `unplaced` becomes `absent`, and every
+    // host keeps doing what it did.
+    let before = present_hosts(&store_a, &instance.id).await;
     assert!(delete_plugin_placement(&store_a, &operator(), &instance.id)
         .await
         .unwrap());
     ensure_hand_managed(&store_a, &instance.id).await.unwrap();
+    let handed = list_deployments_for_instance(&store_a, &instance.id)
+        .await
+        .unwrap();
+    assert!(handed
+        .iter()
+        .all(|d| matches!(d.desired, DesiredState::Present | DesiredState::Absent)));
+    assert_eq!(present_hosts(&store_a, &instance.id).await, before);
     assert_eq!(
         schedule_placements(&store_b).await.unwrap(),
         ScheduleReport::default()

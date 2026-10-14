@@ -460,9 +460,11 @@ fn instance_from_model(row: plugin_instances::Model) -> PluginInstance {
 fn authorize_create(actor: &ConfigActor) -> Result<()> {
     match actor {
         ConfigActor::Operator { .. } | ConfigActor::Bootstrap => Ok(()),
-        ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => Err(LibraryError::Other(
-            anyhow::anyhow!("unauthorized configuration write: operator authority is required"),
-        )),
+        ConfigActor::Scheduler | ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => {
+            Err(LibraryError::Other(anyhow::anyhow!(
+                "unauthorized configuration write: operator authority is required"
+            )))
+        }
     }
 }
 

@@ -66,6 +66,10 @@ pub enum ConfigActor {
     /// instance document to a newer pinned schema; it is never constructed
     /// for an API caller.
     Bootstrap,
+    /// The placement scheduler (one daemon, under the `scheduler` lease). It
+    /// writes only `placed` / `unplaced` deployments; it is never
+    /// constructed for an API caller.
+    Scheduler,
 }
 
 impl ConfigActor {
@@ -74,6 +78,7 @@ impl ConfigActor {
         match self {
             Self::Operator { id } | Self::Administrator { id } | Self::Member { id } => id,
             Self::Bootstrap => "bootstrap",
+            Self::Scheduler => "scheduler",
         }
     }
 

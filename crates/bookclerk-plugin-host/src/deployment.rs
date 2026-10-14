@@ -18,7 +18,7 @@ use bookclerk_library::control_plane::{
     bounded_observation_detail, current_process_incarnation, default_instance_for_key,
     list_deployments_for_host, load_active_release, load_instance_config, load_observation,
     load_plugin_instance, resolve_instance_bindings, stale_against_pin, upsert_observation,
-    ConfigActor, DeploymentObservation, DeploymentStatus, PluginRelease, DESIRED_PRESENT,
+    ConfigActor, DeploymentObservation, DeploymentStatus, PluginRelease,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{InstallLedger, Installer, PluginKey};
@@ -263,7 +263,7 @@ pub async fn reconcile_local_deployments(
         .map_err(library_err)?;
     let (deployments, absent): (Vec<_>, Vec<_>) = rows
         .into_iter()
-        .partition(|deployment| deployment.desired == DESIRED_PRESENT);
+        .partition(|deployment| deployment.desired.runs());
     let present: std::collections::BTreeSet<String> = deployments
         .iter()
         .map(|deployment| deployment.plugin_instance_id.as_str().to_string())

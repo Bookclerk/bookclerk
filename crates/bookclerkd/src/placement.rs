@@ -87,7 +87,7 @@ mod tests {
     use bookclerk_config::{Config, EventsConfig};
     use bookclerk_library::control_plane::{
         bootstrap_control_plane, create_plugin_instance, host_consumer_id, host_queue_name,
-        list_deployments_for_instance, ConfigActor, DESIRED_PRESENT,
+        list_deployments_for_instance, ConfigActor, DesiredState,
     };
     use bookclerk_library::EventCatalogSubscription;
     use http_body_util::BodyExt;
@@ -229,8 +229,8 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(
-            (rows[0].host_id.as_str(), rows[0].desired.as_str()),
-            (host.as_str(), DESIRED_PRESENT)
+            (rows[0].host_id.as_str(), rows[0].desired),
+            (host.as_str(), DesiredState::Placed)
         );
 
         let deployment_uri = format!(

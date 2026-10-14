@@ -915,7 +915,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         deployment_id TEXT PRIMARY KEY NOT NULL,
         plugin_instance_id TEXT NOT NULL,
         host_id TEXT NOT NULL,
-        desired TEXT NOT NULL CHECK (desired IN ('present', 'absent')),
+        desired TEXT NOT NULL CHECK (desired IN ('present', 'absent', 'placed', 'unplaced')),
         revision INTEGER NOT NULL,
         updated_at TEXT NOT NULL,
         updated_by TEXT NOT NULL,

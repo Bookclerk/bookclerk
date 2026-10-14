@@ -19,12 +19,105 @@ use crate::entities::{bookclerk_receipts, plugin_deployment_observations, plugin
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
-/// Desired state: the instance should be installed and running on the host.
-pub const DESIRED_PRESENT: &str = "present";
+/// What a deployment row asks its host to do, and who decided it.
+///
+/// Operators write [`DesiredState::Present`] and [`DesiredState::Absent`]
+/// (`plugins enable|disable`, the Settings switch). The placement scheduler
+/// writes [`DesiredState::Placed`] and [`DesiredState::Unplaced`] for an
+/// instance it owns. A host runs the instance for `present` and `placed`
+/// and retires it for `absent` and `unplaced`; the split only records whose
+/// decision the row carries, so "the operator turned this off" never reads
+/// like "the scheduler put the replica elsewhere".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DesiredState {
+    /// An operator enabled the instance on this host.
+    Present,
+    /// An operator disabled the instance on this host.
+    Absent,
+    /// The scheduler placed a replica on this host.
+    Placed,
+    /// The scheduler holds no replica on this host (scaled away, host no
+    /// longer qualifies, or not chosen).
+    Unplaced,
+}
 
-/// Desired state: the instance should not run on the host. A running guest
-/// is retired on the next reconcile.
-pub const DESIRED_ABSENT: &str = "absent";
+impl DesiredState {
+    /// Every state, in stored-text order.
+    pub const ALL: [Self; 4] = [Self::Present, Self::Absent, Self::Placed, Self::Unplaced];
+
+    /// Stored text.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::Placed => "placed",
+            Self::Unplaced => "unplaced",
+        }
+    }
+
+    /// Parses stored or API text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `raw` names no state.
+    pub fn parse(raw: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|state| state.as_str() == raw.trim())
+            .ok_or_else(|| invalid("desired must be `present`, `absent`, `placed`, or `unplaced`"))
+    }
+
+    /// True when the host should run the instance.
+    #[must_use]
+    pub fn runs(self) -> bool {
+        matches!(self, Self::Present | Self::Placed)
+    }
+
+    /// True for the scheduler's states.
+    #[must_use]
+    pub fn is_scheduled(self) -> bool {
+        matches!(self, Self::Placed | Self::Unplaced)
+    }
+
+    /// The operator state for an enable (`true`) or disable switch.
+    #[must_use]
+    pub fn operator(enabled: bool) -> Self {
+        if enabled {
+            Self::Present
+        } else {
+            Self::Absent
+        }
+    }
+
+    /// The scheduler state for a replica kept (`true`) or not.
+    #[must_use]
+    pub fn scheduled(placed: bool) -> Self {
+        if placed {
+            Self::Placed
+        } else {
+            Self::Unplaced
+        }
+    }
+
+    /// The operator state that keeps what this row does today: `placed`
+    /// becomes `present` and `unplaced` becomes `absent` when an instance
+    /// is handed back from the scheduler.
+    #[must_use]
+    pub fn handed_back(self) -> Self {
+        match self {
+            Self::Placed => Self::Present,
+            Self::Unplaced => Self::Absent,
+            other => other,
+        }
+    }
+}
+
+impl std::fmt::Display for DesiredState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// `bookclerk_receipts.operation_kind` for a deployment replacement.
 const REPLACE_DEPLOYMENT_KIND: &str = "replacePluginDeployment";
@@ -94,8 +187,8 @@ pub struct PluginDeployment {
     pub plugin_instance_id: PluginInstanceId,
     /// Target host.
     pub host_id: String,
-    /// [`DESIRED_PRESENT`] or [`DESIRED_ABSENT`].
-    pub desired: String,
+    /// What the host should do, and whose decision it is.
+    pub desired: DesiredState,
     /// Compare-and-swap revision.
     pub revision: i64,
     /// RFC 3339 commit time.
@@ -140,23 +233,23 @@ pub enum DeploymentReplace {
     },
 }
 
-/// Inserts `(instance, host, present)` when that pair is absent.
+/// Inserts `(instance, host, desired)` when that pair has no row.
 ///
 /// A second call returns the original row and does not bump the revision.
 ///
 /// # Errors
 ///
-/// Returns an error when the actor may not write, the instance is missing, or the insert fails.
+/// Returns an error when the actor may not write `desired`, the instance is
+/// missing, or the insert fails.
 pub async fn ensure_plugin_deployment(
     store: &LibraryStore,
     actor: &ConfigActor,
     instance_id: &PluginInstanceId,
     host_id: &str,
-    desired: &str,
+    desired: DesiredState,
 ) -> Result<PluginDeployment> {
-    authorize_create(actor)?;
+    authorize_create(actor, desired)?;
     validate_host_id(host_id)?;
-    validate_desired(desired)?;
     if load_plugin_instance(store, instance_id).await?.is_none() {
         return Err(LibraryError::NotFound(format!(
             "plugin instance {instance_id}"
@@ -171,7 +264,7 @@ pub async fn ensure_plugin_deployment(
         deployment_id: Set(deployment_id.clone()),
         plugin_instance_id: Set(instance_id.as_str().to_string()),
         host_id: Set(host_id.to_string()),
-        desired: Set(desired.to_string()),
+        desired: Set(desired.as_str().to_string()),
         revision: Set(1),
         updated_at: Set(now),
         updated_by: Set(actor.audit_id().to_string()),
@@ -198,24 +291,24 @@ pub async fn ensure_plugin_deployment(
 
 /// Replaces desired state when `expected_revision` is current.
 ///
-/// This slice only accepts `present`. The batch carries a revision predicate
-/// and a `replacePluginDeployment` receipt. It does not update observation rows.
+/// The batch carries a revision predicate and a `replacePluginDeployment`
+/// receipt. It does not update observation rows.
 ///
 /// # Errors
 ///
-/// Returns an error when the actor may not replace, the deployment is missing,
-/// or the operation id was already used for a different body.
+/// Returns an error when the actor may not write `desired`, the deployment
+/// is missing, or the operation id was already used for a different body.
 pub async fn replace_plugin_deployment(
     store: &LibraryStore,
     actor: &ConfigActor,
     deployment_id: &str,
     expected_revision: i64,
-    desired: &str,
+    desired: DesiredState,
     operation_id: &str,
 ) -> Result<DeploymentReplace> {
-    authorize_replace(actor)?;
+    authorize_replace(actor, desired)?;
     validate_operation_id(operation_id)?;
-    validate_desired(desired)?;
+    let desired = desired.as_str();
     if expected_revision < 1 {
         return Err(invalid("expected revision must be >= 1"));
     }
@@ -372,7 +465,14 @@ pub async fn list_present_deployments_for_host(
 ) -> Result<Vec<PluginDeployment>> {
     let rows = plugin_deployments::Entity::find()
         .filter(plugin_deployments::Column::HostId.eq(host_id))
-        .filter(plugin_deployments::Column::Desired.eq(DESIRED_PRESENT))
+        .filter(
+            plugin_deployments::Column::Desired.is_in(
+                DesiredState::ALL
+                    .into_iter()
+                    .filter(|state| state.runs())
+                    .map(DesiredState::as_str),
+            ),
+        )
         .order_by_asc(plugin_deployments::Column::DeploymentId)
         .all(store.db())
         .await
@@ -472,14 +572,15 @@ pub async fn delete_plugin_deployment(
     actor: &ConfigActor,
     deployment_id: &str,
 ) -> Result<()> {
-    authorize_replace(actor)?;
     let current = load_deployment_by_id(store, deployment_id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("plugin deployment {deployment_id}")))?;
-    if current.desired != DESIRED_ABSENT {
-        return Err(LibraryError::Conflict(
-            "deployment is still desired present; set it absent first".into(),
-        ));
+    authorize_replace(actor, current.desired)?;
+    if current.desired.runs() {
+        return Err(LibraryError::Conflict(format!(
+            "deployment is still desired {}; stop it first",
+            current.desired
+        )));
     }
     plugin_deployment_observations::Entity::delete_many()
         .filter(plugin_deployment_observations::Column::DeploymentId.eq(deployment_id))
@@ -512,7 +613,7 @@ async fn notify_deployment(store: &LibraryStore, deployment: &PluginDeployment) 
         HostMessage::DeploymentChanged {
             deployment_id: deployment.deployment_id.clone(),
             plugin_instance_id: deployment.plugin_instance_id.as_str().to_string(),
-            desired: deployment.desired.clone(),
+            desired: deployment.desired.as_str().to_string(),
             revision: deployment.revision,
         },
     )
@@ -692,7 +793,7 @@ fn deployment_from_model(row: plugin_deployments::Model) -> Result<PluginDeploym
         deployment_id: row.deployment_id,
         plugin_instance_id: PluginInstanceId::parse(&row.plugin_instance_id)?,
         host_id: row.host_id,
-        desired: row.desired,
+        desired: DesiredState::parse(&row.desired)?,
         revision: row.revision,
         updated_at: row.updated_at,
         updated_by: row.updated_by,
@@ -777,30 +878,49 @@ fn deployment_hash(
     hex::encode(hasher.finalize())
 }
 
-/// Operator and bootstrap may insert a deployment.
-fn authorize_create(actor: &ConfigActor) -> Result<()> {
-    match actor {
-        ConfigActor::Operator { .. } | ConfigActor::Bootstrap => Ok(()),
-        ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => Err(unauthorized()),
-    }
-}
-
-/// Only an operator may replace desired state.
-fn authorize_replace(actor: &ConfigActor) -> Result<()> {
-    match actor {
-        ConfigActor::Operator { .. } => Ok(()),
-        ConfigActor::Bootstrap | ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => {
-            Err(unauthorized())
-        }
-    }
-}
-
-/// Rejects an empty host id.
-fn validate_desired(desired: &str) -> Result<()> {
-    if desired == DESIRED_PRESENT || desired == DESIRED_ABSENT {
+/// Who may create a row in each state: operators and bootstrap enrollment
+/// write the operator states, the scheduler writes its own, and enrollment
+/// may record a scheduler-owned instance as `unplaced` on a new host.
+fn authorize_create(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
+    let allowed = match actor {
+        ConfigActor::Operator { .. } => !desired.is_scheduled(),
+        ConfigActor::Bootstrap => desired != DesiredState::Placed,
+        ConfigActor::Scheduler => desired.is_scheduled(),
+        ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => false,
+    };
+    if allowed {
         Ok(())
     } else {
-        Err(invalid("desired must be `present` or `absent`"))
+        Err(unauthorized_state(actor, desired))
+    }
+}
+
+/// Operators replace with operator states, the scheduler with its own.
+fn authorize_replace(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
+    let allowed = match actor {
+        ConfigActor::Operator { .. } => !desired.is_scheduled(),
+        ConfigActor::Scheduler => desired.is_scheduled(),
+        ConfigActor::Bootstrap | ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => {
+            false
+        }
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(unauthorized_state(actor, desired))
+    }
+}
+
+/// Error for an actor writing a state it does not own.
+fn unauthorized_state(actor: &ConfigActor, desired: DesiredState) -> LibraryError {
+    match actor {
+        ConfigActor::Operator { .. } | ConfigActor::Scheduler | ConfigActor::Bootstrap => {
+            LibraryError::Other(anyhow::anyhow!(
+                "unauthorized configuration write: {} may not set a deployment `{desired}`",
+                actor.audit_id()
+            ))
+        }
+        ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => unauthorized(),
     }
 }
 

@@ -1462,7 +1462,7 @@ async fn postgres_kv_and_host_queues_cross_two_pools() {
         },
         &instance.id,
         &session_b.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -1477,7 +1477,7 @@ async fn postgres_kv_and_host_queues_cross_two_pools() {
         HostMessage::DeploymentChanged {
             deployment_id: deployment.deployment_id.clone(),
             plugin_instance_id: instance.id.as_str().to_string(),
-            desired: DESIRED_PRESENT.into(),
+            desired: DesiredState::Present.as_str().into(),
             revision: 1,
         }
     );

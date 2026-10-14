@@ -1625,8 +1625,12 @@ export interface PluginSettingOption {
 export interface PluginDeploymentView {
   deployment_id: string;
   host_id: string;
-  /** `present` (enabled) or `absent` (disabled). */
-  desired: "present" | "absent" | string;
+  /**
+   * `present` / `absent` when an operator manages the instance (the Enabled
+   * switch), `placed` / `unplaced` when the cluster scheduler does. The
+   * host runs it for `present` and `placed`.
+   */
+  desired: "present" | "absent" | "placed" | "unplaced" | string;
   revision: number;
   /** `installed`, `running`, `healthy`, `error`, or `retired` when observed. */
   status?: string;

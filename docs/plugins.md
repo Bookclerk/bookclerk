@@ -1168,10 +1168,19 @@ instance** at enrollment, with a document seeded from the manifest's
 alias routes to the default instance, and jobs may pin another with
 `--instance`.
 
-**Enabled on a host** means a `present` deployment row for that instance and
-that host. An operator writes those rows by hand (below) or hands them to
-the cluster scheduler with [placement](#placement). The reconciler spawns
-present deployments, retires the guest when the row flips to `absent`, and
+**Enabled on a host** means the instance's deployment row for that host
+says to run it. Each row's `desired` state also says whose decision it is:
+
+| `desired` | Written by | The host |
+| --- | --- | --- |
+| `present` | an operator (`plugins enable`, the Settings switch) | runs it |
+| `absent` | an operator (`plugins disable`) | retires it |
+| `placed` | the cluster scheduler ([placement](#placement)) | runs it |
+| `unplaced` | the cluster scheduler | retires it |
+
+Only an operator writes `present` / `absent` and only the scheduler writes
+`placed` / `unplaced`; the library refuses anything else. The reconciler
+spawns rows that run, retires the guest when a row stops running, and
 records observations (`installed`, `running`, `healthy`, `error`,
 `retired`). Third-party plugins enrol `absent` until an operator approves
 their grant and enables them; platform guests (`local`, `sqlite`)
@@ -1358,7 +1367,7 @@ bookclerk plugins deploy example --manual         # back to enable/disable by ha
   target, or a target-independent `any` artifact (workerd packages).
 
 **Planning.** The scheduler keeps replicas where they already run, sets
-`absent` on hosts that stopped qualifying (a dead daemon, a removed label),
+`unplaced` on hosts that stopped qualifying (a dead daemon, a removed label),
 scales down from the most loaded host, and fills the rest on the least
 loaded candidates (load is the host's count of present deployments). When
 fewer hosts qualify than requested it places what it can and records why on
@@ -1377,9 +1386,10 @@ removes.
 
 **Placed instances are the scheduler's.** `plugins enable|disable` and the
 deployment API refuse a placed instance (409), the Settings Enabled switch
-is read-only for it, and enrollment records a new host `absent` for it
+is read-only for it, and enrollment records a new host `unplaced` for it
 rather than `present`. `plugins deploy --manual` (or deleting the placement)
-leaves the deployments as they are and hands them back. Removing a plugin
+hands the deployments back without changing what any host runs: `placed`
+becomes `present` and `unplaced` becomes `absent`. Removing a plugin
 (`plugins remove`, `DELETE /api/config/plugin-releases/{key}/active`) drops
 its placements first.
 

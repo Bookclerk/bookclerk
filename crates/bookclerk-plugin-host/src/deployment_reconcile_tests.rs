@@ -30,8 +30,8 @@ use bookclerk_library::control_plane::{
     create_plugin_instance, ensure_plugin_deployment, import_instance_config_if_absent,
     load_deployment, load_instance_config, load_observation, replace_instance_config,
     replace_plugin_deployment, seal_instance_secret, ConfigActor, DeploymentReplace,
-    DeploymentStatus, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
-    SettingValue, DESIRED_ABSENT, DESIRED_PRESENT,
+    DeploymentStatus, DesiredState, InstanceConfigReplace, InstanceSecretRefV1,
+    PluginInstanceConfigV1, SettingValue,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
@@ -318,7 +318,7 @@ async fn open_world(secrets: bool) -> World {
         &actor,
         &instance.id,
         &session.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .expect("deployment");
@@ -389,7 +389,7 @@ async fn foreign_host_deployment_does_not_install_or_observe() {
         &ConfigActor::Bootstrap,
         &world.instance_id,
         foreign,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .expect("foreign deployment");
@@ -505,7 +505,7 @@ async fn an_operator_package_becomes_an_active_release_and_reaches_healthy() {
             .unwrap()
             .unwrap()
             .desired,
-        DESIRED_PRESENT
+        DesiredState::Present
     );
 }
 
@@ -666,7 +666,7 @@ async fn a_release_published_on_one_host_is_materialized_and_spawned_on_another(
         &ConfigActor::Operator { id: "cli".into() },
         &world.instance_id,
         &session_b.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .expect("deployment on b");
@@ -737,7 +737,7 @@ async fn absent_retires_running_guest_and_present_brings_it_back() {
         &operator,
         &world.deployment_id,
         current.revision,
-        DESIRED_ABSENT,
+        DesiredState::Absent,
         "disable-fxdep",
     )
     .await
@@ -790,7 +790,7 @@ async fn absent_retires_running_guest_and_present_brings_it_back() {
         &operator,
         &world.deployment_id,
         current.revision,
-        DESIRED_PRESENT,
+        DesiredState::Present,
         "enable-fxdep",
     )
     .await
@@ -909,7 +909,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
             &actor,
             &instance.id,
             &world.host_id,
-            DESIRED_PRESENT,
+            DesiredState::Present,
         )
         .await
         .expect("deployment");
@@ -1147,7 +1147,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
             .unwrap()
             .unwrap()
             .desired,
-        DESIRED_PRESENT
+        DesiredState::Present
     );
 }
 
@@ -1400,7 +1400,7 @@ async fn live_two_instances_same_key_route_to_the_default() {
         &actor,
         &first.id,
         &session.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -1409,7 +1409,7 @@ async fn live_two_instances_same_key_route_to_the_default() {
         &actor,
         &second.id,
         &session.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -1531,7 +1531,7 @@ async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
         &actor,
         &instance.id,
         &session.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -1610,7 +1610,7 @@ async fn broken_guest_health_is_an_error_observation_and_keeps_the_release() {
             .unwrap()
             .unwrap()
             .desired,
-        DESIRED_PRESENT
+        DesiredState::Present
     );
 }
 
@@ -1855,7 +1855,7 @@ async fn a_verified_platform_guest_without_a_grant_file_persists_its_grant_and_s
         &actor,
         &instance.id,
         &session.host.host_id,
-        DESIRED_PRESENT,
+        DesiredState::Present,
     )
     .await
     .expect("deployment");

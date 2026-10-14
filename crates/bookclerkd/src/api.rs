@@ -2320,9 +2320,7 @@ fn instance_settings_group(
         present_on: view
             .deployments
             .iter()
-            .filter(|deployment| {
-                deployment.desired == bookclerk_library::control_plane::DESIRED_PRESENT
-            })
+            .filter(|deployment| deployment.desired == "present" || deployment.desired == "placed")
             .map(|deployment| deployment.host_id.clone())
             .collect(),
     }

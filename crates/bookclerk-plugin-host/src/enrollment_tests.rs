@@ -8,7 +8,7 @@ use std::path::Path;
 use bookclerk_config::{Config, EventsConfig};
 use bookclerk_library::control_plane::{
     find_plugin_instance_by_key, list_plugin_schemas, load_deployment_for_host,
-    load_instance_config, DESIRED_ABSENT, DESIRED_PRESENT,
+    load_instance_config, DesiredState,
 };
 use bookclerk_library::LibraryStore;
 
@@ -92,7 +92,8 @@ async fn enrollment_is_idempotent_across_restarts() {
     assert_eq!(one.plugin.manifest.id, "fxenroll");
     assert_eq!(one.deployment.host_id, host_id);
     assert_eq!(
-        one.deployment.desired, DESIRED_ABSENT,
+        one.deployment.desired,
+        DesiredState::Absent,
         "no grant yet: a third-party plugin enrols absent"
     );
     let seeded = load_instance_config(&store, &one.instance.id)
@@ -199,7 +200,8 @@ async fn granted_plugins_enroll_present_and_database_adapters_are_not_enrolled()
     assert_eq!(enrolled.len(), 1, "only the storefront enrols");
     assert_eq!(enrolled[0].plugin.manifest.id, "fxgranted");
     assert_eq!(
-        enrolled[0].deployment.desired, DESIRED_PRESENT,
+        enrolled[0].deployment.desired,
+        DesiredState::Present,
         "a covering grant enrols the deployment present"
     );
 
@@ -222,7 +224,7 @@ async fn granted_plugins_enroll_present_and_database_adapters_are_not_enrolled()
 }
 
 #[tokio::test]
-async fn a_scheduler_placed_instance_enrolls_absent_even_with_a_grant() {
+async fn a_scheduler_placed_instance_enrolls_unplaced_even_with_a_grant() {
     use bookclerk_library::control_plane::{
         ensure_plugin_instance, put_plugin_placement, ConfigActor, PlacementSpec,
     };
@@ -266,7 +268,8 @@ async fn a_scheduler_placed_instance_enrolls_absent_even_with_a_grant() {
     assert_eq!(enrolled.len(), 1);
     assert_eq!(enrolled[0].instance.id, instance.id);
     assert_eq!(
-        enrolled[0].deployment.desired, DESIRED_ABSENT,
+        enrolled[0].deployment.desired,
+        DesiredState::Unplaced,
         "the scheduler, not enrollment, deploys a placed instance"
     );
     assert_eq!(
@@ -275,7 +278,7 @@ async fn a_scheduler_placed_instance_enrolls_absent_even_with_a_grant() {
             .unwrap()
             .unwrap()
             .desired,
-        DESIRED_ABSENT
+        DesiredState::Unplaced
     );
 }
 

@@ -16,7 +16,7 @@ use bookclerk_library::control_plane::{
     activate_release, approve_release_grant, clear_active_release, delete_plugin_placement,
     list_deployments_for_instance, list_plugin_instances_for_key, list_plugin_schemas,
     list_release_pointers, list_releases, load_active_release, load_release,
-    replace_plugin_deployment, ConfigActor, DeploymentReplace, PluginRelease, DESIRED_ABSENT,
+    replace_plugin_deployment, ConfigActor, DeploymentReplace, DesiredState, PluginRelease,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
@@ -405,7 +405,7 @@ pub async fn run_remove(config: &Config, id: &str, format: OutputFormat) -> anyh
         // The scheduler would redeploy a placed instance; drop its placement.
         delete_plugin_placement(store, &cli_actor(), &instance.id).await?;
         for deployment in list_deployments_for_instance(store, &instance.id).await? {
-            if deployment.desired == DESIRED_ABSENT {
+            if !deployment.desired.runs() {
                 continue;
             }
             let replaced = replace_plugin_deployment(
@@ -413,7 +413,7 @@ pub async fn run_remove(config: &Config, id: &str, format: OutputFormat) -> anyh
                 &cli_actor(),
                 &deployment.deployment_id,
                 deployment.revision,
-                DESIRED_ABSENT,
+                DesiredState::Absent,
                 &format!(
                     "cli-remove-{}-{}",
                     deployment.deployment_id, deployment.revision

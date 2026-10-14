@@ -17,7 +17,7 @@ use bookclerk_library::control_plane::{
     activate_release, approve_release_grant, clear_active_release, delete_plugin_placement,
     list_deployments_for_instance, list_plugin_instances_for_key, list_release_pointers,
     list_releases, load_or_create_host_identity, load_release, replace_plugin_deployment,
-    ConfigActor, PluginRelease, DESIRED_ABSENT,
+    ConfigActor, DesiredState, PluginRelease,
 };
 use bookclerk_plugin_catalog::{
     safe_join, BookclerkPackageManifest, Installer, PackageCoordinate, TrustPolicy,
@@ -278,7 +278,7 @@ pub async fn delete_active_release(
             .await
             .map_err(library_error)?
         {
-            if deployment.desired == DESIRED_ABSENT {
+            if !deployment.desired.runs() {
                 continue;
             }
             replace_plugin_deployment(
@@ -286,7 +286,7 @@ pub async fn delete_active_release(
                 &operator_actor(),
                 &deployment.deployment_id,
                 deployment.revision,
-                DESIRED_ABSENT,
+                DesiredState::Absent,
                 &uuid::Uuid::new_v4().to_string(),
             )
             .await

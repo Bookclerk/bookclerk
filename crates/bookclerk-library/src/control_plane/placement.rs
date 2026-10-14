@@ -32,8 +32,8 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use super::deployments::{
-    ensure_plugin_deployment, list_all_deployments, replace_plugin_deployment, DeploymentReplace,
-    PluginDeployment, DESIRED_ABSENT, DESIRED_PRESENT,
+    ensure_plugin_deployment, list_all_deployments, list_deployments_for_instance,
+    replace_plugin_deployment, DeploymentReplace, DesiredState, PluginDeployment,
 };
 use super::documents::ConfigActor;
 use super::host_queue::{notify_all_hosts, HostMessage, HOST_CONSUMER_PREFIX};
@@ -68,17 +68,6 @@ pub const HOST_LABEL: &str = "host";
 
 /// Implicit label name every host carries with its artifact target.
 pub const TARGET_LABEL: &str = "target";
-
-/// Audit id the scheduler writes deployments under.
-pub const SCHEDULER_ACTOR_ID: &str = "scheduler";
-
-/// The scheduler's actor: it writes deployments on the operator's behalf.
-#[must_use]
-pub fn scheduler_actor() -> ConfigActor {
-    ConfigActor::Operator {
-        id: SCHEDULER_ACTOR_ID.into(),
-    }
-}
 
 /// What an operator asks for: how many hosts, and which may qualify.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -160,11 +149,12 @@ fn invalid(detail: &str) -> LibraryError {
 fn authorize(actor: &ConfigActor) -> Result<()> {
     match actor {
         ConfigActor::Operator { .. } => Ok(()),
-        ConfigActor::Bootstrap | ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => {
-            Err(LibraryError::Other(anyhow::anyhow!(
-                "unauthorized configuration write: operator authority is required"
-            )))
-        }
+        ConfigActor::Bootstrap
+        | ConfigActor::Scheduler
+        | ConfigActor::Administrator { .. }
+        | ConfigActor::Member { .. } => Err(LibraryError::Other(anyhow::anyhow!(
+            "unauthorized configuration write: operator authority is required"
+        ))),
     }
 }
 
@@ -417,12 +407,14 @@ pub async fn put_plugin_placement(
     Ok(PlacementWrite::Applied(stored))
 }
 
-/// Deletes an instance's placement; its deployments stay as they are and
-/// become hand-managed again. Returns false when there was none.
+/// Deletes an instance's placement and hands its deployments back to the
+/// operator: each `placed` row becomes `present` and each `unplaced` row
+/// `absent`, so every host keeps doing what it does now. Returns false when
+/// there was no placement.
 ///
 /// # Errors
 ///
-/// Returns an error when the actor is not an operator or the delete fails.
+/// Returns an error when the actor is not an operator or a write fails.
 pub async fn delete_plugin_placement(
     store: &LibraryStore,
     actor: &ConfigActor,
@@ -433,6 +425,23 @@ pub async fn delete_plugin_placement(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    // Hand back after the placement row is gone, so a scheduler pass that
+    // starts now finds no placement and leaves these rows alone.
+    for row in list_deployments_for_instance(store, instance_id).await? {
+        if !row.desired.is_scheduled() {
+            continue;
+        }
+        let operation_id = format!("hand-back-{}-{}", row.deployment_id, row.revision);
+        replace_plugin_deployment(
+            store,
+            actor,
+            &row.deployment_id,
+            row.revision,
+            row.desired.handed_back(),
+            &operation_id,
+        )
+        .await?;
+    }
     if res.rows_affected > 0 {
         notify_all_hosts(
             store,
@@ -768,20 +777,22 @@ pub struct ScheduleReport {
     pub conflicts: usize,
 }
 
-/// Sets `host_id`'s deployment of `instance_id` to `desired`, creating it
-/// when missing. Returns false on a compare-and-swap loss.
+/// Sets `host_id`'s deployment of `instance_id` to `placed` (`true`) or
+/// `unplaced`, creating the row when missing. Returns false on a
+/// compare-and-swap loss.
 async fn write_deployment(
     store: &LibraryStore,
     instance_id: &PluginInstanceId,
     host_id: &str,
     existing: Option<&PluginDeployment>,
-    desired: &str,
+    placed: bool,
 ) -> Result<bool> {
-    let actor = scheduler_actor();
+    let actor = ConfigActor::Scheduler;
+    let desired = DesiredState::scheduled(placed);
     let row = match existing {
         Some(row) => row.clone(),
         // `ensure` returns a row a concurrent writer created first; that row
-        // may carry the other desired state, so fall through to replace it.
+        // may carry another state, so fall through to replace it.
         None => ensure_plugin_deployment(store, &actor, instance_id, host_id, desired).await?,
     };
     if row.desired == desired {
@@ -824,7 +835,7 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
     let mut load: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_instance: BTreeMap<String, Vec<PluginDeployment>> = BTreeMap::new();
     for deployment in deployments {
-        if deployment.desired == DESIRED_PRESENT {
+        if deployment.desired.runs() {
             *load.entry(deployment.host_id.clone()).or_default() += 1;
         }
         by_instance
@@ -860,7 +871,7 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         let rows = by_instance.remove(instance_id.as_str()).unwrap_or_default();
         let present: BTreeSet<String> = rows
             .iter()
-            .filter(|d| d.desired == DESIRED_PRESENT)
+            .filter(|d| d.desired.runs())
             .map(|d| d.host_id.clone())
             .collect();
         let plan = plan_placement(
@@ -871,7 +882,7 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         );
         for host_id in &plan.remove {
             let row = rows.iter().find(|d| &d.host_id == host_id);
-            if write_deployment(store, instance_id, host_id, row, DESIRED_ABSENT).await? {
+            if write_deployment(store, instance_id, host_id, row, false).await? {
                 report.removed += 1;
                 if let Some(n) = load.get_mut(host_id) {
                     *n = n.saturating_sub(1);
@@ -882,7 +893,7 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         }
         for host_id in &plan.add {
             let row = rows.iter().find(|d| &d.host_id == host_id);
-            if write_deployment(store, instance_id, host_id, row, DESIRED_PRESENT).await? {
+            if write_deployment(store, instance_id, host_id, row, true).await? {
                 report.added += 1;
                 *load.entry(host_id.clone()).or_default() += 1;
             } else {

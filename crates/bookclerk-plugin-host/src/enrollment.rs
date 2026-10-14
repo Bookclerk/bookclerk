@@ -21,9 +21,9 @@ use bookclerk_library::control_plane::{
     current_process_incarnation, default_instance_for_key, ensure_plugin_deployment,
     ensure_plugin_instance, import_instance_config_if_absent, load_deployment_for_host,
     load_plugin_placement, pin_plugin_schema, reconcile_instance_configs_to_schema,
-    upsert_observation, ConfigActor, DeploymentObservation, DeploymentStatus, PinnedPluginSchema,
-    PluginDeployment, PluginInstance, PluginInstanceConfigV1, SchemaPin, SchemaPinChange,
-    DESIRED_ABSENT, DESIRED_PRESENT,
+    upsert_observation, ConfigActor, DeploymentObservation, DeploymentStatus, DesiredState,
+    PinnedPluginSchema, PluginDeployment, PluginInstance, PluginInstanceConfigV1, SchemaPin,
+    SchemaPinChange,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 
@@ -188,15 +188,16 @@ pub async fn enroll_one(
         Some(existing) => existing,
         None => {
             // A scheduler-placed instance is the scheduler's to deploy:
-            // enrollment records this host as `absent` and never `present`.
+            // enrollment records this host `unplaced` until a pass chooses
+            // it. Otherwise a covering grant enrols it enabled.
             let placed = load_plugin_placement(store, &instance.id)
                 .await
                 .map_err(library_err)?
                 .is_some();
-            let desired = if !placed && has_covering_grant(plugin, grants) {
-                DESIRED_PRESENT
+            let desired = if placed {
+                DesiredState::Unplaced
             } else {
-                DESIRED_ABSENT
+                DesiredState::operator(has_covering_grant(plugin, grants))
             };
             ensure_plugin_deployment(store, &actor, &instance.id, host_id, desired)
                 .await

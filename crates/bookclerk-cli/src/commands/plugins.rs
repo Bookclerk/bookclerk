@@ -11,7 +11,6 @@ use bookclerk_library::control_plane::{
     replace_instance_config, replace_plugin_deployment, require_plugin_schema,
     seal_instance_secret, set_secret_ref, set_setting, ConfigActor, DeploymentReplace,
     InstanceConfigReplace, PluginInstance, PluginInstanceConfigV1, PluginInstanceId, SettingValue,
-    DESIRED_ABSENT, DESIRED_PRESENT,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
@@ -1702,11 +1701,7 @@ async fn set_plugin_enabled(
             anyhow::bail!("host `{host_id}` is not registered with this cluster");
         }
     }
-    let desired = if enabled {
-        DESIRED_PRESENT
-    } else {
-        DESIRED_ABSENT
-    };
+    let desired = bookclerk_library::control_plane::DesiredState::operator(enabled);
     let row = match load_deployment_for_host(store, &instance.id, &host_id).await? {
         None => {
             ensure_plugin_deployment(store, &cli_actor(), &instance.id, &host_id, desired).await?
@@ -1733,7 +1728,7 @@ async fn set_plugin_enabled(
         "plugin_key": instance.plugin_key,
         "plugin_instance_id": instance.id.to_string(),
         "host_id": row.host_id,
-        "desired": row.desired,
+        "desired": row.desired.as_str(),
         "revision": row.revision,
         "enabled": enabled,
     });
@@ -1874,7 +1869,7 @@ async fn instance_items(
             deployments.push(DeploymentListItem {
                 this_host: deployment.host_id == this_host,
                 host_id: deployment.host_id,
-                desired: deployment.desired,
+                desired: deployment.desired.as_str().to_string(),
                 revision: deployment.revision,
                 status: observation.as_ref().map(|o| o.status.as_str().to_string()),
                 detail: observation
@@ -1924,7 +1919,7 @@ fn enabled_here(
             && instance
                 .deployments
                 .iter()
-                .any(|d| d.this_host && d.desired == DESIRED_PRESENT)
+                .any(|d| d.this_host && (d.desired == "present" || d.desired == "placed"))
     })
 }
 
