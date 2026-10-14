@@ -12,6 +12,7 @@ mod documents;
 mod identity;
 mod instance_config;
 mod instances;
+mod schemas;
 mod secret;
 
 use std::path::Path;
@@ -20,10 +21,12 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub use deployments::{
-    bounded_observation_detail, ensure_plugin_deployment, instance_has_deployment,
-    list_present_deployments_for_host, load_deployment, load_observation,
-    present_plugin_keys_for_host, replace_plugin_deployment, upsert_observation,
-    DeploymentObservation, DeploymentReplace, DeploymentStatus, PluginDeployment, DESIRED_PRESENT,
+    bounded_observation_detail, delete_plugin_deployment, ensure_plugin_deployment,
+    instance_has_deployment, list_deployments_for_host, list_deployments_for_instance,
+    list_observations_for_deployment, list_present_deployments_for_host, load_deployment,
+    load_deployment_for_host, load_observation, present_plugin_keys_for_host,
+    replace_plugin_deployment, upsert_observation, DeploymentObservation, DeploymentReplace,
+    DeploymentStatus, PluginDeployment, DESIRED_ABSENT, DESIRED_PRESENT,
     MAX_OBSERVATION_DETAIL_BYTES,
 };
 pub use documents::{
@@ -32,20 +35,26 @@ pub use documents::{
     PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
 };
 pub use identity::{
-    current_process_incarnation, host_identity_path, load_or_create_host_identity, HostIdentity,
-    HostRecord, HOST_IDENTITY_FILE,
+    current_process_incarnation, host_identity_path, list_host_ids, list_hosts, load_host,
+    load_or_create_host_identity, HostIdentity, HostRecord, HOST_IDENTITY_FILE,
 };
 pub use instance_config::{
-    graphicaudio_config_from_pairs, import_instance_config_if_absent, load_instance_config,
-    replace_instance_config, resolve_instance_bindings, seal_instance_secret, InstanceBindingGrant,
-    InstanceConfigDocument, InstanceConfigReplace, InstancePackagePolicy, InstanceSecretRefV1,
-    PluginInstanceConfigV1, ResolvedInstanceBindings, SettingValue, GRAPHICAUDIO_IMPORT_KEYS,
-    GRAPHICAUDIO_MANIFEST_ID, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
-    MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
+    import_instance_config_if_absent, load_instance_config, parse_setting_text,
+    reconcile_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
+    seal_instance_secret, set_secret_ref, set_setting, InstanceBindingGrant,
+    InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
+    PrunedInstanceConfig, ResolvedInstanceBindings, SettingValue, MAX_INSTANCE_SECRET_REFS,
+    MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
-    create_plugin_instance, ensure_plugin_instance, find_plugin_instance_by_key,
+    create_plugin_instance, default_instance_for_key, delete_plugin_instance,
+    ensure_plugin_instance, find_plugin_instance_by_key, list_all_plugin_instances,
     list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
+};
+pub use schemas::{
+    list_plugin_schemas, load_plugin_schema, pin_plugin_schema, require_plugin_schema,
+    schema_fingerprint, stale_against_pin, PinnedPluginSchema, SchemaPin, SchemaPinChange,
+    SchemaPinOutcome,
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
 

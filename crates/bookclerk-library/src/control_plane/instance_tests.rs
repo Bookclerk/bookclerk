@@ -36,6 +36,38 @@ fn mode_device() -> PluginInstanceConfigV1 {
     }
 }
 
+/// Schema the fixture plugin declares: `mode` enum, `retries` integer with a
+/// default, and a `token` secret.
+fn fixture_schema() -> bookclerk_plugin_abi::SettingsSchema {
+    use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingValueSpec, SettingsSchema};
+    let spec = |key: &str, kind: SettingKind| SettingSpec {
+        key: key.into(),
+        label: String::new(),
+        kind,
+        values: Vec::new(),
+        default: None,
+        required: false,
+        description: None,
+    };
+    SettingsSchema::new(vec![
+        SettingSpec {
+            values: ["device", "zip", "web"]
+                .into_iter()
+                .map(|id| SettingValueSpec {
+                    id: id.into(),
+                    label: String::new(),
+                })
+                .collect(),
+            ..spec("mode", SettingKind::Enum)
+        },
+        SettingSpec {
+            default: Some(serde_json::json!(2)),
+            ..spec("retries", SettingKind::Integer)
+        },
+        spec("token", SettingKind::Secret),
+    ])
+}
+
 async fn bootstrap(store: &LibraryStore, files: &std::path::Path) -> ControlPlaneSession {
     let scratch = files.join("cache");
     bootstrap_control_plane(store, files, &scratch, None, &EventsConfig::default())
@@ -51,10 +83,10 @@ async fn plugin_instance_ids_are_stable_uuids_independent_of_key() {
     let session = bootstrap(&store, dir.path()).await;
     let key = "platform:bookclerk/fixture";
     let alias = "fixture";
-    let first = create_plugin_instance(&store, &operator(), key)
+    let first = create_plugin_instance(&store, &operator(), key, "")
         .await
         .expect("first");
-    let second = create_plugin_instance(&store, &operator(), key)
+    let second = create_plugin_instance(&store, &operator(), key, "")
         .await
         .expect("second");
     assert_ne!(first.id, second.id);
@@ -92,7 +124,7 @@ async fn plugin_instance_ids_are_stable_uuids_independent_of_key() {
     let left = left.expect("left enrollment");
     let right = right.expect("right enrollment");
     assert_eq!(left.id, right.id);
-    let explicit = create_plugin_instance(&store, &operator(), race_key)
+    let explicit = create_plugin_instance(&store, &operator(), race_key, "")
         .await
         .expect("explicit same-key instance");
     assert_ne!(explicit.id, left.id);
@@ -138,7 +170,7 @@ async fn ensure_shares_one_id_across_two_sqlite_connections() {
         .expect("right enrollment");
     assert_eq!(left.id, right.id);
 
-    let explicit = create_plugin_instance(&holder, &operator(), key)
+    let explicit = create_plugin_instance(&holder, &operator(), key, "")
         .await
         .expect("explicit same-key instance");
     assert_ne!(explicit.id, left.id);
@@ -219,7 +251,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(dir.path().join("library.db").as_path()).await;
     let _session = bootstrap(&store, dir.path()).await;
-    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture")
+    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
         .await
         .expect("instance");
     let secret = "s3cret-value-should-not-leak";
@@ -243,7 +275,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &ConfigActor::Bootstrap,
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         &body,
         "import-instance-config",
     )
@@ -275,7 +307,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         imported.revision + 5,
         &body,
         "stale-instance-config",
@@ -301,7 +333,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         imported.revision,
         &bumped,
         "replace-instance-config",
@@ -316,7 +348,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         imported.revision,
         &bumped,
         "replace-instance-config",
@@ -340,7 +372,7 @@ async fn instance_config_cas_keeps_secret_values_out_of_the_document() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         imported.revision,
         &other,
         "replace-instance-config",
@@ -395,6 +427,7 @@ async fn capability_fixtures_share_one_config_address() {
             &store,
             &operator(),
             &format!("platform:bookclerk/fixture-{family}"),
+            "",
         )
         .await
         .expect("instance");
@@ -402,14 +435,14 @@ async fn capability_fixtures_share_one_config_address() {
             &store,
             &ConfigActor::Bootstrap,
             &instance.id,
-            InstancePackagePolicy::Generic,
+            &fixture_schema(),
             &mode_device(),
             &format!("import-fixture-{index}"),
         )
         .await
         .expect("import");
         assert_eq!(doc.instance_id, instance.id.as_str());
-        let resolved = resolve_instance_bindings(&store, &instance.id, &grant)
+        let resolved = resolve_instance_bindings(&store, &instance.id, &grant, &fixture_schema())
             .await
             .expect("resolve");
         payloads.push(resolved.config.payload);
@@ -439,14 +472,14 @@ async fn unknown_instance_schema_fails_read_and_write() {
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(dir.path().join("library.db").as_path()).await;
     let _session = bootstrap(&store, dir.path()).await;
-    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture")
+    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
         .await
         .unwrap();
     import_instance_config_if_absent(
         &store,
         &ConfigActor::Bootstrap,
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         &mode_device(),
         "import-schema",
     )
@@ -474,7 +507,7 @@ async fn unknown_instance_schema_fails_read_and_write() {
         &store,
         &operator(),
         &instance.id,
-        InstancePackagePolicy::Generic,
+        &fixture_schema(),
         1,
         &mode_device(),
         "replace-unknown-schema",
@@ -487,24 +520,106 @@ async fn unknown_instance_schema_fails_read_and_write() {
 }
 
 #[tokio::test]
-async fn graphicaudio_allowlist_rejects_unknown_keys() {
+async fn documents_validate_against_the_pinned_schema_not_the_host() {
+    let schema = fixture_schema();
     let mut settings = std::collections::BTreeMap::new();
-    settings.insert("access".into(), SettingValue::String("device".into()));
+    settings.insert("mode".into(), SettingValue::String("device".into()));
     settings.insert("password".into(), SettingValue::String("nope".into()));
-    let body = PluginInstanceConfigV1 {
-        settings,
+    let unknown = PluginInstanceConfigV1 {
+        settings: settings.clone(),
         secret_refs: Vec::new(),
     };
-    assert!(body.validate(InstancePackagePolicy::GraphicAudio).is_err());
-    let imported = graphicaudio_config_from_pairs([
-        ("access", "device"),
-        ("base_url", "https://example.test"),
-    ])
-    .expect("pairs");
-    imported
-        .validate(InstancePackagePolicy::GraphicAudio)
+    assert!(unknown.validate(&schema).is_err(), "undeclared key");
+    settings.remove("password");
+    settings.insert("token".into(), SettingValue::String("plain".into()));
+    let plain_secret = PluginInstanceConfigV1 {
+        settings: settings.clone(),
+        secret_refs: Vec::new(),
+    };
+    assert!(
+        plain_secret.validate(&schema).is_err(),
+        "secret as plain value"
+    );
+    settings.remove("token");
+    settings.insert("mode".into(), SettingValue::String("tape".into()));
+    let bad_enum = PluginInstanceConfigV1 {
+        settings: settings.clone(),
+        secret_refs: Vec::new(),
+    };
+    assert!(bad_enum.validate(&schema).is_err(), "enum outside values");
+    settings.insert("mode".into(), SettingValue::String("zip".into()));
+    settings.insert("retries".into(), SettingValue::String("3".into()));
+    let wrong_type = PluginInstanceConfigV1 {
+        settings: settings.clone(),
+        secret_refs: Vec::new(),
+    };
+    assert!(wrong_type.validate(&schema).is_err(), "string for integer");
+    settings.insert("retries".into(), SettingValue::Number(3.into()));
+    let ok = PluginInstanceConfigV1 {
+        settings,
+        secret_refs: vec![InstanceSecretRefV1 {
+            key: "token".into(),
+            name: "device_token".into(),
+        }],
+    };
+    ok.validate(&schema)
+        .expect("declared keys with fitting values");
+    assert_eq!(
+        parse_setting_text(&schema, "retries", "7").unwrap(),
+        SettingValue::Number(7.into())
+    );
+    assert!(parse_setting_text(&schema, "token", "x").is_err());
+    assert!(parse_setting_text(&schema, "mode", "tape").is_err());
+}
+
+#[tokio::test]
+async fn resolve_merges_schema_defaults_and_drops_retired_keys() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let _session = bootstrap(&store, dir.path()).await;
+    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
+        .await
         .unwrap();
-    assert!(graphicaudio_config_from_pairs([("access", "nope")]).is_err());
+    let mut body = PluginInstanceConfigV1::empty();
+    body.settings
+        .insert("mode".into(), SettingValue::String("zip".into()));
+    body.settings
+        .insert("legacy".into(), SettingValue::Bool(true));
+    let mut wide = fixture_schema();
+    wide.settings.push(bookclerk_plugin_abi::SettingSpec {
+        key: "legacy".into(),
+        label: String::new(),
+        kind: bookclerk_plugin_abi::SettingKind::Bool,
+        values: Vec::new(),
+        default: None,
+        required: false,
+        description: None,
+    });
+    import_instance_config_if_absent(
+        &store,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &wide,
+        &body,
+        "import-defaults",
+    )
+    .await
+    .unwrap();
+    // The current manifest no longer declares `legacy`; spawn drops it and
+    // fills `retries` from the schema default.
+    let grant = InstanceBindingGrant {
+        config: true,
+        secrets: false,
+    };
+    let resolved = resolve_instance_bindings(&store, &instance.id, &grant, &fixture_schema())
+        .await
+        .unwrap();
+    let config = resolved.config.json_value().unwrap();
+    assert_eq!(config["mode"], "zip");
+    assert_eq!(config["retries"], 2);
+    assert!(config.get("legacy").is_none());
+    assert_eq!(resolved.dropped_keys, vec!["legacy".to_string()]);
 }
 
 #[tokio::test]
@@ -513,7 +628,7 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(dir.path().join("library.db").as_path()).await;
     let session = bootstrap(&store, dir.path()).await;
-    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture")
+    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
         .await
         .unwrap();
     let local = ensure_plugin_deployment(
@@ -521,14 +636,20 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
         &ConfigActor::Bootstrap,
         &instance.id,
         &session.host.host_id,
+        DESIRED_PRESENT,
     )
     .await
     .unwrap();
     let foreign_host = Uuid::new_v4().hyphenated().to_string();
-    let foreign =
-        ensure_plugin_deployment(&store, &ConfigActor::Bootstrap, &instance.id, &foreign_host)
-            .await
-            .unwrap();
+    let foreign = ensure_plugin_deployment(
+        &store,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &foreign_host,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
     let visible = list_present_deployments_for_host(&store, &session.host.host_id)
         .await
         .unwrap();
@@ -545,6 +666,7 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
         &ConfigActor::Bootstrap,
         &instance.id,
         &session.host.host_id,
+        DESIRED_PRESENT,
     )
     .await
     .unwrap();
@@ -558,13 +680,18 @@ async fn deployment_replace_conflicts_without_touching_observations() {
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(dir.path().join("library.db").as_path()).await;
     let session = bootstrap(&store, dir.path()).await;
-    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture")
+    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
         .await
         .unwrap();
-    let deployment =
-        ensure_plugin_deployment(&store, &operator(), &instance.id, &session.host.host_id)
-            .await
-            .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &operator(),
+        &instance.id,
+        &session.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
     upsert_observation(
         &store,
         &DeploymentObservation {
@@ -584,6 +711,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &operator(),
         &deployment.deployment_id,
         9,
+        DESIRED_PRESENT,
         "stale-deployment",
     )
     .await
@@ -599,6 +727,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &operator(),
         &deployment.deployment_id,
         1,
+        DESIRED_PRESENT,
         "replace-deployment",
     )
     .await
@@ -613,6 +742,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &operator(),
         &deployment.deployment_id,
         1,
+        DESIRED_PRESENT,
         "replace-deployment",
     )
     .await
@@ -624,4 +754,412 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         .unwrap();
     assert_eq!(observed.status, DeploymentStatus::Healthy);
     assert_eq!(observed.applied_config_revision, Some(1));
+}
+
+#[tokio::test]
+async fn two_connections_observe_one_instance_document() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let files_a = tempfile::tempdir().unwrap();
+    let files_b = tempfile::tempdir().unwrap();
+    let store_a = file_store(&path).await;
+    let session_a = bootstrap(&store_a, files_a.path()).await;
+    std::fs::copy(
+        crate::master_key::master_key_path(files_a.path()),
+        crate::master_key::master_key_path(files_b.path()),
+    )
+    .unwrap();
+    let store_b = file_store(&path).await;
+    let session_b = bootstrap(&store_b, files_b.path()).await;
+    assert_eq!(session_a.cluster_id, session_b.cluster_id);
+    assert_ne!(session_a.host.host_id, session_b.host.host_id);
+
+    // Host A enrols the plugin: one default instance, seeded from defaults.
+    let key = "platform:bookclerk/shared-fixture";
+    let instance = ensure_plugin_instance(&store_a, &ConfigActor::Bootstrap, key)
+        .await
+        .unwrap();
+    let seeded = import_instance_config_if_absent(
+        &store_a,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &fixture_schema(),
+        &PluginInstanceConfigV1::empty(),
+        "seed-shared-fixture",
+    )
+    .await
+    .unwrap();
+
+    // Host B enrols the same plugin key and lands on the same instance.
+    let from_b = ensure_plugin_instance(&store_b, &ConfigActor::Bootstrap, key)
+        .await
+        .unwrap();
+    assert_eq!(from_b.id, instance.id);
+    let doc_b = load_instance_config(&store_b, &instance.id).await.unwrap();
+    assert_eq!(doc_b.revision, seeded.revision);
+
+    // An operator on host B writes; host A observes the new revision.
+    let mut body = PluginInstanceConfigV1::empty();
+    body.settings
+        .insert("mode".into(), SettingValue::String("zip".into()));
+    let applied = replace_instance_config(
+        &store_b,
+        &operator(),
+        &instance.id,
+        &fixture_schema(),
+        seeded.revision,
+        &body,
+        "host-b-writes",
+    )
+    .await
+    .unwrap();
+    let InstanceConfigReplace::Applied(doc) = applied else {
+        panic!("expected apply, got {applied:?}");
+    };
+    let seen_by_a = load_instance_config(&store_a, &instance.id).await.unwrap();
+    assert_eq!(seen_by_a.revision, doc.revision);
+    assert_eq!(seen_by_a.body.settings_json()["mode"], "zip");
+
+    // Host A's write against the revision it last saw is rejected.
+    let stale = replace_instance_config(
+        &store_a,
+        &operator(),
+        &instance.id,
+        &fixture_schema(),
+        seeded.revision,
+        &mode_device(),
+        "host-a-stale",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stale,
+        InstanceConfigReplace::Conflict {
+            current_revision: doc.revision,
+        }
+    );
+
+    // A spawn on either host resolves the same CONFIG at the same revision.
+    let grant = InstanceBindingGrant {
+        config: true,
+        secrets: false,
+    };
+    let on_a = resolve_instance_bindings(&store_a, &instance.id, &grant, &fixture_schema())
+        .await
+        .unwrap();
+    let on_b = resolve_instance_bindings(&store_b, &instance.id, &grant, &fixture_schema())
+        .await
+        .unwrap();
+    assert_eq!(on_a.config, on_b.config);
+    assert_eq!(on_a.config_revision, doc.revision);
+    assert_eq!(on_a.config.json_value().unwrap()["retries"], 2);
+
+    // Deployments are host-scoped: the same instance is present on A and
+    // absent on B, and each host reads the other's row without owning it.
+    ensure_plugin_deployment(
+        &store_a,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &session_a.host.host_id,
+        DESIRED_PRESENT,
+    )
+    .await
+    .unwrap();
+    ensure_plugin_deployment(
+        &store_b,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &session_b.host.host_id,
+        DESIRED_ABSENT,
+    )
+    .await
+    .unwrap();
+    let present_on_a = list_present_deployments_for_host(&store_b, &session_a.host.host_id)
+        .await
+        .unwrap();
+    assert_eq!(present_on_a.len(), 1);
+    assert_eq!(present_on_a[0].plugin_instance_id, instance.id);
+    assert!(
+        list_present_deployments_for_host(&store_a, &session_b.host.host_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let b_row = load_deployment_for_host(&store_a, &instance.id, &session_b.host.host_id)
+        .await
+        .unwrap()
+        .expect("host B's row is visible from host A");
+    assert_eq!(b_row.desired, DESIRED_ABSENT);
+}
+
+#[tokio::test]
+async fn schema_pin_follows_the_package_version_and_prunes_documents() {
+    use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingsSchema};
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let _session = bootstrap(&store, dir.path()).await;
+    const KEY: &str = "platform:bookclerk/fxver";
+    fn pin<'a>(version: &'a str, host: &'a str) -> impl Fn(&'a SettingsSchema) -> SchemaPin<'a> {
+        move |schema| SchemaPin {
+            plugin_key: KEY,
+            manifest_id: "fxver",
+            package_version: version,
+            schema,
+            host_id: host,
+        }
+    }
+
+    // A version is required.
+    let v1 = fixture_schema();
+    let err = pin_plugin_schema(&store, &pin("", "host-a")(&v1))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("`version` is required"), "{err}");
+    let err = pin_plugin_schema(&store, &pin("v1", "host-a")(&v1))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not a semantic version"), "{err}");
+
+    // First pin, then an unchanged re-run.
+    let first = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
+        .await
+        .unwrap();
+    assert_eq!(first.change, SchemaPinChange::Pinned);
+    assert_eq!(first.schema.package_version, "0.1.0");
+    let again = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
+        .await
+        .unwrap();
+    assert_eq!(again.change, SchemaPinChange::Unchanged);
+    assert_eq!(again.schema.recorded_at, first.schema.recorded_at);
+
+    // A document written under 0.1.0 uses `retries` and a `token` secret ref.
+    let instance = create_plugin_instance(&store, &operator(), KEY, "")
+        .await
+        .unwrap();
+    let mut body = PluginInstanceConfigV1::empty();
+    body.settings
+        .insert("mode".into(), SettingValue::String("zip".into()));
+    body.settings
+        .insert("retries".into(), SettingValue::Number(3.into()));
+    body.secret_refs.push(InstanceSecretRefV1 {
+        key: "token".into(),
+        name: "device_token".into(),
+    });
+    let seeded = import_instance_config_if_absent(
+        &store,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &v1,
+        &body,
+        "seed-fxver",
+    )
+    .await
+    .unwrap();
+
+    // 0.2.0 drops `retries` and makes `token` a plain string: the newer
+    // package re-pins and the document is pruned to what still validates.
+    let v2 = SettingsSchema::new(vec![
+        v1.get("mode").cloned().unwrap(),
+        SettingSpec {
+            key: "token".into(),
+            label: String::new(),
+            kind: SettingKind::String,
+            values: Vec::new(),
+            default: None,
+            required: false,
+            description: None,
+        },
+    ]);
+    let upgraded = pin_plugin_schema(&store, &pin("0.2.0", "host-b")(&v2))
+        .await
+        .unwrap();
+    assert_eq!(
+        upgraded.change,
+        SchemaPinChange::Upgraded {
+            previous_version: "0.1.0".into()
+        }
+    );
+    assert_eq!(upgraded.schema.recorded_by_host, "host-b");
+    let pruned = reconcile_instance_configs_to_schema(&store, KEY, &v2)
+        .await
+        .unwrap();
+    assert_eq!(pruned.len(), 1);
+    assert_eq!(pruned[0].instance_id, instance.id.as_str());
+    assert_eq!(pruned[0].removed_keys, vec!["retries", "token"]);
+    assert_eq!(pruned[0].revision, seeded.revision + 1);
+    assert_eq!(
+        upgraded.schema.schema_sha256,
+        schema_fingerprint(&v2).unwrap()
+    );
+    let doc = load_instance_config(&store, &instance.id).await.unwrap();
+    assert_eq!(doc.revision, seeded.revision + 1);
+    assert_eq!(doc.body.settings.len(), 1);
+    assert_eq!(
+        doc.body.settings.get("mode"),
+        Some(&SettingValue::String("zip".into()))
+    );
+    assert!(doc.body.secret_refs.is_empty());
+    doc.body.validate(&v2).expect("pruned document fits 0.2.0");
+    assert!(
+        reconcile_instance_configs_to_schema(&store, KEY, &v2)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a fitting document is not rewritten"
+    );
+    // A value whose type no longer fits is dropped too (`mode` became an
+    // integer), and the rewrite happens on any later pass, not only the one
+    // that moved the pin.
+    let v2_int = SettingsSchema::new(vec![
+        SettingSpec {
+            key: "mode".into(),
+            label: String::new(),
+            kind: SettingKind::Integer,
+            values: Vec::new(),
+            default: Some(serde_json::json!(1)),
+            required: false,
+            description: None,
+        },
+        v2.get("token").cloned().unwrap(),
+    ]);
+    let retyped = reconcile_instance_configs_to_schema(&store, KEY, &v2_int)
+        .await
+        .unwrap();
+    assert_eq!(retyped.len(), 1);
+    assert_eq!(retyped[0].removed_keys, vec!["mode"]);
+    let doc = load_instance_config(&store, &instance.id).await.unwrap();
+    assert!(doc.body.settings.is_empty());
+    doc.body.validate(&v2_int).expect("retyped document fits");
+
+    // The host still on 0.1.0 is stale: the row is untouched and the
+    // reconciler-side check agrees.
+    let stale = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
+        .await
+        .unwrap();
+    assert_eq!(
+        stale.change,
+        SchemaPinChange::Stale {
+            local_version: "0.1.0".into()
+        }
+    );
+    assert_eq!(stale.schema.package_version, "0.2.0");
+    assert_eq!(stale.schema.recorded_by_host, "host-b");
+    assert_eq!(stale.schema.schema, v2);
+    assert_eq!(
+        stale_against_pin(&store, KEY, "0.1.0")
+            .await
+            .unwrap()
+            .map(|row| row.package_version),
+        Some("0.2.0".into())
+    );
+    assert!(stale_against_pin(&store, KEY, "0.2.0")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(stale_against_pin(&store, KEY, "0.3.0")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(
+        stale_against_pin(&store, "platform:bookclerk/never", "0.1.0")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // Same version, different schema: re-pinned in place. The same schema
+    // from a differently formatted manifest is unchanged.
+    let repinned = pin_plugin_schema(&store, &pin("0.2.0", "host-a")(&v2_int))
+        .await
+        .unwrap();
+    assert_eq!(repinned.change, SchemaPinChange::Repinned);
+    assert_eq!(
+        repinned.schema.schema_sha256,
+        schema_fingerprint(&v2_int).unwrap()
+    );
+    assert_eq!(repinned.schema.recorded_by_host, "host-a");
+    let same = pin_plugin_schema(&store, &pin("0.2.0", "host-b")(&v2_int))
+        .await
+        .unwrap();
+    assert_eq!(same.change, SchemaPinChange::Unchanged);
+    assert_eq!(same.schema.recorded_by_host, "host-a");
+}
+
+#[tokio::test]
+async fn concurrent_pins_never_leave_an_older_version_on_top() {
+    use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingsSchema};
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let _session = bootstrap(&store, dir.path()).await;
+    const KEY: &str = "platform:bookclerk/fxrace";
+    let schema_for = |key: &str| {
+        SettingsSchema::new(vec![SettingSpec {
+            key: key.into(),
+            label: String::new(),
+            kind: SettingKind::String,
+            values: Vec::new(),
+            default: None,
+            required: false,
+            description: None,
+        }])
+    };
+    let (v1, v2, v3) = (schema_for("one"), schema_for("two"), schema_for("three"));
+    let first = pin_plugin_schema(
+        &store,
+        &SchemaPin {
+            plugin_key: KEY,
+            manifest_id: "fxrace",
+            package_version: "0.1.0",
+            schema: &v1,
+            host_id: "host-0",
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.change, SchemaPinChange::Pinned);
+    // Two hosts race from the same 0.1.0 read: whichever order the writes
+    // land in, 0.3.0 ends on top and 0.2.0 reports itself stale or upgraded
+    // from 0.1.0 (never over 0.3.0).
+    let newer = SchemaPin {
+        plugin_key: KEY,
+        manifest_id: "fxrace",
+        package_version: "0.3.0",
+        schema: &v3,
+        host_id: "host-a",
+    };
+    let older = SchemaPin {
+        plugin_key: KEY,
+        manifest_id: "fxrace",
+        package_version: "0.2.0",
+        schema: &v2,
+        host_id: "host-b",
+    };
+    let (a, b) = tokio::join!(
+        pin_plugin_schema(&store, &newer),
+        pin_plugin_schema(&store, &older),
+    );
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(
+        a.change,
+        SchemaPinChange::Upgraded {
+            previous_version: "0.1.0".into()
+        }
+    );
+    let older_outcome_ok = match &b.change {
+        SchemaPinChange::Stale { .. } => true,
+        SchemaPinChange::Upgraded { previous_version } => previous_version == "0.1.0",
+        _ => false,
+    };
+    assert!(older_outcome_ok, "{:?}", b.change);
+    let pinned = load_plugin_schema(&store, KEY).await.unwrap().unwrap();
+    assert_eq!(pinned.package_version, "0.3.0");
+    assert_eq!(pinned.recorded_by_host, "host-a");
+    assert_eq!(pinned.schema, v3);
+    assert!(stale_against_pin(&store, KEY, "0.2.0")
+        .await
+        .unwrap()
+        .is_some());
 }

@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bookclerk_config::AudiobookshelfConfig;
 use bookclerk_integrations::{
     Brand, ExternalUser, Integration, IntegrationContext, IntegrationError, IntegrationHealth,
     ProvidedOidcClient, Result,
 };
 use bookclerk_plugin_sdk::{DomainEvent, EventResult};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -23,9 +23,41 @@ const PROVIDER: &str = "audiobookshelf";
 
 /// Audiobookshelf outbound integration.
 ///
-/// Always constructed when `enabled = true`. If required config (API key / base
-/// URL) is missing, the adapter stays registered, reports unhealthy, and
-/// refuses operational calls so the misconfiguration is visible.
+/// The guest's `CONFIG` / `SECRETS`, as declared by `[[settings]]` in
+/// `plugin.toml` and resolved by the host from the plugin instance document.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AudiobookshelfConfig {
+    /// Audiobookshelf server origin without trailing slash (e.g. `https://abs.example`).
+    pub base_url: String,
+    /// ABS API token (a `secret` setting; delivered in `SECRETS`).
+    pub api_key: Option<String>,
+    /// Target ABS library UUID when the server has multiple libraries.
+    pub library_id: Option<String>,
+    /// When true, poll ABS users for listening-progress sync.
+    pub watch_users: bool,
+    /// When true, ask ABS to rescan after a successful acquire.
+    pub notify_scan_on_acquire: bool,
+    /// When true, allow signing in to the Bookclerk portal with ABS credentials.
+    pub allow_credential_login: bool,
+}
+
+impl Default for AudiobookshelfConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            api_key: None,
+            library_id: None,
+            watch_users: true,
+            notify_scan_on_acquire: true,
+            allow_credential_login: true,
+        }
+    }
+}
+
+/// If required config (API key / base URL) is missing, the adapter stays
+/// registered, reports unhealthy, and refuses operational calls so the
+/// misconfiguration is visible.
 pub struct AbsIntegration {
     /// Operator ABS settings (base URL, API key, library id).
     config: AudiobookshelfConfig,
@@ -62,7 +94,7 @@ impl AbsIntegration {
             None => (
                 None,
                 Some(
-                    "integrations.audiobookshelf.api_key (or BOOKCLERK_ABS_API_KEY) is required"
+                    "the audiobookshelf `api_key` secret is required (bookclerk plugins config set audiobookshelf api_key --secret)"
                         .to_string(),
                 ),
             ),
@@ -268,7 +300,7 @@ impl Integration for AbsIntegration {
         let Some(client) = self.client.as_ref() else {
             return Ok(IntegrationHealth {
                 id: PROVIDER.into(),
-                enabled: self.config.enabled,
+                enabled: true,
                 ok: false,
                 detail: self
                     .config_error
@@ -279,13 +311,13 @@ impl Integration for AbsIntegration {
         match client.authorize().await {
             Ok(auth) => Ok(IntegrationHealth {
                 id: PROVIDER.into(),
-                enabled: self.config.enabled,
+                enabled: true,
                 ok: true,
                 detail: auth.user.map(|u| format!("authorized as {}", u.username)),
             }),
             Err(err) => Ok(IntegrationHealth {
                 id: PROVIDER.into(),
-                enabled: self.config.enabled,
+                enabled: true,
                 ok: false,
                 detail: Some(err.to_string()),
             }),

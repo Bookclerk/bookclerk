@@ -21,7 +21,7 @@ on three counts:
    installed**.
 2. Redirect URIs mixed Bookclerk’s listen port with ABS’s UI port. ABS
    callbacks live on the **player** origin (operator-configured
-   `[integrations.audiobookshelf].base_url`, default ABS UI port 13378), not
+   Audiobookshelf instance `base_url` setting, default ABS UI port 13378), not
    on `daemon.listen` (default 8787).
 3. There was no enable/disable control. Installing or seeding a client
    immediately made it a live relying party.

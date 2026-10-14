@@ -15,7 +15,7 @@ pub struct Model {
     pub plugin_instance_id: String,
     /// Host that should install and run the instance.
     pub host_id: String,
-    /// Desired presence. This slice stores `present` only.
+    /// Desired presence: `present` or `absent`.
     pub desired: String,
     /// Monotonic compare-and-swap revision. Starts at 1.
     pub revision: i64,

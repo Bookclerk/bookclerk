@@ -84,7 +84,7 @@ enum Commands {
     /// Read or write configuration values.
     Config {
         #[command(subcommand)]
-        /// Nested `config` verb (get/set keys, master-key wrap, S3 credentials).
+        /// Nested `config` verb (get/set keys, master-key wrap, database migrate).
         command: commands::config_cmd::ConfigCommand,
     },
     /// Export library data, backups, or Libation-compatible files.

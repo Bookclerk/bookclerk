@@ -20,9 +20,7 @@ use serde_json::Value;
 
 use crate::auth::GraphicAudioAuthFile;
 use crate::client::{GraphicAudioClient, DEFAULT_BASE_URL};
-use crate::download::{
-    fetch_title_with_mode, password_from_env, product_title_for, TitleFetchRequest,
-};
+use crate::download::{fetch_title_with_mode, product_title_for, TitleFetchRequest};
 use crate::error::{GraphicAudioError, Result};
 use crate::magento::{MagentoClient, DEFAULT_STORE_URL};
 use crate::options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
@@ -250,9 +248,7 @@ pub async fn guest_fetch_title(
         None
     };
 
-    let password = magento_password
-        .map(str::to_string)
-        .or_else(password_from_env);
+    let password = magento_password.map(str::to_string);
 
     fetch_title_with_mode(
         &client,

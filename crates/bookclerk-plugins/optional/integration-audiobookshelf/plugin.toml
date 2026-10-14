@@ -15,6 +15,43 @@ mode = "outbound"
 
 [vars]
 
+[[settings]]
+key = "base_url"
+label = "Audiobookshelf URL"
+type = "string"
+required = true
+description = "Scheme and host of the Audiobookshelf server (https unless loopback)."
+
+[[settings]]
+key = "library_id"
+label = "Library id"
+type = "string"
+
+[[settings]]
+key = "watch_users"
+label = "Watch users"
+type = "bool"
+default = true
+
+[[settings]]
+key = "notify_scan_on_acquire"
+label = "Notify scan on acquire"
+type = "bool"
+default = true
+
+[[settings]]
+key = "allow_credential_login"
+label = "Allow credential login"
+type = "bool"
+default = true
+
+[[settings]]
+key = "api_key"
+label = "API key"
+type = "secret"
+
+[secrets]
+
 [[events.consumers]]
 type = "book_acquired"
 schema_versions = [1]

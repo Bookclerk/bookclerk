@@ -1227,3 +1227,130 @@ async fn heartbeat_persists_fake_cgroup_observations() {
     assert_eq!(host.created_at, session.host.created_at);
     assert_eq!(host.incarnation, "incarnation-obs");
 }
+
+/// Minimal `[[settings]]` schema for the Postgres instance-document proof.
+fn instance_schema() -> bookclerk_plugin_abi::SettingsSchema {
+    use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingValueSpec, SettingsSchema};
+    SettingsSchema::new(vec![SettingSpec {
+        key: "mode".into(),
+        label: String::new(),
+        kind: SettingKind::Enum,
+        values: ["device", "zip", "web"]
+            .into_iter()
+            .map(|id| SettingValueSpec {
+                id: id.into(),
+                label: String::new(),
+            })
+            .collect(),
+        default: Some(serde_json::json!("web")),
+        required: false,
+        description: None,
+    }])
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_two_pools_observe_one_instance_document() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let _guard = master_key_test_lock_async().await;
+    let (store_a, store_b) = postgres_stores().await;
+    let files_a = tempdir().unwrap();
+    let files_b = tempdir().unwrap();
+    let session_a = bootstrap_pair(&store_a, files_a.path()).await;
+    std::fs::copy(
+        master_key_path(files_a.path()),
+        master_key_path(files_b.path()),
+    )
+    .unwrap();
+    let session_b = bootstrap_pair(&store_b, files_b.path()).await;
+    assert_eq!(session_a.cluster_id, session_b.cluster_id);
+    assert_ne!(session_a.host.host_id, session_b.host.host_id);
+
+    let key = "platform:bookclerk/pg-shared-fixture";
+    let schema = instance_schema();
+    let bootstrap = ConfigActor::Bootstrap;
+    let (left, right) = tokio::join!(
+        ensure_plugin_instance(&store_a, &bootstrap, key),
+        ensure_plugin_instance(&store_b, &bootstrap, key),
+    );
+    let instance = left.unwrap();
+    assert_eq!(right.unwrap().id, instance.id);
+    let seeded = import_instance_config_if_absent(
+        &store_a,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &schema,
+        &PluginInstanceConfigV1::empty(),
+        "pg-seed-shared",
+    )
+    .await
+    .unwrap();
+    let same_seed = import_instance_config_if_absent(
+        &store_b,
+        &ConfigActor::Bootstrap,
+        &instance.id,
+        &schema,
+        &PluginInstanceConfigV1::empty(),
+        "pg-seed-shared-again",
+    )
+    .await
+    .unwrap();
+    assert_eq!(same_seed.revision, seeded.revision);
+
+    let mut zip = PluginInstanceConfigV1::empty();
+    zip.settings
+        .insert("mode".into(), SettingValue::String("zip".into()));
+    let mut device = PluginInstanceConfigV1::empty();
+    device
+        .settings
+        .insert("mode".into(), SettingValue::String("device".into()));
+    let expected = seeded.revision;
+    let actor = operator();
+    let (left, right) = tokio::join!(
+        replace_instance_config(
+            &store_a,
+            &actor,
+            &instance.id,
+            &schema,
+            expected,
+            &zip,
+            "pg-instance-cas-a",
+        ),
+        replace_instance_config(
+            &store_b,
+            &actor,
+            &instance.id,
+            &schema,
+            expected,
+            &device,
+            "pg-instance-cas-b",
+        ),
+    );
+    let (left, right) = (left.unwrap(), right.unwrap());
+    let applied = matches!(left, InstanceConfigReplace::Applied(_)) as u32
+        + matches!(right, InstanceConfigReplace::Applied(_)) as u32;
+    let conflicts = matches!(left, InstanceConfigReplace::Conflict { .. }) as u32
+        + matches!(right, InstanceConfigReplace::Conflict { .. }) as u32;
+    assert_eq!(applied, 1, "left={left:?} right={right:?}");
+    assert_eq!(conflicts, 1, "left={left:?} right={right:?}");
+    let from_a = load_instance_config(&store_a, &instance.id).await.unwrap();
+    let from_b = load_instance_config(&store_b, &instance.id).await.unwrap();
+    assert_eq!(from_a.revision, from_b.revision);
+    assert_eq!(from_a.revision, expected + 1);
+    assert_eq!(from_a.body, from_b.body);
+
+    let grant = InstanceBindingGrant {
+        config: true,
+        secrets: false,
+    };
+    let on_a = resolve_instance_bindings(&store_a, &instance.id, &grant, &schema)
+        .await
+        .unwrap();
+    let on_b = resolve_instance_bindings(&store_b, &instance.id, &grant, &schema)
+        .await
+        .unwrap();
+    assert_eq!(on_a.config, on_b.config);
+    assert_eq!(on_a.config_revision, from_a.revision);
+}

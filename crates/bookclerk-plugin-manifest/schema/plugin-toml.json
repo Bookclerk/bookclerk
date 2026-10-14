@@ -54,7 +54,13 @@
     },
     "vars": {
       "type": "object",
-      "description": "Operator config binding defaults (`CONFIG`). An empty table still declares the binding."
+      "description": "Operator config binding (`CONFIG`). Declares that the guest receives CONFIG; values come from [[settings]] defaults and the plugin instance document. An empty table is the usual form."
+    },
+    "settings": {
+      "type": "array",
+      "description": "Operator settings schema ([[settings]]): keys an instance document may set, their types, enum values, and defaults. The host validates documents against it and renders it in Settings. Non-secret entries require [vars]; type = \"secret\" entries require [secrets].",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/SettingSpec" }
     },
     "secrets": { "$ref": "#/$defs/NamedBinding" },
     "kv_namespaces": {
@@ -243,6 +249,44 @@
           "pattern": "^[a-z][a-z0-9_]*$"
         },
         "binding": { "type": "string", "minLength": 1 }
+      }
+    },
+    "SettingSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "type"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "Setting key, unique within the plugin; the CONFIG / SECRETS property name."
+        },
+        "label": { "type": "string", "description": "Operator-facing label; defaults to the key." },
+        "type": {
+          "type": "string",
+          "enum": ["string", "bool", "integer", "enum", "secret"],
+          "description": "Value type. `secret` values are sealed by the host and delivered in SECRETS, never stored in the instance document."
+        },
+        "values": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "Allowed values for type = \"enum\"; forbidden otherwise.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 1024 },
+              "label": { "type": "string" }
+            }
+          }
+        },
+        "default": {
+          "type": ["string", "boolean", "integer"],
+          "description": "Default applied when the instance document omits the key. Not allowed for secrets."
+        },
+        "required": { "type": "boolean", "default": false },
+        "description": { "type": "string" }
       }
     },
     "DatabaseBinding": {

@@ -18,11 +18,16 @@ use crate::types::{ScanOptions, ScanSummary, SourceAccount};
 ///
 /// A deployed source is addressed by [`ContentSource::plugin_instance_id`].
 /// A source with no instance id is addressed by [`ContentSource::plugin_key`].
-/// Plugin key and display alias resolve only when exactly one source matches.
+/// A plugin key or display alias that several instances share routes to the
+/// plugin's default instance (see [`Self::set_default_instance`]); a job may
+/// pin another instance through [`Self::route`]. Nothing fails closed on a
+/// shared key: accounts belong to the plugin, so any instance may serve them.
 #[derive(Clone, Default)]
 pub struct SourceRegistry {
     /// Installed sources keyed by instance id, or by plugin key when unset.
     sources: HashMap<String, Arc<dyn ContentSource>>,
+    /// Default instance id per plugin key, from `plugin_instance_defaults`.
+    default_instances: HashMap<String, String>,
 }
 
 impl SourceRegistry {
@@ -51,22 +56,80 @@ impl SourceRegistry {
         self.sources.remove(plugin_instance_id).is_some()
     }
 
+    /// Names the instance a bare plugin key or alias routes to when several
+    /// instances of `plugin_key` are registered.
+    pub fn set_default_instance(&mut self, plugin_key: &str, plugin_instance_id: &str) {
+        self.default_instances
+            .insert(plugin_key.to_string(), plugin_instance_id.to_string());
+    }
+
+    /// Default instance id recorded for `plugin_key`, if any.
+    #[must_use]
+    pub fn default_instance(&self, plugin_key: &str) -> Option<&str> {
+        self.default_instances.get(plugin_key).map(String::as_str)
+    }
+
     /// Look up a source by plugin instance id, PluginKey, or display alias.
     ///
     /// An instance id matches that deployed source. A plugin key or alias
-    /// matches only when exactly one registered source has it. Several matches
-    /// return `None`; [`Self::require`] reports the ambiguity.
+    /// shared by several instances of **one** plugin routes to the default
+    /// instance, else the lowest instance id, so a bare key always resolves
+    /// while any instance is registered. An alias that two different plugins
+    /// claim is ambiguous and resolves to nothing: the caller names the
+    /// PluginKey or an instance id instead.
     #[must_use]
     pub fn get(&self, id_or_alias: &str) -> Option<Arc<dyn ContentSource>> {
+        self.route(id_or_alias, None)
+    }
+
+    /// [`Self::get`] with an optional pinned instance.
+    ///
+    /// `preferred_instance` must be a registered instance of the plugin that
+    /// `id_or_alias` names; a pin for another plugin, or an unknown id, yields
+    /// `None` rather than silently falling back.
+    #[must_use]
+    pub fn route(
+        &self,
+        id_or_alias: &str,
+        preferred_instance: Option<&str>,
+    ) -> Option<Arc<dyn ContentSource>> {
         let mut matches = self.matches(id_or_alias);
-        (matches.len() == 1).then(|| matches.remove(0))
+        if let Some(pin) = preferred_instance.map(str::trim).filter(|p| !p.is_empty()) {
+            return matches
+                .into_iter()
+                .find(|s| s.plugin_instance_id() == Some(pin));
+        }
+        match matches.len() {
+            0 => None,
+            1 => Some(matches.remove(0)),
+            _ => {
+                let key = matches[0].plugin_key().to_string();
+                if matches.iter().any(|s| s.plugin_key() != key) {
+                    return None;
+                }
+                if let Some(default) = self.default_instances.get(&key) {
+                    if let Some(found) = matches
+                        .iter()
+                        .find(|s| s.plugin_instance_id() == Some(default.as_str()))
+                    {
+                        return Some(found.clone());
+                    }
+                }
+                matches.sort_by(|a, b| {
+                    a.plugin_instance_id()
+                        .unwrap_or("")
+                        .cmp(b.plugin_instance_id().unwrap_or(""))
+                });
+                Some(matches.remove(0))
+            }
+        }
     }
 
     /// Sources whose instance id, PluginKey, display alias, or extra aliases match.
     ///
     /// An exact registry address (instance id, or plugin key for a source with
     /// no instance) is one hit. Otherwise every key and alias match is returned
-    /// so two instances of one key stay ambiguous.
+    /// and [`Self::route`] picks one.
     fn matches(&self, id_or_alias: &str) -> Vec<Arc<dyn ContentSource>> {
         let needle = id_or_alias.trim();
         if needle.is_empty() {
@@ -94,26 +157,41 @@ impl SourceRegistry {
     ///
     /// Returns an API error when `id_or_alias` is not registered.
     pub fn require(&self, id_or_alias: &str) -> Result<Arc<dyn ContentSource>> {
-        let mut matches = self.matches(id_or_alias);
-        match matches.len() {
-            1 => Ok(matches.remove(0)),
-            0 => Err(SourceError::api(format!(
-                "content source `{id_or_alias}` is not registered"
-            ))),
-            _ => {
-                let keys: Vec<_> = matches
-                    .iter()
-                    .map(|s| match s.plugin_instance_id() {
-                        Some(id) => format!("{id} ({})", s.plugin_key()),
-                        None => s.plugin_key().to_string(),
-                    })
-                    .collect();
-                Err(SourceError::api(format!(
-                    "plugin alias `{id_or_alias}` is ambiguous; use a plugin instance id or a provenance-qualified PluginKey. candidates: {}",
-                    keys.join(", ")
-                )))
-            }
+        self.require_routed(id_or_alias, None)
+    }
+
+    /// [`Self::require`] with an optional pinned instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an API error when nothing is registered under `id_or_alias`,
+    /// or when `preferred_instance` is not one of its instances.
+    pub fn require_routed(
+        &self,
+        id_or_alias: &str,
+        preferred_instance: Option<&str>,
+    ) -> Result<Arc<dyn ContentSource>> {
+        if let Some(found) = self.route(id_or_alias, preferred_instance) {
+            return Ok(found);
         }
+        let matches = self.matches(id_or_alias);
+        if matches.is_empty() {
+            return Err(SourceError::api(format!(
+                "content source `{id_or_alias}` is not registered"
+            )));
+        }
+        if let Some(pin) = preferred_instance.filter(|p| !p.trim().is_empty()) {
+            return Err(SourceError::api(format!(
+                "plugin instance `{pin}` is not a registered instance of `{id_or_alias}`"
+            )));
+        }
+        let mut keys: Vec<&str> = matches.iter().map(|s| s.plugin_key()).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        Err(SourceError::api(format!(
+            "plugin alias `{id_or_alias}` is ambiguous; use a plugin instance id or a PluginKey. candidates: {}",
+            keys.join(", ")
+        )))
     }
 
     /// Resolve a needle to the canonical plugin id when registered.
@@ -136,29 +214,27 @@ impl SourceRegistry {
         sources
     }
 
-    /// Plugin keys that have more than one registered instance.
+    /// One routed source per registered plugin key, in stable plugin order.
     ///
-    /// Accounts and [`crate::SourceScope`] stay keyed by storefront id, so
-    /// scanning both would read and write the same rows twice. Those keys are
-    /// skipped. Other sources in the same scan still run.
-    fn ambiguous_plugin_keys(&self) -> std::collections::BTreeMap<String, Vec<String>> {
-        let mut by_key: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        for source in self.sources.values() {
-            let label = match source.plugin_instance_id() {
-                Some(id) if !id.is_empty() => id.to_string(),
-                _ => source.id().to_string(),
-            };
-            by_key
-                .entry(source.plugin_key().to_string())
-                .or_default()
-                .push(label);
-        }
-        by_key.retain(|_, ids| ids.len() > 1);
-        by_key
+    /// Accounts belong to the plugin, so a scan that visited every instance
+    /// of one key would read and write the same rows twice. Bare-key routing
+    /// picks the instance; a pinned job goes through [`Self::route`].
+    #[must_use]
+    pub fn routed(&self) -> Vec<Arc<dyn ContentSource>> {
+        let mut seen = std::collections::HashSet::new();
+        self.all()
+            .into_iter()
+            .filter_map(|source| {
+                let key = source.plugin_key().to_string();
+                if !seen.insert(key.clone()) {
+                    return None;
+                }
+                self.route(&key, None)
+            })
+            .collect()
     }
 
-    /// Scan every registered source (honoring per-source account filters).
+    /// Scan every registered plugin once (honoring per-source account filters).
     ///
     /// When `opts.accounts` is non-empty, each source only receives the subset of
     /// account needles that resolve to an account on that source. Sources with no
@@ -169,27 +245,41 @@ impl SourceRegistry {
     ///
     /// Returns an error when the operation fails.
     pub async fn scan_all(&self, library: &LibraryStore, opts: ScanOptions) -> Result<ScanSummary> {
-        let ambiguous = self.ambiguous_plugin_keys();
+        self.scan_sources(library, self.routed(), opts).await
+    }
+
+    /// Scan one registered source (a job pinned to a plugin instance).
+    ///
+    /// Account filters apply as in [`Self::scan_all`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the scan fails or no account matches.
+    pub async fn scan_one(
+        &self,
+        library: &LibraryStore,
+        source: Arc<dyn ContentSource>,
+        opts: ScanOptions,
+    ) -> Result<ScanSummary> {
+        self.scan_sources(library, vec![source], opts).await
+    }
+
+    /// Scans `sources` in order, merging their summaries.
+    async fn scan_sources(
+        &self,
+        library: &LibraryStore,
+        sources: Vec<Arc<dyn ContentSource>>,
+        opts: ScanOptions,
+    ) -> Result<ScanSummary> {
         let mut total = ScanSummary::default();
         let mut any = false;
-        for (key, ids) in &ambiguous {
-            let detail = format!(
-                "scan skipped `{key}` ({}); pass a plugin instance id. Accounts stay keyed by storefront id",
-                ids.join(", ")
-            );
-            tracing::warn!("{detail}");
-            total.warnings.push(detail);
-        }
-        for source in self.all() {
-            if ambiguous.contains_key(source.plugin_key()) {
-                continue;
-            }
+        for source in sources {
             if opts.is_cancelled() {
                 return Err(crate::error::SourceError::Other(anyhow::anyhow!(
                     "cancelled"
                 )));
             }
-            let scope = library.scope(source.id());
+            let scope = crate::traits::source_scope(library, source.as_ref());
             let source_opts =
                 match filter_scan_opts_for_source(source.as_ref(), &scope, &opts).await {
                     Ok(Some(o)) => o,
@@ -218,9 +308,6 @@ impl SourceRegistry {
             }
         }
         if !any && total.accounts == 0 {
-            if !ambiguous.is_empty() {
-                return Err(SourceError::api(total.warnings.join("; ")));
-            }
             return Err(SourceError::no_accounts(
                 "no accounts configured — connect a store in the Bookclerk Accounts UI",
             ));
@@ -473,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn two_instances_of_one_key_resolve_by_instance_id_only() {
+    fn two_instances_of_one_key_route_to_the_default_then_the_pin() {
         let mut registry = SourceRegistry::new();
         registry.register(stub(
             "graphicaudio",
@@ -495,16 +582,38 @@ mod tests {
             registry.get("instance-b").unwrap().plugin_instance_id(),
             Some("instance-b")
         );
-        assert!(registry.get("local/graphicaudio").is_none());
-        assert!(registry.get("graphicaudio").is_none());
-        assert!(registry.get("ga").is_none());
-        let err = match registry.require("graphicaudio") {
+        // No default recorded: the lowest instance id wins, deterministically.
+        assert_eq!(
+            registry
+                .get("local/graphicaudio")
+                .unwrap()
+                .plugin_instance_id(),
+            Some("instance-a")
+        );
+        registry.set_default_instance("local/graphicaudio", "instance-b");
+        for needle in ["local/graphicaudio", "graphicaudio", "ga", "GA"] {
+            assert_eq!(
+                registry.get(needle).unwrap().plugin_instance_id(),
+                Some("instance-b"),
+                "{needle}"
+            );
+        }
+        // A pinned instance overrides the default; a pin for an unknown or
+        // foreign instance does not fall back.
+        assert_eq!(
+            registry
+                .route("graphicaudio", Some("instance-a"))
+                .unwrap()
+                .plugin_instance_id(),
+            Some("instance-a")
+        );
+        assert!(registry.route("graphicaudio", Some("instance-z")).is_none());
+        let err = match registry.require_routed("graphicaudio", Some("instance-z")) {
             Err(err) => err.to_string(),
-            Ok(_) => panic!("plugin key must be ambiguous"),
+            Ok(_) => panic!("unknown pin must not resolve"),
         };
-        assert!(err.contains("plugin instance id"), "{err}");
-        assert!(err.contains("instance-a"), "{err}");
-        assert!(err.contains("instance-b"), "{err}");
+        assert!(err.contains("instance-z"), "{err}");
+        assert_eq!(registry.routed().len(), 1);
 
         registry.register(stub(
             "replaced",
@@ -519,8 +628,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_alias_claimed_by_two_plugins_fails_closed() {
+        let mut registry = SourceRegistry::new();
+        registry.register(stub(
+            "audible",
+            "platform:bookclerk/audible",
+            Some("instance-real"),
+            &[],
+        ));
+        registry.register(stub(
+            "audible",
+            "path:/tmp/lookalike#audible",
+            Some("instance-twin"),
+            &[],
+        ));
+        registry.set_default_instance("platform:bookclerk/audible", "instance-real");
+        assert!(registry.get("audible").is_none(), "alias spans two keys");
+        let err = match registry.require("audible") {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("ambiguous alias must not resolve"),
+        };
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(err.contains("platform:bookclerk/audible"), "{err}");
+        assert!(err.contains("path:/tmp/lookalike#audible"), "{err}");
+        // The key and the instance id still resolve each plugin exactly.
+        assert_eq!(
+            registry
+                .get("platform:bookclerk/audible")
+                .unwrap()
+                .plugin_instance_id(),
+            Some("instance-real")
+        );
+        assert_eq!(
+            registry.get("instance-twin").unwrap().plugin_key(),
+            "path:/tmp/lookalike#audible"
+        );
+        assert_eq!(
+            registry
+                .route("audible", Some("instance-twin"))
+                .unwrap()
+                .plugin_key(),
+            "path:/tmp/lookalike#audible",
+            "a pin names one instance unambiguously"
+        );
+        assert_eq!(registry.routed().len(), 2, "scan_all still visits both");
+    }
+
     #[tokio::test]
-    async fn scan_all_skips_only_the_ambiguous_key() {
+    async fn scan_all_visits_each_plugin_once_through_the_routed_instance() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
@@ -532,7 +688,8 @@ mod tests {
             .expect("schema");
         let store = bookclerk_library::LibraryStore::from_connection(db);
         let audible = Arc::new(AtomicUsize::new(0));
-        let graphic = Arc::new(AtomicUsize::new(0));
+        let instance_a = Arc::new(AtomicUsize::new(0));
+        let instance_b = Arc::new(AtomicUsize::new(0));
         let mut registry = SourceRegistry::new();
         registry.register(counting(
             "audible",
@@ -544,83 +701,24 @@ mod tests {
             "graphicaudio",
             "local/graphicaudio",
             Some("instance-a"),
-            Arc::clone(&graphic),
+            Arc::clone(&instance_a),
         ));
         registry.register(counting(
             "graphicaudio",
             "local/graphicaudio",
             Some("instance-b"),
-            Arc::clone(&graphic),
+            Arc::clone(&instance_b),
         ));
+        registry.set_default_instance("local/graphicaudio", "instance-b");
         let summary = registry
             .scan_all(&store, crate::types::ScanOptions::default())
             .await
-            .expect("other sources still scan");
+            .expect("scan");
         assert_eq!(audible.load(Ordering::SeqCst), 1);
-        assert_eq!(graphic.load(Ordering::SeqCst), 0);
-        assert!(
-            summary
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("local/graphicaudio")),
-            "{:?}",
-            summary.warnings
-        );
-        assert_eq!(summary.accounts, 1);
-    }
-
-    #[tokio::test]
-    async fn scan_all_reports_ambiguity_when_nothing_else_scans() {
-        use std::sync::atomic::AtomicUsize;
-        use std::sync::Arc;
-
-        let db = bookclerk_plugin_database_sqlite::open_memory()
-            .await
-            .expect("sqlite");
-        bookclerk_library::apply_host_schema(&db)
-            .await
-            .expect("schema");
-        let store = bookclerk_library::LibraryStore::from_connection(db);
-        let graphic = Arc::new(AtomicUsize::new(0));
-        let mut registry = SourceRegistry::new();
-        registry.register(counting(
-            "graphicaudio",
-            "local/graphicaudio",
-            Some("instance-a"),
-            Arc::clone(&graphic),
-        ));
-        registry.register(counting(
-            "graphicaudio",
-            "local/graphicaudio",
-            Some("instance-b"),
-            Arc::clone(&graphic),
-        ));
-        let err = registry
-            .scan_all(&store, crate::types::ScanOptions::default())
-            .await
-            .expect_err("ambiguity is the error when nothing else scans");
-        let text = err.to_string();
-        assert!(text.contains("instance-a"), "{text}");
-        assert!(text.contains("instance-b"), "{text}");
-        assert!(text.contains("plugin instance id"), "{text}");
-        assert!(
-            !text.contains("connect a store"),
-            "a connected ambiguous store must not look unconfigured: {text}"
-        );
-        assert_eq!(graphic.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-        let mut filtered = crate::types::ScanOptions::default();
-        filtered.accounts.push("ga-user".into());
-        let filtered_err = registry
-            .scan_all(&store, filtered)
-            .await
-            .expect_err("an explicit account still reports the skipped key");
-        let filtered_text = filtered_err.to_string();
-        assert!(filtered_text.contains("instance-a"), "{filtered_text}");
-        assert!(
-            !filtered_text.contains("connect a store"),
-            "{filtered_text}"
-        );
+        assert_eq!(instance_a.load(Ordering::SeqCst), 0, "not the default");
+        assert_eq!(instance_b.load(Ordering::SeqCst), 1, "the default instance");
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        assert_eq!(summary.accounts, 2);
     }
 
     #[test]

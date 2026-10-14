@@ -190,8 +190,9 @@ Highlights from the sample unit:
   Wrap an existing BCK1 key later with `bookclerk config master-key wrap` or
   reload `bookclerkd` after setting the password (SIGHUP / `POST /api/config/reload`).
 
-If acquired media lives outside the files dir, set an absolute
-`output.local.root` and add that path to `ReadWritePaths`.
+If acquired media lives outside the files dir, set an absolute root
+(`bookclerk plugins config set local root /srv/audiobooks`) and add that path
+to `ReadWritePaths`.
 
 ## Docker
 
@@ -214,7 +215,7 @@ docker run --rm \
 | Path / env | Role |
 | --- | --- |
 | `/config` | `BOOKCLERK_FILES_DIR` (`config.toml`, `library.db` incl. `encrypted_secrets`) |
-| `/data` | Default books root (`BOOKCLERK_OUTPUT_LOCAL_ROOT=/data/Audiobooks`) |
+| `/data` | Books root (`bookclerk plugins config set local root /data/Audiobooks`) |
 | `BOOKCLERK_DAEMON_LISTEN` | Default loopback inside the container |
 
 To publish the UI / API (keep operator auth enabled; terminate TLS at a proxy):
@@ -258,7 +259,7 @@ Opt-in crash/error reporting: [diagnostics.md](diagnostics.md).
 When exercising real store credentials:
 
 1. Keep `library.auto_acquire = false`.
-2. After login, `bookclerk auth set-scan <account> --scan false`.
+2. After login, `bookclerk library set-scan <account> --scan false`.
 3. Acquire **one** title (`--asin` / `--isbn` / UUID), not the whole library.
 4. Prefer CLI over `POST /scan` / `/acquire` so nothing bulk-queues.
 5. One-shot sync without re-enabling scan: `library scan --account <id>`.

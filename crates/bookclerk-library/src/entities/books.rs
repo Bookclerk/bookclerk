@@ -12,7 +12,9 @@ pub struct Model {
     /// Stable UUID for this row (API / foreign-key identity).
     #[sea_orm(unique)]
     pub uuid: String,
-    /// Content-source plugin id (`audible`, `libro`, …).
+    /// Provenance-qualified PluginKey that owns the account.
+    pub plugin_key: String,
+    /// Display alias of the owning plugin (`audible`, `libro`, …).
     pub source: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,

@@ -185,6 +185,7 @@ rust_xlsxwriter = "0.99"
 tar = "0.4"
 flate2 = "1"
 hex = "0.4"
+semver = "1"
 sha2 = "0.11"
 hmac = "0.13"
 zip = { version = "8", default-features = false, features = ["deflate"] }

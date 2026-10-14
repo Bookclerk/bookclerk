@@ -17,16 +17,20 @@ import { Input } from "@/components/ui/input";
 import {
   approvePluginConsent,
   fetchPluginConsent,
+  fetchPluginInstanceConfig,
   fetchSettings,
   isApiError,
   listSessions,
   listUsers,
   patchSettings,
+  putPluginDeployment,
+  putPluginInstanceConfig,
   revokeSession,
   type AuthSession,
   type ListedUser,
   type ListedSession,
   type PluginConsentResponse,
+  type PluginDeploymentView,
   type PluginSettingOption,
   type PluginSettingsGroup,
   signOut,
@@ -170,32 +174,87 @@ function coresSettingValue(cores: number | null | undefined): string {
 }
 
 function pluginRowKey(plugin: PluginSettingsGroup): string {
-  return `${plugin.family}:${plugin.plugin_key ?? plugin.id}`;
+  return `${plugin.family}:${plugin.plugin_instance_id ?? plugin.plugin_key ?? plugin.id}`;
+}
+
+/**
+ * Key under which one option's draft value is held.
+ *
+ * Instance groups carry bare schema keys (`bitrate`), which collide across
+ * plugins, so they are qualified by the instance id; database adapter groups
+ * already carry fully qualified `config.toml` keys.
+ */
+function pluginValueKey(plugin: PluginSettingsGroup, option: PluginSettingOption): string {
+  return plugin.plugin_instance_id ? `${plugin.plugin_instance_id}.${option.key}` : option.key;
+}
+
+/** True when the group edits a plugin instance (deployment-switched, document-backed). */
+function isInstanceGroup(plugin: PluginSettingsGroup): boolean {
+  return Boolean(plugin.plugin_instance_id);
+}
+
+/** Enabled on this host = a `present` deployment. */
+function deploymentEnabled(plugin: PluginSettingsGroup): boolean {
+  return plugin.deployment?.desired === "present";
+}
+
+function deploymentStatusLabel(deployment: PluginDeploymentView | undefined): string | null {
+  const status = deployment?.status?.trim();
+  if (!status) return null;
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+/** Converts a form string into the JSON type the instance document stores. */
+function documentValue(
+  option: PluginSettingOption,
+  value: string,
+): string | number | boolean | null {
+  if (option.value_type === "boolean") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+  }
+  if (!value.trim()) return null;
+  if (option.value_type === "number") return Number(value);
+  return value;
 }
 
 function pluginConsentKey(plugin: PluginSettingsGroup): string {
   return plugin.plugin_key ?? plugin.id;
 }
 
-/** Prefer the standard `*.enabled` knob; fall back to an "Enabled" label. */
+/**
+ * Prefer the standard `*.enabled` knob; fall back to an "Enabled" label.
+ *
+ * Instance groups have no such knob: their switch is the host deployment.
+ */
 function findEnabledOption(plugin: PluginSettingsGroup): PluginSettingOption | null {
+  if (isInstanceGroup(plugin)) return null;
   const byKey = plugin.settings.find((option) => option.key.endsWith(".enabled"));
   if (byKey) return byKey;
   return plugin.settings.find((option) => option.label.trim().toLowerCase() === "enabled") ?? null;
 }
 
-function runtimeLoadedKey(plugin: PluginSettingsGroup): string {
+function runtimeLoadedKeys(plugin: PluginSettingsGroup): string[] {
   const plural =
     plugin.family === "source"
       ? "sources"
       : plugin.family === "integration"
         ? "integrations"
         : `${plugin.family}s`;
-  return `runtime.${plural}.${plugin.id}.loaded`;
+  const keys = [`runtime.${plural}.${plugin.id}.loaded`];
+  if (plugin.plugin_instance_id) {
+    keys.unshift(`runtime.${plural}.${plugin.plugin_instance_id}.loaded`);
+  }
+  return keys;
 }
 
 function effectiveLoaded(settings: SettingsResponse | null, plugin: PluginSettingsGroup): boolean {
-  return settings?.effective?.[runtimeLoadedKey(plugin)] === "true";
+  const effective = settings?.effective;
+  if (!effective) return false;
+  if (plugin.plugin_instance_id) {
+    return effective[runtimeLoadedKeys(plugin)[0]] === "true";
+  }
+  return runtimeLoadedKeys(plugin).some((key) => effective[key] === "true");
 }
 
 /** Prefer API `logo`, then known store/domain favicons; advance on load failure. */
@@ -364,7 +423,12 @@ export function SettingsPage({
   /** Plugins start collapsed; keys are `${family}:${id}`. */
   const [expandedPlugins, setExpandedPlugins] = useState<Set<string>>(() => new Set());
   const [consentPrompt, setConsentPrompt] = useState<PluginConsentResponse | null>(null);
-  const [pendingEnableOption, setPendingEnableOption] = useState<PluginSettingOption | null>(null);
+  const [pendingEnable, setPendingEnable] = useState<{
+    plugin: PluginSettingsGroup;
+    option: PluginSettingOption | null;
+  } | null>(null);
+  /** Row keys whose deployment switch is in flight. */
+  const [deploymentBusy, setDeploymentBusy] = useState<Set<string>>(() => new Set());
   const [consentBusy, setConsentBusy] = useState(false);
   const [operatorBaseline, setOperatorBaseline] = useState<{
     daemonListen: string;
@@ -457,7 +521,8 @@ export function SettingsPage({
     const out: Record<string, string> = {};
     for (const plugin of nextSettings.plugins) {
       for (const option of plugin.settings) {
-        out[option.key] = option.value;
+        // Secrets are never echoed back; an empty draft means "leave as stored".
+        out[pluginValueKey(plugin, option)] = option.secret ? "" : option.value;
       }
     }
     return out;
@@ -524,8 +589,12 @@ export function SettingsPage({
     return null;
   }
 
-  function setPluginValue(option: PluginSettingOption, nextValue: string) {
-    const settingKey = option.key;
+  function setPluginValue(
+    plugin: PluginSettingsGroup,
+    option: PluginSettingOption,
+    nextValue: string,
+  ) {
+    const settingKey = pluginValueKey(plugin, option);
     setPluginValues((current) => ({
       ...current,
       [settingKey]: nextValue,
@@ -703,8 +772,62 @@ export function SettingsPage({
     void refresh();
   }, [refresh]);
 
+  /**
+   * Writes changed instance documents through the control-plane API.
+   *
+   * Each instance is read fresh for its revision, changed non-secret values are
+   * merged into its stored settings (an empty string clears the key so the
+   * schema default applies), and non-empty secret drafts are sealed server-side.
+   */
+  async function saveInstanceDocuments(): Promise<void> {
+    if (!settings) return;
+    const baseline = operatorBaseline?.pluginValues ?? {};
+    for (const plugin of settings.plugins) {
+      const instanceId = plugin.plugin_instance_id;
+      if (!instanceId) continue;
+      const changed = plugin.settings.filter((option) => {
+        const key = pluginValueKey(plugin, option);
+        return (pluginValues[key] ?? "") !== (baseline[key] ?? "");
+      });
+      if (changed.length === 0) continue;
+      const doc = await withRequestTimeout(
+        fetchPluginInstanceConfig(instanceId),
+        `Read ${plugin.id} settings`,
+      );
+      const nextSettings: Record<string, string | number | boolean> = { ...doc.settings };
+      const secrets: Record<string, string> = {};
+      for (const option of changed) {
+        const draft = pluginValues[pluginValueKey(plugin, option)] ?? "";
+        if (option.secret) {
+          if (draft) secrets[option.key] = draft;
+          continue;
+        }
+        const value = documentValue(option, draft);
+        if (value === null) delete nextSettings[option.key];
+        else nextSettings[option.key] = value;
+      }
+      await withRequestTimeout(
+        putPluginInstanceConfig(instanceId, {
+          expected_revision: doc.revision,
+          settings: nextSettings,
+          secret_refs: doc.secret_refs,
+          secrets,
+        }),
+        `Save ${plugin.id} settings`,
+      );
+    }
+  }
+
   async function saveOperatorSettings(): Promise<SettingsResponse> {
-    const pluginUpdates = Object.entries(pluginValues).map(([key, value]) => ({ key, value }));
+    await saveInstanceDocuments();
+    const pluginUpdates = (settings?.plugins ?? [])
+      .filter((plugin) => !isInstanceGroup(plugin))
+      .flatMap((plugin) =>
+        plugin.settings.map((option) => ({
+          key: option.key,
+          value: pluginValues[pluginValueKey(plugin, option)] ?? option.value,
+        })),
+      );
     const nextListen = daemonListen;
     return withRequestTimeout(
       patchSettings({
@@ -764,12 +887,8 @@ export function SettingsPage({
     void prefetchConsentCoverage(next);
   }
 
-  async function promptConsentForPlugin(
-    pluginId: string,
-    fallbackSummary?: string[],
-    enableOption?: PluginSettingOption,
-  ) {
-    setPendingEnableOption(enableOption ?? null);
+  async function promptConsentForPlugin(pluginId: string, fallbackSummary?: string[]) {
+    setPendingEnable(null);
     try {
       const consent = await fetchPluginConsent(pluginId);
       setConsentPrompt(consent);
@@ -820,30 +939,77 @@ export function SettingsPage({
     }
   }
 
+  /**
+   * Flips this host's deployment of an instance and reloads the snapshot.
+   *
+   * The write is immediate (not part of the Save form): enablement is a
+   * cluster fact, not a draft value.
+   */
+  async function setDeployment(plugin: PluginSettingsGroup, desired: "present" | "absent") {
+    const instanceId = plugin.plugin_instance_id;
+    const hostId = settings?.effective?.["host.id"];
+    if (!instanceId || !hostId) {
+      setError("This host has no identity yet; retry after bookclerkd finishes starting.");
+      return;
+    }
+    const rowKey = pluginRowKey(plugin);
+    setDeploymentBusy((current) => new Set(current).add(rowKey));
+    setError(null);
+    try {
+      await withRequestTimeout(
+        putPluginDeployment(instanceId, hostId, desired, plugin.deployment?.revision),
+        `${desired === "present" ? "Enable" : "Disable"} ${plugin.id}`,
+      );
+      const next = await withRequestTimeout(fetchSettings(), "Reload settings");
+      applySavedSettings(next, daemonListen);
+    } catch (err) {
+      if (isApiError(err) && err.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      if (isApiError(err) && err.code === "consent_required" && err.pluginId) {
+        await promptConsentForPlugin(err.pluginId, err.summary);
+        setPendingEnable({ plugin, option: null });
+        return;
+      }
+      setError(err instanceof Error ? err.message : "Failed to update plugin deployment");
+    } finally {
+      setDeploymentBusy((current) => {
+        const next = new Set(current);
+        next.delete(rowKey);
+        return next;
+      });
+    }
+  }
+
   async function onPluginEnabledChange(
     plugin: PluginSettingsGroup,
-    option: PluginSettingOption,
+    option: PluginSettingOption | null,
     checked: boolean,
   ) {
     if (!checked) {
-      setPluginValue(option, "false");
+      if (option) setPluginValue(plugin, option, "false");
+      else await setDeployment(plugin, "absent");
       return;
     }
     setError(null);
-    setPluginErrors((current) => {
-      const { [option.key]: _removed, ...rest } = current;
-      return rest;
-    });
+    if (option) {
+      setPluginErrors((current) => {
+        const { [pluginValueKey(plugin, option)]: _removed, ...rest } = current;
+        return rest;
+      });
+    }
     try {
       const consent =
         consentCoverage[pluginConsentKey(plugin)] ??
         (await fetchPluginConsent(plugin.id, plugin.plugin_key));
       setConsentCoverage((current) => ({ ...current, [pluginConsentKey(plugin)]: consent }));
       if (consent.covered) {
-        setPluginValue(option, "true");
+        if (option) setPluginValue(plugin, option, "true");
+        else await setDeployment(plugin, "present");
         return;
       }
-      setPendingEnableOption(option);
+      setPendingEnable({ plugin, option });
       setConsentPrompt(consent);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load plugin consent");
@@ -891,11 +1057,14 @@ export function SettingsPage({
         ...current,
         [consentPrompt.plugin_key || consentPrompt.plugin_id]: approved,
       }));
-      if (pendingEnableOption) {
-        setPluginValue(pendingEnableOption, "true");
-      }
+      const pending = pendingEnable;
       setConsentPrompt(null);
-      setPendingEnableOption(null);
+      setPendingEnable(null);
+      if (pending?.option) {
+        setPluginValue(pending.plugin, pending.option, "true");
+      } else if (pending) {
+        await setDeployment(pending.plugin, "present");
+      }
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         onSessionExpired();
@@ -960,9 +1129,10 @@ export function SettingsPage({
   }
 
   function renderPluginOption(plugin: PluginSettingsGroup, option: PluginSettingOption) {
-    const fieldId = `${plugin.family}-${plugin.id}-${option.key}`;
-    const value = pluginValues[option.key] ?? option.value;
-    const error = pluginErrors[option.key];
+    const valueKey = pluginValueKey(plugin, option);
+    const fieldId = `${plugin.family}-${plugin.plugin_instance_id ?? plugin.id}-${option.key}`;
+    const value = pluginValues[valueKey] ?? (option.secret ? "" : option.value);
+    const error = pluginErrors[valueKey];
 
     if (option.value_type === "boolean") {
       return (
@@ -971,8 +1141,33 @@ export function SettingsPage({
           id={fieldId}
           label={option.label}
           checked={parseBooleanLike(value)}
-          onChange={(checked) => setPluginValue(option, String(checked))}
+          onChange={(checked) => setPluginValue(plugin, option, String(checked))}
         />
+      );
+    }
+
+    if (option.secret) {
+      return (
+        <FieldBlock
+          key={fieldId}
+          label={option.label}
+          htmlFor={fieldId}
+          error={error}
+          hint={
+            option.secret_set
+              ? "Stored and hidden. Enter a value to replace it."
+              : "Not set. Sealed on save; never shown again."
+          }
+        >
+          <Input
+            id={fieldId}
+            type="password"
+            autoComplete="new-password"
+            placeholder={option.secret_set ? "••••••••" : ""}
+            value={value}
+            onChange={(e) => setPluginValue(plugin, option, e.target.value)}
+          />
+        </FieldBlock>
       );
     }
 
@@ -982,7 +1177,7 @@ export function SettingsPage({
           <select
             id={fieldId}
             value={value}
-            onChange={(e) => setPluginValue(option, e.target.value)}
+            onChange={(e) => setPluginValue(plugin, option, e.target.value)}
             className={selectClassName}
           >
             {option.choices.map((choice) => (
@@ -1001,7 +1196,7 @@ export function SettingsPage({
           id={fieldId}
           type={option.value_type === "number" ? "number" : "text"}
           value={value}
-          onChange={(e) => setPluginValue(option, e.target.value)}
+          onChange={(e) => setPluginValue(plugin, option, e.target.value)}
         />
       </FieldBlock>
     );
@@ -1506,7 +1701,8 @@ export function SettingsPage({
                 <div className="space-y-1">
                   <h2 className="text-lg font-semibold text-ink">Plugins</h2>
                   <p className="text-sm text-ink/55">
-                    Editable knobs exposed by loaded plugins. Empty groups have nothing to configure here.
+                    Settings each plugin declares in its manifest, stored per instance in the
+                    database. Enabled means the instance runs on this host.
                   </p>
                 </div>
 
@@ -1521,11 +1717,15 @@ export function SettingsPage({
                           const rowKey = pluginRowKey(plugin);
                           const expanded = expandedPlugins.has(rowKey);
                           const enabledOption = findEnabledOption(plugin);
+                          const instanceGroup = isInstanceGroup(plugin);
                           const enabled = enabledOption
                             ? parseBooleanLike(
-                                pluginValues[enabledOption.key] ?? enabledOption.value,
+                                pluginValues[pluginValueKey(plugin, enabledOption)] ??
+                                  enabledOption.value,
                               )
-                            : null;
+                            : instanceGroup
+                              ? deploymentEnabled(plugin)
+                              : null;
                           const detailSettings = plugin.settings.filter(
                             (option) => option.key !== enabledOption?.key,
                           );
@@ -1533,6 +1733,8 @@ export function SettingsPage({
                             detailSettings.length > 0 || plugin.settings.length === 0;
                           const consent = consentCoverage[pluginConsentKey(plugin)];
                           const loaded = effectiveLoaded(settings, plugin);
+                          const deploymentStatus = deploymentStatusLabel(plugin.deployment);
+                          const switchBusy = deploymentBusy.has(rowKey);
 
                           return (
                             <li key={rowKey} className="px-3 py-2.5">
@@ -1562,10 +1764,22 @@ export function SettingsPage({
                                     <span className="inline-block h-4 w-4 shrink-0" />
                                   )}
                                   <PluginLogo plugin={plugin} />
-                                  <span className="truncate font-medium text-ink">{plugin.id}</span>
+                                  <span className="truncate font-medium text-ink">
+                                    {plugin.display_name?.trim() || plugin.id}
+                                  </span>
+                                  {plugin.display_name?.trim() && plugin.display_name.trim() !== plugin.id ? (
+                                    <span className="hidden text-xs text-ink/45 sm:inline">
+                                      {plugin.id}
+                                    </span>
+                                  ) : null}
                                   <span className="hidden text-xs text-ink/45 sm:inline">
                                     {plugin.family}
                                   </span>
+                                  {instanceGroup && plugin.is_default === false ? (
+                                    <span className="text-[10px] uppercase tracking-wide text-ink/40">
+                                      instance
+                                    </span>
+                                  ) : null}
                                   {plugin.provenance ? (
                                     <span
                                       className="hidden max-w-[14rem] truncate font-mono text-[10px] text-ink/40 sm:inline"
@@ -1576,7 +1790,7 @@ export function SettingsPage({
                                   ) : null}
                                 </button>
 
-                                {enabled !== null && enabledOption ? (
+                                {enabled !== null ? (
                                   <div className="ml-auto flex items-center gap-2">
                                     <Badge
                                       className={
@@ -1587,6 +1801,17 @@ export function SettingsPage({
                                     >
                                       {enabled ? "Enabled" : "Disabled"}
                                     </Badge>
+                                    {deploymentStatus && deploymentStatus !== "Running" ? (
+                                      <Badge
+                                        className={
+                                          deploymentStatus === "Error"
+                                            ? "bg-brick/10 text-brick normal-case tracking-normal"
+                                            : "bg-ink/5 text-ink/55 normal-case tracking-normal"
+                                        }
+                                      >
+                                        <span title={plugin.deployment?.detail}>{deploymentStatus}</span>
+                                      </Badge>
+                                    ) : null}
                                     {loaded ? (
                                       <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
                                         Loaded
@@ -1607,8 +1832,9 @@ export function SettingsPage({
                                       id={`plugin-enabled-${rowKey}`}
                                       type="checkbox"
                                       className="h-4 w-4 accent-teal"
-                                      aria-label={`${plugin.id} enabled`}
+                                      aria-label={`${plugin.display_name?.trim() || plugin.id} enabled`}
                                       checked={enabled}
+                                      disabled={switchBusy}
                                       onChange={(e) =>
                                         void onPluginEnabledChange(
                                           plugin,
@@ -1660,7 +1886,7 @@ export function SettingsPage({
                                         if (option.value_type === "boolean") {
                                           return (
                                             <div
-                                              key={`${plugin.family}-${plugin.id}-${option.key}`}
+                                              key={`${plugin.family}-${plugin.plugin_instance_id ?? plugin.id}-${option.key}`}
                                               className="border-t border-ink/10 sm:col-span-2"
                                             >
                                               {control}
@@ -1724,7 +1950,7 @@ export function SettingsPage({
           busy={consentBusy}
           onCancel={() => {
             setConsentPrompt(null);
-            setPendingEnableOption(null);
+            setPendingEnable(null);
           }}
           onApprove={(grant) => void onConsentApprove(grant)}
         />

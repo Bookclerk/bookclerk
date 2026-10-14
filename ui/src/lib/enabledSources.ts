@@ -3,8 +3,8 @@ import { portalSources, type PortalSource } from "@/lib/api";
 /**
  * Loads enabled storefront sources from the portal API.
  *
- * Used by Discover / Preferences so store lists track `[sources.<id>].enabled`
- * instead of a hardcoded product catalog.
+ * Used by Discover / Preferences so store lists track the storefront plugins
+ * deployed on this host instead of a hardcoded product catalog.
  *
  * @returns Enabled sources (may be empty when none are enabled).
  */

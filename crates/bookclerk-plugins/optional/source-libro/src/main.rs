@@ -5,11 +5,11 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogDetailParams, CatalogHit, ConfigOption, ConfigOptionValue,
-    ContentSource as ContentSourceRole, Entrypoints, ExpandCandidatesParams, FetchTitleParams,
-    HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe,
-    PluginError, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits,
-    ScanParams, ScanSummary, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Bindings, Brand, CatalogDetailParams, CatalogHit, ContentSource as ContentSourceRole,
+    Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation, ListDealsParams,
+    LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError, PluginWorker,
+    PortalAuthMode, PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary,
+    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_source::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
 use bookclerk_source::{CatalogSearchOpts, ContentSource, PurchaseHintOpts};
@@ -29,7 +29,6 @@ impl PluginWorker for LibroRoot {
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             portal_auth_mode: PortalAuthMode::Password,
-            password_env_var: Some(bookclerk_plugin_source_libro::PASSWORD_ENV.into()),
             aliases: vec!["libro.fm".into(), "librofm".into()],
             sort_key: 1,
             brand: Some(Brand {
@@ -40,20 +39,6 @@ impl PluginWorker for LibroRoot {
                 accent: "#2F6B53".into(),
                 icon_url: Some("https://www.google.com/s2/favicons?domain=libro.fm&sz=128".into()),
             }),
-            config_options: vec![ConfigOption {
-                key: "container".into(),
-                label: "Container".into(),
-                values: vec![
-                    ConfigOptionValue {
-                        id: "m4b".into(),
-                        label: "M4B".into(),
-                    },
-                    ConfigOptionValue {
-                        id: "zip".into(),
-                        label: "ZIP (MP3 parts)".into(),
-                    },
-                ],
-            }],
             ..PluginDescribe::default()
         })
     }

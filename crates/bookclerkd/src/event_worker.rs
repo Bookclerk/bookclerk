@@ -229,7 +229,9 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
                 if !plugin.manifest.consumes_events() {
                     continue;
                 }
-                let enabled = cfg.integrations.is_enabled(&plugin.manifest.id);
+                // Not loaded on this host: no present deployment runs it here,
+                // so its catalog row is recorded disabled until one does.
+                let enabled = false;
                 let plugin_id = plugin.plugin_key().canonical().to_string();
                 let grant = bookclerk_plugin_host::PluginGrantStore::load(&cfg.paths().files_dir)
                     .ok()
@@ -1439,6 +1441,7 @@ mod tests {
         let toml = r#"
 api_version = 3
 id = "echo"
+version = "0.1.0"
 runtime = "native"
 command = "./guest"
 entrypoints = ["cli"]

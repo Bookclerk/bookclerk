@@ -401,6 +401,12 @@ struct PluginSettingOption {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional dropdown values; omitted for free-form fields.
     choices: Option<Vec<PluginSettingChoice>>,
+    /// True for a `secret` setting: `value` is never the stored value.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    secret: bool,
+    /// For a secret setting, whether the instance document names a sealed value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_set: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -421,6 +427,21 @@ struct PluginSettingsGroup {
     logo: Option<String>,
     /// Editable options for this plugin, including `.enabled`.
     settings: Vec<PluginSettingOption>,
+    /// Plugin instance this group edits; absent for a bootstrap database adapter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_instance_id: Option<String>,
+    /// Operator-facing instance name, when the operator set one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    /// True when a bare plugin key or alias routes to this instance.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    is_default: bool,
+    /// Instance document revision for compare-and-swap writes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_revision: Option<i64>,
+    /// This host's deployment of the instance, when one exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deployment: Option<crate::config_authority::PluginDeploymentView>,
 }
 
 #[derive(Debug, Serialize)]
@@ -710,6 +731,8 @@ struct ActionResponse {
 pub struct ScanRequest {
     /// When set, scan this account even if `scan_enabled` is false.
     pub account: Option<String>,
+    /// When set, scan only this deployed plugin instance.
+    pub plugin_instance_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -725,6 +748,8 @@ pub struct AcquireRequestBody {
     pub product_id: Option<String>,
     /// Restrict acquire to this store account.
     pub account: Option<String>,
+    /// When set, fetch through this deployed plugin instance.
+    pub plugin_instance_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -837,8 +862,27 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 .put(crate::config_authority::put_events_domain),
         )
         .route(
+            "/api/config/plugin-instances",
+            get(crate::config_authority::get_plugin_instances)
+                .post(crate::config_authority::post_plugin_instance),
+        )
+        .route(
+            "/api/config/plugin-instances/{id}",
+            delete(crate::config_authority::delete_plugin_instance_route),
+        )
+        .route(
             "/api/config/plugin-instances/{id}/config",
-            put(crate::config_authority::put_plugin_instance_config),
+            get(crate::config_authority::get_plugin_instance_config)
+                .put(crate::config_authority::put_plugin_instance_config),
+        )
+        .route(
+            "/api/config/plugin-instances/{id}/deployments/{host_id}",
+            put(crate::config_authority::put_plugin_deployment),
+        )
+        .route("/api/config/hosts", get(crate::config_authority::get_hosts))
+        .route(
+            "/api/config/plugin-schemas",
+            get(crate::config_authority::get_plugin_schemas),
         )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
@@ -1183,31 +1227,6 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-/// Re-open the library connection for the active `[database].plugin` and refresh destinations.
-///
-/// Prefer [`reload_daemon_config`] / [`reload_daemon_config_held`] for HTTP
-/// mutation routes so config publication stays under `reload_lock`.
-#[allow(dead_code)]
-pub async fn reload_library_store(state: &AppState, config: &Config) -> anyhow::Result<()> {
-    let _runtime = timeout(Duration::from_secs(60), state.job_runtime.write())
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!("timed out waiting for in-flight jobs before database swap")
-        })?;
-    let registry = bookclerk_plugin_host::load_external_database(config).await?;
-    let library = bookclerk_plugin_host::open_library_store(config, &registry).await?;
-    let destinations =
-        bookclerk_plugin_host::load_external_destinations(config, Some(library.db())).await?;
-    *state.database_registry.write().await = registry;
-    *state.library.write().await = library;
-    *state.destinations.write().await = destinations;
-    tracing::info!(
-        plugin = %config.database.plugin,
-        "reloaded library database connection"
-    );
-    Ok(())
-}
-
 /// Build operator auth runtime from config + library DB (env / encrypted_secrets).
 pub async fn build_operator_auth(
     config: &Config,
@@ -1310,6 +1329,14 @@ pub async fn reload_daemon_config(state: &AppState) -> anyhow::Result<String> {
 }
 
 /// Like [`reload_daemon_config`] when the caller already holds `reload_lock`.
+///
+/// Guests are not touched here: the deployment reconciler owns every source,
+/// integration, and destination this process runs. Reload re-enrolls local
+/// plugins (a newly installed plugin gets its instance and deployment row),
+/// republishes auth and config, and then runs one reconcile pass so the
+/// enrolled deployments come up without waiting for the next tick. A
+/// database connect change retires every guest so the pass respawns them
+/// against the new library.
 pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Result<String> {
     let (files_dir, config_path, old_listen, old_db_fingerprint, old_auth_enabled, old_token) = {
         let cfg = state.config.read().await;
@@ -1324,7 +1351,7 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         )
     };
 
-    let mut new_cfg = Config::load(Some(files_dir.clone()), Some(config_path.clone()))?;
+    let new_cfg = Config::load(Some(files_dir.clone()), Some(config_path.clone()))?;
     validate_daemon_listen(&new_cfg)?;
     new_cfg.warn_unsupported_options();
 
@@ -1354,71 +1381,29 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         Some(lib) => lib.clone(),
         None => state.library_snapshot().await,
     };
-    let scratch_dir = new_cfg.download_cache_dir();
-    let control_plane = bookclerk_library::control_plane::bootstrap_control_plane(
-        &library_for_auth,
-        &files_dir,
-        &scratch_dir,
-        new_cfg.auth_password().as_deref(),
-        &new_cfg.events,
-    )
-    .await?;
-    bookclerk_library::control_plane::overlay_events(
-        &mut new_cfg,
-        &control_plane.events,
-        &control_plane.cluster_id,
+    let bookclerk_plugin_host::HostEnrollment {
+        config: mut new_cfg,
+        session: control_plane,
+        enrolled,
+    } = bookclerk_plugin_host::enroll_host(&new_cfg, &library_for_auth).await?;
+    tracing::info!(
+        host_id = %control_plane.host.host_id,
+        enrolled = enrolled.len(),
+        "re-enrolled local plugins on config reload"
     );
-    if let Err(err) = bookclerk_plugin_host::enroll_graphicaudio_instance(
-        &library_for_auth,
-        &new_cfg,
-        &control_plane.host.host_id,
-    )
-    .await
-    {
-        tracing::warn!(
-            error = %err,
-            "GraphicAudio instance import did not complete during reload"
-        );
-    }
-    let owned =
-        crate::registry::deployment_skip_keys(&library_for_auth, &control_plane.host.host_id)
-            .await?;
-    let deployed =
-        crate::registry::deployment_instance_ids(&library_for_auth, &control_plane.host.host_id)
-            .await?;
 
     let candidate_auth = build_operator_auth(&new_cfg, &library_for_auth).await?;
     // Defense in depth: never publish a non-loopback listen with auth disabled
     // in the *runtime* object (validate_daemon_listen already checked config).
     validate_daemon_listen_against_auth(&new_cfg, candidate_auth.enabled)?;
 
-    let mut candidate_destinations = {
-        let lib_db = library_for_auth.db();
-        bookclerk_plugin_host::load_external_destinations_with_store(
-            &new_cfg,
-            Some(lib_db),
-            Some(&library_for_auth),
-            &owned,
-        )
-        .await?
-    };
-
-    let mut candidate_sources =
-        crate::registry::registry_skipping_deployments(&new_cfg, &library_for_auth, &owned).await?;
-    let mut candidate_integrations = bookclerk_plugin_host::load_integrations_skipping(
-        &new_cfg,
-        &bookclerk_plugin_host::SessionServices::with_event_outbox(library_for_auth.clone()),
-        &owned,
-    )
-    .await?;
-
     let token_changed = candidate_auth.enabled != old_auth_enabled
         || (candidate_auth.enabled && candidate_auth.token != old_token);
     let listen_changed = old_listen != new_cfg.daemon.listen;
 
     // Read the candidate events document before any live swap. A database
-    // error here leaves integrations, sources, destinations, library, auth,
-    // and the media pool on the previous runtime.
+    // error here leaves library, auth, and the media pool on the previous
+    // runtime.
     let fresh = crate::config_authority::load_events_publication(&library_for_auth).await?;
 
     // Fail closed before publishing when the new listen set cannot bind at all
@@ -1431,48 +1416,19 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
     // leave workers on the candidate `[media]` while AppState stays on the old one.
     bookclerk_media::init_pool_from_config(&new_cfg.media);
 
-    // Publish: keep sessions bound to a present instance id. Stop every other
-    // integration, including a transitional guest that shares a deployed key.
+    // Publish.
     {
-        let mut sources = state.sources.write().await;
-        let mut integrations = state.integrations.write().await;
-        let mut destinations = state.destinations.write().await;
-        let disabled_sources: Vec<String> = sources
-            .all()
-            .iter()
-            .filter_map(|source| {
-                let id = source.plugin_instance_id()?;
-                if deployed.contains(id) && !new_cfg.sources.is_enabled(source.id()) {
-                    Some(id.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        crate::registry::reattach_deployed_sources(
-            &mut candidate_sources,
-            &sources,
-            &deployed,
-            &new_cfg,
-        );
-        crate::registry::reattach_deployed_integrations(
-            &mut candidate_integrations,
-            &integrations,
-            &deployed,
-        );
-        destinations.reattach_owned(&mut candidate_destinations, &deployed);
-        let old_integrations = std::mem::replace(&mut *integrations, candidate_integrations);
-        *sources = candidate_sources;
-        *destinations = candidate_destinations;
-        drop(sources);
-        drop(integrations);
-        drop(destinations);
-        let runtime = state.deployment_runtime();
-        for id in &disabled_sources {
-            runtime.forget_guest(id);
-        }
-        old_integrations.stop_except(&deployed).await;
         if let (Some(registry), Some(library)) = (candidate_db_registry, candidate_library) {
+            // Every guest was opened against the previous database; retire
+            // them so the reconcile pass below respawns each present
+            // deployment with bindings resolved from the new one.
+            let runtime = state.deployment_runtime();
+            let tracked =
+                bookclerk_plugin_host::DeploymentRuntime::tracked_instance_ids(runtime.as_ref())
+                    .await;
+            for instance_id in tracked {
+                runtime.retire_plugin_instance(&instance_id).await;
+            }
             *state.database_registry.write().await = registry;
             *state.library.write().await = library;
         }
@@ -1500,7 +1456,12 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
 
-    // Start watchers for the new integration set (awaited — no untracked race).
+    // Bring the enrolled deployment set up now rather than on the next tick.
+    if let Err(err) = crate::config_authority::reconcile_deployments(state).await {
+        tracing::warn!(error = %err, "deployment reconcile after reload failed");
+    }
+
+    // Start watchers for the integration set (awaited — no untracked race).
     start_integration_watchers(state).await;
     crate::event_worker::upsert_event_subscriber_catalog(state).await;
     state.job_notify.notify_waiters();
@@ -1715,10 +1676,10 @@ fn allowed_setting_key(key: &str) -> bool {
         !id.is_empty() && !field.is_empty() && parts.next().is_none()
     }
 
-    valid_scoped_key(key, "sources.")
-        || valid_scoped_key(key, "integrations.")
-        || valid_scoped_key(key, "output.")
-        || valid_scoped_key(key, "database.")
+    // Plugin settings live on plugin instances
+    // (`PUT /api/config/plugin-instances/{id}/config`); only the bootstrap
+    // database adapters keep a `config.toml` table.
+    valid_scoped_key(key, "database.")
 }
 
 /// Validates and canonicalizes a Settings value; returns an error string for invalid input.
@@ -1927,24 +1888,6 @@ fn current_settings_snapshot(config: &Config) -> std::collections::BTreeMap<Stri
             .unwrap_or(PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT)
             .to_string(),
     );
-    for source in config.sources.plugins.keys() {
-        settings.insert(
-            format!("sources.{source}.enabled"),
-            config.sources.is_enabled(source).to_string(),
-        );
-    }
-    for (id, value) in &config.sources.plugins {
-        let Some(table) = value.as_table() else {
-            continue;
-        };
-        for (key, entry) in table {
-            let value_text = entry
-                .as_str()
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| entry.to_string());
-            settings.insert(format!("sources.{id}.{key}"), value_text);
-        }
-    }
     settings
 }
 
@@ -1961,30 +1904,6 @@ fn setting_label(key: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// True when `id` is the active plugin for `family` in the current config.
-fn plugin_enabled(config: &Config, family: bookclerk_plugin_host::PluginFamily, id: &str) -> bool {
-    match family {
-        bookclerk_plugin_host::PluginFamily::Source => config.sources.is_enabled(id),
-        bookclerk_plugin_host::PluginFamily::Integration => config.integrations.is_enabled(id),
-        bookclerk_plugin_host::PluginFamily::Output if id == "s3" => config.output.s3.enabled,
-        bookclerk_plugin_host::PluginFamily::Output if id == "local" => config.output.local.enabled,
-        bookclerk_plugin_host::PluginFamily::Output => false,
-        bookclerk_plugin_host::PluginFamily::Database => {
-            bookclerk_plugin_host::occupancy_matches_alias(config.database.plugin.trim(), id)
-        }
-    }
-}
-
-/// Dotted `config.toml` prefix for a plugin (`sources.id`, `database.id`, …).
-fn plugin_prefix(family: bookclerk_plugin_host::PluginFamily, id: &str) -> String {
-    match family {
-        bookclerk_plugin_host::PluginFamily::Source => format!("sources.{id}"),
-        bookclerk_plugin_host::PluginFamily::Integration => format!("integrations.{id}"),
-        bookclerk_plugin_host::PluginFamily::Output => format!("output.{id}"),
-        bookclerk_plugin_host::PluginFamily::Database => format!("database.{id}"),
-    }
 }
 
 /// Wire label for a handler family (`source`, `integration`, `output`, `database`).
@@ -2032,6 +1951,8 @@ fn plugin_setting_option(
         value: value.into(),
         value_type: value_type.into(),
         choices: None,
+        secret: false,
+        secret_set: None,
     }
 }
 
@@ -2064,267 +1985,20 @@ fn plugin_setting_option_with_choices(
         } else {
             Some(choices)
         },
+        secret: false,
+        secret_set: None,
     }
 }
 
-/// Prepends an empty-value Default choice to a fixed list of id/label pairs.
-fn plugin_choices_with_default(
-    default_label: &str,
-    values: impl IntoIterator<Item = (&'static str, &'static str)>,
-) -> Vec<PluginSettingChoice> {
-    let mut out = vec![plugin_setting_choice("", default_label)];
-    out.extend(
-        values
-            .into_iter()
-            .map(|(value, label)| plugin_setting_choice(value, label)),
-    );
-    out
-}
-
-/// Hard-coded Settings options for first-party plugins (bitrate, container, S3, D1, …).
-fn built_in_plugin_settings(
-    config: &Config,
-    family: bookclerk_plugin_host::PluginFamily,
-    id: &str,
-) -> Vec<PluginSettingOption> {
-    let prefix = plugin_prefix(family, id);
-    match (family, id) {
-        (bookclerk_plugin_host::PluginFamily::Source, "audible") => {
-            vec![plugin_setting_option_with_choices(
-                format!("{prefix}.bitrate"),
-                "Bitrate",
-                config
-                    .sources
-                    .get_string("audible", "bitrate")
-                    .unwrap_or_default(),
-                "string",
-                plugin_choices_with_default("Default", [("high", "High"), ("normal", "Normal")]),
-            )]
-        }
-        (bookclerk_plugin_host::PluginFamily::Source, "libro") => {
-            vec![plugin_setting_option_with_choices(
-                format!("{prefix}.container"),
-                "Container",
-                config
-                    .sources
-                    .get_string("libro", "container")
-                    .unwrap_or_default(),
-                "string",
-                plugin_choices_with_default(
-                    "Default",
-                    [("m4b", "M4B"), ("zip", "ZIP (MP3 parts)")],
-                ),
-            )]
-        }
-        (bookclerk_plugin_host::PluginFamily::Source, "graphicaudio") => vec![
-            plugin_setting_option_with_choices(
-                format!("{prefix}.access"),
-                "Access",
-                config
-                    .sources
-                    .get_string("graphicaudio", "access")
-                    .unwrap_or_default(),
-                "string",
-                plugin_choices_with_default(
-                    "Default",
-                    [
-                        ("web", "Browser Player"),
-                        ("zip", "Magento ZIP"),
-                        ("device", "Access App"),
-                    ],
-                ),
-            ),
-            plugin_setting_option_with_choices(
-                format!("{prefix}.bitrate"),
-                "Bitrate",
-                config
-                    .sources
-                    .get_string("graphicaudio", "bitrate")
-                    .unwrap_or_default(),
-                "string",
-                plugin_choices_with_default("Default", [("hi", "Hi"), ("lo", "Lo")]),
-            ),
-            plugin_setting_option_with_choices(
-                format!("{prefix}.container"),
-                "Container",
-                config
-                    .sources
-                    .get_string("graphicaudio", "container")
-                    .unwrap_or_default(),
-                "string",
-                plugin_choices_with_default(
-                    "Default",
-                    [
-                        ("auto", "Auto"),
-                        ("m4b", "M4B"),
-                        ("mp3", "MP3"),
-                        ("flac", "FLAC"),
-                    ],
-                ),
-            ),
-        ],
-        (bookclerk_plugin_host::PluginFamily::Integration, "audiobookshelf") => {
-            let cfg = config.integrations.audiobookshelf();
-            vec![
-                plugin_setting_option(
-                    format!("{prefix}.base_url"),
-                    "Base URL",
-                    cfg.base_url,
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.api_key"),
-                    "API Key",
-                    cfg.api_key.unwrap_or_default(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.library_id"),
-                    "Library ID",
-                    cfg.library_id.unwrap_or_default(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.watch_users"),
-                    "Watch Users",
-                    cfg.watch_users.to_string(),
-                    "boolean",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.notify_scan_on_acquire"),
-                    "Notify Scan On Acquire",
-                    cfg.notify_scan_on_acquire.to_string(),
-                    "boolean",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.allow_credential_login"),
-                    "Allow Credential Login",
-                    cfg.allow_credential_login.to_string(),
-                    "boolean",
-                ),
-            ]
-        }
-        (bookclerk_plugin_host::PluginFamily::Output, "local") => {
-            let cfg = &config.output.local;
-            vec![
-                plugin_setting_option(
-                    format!("{prefix}.root"),
-                    "Root",
-                    cfg.root.to_string_lossy().into_owned(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.prefix"),
-                    "Prefix",
-                    cfg.prefix.clone(),
-                    "string",
-                ),
-                plugin_setting_option_with_choices(
-                    format!("{prefix}.naming_profile"),
-                    "Naming Profile",
-                    cfg.naming
-                        .naming_profile
-                        .map(bookclerk_config::NamingProfile::as_str)
-                        .unwrap_or_default(),
-                    "string",
-                    plugin_choices_with_default(
-                        "Default (global)",
-                        bookclerk_config::NamingProfile::all()
-                            .iter()
-                            .copied()
-                            .map(|profile| (profile.as_str(), profile.as_str())),
-                    ),
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.folder_template"),
-                    "Folder Template",
-                    cfg.naming.folder_template.clone().unwrap_or_default(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.file_template"),
-                    "File Template",
-                    cfg.naming.file_template.clone().unwrap_or_default(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.chapter_file_template"),
-                    "Chapter File Template",
-                    cfg.naming.chapter_file_template.clone().unwrap_or_default(),
-                    "string",
-                ),
-            ]
-        }
-        (bookclerk_plugin_host::PluginFamily::Output, "s3") => {
-            let cfg = &config.output.s3;
-            vec![
-                plugin_setting_option(
-                    format!("{prefix}.bucket"),
-                    "Bucket",
-                    cfg.bucket.clone(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.prefix"),
-                    "Prefix",
-                    cfg.prefix.clone(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.region"),
-                    "Region",
-                    cfg.region.clone(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.endpoint"),
-                    "Endpoint",
-                    cfg.endpoint.clone().unwrap_or_default(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.force_path_style"),
-                    "Force Path Style",
-                    cfg.force_path_style.to_string(),
-                    "boolean",
-                ),
-                plugin_setting_option_with_choices(
-                    format!("{prefix}.naming_profile"),
-                    "Naming Profile",
-                    cfg.naming
-                        .naming_profile
-                        .map(bookclerk_config::NamingProfile::as_str)
-                        .unwrap_or_default(),
-                    "string",
-                    plugin_choices_with_default(
-                        "Default (global)",
-                        bookclerk_config::NamingProfile::all()
-                            .iter()
-                            .copied()
-                            .map(|profile| (profile.as_str(), profile.as_str())),
-                    ),
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.folder_template"),
-                    "Folder Template",
-                    cfg.naming.folder_template.clone().unwrap_or_default(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.file_template"),
-                    "File Template",
-                    cfg.naming.file_template.clone().unwrap_or_default(),
-                    "string",
-                ),
-                plugin_setting_option(
-                    format!("{prefix}.chapter_file_template"),
-                    "Chapter File Template",
-                    cfg.naming.chapter_file_template.clone().unwrap_or_default(),
-                    "string",
-                ),
-            ]
-        }
-        (bookclerk_plugin_host::PluginFamily::Database, "sqlite") => {
+/// Typed `[database.<id>]` options for the first-party adapters.
+///
+/// Database adapters are the bootstrap exception: their connect settings
+/// stay in `config.toml`. Every other plugin declares `[[settings]]` and is
+/// edited through its plugin instance.
+fn built_in_plugin_settings(config: &Config, id: &str) -> Vec<PluginSettingOption> {
+    let prefix = format!("database.{id}");
+    match id {
+        "sqlite" => {
             let cfg = &config.database.sqlite;
             vec![plugin_setting_option(
                 format!("{prefix}.path"),
@@ -2336,7 +2010,7 @@ fn built_in_plugin_settings(
                 "string",
             )]
         }
-        (bookclerk_plugin_host::PluginFamily::Database, "d1") => {
+        "d1" => {
             let cfg = &config.database.d1;
             vec![
                 plugin_setting_option(
@@ -2359,7 +2033,7 @@ fn built_in_plugin_settings(
                 ),
             ]
         }
-        (bookclerk_plugin_host::PluginFamily::Database, "postgres") => {
+        "postgres" => {
             let cfg = &config.database.postgres;
             vec![
                 plugin_setting_option(
@@ -2383,110 +2057,13 @@ fn built_in_plugin_settings(
     }
 }
 
-/// Assembles a Settings group from a live source guest plus its TOML table.
-fn build_source_settings_group(
+/// Settings group for a bootstrap database adapter (`database.<id>.*`).
+fn build_database_settings_group(
     config: &Config,
-    source: &dyn bookclerk_source::ContentSource,
-    table: toml::Table,
-) -> PluginSettingsGroup {
-    let id = source.id();
-    let prefix = plugin_prefix(bookclerk_plugin_host::PluginFamily::Source, id);
-    let mut options = Vec::new();
-    let mut seen_keys = std::collections::BTreeSet::new();
-
-    let enabled_key = format!("{prefix}.enabled");
-    seen_keys.insert(enabled_key.clone());
-    options.push(plugin_setting_option(
-        enabled_key,
-        "Enabled",
-        plugin_enabled(config, bookclerk_plugin_host::PluginFamily::Source, id).to_string(),
-        "boolean",
-    ));
-
-    for option in source.config_options() {
-        let key = format!("{prefix}.{}", option.key);
-        seen_keys.insert(key.clone());
-        let value = table
-            .get(option.key)
-            .and_then(|entry| entry.as_str().map(ToOwned::to_owned))
-            .unwrap_or_default();
-        let choices = plugin_choices_with_default(
-            "Default",
-            option.values.iter().map(|value| (value.id, value.label)),
-        );
-        options.push(plugin_setting_option_with_choices(
-            key,
-            option.label,
-            value,
-            "string",
-            choices,
-        ));
-    }
-
-    for (key, entry) in &table {
-        if key == "enabled" {
-            continue;
-        }
-        let full_key = format!("{prefix}.{key}");
-        if seen_keys.contains(&full_key) {
-            continue;
-        }
-        let value_text = entry
-            .as_str()
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| entry.to_string());
-        let value_type = if entry.as_bool().is_some() {
-            "boolean"
-        } else if entry.as_integer().is_some() || entry.as_float().is_some() {
-            "number"
-        } else {
-            "string"
-        };
-        options.push(plugin_setting_option(
-            full_key,
-            setting_label(key),
-            value_text,
-            value_type,
-        ));
-    }
-
-    PluginSettingsGroup {
-        id: id.to_string(),
-        family: plugin_family_label(bookclerk_plugin_host::PluginFamily::Source).to_string(),
-        plugin_key: None,
-        provenance: None,
-        logo: non_empty_logo(source.portal_brand().icon_url),
-        settings: options,
-    }
-}
-
-/// Assembles a Settings group for an integration, overlaying portal-brand logo when present.
-fn build_integration_settings_group(
-    config: &Config,
-    integration: &dyn bookclerk_integrations::Integration,
-    table: toml::Table,
-) -> PluginSettingsGroup {
-    let id = integration.id();
-    let mut group = build_plugin_settings_group(
-        config,
-        bookclerk_plugin_host::PluginFamily::Integration,
-        id,
-        table,
-    );
-    if let Some(brand) = integration.portal_brand() {
-        group.logo = non_empty_logo(brand.icon_url);
-    }
-    group
-}
-
-/// Assembles a generic Settings group (enabled + built-ins + leftover TOML keys).
-fn build_plugin_settings_group(
-    config: &Config,
-    family: bookclerk_plugin_host::PluginFamily,
     id: &str,
     table: toml::Table,
 ) -> PluginSettingsGroup {
-    let prefix = plugin_prefix(family, id);
+    let prefix = format!("database.{id}");
     let mut options = Vec::new();
     let mut seen_keys = std::collections::BTreeSet::new();
 
@@ -2495,11 +2072,12 @@ fn build_plugin_settings_group(
     options.push(plugin_setting_option(
         enabled_key,
         "Enabled",
-        plugin_enabled(config, family, id).to_string(),
+        bookclerk_plugin_host::occupancy_matches_alias(config.database.plugin.trim(), id)
+            .to_string(),
         "boolean",
     ));
 
-    for option in built_in_plugin_settings(config, family, id) {
+    for option in built_in_plugin_settings(config, id) {
         seen_keys.insert(option.key.clone());
         options.push(option);
     }
@@ -2533,121 +2111,178 @@ fn build_plugin_settings_group(
 
     PluginSettingsGroup {
         id: id.to_string(),
-        family: plugin_family_label(family).to_string(),
+        family: plugin_family_label(bookclerk_plugin_host::PluginFamily::Database).to_string(),
         plugin_key: None,
         provenance: None,
         logo: None,
         settings: options,
+        plugin_instance_id: None,
+        display_name: None,
+        is_default: false,
+        config_revision: None,
+        deployment: None,
     }
 }
 
-/// Merges discovered and in-process plugins into Settings groups keyed by kind and id.
-fn plugin_settings_snapshot(
+/// Settings groups: one per plugin instance from the control plane, plus the
+/// bootstrap database adapters discovered on this host.
+async fn plugin_settings_snapshot(
     config: &Config,
-    sources: &SourceRegistry,
-    integrations: &IntegrationRegistry,
+    library: &bookclerk_library::LibraryStore,
+    host_id: &str,
     discovered_plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
-    omit_imported_graphicaudio: bool,
 ) -> Vec<PluginSettingsGroup> {
-    let mut groups_by_key: std::collections::BTreeMap<(String, String), PluginSettingsGroup> =
-        std::collections::BTreeMap::new();
-
+    let mut groups = Vec::new();
     for plugin in discovered_plugins {
-        // A plugin exporting several entrypoints appears once per handler
-        // family so each family's `config.toml` prefix is editable.
-        for family in plugin.manifest.families() {
-            let table = bookclerk_plugin_host::settings_table_for(config, plugin, family);
-            let mut group = match family {
-                bookclerk_plugin_host::PluginFamily::Source => {
-                    if let Some(source) = sources.get(&plugin.manifest.id) {
-                        build_source_settings_group(config, source.as_ref(), table)
-                    } else {
-                        build_plugin_settings_group(config, family, &plugin.manifest.id, table)
-                    }
-                }
-                bookclerk_plugin_host::PluginFamily::Integration => {
-                    if let Some(integration) = integrations.get(&plugin.manifest.id) {
-                        build_integration_settings_group(config, integration.as_ref(), table)
-                    } else {
-                        build_plugin_settings_group(config, family, &plugin.manifest.id, table)
-                    }
-                }
-                _ => build_plugin_settings_group(config, family, &plugin.manifest.id, table),
-            };
-            // Prefer live BrandDto / portal brand (already on group); else plugin.toml logo.
-            if group.logo.is_none() {
-                if let Some(logo) = settings_logo_from_manifest(plugin) {
-                    group.logo = Some(logo);
-                }
-            }
-            if family == bookclerk_plugin_host::PluginFamily::Database {
-                let spec = config.database.plugin.trim();
-                let enabled = !spec.is_empty()
-                    && bookclerk_plugin_host::plugin_matches_occupancy(plugin, spec);
-                if let Some(option) = group
-                    .settings
-                    .iter_mut()
-                    .find(|option| option.key == format!("database.{}.enabled", plugin.alias()))
-                {
-                    option.value = enabled.to_string();
-                }
-            }
-            if omit_imported_graphicaudio {
-                hide_imported_graphicaudio(&mut group);
-            }
-            group.plugin_key = Some(plugin.plugin_key().canonical().to_string());
-            group.provenance = Some(plugin.identity.provenance.to_string());
-            groups_by_key.insert(
-                (
-                    group.family.clone(),
-                    plugin.plugin_key().canonical().to_string(),
-                ),
-                group,
+        if !plugin
+            .manifest
+            .families()
+            .contains(&bookclerk_plugin_host::PluginFamily::Database)
+        {
+            continue;
+        }
+        let table = bookclerk_plugin_host::settings_table_for(
+            config,
+            plugin,
+            bookclerk_plugin_host::PluginFamily::Database,
+        );
+        let mut group = build_database_settings_group(config, &plugin.manifest.id, table);
+        group.logo = settings_logo_from_manifest(plugin);
+        let spec = config.database.plugin.trim();
+        let enabled =
+            !spec.is_empty() && bookclerk_plugin_host::plugin_matches_occupancy(plugin, spec);
+        if let Some(option) = group
+            .settings
+            .iter_mut()
+            .find(|option| option.key == format!("database.{}.enabled", plugin.alias()))
+        {
+            option.value = enabled.to_string();
+        }
+        group.plugin_key = Some(plugin.plugin_key().canonical().to_string());
+        group.provenance = Some(plugin.identity.provenance.to_string());
+        groups.push(group);
+    }
+
+    let views = match crate::config_authority::list_plugin_instance_views(library, host_id).await {
+        Ok(views) => views,
+        Err(err) => {
+            tracing::warn!(error = %err, "plugin instances unavailable for settings");
+            Vec::new()
+        }
+    };
+    for view in &views {
+        let plugin = discovered_plugins
+            .iter()
+            .find(|plugin| plugin.plugin_key().canonical() == view.plugin_key);
+        groups.push(instance_settings_group(view, plugin, host_id));
+    }
+    groups.sort_by(|a, b| {
+        (a.family.as_str(), a.id.as_str(), &a.display_name).cmp(&(
+            b.family.as_str(),
+            b.id.as_str(),
+            &b.display_name,
+        ))
+    });
+    groups
+}
+
+/// Settings group for one plugin instance, rendered from its pinned schema.
+///
+/// Option keys are the bare setting keys; the group's `plugin_instance_id`
+/// tells the client to write them with the plugin-instance config route.
+fn instance_settings_group(
+    view: &crate::config_authority::PluginInstanceView,
+    plugin: Option<&bookclerk_plugin_host::DiscoveredPlugin>,
+    host_id: &str,
+) -> PluginSettingsGroup {
+    use bookclerk_library::control_plane::SettingValue;
+    use bookclerk_plugin_abi::SettingKind;
+
+    let stored = view.config.as_ref();
+    let mut options = Vec::new();
+    for spec in &view.schema {
+        let value = stored
+            .and_then(|config| config.settings.get(&spec.key))
+            .map(|value| match value {
+                SettingValue::Bool(flag) => flag.to_string(),
+                SettingValue::Number(number) => number.to_string(),
+                SettingValue::String(text) => text.clone(),
+            })
+            .or_else(|| {
+                spec.default.as_ref().map(|default| match default {
+                    serde_json::Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+            })
+            .unwrap_or_default();
+        let value_type = match spec.kind {
+            SettingKind::Bool => "boolean",
+            SettingKind::Integer => "number",
+            SettingKind::String | SettingKind::Enum => "string",
+            SettingKind::Secret => "secret",
+        };
+        let label = if spec.label.trim().is_empty() {
+            setting_label(&spec.key)
+        } else {
+            spec.label.clone()
+        };
+        let mut option = if spec.kind == SettingKind::Enum {
+            plugin_setting_option_with_choices(
+                spec.key.clone(),
+                label,
+                value,
+                value_type,
+                spec.values
+                    .iter()
+                    .map(|choice| {
+                        plugin_setting_choice(
+                            choice.id.clone(),
+                            if choice.label.trim().is_empty() {
+                                choice.id.clone()
+                            } else {
+                                choice.label.clone()
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+        } else {
+            plugin_setting_option(spec.key.clone(), label, value, value_type)
+        };
+        if spec.kind == SettingKind::Secret {
+            option.value = String::new();
+            option.secret = true;
+            option.secret_set = Some(
+                stored.is_some_and(|config| config.secret_refs.iter().any(|r| r.key == spec.key)),
             );
         }
+        options.push(option);
     }
 
-    // Loaded in-process guests that were not also discovered from disk.
-    for source in sources.all() {
-        let id = source.id().to_string();
-        let key = (String::from("source"), id.clone());
-        if !groups_by_key.contains_key(&key) {
-            let table = config.sources.table(&id).cloned().unwrap_or_default();
-            let mut group = build_source_settings_group(config, source.as_ref(), table);
-            if omit_imported_graphicaudio {
-                hide_imported_graphicaudio(&mut group);
-            }
-            groups_by_key.insert((group.family.clone(), group.id.clone()), group);
-        }
+    let family = plugin
+        .map(|plugin| plugin.manifest.primary_family().as_str().to_string())
+        .unwrap_or_else(|| "plugin".to_string());
+    PluginSettingsGroup {
+        id: if view.alias.is_empty() {
+            view.plugin_key.clone()
+        } else {
+            view.alias.clone()
+        },
+        family,
+        plugin_key: Some(view.plugin_key.clone()),
+        provenance: plugin.map(|plugin| plugin.identity.provenance.to_string()),
+        logo: plugin.and_then(settings_logo_from_manifest),
+        settings: options,
+        plugin_instance_id: Some(view.plugin_instance_id.clone()),
+        display_name: (!view.display_name.is_empty()).then(|| view.display_name.clone()),
+        is_default: view.is_default,
+        config_revision: view.config.as_ref().map(|config| config.revision),
+        deployment: view
+            .deployments
+            .iter()
+            .find(|deployment| deployment.host_id == host_id)
+            .cloned(),
     }
-    for integration in integrations.all() {
-        let id = integration.id().to_string();
-        let key = (String::from("integration"), id.clone());
-        if !groups_by_key.contains_key(&key) {
-            let table = config
-                .integrations
-                .plugin_table(&id)
-                .cloned()
-                .unwrap_or_default();
-            let group = build_integration_settings_group(config, integration.as_ref(), table);
-            groups_by_key.insert((group.family.clone(), group.id.clone()), group);
-        }
-    }
-
-    groups_by_key.into_values().collect()
-}
-
-/// Drops GraphicAudio knobs that the instance document owns.
-///
-/// `enabled` stays. Operators edit the rest with
-/// `PUT /api/config/plugin-instances/{id}/config`.
-fn hide_imported_graphicaudio(group: &mut PluginSettingsGroup) {
-    if !group.id.eq_ignore_ascii_case("graphicaudio") {
-        return;
-    }
-    group
-        .settings
-        .retain(|option| !bookclerk_plugin_host::is_graphicaudio_imported_setting(&option.key));
 }
 
 /// Discovers plugins on a blocking thread with a 2s timeout; returns empty on failure.
@@ -2673,22 +2308,6 @@ async fn discover_plugins_for_settings(
             Vec::new()
         }
     }
-}
-
-/// True when GraphicAudio's instance document already owns the imported keys.
-///
-/// The key comes from `discovered` first. The install ledger is the fallback
-/// and does not walk plugin trees on this worker.
-async fn graphicaudio_settings_owned(
-    library: &bookclerk_library::LibraryStore,
-    config: &Config,
-    discovered: &[bookclerk_plugin_host::DiscoveredPlugin],
-) -> Result<bool, bookclerk_plugin_host::PluginError> {
-    let key = match bookclerk_plugin_host::graphicaudio_key_from_discovered(discovered) {
-        Some(key) => Some(key),
-        None => bookclerk_plugin_host::graphicaudio_key_from_ledger(config)?,
-    };
-    bookclerk_plugin_host::graphicaudio_document_exists_for_key(library, key.as_deref()).await
 }
 
 /// Applies `database.<id>.enabled` toggles so at most one backend remains selected.
@@ -2778,7 +2397,7 @@ fn newly_enabled_plugin_ids(
         if parts.len() != 3 || parts[2] != "enabled" {
             continue;
         }
-        if !matches!(parts[0], "sources" | "integrations" | "output" | "database") {
+        if parts[0] != "database" {
             continue;
         }
         let prev = previous
@@ -3244,41 +2863,40 @@ async fn get_settings(
     let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
     let discovered_plugins = discover_plugins_for_settings(&cfg).await;
-    let omit_imported_graphicaudio =
-        match graphicaudio_settings_owned(&library, &cfg, &discovered_plugins).await {
-            Ok(exists) => exists,
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "hiding GraphicAudio settings because the instance document could not be read"
-                );
-                true
-            }
-        };
-    let sources = state.sources.read().await;
-    let integrations = state.integrations.read().await;
+    // A config without resolved paths (unit tests) has no host identity and
+    // therefore no per-host deployment view; the plugin groups still render.
+    let host_id = cfg
+        .paths
+        .as_ref()
+        .and_then(|paths| {
+            bookclerk_library::control_plane::load_or_create_host_identity(&paths.files_dir)
+                .map_err(|err| {
+                    tracing::warn!(error = %err, "host identity unavailable for settings");
+                })
+                .ok()
+        })
+        .map(|host| host.host_id)
+        .unwrap_or_default();
     let auth = state.auth_snapshot().await;
     let settings = current_settings_snapshot(&cfg);
     let mut effective = settings.clone();
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
-    for source in sources.all() {
-        effective.insert(
-            format!("sources.{}.enabled", source.id()),
-            cfg.sources.is_enabled(source.id()).to_string(),
-        );
-        effective.insert(
-            format!("runtime.sources.{}.loaded", source.id()),
-            "true".into(),
-        );
+    effective.insert("host.id".into(), host_id.clone());
+    for source in state.sources.read().await.all() {
+        let address = source
+            .plugin_instance_id()
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| source.id());
+        effective.insert(format!("runtime.sources.{address}.loaded"), "true".into());
     }
-    for integration in integrations.all() {
+    for integration in state.integrations.read().await.all() {
+        let address = integration
+            .plugin_instance_id()
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| integration.id());
         effective.insert(
-            format!("integrations.{}.enabled", integration.id()),
-            cfg.integrations.is_enabled(integration.id()).to_string(),
-        );
-        effective.insert(
-            format!("runtime.integrations.{}.loaded", integration.id()),
+            format!("runtime.integrations.{address}.loaded"),
             "true".into(),
         );
     }
@@ -3288,13 +2906,7 @@ async fn get_settings(
     Ok(Json(SettingsResponse {
         settings,
         effective,
-        plugins: plugin_settings_snapshot(
-            &cfg,
-            &sources,
-            &integrations,
-            &discovered_plugins,
-            omit_imported_graphicaudio,
-        ),
+        plugins: plugin_settings_snapshot(&cfg, &library, &host_id, &discovered_plugins).await,
         host_cpu_cores_max: host_cpu_cores_max(),
         jail_cpu_cores: cfg
             .plugins
@@ -3336,15 +2948,19 @@ async fn patch_settings(
         .await
         .map_err(IntoResponse::into_response)?
         .0;
+    // Plugin-instance groups are edited through the plugin-instance routes;
+    // only `config.toml`-backed groups (database adapters) are patchable here.
     let editable_keys: std::collections::HashSet<&str> = editable
         .plugins
         .iter()
+        .filter(|plugin| plugin.plugin_instance_id.is_none())
         .flat_map(|plugin| plugin.settings.iter().map(|setting| setting.key.as_str()))
         .chain(editable.settings.keys().map(String::as_str))
         .collect();
     let editable_plugin_options: std::collections::HashMap<&str, &PluginSettingOption> = editable
         .plugins
         .iter()
+        .filter(|plugin| plugin.plugin_instance_id.is_none())
         .flat_map(|plugin| plugin.settings.iter())
         .map(|setting| (setting.key.as_str(), setting))
         .collect();
@@ -3451,34 +3067,6 @@ async fn patch_settings(
         )
             .into_response());
     }
-    if updates
-        .iter()
-        .any(|(key, _)| bookclerk_plugin_host::is_graphicaudio_imported_setting(key))
-    {
-        let library = state.library_snapshot().await;
-        let cfg = state.config.read().await.clone();
-        match graphicaudio_settings_owned(&library, &cfg, &discovered).await {
-            Ok(true) => {
-                tracing::warn!(
-                    "rejected settings update for GraphicAudio keys owned by the instance document"
-                );
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "plugin_instance_configuration",
-                        "message": "GraphicAudio access, base_url, store_url, bitrate, and container are stored on the plugin instance; use PUT /api/config/plugin-instances/{id}/config",
-                    })),
-                )
-                    .into_response());
-            }
-            Ok(false) => {}
-            Err(err) => {
-                tracing::error!(error = %err, "could not read GraphicAudio instance document");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-            }
-        }
-    }
-
     let _reload_guard = state.reload_lock.lock().await;
     if !events_updates.is_empty() {
         crate::config_authority::commit_events_settings(&state, &events_updates).await?;
@@ -3702,7 +3290,14 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     let in_progress = queued + downloading;
     let (listen, storage_backend) = {
         let cfg = state.config.read().await;
-        let names = cfg.output.enabled_backend_names();
+        let destinations = state.destinations.read().await;
+        let mut names = Vec::new();
+        if destinations.local().is_some() {
+            names.push("local");
+        }
+        if destinations.s3().is_some() {
+            names.push("s3");
+        }
         (
             cfg.daemon.listen.join_comma(),
             if names.is_empty() {
@@ -3748,8 +3343,10 @@ async fn trigger_scan(
     State(state): State<Arc<AppState>>,
     body: Option<Json<ScanRequest>>,
 ) -> impl IntoResponse {
-    let account = body.and_then(|Json(b)| b.account);
-    match enqueue_scan(state, account, JobTrigger::Api).await {
+    let body = body.map(|Json(b)| b);
+    let account = body.as_ref().and_then(|b| b.account.clone());
+    let instance = body.and_then(|b| b.plugin_instance_id);
+    match enqueue_scan(state, account, instance, JobTrigger::Api).await {
         Ok(admit) => admit_response("scan", admit),
         Err(err) => enqueue_error_response(err),
     }
@@ -3762,7 +3359,15 @@ async fn trigger_acquire(
 ) -> impl IntoResponse {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let title_filter = body.uuid.or(body.asin).or(body.isbn).or(body.product_id);
-    match enqueue_acquire(state, title_filter, body.account, JobTrigger::Api).await {
+    match enqueue_acquire(
+        state,
+        title_filter,
+        body.account,
+        body.plugin_instance_id,
+        JobTrigger::Api,
+    )
+    .await
+    {
         Ok(admit) => admit_response("acquire", admit),
         Err(err) => enqueue_error_response(err),
     }
@@ -4178,7 +3783,8 @@ async fn get_book(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-/// Serves the local JPEG cover sidecar for a title, or 404 when local output is off.
+/// Serves the JPEG cover sidecar from the deployed local destination, or 404
+/// when no local destination runs on this host.
 async fn get_book_cover(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
@@ -4190,40 +3796,23 @@ async fn get_book_cover(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let storage_key = book.storage_key.as_deref().ok_or(StatusCode::NOT_FOUND)?;
-    let cfg = state.config.read().await;
-    if !cfg.output.local.enabled {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let cover_key = sidecar_key(storage_key, "jpg");
-    let path = resolve_local_key(&cfg.output.local.root, &cfg.output.local.prefix, &cover_key);
-    if !path.is_file() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let bytes = tokio::fs::read(&path)
+    let local = state
+        .destinations
+        .read()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .local()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let cover_key = sidecar_key(storage_key, "jpg");
+    let bytes = local
+        .get(&cover_key)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "image/jpeg")],
         bytes,
     )
         .into_response())
-}
-
-/// Joins local output root, prefix, and object key while dropping `.` / `..` segments.
-fn resolve_local_key(root: &Path, prefix: &str, key: &str) -> PathBuf {
-    let mut path = root.to_path_buf();
-    let prefix = prefix.trim_matches('/');
-    if !prefix.is_empty() {
-        path.push(prefix);
-    }
-    for part in key.split('/') {
-        if part.is_empty() || part == "." || part == ".." {
-            continue;
-        }
-        path.push(part);
-    }
-    path
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -5358,10 +4947,10 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 mod tests {
     use super::{
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
-        build_plugin_settings_group, current_settings_snapshot, database_backends_requiring_grant,
-        normalize_disabled_shelves, normalize_setting_value, stamp_settings_occupancy,
-        validate_daemon_listen, validate_daemon_listen_against_auth, InviteLinkError,
-        PluginGrantOverride,
+        build_database_settings_group, current_settings_snapshot,
+        database_backends_requiring_grant, normalize_disabled_shelves, normalize_setting_value,
+        stamp_settings_occupancy, validate_daemon_listen, validate_daemon_listen_against_auth,
+        InviteLinkError, PluginGrantOverride,
     };
     use bookclerk_config::{Config, ListenAddrs};
 
@@ -5424,15 +5013,16 @@ mod tests {
         assert!(allowed_setting_key("events.retention_days"));
         assert!(allowed_setting_key("events.dead_letter_retention_days"));
         assert!(allowed_setting_key("events.concurrency"));
-        assert!(allowed_setting_key("sources.audible.region"));
-        assert!(allowed_setting_key("sources.libro.enabled_mode"));
-        assert!(!allowed_setting_key("sources"));
-        assert!(!allowed_setting_key("sources..region"));
-        assert!(!allowed_setting_key("sources.audible"));
-        assert!(!allowed_setting_key("sources.audible.region.extra"));
-        assert!(allowed_setting_key("integrations.audiobookshelf.enabled"));
-        assert!(allowed_setting_key("output.s3.bucket"));
+        assert!(
+            !allowed_setting_key("sources.audible.region"),
+            "plugin settings are edited on the plugin instance, not in config.toml"
+        );
+        assert!(!allowed_setting_key("sources.audible.enabled"));
+        assert!(!allowed_setting_key("integrations.audiobookshelf.enabled"));
+        assert!(!allowed_setting_key("output.s3.bucket"));
         assert!(allowed_setting_key("database.plugin"));
+        assert!(allowed_setting_key("database.sqlite.path"));
+        assert!(!allowed_setting_key("database.sqlite.path.extra"));
         assert!(allowed_setting_key("database.sqlite.enabled"));
         assert!(!allowed_setting_key("database"));
         assert!(!allowed_setting_key("database..enabled"));
@@ -5694,62 +5284,10 @@ mod tests {
     }
 
     #[test]
-    fn built_in_plugin_groups_include_registered_optional_settings() {
+    fn database_groups_keep_their_bootstrap_settings() {
         let cfg = Config::default();
 
-        let audible = build_plugin_settings_group(
-            &cfg,
-            bookclerk_plugin_host::PluginFamily::Source,
-            "audible",
-            toml::Table::new(),
-        );
-        assert!(audible
-            .settings
-            .iter()
-            .find(|option| option.key == "sources.audible.bitrate")
-            .and_then(|option| option.choices.as_ref())
-            .is_some());
-
-        let abs = build_plugin_settings_group(
-            &cfg,
-            bookclerk_plugin_host::PluginFamily::Integration,
-            "audiobookshelf",
-            toml::Table::new(),
-        );
-        assert!(abs
-            .settings
-            .iter()
-            .any(|option| option.key == "integrations.audiobookshelf.base_url"));
-        assert!(abs
-            .settings
-            .iter()
-            .any(|option| option.key == "integrations.audiobookshelf.api_key"));
-        assert!(abs
-            .settings
-            .iter()
-            .any(|option| option.key == "integrations.audiobookshelf.library_id"));
-
-        let s3 = build_plugin_settings_group(
-            &cfg,
-            bookclerk_plugin_host::PluginFamily::Output,
-            "s3",
-            toml::Table::new(),
-        );
-        assert!(s3
-            .settings
-            .iter()
-            .any(|option| option.key == "output.s3.endpoint"));
-        assert!(s3
-            .settings
-            .iter()
-            .any(|option| option.key == "output.s3.bucket"));
-
-        let d1 = build_plugin_settings_group(
-            &cfg,
-            bookclerk_plugin_host::PluginFamily::Database,
-            "d1",
-            toml::Table::new(),
-        );
+        let d1 = build_database_settings_group(&cfg, "d1", toml::Table::new());
         assert!(d1
             .settings
             .iter()
@@ -5763,12 +5301,7 @@ mod tests {
             .iter()
             .any(|option| option.key == "database.d1.api_base"));
 
-        let postgres = build_plugin_settings_group(
-            &cfg,
-            bookclerk_plugin_host::PluginFamily::Database,
-            "postgres",
-            toml::Table::new(),
-        );
+        let postgres = build_database_settings_group(&cfg, "postgres", toml::Table::new());
         assert!(postgres
             .settings
             .iter()
@@ -5855,12 +5388,7 @@ mod tests {
     fn database_enabled_toggle_follows_plugin_key_occupancy() {
         let mut cfg = Config::default();
         cfg.database.plugin = "platform:bookclerk/bookclerk-plugin-database-sqlite".into();
-        let sqlite = build_plugin_settings_group(
-            &cfg,
-            bookclerk_plugin_host::PluginFamily::Database,
-            "sqlite",
-            toml::Table::new(),
-        );
+        let sqlite = build_database_settings_group(&cfg, "sqlite", toml::Table::new());
         assert_eq!(
             sqlite
                 .settings
@@ -5870,12 +5398,7 @@ mod tests {
             Some("true"),
             "first-party PluginKey occupancy must still show sqlite as enabled"
         );
-        let postgres = build_plugin_settings_group(
-            &cfg,
-            bookclerk_plugin_host::PluginFamily::Database,
-            "postgres",
-            toml::Table::new(),
-        );
+        let postgres = build_database_settings_group(&cfg, "postgres", toml::Table::new());
         assert_eq!(
             postgres
                 .settings
@@ -6720,11 +6243,11 @@ mode = "deny"
                 .unwrap(),
         );
         store
-            .upsert_account("envelope-a", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
             .unwrap();
         store
-            .upsert_account("envelope-b", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-b", "us", None, false, "audible")
             .await
             .unwrap();
         for i in 0..20u32 {

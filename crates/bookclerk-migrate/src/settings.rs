@@ -1,6 +1,6 @@
 //! Import classic `Settings.json` into bookclerk [`Config`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bookclerk_config::{
     parse_replacement_characters, BadBookAction, Config, FileTimestampMode, OutputFormat,
@@ -30,17 +30,29 @@ pub fn load_settings_json(path: &Path) -> Result<Value> {
         .map_err(|err| MigrateError::Settings(format!("invalid Settings.json: {err}")))
 }
 
+/// Classic settings that belong to plugin instances rather than `config.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClassicPluginSettings {
+    /// Libation `Books` directory: the `local` destination's `root`.
+    pub books_root: Option<PathBuf>,
+    /// Libation `FileDownloadQuality` as the Audible plugin's `bitrate`
+    /// (`high` or `normal`).
+    pub audible_bitrate: Option<String>,
+}
+
 /// Apply classic Settings.json keys onto `config`.
+///
+/// Keys that configure a plugin (the books directory, the Audible bitrate)
+/// are returned instead so the caller can write them on the plugin instance.
 ///
 /// # Arguments
 ///
 /// * `config` - Loaded Bookclerk configuration.
 /// * `settings` - `settings` input for this call.
-pub fn apply_settings_json(config: &mut Config, settings: &Value) {
+pub fn apply_settings_json(config: &mut Config, settings: &Value) -> ClassicPluginSettings {
+    let mut plugin_settings = ClassicPluginSettings::default();
     if let Some(books) = string_at(settings, "Books") {
-        config.output.local.enabled = true;
-        config.output.s3.enabled = false;
-        config.output.local.root = Path::new(books).to_path_buf();
+        plugin_settings.books_root = Some(Path::new(books).to_path_buf());
     }
 
     if let Some(quality) = string_at(settings, "FileDownloadQuality") {
@@ -48,7 +60,7 @@ pub fn apply_settings_json(config: &mut Config, settings: &Value) {
             "normal" => "normal",
             _ => "high",
         };
-        config.sources.set_string("audible", "bitrate", bitrate);
+        plugin_settings.audible_bitrate = Some(bitrate.to_string());
     }
 
     if let Some(lossy) = bool_at(settings, "DecryptToLossy") {
@@ -188,6 +200,7 @@ pub fn apply_settings_json(config: &mut Config, settings: &Value) {
     if let Some(v) = settings.get("ReplacementCharacters") {
         config.output.replacement_characters = parse_replacement_characters(v);
     }
+    plugin_settings
 }
 
 /// Maps Libation `CreationTime`/`LastWriteTime` strings onto [`FileTimestampMode`] (`now` when unknown).
@@ -217,15 +230,17 @@ fn bool_at(value: &Value, key: &str) -> Option<bool> {
 /// # Arguments
 ///
 /// * `config` - Loaded Bookclerk configuration.
+/// * `plugin_settings` - Books directory and Audible bitrate from the plugin
+///   instances, when the caller could read them.
 ///
 /// # Returns
 ///
 /// `Value` result.
 #[must_use]
-pub fn config_to_settings_json(config: &Config) -> Value {
+pub fn config_to_settings_json(config: &Config, plugin_settings: &ClassicPluginSettings) -> Value {
     use serde_json::json;
 
-    let quality = match config.sources.get_string("audible", "bitrate") {
+    let quality = match plugin_settings.audible_bitrate.as_deref() {
         Some("normal") => "Normal",
         _ => "High",
     };
@@ -242,7 +257,11 @@ pub fn config_to_settings_json(config: &Config) -> Value {
     let mut map = serde_json::Map::new();
     map.insert(
         "Books".into(),
-        json!(config.output.local.root.display().to_string()),
+        json!(plugin_settings
+            .books_root
+            .as_ref()
+            .map(|root| root.display().to_string())
+            .unwrap_or_default()),
     );
     map.insert("FileDownloadQuality".into(), json!(quality));
     map.insert("DecryptToLossy".into(), json!(decrypt_to_lossy));
@@ -400,9 +419,12 @@ mod tests {
             "AutoScan": true
         });
         let mut cfg = Config::default();
-        apply_settings_json(&mut cfg, &settings);
-        assert_eq!(cfg.output.local.root, Path::new("/data/Audiobooks"));
-        assert_eq!(cfg.sources.get_string("audible", "bitrate"), Some("normal"));
+        let plugin_settings = apply_settings_json(&mut cfg, &settings);
+        assert_eq!(
+            plugin_settings.books_root.as_deref(),
+            Some(Path::new("/data/Audiobooks"))
+        );
+        assert_eq!(plugin_settings.audible_bitrate.as_deref(), Some("normal"));
         assert_eq!(cfg.output.format, OutputFormat::SingleMp3);
         assert!(cfg.output.widevine);
         assert!(cfg.output.xhe_aac);

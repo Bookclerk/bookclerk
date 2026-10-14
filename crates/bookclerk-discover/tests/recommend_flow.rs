@@ -13,7 +13,7 @@ mod integration {
             .await
             .unwrap();
         store
-            .upsert_account("acct", "us", Some("Main"), true, "audible")
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
             .await
             .unwrap();
 

@@ -116,7 +116,6 @@ isolation = "required"
 # best-effort — start it unconfined when the platform cannot jail, and warn
 # off         — no jail (development only)
 # Plugin guests are jailed on every platform (Landlock/Seatbelt/AppContainer).
-# First-party sources still run in-process when built into the host.
 isolation = "required"
 # Normally unset: the launcher is found beside the running executable.
 # jail_bin = "/usr/local/bin/bookclerk-jail"
@@ -159,57 +158,22 @@ chapter_layout = "tree"
 #   refetch_all     — re-download/encode into every destination
 # multi_destination = "sync_missing"
 
-# Destination plugins — each has `enabled`; multiple may be on at once
-# (acquired files are written to every enabled destination).
-[output.local]
-enabled = true
-root = "/data/Audiobooks"
-# prefix = "library/"
-# Optional per-destination naming overrides. Unset values inherit [output].
-# naming_profile = "audiobookshelf"
-# folder_template = "<first author>/<title>"
-# file_template = "<title> [<asin>]"
-# chapter_file_template = "<ch#> - <chapter title>"
+# Destination plugins (`local`, `s3`) are deployed plugin instances, not
+# config.toml tables. Enable one per host and set its settings on the
+# instance:
+#   bookclerk plugins enable local
+#   bookclerk plugins config set local root /data/Audiobooks
+#   bookclerk plugins config set s3 bucket my-audiobooks
+#   bookclerk plugins config set s3 secret_access_key --secret   # value on stdin
+# Each destination declares `prefix` and per-destination naming overrides
+# (`naming_profile`, `folder_template`, …) in its plugin.toml [[settings]].
 
-[output.s3]
-enabled = false
-# bucket = "my-audiobooks"
-# prefix = "library/"
-# region = "us-east-1"
-# endpoint = "http://minio:9000"
-# force_path_style = true
-# Credentials resolve in order:
-#   1. BOOKCLERK_AWS_ACCESS_KEY_ID + BOOKCLERK_AWS_SECRET_ACCESS_KEY
-#      (+ optional BOOKCLERK_AWS_SESSION_TOKEN) — process-env override; wins over DB row.
-#   2. encrypted_secrets DB row (kind=s3, account_id=operator, name=default).
-#      Save with: bookclerk config s3-credentials set
-#   3. AWS SDK default provider chain (~/.aws/credentials, SSO, instance roles).
-# Optional per-destination naming overrides. Useful when object storage should
-# use a different key layout than the local filesystem.
-# naming_profile = "classic"
-# folder_template = "<author>/<series>"
-# file_template = "<asin>"
-# chapter_file_template = "<asin> - <ch#>"
-# Env: BOOKCLERK_OUTPUT_S3_ENABLED, BOOKCLERK_OUTPUT_S3_BUCKET,
-#      BOOKCLERK_OUTPUT_S3_REGION, BOOKCLERK_OUTPUT_S3_ENDPOINT (or BOOKCLERK_S3_*), …
-
-# Content-source plugins ([sources.*]). Each source has `enabled`.
-# [sources.audible]
-# enabled = true
-# bitrate = "high"          # high | normal
-
-# [sources.libro]
-# enabled = true
-# container = "m4b"         # m4b | zip
-
-# [sources.chirp]
-# enabled = true
-
-# [sources.graphicaudio]
-# enabled = true
-# access = "web"            # web | zip | device
-# bitrate = "hi"            # hi | lo
-# container = "auto"        # auto | m4b | mp3 | flac
+# Content-source plugins (audible, libro, chirp, graphicaudio, …) are enabled
+# and configured the same way; their settings (bitrate, container, access,
+# …) come from each plugin's declared [[settings]]:
+#   bookclerk plugins list
+#   bookclerk plugins config get audible
+#   bookclerk plugins config set audible bitrate normal
 
 [daemon]
 listen = "127.0.0.1:8787"
@@ -235,22 +199,14 @@ json_logs = true
 # [integrations]
 # public_origin = "https://bookclerk.example.com"  # required off loopback: OIDC issuer, claim URLs, SSO callback, Secure cookies
 
-# [integrations.audiobookshelf]
-# enabled = false
-# base_url = "http://audiobookshelf:80"
-# # Prefer BOOKCLERK_ABS_API_KEY env over storing the key in TOML.
-# # api_key = ""
-# # library_id = "lib_..."
-# watch_users = true
-# notify_scan_on_acquire = true
-# allow_credential_login = true
-
-# Third-party plugins (see docs/plugins.md) install under
-# `$BOOKCLERK_FILES_DIR/plugins/<name>/plugin.toml` (or BOOKCLERK_PLUGIN_DIRS).
-# Enable / configure by id in this file — external integrations default off:
-# [integrations.echo]
-# enabled = true
-# # … opaque knobs forwarded in the spawn config …
+# Integration plugins (Audiobookshelf, third-party installs under
+# `$BOOKCLERK_FILES_DIR/plugins/<name>/plugin.toml` or BOOKCLERK_PLUGIN_DIRS)
+# are deployed plugin instances too; they default to disabled until approved
+# and enabled on a host:
+#   bookclerk plugins approve audiobookshelf
+#   bookclerk plugins enable audiobookshelf
+#   bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
+#   bookclerk plugins config set audiobookshelf api_key --secret   # value on stdin
 
 # Recommendations / embeddings / request queue (see docs/discovery.md).
 # Storefront candidates (Libro related + Audible catalog) are the primary

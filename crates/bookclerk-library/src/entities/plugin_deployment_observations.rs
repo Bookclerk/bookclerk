@@ -16,7 +16,7 @@ pub struct Model {
     pub host_id: String,
     /// Process incarnation that recorded the row.
     pub incarnation: String,
-    /// `installed`, `running`, `healthy`, or `error`.
+    /// `installed`, `running`, `healthy`, `error`, or `retired`.
     pub status: String,
     /// Bounded detail. Empty when the status is `healthy`.
     pub detail: String,

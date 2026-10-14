@@ -41,7 +41,6 @@ use crate::api::{
 };
 use crate::event_worker::start_event_runtime;
 use crate::job_worker::start_job_runtime;
-use crate::registry::deployment_skip_keys;
 use crate::scheduler::spawn_scheduler;
 
 #[derive(Debug, Parser)]
@@ -114,58 +113,29 @@ async fn main() -> anyhow::Result<()> {
     paths.ensure_dirs()?;
     bookclerk_plugin_host::retry_abandoned_acl_journals(&paths.files_dir);
 
-    let database_registry = bookclerk_plugin_host::load_external_database(&config).await?;
-    let library_store =
-        bookclerk_plugin_host::open_library_store(&config, &database_registry).await?;
-    let scratch_dir = config.download_cache_dir();
-    let control_plane = bookclerk_library::control_plane::bootstrap_control_plane(
-        &library_store,
-        &paths.files_dir,
-        &scratch_dir,
-        config.auth_password().as_deref(),
-        &config.events,
-    )
-    .await?;
-    bookclerk_library::control_plane::overlay_events(
-        &mut config,
-        &control_plane.events,
-        &control_plane.cluster_id,
-    );
+    let bookclerk_plugin_host::HostControlPlane {
+        config,
+        database_registry,
+        store: library_store,
+        session: control_plane,
+        enrolled,
+        present,
+        ..
+    } = bookclerk_plugin_host::open_host_control_plane(&config).await?;
     tracing::info!(
         host_id = %control_plane.host.host_id,
         cluster_id = %control_plane.cluster_id,
         events_revision = control_plane.events.revision,
-        "enrolled control plane; core.events is database-authoritative"
+        enrolled = enrolled.len(),
+        present = present.len(),
+        "enrolled control plane; core.events and plugin deployments are database-authoritative"
     );
-    if let Err(err) = bookclerk_plugin_host::enroll_graphicaudio_instance(
-        &library_store,
-        &config,
-        &control_plane.host.host_id,
-    )
-    .await
-    {
-        tracing::warn!(
-            error = %err,
-            "GraphicAudio instance import did not complete; file-backed settings stay in use"
-        );
-    }
-    let owned = deployment_skip_keys(&library_store, &control_plane.host.host_id).await?;
-    let session_services =
-        bookclerk_plugin_host::SessionServices::with_event_outbox(library_store.clone());
-    let integrations =
-        bookclerk_plugin_host::load_integrations_skipping(&config, &session_services, &owned)
-            .await?;
-    let destinations = bookclerk_plugin_host::load_external_destinations_with_store(
-        &config,
-        Some(library_store.db()),
-        Some(&library_store),
-        &owned,
-    )
-    .await?;
-    let sources = {
-        let cfg = config.clone();
-        registry::registry_skipping_deployments(&cfg, &library_store, &owned).await?
-    };
+    // Guests are the deployment reconciler's: the registries start empty and
+    // the first reconcile pass below brings every present deployment up
+    // before the HTTP listeners bind.
+    let integrations = bookclerk_integrations::IntegrationRegistry::new();
+    let destinations = bookclerk_plugin_host::DestinationRegistry::default();
+    let sources = bookclerk_source::SourceRegistry::new();
     let library = Arc::new(RwLock::new(library_store));
     let database_registry = Arc::new(RwLock::new(database_registry));
     validate_daemon_listen(&config)?;
@@ -199,6 +169,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
+    if let Err(err) = config_authority::reconcile_deployments(&state).await {
+        tracing::warn!(error = %err, "initial plugin deployment reconcile failed");
+    }
     start_integration_watchers(&state).await;
     if let Err(err) = crate::oidc::sync_plugin_oidc_clients(&state).await {
         tracing::warn!(error = %err, "failed to sync plugin OIDC clients");

@@ -18,6 +18,73 @@ tcp = [
 
 [vars]
 
+[[settings]]
+key = "bucket"
+label = "Bucket"
+type = "string"
+required = true
+
+[[settings]]
+key = "region"
+label = "Region"
+type = "string"
+default = "us-east-1"
+
+[[settings]]
+key = "endpoint"
+label = "Endpoint"
+type = "string"
+description = "Custom S3 endpoint (MinIO, LocalStack, …); host-only values get https://."
+
+[[settings]]
+key = "force_path_style"
+label = "Force path-style addressing"
+type = "bool"
+default = false
+
+[[settings]]
+key = "prefix"
+label = "Key prefix"
+type = "string"
+default = "library/"
+
+[[settings]]
+key = "naming_profile"
+label = "Naming profile"
+type = "enum"
+values = [{ id = "audiobookshelf", label = "Audiobookshelf" }, { id = "classic", label = "Classic Libation" }]
+description = "Overrides [output].naming_profile for this destination only; unset inherits it."
+
+[[settings]]
+key = "folder_template"
+label = "Folder template"
+type = "string"
+
+[[settings]]
+key = "file_template"
+label = "File template"
+type = "string"
+
+[[settings]]
+key = "chapter_file_template"
+label = "Chapter file template"
+type = "string"
+
+[[settings]]
+key = "access_key_id"
+label = "Access key id"
+type = "secret"
+
+[[settings]]
+key = "secret_access_key"
+label = "Secret access key"
+type = "secret"
+
+[[settings]]
+key = "session_token"
+label = "Session token"
+type = "secret"
+
 [secrets]
 
 [work_fs]

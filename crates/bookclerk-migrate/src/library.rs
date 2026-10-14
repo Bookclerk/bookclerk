@@ -46,6 +46,7 @@ pub struct LibraryImportSummary {
 pub async fn import_library_db(
     classic_db: &Path,
     store: &LibraryStore,
+    plugin_key: &str,
     audio_paths: &AudioPathMap,
     books_root: &Path,
     account_id_map: &HashMap<(String, String), String>,
@@ -188,7 +189,7 @@ pub async fn import_library_db(
 
         // Ensure account row exists even if AccountsSettings was missing.
         let _ = store
-            .upsert_account(&account_id, &row.locale, None, true, "audible")
+            .upsert_account(plugin_key, &account_id, &row.locale, None, true, "audible")
             .await;
 
         let title = if row.subtitle.trim().is_empty() {
@@ -209,6 +210,7 @@ pub async fn import_library_db(
             .upsert_book(&NewBook {
                 uuid: None,
                 product_id: row.asin.clone(),
+                plugin_key: plugin_key.to_string(),
                 asin: Some(row.asin.clone()),
                 isbn: None,
                 source: String::from("audible"),
@@ -431,9 +433,17 @@ mod tests {
             Path::new("/books/Ann Author/Hello/B00TEST.m4b").to_path_buf(),
         );
         let map = HashMap::from([(("user@example.com".into(), "us".into()), "cust-1".into())]);
-        let summary = import_library_db(&classic, &store, &paths, Path::new("/books"), &map, false)
-            .await
-            .unwrap();
+        let summary = import_library_db(
+            &classic,
+            &store,
+            "audible",
+            &paths,
+            Path::new("/books"),
+            &map,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.books, 1);
         assert_eq!(summary.acquired, 1);
         assert_eq!(summary.storage_keys, 1);

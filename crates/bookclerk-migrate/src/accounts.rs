@@ -49,6 +49,7 @@ pub struct AccountsImportSummary {
 pub async fn import_accounts(
     path: &Path,
     store: &LibraryStore,
+    plugin_key: &str,
     _force: bool,
     _skip_auth: bool,
     dry_run: bool,
@@ -117,6 +118,7 @@ pub async fn import_accounts(
         if !dry_run {
             store
                 .upsert_account(
+                    plugin_key,
                     &canonical_id,
                     &marketplace,
                     label.as_deref(),
@@ -173,7 +175,7 @@ mod tests {
         let dest = crate::store::DestStore::open(dir.path(), false)
             .await
             .unwrap();
-        let summary = import_accounts(&path, &dest.store, false, false, false)
+        let summary = import_accounts(&path, &dest.store, "audible", false, false, false)
             .await
             .unwrap();
         assert_eq!(summary.accounts, 1);

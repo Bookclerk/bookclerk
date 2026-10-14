@@ -42,7 +42,7 @@ Both modes open Amazon's OAuth / device-registration flow in a browser. There is
 (audible-rs). Amazon accounts with **2FA/MFA enabled require completing OTP**
 (or SMS / mobile verification) during that browser step. Headless agents need
 either an interactive Desktop session or a TOTP seed to finish login; importing
-an existing audible-rs `*.audible.auth` file (`bookclerk auth import`) stores it
+an existing audible-rs `*.audible.auth` file through the migrate path stores it
 in `encrypted_secrets` and skips login entirely.
 
 ## Acquire download path

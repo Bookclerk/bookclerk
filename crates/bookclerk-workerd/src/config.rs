@@ -986,6 +986,7 @@ pub fn manifest_describe_json(manifest: &PluginManifest) -> Result<String> {
             bookclerk_plugin_abi::FEATURE_STREAMS.to_string(),
         ],
         capabilities: manifest.capabilities(),
+        config_options: manifest.config_options(),
         cli: manifest.cli.clone().unwrap_or_default(),
         ..PluginDescribe::default()
     };

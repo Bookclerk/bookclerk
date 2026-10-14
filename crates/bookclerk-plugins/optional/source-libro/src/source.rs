@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
     PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceBrand,
-    SourceFetch, SourcePurchaseHint, SourceRegistry,
+    SourceFetch, SourcePurchaseHint,
 };
 use chrono::{Duration, TimeZone, Utc};
 
@@ -23,16 +22,13 @@ use crate::sync::{scan_library, ScanOptions as LibroScanOptions};
 /// Describe / config id for this store (`libro` in `[sources.libro]`).
 pub const ID: &str = "libro";
 
-/// Env var read for non-interactive password login when Accounts UI is unavailable.
-pub const PASSWORD_ENV: &str = "BOOKCLERK_LIBRO_PASSWORD";
-
 /// Extra ids accepted by the source registry (`libro.fm`, `librofm`).
 const ALIASES: &[&str] = &["libro.fm", "librofm"];
 
 /// Libro.fm storefront adapter implementing [`ContentSource`].
 ///
-/// Prefer [`LibroSource::from_config`] when registering with the host; use
-/// [`LibroSource::with_base_url`] for wiremock / staging.
+/// Construct with [`LibroSource::new`]; use [`LibroSource::with_base_url`]
+/// for wiremock / staging.
 #[derive(Debug, Clone)]
 pub struct LibroSource {
     /// Libro.fm API origin (production default, or a wiremock / staging URL).
@@ -54,20 +50,6 @@ impl LibroSource {
         Self {
             base_url: DEFAULT_BASE_URL.to_string(),
             container: LibroContainer::M4b,
-        }
-    }
-
-    /// Parse `[sources.libro]` knobs from config.
-    #[must_use]
-    pub fn from_config(config: &Config) -> Self {
-        let container = config
-            .sources
-            .get_string(ID, "container")
-            .and_then(LibroContainer::parse)
-            .unwrap_or_default();
-        Self {
-            base_url: DEFAULT_BASE_URL.to_string(),
-            container,
         }
     }
 
@@ -202,10 +184,6 @@ impl ContentSource for LibroSource {
         }
     }
 
-    fn password_env_var(&self) -> Option<&'static str> {
-        Some(PASSWORD_ENV)
-    }
-
     fn sort_key(&self) -> u32 {
         1
     }
@@ -326,18 +304,5 @@ fn source_account_from_auth(auth: &LibroAuthFile) -> SourceAccount {
         marketplace: auth.marketplace.clone(),
         label: auth.label.clone().or_else(|| Some(auth.email.clone())),
         scan_enabled: true,
-    }
-}
-
-/// Parse `[sources.libro]` into a [`LibroSource`].
-#[must_use]
-pub fn from_config(config: &Config) -> LibroSource {
-    LibroSource::from_config(config)
-}
-
-/// Register Libro.fm when `[sources.libro] enabled` (default true).
-pub fn register(registry: &mut SourceRegistry, config: &Config) {
-    if config.sources.is_enabled(ID) {
-        registry.register(Arc::new(from_config(config)));
     }
 }

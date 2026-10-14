@@ -21,13 +21,12 @@ community tooling ([audiobook-dl](https://github.com/jo1gi/audiobook-dl),
 | Plain path | Matches Libro.fm today (no `bookclerk-media`) |
 | DRM | Owned by the source plugin (Audible: Adrm/Widevine); host never sees keys |
 | Auth storage | Per-account tokens in `encrypted_secrets` (DB), keyed by account id |
-| Config plugins | `[sources.<id>]` enable + source knobs; `[integrations.*]` reserved for third-party hooks |
+| Config plugins | Plugin instance document (`[[settings]]` schema); enablement is a deployment per host |
 | Diagnostics | Top-level `[diagnostics]` only (not an integration plugin) |
 
-Sources are registered from config like a small plugin table: set
-`[sources.chirp] enabled = false` (or `BOOKCLERK_SOURCE_CHIRP_ENABLED=0`) to
-keep the binary from loading that store. Store-specific knobs live on the
-same table (`bitrate`, `container`, `access` as applicable). Crash/error-burst
+Sources are plugin instances: `bookclerk plugins disable chirp` keeps this
+host from loading that store. Store-specific knobs (`bitrate`, `container`,
+`access` as applicable) are the plugin's declared settings. Crash/error-burst
 reporting stays under `[diagnostics]` — distinct from `[integrations.*]`.
 
 ---
@@ -297,17 +296,14 @@ Test accounts (empty owned libraries except Chirp auto-entitlement):
 | GraphicAudio | Login OK; scan upserts **0** owned titles (5 promotional samples skipped) |
 | Chirp | Login OK (`user_id=5330622`); scan found **Firefly: Big Damn Hero** (`product_id=444622`) |
 
-Configure passwords via env (never argv):
+Connect each store in the Accounts UI (email + password; the password is
+sealed in the database, never read from env or argv), then:
 
 ```bash
-export BOOKCLERK_GA_PASSWORD='…'
-export BOOKCLERK_CHIRP_PASSWORD='…'
-bookclerk auth login --source graphicaudio --email you+ga@example.com
-bookclerk auth login --source chirp --email you+chirp@example.com
 bookclerk library scan --source graphicaudio
 bookclerk library scan --source chirp
 # After verification, disable scan inclusion:
-bookclerk auth set-scan <account> --scan false
+bookclerk library set-scan <account> --source graphicaudio --scan false
 ```
 
 Probe harness still uses `TEST_GA_*` / `TEST_CHIRP_*` for Python smoke tests.
@@ -342,22 +338,22 @@ activations (`client_id`); Browser Player is a separate website feature (no
 device-slot language in FAQ). Magento ZIP links live under
 [My Downloadable Products](https://www.graphicaudio.net/downloadable/customer/products/).
 
-### Expected Bookclerk functionality (`[sources.graphicaudio] access`)
+### Expected Bookclerk functionality (`access` setting)
 
 1. **Browser Player (default: `access = "web"`)** — **implemented**  
    Magento login → `library/index/content_library` →
    `/library/player/listen/title/{slug}/` → `<audio src>` on
    `media.graphicaudio.net` → download with **CloudFront signed cookies**
    set by the player page (bare URL without cookies returns 403). No
-   device slot. Requires `BOOKCLERK_GA_PASSWORD` (same as login). Login does
-   **not** register an Access App device.
+   device slot. Requires the account password stored at connect time. Login
+   does **not** register an Access App device.
 
 2. **Magento ZIP (opt-in: `access = "zip"`)** — **implemented**  
    Magento customer session → My Downloadable Products → follow download
    link (307 → signed CloudFront ZIP) → extract M4B/MP3/FLAC →
    `PlainFetch` (`m4b_path` when M4B). No Access App device slot.
    Each Magento link hit consumes one of ≤3 download attempts — transfer
-   must complete after resolve. Same password env as Browser Player.
+   must complete after resolve. Same stored password as Browser Player.
 
 3. **Access App API (opt-in: `access = "device"`)** — **implemented** (streaming)  
    `POST /access/activation/login` + `api/products` + `api/links` → Hi/Lo
@@ -368,17 +364,13 @@ device-slot language in FAQ). Magento ZIP links live under
 
 **Config:**
 
-```toml
-[sources.graphicaudio]
-enabled = true
-access = "web"       # web | zip | device
-# bitrate = "hi"     # hi | lo (device)
-# container = "auto" # auto | m4b | mp3 | flac (zip)
+```bash
+bookclerk plugins config set graphicaudio access web       # web | zip | device
+bookclerk plugins config set graphicaudio bitrate hi       # hi | lo (device)
+bookclerk plugins config set graphicaudio container auto   # auto | m4b | mp3 | flac (zip)
 ```
 
-Env override: `BOOKCLERK_GA_ACCESS` (legacy alias `BOOKCLERK_GA_FETCH`).
-Disable registration with `enabled = false` or
-`BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED=0`. There is no ZIP→Browser→App cascade —
+Disable with `bookclerk plugins disable graphicaudio`. There is no ZIP→Browser→App cascade —
 pick one path explicitly (default web).
 
 ### Live purchase probe (Sons of Ares Vol. 1, product `5273`)

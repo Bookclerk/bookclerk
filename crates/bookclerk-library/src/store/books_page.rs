@@ -32,7 +32,8 @@ const BOOK_PAGE_CHUNK: usize = 64;
 ///
 /// Named so a later column added at the end of the table cannot shift this
 /// positional map. The list matches the catalog row the handler returns.
-const BOOK_PAGE_COLUMNS: &str = "id, uuid, source, account_id, product_id, asin, isbn, \
+const BOOK_PAGE_COLUMNS: &str =
+    "id, uuid, plugin_key, source, account_id, product_id, asin, isbn, \
 marketplace, title, authors, narrators, series, series_index, series_asin, acquire_status, \
 storage_key, error_message, purchased_at, tags, rating_overall, rating_performance, \
 rating_story, is_finished, pdf_status, pdf_storage_key, publisher, length_minutes, \
@@ -610,6 +611,7 @@ fn book_from_row(row: &DbRow) -> Result<BookRecord> {
     map_book(books::Model {
         id: cells.int()?,
         uuid: cells.text()?,
+        plugin_key: cells.text()?,
         source: cells.text()?,
         account_id: cells.text()?,
         product_id: cells.text()?,
@@ -752,7 +754,7 @@ mod tests {
     /// before `beta` because `G` < `b`.
     async fn assert_mixed_case_pages(store: &LibraryStore) {
         store
-            .upsert_account("case", "us", None, false, "audible")
+            .upsert_account("audible", "case", "us", None, false, "audible")
             .await
             .unwrap();
         for (uuid, title) in [
@@ -1022,11 +1024,11 @@ mod tests {
     async fn filtered_page_sorts_counts_and_does_not_return_the_catalog() {
         let store = memory_store().await;
         store
-            .upsert_account("envelope-a", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
             .unwrap();
         store
-            .upsert_account("envelope-b", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-b", "us", None, false, "audible")
             .await
             .unwrap();
         for i in 0..30 {
@@ -1095,11 +1097,11 @@ mod tests {
     async fn ten_thousand_page_plan_uses_the_nocase_index() {
         let store = memory_store().await;
         store
-            .upsert_account("envelope-a", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
             .unwrap();
         store
-            .upsert_account("envelope-b", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-b", "us", None, false, "audible")
             .await
             .unwrap();
         seed_envelope_books(&store, 10_000).await;
@@ -1185,7 +1187,7 @@ mod tests {
             let end = (start + chunk).min(count);
             let mut sql = String::from(
                 "INSERT INTO books (
-                    uuid, source, account_id, product_id, asin, marketplace, title,
+                    uuid, plugin_key, source, account_id, product_id, asin, marketplace, title,
                     acquire_status, pdf_status, is_finished, is_abridged, content_kind,
                     created_at, updated_at
                 ) VALUES ",
@@ -1195,7 +1197,7 @@ mod tests {
                 if i != start {
                     sql.push_str(", ");
                 }
-                sql.push_str("(?, 'audible', ?, ?, ?, 'us', ?, ?, 'not_acquired', 0, 0, 'book', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
+                sql.push_str("(?, 'audible', 'audible', ?, ?, ?, 'us', ?, ?, 'not_acquired', 0, 0, 'book', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
                 let account = if i < 8_000 {
                     "envelope-a"
                 } else {
@@ -1248,7 +1250,7 @@ mod tests {
     async fn uuid_page_accepts_five_hundred_search_hits() {
         let store = memory_store().await;
         store
-            .upsert_account("envelope-a", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
             .unwrap();
         let mut uuids = Vec::with_capacity(500);
@@ -1315,7 +1317,7 @@ mod tests {
         let db = store.db.clone();
         let store = store.with_typed_exec(std::sync::Arc::new(CapsGuest { db }));
         store
-            .upsert_account("envelope-a", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
             .unwrap();
         let mut uuids = Vec::with_capacity(500);
@@ -1390,7 +1392,7 @@ mod tests {
         let db = store.db.clone();
         let store = store.with_typed_exec(std::sync::Arc::new(CapsGuest { db }));
         store
-            .upsert_account("envelope-a", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
             .unwrap();
         seed_envelope_books(&store, 256).await;
@@ -1577,7 +1579,7 @@ mod tests {
     async fn filtered_page_of_enriched_rows_shrinks_to_the_result_cap() {
         let store = capped_store().await;
         store
-            .upsert_account("envelope-a", "us", None, false, "audible")
+            .upsert_account("audible", "envelope-a", "us", None, false, "audible")
             .await
             .unwrap();
         seed_envelope_books(&store, 64).await;
@@ -1622,7 +1624,7 @@ mod tests {
     async fn uuid_page_hydrates_mixed_case_stored_ids() {
         let store = memory_store().await;
         store
-            .upsert_account("case", "us", None, false, "audible")
+            .upsert_account("audible", "case", "us", None, false, "audible")
             .await
             .unwrap();
         for (uuid, title) in [

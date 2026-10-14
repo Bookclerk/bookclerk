@@ -28,9 +28,8 @@ Imports typically include:
 - Naming templates and user metadata where present
 
 IdentityTokens and other store credentials are **not** converted by migrate
-(file-based auth leftovers are discarded). After import, re-authenticate with
-`bookclerk auth login --source audible`, or import an audible-rs auth file via
-`bookclerk auth import` (Audible plugin — see [sources.md](sources.md)).
+(file-based auth leftovers are discarded). After import, re-connect Audible
+from the Accounts UI (see [sources.md](sources.md)).
 
 Example AccountsSettings shape:
 [`examples/AccountsSettings.example.json`](../examples/AccountsSettings.example.json).
@@ -114,9 +113,11 @@ native flat layout. See `bookclerk export postgres --help`.
 
 ## After migrate
 
-1. Review `$BOOKCLERK_FILES_DIR/config.toml` — enable only the sources you use.
-2. Confirm auth: `bookclerk auth list` / `auth status`.
-3. Set destination roots (`output.local` / `output.s3`).
+1. `bookclerk plugins list` — enable only the stores you use
+   (`bookclerk plugins disable <id>` retires the rest on this host).
+2. Confirm accounts: `bookclerk library accounts` / `library status`.
+3. Check destination settings (`bookclerk plugins config get local`; the
+   imported books root is seeded there).
 4. Optionally `library scan --match-storage` if books already exist on disk/S3.
 5. Keep `library.auto_acquire = false` until a dry run looks right.
 

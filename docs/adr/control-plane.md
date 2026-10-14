@@ -1,7 +1,8 @@
 # ADR: Control plane — bootstrap, host identity, and database configuration
 
-- **Status:** Accepted for the Phase 0 / bounded Phase 1 spike (Refs #192)
-- **Date:** 2026-09-29
+- **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided, not
+  yet implemented (Refs #192)
+- **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13)
 - **Related:** [SQL database contract](sql-database-contract.md),
   [schema versioning](schema-versioning.md),
   [plugin capabilities v3](plugin-capabilities-v3.md),
@@ -255,81 +256,265 @@ before a receipt replay. `PATCH /api/settings` rejects a body that mixes
 `events.*` with file-backed keys before either authority is written. The
 response includes `revision` on success and `current_revision` on conflict.
 
-## Phase 2 addendum: one plugin instance
+## Phase 2: plugin instances, declared schemas, PluginKey-keyed accounts
+
+Phase 2 makes the database the only home for plugin configuration and
+enablement. The host hard-codes nothing per plugin: what a plugin can be
+configured with comes from its manifest, where it runs comes from a
+deployment row, and which accounts it serves comes from the plugin key.
+
+### Instances
 
 A plugin instance is a durable id, not a function of the plugin key, alias,
-capability, or host. `plugin_instances.plugin_instance_id` is a hyphenated UUID.
-Two rows may name the same canonical plugin key. The instance row stores that
-key and nothing about which host runs it.
+capability, or host. `plugin_instances.plugin_instance_id` is a hyphenated
+UUID with an operator-facing `display_name`. Two rows may name the same
+canonical plugin key, and both may run on one host.
+`plugin_instance_defaults` names the plugin's **default instance**: the one a
+bare plugin key or alias routes to when a job does not pin an instance.
+Enrollment creates it; `bookclerk plugins instances create` adds more.
+
+### Declared schema
+
+A plugin declares its operator settings in `plugin.toml` as `[[settings]]`
+entries (`key`, `label`, `type` ∈ `string | bool | integer | enum | secret`,
+`values`, `default`, `required`, `description`). The manifest is the authority,
+as it already is for identity and capabilities. `describe().configOptions` is
+presentation only: an empty list means "derive from the manifest"; a non-empty
+list must equal the manifest-derived list or the spawn fails
+(`validate_described_config_options`). A guest cannot widen its schema at
+runtime.
+
+Every plugin declares a semver `version` in `plugin.toml`; a manifest
+without one is not enrolled and `bookclerk plugin check` rejects it.
+Enrollment pins a copy of the schema in `plugin_schemas(plugin_key,
+schema_sha256, package_version, settings_json, recorded_at,
+recorded_by_host)` and the version orders the pin:
+
+- a newer local package re-pins the row;
+- the same version with a different schema re-pins in place with a warning
+  (an unreleased edit). Equality is a fingerprint of the normalized schema,
+  not of the manifest bytes, so line endings or comments never move the pin;
+- an older local package is **stale**: the row is untouched, enrollment
+  skips the plugin, and the reconciler retires a running guest and records
+  an `error` observation naming the pinned version and the host that pinned
+  it. The operator upgrades that host's package or rolls the other host
+  back.
+
+Every write to the row is a compare-and-swap on the row that was read, so
+two hosts pinning at once cannot leave an older version on top of a newer
+one. Every enrollment pass, not only the one that moved the pin, reconciles
+the plugin's instance documents against the pinned schema: settings the
+schema no longer declares, declares as secrets, or whose value no longer
+fits the entry's kind (a type or enum change), and secret refs for keys that
+are gone or now plain, are dropped, so a document that lost a race or was
+written under an earlier manifest is repaired on the next restart instead of
+staying invalid. `CONFIG` resolution applies the same rules at spawn and
+enforces `required` on secrets as well as settings. A plugin that declares
+no non-secret settings needs no `[vars]` binding and spawns with an empty
+`CONFIG`.
+
+`PluginKey` stays versionless, so instances, deployments, and accounts
+survive an upgrade. Writes through the API or CLI validate against the pinned
+row, so an administrator on one host can configure a plugin that is only
+installed on another. A spawn still validates the document against the
+host's local manifest: unknown keys are dropped with a warning, a missing
+required key is an `error` observation.
+
+### Instance document
 
 The instance's settings and secret refs live in `configuration_documents` at
-scope `plugin_instance`, namespace `config`, schema version 1. Secret refs
-store names only. Ciphertext stays in `encrypted_secrets` (`kind =
-plugin_instance`). Compare-and-swap uses the same revision and receipt path as
-`core.events`.
+scope `plugin_instance`, namespace `config`, schema version 1. The effective
+`CONFIG` binding for a spawn is the schema defaults with the document's
+settings on top. A `secret` setting is never stored in the document: the
+value is sealed into `encrypted_secrets` (`kind = plugin_instance`) and the
+document carries only a ref name; the guest receives it in `SECRETS`.
+Unknown keys, type mismatches, enum values outside `values`, and plain values
+for a secret are rejected at write time. Compare-and-swap uses the same
+revision and receipt path as `core.events`. `[vars]` stays the declaration
+that the guest receives `CONFIG`; it carries no defaults.
 
-`plugin_deployments` is the desired row: one instance, one host, `desired =
-present`. `plugin_deployment_observations` is written only by that host's
-reconciler (`installed`, `running`, `healthy`, `error`). A desired write does
-not update observations. This slice reconciles the local host only. It does
-not place work, roll versions, or uninstall.
+### Deployments are the enable switch
 
-The reconciler passes the deployment's instance id and resolved bindings into
-`open`. It does not look the instance up by plugin key. A healthy observation
-is skipped only while that session's process is still running. The daemon
-keeps that session map for the process lifetime, so the next tick sees the
-same guest. Config reload copies source, integration, and storage sessions that are bound
-to a present plugin instance id onto the replacement registries and does not
-stop those sessions. A transitional guest for the same plugin key is dropped
-and, for integrations, stopped. Install stages the archive on a blocking
-thread while the host mutation lock is held, then runs health. Health failure
-rolls that staged tree back before commit. A crash between stage and commit
-can leave the tree active; the next process does not replay that pre-commit
-health check. Packages come from `plugin-packages/` on the local files
-directory, not from a download.
+`plugin_deployments` holds `desired ∈ {present, absent}` per (instance, host).
+"Enabled on this host" means a present deployment. `bookclerk plugins
+enable|disable [--host]`, `PUT /api/config/plugin-instances/{id}/deployments/
+{host_id}`, and the Settings page switch write that row; nothing reads an
+`enabled` key from TOML. The host's reconciler spawns present deployments,
+retires a running guest when desired flips to absent, and records
+observations (`installed`, `running`, `healthy`, `error`, `retired`). A
+desired write never updates observations.
 
-A deployed storefront is registered under its plugin instance id. Job and
-API lookup (`registry_for_job`, then `SourceRegistry::get`) resolves that id
-to that guest. A plugin key or alias resolves only when exactly one
-registered source matches. Two instances are distinct only by instance id
-(`registry.get(id)`). Key and alias lookups, scan, acquire, and storage slots
-fail closed when a key is shared. Scan skips only that key and continues the
-other storefronts. `sources.graphicaudio.enabled = false` retires the running
-guest. CLI scan and acquire use the instance document and require `--instance`
-when selection is ambiguous. The key alone does not pick one of them.
+Enrollment is generic and idempotent, and runs in both the CLI and the daemon
+bootstrap. For every plugin discovered on the host except those whose only
+entrypoint is `databaseAdapter`: pin the schema; ensure the default instance
+and, when its document is absent, seed it with the schema defaults; ensure
+this host's deployment with `desired = present` when a covering consent grant
+exists and `absent` otherwise. Platform guests auto-grant, so `local` and
+`sqlite` come up enabled on a fresh files directory; third-party plugins stay
+absent until an operator approves and enables them.
 
-GraphicAudio is the first migrated caller. When discovery or the install
-ledger contains manifest id `graphicaudio`, startup ensures one instance, one
-local deployment, and, if the document is absent, imports `access`,
-`base_url`, `store_url`, `bitrate`, and `container` from
-`[sources.graphicaudio]`. After that document exists it is the authority for
-those keys. `BOOKCLERK_GA_ACCESS` is not a live override. `enabled` stays in
-TOML. The GraphicAudio write allowlist is hard-coded in the host. It is not
-derived from `describe()`, and that schema debt stays until a later phase.
-Other plugins with no instance document keep `settings_table_for`.
+### One bootstrap
 
-Accounts and `SourceScope` stay keyed by the storefront id (`graphicaudio`),
-not by `PluginInstanceId`. Two instances of one key share credentials and scan
-rows. Acquire fails closed when that key is ambiguous instead of moving those
-rows onto the instance id. Scan records a warning and skips only the ambiguous
-key. When that key is the only store that would have been scanned, the error
-is that warning.
+`bookclerk_plugin_host::open_host_control_plane` is the single path both
+binaries use: open the database, align the cluster secret root, load or mint
+the host identity, heartbeat, import `core.events`, enrol local plugins, then
+load sources, destinations, and integrations from this host's present
+deployments only. A plugin with no present deployment here is not loaded;
+there is no TOML fallback and no transitional guest. The CLI spawns guests
+for the lifetime of a command and does not write observations, so "route to
+the healthy default" degrades to "route to the present default" there.
+
+### Accounts belong to the plugin, not the instance
+
+`accounts` is keyed `(plugin_key, account_id)`; `books`, `ignored_titles`,
+and `account_links` carry `plugin_key` with composite foreign keys; `source`
+remains the display alias. `SourceScope` carries the plugin key (isolation)
+and the source id (display). Any instance of that plugin on any host may scan
+or acquire for any of its accounts, which is what lets a cluster assign work
+freely. An `account_id` is unique per plugin, not globally: the same email is
+a legitimate account on two stores that both use email as the id. Paths that
+must pick one row (`find_account`, `library set-scan`, `library
+revoke-account`, portal revoke) take the plugin key, or `--source`, and fail
+with a clear conflict when a bare id matches two plugins.
+`title_request_sources.source` and `domain_events.source` are provenance,
+not ownership, and are unchanged.
+
+### Routing
+
+`SourceRegistry::route(needle, pin)` resolves an instance id exactly, and a
+plugin key or alias to the default instance when it is present on this host
+(else the oldest). Jobs carry `plugin_instance_id: Option<String>`; `library
+scan|acquire --instance` and the API bodies may set it. `scan_all` iterates
+plugin keys, one routed instance each. The earlier "ambiguous key" fail-closed
+paths are gone.
+
+### What left `config.toml`
+
+`[sources.<id>]`, `[output.local]`, `[output.s3]`, `[integrations.<id>]`,
+their `enabled` flags, their `plugin` occupancy keys, and every environment
+override for them (`BOOKCLERK_SOURCE_<ID>_ENABLED`, `BOOKCLERK_OUTPUT_*`,
+`BOOKCLERK_S3_*`, `BOOKCLERK_AWS_*`, `BOOKCLERK_GA_*`,
+`BOOKCLERK_AUDIBLE_BITRATE`, `BOOKCLERK_LIBRO_CONTAINER`,
+`BOOKCLERK_ABS_API_KEY`, `BOOKCLERK_*_PASSWORD`). Per-destination `root`,
+`prefix`, naming, S3 bucket/region/endpoint, and S3 credentials are
+`[[settings]]` of the `local` / `s3` plugins; `bookclerk config
+s3-credentials` and the `kind = s3` operator secret row are gone. The host's
+in-process `LocalFsBackend` / `S3Backend` fallbacks are gone with them. A
+network host the document names (an S3 `endpoint`, the Audiobookshelf
+`base_url`) is granted to the guest as a deployed endpoint derived from the
+document, not from TOML. Store passwords reach a guest only as the sealed
+secret stored when the account is connected.
+
+Bootstrap stays in TOML and env: `[database]`, `master.key`,
+`host-identity.json`, `daemon.listen`. Database-adapter plugins are not
+instances in this phase. The shared `[output]` table (format, Widevine,
+naming profile, sidecars, multi-destination policy) also stays in TOML for
+now; moving it to a `core.output` cluster document is deferred.
 
 KV and Queues are unchanged. Named SQL bindings do not replace them.
+
+## Phase 3 decision: Workers-parity platform services
+
+Decided 2026-10-13 with the owner; implemented in a follow-up stacked on the
+Phase 2 change. The goal is a host that can place any plugin instance on any
+host, or subset of hosts, as many times as needed, with plugins reacting to
+each other only through events the core defines, and plugin development fully
+decentralised.
+
+### What is already in place
+
+The manifest is Wrangler-shaped: tables name bindings on `env`, and the guest
+exports handlers the host invokes (`job(controller)` for `[triggers]`,
+`event(batch)` for `[[events.consumers]]`). `domain_events` is a durable
+outbox with fenced delivery, leases, retries, dead-lettering, and per-node
+subscriber catalogs (`event_deliveries`, `event_subscribers`). The host
+publishes `book_acquired` through the same outbox a plugin's `EVENTS` binding
+uses, and Audiobookshelf consumes it in `event(batch)`; nothing in the host
+names an integration. That is the model Phase 3 extends. It does not add a
+second way to declare interest.
+
+### Decisions
+
+- **No `[[emits]]` / `[[subscribes]]`.** Plugins declare bindings and
+  implement handlers, as Workers do. `[[events.producers]]` and
+  `[[events.consumers]]` remain the bindings of the domain-event bus; the
+  event catalog (types, payload schemas, versions) is core-owned. A plugin
+  that does not export a handler for a binding it declares fails to load.
+- **Queues parity.** `[queues]` with `[[queues.producers]]` and
+  `[[queues.consumers]]` (declared today, "not implemented yet") is
+  implemented on the outbox tables, keyed by queue name:
+  `env.<BINDING>.send()` / `sendBatch()` and a `queue(batch)` handler with
+  per-message `ack` / `retry` mirroring `event(batch)`. The domain-event bus
+  becomes one well-known queue the host publishes to; `event(batch)` stays
+  as its typed alias. Delivery semantics are those `event_deliveries`
+  already implement.
+- **KV parity.** `[[kv_namespaces]]` (declared today, "not implemented yet")
+  is implemented on the library database, scoped per plugin key and
+  namespace, with the Workers surface (`get`, `put`, `delete`, `list`,
+  expiration, metadata). Plugin cursors, tokens, and caches move there from
+  the per-host `plugin-state` directories, which remain scratch only. This is
+  what makes an instance host-independent.
+- **The host runs on the same services.** Deployment changes, configuration
+  change wakeups (the Phase 3 item in *Remaining work*), and retire signals
+  are queue messages host subsystems consume; the reconciler on each host is
+  a consumer. There is no second coordination mechanism beside the database.
+- **Scheduler.** `plugin_deployments` stays the scheduler's output. It gains
+  a replica count and placement constraints (host labels; a `local`
+  destination is bound to a disk, a workerd-only plugin to a host with the
+  pinned runtime). Enrollment stops writing "this host, present" once a
+  scheduler exists; until then it keeps doing so.
+- **Out of scope.** Durable Objects, R2 (destinations are the storage
+  abstraction), and cron triggers (jobs cover them). Database adapters as
+  instances stay Phase 4.
+
+### Implementation plan (stacked PR)
+
+Ordered so each step is testable on its own and the branch builds at every
+commit; the Phase 2 PR carries versioned schema pinning because the rest
+depends on hosts agreeing on a schema.
+
+1. **Queues on the outbox.** Type `[queues]` in the manifest; add
+   `queue_name` to `domain_events` and `event_deliveries` (the domain bus is
+   `core.events`); route `queue(batch)` through the workerd bridge beside
+   `event(batch)`; `env.<Q>.send()` in the SDK; consumer catalog rows per
+   queue; conformance tests in `bookclerk-plugin-e2e`; `bookclerk queues
+   list|inspect` and `GET /api/queues` for operators.
+2. **KV on the library.** `plugin_kv(plugin_key, namespace, key, value,
+   metadata, expires_at)`; the `KV` binding in the workerd bridge and native
+   RPC; SDK surface; size and count limits in `[[kv_namespaces]]`; a
+   two-connection test proving an instance moved to another host reads its
+   own cursor.
+3. **Host subsystems as consumers.** `host.<host_id>` queues; the reconciler
+   and the configuration-change wakeup consume them instead of the 5 s tick;
+   `deployment.changed` published on every deployment write; the CLI stays a
+   producer only.
+4. **Placement.** `replicas` and `constraints` on `plugin_deployments`;
+   `hosts.labels`; `bookclerk plugins deploy <plugin> --replicas N --on
+   <label>`; the Settings page shows placement per instance. The scheduler
+   is a singleton maintenance lease (already listed under Phase 3) that
+   writes deployments; each host's reconciler converges as today.
+5. **Docs and ADR.** `plugins.md` loses "not implemented yet" for KV and
+   Queues; this section records any deviation.
+
+Steps 1 and 2 are independent of each other and of 3; 4 needs 3.
 
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `hosts`,
   `configuration_documents`, `configuration_audit`,
   `configuration_changes`, `plugin_instances`, `plugin_instance_defaults`,
-  `plugin_deployments`, and `plugin_deployment_observations`.
-  `plugin_instance_defaults` claims one id per plugin key for
-  `ensure_plugin_instance`. Explicit create does not write that row, so two
-  instances may still share a key. Checksum of the unreleased pack changes. Existing
-  development databases fail closed until recreated (`cargo reset --yes` or a
-  new database). That matches the unreleased-schema rule.
+  `plugin_deployments`, `plugin_deployment_observations`, and
+  `plugin_schemas`. `plugin_instance_defaults` names the plugin's default
+  instance; explicit create adds further instances of the same key.
+  `accounts` is unique on `(plugin_key, account_id)`; `books`,
+  `ignored_titles`, and `account_links` carry `plugin_key`. Checksum of the
+  unreleased pack changes. Existing development databases fail closed until
+  recreated (`cargo reset --yes` or a new database). That matches the
+  unreleased-schema rule.
 - `bookclerk config get/set` for `events.*` reads and writes the database.
-  Other keys still edit `config.toml`.
+  Plugin settings and enablement are `bookclerk plugins config` and
+  `bookclerk plugins enable|disable`, also database. The remaining `config`
+  keys still edit `config.toml`.
 - `bookclerk config show` prints `events.authority = database` when the
   library can be read, and `transitional` when it cannot.
 - Single-host SQLite still starts by opening the local database, minting
@@ -340,19 +525,31 @@ KV and Queues are unchanged. Named SQL bindings do not replace them.
 
 ## Remaining work
 
-Not in this spike, and not claimed as production HA:
+Not in this phase, and not claimed as production HA:
 
-- One local deployment is reconciled (Phase 2 vertical slice). Placement,
-  multi-host reconciliation, rollouts, and moving the rest of `config.toml`
-  onto instance documents are still open.
-- Moving the rest of `config.toml` (library, jobs, sources, output, media,
-  plugins, diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap
-  is part of that, not this slice.
+- `core.output`: the shared `[output]` table (format, Widevine, naming
+  profile, sidecars, multi-destination policy) is still TOML. Moving it to a
+  cluster document like `core.events` is the next configuration domain.
+- Moving the rest of `config.toml` (library, jobs, media, plugins,
+  diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap is part
+  of that.
 - Job placement, cluster semaphores, and singleton maintenance leases
   (Phase 3). Heartbeats do not claim jobs. Do not run two daemons against one
-  database and expect safe active/active acquire.
-- Multiple database targets and host-local SQLite affinity (Phase 4).
+  database and expect safe active/active acquire. A notification-driven
+  wakeup for configuration changes is also Phase 3; today every process
+  re-reads documents on a 5 s tick. The Phase 3 decision above fixes the
+  shape: Queues and KV on the library database, host subsystems as
+  consumers, a scheduler that writes deployments.
+- Multi-host reconciliation, placement, rollouts, and uninstall: a host only
+  reconciles its own deployments. Database-adapter plugins as instances and
+  multiple database targets (Phase 4).
 - Dashboard, drain, and rolling upgrades (Phase 5).
+- Schema pinning compares package versions, not schema contents: a newer
+  package that only renames a key still drops the operator's value for the
+  old name. A declared per-key migration in `[[settings]]` is a possible
+  later refinement.
+- The CLI writes no observations, so its routing prefers the present default
+  instance rather than the healthy one.
 - Resizing the local event delivery task count without a process restart.
 - A general key-management provider. Operators copy `master.key`.
 - Install crash window between stage and commit. There is no durable
@@ -363,11 +560,7 @@ Not in this spike, and not claimed as production HA:
   and the health check. Extract runs on a blocking thread. The lock is still
   held across the health await so a second installer cannot commit the same
   tree.
-- GraphicAudio writable settings remain a hard-coded allowlist. They are not
-  derived from `describe()`.
-- Accounts and `SourceScope` stay storefront-keyed. Moving those rows onto
-  the plugin instance id is a later phase.
 - D1 multi-host execution. The executing D1 tests in this repository are an
-  HTTP mock over one SQLite connection. This spike's shared-database proof is
-  two PostgreSQL pools plus two SQLite connections. A live D1 database was
-  not provisioned.
+  HTTP mock over one SQLite connection. The shared-database proof is two
+  PostgreSQL pools plus two SQLite connections. A live D1 database was not
+  provisioned.

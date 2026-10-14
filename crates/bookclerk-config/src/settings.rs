@@ -15,7 +15,7 @@ use crate::naming_profile::NamingProfile;
 use crate::output::OutputConfig;
 use crate::paths::{resolve_config_path, resolve_files_dir, Paths};
 use crate::pipeline_opts::{ChapterJsonMode, OutputFormat};
-use crate::plugins::{IntegrationsConfig, SourcesConfig};
+use crate::plugins::IntegrationsConfig;
 
 /// Top-level Bookclerk configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -36,9 +36,7 @@ pub struct Config {
     pub daemon: DaemonConfig,
     /// Master-key wrapping passphrase (`[auth]`).
     pub auth: AuthConfig,
-    /// Content-source plugins (`[sources.audible]`, `[sources.graphicaudio]`, …).
-    pub sources: SourcesConfig,
-    /// Optional third-party integrations (`[integrations.*]`). Not diagnostics.
+    /// Connect-portal settings (`[integrations]`). Not diagnostics.
     pub integrations: IntegrationsConfig,
     /// Discovery / recommendations / request queue (`[discovery]`).
     #[serde(default)]
@@ -535,49 +533,6 @@ impl Config {
                 self.database.postgres.url_file = Some(PathBuf::from(v.trim()));
             }
         }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_LOCAL_ENABLED") {
-            if let Some(enabled) = parse_bool(&v) {
-                self.output.local.enabled = enabled;
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_ENABLED") {
-            if let Some(enabled) = parse_bool(&v) {
-                self.output.s3.enabled = enabled;
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_LOCAL_ROOT") {
-            self.output.local.root = PathBuf::from(v);
-            self.output.local.enabled = true;
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_LOCAL_PREFIX") {
-            self.output.local.prefix = v;
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_BUCKET")
-            .or_else(|_| std::env::var("BOOKCLERK_S3_BUCKET"))
-        {
-            self.output.s3.bucket = v;
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_PREFIX")
-            .or_else(|_| std::env::var("BOOKCLERK_S3_PREFIX"))
-        {
-            self.output.s3.prefix = v;
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_REGION")
-            .or_else(|_| std::env::var("BOOKCLERK_S3_REGION"))
-        {
-            self.output.s3.region = v;
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_ENDPOINT")
-            .or_else(|_| std::env::var("BOOKCLERK_S3_ENDPOINT"))
-        {
-            self.output.s3.endpoint = Some(v);
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_S3_FORCE_PATH_STYLE")
-            .or_else(|_| std::env::var("BOOKCLERK_S3_FORCE_PATH_STYLE"))
-        {
-            self.output.s3.force_path_style =
-                parse_bool(&v).unwrap_or(self.output.s3.force_path_style);
-        }
         self.media.apply_env_overrides();
         self.jobs.apply_env_overrides();
         self.events.apply_env_overrides();
@@ -753,60 +708,10 @@ impl Config {
                 self.library.scan_interval_minutes = n;
             }
         }
-        if let Ok(v) =
-            std::env::var("BOOKCLERK_GA_ACCESS").or_else(|_| std::env::var("BOOKCLERK_GA_FETCH"))
-        {
-            let trimmed = v.trim();
-            if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("auto") {
-                self.sources.set_string("graphicaudio", "access", trimmed);
-            }
-        }
-        // Generic `BOOKCLERK_SOURCE_<ID>_ENABLED` for any source/plugin id
-        // (`AUDIBLE` → `audible`, `MY_STORE` → `my_store`, …).
-        apply_source_enabled_env_overrides(&mut self.sources, std::env::vars());
         if let Ok(v) = std::env::var("BOOKCLERK_INTEGRATIONS_PUBLIC_ORIGIN") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {
                 self.integrations.public_origin = Some(trimmed.to_string());
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_ABS_BASE_URL") {
-            self.integrations.set_audiobookshelf_string("base_url", v);
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_ABS_API_KEY") {
-            let trimmed = v.trim();
-            if !trimmed.is_empty() {
-                self.integrations
-                    .set_audiobookshelf_string("api_key", trimmed);
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_ABS_LIBRARY_ID") {
-            let trimmed = v.trim();
-            if !trimmed.is_empty() {
-                self.integrations
-                    .set_audiobookshelf_string("library_id", trimmed);
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_ABS_ENABLED") {
-            if let Some(b) = parse_bool(&v) {
-                self.integrations.set_audiobookshelf_bool("enabled", b);
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_ABS_WATCH_USERS") {
-            if let Some(b) = parse_bool(&v) {
-                self.integrations.set_audiobookshelf_bool("watch_users", b);
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_ABS_NOTIFY_SCAN_ON_ACQUIRE") {
-            if let Some(b) = parse_bool(&v) {
-                self.integrations
-                    .set_audiobookshelf_bool("notify_scan_on_acquire", b);
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_ABS_ALLOW_CREDENTIAL_LOGIN") {
-            if let Some(b) = parse_bool(&v) {
-                self.integrations
-                    .set_audiobookshelf_bool("allow_credential_login", b);
             }
         }
         if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_WIDEVINE")
@@ -889,31 +794,6 @@ impl Config {
                 self.output.format = output;
             }
         }
-        if let Ok(v) = std::env::var("BOOKCLERK_AUDIBLE_BITRATE") {
-            let bitrate = match v.trim().to_ascii_lowercase().as_str() {
-                "normal" => "normal",
-                _ => "high",
-            };
-            self.sources.set_string("audible", "bitrate", bitrate);
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_LIBRO_CONTAINER") {
-            if !v.trim().is_empty() {
-                self.sources
-                    .set_string("libro", "container", v.trim().to_ascii_lowercase());
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_GA_BITRATE") {
-            if !v.trim().is_empty() {
-                self.sources
-                    .set_string("graphicaudio", "bitrate", v.trim().to_ascii_lowercase());
-            }
-        }
-        if let Ok(v) = std::env::var("BOOKCLERK_GA_CONTAINER") {
-            if !v.trim().is_empty() {
-                self.sources
-                    .set_string("graphicaudio", "container", v.trim().to_ascii_lowercase());
-            }
-        }
         if let Ok(v) = std::env::var("BOOKCLERK_OUTPUT_COVER_SIZE")
             .or_else(|_| std::env::var("BOOKCLERK_COVER_SIZE"))
         {
@@ -937,7 +817,6 @@ impl Config {
     /// Returns an error when the operation fails.
     pub fn validate(&self) -> Result<()> {
         self.database.validate()?;
-        self.output.validate_destinations()?;
         self.auth.oidc.validate()?;
         if self.diagnostics.share_reports && self.diagnostics.effective_collector_url().is_empty() {
             return Err(ConfigError::Invalid(
@@ -946,24 +825,6 @@ impl Config {
                  set when running cargo build"
                     .into(),
             ));
-        }
-        // Reserved names that must not appear as opaque plugin tables.
-        if self.integrations.plugins.contains_key("diagnostics") {
-            return Err(ConfigError::Invalid(
-                "unknown field `diagnostics` under [integrations] — use top-level [diagnostics]"
-                    .into(),
-            ));
-        }
-        for reserved in [
-            "claim_ticket_ttl_hours",
-            "public_origin",
-            "portal_session_ttl_hours",
-        ] {
-            if self.integrations.plugins.contains_key(reserved) {
-                return Err(ConfigError::Invalid(format!(
-                    "reserved integrations field `{reserved}` must not be a plugin table"
-                )));
-            }
         }
         Ok(())
     }
@@ -1017,19 +878,10 @@ impl Config {
                 }
             }
         }
-        if let Some(key) = self.integrations.audiobookshelf().api_key {
-            let trimmed = key.trim();
-            if !trimmed.is_empty() {
-                crate::redact::register_secret(trimmed);
-            }
-        }
         for env_key in [
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",
             "AWS_SESSION_TOKEN",
-            "BOOKCLERK_AWS_ACCESS_KEY_ID",
-            "BOOKCLERK_AWS_SECRET_ACCESS_KEY",
-            "BOOKCLERK_AWS_SESSION_TOKEN",
         ] {
             if let Ok(v) = std::env::var(env_key) {
                 let trimmed = v.trim();
@@ -1069,18 +921,15 @@ impl Config {
         }
     }
 
-    /// Resolve relative `output.local.root` under `files_dir`.
+    /// Resolve relative file paths (Widevine CDM, scratch dir, database
+    /// files) under `files_dir`.
     ///
-    /// Keeps absolute roots (Docker `/data/Audiobooks`, classic migrate paths)
-    /// unchanged. Relative defaults like `Audiobooks` become
-    /// `{BOOKCLERK_FILES_DIR}/Audiobooks` so systemd/Docker cwd does not matter.
+    /// Absolute paths are unchanged; relative ones become
+    /// `{BOOKCLERK_FILES_DIR}/<path>` so systemd/Docker cwd does not matter.
     pub fn resolve_relative_paths(&mut self) {
         let Some(paths) = &self.paths else {
             return;
         };
-        if self.output.local.root.is_relative() {
-            self.output.local.root = paths.files_dir.join(&self.output.local.root);
-        }
         if let Some(cdm) = &self.output.widevine_cdm {
             if cdm.is_relative() {
                 self.output.widevine_cdm = Some(paths.files_dir.join(cdm));
@@ -1229,33 +1078,6 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// Apply `BOOKCLERK_SOURCE_<ID>_ENABLED` overrides from an env-like key/value
-/// iterator. `<ID>` is lowercased as the source plugin id.
-fn apply_source_enabled_env_overrides<I, K, V>(sources: &mut crate::SourcesConfig, vars: I)
-where
-    I: IntoIterator<Item = (K, V)>,
-    K: AsRef<str>,
-    V: AsRef<str>,
-{
-    const PREFIX: &str = "BOOKCLERK_SOURCE_";
-    const SUFFIX: &str = "_ENABLED";
-    for (key, value) in vars {
-        let key = key.as_ref();
-        let Some(rest) = key.strip_prefix(PREFIX) else {
-            continue;
-        };
-        let Some(id_part) = rest.strip_suffix(SUFFIX) else {
-            continue;
-        };
-        if id_part.is_empty() {
-            continue;
-        }
-        if let Some(enabled) = parse_bool(value.as_ref()) {
-            sources.set_enabled(&id_part.to_ascii_lowercase(), enabled);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,19 +1095,6 @@ format = "enriched_m4b"
 widevine = true
 xhe_aac = false
 
-[sources.audible]
-bitrate = "high"
-
-[output.local]
-enabled = true
-root = "/data/audiobooks"
-
-[output.s3]
-enabled = false
-bucket = "my-audiobooks"
-prefix = "library/"
-region = "us-east-1"
-
 [daemon]
 listen = "0.0.0.0:8787"
 json_logs = true
@@ -1293,8 +1102,7 @@ json_logs = true
         let cfg = Config::from_toml_str(text, "test").unwrap();
         assert!(cfg.library.auto_acquire);
         assert_eq!(cfg.library.scan_interval_minutes, 30);
-        assert_eq!(cfg.output.enabled_backend_names(), vec!["local"]);
-        assert_eq!(cfg.output.local.root, PathBuf::from("/data/audiobooks"));
+        assert!(cfg.output.widevine);
         assert_eq!(cfg.daemon.listen.as_slice(), ["0.0.0.0:8787"]);
         assert!(!cfg.diagnostics.share_reports);
         assert_eq!(cfg.daemon.auth.tray_handoff_ttl_secs, 180);
@@ -1313,51 +1121,12 @@ json_logs = true
     }
 
     #[test]
-    fn output_path_limit_prefix_and_multi_enabled() {
-        let mut cfg = Config::default();
-        assert_eq!(cfg.output.path_limit_prefix(), "");
-        assert_eq!(cfg.output.enabled_backend_names(), vec!["local"]);
-
-        cfg.output.local.prefix = "books".into();
-        assert_eq!(cfg.output.path_limit_prefix(), "books/");
-
-        // Both destinations may be enabled; S3 prefix wins for key budgeting.
-        cfg.output.s3.enabled = true;
-        cfg.output.s3.bucket = "b".into();
-        cfg.output.s3.prefix = "library/".into();
-        assert_eq!(cfg.output.enabled_backend_names(), vec!["local", "s3"]);
-        assert_eq!(cfg.output.path_limit_prefix(), "library/");
-        assert!(cfg.validate().is_ok());
-
-        cfg.output.local.enabled = false;
-        cfg.output.s3.prefix = "s3-books".into();
-        assert_eq!(cfg.output.path_limit_prefix(), "s3-books/");
-        assert_eq!(cfg.output.enabled_backend_names(), vec!["s3"]);
-    }
-
-    #[test]
     fn normalize_storage_prefix_trims_and_slashes() {
         assert_eq!(normalize_storage_prefix(""), "");
         assert_eq!(normalize_storage_prefix("  "), "");
         assert_eq!(normalize_storage_prefix("library"), "library/");
         assert_eq!(normalize_storage_prefix("library/"), "library/");
         assert_eq!(normalize_storage_prefix("/library"), "library/");
-    }
-
-    #[test]
-    fn sources_graphicaudio_access_from_toml() {
-        let text = r#"
-[sources.graphicaudio]
-access = "zip"
-"#;
-        let cfg = Config::from_toml_str(text, "test").unwrap();
-        assert_eq!(
-            cfg.sources.get_string("graphicaudio", "access"),
-            Some("zip")
-        );
-        // Missing plugin tables default to enabled.
-        assert!(Config::default().sources.is_enabled("audible"));
-        assert!(Config::default().sources.is_enabled("graphicaudio"));
     }
 
     #[test]
@@ -1380,109 +1149,14 @@ collector_url = "https://reports.example"
 [integrations.diagnostics]
 share_reports = true
 "#;
-        let cfg = Config::from_toml_str(text, "test").unwrap();
-        let err = cfg.validate().unwrap_err();
+        // `[integrations]` holds portal knobs only; a nested table is a parse
+        // error so a stale `[integrations.<plugin>]` cannot be silently ignored.
+        let err = Config::from_toml_str(text, "test").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("diagnostics"),
-            "expected reserved diagnostics error, got: {msg}"
+            "expected unknown-field error naming diagnostics, got: {msg}"
         );
-    }
-
-    #[test]
-    fn sources_plugin_enabled_defaults() {
-        let text = r#"
-[sources.chirp]
-enabled = false
-
-[sources.graphicaudio]
-enabled = true
-access = "device"
-bitrate = "lo"
-"#;
-        let cfg = Config::from_toml_str(text, "test").unwrap();
-        assert!(!cfg.sources.is_enabled("chirp"));
-        assert!(cfg.sources.is_enabled("audible"));
-        assert_eq!(
-            cfg.sources.get_string("graphicaudio", "access"),
-            Some("device")
-        );
-        assert_eq!(
-            cfg.sources.get_string("graphicaudio", "bitrate"),
-            Some("lo")
-        );
-    }
-
-    #[test]
-    fn sources_native_knobs() {
-        let text = r#"
-[sources.audible]
-bitrate = "normal"
-
-[sources.libro]
-container = "zip"
-
-[sources.graphicaudio]
-access = "zip"
-bitrate = "lo"
-container = "mp3"
-"#;
-        let cfg = Config::from_toml_str(text, "test").unwrap();
-        assert_eq!(cfg.sources.get_string("audible", "bitrate"), Some("normal"));
-        assert_eq!(cfg.sources.get_string("libro", "container"), Some("zip"));
-        assert_eq!(
-            cfg.sources.get_string("graphicaudio", "access"),
-            Some("zip")
-        );
-        assert_eq!(
-            cfg.sources.get_string("graphicaudio", "bitrate"),
-            Some("lo")
-        );
-        assert_eq!(
-            cfg.sources.get_string("graphicaudio", "container"),
-            Some("mp3")
-        );
-    }
-
-    #[test]
-    fn sources_partial_table_keeps_enabled_true() {
-        // Only setting source-specific knobs must not flip enabled→false.
-        let text = r#"
-[sources.graphicaudio]
-access = "zip"
-
-[sources.libro]
-enabled = true
-"#;
-        let cfg = Config::from_toml_str(text, "test").unwrap();
-        assert!(cfg.sources.is_enabled("graphicaudio"));
-        assert!(cfg.sources.is_enabled("libro"));
-        assert!(cfg.sources.is_enabled("audible"));
-        assert!(cfg.sources.is_enabled("chirp"));
-    }
-
-    #[test]
-    fn source_enabled_env_overrides_any_plugin_id() {
-        let mut cfg = Config::default();
-        apply_source_enabled_env_overrides(
-            &mut cfg.sources,
-            [
-                ("BOOKCLERK_SOURCE_CHIRP_ENABLED", "0"),
-                ("BOOKCLERK_SOURCE_ECHO_ENABLED", "false"),
-                ("BOOKCLERK_SOURCE_MY_STORE_ENABLED", "1"),
-                ("BOOKCLERK_SOURCE_GRAPHICAUDIO_ENABLED", "off"),
-                ("UNRELATED", "0"),
-                ("BOOKCLERK_SOURCE_NOPE", "0"),
-                ("BOOKCLERK_SOURCE__ENABLED", "0"),
-            ],
-        );
-        assert!(!cfg.sources.is_enabled("chirp"));
-        assert!(!cfg.sources.is_enabled("echo"));
-        assert!(cfg.sources.is_enabled("my_store"));
-        assert!(!cfg.sources.is_enabled("graphicaudio"));
-        // Untouched ids still default enabled.
-        assert!(cfg.sources.is_enabled("audible"));
-        assert!(cfg.sources.is_enabled("libro"));
     }
 
     #[test]
@@ -1555,68 +1229,21 @@ upload_url = "https://example.invalid"
     }
 
     #[test]
-    fn s3_requires_bucket() {
-        let mut cfg = Config::default();
-        cfg.output.local.enabled = false;
-        cfg.output.s3.enabled = true;
-        assert!(cfg.validate().is_err());
-        cfg.output.s3.bucket = "books".into();
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
     fn default_widevine_is_off() {
         assert!(!Config::default().output.widevine);
-    }
-
-    #[test]
-    fn relative_storage_root_resolves_under_files_dir() {
-        let mut cfg = Config {
-            paths: Some(Paths::from_files_dir(PathBuf::from("/var/lib/bookclerk"))),
-            output: OutputConfig {
-                local: crate::OutputLocalConfig {
-                    root: PathBuf::from("Audiobooks"),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        cfg.resolve_relative_paths();
-        assert_eq!(
-            cfg.output.local.root,
-            PathBuf::from("/var/lib/bookclerk/Audiobooks")
-        );
-    }
-
-    #[test]
-    fn absolute_storage_root_unchanged() {
-        let mut cfg = Config {
-            paths: Some(Paths::from_files_dir(PathBuf::from("/var/lib/bookclerk"))),
-            output: OutputConfig {
-                local: crate::OutputLocalConfig {
-                    root: PathBuf::from("/data/Audiobooks"),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        cfg.resolve_relative_paths();
-        assert_eq!(cfg.output.local.root, PathBuf::from("/data/Audiobooks"));
     }
 
     #[test]
     fn write_toml_roundtrip() {
         let mut cfg = Config::default();
         cfg.library.auto_acquire = true;
-        cfg.output.local.root = PathBuf::from("/data/books");
+        cfg.output.cover_size = "900".into();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         cfg.write_toml_file(&path).unwrap();
         let loaded = Config::from_toml_file(&path).unwrap();
         assert!(loaded.library.auto_acquire);
-        assert_eq!(loaded.output.local.root, PathBuf::from("/data/books"));
+        assert_eq!(loaded.output.cover_size, "900");
     }
 
     #[test]

@@ -80,7 +80,9 @@ pub async fn export_libation(opts: LibationExportOptions) -> Result<LibationExpo
         Config::default()
     };
 
-    let settings = config_to_settings_json(&config);
+    // The books directory and Audible bitrate live on plugin instances;
+    // export writes Libation defaults for them.
+    let settings = config_to_settings_json(&config, &crate::ClassicPluginSettings::default());
     summary.settings = true;
     if !opts.dry_run {
         let path = opts.dest.join("Settings.json");
@@ -381,7 +383,14 @@ mod tests {
             .unwrap();
         store
             .store
-            .upsert_account("reader@example.com", "us", Some("Reader"), true, "audible")
+            .upsert_account(
+                "audible",
+                "reader@example.com",
+                "us",
+                Some("Reader"),
+                true,
+                "audible",
+            )
             .await
             .unwrap();
         drop(store);
@@ -420,7 +429,7 @@ mod tests {
             .unwrap();
         store
             .store
-            .upsert_account("reader@example.com", "us", None, true, "audible")
+            .upsert_account("audible", "reader@example.com", "us", None, true, "audible")
             .await
             .unwrap();
         drop(store);

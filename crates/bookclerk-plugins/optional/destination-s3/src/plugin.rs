@@ -5,7 +5,6 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use bookclerk_config::OutputS3Config;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{
     Bindings, ByteRange, CopyResult, Destination, Entrypoints, ExtensibleConfig, Invocation,
@@ -14,7 +13,9 @@ use bookclerk_plugin_sdk::{
     FEATURE_STORAGE_COPY, FEATURE_STREAMS, PRODUCT_API_VERSION,
 };
 use bookclerk_plugin_sdk::{OutputS3ContextDto, PluginError, S3CredentialsDto};
-use bookclerk_storage::{ObjectMeta, S3Backend, S3Credentials, StorageBackend, StorageError};
+use bookclerk_storage::{
+    ObjectMeta, S3Backend, S3Credentials, S3Settings, StorageBackend, StorageError,
+};
 use tokio::io::AsyncRead;
 
 use crate::ID;
@@ -107,15 +108,11 @@ fn secret_text(value: &serde_json::Value, keys: &[&str]) -> String {
 
 /// Builds an [`S3Backend`] from the host-injected bucket/region/endpoint context.
 async fn backend_from_ctx(ctx: &OutputS3ContextDto) -> Result<S3Backend> {
-    let cfg = OutputS3Config {
-        enabled: true,
+    let cfg = S3Settings {
         bucket: ctx.bucket.clone(),
-        prefix: ctx.prefix.clone(),
         region: ctx.region.clone(),
         endpoint: ctx.endpoint.clone(),
         force_path_style: ctx.force_path_style,
-        naming: Default::default(),
-        plugin: String::new(),
     };
     let creds = ctx.credentials.as_ref().map(credentials_from_dto);
     let home = std::env::var_os("HOME")
@@ -136,7 +133,6 @@ fn credentials_from_dto(dto: &S3CredentialsDto) -> S3Credentials {
         access_key_id: dto.access_key_id.clone(),
         secret_access_key: dto.secret_access_key.clone(),
         session_token: dto.session_token.clone(),
-        label: None,
     }
 }
 

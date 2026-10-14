@@ -38,6 +38,9 @@ pub fn check_plugin(plugin_dir: &Path) -> Result<String> {
     let text = std::fs::read_to_string(&toml_path)
         .map_err(|e| SdkError::message(format!("read {}: {e}", toml_path.display())))?;
     let manifest = parse(&text).map_err(|e| SdkError::message(e.to_string()))?;
+    manifest
+        .package_version()
+        .map_err(|e| SdkError::message(e.to_string()))?;
 
     if let Some(logo) = manifest.logo.as_deref() {
         let kind = bookclerk_plugin_manifest::validate_logo(logo)

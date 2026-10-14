@@ -131,7 +131,7 @@ Audible/Libro.fm/Chirp/GraphicAudio auth, Widevine CDM blobs, and S3 destination
 keys live in the `encrypted_secrets` DB table; bootstrap secrets (passphrase,
 DB/API tokens) come from the environment. There is no `Accounts/` directory.
 
-Relative `output.local.root` values resolve under this directory.
+A relative `root` on the `local` destination plugin resolves under this directory.
 
 ## Identity model
 

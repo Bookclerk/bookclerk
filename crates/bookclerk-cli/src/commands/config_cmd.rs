@@ -14,10 +14,6 @@ use bookclerk_library::{
     MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 use bookclerk_source::DownloadOptions;
-use bookclerk_storage::{
-    delete_s3_credentials, load_s3_credentials, save_s3_credentials, S3Credentials,
-    ENV_AWS_ACCESS_KEY_ID, ENV_AWS_SECRET_ACCESS_KEY, ENV_AWS_SESSION_TOKEN,
-};
 use chrono::Datelike;
 use clap::Subcommand;
 
@@ -28,7 +24,8 @@ use crate::format_out::{emit, OutputFormat};
 pub enum ConfigCommand {
     /// Print a configuration value by dotted key or classic Settings.json name.
     Get {
-        /// Dotted key (`sources.audible.bitrate`) or classic name (`FileDownloadQuality`).
+        /// Dotted key (`output.widevine`) or classic name (`UseWidevine`).
+        /// Plugin settings are read with `bookclerk plugins config get`.
         key: Option<String>,
         /// Bare list of all classic setting keys and values.
         #[arg(short, long)]
@@ -45,12 +42,6 @@ pub enum ConfigCommand {
     Show,
     /// Print resolved filesystem paths.
     Paths,
-    /// Manage S3 destination credentials in `encrypted_secrets`.
-    S3Credentials {
-        #[command(subcommand)]
-        /// Nested S3 credential set/show/clear action (sealed in `encrypted_secrets`).
-        command: S3CredentialsCommand,
-    },
     /// Inspect or wrap `{files_dir}/master.key` (BCK1 ↔ BCK2).
     MasterKey {
         #[command(subcommand)]
@@ -105,25 +96,6 @@ pub enum MasterKeyCommand {
     ///
     /// Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
     Wrap,
-}
-
-#[derive(Debug, Subcommand)]
-/// Nested `config s3-credentials` actions that seal or delete destination keys.
-pub enum S3CredentialsCommand {
-    /// Save S3 credentials from `BOOKCLERK_AWS_ACCESS_KEY_ID` / `BOOKCLERK_AWS_SECRET_ACCESS_KEY`
-    /// (optional `BOOKCLERK_AWS_SESSION_TOKEN`) into `encrypted_secrets` (sealed with master key).
-    ///
-    /// Secrets are never accepted on argv — set the env vars (or export them
-    /// for this one command), then run `set`.
-    Set {
-        /// Optional label stored with the credentials (e.g. `minio`).
-        #[arg(long)]
-        label: Option<String>,
-    },
-    /// Show whether S3 credentials are stored (access key id only; secret redacted).
-    Show,
-    /// Delete stored S3 credentials from `encrypted_secrets`.
-    Clear,
 }
 
 #[derive(Debug, Subcommand)]
@@ -219,38 +191,6 @@ pub async fn run(
             })
         }
         ConfigCommand::Show => {
-            println!(
-                "output.backends = {}",
-                config.output.enabled_backend_names().join(",")
-            );
-            println!(
-                "output.path_limit_prefix = {}",
-                config.output.path_limit_prefix()
-            );
-            println!("output.local.enabled = {}", config.output.local.enabled);
-            println!("output.local.root = {}", config.output.local.root.display());
-            println!("output.local.prefix = {}", config.output.local.prefix);
-            println!("output.s3.enabled = {}", config.output.s3.enabled);
-            println!("output.s3.bucket = {}", config.output.s3.bucket);
-            println!("output.s3.prefix = {}", config.output.s3.prefix);
-            println!("output.s3.region = {}", config.output.s3.region);
-            println!(
-                "output.s3.endpoint = {}",
-                config.output.s3.endpoint.as_deref().unwrap_or("-")
-            );
-            println!(
-                "output.s3.force_path_style = {}",
-                config.output.s3.force_path_style
-            );
-            for (id, value) in &config.sources.plugins {
-                let Some(table) = value.as_table() else {
-                    println!("sources.{id} = {value}");
-                    continue;
-                };
-                for (key, v) in table {
-                    println!("sources.{id}.{key} = {v}");
-                }
-            }
             println!("output.format = {:?}", config.output.format);
             println!("output.widevine = {}", config.output.widevine);
             println!("output.xhe_aac = {}", config.output.xhe_aac);
@@ -380,9 +320,6 @@ pub async fn run(
             println!("log_dir\t{}", paths.log_dir.display());
             Ok(())
         }
-        ConfigCommand::S3Credentials { command } => {
-            run_s3_credentials(command, config, format).await
-        }
         ConfigCommand::MasterKey { command } => run_master_key(command, config, format),
         ConfigCommand::Template { command } => run_template(command, config).await,
         ConfigCommand::Database { command } => run_database(command, config, format).await,
@@ -450,93 +387,6 @@ fn run_master_key(
     }
 }
 
-/// Seals S3 keys from env into `encrypted_secrets`, shows a redacted row, or deletes it; missing master key fails closed.
-async fn run_s3_credentials(
-    command: S3CredentialsCommand,
-    config: &Config,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
-    let store = crate::registry::open_library(config).await?;
-    match command {
-        S3CredentialsCommand::Set { label } => {
-            let access_key_id = std::env::var(ENV_AWS_ACCESS_KEY_ID).map_err(|_| {
-                anyhow::anyhow!(
-                    "set {ENV_AWS_ACCESS_KEY_ID} and {ENV_AWS_SECRET_ACCESS_KEY} in the environment \
-                     (secrets are not accepted on argv)"
-                )
-            })?;
-            let secret_access_key = std::env::var(ENV_AWS_SECRET_ACCESS_KEY).map_err(|_| {
-                anyhow::anyhow!(
-                    "set {ENV_AWS_ACCESS_KEY_ID} and {ENV_AWS_SECRET_ACCESS_KEY} in the environment \
-                     (secrets are not accepted on argv)"
-                )
-            })?;
-            let session_token = std::env::var(ENV_AWS_SESSION_TOKEN)
-                .ok()
-                .filter(|s| !s.is_empty());
-            let creds = S3Credentials {
-                access_key_id,
-                secret_access_key,
-                session_token,
-                label,
-            };
-            save_s3_credentials(store.db(), &creds).await?;
-            let payload = serde_json::json!({
-                "stored": true,
-                "access_key_id": redact_access_key(&creds.access_key_id),
-                "has_session_token": creds.session_token.is_some(),
-                "encrypted": true,
-                "label": creds.label,
-            });
-            emit(format, &payload, || {
-                println!(
-                    "saved S3 credentials for access key {} → encrypted_secrets (sealed-v1)",
-                    redact_access_key(&creds.access_key_id),
-                );
-            })
-        }
-        S3CredentialsCommand::Show => {
-            let loaded = load_s3_credentials(store.db()).await?;
-            let payload = match &loaded {
-                Some(creds) => serde_json::json!({
-                    "present": true,
-                    "access_key_id": redact_access_key(&creds.access_key_id),
-                    "has_session_token": creds.session_token.is_some(),
-                    "label": creds.label,
-                }),
-                None => serde_json::json!({ "present": false }),
-            };
-            emit(format, &payload, || match loaded {
-                Some(creds) => {
-                    println!(
-                        "present\taccess_key_id={}\thas_session_token={}\tlabel={}",
-                        redact_access_key(&creds.access_key_id),
-                        creds.session_token.is_some(),
-                        creds.label.as_deref().unwrap_or("-")
-                    );
-                }
-                None => println!("present\tfalse"),
-            })
-        }
-        S3CredentialsCommand::Clear => {
-            delete_s3_credentials(store.db()).await?;
-            let payload = serde_json::json!({ "cleared": true });
-            emit(format, &payload, || {
-                println!("cleared S3 credentials from encrypted_secrets");
-            })
-        }
-    }
-}
-
-/// Keeps the first four characters of an access key id and masks the rest.
-fn redact_access_key(access_key_id: &str) -> String {
-    if access_key_id.len() <= 4 {
-        return "****".into();
-    }
-    let (prefix, rest) = access_key_id.split_at(4);
-    format!("{prefix}{}", "*".repeat(rest.len().min(8)))
-}
-
 /// Lists naming tags/profiles or previews a storage key for a library title.
 async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Result<()> {
     match command {
@@ -599,7 +449,7 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
             let rules = resolve_replacement_characters(
                 &config.output.replacement_characters,
                 config.output.path_sanitization,
-                config.output.is_s3(),
+                false,
             );
             let path_limits = DownloadOptions::from(config).path_limits;
             let key = storage_key_with_contexts(
@@ -968,17 +818,6 @@ async fn load_events_for_show(
 fn lookup(config: &Config, key: &str) -> Option<String> {
     let paths = config.paths.as_ref();
     Some(match key {
-        "output.backend" | "output.backends" => config.output.enabled_backend_names().join(","),
-        "output.local.enabled" => config.output.local.enabled.to_string(),
-        "output.local.root" => config.output.local.root.display().to_string(),
-        "output.local.prefix" => config.output.local.prefix.clone(),
-        "output.effective_prefix" | "output.path_limit_prefix" => config.output.path_limit_prefix(),
-        "output.s3.enabled" => config.output.s3.enabled.to_string(),
-        "output.s3.bucket" => config.output.s3.bucket.clone(),
-        "output.s3.prefix" => config.output.s3.prefix.clone(),
-        "output.s3.region" => config.output.s3.region.clone(),
-        "output.s3.endpoint" => config.output.s3.endpoint.clone().unwrap_or_default(),
-        "output.s3.force_path_style" => config.output.s3.force_path_style.to_string(),
         "output.format" => format!("{:?}", config.output.format).to_ascii_lowercase(),
         "output.widevine" => config.output.widevine.to_string(),
         "output.xhe_aac" => config.output.xhe_aac.to_string(),
@@ -1105,20 +944,6 @@ fn lookup(config: &Config, key: &str) -> Option<String> {
         "paths.library_db" => paths?.library_db.display().to_string(),
         "paths.cache_dir" => paths?.cache_dir.display().to_string(),
         "paths.log_dir" => paths?.log_dir.display().to_string(),
-        other if let Some(rest) = other.strip_prefix("sources.") => {
-            let (id, key) = rest.split_once('.')?;
-            if key == "enabled" {
-                return Some(config.sources.is_enabled(id).to_string());
-            }
-            if let Some(s) = config.sources.get_string(id, key) {
-                return Some(s.to_string());
-            }
-            config
-                .sources
-                .table(id)?
-                .get(key)
-                .map(|v| v.to_string().trim_matches('"').to_string())?
-        }
         _ => return None,
     })
 }

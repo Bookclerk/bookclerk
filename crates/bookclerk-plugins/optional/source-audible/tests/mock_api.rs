@@ -142,9 +142,16 @@ async fn scan_account_upserts_library_rows() {
     let library = bookclerk_plugin_database_sqlite::open_store_memory()
         .await
         .unwrap();
-    let scope = library.scope("audible");
+    let scope = library.scope("audible", "audible");
     library
-        .upsert_account("amzn1.account.TEST", "us", Some("Main"), true, "audible")
+        .upsert_account(
+            "audible",
+            "amzn1.account.TEST",
+            "us",
+            Some("Main"),
+            true,
+            "audible",
+        )
         .await
         .unwrap();
 

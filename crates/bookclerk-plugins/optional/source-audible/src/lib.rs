@@ -53,7 +53,7 @@ pub use guest::{
 pub use options::DownloadOptions;
 pub use qr::{render_login_qr, QrRenderMode};
 pub use secret::{resolve_auth_password, AUTH_PASSWORD_ENV};
-pub use source::{from_config, register, AudibleSource, ID as AUDIBLE_SOURCE_ID};
+pub use source::{AudibleSource, ID as AUDIBLE_SOURCE_ID};
 pub use sync::{collect_account_books, scan_account_into_library, scan_library};
 pub use widevine::{
     effective_cdm_provider, ensure_widevine_cdm, load_widevine_cdm, WidevineCdm, WidevineDownload,

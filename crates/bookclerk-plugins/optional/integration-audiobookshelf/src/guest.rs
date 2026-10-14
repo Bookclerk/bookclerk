@@ -8,7 +8,6 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bookclerk_config::AudiobookshelfConfig;
 use bookclerk_integrations::{ExternalUser, IntegrationError, Result};
 use bookclerk_plugin_sdk::{
     EventPollResult, ExternalUser as AbiExternalUser, HealthOk, ListeningProgress,
@@ -18,6 +17,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::client::AbsApiClient;
+use crate::integration::AudiobookshelfConfig;
 use crate::listening::collect_listening_snapshots;
 
 /// Integration id written on listening rows and external-user records.
@@ -56,7 +56,7 @@ impl AbsGuestState {
             None => (
                 None,
                 Some(
-                    "integrations.audiobookshelf.api_key (or BOOKCLERK_ABS_API_KEY) is required"
+                    "the audiobookshelf `api_key` secret is required (bookclerk plugins config set audiobookshelf api_key --secret)"
                         .to_string(),
                 ),
             ),

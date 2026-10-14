@@ -14,6 +14,8 @@ pub struct Model {
     pub plugin_instance_id: String,
     /// Canonical plugin key of the package this instance runs.
     pub plugin_key: String,
+    /// Operator-facing name; empty for the default instance.
+    pub display_name: String,
     /// RFC 3339 timestamp of the insert.
     pub created_at: String,
     /// Audit identity of the creator.

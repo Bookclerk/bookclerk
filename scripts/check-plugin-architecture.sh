@@ -224,18 +224,22 @@ else
   fail "postgres host overlay still keys only on the display alias"
 fi
 
-if grep -A20 'fn overlay_s3_endpoint' crates/bookclerk-plugin-host/src/consent.rs \
-    | grep -q 'overlay_unique_occupant'; then
-  ok "S3 host overlay is PluginKey-aware"
+# A deployed instance's network host (S3 `endpoint`, Audiobookshelf
+# `base_url`) is granted from the instance document the spawn resolved, never
+# read back from config.toml or keyed on a display alias.
+if grep -A12 'fn overlay_deployed_endpoint' crates/bookclerk-plugin-host/src/consent.rs \
+    | grep -q 'overlay_http_url' \
+  && ! grep -A12 'fn overlay_deployed_endpoint' crates/bookclerk-plugin-host/src/consent.rs \
+    | grep -q 'config\.'; then
+  ok "deployed endpoint overlay grants the instance document's host only"
 else
-  fail "S3 host overlay still keys only on the display alias"
+  fail "deployed endpoint overlay reads config.toml or an alias instead of the instance document"
 fi
 
-if grep -A20 'fn overlay_audiobookshelf_url' crates/bookclerk-plugin-host/src/consent.rs \
-    | grep -q 'overlay_unique_occupant'; then
-  ok "Audiobookshelf host overlay is PluginKey-aware"
+if grep -q 'fn overlay_s3_endpoint\|fn overlay_audiobookshelf_url' crates/bookclerk-plugin-host/src/consent.rs; then
+  fail "per-plugin host overlays (S3 / Audiobookshelf) are back; plugins declare endpoints in their instance document"
 else
-  fail "Audiobookshelf host overlay still keys only on the display alias"
+  ok "no per-plugin host overlay keys on a config table or display alias"
 fi
 
 if grep -A20 'fn overlay_unique_occupant' crates/bookclerk-plugin-host/src/consent.rs \
@@ -245,25 +249,26 @@ else
   fail "host overlays still match every same-alias install"
 fi
 
-if grep -A40 'pub async fn load_external_destinations' crates/bookclerk-plugin-host/src/host/destination.rs \
-    | grep -q 'resolve_plugin_slot'; then
-  ok "destination occupancy fail-closes on duplicate aliases"
-else
-  fail "S3/local destination load still last-write-wins on duplicate aliases"
-fi
+# Hosts load guests from this host's present deployments, one spawn per
+# plugin instance, and never from a config table or by scanning aliases.
+for loader in load_sources load_integrations load_destinations; do
+  if grep -A40 "pub async fn ${loader}" crates/bookclerk-plugin-host/src/host_control_plane.rs \
+      | grep -q 'prepare_open_for_instance' \
+    && grep -A40 "pub async fn ${loader}" crates/bookclerk-plugin-host/src/host_control_plane.rs \
+      | grep -q 'present'; then
+    ok "${loader} spawns present deployments by plugin instance"
+  else
+    fail "${loader} no longer spawns from present deployments by plugin instance"
+  fi
+done
 
-if grep -A40 'pub async fn load_external_sources' crates/bookclerk-plugin-host/src/host/source.rs \
-    | grep -q 'resolve_plugin_slot'; then
-  ok "source occupancy fail-closes on duplicate aliases"
+if grep -q 'config\.sources\|config\.output\.local\|config\.output\.s3\|config\.integrations\.plugins' \
+    crates/bookclerk-plugin-host/src/host_control_plane.rs \
+    crates/bookclerk-plugin-host/src/deployment.rs \
+    crates/bookclerk-plugin-host/src/instance_bindings.rs; then
+  fail "host loading reads plugin tables from config.toml again"
 else
-  fail "source load still spawns every alias duplicate"
-fi
-
-if grep -A40 'pub async fn load_external_integrations' crates/bookclerk-plugin-host/src/host/integration.rs \
-    | grep -q 'resolve_plugin_slot'; then
-  ok "integration occupancy fail-closes on duplicate aliases"
-else
-  fail "integration load still spawns every alias duplicate"
+  ok "host loading has no config.toml plugin tables to fall back to"
 fi
 
 if grep -n 'not(unix)' crates/bookclerk-plugin-sdk/src/pass_fd.rs \

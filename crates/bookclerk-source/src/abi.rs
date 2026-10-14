@@ -509,12 +509,14 @@ pub fn scan_book_from_new(book: NewBook) -> abi::ScanBook {
 }
 
 /// Maps a guest scan row onto [`NewBook`], forcing `source` to the plugin id
-/// so a guest can never claim another storefront's rows.
+/// so a guest can never claim another storefront's rows. The owning
+/// `plugin_key` is stamped by the [`bookclerk_library::SourceScope`] on write.
 #[must_use]
 pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> NewBook {
     NewBook {
         uuid: None,
         product_id: book.product_id,
+        plugin_key: String::new(),
         source: plugin_id.to_string(),
         account_id: book.account_id,
         asin: book.asin,

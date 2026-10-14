@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use bookclerk_config::OutputS3Config;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -487,21 +486,16 @@ async fn open_backend(url: &str, journal: &std::path::Path) -> S3Backend {
 }
 
 async fn open_sized(url: &str, journal: &std::path::Path, part_size: Option<usize>) -> S3Backend {
-    let cfg = OutputS3Config {
-        enabled: true,
+    let cfg = S3Settings {
         bucket: "library".into(),
-        prefix: String::new(),
         region: "us-east-1".into(),
         endpoint: Some(url.into()),
         force_path_style: true,
-        naming: Default::default(),
-        plugin: String::new(),
     };
-    let creds = crate::s3_credentials::S3Credentials {
+    let creds = S3Credentials {
         access_key_id: "test-key".into(),
         secret_access_key: "test-secret".into(),
         session_token: None,
-        label: None,
     };
     let backend = S3Backend::from_parts_with_journal(&cfg, "", Some(&creds), journal)
         .await
