@@ -18,6 +18,7 @@ mod oidc_rp;
 mod oidc_verify;
 mod origin;
 mod passkeys;
+mod plugin_releases;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;

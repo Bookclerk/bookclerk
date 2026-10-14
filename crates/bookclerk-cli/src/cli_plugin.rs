@@ -5,8 +5,24 @@ use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 
 /// Reserved host subcommands under `bookclerk plugins` (cannot be plugin ids).
 pub const RESERVED_PLUGIN_SUBCOMMANDS: &[&str] = &[
-    "list", "info", "diagnose", "doctor", "enable", "disable", "approve", "search", "install",
-    "update", "remove", "registry", "help",
+    "list",
+    "info",
+    "diagnose",
+    "doctor",
+    "enable",
+    "disable",
+    "approve",
+    "search",
+    "install",
+    "update",
+    "rollback",
+    "releases",
+    "remove",
+    "instances",
+    "config",
+    "registry",
+    "db",
+    "help",
 ];
 
 /// Convert a plugin CLI schema into a clap command named `plugin_id`.

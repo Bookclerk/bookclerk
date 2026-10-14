@@ -1328,6 +1328,7 @@ fn release_fixture(version: &str, payload: char) -> PluginRelease {
         }],
         publisher_verified: true,
         grant_json: String::new(),
+        coordinate: String::new(),
         published_at: String::new(),
         published_by: String::new(),
     }

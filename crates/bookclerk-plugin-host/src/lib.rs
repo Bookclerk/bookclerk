@@ -158,9 +158,11 @@ pub use registry::{
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,
 };
 pub use release::{
-    host_artifact, materialize_release, open_released_plugin, publish_package_release,
-    release_cache_path, release_cache_root, release_grant, sweep_release_cache, Activate,
-    PublishedRelease, ReleaseRequest, RELEASE_CACHE_DIR, RELEASE_CACHE_GRACE,
+    enroll_release, grant_covers_release, host_artifact, install_plugin_key, install_release,
+    materialize_release, open_released_plugin, publish_package_release, release_cache_path,
+    release_cache_root, release_consent_request, release_grant, sweep_release_cache, Activate,
+    InstallRequest, InstalledRelease, PublishedRelease, ReleaseRequest, RELEASE_CACHE_DIR,
+    RELEASE_CACHE_GRACE,
 };
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,

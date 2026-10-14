@@ -21,10 +21,10 @@ use bookclerk_plugin_catalog::{
 };
 use bookclerk_plugin_host::{
     consent_request, consent_summary, host_target_triple,
-    install_from_manifest_with_configured_aliases, install_local_archive_with_configured_aliases,
-    is_bootstrap_only, plugin_matches_occupancy, require_grant, search_crates_io, CliInvokeParams,
-    CliInvokeResult, CliSchema, DiscoveredPlugin, Entrypoint, PluginFamily, PluginGrantStore,
-    PluginSession, CRATE_NAME_PREFIX, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
+    install_from_manifest_with_configured_aliases, is_bootstrap_only, plugin_matches_occupancy,
+    require_grant, search_crates_io, CliInvokeParams, CliInvokeResult, CliSchema, DiscoveredPlugin,
+    Entrypoint, PluginFamily, PluginGrantStore, PluginSession, CRATE_NAME_PREFIX,
+    HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
@@ -48,7 +48,10 @@ pub enum PluginsCommand {
         #[arg(long, default_value_t = 25)]
         limit: u32,
     },
-    /// Install a plugin from a source-qualified coordinate or local archive.
+    /// Publish a plugin release from a source-qualified coordinate or local
+    /// archive. The first release of a plugin (or `--activate`) becomes the
+    /// active release every host materializes; nothing on this host's
+    /// `plugins/` changes.
     Install {
         /// Coordinate (`cargo:…@ver`, `registry:…#name@ver`, `local:…`) or legacy crate name.
         coordinate: String,
@@ -61,10 +64,10 @@ pub enum PluginsCommand {
         /// Override Bookclerk target (e.g. `linux-x64-gnu`).
         #[arg(long)]
         target: Option<String>,
-        /// Replace files for an existing install of the same PluginKey at the same alias.
-        #[arg(long)]
-        replace: bool,
-        /// Approve sandbox/network capability changes on update/replace.
+        /// Make this the active release even when another version is active.
+        #[arg(long, alias = "replace")]
+        activate: bool,
+        /// Record the requested consent as approved (no separate `approve`).
         #[arg(long)]
         approve_capabilities: bool,
         /// Allow community packages without independent publisher authenticity (digest still required).
@@ -77,7 +80,8 @@ pub enum PluginsCommand {
         #[arg(long)]
         offline: bool,
     },
-    /// Update an installed plugin to a newer matching version.
+    /// Publish and activate a newer version of a released plugin (or update
+    /// a host-local install by its receipt).
     Update {
         /// Plugin runtime id (default: all with receipts).
         id: Option<String>,
@@ -94,7 +98,20 @@ pub enum PluginsCommand {
         /// Resolve and print the plan without downloading.
         dry_run: bool,
     },
-    /// Remove an installed plugin directory.
+    /// Move a released plugin's active pointer back to an earlier version.
+    Rollback {
+        /// Plugin alias or PluginKey.
+        id: String,
+        /// Published version to activate.
+        version: String,
+    },
+    /// List published releases (the active one is starred).
+    Releases {
+        /// Only this plugin (alias or PluginKey).
+        id: Option<String>,
+    },
+    /// Remove a plugin: clear its active release and set every deployment
+    /// absent (or remove a host-local install directory).
     Remove {
         /// Plugin runtime id.
         id: String,
@@ -445,26 +462,34 @@ pub async fn run(
             archive,
             manifest,
             target,
-            replace,
+            activate,
             approve_capabilities,
             allow_unverified_publisher,
             dry_run,
             offline,
         } => {
-            run_install(
+            crate::commands::plugin_releases::run_install(
                 config,
-                &coordinate,
-                archive.as_deref(),
-                manifest.as_deref(),
-                target,
-                replace,
-                approve_capabilities,
-                allow_unverified_publisher,
-                dry_run,
-                offline,
+                crate::commands::plugin_releases::InstallArgs {
+                    coordinate: &coordinate,
+                    archive: archive.as_deref(),
+                    manifest: manifest.as_deref(),
+                    target,
+                    activate,
+                    approve_capabilities,
+                    allow_unverified_publisher,
+                    dry_run,
+                    offline,
+                },
                 format,
             )
             .await
+        }
+        PluginsCommand::Rollback { id, version } => {
+            crate::commands::plugin_releases::run_rollback(config, &id, &version, format).await
+        }
+        PluginsCommand::Releases { id } => {
+            crate::commands::plugin_releases::run_list(config, id.as_deref(), format).await
         }
         PluginsCommand::Update {
             id,
@@ -473,6 +498,19 @@ pub async fn run(
             approve_capabilities,
             dry_run,
         } => {
+            let released = crate::commands::plugin_releases::run_update(
+                config,
+                id.as_deref(),
+                to.as_deref(),
+                allow_unverified_publisher,
+                approve_capabilities,
+                dry_run,
+                format,
+            )
+            .await?;
+            if released {
+                return Ok(());
+            }
             run_update(
                 config,
                 id,
@@ -488,7 +526,12 @@ pub async fn run(
             id,
             purge_state,
             discard_acl_journals,
-        } => run_remove(config, &id, purge_state, discard_acl_journals, format),
+        } => {
+            if crate::commands::plugin_releases::run_remove(config, &id, format).await? {
+                return Ok(());
+            }
+            run_remove(config, &id, purge_state, discard_acl_journals, format)
+        }
         PluginsCommand::Info { id } => {
             let plugin = find_plugin(config, &id)?;
             let schema = plugin.manifest.cli.clone().unwrap_or_default();
@@ -640,7 +683,14 @@ pub async fn run(
         }
         PluginsCommand::Instances { command } => run_instances(config, command, format).await,
         PluginsCommand::Config { command } => run_plugin_config(config, command, format).await,
-        PluginsCommand::Approve { id, yes } => run_approve(config, &id, yes, format),
+        PluginsCommand::Approve { id, yes } => {
+            if find_plugin(config, &id).is_err()
+                && crate::commands::plugin_releases::run_approve(config, &id, yes, format).await?
+            {
+                return Ok(());
+            }
+            run_approve(config, &id, yes, format)
+        }
         PluginsCommand::Registry { command } => run_registry(config, command, format),
         PluginsCommand::Db { command } => run_plugin_db(config, command, format).await,
     }
@@ -765,101 +815,6 @@ fn run_search(
             }
         },
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-/// Installs from a coordinate or local archive, then health-checks and rolls back on failure.
-async fn run_install(
-    config: &Config,
-    coordinate: &str,
-    archive: Option<&std::path::Path>,
-    manifest_path: Option<&std::path::Path>,
-    target: Option<String>,
-    replace: bool,
-    approve_capabilities: bool,
-    allow_unverified_publisher: bool,
-    dry_run: bool,
-    offline: bool,
-    format: OutputFormat,
-) -> anyhow::Result<()> {
-    let plugins_root = config.paths().files_dir.join("plugins");
-    let mutation_lock = PluginMutationLock::acquire(&config.paths().files_dir)?;
-    let trust = TrustPolicy {
-        allow_unverified_publisher: allow_unverified_publisher
-            || config.plugins.allow_unverified_publisher,
-        ..TrustPolicy::default()
-    };
-    let opts = InstallOptions {
-        plugins_root: plugins_root.clone(),
-        target,
-        dry_run,
-        replace,
-        offline,
-        trust,
-        skip_health: true,
-        approve_capabilities,
-    };
-
-    let outcome = if let Some(archive) = archive {
-        let manifest_path = manifest_path.ok_or_else(|| {
-            anyhow::anyhow!("--archive requires --manifest <bookclerk-package.json>")
-        })?;
-        let text = std::fs::read_to_string(manifest_path)?;
-        let manifest = bookclerk_plugin_catalog::BookclerkPackageManifest::from_json(&text)?;
-        install_local_archive_with_configured_aliases(
-            config,
-            &mutation_lock,
-            archive,
-            &manifest,
-            &opts,
-        )?
-    } else {
-        let coord = resolve_coordinate(coordinate)?;
-        let manifest = bookclerk_plugin_catalog::fetch_manifest_for_coordinate(&coord, &[])?;
-        install_from_manifest_with_configured_aliases(
-            config,
-            &mutation_lock,
-            &manifest,
-            &coord,
-            &opts,
-        )?
-    };
-
-    // Post-install health when not dry-run.
-    // Historical note: `skip_health: true` (install default) means "run health
-    // here"; `false` leaves health + commit/rollback to the caller (update).
-    if !outcome.dry_run && opts.skip_health {
-        if let Err(err) = health_check_installed(config, &outcome.receipt.plugin_key).await {
-            return Err(health_failure_after_rollback(
-                err,
-                Installer::rollback(&outcome),
-                "install rolled back",
-            ));
-        }
-        commit_install_cleanup(&outcome)?;
-    }
-
-    let payload = json!({
-        "plugin_root": outcome.plugin_root,
-        "dry_run": outcome.dry_run,
-        "receipt": outcome.receipt,
-    });
-    emit(format, &payload, || {
-        if outcome.dry_run {
-            println!(
-                "dry-run: would install {} -> {}",
-                outcome.receipt.coordinate,
-                outcome.plugin_root.display()
-            );
-        } else {
-            println!(
-                "installed {} ({}) -> {}",
-                outcome.receipt.runtime.id,
-                outcome.receipt.coordinate,
-                outcome.plugin_root.display()
-            );
-        }
-    })
 }
 
 /// Updates installed receipts to a newer (or pinned) version, restoring the previous tree on health failure.
@@ -1281,7 +1236,7 @@ fn run_registry(
 }
 
 /// Parses a source-qualified coordinate, or a legacy `name@version` as `cargo:`.
-fn resolve_coordinate(raw: &str) -> anyhow::Result<PackageCoordinate> {
+pub(crate) fn resolve_coordinate(raw: &str) -> anyhow::Result<PackageCoordinate> {
     if raw.contains(':') {
         return Ok(PackageCoordinate::parse(raw)?);
     }
@@ -1674,8 +1629,18 @@ async fn set_plugin_enabled(
         .find(|e| e.plugin.plugin_key().canonical() == instance.plugin_key)
         .map(|e| e.plugin.clone());
     let host_id = host.unwrap_or_else(|| plane.host_id().to_string());
+    let released =
+        bookclerk_library::control_plane::load_active_release(store, &instance.plugin_key).await?;
     if enabled {
-        if host_id == plane.host_id() {
+        if let Some(release) = &released {
+            // A released plugin runs on any host from its digest; consent is
+            // the grant recorded on the release.
+            bookclerk_plugin_host::release_grant(release)
+                .map_err(|err| anyhow::anyhow!("{err}"))?;
+            if host_id != plane.host_id() && !list_host_ids(store).await?.contains(&host_id) {
+                anyhow::bail!("host `{host_id}` is not registered with this cluster");
+            }
+        } else if host_id == plane.host_id() {
             let plugin = installed.ok_or_else(|| {
                 anyhow::anyhow!(
                     "plugin `{}` is not installed on this host; install it or pass --host",
@@ -2314,5 +2279,24 @@ mod tests {
         assert!(err.contains("health check failed: health boom"), "{err}");
         assert!(err.contains("previous version restored"), "{err}");
         assert!(!err.contains("rollback also failed"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod reserved_verbs_tests {
+    use super::PluginsCommand;
+    use crate::cli_plugin::RESERVED_PLUGIN_SUBCOMMANDS;
+    use clap::Subcommand;
+
+    #[test]
+    fn every_builtin_plugins_verb_is_reserved_from_plugin_clis() {
+        let cmd = PluginsCommand::augment_subcommands(clap::Command::new("plugins"));
+        for sub in cmd.get_subcommands() {
+            let name = sub.get_name();
+            assert!(
+                RESERVED_PLUGIN_SUBCOMMANDS.contains(&name),
+                "`plugins {name}` would be routed to a plugin CLI; add it to RESERVED_PLUGIN_SUBCOMMANDS"
+            );
+        }
     }
 }

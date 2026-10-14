@@ -16,15 +16,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    activate_release, load_active_release, load_release_blob, publish_release, put_release_blob,
-    ConfigActor, PluginRelease, ReleaseArtifact, ReleasePointer, MAX_RELEASE_BLOB_BYTES,
-    RELEASE_BLOB_SCHEME,
+    activate_release, approve_release_grant, list_release_pointers, list_releases,
+    load_active_release, load_release, load_release_blob, publish_release, put_release_blob,
+    ConfigActor, PluginInstance, PluginRelease, ReleaseArtifact, ReleasePointer,
+    MAX_RELEASE_BLOB_BYTES, RELEASE_BLOB_SCHEME,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
     extract_archive, fetch_artifact, host_bookclerk_target, is_platform_plugin_key,
     payload_root_sha256, require_mutable_child, safe_join, select_target, sha256_file,
-    ArchiveFormat, ArtifactTarget, BookclerkPackageManifest, PluginKey, PluginMutationLock,
+    ArchiveFormat, ArtifactTarget, BookclerkPackageManifest, Installer, PackageCoordinate,
+    PluginKey, PluginMutationLock, RegistrySource,
 };
 
 use crate::consent::PluginGrant;
@@ -67,9 +69,15 @@ pub struct ReleaseRequest {
     pub plugin_key: String,
     /// Install-grade package manifest.
     pub package: BookclerkPackageManifest,
-    /// Local archive for the host target. `None` fetches every target's
-    /// artifact from its URL and verifies the manifest digests.
+    /// Local archive. `None` fetches every target's artifact from its URL
+    /// and verifies the manifest digests.
     pub archive: Option<PathBuf>,
+    /// Target the local archive is built for (default: this host's).
+    pub target: Option<String>,
+    /// Package coordinate recorded for `update`; empty for a local archive.
+    pub coordinate: String,
+    /// Refuse remote downloads (a local archive needs none).
+    pub offline: bool,
     /// Publisher verification result (recorded on the release).
     pub publisher_verified: bool,
     /// Consent grant approved at publish time, if any.
@@ -204,13 +212,16 @@ pub async fn publish_package_release(
     let files = files_dir.to_path_buf();
     let package = request.package.clone();
     let archive = request.archive.clone();
+    let target = request.target.clone();
+    let offline = request.offline;
     let inspected: Vec<(ArtifactTarget, Inspected, Option<PathBuf>)> =
         tokio::task::spawn_blocking(move || -> Result<_> {
             let mut out = Vec::new();
             if let Some(archive) = archive {
-                let artifact = select_target(&package.artifacts, |a| a.target.as_str(), None)
-                    .map_err(cat)?
-                    .clone();
+                let artifact =
+                    select_target(&package.artifacts, |a| a.target.as_str(), target.as_deref())
+                        .map_err(cat)?
+                        .clone();
                 let inspected = inspect_archive(&files, &archive, &artifact)?;
                 out.push((artifact, inspected, Some(archive)));
             } else {
@@ -218,7 +229,7 @@ pub async fn publish_package_release(
                 std::fs::create_dir_all(&scratch).map_err(io)?;
                 for artifact in &package.artifacts {
                     let download = scratch.join(format!("fetch-{}", uuid::Uuid::new_v4().simple()));
-                    let fetched = fetch_artifact(&artifact.url, &download, false).map_err(cat);
+                    let fetched = fetch_artifact(&artifact.url, &download, offline).map_err(cat);
                     let inspected = fetched.and_then(|()| {
                         let actual = sha256_file(&download).map_err(cat)?;
                         if actual != artifact.archive_sha256 {
@@ -323,6 +334,7 @@ pub async fn publish_package_release(
         artifacts,
         publisher_verified: request.publisher_verified,
         grant_json,
+        coordinate: request.coordinate.clone(),
         published_at: String::new(),
         published_by: String::new(),
     };
@@ -584,4 +596,233 @@ pub fn sweep_release_cache(
         }
     }
     Ok(removed)
+}
+
+/// Consent the release's manifest requests (what `plugins approve` shows).
+///
+/// # Errors
+///
+/// Returns an error when the recorded `plugin.toml` or plugin key no longer
+/// parses.
+pub fn release_consent_request(release: &PluginRelease) -> Result<PluginGrant> {
+    let manifest = bookclerk_plugin_manifest::parse(&release.manifest_toml)
+        .map_err(|err| PluginError::message(format!("release plugin.toml: {err}")))?;
+    let key = PluginKey::parse(&release.plugin_key).map_err(cat)?;
+    Ok(crate::consent::consent_request(&manifest, &key))
+}
+
+/// True when `grant` still covers everything `release` requests, so an
+/// update may carry an earlier approval forward. A widened request needs a
+/// fresh `plugins approve`.
+#[must_use]
+pub fn grant_covers_release(grant: &PluginGrant, release: &PluginRelease) -> bool {
+    release_consent_request(release)
+        .is_ok_and(|requested| crate::consent::grant_covers(grant, &requested))
+}
+
+/// Creates the default instance of a released plugin with its schema
+/// defaults, as enrollment does for a host-local plugin. Idempotent.
+///
+/// # Errors
+///
+/// Returns an error when an instance or document write fails.
+pub async fn enroll_release(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    release: &PluginRelease,
+) -> Result<bookclerk_library::control_plane::PluginInstance> {
+    let instance =
+        bookclerk_library::control_plane::ensure_plugin_instance(store, actor, &release.plugin_key)
+            .await
+            .map_err(lib)?;
+    bookclerk_library::control_plane::import_instance_config_if_absent(
+        store,
+        actor,
+        &instance.id,
+        &release.settings,
+        &bookclerk_library::control_plane::PluginInstanceConfigV1::empty(),
+        &format!("seed-instance-config-{}", instance.id),
+    )
+    .await
+    .map_err(lib)?;
+    Ok(instance)
+}
+
+/// An operator's `install`: what `bookclerk plugins install` and
+/// `POST /api/config/plugin-releases` both publish.
+#[derive(Debug, Clone)]
+pub struct InstallRequest {
+    /// Resolved package manifest.
+    pub package: BookclerkPackageManifest,
+    /// Where the package came from. A local archive's coordinate is
+    /// path-derived and is not recorded on the release.
+    pub coordinate: PackageCoordinate,
+    /// Local archive to publish instead of fetching the coordinate.
+    pub archive: Option<PathBuf>,
+    /// Publish only this target instead of every target in the package.
+    pub target: Option<String>,
+    /// Refuse network fetches.
+    pub offline: bool,
+    /// Make the release active even when another release already is.
+    pub activate: bool,
+    /// Record the requested consent as approved when no earlier approval
+    /// carries forward.
+    pub approve: bool,
+}
+
+/// What [`install_release`] did.
+#[derive(Debug, Clone)]
+pub struct InstalledRelease {
+    /// The published (and maybe approved) release.
+    pub release: PluginRelease,
+    /// False when this exact release was already published.
+    pub created: bool,
+    /// True when the release is the plugin's active release afterwards.
+    pub active: bool,
+    /// The plugin's default instance.
+    pub instance: PluginInstance,
+}
+
+/// The plugin key an install publishes under.
+///
+/// A registry coordinate names a stable key. A local archive's path does
+/// not: a new version of an already published plugin arrives as another
+/// file, so its key is the key its alias is already published under, and
+/// only a first publish takes the path-derived key.
+///
+/// # Errors
+///
+/// Returns an error when the coordinate yields no key or the alias is
+/// published under several keys.
+pub async fn install_plugin_key(
+    store: &LibraryStore,
+    files_dir: &Path,
+    coordinate: &PackageCoordinate,
+    package: &BookclerkPackageManifest,
+) -> Result<String> {
+    let derived = Installer::plugin_key_for(coordinate, &package.id, &files_dir.join("plugins"))
+        .map_err(cat)?
+        .canonical()
+        .to_string();
+    if !matches!(coordinate.source, RegistrySource::LocalArchive) {
+        return Ok(derived);
+    }
+    let mut known: Vec<String> = list_releases(store, None)
+        .await
+        .map_err(lib)?
+        .into_iter()
+        .filter(|r| r.manifest_id.eq_ignore_ascii_case(&package.id))
+        .map(|r| r.plugin_key)
+        .collect();
+    known.sort();
+    known.dedup();
+    match known.as_slice() {
+        [] => Ok(derived),
+        [one] => Ok(one.clone()),
+        many => Err(PluginError::message(format!(
+            "alias `{}` is published under several plugin keys ({}); remove the extra ones",
+            package.id,
+            many.join(", ")
+        ))),
+    }
+}
+
+/// Publishes an operator's package as a release, carries an earlier
+/// approval forward when it still covers the new release (or approves when
+/// asked), and enrolls the plugin's default instance.
+///
+/// One alias names one plugin: a release may not take an alias another
+/// plugin's active release already answers to.
+///
+/// # Errors
+///
+/// Returns an error when the key cannot be derived, the alias belongs to
+/// another plugin, or publishing, approval, or enrollment fails.
+pub async fn install_release(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    files_dir: &Path,
+    host_id: &str,
+    request: InstallRequest,
+) -> Result<InstalledRelease> {
+    let key = install_plugin_key(store, files_dir, &request.coordinate, &request.package).await?;
+    for pointer in list_release_pointers(store).await.map_err(lib)? {
+        if pointer.plugin_key == key {
+            continue;
+        }
+        let other = load_release(store, &pointer.plugin_key, &pointer.version)
+            .await
+            .map_err(lib)?;
+        if other.is_some_and(|o| o.manifest_id.eq_ignore_ascii_case(&request.package.id)) {
+            return Err(PluginError::message(format!(
+                "alias `{}` is already the active release of {}; remove it first",
+                request.package.id, pointer.plugin_key
+            )));
+        }
+    }
+    let previous = load_active_release(store, &key).await.map_err(lib)?;
+    let coordinate = if matches!(request.coordinate.source, RegistrySource::LocalArchive) {
+        String::new()
+    } else {
+        request.coordinate.to_string()
+    };
+    let published = publish_package_release(
+        store,
+        actor,
+        files_dir,
+        host_id,
+        ReleaseRequest {
+            plugin_key: key.clone(),
+            package: request.package,
+            archive: request.archive,
+            target: request.target,
+            coordinate,
+            offline: request.offline,
+            publisher_verified: false,
+            grant: None,
+            activate: if request.activate {
+                Activate::Always
+            } else {
+                Activate::IfNone
+            },
+        },
+    )
+    .await?;
+    let mut release = published.release;
+    if release.grant_json.is_empty() {
+        let carried = previous
+            .as_ref()
+            .filter(|p| !p.grant_json.is_empty())
+            .and_then(|p| serde_json::from_str::<PluginGrant>(&p.grant_json).ok())
+            .filter(|grant| grant_covers_release(grant, &release));
+        let grant = match carried {
+            Some(grant) => Some(grant),
+            None if request.approve => Some(release_consent_request(&release)?),
+            None => None,
+        };
+        if let Some(grant) = grant {
+            let grant_json = serde_json::to_string(&grant)
+                .map_err(|err| PluginError::message(format!("grant: {err}")))?;
+            release = approve_release_grant(
+                store,
+                actor,
+                &release.plugin_key,
+                &release.version,
+                &grant_json,
+            )
+            .await
+            .map_err(lib)?;
+        }
+    }
+    let instance = enroll_release(store, actor, &release).await?;
+    let active = load_active_release(store, &key)
+        .await
+        .map_err(lib)?
+        .is_some_and(|a| a.version == release.version);
+    Ok(InstalledRelease {
+        release,
+        created: published.created,
+        active,
+        instance,
+    })
 }

@@ -11,5 +11,6 @@ pub mod import_cmd;
 pub mod integrations;
 pub mod library;
 pub mod migrate;
+pub mod plugin_releases;
 pub mod plugins;
 pub mod queues;

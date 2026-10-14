@@ -24,6 +24,9 @@ pub struct Model {
     pub publisher_verified: i64,
     /// JSON consent grant the operator approved; empty until approved.
     pub grant_json: String,
+    /// Package coordinate the release was resolved from (`cargo:…@v`);
+    /// empty for a local archive.
+    pub coordinate: String,
     /// RFC 3339 publish time.
     pub published_at: String,
     /// Audit identity of the publisher.

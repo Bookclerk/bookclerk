@@ -73,6 +73,9 @@ pub struct PluginRelease {
     pub publisher_verified: bool,
     /// Approved consent grant (JSON), empty until an operator approves it.
     pub grant_json: String,
+    /// Package coordinate the release was resolved from; `update` resolves
+    /// newer versions from it. Empty for a local archive.
+    pub coordinate: String,
     /// RFC 3339 publish time.
     pub published_at: String,
     /// Audit identity of the publisher.
@@ -179,6 +182,7 @@ fn to_model(release: &PluginRelease) -> Result<plugin_releases::ActiveModel> {
         artifacts_json: Set(serde_json::to_string(&release.artifacts).map_err(encode)?),
         publisher_verified: Set(i64::from(release.publisher_verified)),
         grant_json: Set(release.grant_json.clone()),
+        coordinate: Set(release.coordinate.clone()),
         published_at: Set(release.published_at.clone()),
         published_by: Set(release.published_by.clone()),
     })
@@ -197,6 +201,7 @@ fn from_model(row: plugin_releases::Model) -> Result<PluginRelease> {
         manifest_toml: row.manifest_toml,
         publisher_verified: row.publisher_verified != 0,
         grant_json: row.grant_json,
+        coordinate: row.coordinate,
         published_at: row.published_at,
         published_by: row.published_by,
     })

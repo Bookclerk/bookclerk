@@ -883,6 +883,20 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .route("/api/config/hosts", get(crate::config_authority::get_hosts))
         .route(
+            "/api/config/plugin-releases",
+            get(crate::plugin_releases::get_plugin_releases)
+                .post(crate::plugin_releases::post_plugin_release),
+        )
+        .route(
+            "/api/config/plugin-releases/{key}/active",
+            put(crate::plugin_releases::put_active_release)
+                .delete(crate::plugin_releases::delete_active_release),
+        )
+        .route(
+            "/api/config/plugin-releases/{key}/{version}/approve",
+            post(crate::plugin_releases::approve_plugin_release),
+        )
+        .route(
             "/api/config/plugin-schemas",
             get(crate::config_authority::get_plugin_schemas),
         )

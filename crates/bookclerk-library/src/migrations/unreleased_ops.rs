@@ -968,6 +968,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         artifacts_json TEXT NOT NULL,
         publisher_verified INTEGER NOT NULL,
         grant_json TEXT NOT NULL DEFAULT '',
+        coordinate TEXT NOT NULL DEFAULT '',
         published_at TEXT NOT NULL,
         published_by TEXT NOT NULL,
         PRIMARY KEY (plugin_key, version)
