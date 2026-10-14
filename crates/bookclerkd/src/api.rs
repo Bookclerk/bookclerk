@@ -1078,7 +1078,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/library",
                 "/wishlist",
                 "/accounts",
-                "/status",
+                // The Status page. `/status` stays the legacy JSON route.
+                "/cluster",
                 "/settings",
             ];
             for path in SPA_DOC_PATHS {

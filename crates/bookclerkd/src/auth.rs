@@ -5945,4 +5945,50 @@ pub(crate) mod tests {
         let (status, _) = call(None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn spa_document_routes_mount_beside_the_legacy_api() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let _dek = process_dek_lock().await;
+        let (state, _app, _library) = phase2_harness("op-token-spa-routes").await;
+        let dist = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dist.path().join("index.html"),
+            "<!doctype html><title>SPA</title>",
+        )
+        .unwrap();
+        // Building the router panics when a document path collides with an API route.
+        let app = crate::api::router(state, Some(dist.path().to_path_buf()));
+        let page = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/cluster")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let body = page.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("<title>SPA</title>"));
+        let legacy = app
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            legacy.status(),
+            StatusCode::UNAUTHORIZED,
+            "still the authenticated API"
+        );
+    }
 }
