@@ -8,6 +8,7 @@ mod auth;
 mod config_authority;
 mod csrf;
 mod event_worker;
+mod host_queue;
 mod http_error;
 mod job_handler;
 mod job_worker;

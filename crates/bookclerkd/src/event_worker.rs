@@ -83,6 +83,7 @@ fn spawn_dispatcher(state: Arc<AppState>) {
                 (cfg.events.retention_days, cfg.paths().files_dir.clone())
             };
             let node_id = event_node_id(&state, &files_dir);
+            crate::host_queue::upsert_catalog_row(&library, &node_id, &files_dir).await;
             let more = match dispatch_pending(
                 &library,
                 retention_days,
@@ -168,15 +169,9 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
             let files_dir = state.config.read().await.paths().files_dir.clone();
             let max_in_flight = state.config.read().await.events.concurrency.max(1);
             let node_id = event_node_id(&state, &files_dir);
-            match claim_delivery(
-                &library,
-                &owner,
-                &loaded_plugin_ids(&state).await,
-                max_in_flight,
-                &node_id,
-            )
-            .await
-            {
+            let mut claim_ids = loaded_plugin_ids(&state).await;
+            claim_ids.extend(crate::host_queue::consumer_id(&files_dir));
+            match claim_delivery(&library, &owner, &claim_ids, max_in_flight, &node_id).await {
                 Ok(Some(delivery)) => {
                     run_delivery(&state, &library, delivery).await;
                 }
@@ -767,6 +762,10 @@ async fn run_delivery(
             .await;
         return;
     };
+    if bookclerk_library::control_plane::is_host_consumer_id(&delivery.plugin_id) {
+        crate::host_queue::run_host_delivery(library, &event, &delivery).await;
+        return;
+    }
     let integration = {
         let integrations = state.integrations.read().await;
         integrations.get(&delivery.plugin_id)

@@ -1222,6 +1222,20 @@ Config reload re-enrols the host and leaves running guests in place unless
 the database connection changed, in which case every guest is retired and
 the reconciler brings the present deployments back.
 
+**How a host hears about a change.** Each host consumes its own queue,
+`host.<host_id>`, on the outbox. Every committed deployment write (create,
+desired-state change, delete) publishes a `deployment.changed` message to
+the deployment's host, and every committed configuration document (cluster
+settings and instance documents) publishes `configuration.changed` to every
+registered host. The daemon's delivery worker claims those messages under
+the catalog id `host:<host_id>` and wakes the deployment and configuration
+reconcilers; there is no fixed 5-second re-read any more, only a 60-second
+backstop pass for a wakeup dispatched while the host's catalog row was not
+live. Messages are wakeups, not state: the reconciler always re-reads the
+authoritative rows. The CLI only produces them (`bookclerk plugins enable
+--host <id>` wakes that host), and `bookclerk queues list` shows each
+host queue with its `host:<id>` consumer.
+
 This host-local install path (receipts, `install-ledger.json`, in-place
 replace of `plugins/<fs-id>`, health before commit) is scheduled to be
 replaced by cluster releases and a content-addressed cache; see the

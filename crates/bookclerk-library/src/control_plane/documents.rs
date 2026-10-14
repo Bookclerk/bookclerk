@@ -518,6 +518,18 @@ pub async fn replace_document(
         .await?
         .ok_or_else(|| LibraryError::NotFound(key.namespace.clone()))?;
     if stored.write_operation_id == operation_id || stored.revision == receipt.revision {
+        // Cluster settings and instance documents both land here; every host
+        // re-reads what it runs on the next pass.
+        super::host_queue::notify_all_hosts(
+            store,
+            super::host_queue::HostMessage::ConfigurationChanged {
+                scope_type: stored.key.scope_type.clone(),
+                scope_id: stored.key.scope_id.clone(),
+                namespace: stored.key.namespace.clone(),
+                revision: stored.revision,
+            },
+        )
+        .await;
         Ok(ReplaceOutcome::Applied(stored))
     } else {
         Ok(ReplaceOutcome::Replayed {

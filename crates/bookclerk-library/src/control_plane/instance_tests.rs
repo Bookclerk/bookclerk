@@ -756,6 +756,152 @@ async fn deployment_replace_conflicts_without_touching_observations() {
     assert_eq!(observed.applied_config_revision, Some(1));
 }
 
+/// Host-queue messages on `host`'s queue, oldest first.
+async fn host_messages(store: &LibraryStore, host: &str) -> Vec<HostMessage> {
+    let mut rows = store
+        .list_domain_events_for_queue(&host_queue_name(host), 100)
+        .await
+        .expect("queue rows");
+    rows.reverse();
+    rows.into_iter()
+        .map(|row| {
+            assert!(
+                row.event_type.is_empty(),
+                "host messages carry no event type"
+            );
+            assert!(row.source.is_empty(), "the host publishes them");
+            serde_json::from_str(&row.payload).expect("host message body")
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn deployment_and_document_writes_wake_hosts_through_their_queues() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let session = bootstrap(&store, dir.path()).await;
+    let local = session.host.host_id.clone();
+    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
+        .await
+        .unwrap();
+    let deployment =
+        ensure_plugin_deployment(&store, &operator(), &instance.id, &local, DESIRED_PRESENT)
+            .await
+            .unwrap();
+    // A second ensure of the same pair writes nothing and publishes nothing.
+    ensure_plugin_deployment(&store, &operator(), &instance.id, &local, DESIRED_PRESENT)
+        .await
+        .unwrap();
+    // A deployment for another host wakes that host, not this one.
+    let foreign =
+        ensure_plugin_deployment(&store, &operator(), &instance.id, "host-b", DESIRED_PRESENT)
+            .await
+            .unwrap();
+    let absent = replace_plugin_deployment(
+        &store,
+        &operator(),
+        &deployment.deployment_id,
+        1,
+        DESIRED_ABSENT,
+        "set-absent",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(absent, DeploymentReplace::Applied(_)),
+        "{absent:?}"
+    );
+    // The replay of a committed write does not publish twice.
+    replace_plugin_deployment(
+        &store,
+        &operator(),
+        &deployment.deployment_id,
+        1,
+        DESIRED_ABSENT,
+        "set-absent",
+    )
+    .await
+    .unwrap();
+    delete_plugin_deployment(&store, &operator(), &deployment.deployment_id)
+        .await
+        .unwrap();
+    let changed = |desired: &str, revision: i64| HostMessage::DeploymentChanged {
+        deployment_id: deployment.deployment_id.clone(),
+        plugin_instance_id: instance.id.as_str().to_string(),
+        desired: desired.into(),
+        revision,
+    };
+    assert_eq!(
+        host_messages(&store, &local).await,
+        vec![
+            changed(DESIRED_PRESENT, 1),
+            changed(DESIRED_ABSENT, 2),
+            changed("deleted", 0),
+        ]
+    );
+    assert_eq!(
+        host_messages(&store, "host-b").await,
+        vec![HostMessage::DeploymentChanged {
+            deployment_id: foreign.deployment_id.clone(),
+            plugin_instance_id: instance.id.as_str().to_string(),
+            desired: DESIRED_PRESENT.into(),
+            revision: 1,
+        }]
+    );
+
+    // A committed configuration write wakes every registered host.
+    let applied = replace_events(
+        &store,
+        &operator(),
+        session.events.revision,
+        &bookclerk_library_events(9),
+        "events-wake",
+    )
+    .await
+    .unwrap();
+    let EventsReplace::Applied(doc) = applied else {
+        panic!("events write applies: {applied:?}");
+    };
+    let config = host_messages(&store, &local).await;
+    assert_eq!(
+        config.last(),
+        Some(&HostMessage::ConfigurationChanged {
+            scope_type: doc.scope_type.clone(),
+            scope_id: doc.scope_id.clone(),
+            namespace: doc.namespace.clone(),
+            revision: doc.revision,
+        })
+    );
+    // `host-b` has no `hosts` row, so it is not a registered host to wake.
+    assert_eq!(host_messages(&store, "host-b").await.len(), 1);
+}
+
+fn bookclerk_library_events(retention: u64) -> EventsSettingsV1 {
+    EventsSettingsV1 {
+        retention_days: retention,
+        dead_letter_retention_days: 30,
+        concurrency: 1,
+    }
+}
+
+#[test]
+fn host_queue_names_stay_valid_for_any_host_id() {
+    let uuid = "3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b";
+    assert_eq!(host_queue_name(uuid), format!("host.{uuid}"));
+    assert_eq!(host_queue_name("Host-A"), "host.host-a");
+    let odd = host_queue_name("a host/with spaces");
+    assert!(odd.starts_with("host.h-"), "{odd}");
+    assert!(crate::is_valid_queue_name(&odd), "{odd}");
+    assert_eq!(odd, host_queue_name("a host/with spaces"), "stable");
+    assert!(crate::is_valid_queue_name(&host_queue_name(
+        &"x".repeat(128)
+    )));
+    assert_eq!(host_consumer_id(uuid), format!("host:{uuid}"));
+    assert!(is_host_consumer_id(&host_consumer_id(uuid)));
+    assert!(!is_host_consumer_id("path:file:///tmp/a#echo"));
+}
+
 #[tokio::test]
 async fn two_connections_observe_one_instance_document() {
     let _guard = master_key_test_lock_async().await;

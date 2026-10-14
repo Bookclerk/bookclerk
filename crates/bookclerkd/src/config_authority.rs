@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
     load_cluster_row, load_events, overlay_events, replace_events, ConfigActor, EventsReplace,
-    EventsSettingsV1, CONFIG_RECONCILE_INTERVAL,
+    EventsSettingsV1,
 };
 use bookclerk_library::LibraryStore;
 use serde::{Deserialize, Serialize};
@@ -29,19 +29,18 @@ fn operator_actor() -> ConfigActor {
     }
 }
 
-/// Re-reads `core.events` until the process stops.
+/// Re-reads `core.events` on each `configuration.changed` delivery on this
+/// host's queue, plus a slow backstop pass, until the process stops.
 pub fn spawn_config_reconciler(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(CONFIG_RECONCILE_INTERVAL);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        tick.tick().await;
-        loop {
-            tick.tick().await;
+    crate::host_queue::spawn_woken_loop(
+        state,
+        crate::host_queue::config_wait,
+        |state| async move {
             if let Err(err) = reconcile_events(&state).await {
                 tracing::warn!(error = %err, "configuration reconcile failed");
             }
-        }
-    });
+        },
+    );
 }
 
 /// How a loaded document may replace in-memory `[events]`.
@@ -357,18 +356,19 @@ fn events_json(
     })
 }
 
-/// Re-reads local plugin deployments until the process stops.
+/// Re-reads local plugin deployments on each `deployment.changed` or
+/// `configuration.changed` delivery on this host's queue, plus a slow
+/// backstop pass, until the process stops.
 pub fn spawn_deployment_reconciler(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(CONFIG_RECONCILE_INTERVAL);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
+    crate::host_queue::spawn_woken_loop(
+        state,
+        crate::host_queue::deployment_wait,
+        |state| async move {
             if let Err(err) = reconcile_deployments(&state).await {
                 tracing::warn!(error = %err, "plugin deployment reconcile failed");
             }
-        }
-    });
+        },
+    );
 }
 
 /// Reconciles this host's deployments: installs, spawns, respawns, and

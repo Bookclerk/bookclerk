@@ -4,6 +4,7 @@
 //! running. Observation rows are written only by that host's reconciler.
 //! Desired writes do not update observations.
 
+use super::host_queue::HostMessage;
 use chrono::{Duration, Utc};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
@@ -179,9 +180,13 @@ pub async fn ensure_plugin_deployment(
         .exec(store.db())
         .await
     {
-        Ok(_) => load_deployment_by_id(store, &deployment_id)
-            .await?
-            .ok_or_else(|| LibraryError::NotFound(deployment_id)),
+        Ok(_) => {
+            let created = load_deployment_by_id(store, &deployment_id)
+                .await?
+                .ok_or_else(|| LibraryError::NotFound(deployment_id))?;
+            notify_deployment(store, &created).await;
+            Ok(created)
+        }
         Err(err) => {
             if let Some(existing) = find_deployment_pair(store, instance_id, host_id).await? {
                 return Ok(existing);
@@ -345,6 +350,7 @@ pub async fn replace_plugin_deployment(
         .await?
         .ok_or_else(|| LibraryError::NotFound(deployment_id.to_string()))?;
     if stored.revision == next_revision {
+        notify_deployment(store, &stored).await;
         Ok(DeploymentReplace::Applied(stored))
     } else {
         Ok(DeploymentReplace::Replayed {
@@ -470,7 +476,33 @@ pub async fn delete_plugin_deployment(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    super::host_queue::notify_host(
+        store,
+        &current.host_id,
+        HostMessage::DeploymentChanged {
+            deployment_id: current.deployment_id.clone(),
+            plugin_instance_id: current.plugin_instance_id.as_str().to_string(),
+            desired: "deleted".into(),
+            revision: 0,
+        },
+    )
+    .await;
     Ok(())
+}
+
+/// Wakes the deployment's host after a committed desired-state write.
+async fn notify_deployment(store: &LibraryStore, deployment: &PluginDeployment) {
+    super::host_queue::notify_host(
+        store,
+        &deployment.host_id,
+        HostMessage::DeploymentChanged {
+            deployment_id: deployment.deployment_id.clone(),
+            plugin_instance_id: deployment.plugin_instance_id.as_str().to_string(),
+            desired: deployment.desired.clone(),
+            revision: deployment.revision,
+        },
+    )
+    .await;
 }
 
 /// True when any deployment row names `instance_id`.

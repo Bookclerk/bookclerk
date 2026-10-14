@@ -136,7 +136,10 @@ authority is written. The Settings page saves file-backed keys and does not
 batch them with `events.*`. `GET /api/settings` includes `events.revision` in
 `effective`.
 
-Running processes re-read the document about every 5 seconds and on startup.
+Running processes re-read the document on startup and whenever a
+`configuration.changed` message reaches their host queue (`host.<host_id>`;
+every committed write publishes one to each registered host), with a
+60-second backstop pass.
 A reload reads that document before it replaces the library connection or
 operator auth. If the read fails, the previous runtime stays in place. Guests
 bound to a plugin instance keep running across a reload; when the database

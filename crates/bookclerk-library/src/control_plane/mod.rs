@@ -9,6 +9,7 @@
 mod batch;
 mod deployments;
 mod documents;
+mod host_queue;
 mod identity;
 mod instance_config;
 mod instances;
@@ -16,7 +17,6 @@ mod schemas;
 mod secret;
 
 use std::path::Path;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,10 @@ pub use documents::{
     audit_count, change_count, ConfigActor, DocumentKey, ReplaceOutcome, StoredDocument,
     CLUSTER_SCOPE_ID, CLUSTER_SCOPE_TYPE, HOST_SCOPE_TYPE, MAX_CONFIGURATION_DOCUMENT_BYTES,
     PLUGIN_INSTANCE_CONFIG_NAMESPACE, PLUGIN_INSTANCE_SCOPE_TYPE,
+};
+pub use host_queue::{
+    host_consumer_id, host_queue_name, is_host_consumer_id, publish_host_message,
+    publish_to_all_hosts, HostMessage, HOST_CONSUMER_PREFIX,
 };
 pub use identity::{
     current_process_incarnation, host_identity_path, list_host_ids, list_hosts, load_host,
@@ -63,13 +67,6 @@ use identity::heartbeat_process;
 
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
-
-/// How often a running host re-reads committed configuration.
-///
-/// A committed revision is visible to other database connections immediately.
-/// Processes apply it on the next reconcile, including the first load after a
-/// restart or a missed notice. This interval is that in-memory bound.
-pub const CONFIG_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Namespace for the migrated `[events]` domain.
 pub const EVENTS_NAMESPACE: &str = "core.events";
