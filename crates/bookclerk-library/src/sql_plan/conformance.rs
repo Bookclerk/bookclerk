@@ -278,6 +278,153 @@ async fn plan_hash_conflict_is_idempotency_conflict() {
     assert_eq!(result.status, atomic_status::IDEMPOTENCY_CONFLICT);
 }
 
+/// Mirrors the plugin host's `RpcAtomicBackend::send_compiled`: validate the
+/// plan, host-authorize the typed request (desugar, host kinds, canonical
+/// wire `requestHash`), execute it, validate the reply, and interpret receipts
+/// against the domain hash.
+async fn execute_via_host_authorize(
+    db: &sea_orm::DatabaseConnection,
+    compiled: super::CompiledAtomic,
+    caps: &DbCapabilities,
+) -> crate::DbAtomicResult {
+    let operation_id = compiled.request.operation_id.clone();
+    super::validate_plan(&compiled, caps).expect("validate plan");
+    let mut typed = compiled.clone().into_typed_request(operation_id.clone());
+    super::authorize_typed_request(&mut typed, caps)
+        .unwrap_or_else(|err| panic!("{operation_id}: host authorize rejected the plan: {err}"));
+    let reply = super::execute_typed_on(db, &typed, caps.max_result_rows)
+        .await
+        .unwrap_or_else(|err| panic!("{operation_id}: execute: {err}"));
+    crate::validate_execute_reply(&typed, &reply, caps).expect("validate reply");
+    super::interpret_typed_exec(&compiled, &reply, &compiled.expected_hash)
+}
+
+/// Enqueue + claim through the host authorize path, including lost-response
+/// retries that recompile with a fresh `now` under the same `operationId`.
+async fn host_authorize_path_runs_and_replays(
+    db: &sea_orm::DatabaseConnection,
+    caps: &DbCapabilities,
+) {
+    let enqueue = enqueue_scan("authz-enq", "a");
+    let first = execute_via_host_authorize(
+        db,
+        compile_named_request(enqueue.id, &enqueue.params, "2024-06-01T00:00:00Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert_eq!(first.status, atomic_status::OK);
+    assert!(!first.replayed);
+    let job_id = first.payload.as_ref().unwrap()["id"].clone();
+    let retry = execute_via_host_authorize(
+        db,
+        compile_named_request(enqueue.id, &enqueue.params, "2024-06-01T00:00:05Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert!(retry.replayed, "same operationId must replay the receipt");
+    assert_eq!(retry.status, atomic_status::OK);
+    assert_eq!(retry.payload.as_ref().unwrap()["id"], job_id);
+
+    let claim = |owner: &str| DbAtomicParams::ClaimNextJob {
+        resource_class: "network".into(),
+        owner: owner.into(),
+        lease_secs: 60,
+    };
+    let claimed = execute_via_host_authorize(
+        db,
+        compile_named_request("authz-claim", &claim("worker-1"), "2024-06-01T00:00:10Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert_eq!(claimed.status, atomic_status::OK);
+    assert_eq!(claimed.payload.as_ref().unwrap()["id"], job_id);
+    let replayed = execute_via_host_authorize(
+        db,
+        compile_named_request("authz-claim", &claim("worker-1"), "2024-06-01T00:00:12Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert!(
+        replayed.replayed,
+        "claim retry must replay, not claim twice"
+    );
+    assert_eq!(replayed.payload.as_ref().unwrap()["id"], job_id);
+    let conflict = execute_via_host_authorize(
+        db,
+        compile_named_request("authz-claim", &claim("worker-2"), "2024-06-01T00:00:12Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert_eq!(conflict.status, atomic_status::IDEMPOTENCY_CONFLICT);
+
+    // Publish an event and dispatch it to a network subscriber: the guarded
+    // delivery `INSERT … SELECT … RETURNING` carries a host `maxRows = 1`
+    // claim that authorization must prove from the SQL shape.
+    let publish = DbAtomicParams::PublishDomainEvent {
+        id: "authz-evt".into(),
+        event_type: "book_acquired".into(),
+        schema_version: 1,
+        account_id: "acct".into(),
+        source: String::new(),
+        correlation_id: String::new(),
+        causation_id: String::new(),
+        dedup_key: "authz-dedup".into(),
+        payload: "{}".into(),
+        ordering_key: String::new(),
+        queue_name: String::new(),
+        content_type: String::new(),
+        deliver_after: String::new(),
+    };
+    let published = execute_via_host_authorize(
+        db,
+        compile_named_request("authz-publish", &publish, "2024-06-01T00:00:20Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert_eq!(published.status, atomic_status::OK);
+    let dispatch = DbAtomicParams::DispatchEventDeliveries {
+        event_id: "authz-evt".into(),
+        subscribers_json: r#"[{"pluginId":"echo"}]"#.into(),
+        mark_dispatched: true,
+    };
+    let dispatched = execute_via_host_authorize(
+        db,
+        compile_named_request("authz-dispatch", &dispatch, "2024-06-01T00:00:21Z").unwrap(),
+        caps,
+    )
+    .await;
+    assert_eq!(dispatched.status, atomic_status::OK);
+    let backend = sea_orm::ConnectionTrait::get_database_backend(db);
+    let row = sea_orm::ConnectionTrait::query_one_raw(
+        db,
+        sea_orm::Statement::from_string(
+            backend,
+            "SELECT COUNT(*) AS n FROM event_deliveries WHERE id = 'authz-evt:echo'",
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let deliveries: i64 = row.try_get("", "n").unwrap();
+    assert_eq!(deliveries, 1, "dispatch created the subscriber's delivery");
+}
+
+#[tokio::test]
+async fn host_authorize_path_runs_and_replays_on_sqlite() {
+    let db = mem_db().await;
+    host_authorize_path_runs_and_replays(&db, &DbCapabilities::advertised_sqlite()).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
+async fn postgres_host_authorize_path_runs_and_replays() {
+    if !postgres_conformance_enabled() {
+        return;
+    }
+    let db = postgres_migrated_db().await;
+    host_authorize_path_runs_and_replays(&db, &DbCapabilities::advertised_postgres()).await;
+}
+
 #[tokio::test]
 async fn unique_constraint_on_generic_insert_is_engine_error() {
     let db = mem_db().await;

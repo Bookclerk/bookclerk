@@ -2366,11 +2366,14 @@ pub fn guest_statement_kind(sql: &str) -> DbPlanStatementKind {
 /// one row.
 ///
 /// Conservative and fail-closed — a caller-asserted `maxRows` is never
-/// trusted. Only a single-statement `INSERT` (after any leading CTE list)
-/// whose row source is exactly one top-level `VALUES` tuple is proven.
-/// `INSERT … SELECT`, `UPDATE … RETURNING`, `DELETE … RETURNING`, and
-/// multi-tuple `VALUES` are never proven, because the SQL text does not bound
-/// how many rows they touch.
+/// trusted. A single-statement `INSERT` (after any leading CTE list) is
+/// proven when its row source is exactly one top-level `VALUES` tuple, or a
+/// table-free `SELECT` with no compound or grouping whose select list holds
+/// only placeholders, literals, operators, `COALESCE`, `MIN` / `MAX` over
+/// such items, and scalar subqueries, so it cannot return a set. `INSERT … SELECT … FROM`,
+/// `UPDATE … RETURNING`, `DELETE … RETURNING`, and multi-tuple `VALUES` are
+/// never proven, because the SQL text does not bound how many rows they
+/// touch.
 #[must_use]
 pub fn returning_single_row_proven(sql: &str) -> bool {
     if has_top_level_semicolon_tail(sql) {
@@ -2380,12 +2383,132 @@ pub fn returning_single_row_proven(sql: &str) -> bool {
     if !matches!(first_top_level_keyword(main).as_deref(), Some("INSERT")) {
         return false;
     }
-    // A top-level SELECT row source is unbounded; nested `(SELECT …)` scalar
-    // expressions sit at depth > 0 and do not trip this check.
+    // Nested `(SELECT …)` scalar expressions sit at depth > 0 and are not a
+    // row source.
     if has_top_level_keyword(main, "SELECT") {
-        return false;
+        return select_row_source_is_single_row(main);
     }
     count_top_level_values_tuples(main) == 1
+}
+
+/// True for an `INSERT … SELECT <list> [WHERE …]` whose `SELECT` reads no
+/// table and whose select list cannot return a set, so it yields zero or one
+/// row.
+///
+/// No top-level `FROM`, compound operator, `VALUES`, or grouping is allowed.
+/// Postgres multiplies rows for a set-returning function in the target list
+/// (`SELECT generate_series(1, 3)` is three rows even without `FROM`), so
+/// the select list may hold only placeholders, literals, `NULL` / `TRUE` /
+/// `FALSE`, operators, `COALESCE(…)` (Postgres rejects set-returning
+/// functions inside it; SQLite has none outside `FROM`), `MIN(…)` / `MAX(…)`
+/// whose arguments pass the same check, and parenthesized scalar subqueries
+/// `(SELECT …)` (more than one row is an error, not more rows). Anything
+/// else fails closed.
+///
+/// `MIN` / `MAX` with several arguments are scalar in SQLite and lower to
+/// `LEAST` / `GREATEST` on Postgres; with one argument they aggregate, which
+/// over a table-free `SELECT` still yields exactly one row. Their arguments
+/// are checked because Postgres would evaluate a set-returning call inside
+/// `GREATEST`, or in the `LATERAL` the lowering adds for placeholders.
+fn select_row_source_is_single_row(main: &str) -> bool {
+    let mut selects = 0usize;
+    let mut select_end = None;
+    let mut forbidden = false;
+    for_each_top_level_keyword(main, |idx, kw| {
+        let upper = kw.to_ascii_uppercase();
+        match upper.as_str() {
+            "SELECT" => {
+                selects += 1;
+                select_end = Some(idx + kw.len());
+            }
+            "FROM" | "UNION" | "INTERSECT" | "EXCEPT" | "VALUES" | "GROUP" | "HAVING"
+            | "WINDOW" => forbidden = true,
+            _ => {}
+        }
+    });
+    let (1, Some(list_start), false) = (selects, select_end, forbidden) else {
+        return false;
+    };
+    let rest = &main[list_start..];
+    // The select list ends at the first clause keyword after it.
+    let mut list_len = rest.len();
+    for_each_top_level_keyword(rest, |idx, kw| {
+        let upper = kw.to_ascii_uppercase();
+        if idx < list_len
+            && matches!(
+                upper.as_str(),
+                "WHERE" | "ON" | "RETURNING" | "ORDER" | "LIMIT" | "OFFSET"
+            )
+        {
+            list_len = idx;
+        }
+    });
+    select_list_is_scalar(&rest[..list_len])
+}
+
+/// True when every top-level item of a `SELECT` list is a placeholder,
+/// literal, `NULL` / `TRUE` / `FALSE`, operator, `COALESCE(…)`, `MIN(…)` /
+/// `MAX(…)` over such items, or parenthesized scalar subquery. See
+/// [`select_row_source_is_single_row`].
+fn select_list_is_scalar(list: &str) -> bool {
+    let mut words_ok = true;
+    for_each_top_level_keyword(list, |_, kw| {
+        if !["NULL", "TRUE", "FALSE", "COALESCE", "MIN", "MAX"]
+            .iter()
+            .any(|allowed| kw.eq_ignore_ascii_case(allowed))
+        {
+            words_ok = false;
+        }
+    });
+    if !words_ok {
+        return false;
+    }
+    let bytes = list.as_bytes();
+    let mut depth = 0usize;
+    let mut parens_ok = true;
+    for_each_unquoted(list, |_, i| {
+        match bytes[i] {
+            b'(' => {
+                if depth == 0 && !paren_is_scalar(list, i) {
+                    parens_ok = false;
+                }
+                depth += 1;
+            }
+            b')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        1
+    });
+    parens_ok
+}
+
+/// True when the `(` at `open` is `COALESCE`'s argument list, the argument
+/// list of a `MIN` / `MAX` whose arguments are themselves scalar, or starts
+/// a `(SELECT …)` scalar subquery. Anything else before it (another
+/// function name, a quoted identifier, a comment) fails closed.
+fn paren_is_scalar(list: &str, open: usize) -> bool {
+    let bytes = list.as_bytes();
+    let mut end = open;
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && ident_cont(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start < end {
+        let name = &list[start..end];
+        if name.eq_ignore_ascii_case("MIN") || name.eq_ignore_ascii_case("MAX") {
+            return skip_balanced_parens(list, open)
+                .is_some_and(|close| select_list_is_scalar(&list[open + 1..close - 1]));
+        }
+        return name.eq_ignore_ascii_case("COALESCE");
+    }
+    if end > 0 && matches!(bytes[end - 1], b'"' | b'`' | b']' | b'/' | b'\'') {
+        return false;
+    }
+    let inner = skip_ws_comments(list, open + 1);
+    keyword_at(list, inner, "SELECT")
 }
 
 /// Number of top-level `VALUES` tuples (`(1),(2)` → 2). `0` when none parsed.
@@ -4441,6 +4564,75 @@ mod tests {
         // Leading CTE with a single-tuple VALUES main statement is proven.
         assert!(returning_single_row_proven(
             "WITH seed AS (SELECT 1) INSERT INTO t (a) VALUES (?) RETURNING id"
+        ));
+    }
+
+    #[test]
+    fn table_free_insert_select_is_proven_only_without_sets() {
+        // The host's guarded insert shape: a table-free SELECT of scalars.
+        assert!(returning_single_row_proven(
+            "INSERT OR IGNORE INTO t (a, b, c, d) SELECT ?, 'x', NULL, \
+             COALESCE((SELECT k FROM u WHERE id = ?), '') \
+             WHERE EXISTS (SELECT 1 FROM u WHERE id = ?) \
+             AND NOT EXISTS (SELECT 1 FROM r WHERE id = ?) RETURNING id"
+        ));
+        assert!(returning_single_row_proven(
+            "INSERT INTO t (a) SELECT ? + 1 ON CONFLICT DO NOTHING RETURNING id"
+        ));
+        assert!(returning_single_row_proven(
+            "INSERT INTO t (a) SELECT (SELECT MAX(x) FROM u) RETURNING id"
+        ));
+        // The delivery insert's `run_after`: scalar MIN/MAX over scalars.
+        assert!(returning_single_row_proven(
+            "INSERT OR IGNORE INTO t (a, b) SELECT ?, \
+             MAX(?, COALESCE((SELECT k FROM u WHERE id = ?), '')) \
+             WHERE EXISTS (SELECT 1 FROM u WHERE id = ?) RETURNING id"
+        ));
+        assert!(returning_single_row_proven(
+            "INSERT INTO t (a) SELECT min(?, max(1, ?)) RETURNING id"
+        ));
+        // A table, a compound, or grouping can yield more than one row.
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT ? FROM u RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT 1 UNION ALL SELECT 2 RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT 1 GROUP BY 1 RETURNING id"
+        ));
+        // Postgres set-returning functions multiply rows without FROM.
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT generate_series(1, 3) RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT \"generate_series\"(1, 3) RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT abs(generate_series(1, 3)) RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT (generate_series(1, 3)) RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT unnest(ARRAY[1, 2]) RETURNING id"
+        ));
+        // MIN/MAX arguments get the same check, so a set cannot hide inside.
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT MAX(?, generate_series(1, 3)) RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT MIN(1, (generate_series(1, 3))) RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT MAX(1, 2 RETURNING id"
+        ));
+        // Unknown words in the select list fail closed.
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT CURRENT_TIMESTAMP RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT /* c */ (1) RETURNING id"
         ));
     }
 

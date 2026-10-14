@@ -170,6 +170,13 @@ Cargo, under a full-suite path, or listed in `[[reviewed]]` with a reason.
 Computed paths, macro-generated includes and dynamically discovered fixtures
 are **not** detected — declare them, or rely on the conservative fallbacks.
 
+Postgres tests only run in the `postgres` check, through the name filters of
+`POSTGRES_STEPS` in `scripts/ci_plan/execute.py`. `scripts/tests/test_ci_contract.py`
+finds every Postgres-gated test (an `#[ignore]` reason naming Postgres, or a
+body that reads `BOOKCLERK_TEST_POSTGRES_URL` directly or through a helper in
+the same package) and fails when no step filter matches its function name, or
+when a step matches no test. Name such tests `postgres_*`.
+
 ## Jobs
 
 | Job | Runs when | Checks |
