@@ -1220,6 +1220,11 @@ Config reload re-enrols the host and leaves running guests in place unless
 the database connection changed, in which case every guest is retired and
 the reconciler brings the present deployments back.
 
+This host-local install path (receipts, `install-ledger.json`, in-place
+replace of `plugins/<fs-id>`, health before commit) is scheduled to be
+replaced by cluster releases and a content-addressed cache; see the
+control-plane ADR, *Releases and materialization*.
+
 A deployed guest is registered under its plugin instance id. `bookclerk
 library scan` and `bookclerk library acquire` route a plugin key to its
 default instance on this host; pass `--instance` to pin another. Accounts

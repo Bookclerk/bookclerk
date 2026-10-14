@@ -1,8 +1,9 @@
 # ADR: Control plane — bootstrap, host identity, and database configuration
 
-- **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided, not
-  yet implemented (Refs #192)
-- **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13)
+- **Status:** Accepted for Phase 0, Phase 1, and Phase 2; Phase 3 decided and
+  in progress (Refs #192)
+- **Date:** 2026-09-29 (Phase 2 and the Phase 3 decision: 2026-10-13; the
+  releases decision: 2026-10-14)
 - **Related:** [SQL database contract](sql-database-contract.md),
   [schema versioning](schema-versioning.md),
   [plugin capabilities v3](plugin-capabilities-v3.md),
@@ -463,9 +464,74 @@ second way to declare interest.
   destination is bound to a disk, a workerd-only plugin to a host with the
   pinned runtime). Enrollment stops writing "this host, present" once a
   scheduler exists; until then it keeps doing so.
+- **Releases, not installs.** "Installed" is a cluster record, the way a
+  Workers version is a record and every colo materializes it on demand. A
+  `plugin_releases` row per `(plugin_key, version)` carries the manifest, the
+  settings schema, one artifact per target with its digest, the publisher
+  verification result, and the consent grant; a pointer names the active
+  release per plugin key. The host's `plugins/` tree is a content-addressed,
+  immutable cache of release artifacts. There is no in-place replace, no
+  host install ledger to repair, and no pre-commit health gate: health is
+  the deployment observation it already is, and rollback is a pointer flip.
+  Decided 2026-10-14 after reviewing the stage-and-commit installer in #255
+  (closed): its crash window had moved to the commit step and its machinery
+  (pending markers, backups, ledger repair) is not needed once the record of
+  truth is the database. See *Releases and materialization* below.
 - **Out of scope.** Durable Objects, R2 (destinations are the storage
   abstraction), and cron triggers (jobs cover them). Database adapters as
   instances stay Phase 4.
+
+### Releases and materialization
+
+A release is published once and materialized by every host that is placed on
+it. `bookclerk plugins install <coordinate|--archive>` becomes "publish a
+release": resolve and verify the package exactly as the installer does today
+(publisher trust, archive digests, manifest validation, `[[settings]]`
+schema), record the consent grant the operator approved, write the
+`plugin_releases` row and, on a first install or `--activate`, the active
+pointer. Nothing on the publishing host's disk changes. The artifact bytes
+stay where the release row points: the registry URL, an operator bucket, the
+`plugin-packages/` directory, or the KV store once it exists. Blobs in the
+database are a fallback for small packages only (D1 rows are capped well
+below a Rust guest binary).
+
+A host materializes a release when its reconciler sees a present deployment
+whose active release it has not cached: fetch the artifact for its target
+(no artifact for this target is an `error` observation naming the target, so
+placement constraints can exclude the host), extract under
+`plugins/.staging/<digest>.<pid>`, verify the payload-root digest against
+the release row, rename to `plugins/<digest>`, and spawn from there. A
+partial extract never reaches the final path, so a crash leaves only
+`.staging` garbage to sweep; a cached digest is immutable and reused by every
+instance of that release on the host. Digests no deployment references are
+collected after a grace period.
+
+What changes in the trust model: a host trusts the database, which is
+already the authority for configuration and secrets, instead of its own
+`install-ledger.json`. Publisher verification and
+`allow_unverified_publisher` happen once at publish time and are recorded on
+the release. `evaluate_install_in` becomes "payload digest matches the
+release row"; `require_key_derived_install_path` and the receipt file go
+with the ledger. Consent moves from the per-host `plugin-grants.json` into
+the release record (approved once; a new version whose requested
+capabilities widen needs re-approval, as `grant_covers` enforces today).
+
+What stays host-local: platform-bundled guests beside the binary (`sqlite`,
+`local`, `s3`, the helpers) and the database adapter that must exist before
+the database is open. The bootstrap exception already records both. The
+local mutation lock still serializes materialization and sweeping on one
+host; `require_mutable_child` keeps guarding every path under `plugins/`.
+
+Schema pinning simplifies: the pinned schema is the active release's schema.
+A host no longer has "an installed version" independent of the cluster, so
+the newer-re-pins / older-is-stale comparison from Phase 2 reduces to
+"materialize the active release". The comparison code stays until the
+release path lands, then goes.
+
+`bookclerk plugins update` publishes a new version and moves the pointer;
+`bookclerk plugins rollback <plugin> <version>` moves it back, which is
+instant on hosts that still cache the digest. `bookclerk plugins remove`
+clears the pointer and deployments; the cache sweep removes the files.
 
 ### Implementation plan (stacked PR)
 
@@ -488,15 +554,23 @@ depends on hosts agreeing on a schema.
    and the configuration-change wakeup consume them instead of the 5 s tick;
    `deployment.changed` published on every deployment write; the CLI stays a
    producer only.
-4. **Placement.** `replicas` and `constraints` on `plugin_deployments`;
+4. **Releases and materialization.** `plugin_releases` and the active
+   pointer; publish from `bookclerk plugins install|update|rollback` and
+   `POST /api/config/plugin-releases`; the reconciler materializes by digest
+   under `plugins/<digest>` and spawns from the cache; `install-ledger.json`,
+   `receipt.json`, and per-host `plugin-grants.json` retire; a
+   two-connection test proving a release published on one host is
+   materialized and spawned on another.
+5. **Placement.** `replicas` and `constraints` on `plugin_deployments`;
    `hosts.labels`; `bookclerk plugins deploy <plugin> --replicas N --on
    <label>`; the Settings page shows placement per instance. The scheduler
    is a singleton maintenance lease (already listed under Phase 3) that
    writes deployments; each host's reconciler converges as today.
-5. **Docs and ADR.** `plugins.md` loses "not implemented yet" for KV and
-   Queues; this section records any deviation.
+6. **Docs and ADR.** `plugins.md` loses "not implemented yet" for KV and
+   Queues and describes releases instead of installs; this section records
+   any deviation.
 
-Steps 1 and 2 are independent of each other and of 3; 4 needs 3.
+Steps 1, 2, and 4 are independent of each other and of 3; 5 needs 3 and 4.
 
 ## Consequences
 
@@ -552,14 +626,13 @@ Not in this phase, and not claimed as production HA:
   instance rather than the healthy one.
 - Resizing the local event delivery task count without a process restart.
 - A general key-management provider. Operators copy `master.key`.
-- Install crash window between stage and commit. There is no durable
-  pending-install marker. A restart can observe a staged tree that never
-  passed pre-commit health. Health failure in a live process still rolls
-  that tree back before commit.
-- The reconciler holds the process-wide plugin mutation lock across extract
-  and the health check. Extract runs on a blocking thread. The lock is still
-  held across the health await so a second installer cannot commit the same
-  tree.
+- The host-local install path (receipts, `install-ledger.json`, in-place
+  replace of `plugins/<fs-id>`, health before commit) still has a crash
+  window between stage and commit, and the reconciler still holds the
+  process-wide plugin mutation lock across extract and the health await. It
+  is not being hardened: Phase 3 step 4 retires it for releases and a
+  content-addressed cache. #255 (a stage-and-commit installer) was closed
+  for that reason.
 - D1 multi-host execution. The executing D1 tests in this repository are an
   HTTP mock over one SQLite connection. The shared-database proof is two
   PostgreSQL pools plus two SQLite connections. A live D1 database was not
