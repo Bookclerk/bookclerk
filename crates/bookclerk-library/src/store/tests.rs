@@ -6921,3 +6921,38 @@ async fn terminal_jobs_drop_scan_inventory_and_pending_retries_keep_it() {
         .unwrap()
         .is_some());
 }
+
+#[tokio::test]
+async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_hosts() {
+    let store = test_store().await;
+    let id = expect_created(
+        persist_outbox_event(
+            &store,
+            outbox_spec("book_acquired", "book_acquired:routed", "{}"),
+        )
+        .await
+        .unwrap(),
+    );
+    store
+        .dispatch_event_deliveries(&id, &[EventSubscriber::plugin("echo")], "routed-op")
+        .await
+        .unwrap();
+    // A host ranked second waits ten seconds behind the best one: a delivery
+    // due just now is not yet its to take.
+    let behind = store
+        .claim_next_event_delivery_due_by(
+            "second",
+            60,
+            &uuid::Uuid::new_v4().to_string(),
+            &["echo".into()],
+            32,
+            "",
+            chrono::Utc::now() - chrono::Duration::seconds(10),
+        )
+        .await
+        .unwrap();
+    assert!(behind.is_none(), "the best host gets the first ten seconds");
+    // The best host (no cutoff) takes it at once.
+    let best = claim_delivery(&store, "best").await;
+    assert_eq!(best.plugin_id, "echo");
+}

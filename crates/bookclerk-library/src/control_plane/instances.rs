@@ -19,7 +19,7 @@ use crate::store::LibraryStore;
 /// Stable id of one plugin instance.
 ///
 /// A hyphenated UUID version 4. It does not parse as a plugin key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PluginInstanceId(String);
 
 impl PluginInstanceId {

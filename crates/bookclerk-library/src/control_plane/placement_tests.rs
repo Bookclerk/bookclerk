@@ -625,3 +625,78 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
         "the operator's row became the scheduler's"
     );
 }
+
+#[tokio::test]
+async fn deliveries_route_to_the_live_host_with_the_most_room() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(&dir.path().join("library.db")).await;
+    let session = bootstrap_control_plane(
+        &store,
+        dir.path(),
+        &dir.path().join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .unwrap();
+    for host in ["vps", "desk", "cold"] {
+        register(&store, host, &session.cluster_id).await;
+    }
+    heartbeat_with(&store, "vps", Duration::ZERO, |s| {
+        s.cpu_budget_millicores = 800;
+    })
+    .await;
+    heartbeat_with(&store, "desk", Duration::ZERO, |s| {
+        s.cpu_budget_millicores = 12_000;
+    })
+    .await;
+    let instance = create_plugin_instance(&store, &operator(), "path:file:///tmp/rt#rt", "")
+        .await
+        .unwrap();
+    for host in ["vps", "desk", "cold"] {
+        let deployment = ensure_plugin_deployment(
+            &store,
+            &ConfigActor::Bootstrap,
+            &instance.id,
+            host,
+            DesiredState::Present,
+        )
+        .await
+        .unwrap();
+        upsert_observation(
+            &store,
+            &DeploymentObservation {
+                deployment_id: deployment.deployment_id,
+                host_id: host.into(),
+                incarnation: "test".into(),
+                status: DeploymentStatus::Healthy,
+                detail: String::new(),
+                applied_config_revision: None,
+                observed_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let ids = vec![instance.id.to_string(), "path:not-an-instance".to_string()];
+    let desk = route_ranks(&store, "desk", &ids).await.unwrap();
+    assert_eq!(desk.len(), 1, "only instance ids are routed");
+    let desk = &desk[instance.id.as_str()];
+    assert_eq!(desk.rank, 0);
+    assert_eq!(desk.hosts, vec!["desk", "vps"], "`cold` never heartbeated");
+    let vps = &route_ranks(&store, "vps", &ids).await.unwrap()[instance.id.as_str()];
+    assert_eq!(vps.rank, 1);
+    assert_eq!(vps.defer(), ROUTE_DEFER_PER_RANK);
+    let cold = &route_ranks(&store, "cold", &ids).await.unwrap()[instance.id.as_str()];
+    assert_eq!(
+        cold.rank, 2,
+        "a host without a heartbeat waits behind every live one"
+    );
+
+    // The desktop sleeps: the VPS is now first in line.
+    heartbeat_with(&store, "desk", Duration::from_secs(600), |_| {}).await;
+    let vps = &route_ranks(&store, "vps", &ids).await.unwrap()[instance.id.as_str()];
+    assert_eq!(vps.rank, 0);
+    assert_eq!(vps.hosts, vec!["vps"]);
+}

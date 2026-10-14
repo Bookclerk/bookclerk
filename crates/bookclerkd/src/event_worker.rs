@@ -5,10 +5,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeMap;
+
 use bookclerk_integrations::{
     DomainEvent, EventResult, EventSubscription, Integration, QueueBatch, QueueMessage,
     QueueResult, QueueSubscription,
 };
+use bookclerk_library::control_plane::{route_ranks, RouteRank};
 use bookclerk_library::{
     catalog_subscribers_for_event, subscription_matches_event, wake_grants_from_subscriptions,
     EventCatalogSubscription, LibraryStore, PublishDomainEventSpec, QUEUE_CONTENT_TYPE_BYTES,
@@ -161,6 +164,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
         let owner = format!("event-{}", Uuid::new_v4());
         let mut idle = tokio::time::interval(Duration::from_secs(5));
         idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut ranks = RankCache::default();
         loop {
             let library = state.library_snapshot().await;
             if let Err(err) = library.reclaim_expired_event_deliveries().await {
@@ -171,7 +175,11 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
             let node_id = event_node_id(&state, &files_dir);
             let mut claim_ids = loaded_plugin_ids(&state).await;
             claim_ids.extend(crate::host_queue::consumer_id(&files_dir));
-            match claim_delivery(&library, &owner, &claim_ids, max_in_flight, &node_id).await {
+            let groups = claim_groups(
+                &claim_ids,
+                ranks.get(&library, &files_dir, &claim_ids).await,
+            );
+            match claim_delivery(&library, &owner, &groups, max_in_flight, &node_id).await {
                 Ok(Some(delivery)) => {
                     run_delivery(&state, &library, delivery).await;
                 }
@@ -705,28 +713,109 @@ fn claim_ids_for_loaded(rows: &[LoadedClaimId]) -> Vec<String> {
     ids
 }
 
-/// Claim the next ready delivery, replaying a lost RPC within [`CLAIM_REPLAY_BUDGET`].
+/// How long a cached route ranking stays valid (heartbeats come every 15 s).
+const RANK_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// This host's route ranks for its loaded instances, refreshed every
+/// [`RANK_CACHE_TTL`].
+#[derive(Default)]
+struct RankCache {
+    /// When the ranks were read, and for which claim ids.
+    read: Option<(Instant, Vec<String>)>,
+    /// Instance id → this host's rank among live hosts running it.
+    ranks: BTreeMap<String, RouteRank>,
+}
+
+impl RankCache {
+    /// Current ranks; on a read failure every id is treated as rank 0, so
+    /// work still flows (ranking only orders hosts, it never blocks one).
+    async fn get(
+        &mut self,
+        library: &LibraryStore,
+        files_dir: &std::path::Path,
+        claim_ids: &[String],
+    ) -> &BTreeMap<String, RouteRank> {
+        let fresh = self
+            .read
+            .as_ref()
+            .is_some_and(|(at, ids)| at.elapsed() < RANK_CACHE_TTL && ids == claim_ids);
+        if !fresh {
+            let host_id = crate::host_queue::host_id(files_dir).unwrap_or_default();
+            self.ranks = match route_ranks(library, &host_id, claim_ids).await {
+                Ok(ranks) => ranks,
+                Err(err) => {
+                    warn!(error = %err, "delivery route ranks unavailable; claiming unranked");
+                    BTreeMap::new()
+                }
+            };
+            self.read = Some((Instant::now(), claim_ids.to_vec()));
+        }
+        &self.ranks
+    }
+}
+
+/// Claim ids grouped by how long this host lets their deliveries wait:
+/// ids this host is best placed for (and ids that are not routed, such as
+/// plugin keys and the host's own queue) first with no wait, then each
+/// lower rank with [`bookclerk_library::control_plane::ROUTE_DEFER_PER_RANK`]
+/// more.
+fn claim_groups(
+    claim_ids: &[String],
+    ranks: &BTreeMap<String, RouteRank>,
+) -> Vec<(Duration, Vec<String>)> {
+    let mut by_defer: BTreeMap<Duration, Vec<String>> = BTreeMap::new();
+    for id in claim_ids {
+        let defer = ranks.get(id).map_or(Duration::ZERO, |rank| rank.defer());
+        by_defer.entry(defer).or_default().push(id.clone());
+    }
+    by_defer.into_iter().collect()
+}
+
+/// Claim the next ready delivery, best-ranked ids first, replaying a lost
+/// RPC within [`CLAIM_REPLAY_BUDGET`].
 async fn claim_delivery(
+    library: &LibraryStore,
+    owner: &str,
+    groups: &[(Duration, Vec<String>)],
+    max_in_flight: u32,
+    node_id: &str,
+) -> Result<Option<bookclerk_library::EventDeliveryRecord>, bookclerk_library::LibraryError> {
+    for (defer, plugin_ids) in groups {
+        if plugin_ids.is_empty() {
+            continue;
+        }
+        let due_by = chrono::Utc::now()
+            - chrono::Duration::from_std(*defer).unwrap_or(chrono::Duration::zero());
+        if let Some(row) =
+            claim_group(library, owner, plugin_ids, max_in_flight, node_id, due_by).await?
+        {
+            return Ok(Some(row));
+        }
+    }
+    Ok(None)
+}
+
+/// One claim over `plugin_ids` for deliveries due by `due_by`.
+async fn claim_group(
     library: &LibraryStore,
     owner: &str,
     plugin_ids: &[String],
     max_in_flight: u32,
     node_id: &str,
+    due_by: chrono::DateTime<chrono::Utc>,
 ) -> Result<Option<bookclerk_library::EventDeliveryRecord>, bookclerk_library::LibraryError> {
-    if plugin_ids.is_empty() {
-        return Ok(None);
-    }
     let operation_id = Uuid::new_v4().to_string();
     let deadline = Instant::now() + CLAIM_REPLAY_BUDGET;
     loop {
         match library
-            .claim_next_event_delivery(
+            .claim_next_event_delivery_due_by(
                 owner,
                 LEASE_SECS,
                 &operation_id,
                 plugin_ids,
                 max_in_flight.max(1),
                 node_id,
+                due_by,
             )
             .await
         {
@@ -1993,6 +2082,62 @@ queue = "other"
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn claim_groups_put_best_ranked_and_unrouted_ids_first() {
+        let ranks = BTreeMap::from([
+            (
+                "instance-best".to_string(),
+                RouteRank {
+                    rank: 0,
+                    hosts: vec!["here".into(), "there".into()],
+                },
+            ),
+            (
+                "instance-second".to_string(),
+                RouteRank {
+                    rank: 1,
+                    hosts: vec!["there".into(), "here".into()],
+                },
+            ),
+            (
+                "instance-third".to_string(),
+                RouteRank {
+                    rank: 2,
+                    hosts: vec!["a".into(), "b".into(), "here".into()],
+                },
+            ),
+        ]);
+        let ids: Vec<String> = [
+            "instance-third",
+            "path:echo",
+            "instance-second",
+            "instance-best",
+            "host:here",
+        ]
+        .map(String::from)
+        .to_vec();
+        let step = bookclerk_library::control_plane::ROUTE_DEFER_PER_RANK;
+        assert_eq!(
+            super::claim_groups(&ids, &ranks),
+            vec![
+                (
+                    Duration::ZERO,
+                    vec![
+                        "path:echo".to_string(),
+                        "instance-best".to_string(),
+                        "host:here".to_string()
+                    ]
+                ),
+                (step, vec!["instance-second".to_string()]),
+                (step * 2, vec!["instance-third".to_string()]),
+            ]
+        );
+        assert_eq!(
+            super::claim_groups(&ids, &BTreeMap::new()),
+            vec![(Duration::ZERO, ids.clone())]
+        );
     }
 
     #[test]

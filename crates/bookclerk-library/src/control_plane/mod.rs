@@ -16,6 +16,7 @@ mod instance_config;
 mod instances;
 mod placement;
 mod releases;
+mod routing;
 mod schemas;
 mod secret;
 
@@ -79,6 +80,7 @@ pub use releases::{
     publish_release, put_release_blob, PluginRelease, PublishRelease, ReleaseArtifact,
     ReleasePointer, MAX_RELEASE_BLOB_BYTES, RELEASE_BLOB_SCHEME,
 };
+pub use routing::{rank_hosts, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{
     list_plugin_schemas, load_plugin_schema, pin_plugin_schema, pin_release_schema,
     require_plugin_schema, schema_fingerprint, stale_against_pin, PinnedPluginSchema, SchemaPin,

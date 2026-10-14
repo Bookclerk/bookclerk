@@ -623,6 +623,39 @@ impl LibraryStore {
         max_in_flight: u32,
         node_id: &str,
     ) -> Result<Option<EventDeliveryRecord>> {
+        self.claim_next_event_delivery_due_by(
+            owner,
+            lease_secs,
+            operation_id,
+            plugin_ids,
+            max_in_flight,
+            node_id,
+            Utc::now(),
+        )
+        .await
+    }
+
+    /// [`Self::claim_next_event_delivery`] restricted to deliveries due at
+    /// or before `due_by` (`run_after <= due_by`).
+    ///
+    /// A host that is not the best placed to run a plugin passes a cutoff in
+    /// the past, so it only picks up deliveries the better hosts left
+    /// waiting that long.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the claim write fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_next_event_delivery_due_by(
+        &self,
+        owner: &str,
+        lease_secs: u64,
+        operation_id: &str,
+        plugin_ids: &[String],
+        max_in_flight: u32,
+        node_id: &str,
+        due_by: chrono::DateTime<Utc>,
+    ) -> Result<Option<EventDeliveryRecord>> {
         if plugin_ids.is_empty() {
             return Ok(None);
         }
@@ -635,6 +668,7 @@ impl LibraryStore {
                     plugin_ids,
                     max_in_flight,
                     node_id,
+                    due_by,
                 )
                 .await;
         }
@@ -647,6 +681,7 @@ impl LibraryStore {
             plugin_ids,
             max_in_flight,
             node_id,
+            due_by,
         )
         .await
         {
@@ -662,6 +697,7 @@ impl LibraryStore {
     }
 
     /// Host eligibility + per-row CAS through the guest atomic backend.
+    #[allow(clippy::too_many_arguments)]
     async fn claim_next_event_delivery_host_cas(
         &self,
         owner: &str,
@@ -670,18 +706,20 @@ impl LibraryStore {
         plugin_ids: &[String],
         max_in_flight: u32,
         node_id: &str,
+        due_by: chrono::DateTime<Utc>,
     ) -> Result<Option<EventDeliveryRecord>> {
         let Some(atomic) = &self.atomic else {
             return Ok(None);
         };
         let page = claim_page_size();
         let now_s = Utc::now().to_rfc3339();
+        let due_s = due_by.min(Utc::now()).to_rfc3339();
         sanitize_unknown_event_resource_class_on(&self.db, &now_s).await?;
         let mut cursor: Option<(String, String)> = None;
         loop {
             let mut query = event_deliveries::Entity::find()
                 .filter(event_deliveries::Column::State.eq(STATE_PENDING))
-                .filter(event_deliveries::Column::RunAfter.lte(now_s.clone()))
+                .filter(event_deliveries::Column::RunAfter.lte(due_s.clone()))
                 .filter(event_deliveries::Column::PluginId.is_in(plugin_ids.to_vec()))
                 .filter(event_deliveries::Column::ResourceClass.eq(EVENT_RESOURCE_CLASS_NETWORK));
             if let Some((created_at, id)) = &cursor {
@@ -2565,6 +2603,7 @@ where
 }
 
 /// Claim the next ready delivery, skipping blocked FIFO keys.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn claim_next_event_delivery_on<C>(
     db: &C,
     in_process: bool,
@@ -2573,6 +2612,7 @@ pub(crate) async fn claim_next_event_delivery_on<C>(
     plugin_ids: &[String],
     max_in_flight: u32,
     node_id: &str,
+    due_by: chrono::DateTime<Utc>,
 ) -> Result<Option<EventDeliveryRecord>>
 where
     C: ConnectionTrait + StreamTrait,
@@ -2583,6 +2623,7 @@ where
     let page = claim_page_size();
     let now = Utc::now();
     let now_s = now.to_rfc3339();
+    let due_s = due_by.min(now).to_rfc3339();
     sanitize_unknown_event_resource_class_on(db, &now_s).await?;
     let lease_expires =
         (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60))).to_rfc3339();
@@ -2590,7 +2631,7 @@ where
     loop {
         let mut query = event_deliveries::Entity::find()
             .filter(event_deliveries::Column::State.eq(STATE_PENDING))
-            .filter(event_deliveries::Column::RunAfter.lte(now_s.clone()))
+            .filter(event_deliveries::Column::RunAfter.lte(due_s.clone()))
             .filter(event_deliveries::Column::PluginId.is_in(plugin_ids.to_vec()))
             .filter(event_deliveries::Column::ResourceClass.eq(EVENT_RESOURCE_CLASS_NETWORK));
         if let Some((created_at, id)) = &cursor {
