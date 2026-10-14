@@ -1,5 +1,6 @@
 api_version = 3
 id = "bad"
+version = "0.1.0"
 runtime = "workerd"
 entrypoints = ["storefront"]
 

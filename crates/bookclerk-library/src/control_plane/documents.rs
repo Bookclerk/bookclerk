@@ -62,7 +62,9 @@ pub enum ConfigActor {
         /// User id recorded if a write is attempted.
         id: String,
     },
-    /// Process startup. May import a missing document and may not replace one.
+    /// Process startup. May import a missing document and may rewrite an
+    /// instance document to a newer pinned schema; it is never constructed
+    /// for an API caller.
     Bootstrap,
 }
 
@@ -82,7 +84,7 @@ impl ConfigActor {
 
     /// True when this actor may replace an existing document.
     fn can_replace(&self) -> bool {
-        matches!(self, Self::Operator { .. })
+        matches!(self, Self::Operator { .. } | Self::Bootstrap)
     }
 }
 

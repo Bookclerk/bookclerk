@@ -1,5 +1,6 @@
 api_version = 3
 id = "bad_native_domains"
+version = "0.1.0"
 runtime = "native"
 command = "./bad"
 entrypoints = ["storefront"]

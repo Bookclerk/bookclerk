@@ -18,8 +18,12 @@ use crate::entities::{bookclerk_receipts, plugin_deployment_observations, plugin
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
-/// Desired state stored by this slice. There is no `absent` or drain.
+/// Desired state: the instance should be installed and running on the host.
 pub const DESIRED_PRESENT: &str = "present";
+
+/// Desired state: the instance should not run on the host. A running guest
+/// is retired on the next reconcile.
+pub const DESIRED_ABSENT: &str = "absent";
 
 /// `bookclerk_receipts.operation_kind` for a deployment replacement.
 const REPLACE_DEPLOYMENT_KIND: &str = "replacePluginDeployment";
@@ -44,6 +48,8 @@ pub enum DeploymentStatus {
     Healthy,
     /// Install, grant, config, secrets, spawn, or health failed.
     Error,
+    /// Desired state is `absent`; the host stopped the guest.
+    Retired,
 }
 
 impl DeploymentStatus {
@@ -55,6 +61,7 @@ impl DeploymentStatus {
             Self::Running => "running",
             Self::Healthy => "healthy",
             Self::Error => "error",
+            Self::Retired => "retired",
         }
     }
 
@@ -62,13 +69,14 @@ impl DeploymentStatus {
     ///
     /// # Errors
     ///
-    /// Returns an error when `raw` is not one of the four statuses.
+    /// Returns an error when `raw` is not one of the five statuses.
     pub fn parse(raw: &str) -> Result<Self> {
         match raw {
             "installed" => Ok(Self::Installed),
             "running" => Ok(Self::Running),
             "healthy" => Ok(Self::Healthy),
             "error" => Ok(Self::Error),
+            "retired" => Ok(Self::Retired),
             _ => Err(LibraryError::Other(anyhow::anyhow!(
                 "invalid deployment observation status `{raw}`"
             ))),
@@ -85,7 +93,7 @@ pub struct PluginDeployment {
     pub plugin_instance_id: PluginInstanceId,
     /// Target host.
     pub host_id: String,
-    /// Always [`DESIRED_PRESENT`] in this slice.
+    /// [`DESIRED_PRESENT`] or [`DESIRED_ABSENT`].
     pub desired: String,
     /// Compare-and-swap revision.
     pub revision: i64,
@@ -143,9 +151,11 @@ pub async fn ensure_plugin_deployment(
     actor: &ConfigActor,
     instance_id: &PluginInstanceId,
     host_id: &str,
+    desired: &str,
 ) -> Result<PluginDeployment> {
     authorize_create(actor)?;
     validate_host_id(host_id)?;
+    validate_desired(desired)?;
     if load_plugin_instance(store, instance_id).await?.is_none() {
         return Err(LibraryError::NotFound(format!(
             "plugin instance {instance_id}"
@@ -160,7 +170,7 @@ pub async fn ensure_plugin_deployment(
         deployment_id: Set(deployment_id.clone()),
         plugin_instance_id: Set(instance_id.as_str().to_string()),
         host_id: Set(host_id.to_string()),
-        desired: Set(DESIRED_PRESENT.to_string()),
+        desired: Set(desired.to_string()),
         revision: Set(1),
         updated_at: Set(now),
         updated_by: Set(actor.audit_id().to_string()),
@@ -195,23 +205,22 @@ pub async fn replace_plugin_deployment(
     actor: &ConfigActor,
     deployment_id: &str,
     expected_revision: i64,
+    desired: &str,
     operation_id: &str,
 ) -> Result<DeploymentReplace> {
     authorize_replace(actor)?;
     validate_operation_id(operation_id)?;
+    validate_desired(desired)?;
     if expected_revision < 1 {
         return Err(invalid("expected revision must be >= 1"));
     }
-    let request_hash = deployment_hash(deployment_id, expected_revision, actor.audit_id());
+    let request_hash = deployment_hash(deployment_id, expected_revision, desired, actor.audit_id());
     if let Some(outcome) = existing_receipt(store, operation_id, &request_hash).await? {
         return Ok(outcome);
     }
     let current = load_deployment_by_id(store, deployment_id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("plugin deployment {deployment_id}")))?;
-    if current.desired != DESIRED_PRESENT {
-        return Err(invalid("deployment desired state must be present"));
-    }
     if current.revision != expected_revision {
         if let Some(outcome) = existing_receipt(store, operation_id, &request_hash).await? {
             return Ok(outcome);
@@ -239,17 +248,16 @@ pub async fn replace_plugin_deployment(
                 exec(
                     "UPDATE plugin_deployments SET
                         desired = ?, revision = revision + 1, updated_at = ?, updated_by = ?
-                     WHERE deployment_id = ? AND revision = ? AND desired = ?
+                     WHERE deployment_id = ? AND revision = ?
                        AND NOT EXISTS (
                             SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?
                        )",
                     vec![
-                        text(DESIRED_PRESENT),
+                        text(desired),
                         text(&now),
                         text(actor.audit_id()),
                         text(deployment_id),
                         int(expected_revision),
-                        text(DESIRED_PRESENT),
                         text(operation_id),
                     ],
                 ),
@@ -364,6 +372,105 @@ pub async fn list_present_deployments_for_host(
         .await
         .map_err(LibraryError::Orm)?;
     rows.into_iter().map(deployment_from_model).collect()
+}
+
+/// Every deployment row targeting `host_id`, present or absent.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn list_deployments_for_host(
+    store: &LibraryStore,
+    host_id: &str,
+) -> Result<Vec<PluginDeployment>> {
+    let rows = plugin_deployments::Entity::find()
+        .filter(plugin_deployments::Column::HostId.eq(host_id))
+        .order_by_asc(plugin_deployments::Column::DeploymentId)
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    rows.into_iter().map(deployment_from_model).collect()
+}
+
+/// Every deployment row for `instance_id`, on any host.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn list_deployments_for_instance(
+    store: &LibraryStore,
+    instance_id: &PluginInstanceId,
+) -> Result<Vec<PluginDeployment>> {
+    let rows = plugin_deployments::Entity::find()
+        .filter(plugin_deployments::Column::PluginInstanceId.eq(instance_id.as_str()))
+        .order_by_asc(plugin_deployments::Column::HostId)
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    rows.into_iter().map(deployment_from_model).collect()
+}
+
+/// Every observation row for `deployment_id`, from any host.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn list_observations_for_deployment(
+    store: &LibraryStore,
+    deployment_id: &str,
+) -> Result<Vec<DeploymentObservation>> {
+    let rows = plugin_deployment_observations::Entity::find()
+        .filter(plugin_deployment_observations::Column::DeploymentId.eq(deployment_id))
+        .order_by_asc(plugin_deployment_observations::Column::HostId)
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    rows.into_iter().map(observation_from_model).collect()
+}
+
+/// The deployment of `instance_id` on `host_id`, if any.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn load_deployment_for_host(
+    store: &LibraryStore,
+    instance_id: &PluginInstanceId,
+    host_id: &str,
+) -> Result<Option<PluginDeployment>> {
+    find_deployment_pair(store, instance_id, host_id).await
+}
+
+/// Deletes an absent deployment and its observations.
+///
+/// # Errors
+///
+/// Returns an error when the actor may not write, the row is still present,
+/// or the delete fails.
+pub async fn delete_plugin_deployment(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    deployment_id: &str,
+) -> Result<()> {
+    authorize_replace(actor)?;
+    let current = load_deployment_by_id(store, deployment_id)
+        .await?
+        .ok_or_else(|| LibraryError::NotFound(format!("plugin deployment {deployment_id}")))?;
+    if current.desired != DESIRED_ABSENT {
+        return Err(LibraryError::Conflict(
+            "deployment is still desired present; set it absent first".into(),
+        ));
+    }
+    plugin_deployment_observations::Entity::delete_many()
+        .filter(plugin_deployment_observations::Column::DeploymentId.eq(deployment_id))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    plugin_deployments::Entity::delete_by_id(deployment_id.to_string())
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(())
 }
 
 /// True when any deployment row names `instance_id`.
@@ -604,11 +711,16 @@ async fn existing_receipt(
 }
 
 /// Stable request hash for one deployment replacement.
-fn deployment_hash(deployment_id: &str, expected_revision: i64, actor: &str) -> String {
+fn deployment_hash(
+    deployment_id: &str,
+    expected_revision: i64,
+    desired: &str,
+    actor: &str,
+) -> String {
     let mut hasher = Sha256::new();
     for part in [
         deployment_id,
-        DESIRED_PRESENT,
+        desired,
         &expected_revision.to_string(),
         actor,
         REPLACE_DEPLOYMENT_KIND,
@@ -638,6 +750,15 @@ fn authorize_replace(actor: &ConfigActor) -> Result<()> {
 }
 
 /// Rejects an empty host id.
+fn validate_desired(desired: &str) -> Result<()> {
+    if desired == DESIRED_PRESENT || desired == DESIRED_ABSENT {
+        Ok(())
+    } else {
+        Err(invalid("desired must be `present` or `absent`"))
+    }
+}
+
+/// Rejects an empty or oversized host id.
 fn validate_host_id(host_id: &str) -> Result<()> {
     if host_id.is_empty() || host_id.len() > 128 || host_id.contains('\u{0000}') {
         return Err(invalid("host id must be 1..=128 characters"));

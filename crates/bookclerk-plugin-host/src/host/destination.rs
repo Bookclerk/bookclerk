@@ -1,26 +1,19 @@
 //! [`StorageBackend`] adapter over an external output plugin process.
 //!
-//! Destinations speak Cap'n Proto `api_version = 3` only. The host never grants
-//! the guest filesystem access to acquire scratch or the output library.
-//! Credentials are injected as spawn env when the `secrets` binding is granted.
+//! Destinations speak Cap'n Proto `api_version = 3` only and are spawned for
+//! a plugin instance whose document supplies bucket, prefix, and endpoint.
+//! The host never grants the guest filesystem access to acquire scratch or
+//! the output library. Credentials travel in `SECRETS`, never in `CONFIG`.
 
 use std::sync::Arc;
 
-use bookclerk_config::{normalize_storage_prefix, Config};
-use bookclerk_plugin_sdk::{BindingValues, PRODUCT_API_VERSION};
-use bookclerk_storage::{load_s3_credentials, S3Credentials, StorageBackend, StorageError};
-use sea_orm::DatabaseConnection;
-use serde_json::Value;
+use bookclerk_config::{Config, DestinationNaming, NamingProfile, OutputBackendKind};
+use bookclerk_storage::StorageBackend;
 
 use crate::discover::DiscoveredPlugin;
 use crate::protocol::OutputS3ContextDto;
 use crate::rpc_session::{PluginSession, PluginStorage};
 use crate::Result as PluginResult;
-
-/// Manifest id of the platform S3 output plugin (`s3`).
-const S3_PLUGIN_ID: &str = "s3";
-/// Manifest id of the platform local-filesystem destination guest.
-const LOCAL_PLUGIN_ID: &str = "local";
 
 /// Which single-slot backend a deployed destination owns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +34,45 @@ pub(crate) struct SpawnedDestination {
     backend: Option<Arc<dyn StorageBackend>>,
     /// Which acquire slot this backend fills.
     kind: DeployedKind,
+    /// Key layout from the instance document.
+    settings: DestinationSettings,
+}
+
+/// Key layout settings the host reads from a deployed destination's instance
+/// document: the `local` / `s3` plugins declare `prefix` and the naming
+/// overrides as `[[settings]]`, and acquire needs them to plan storage keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DestinationSettings {
+    /// Key prefix under the destination root or bucket.
+    pub prefix: String,
+    /// Naming overrides; unset values inherit global `[output]`.
+    pub naming: DestinationNaming,
+}
+
+impl DestinationSettings {
+    /// Reads the layout settings from a resolved `CONFIG` object.
+    #[must_use]
+    pub fn from_granted_config(granted: &serde_json::Value) -> Self {
+        let text = |key: &str| {
+            granted
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        Self {
+            prefix: text("prefix").unwrap_or_default(),
+            naming: DestinationNaming {
+                naming_profile: text("naming_profile")
+                    .as_deref()
+                    .and_then(NamingProfile::parse),
+                folder_template: text("folder_template"),
+                file_template: text("file_template"),
+                chapter_file_template: text("chapter_file_template"),
+            },
+        }
+    }
 }
 
 /// One reconciler-spawned destination, addressed by plugin instance id.
@@ -52,21 +84,17 @@ struct DeployedSlot {
     backend: Option<Arc<dyn StorageBackend>>,
     /// Which acquire slot this backend fills.
     kind: DeployedKind,
+    /// Key layout from the instance document.
+    settings: DestinationSettings,
 }
 
 /// Long-lived external output plugins loaded at host startup.
 #[derive(Default, Clone)]
 pub struct DestinationRegistry {
-    /// Transitional S3 backend. A deployed instance lives in [`Self::deployed`].
-    s3: Option<Arc<dyn StorageBackend>>,
-    /// Transitional local backend. A deployed instance lives in [`Self::deployed`].
-    local: Option<Arc<dyn StorageBackend>>,
-    /// Transitional plugin sessions keyed by `(plugin_id, account_id)`.
-    plugin_sessions: std::collections::HashMap<String, Arc<PluginSession>>,
-    /// Reconciler sessions keyed by plugin instance id.
+    /// Sessions keyed by plugin instance id.
     ///
-    /// Two instances of one plugin key each keep their own guest. Reload copies
-    /// these slots and leaves transitional sessions behind.
+    /// Two instances of one plugin key each keep their own guest. Reload
+    /// copies these slots.
     deployed: std::collections::HashMap<String, DeployedSlot>,
 }
 
@@ -88,7 +116,7 @@ impl DestinationRegistry {
     /// Returns an error when two deployed S3 instances would otherwise overwrite
     /// one slot.
     pub fn require_s3(&self) -> std::result::Result<Option<Arc<dyn StorageBackend>>, String> {
-        self.require_kind(DeployedKind::S3, &self.s3, "s3")
+        self.require_kind(DeployedKind::S3, "s3")
     }
 
     /// External local-filesystem output backend, when exactly one is loaded.
@@ -104,14 +132,29 @@ impl DestinationRegistry {
     /// Returns an error when two deployed local instances would otherwise
     /// overwrite one slot.
     pub fn require_local(&self) -> std::result::Result<Option<Arc<dyn StorageBackend>>, String> {
-        self.require_kind(DeployedKind::Local, &self.local, "local")
+        self.require_kind(DeployedKind::Local, "local")
+    }
+
+    /// Key layout settings of the deployed destination of `kind`, when exactly
+    /// one is deployed.
+    #[must_use]
+    pub fn settings_for(&self, kind: OutputBackendKind) -> Option<DestinationSettings> {
+        let wanted = match kind {
+            OutputBackendKind::Local => DeployedKind::Local,
+            OutputBackendKind::S3 => DeployedKind::S3,
+        };
+        let mut matches = self.deployed.values().filter(|slot| slot.kind == wanted);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first.settings.clone())
     }
 
     /// One deployed backend of `kind`, else the transitional slot.
     fn require_kind(
         &self,
         kind: DeployedKind,
-        transitional: &Option<Arc<dyn StorageBackend>>,
         label: &str,
     ) -> std::result::Result<Option<Arc<dyn StorageBackend>>, String> {
         let deployed: Vec<_> = self
@@ -121,7 +164,7 @@ impl DestinationRegistry {
             .filter_map(|slot| slot.backend.clone())
             .collect();
         match deployed.len() {
-            0 => Ok(transitional.clone()),
+            0 => Ok(None),
             1 => Ok(deployed.into_iter().next()),
             count => Err(format!(
                 "{count} {label} destination instances are deployed; refusing to pick one"
@@ -170,9 +213,6 @@ impl DestinationRegistry {
         for slot in self.deployed.values() {
             push(&slot.session);
         }
-        for session in self.plugin_sessions.values() {
-            push(session);
-        }
         match hits.len() {
             1 => Ok(hits.remove(0)),
             0 => Err(format!(
@@ -188,17 +228,6 @@ impl DestinationRegistry {
         }
     }
 
-    /// Records the local-filesystem output backend after a successful spawn.
-    pub(crate) fn set_local(&mut self, dest: Arc<dyn StorageBackend>) {
-        self.local = Some(dest);
-    }
-
-    /// Records a plugin session used for `JobRunner.job` invocations.
-    pub(crate) fn set_plugin_session(&mut self, session: Arc<PluginSession>) {
-        self.plugin_sessions
-            .insert(session.instance_key().to_string(), session);
-    }
-
     /// Records a reconciler-spawned guest under `plugin_instance_id`.
     ///
     /// A second instance of the same plugin key does not replace this slot.
@@ -208,6 +237,7 @@ impl DestinationRegistry {
         session: Arc<PluginSession>,
         backend: Option<Arc<dyn StorageBackend>>,
         kind: DeployedKind,
+        settings: DestinationSettings,
     ) {
         if plugin_instance_id.is_empty() {
             return;
@@ -218,6 +248,7 @@ impl DestinationRegistry {
                 session,
                 backend,
                 kind,
+                settings,
             },
         );
     }
@@ -246,6 +277,7 @@ impl DestinationRegistry {
             Arc::clone(&spawned.session),
             spawned.backend,
             kind,
+            spawned.settings,
         );
         if matches!(kind, DeployedKind::S3 | DeployedKind::Local) {
             let count = self
@@ -289,131 +321,6 @@ impl DestinationRegistry {
     }
 }
 
-/// Discover and spawn external output plugins.
-///
-/// Every enabled destination guest goes through the generic
-/// [`PluginSession`] front door; there is no direct-native or in-process
-/// fallback when a guest cannot start.
-///
-/// # Errors
-///
-/// Returns an error when discovery fails or an **enabled** destination guest
-/// fails to spawn / `open`. Guests that are not `api_version = 3` are skipped
-/// with a warning.
-pub async fn load_external_destinations(
-    config: &Config,
-    db: Option<&DatabaseConnection>,
-) -> PluginResult<DestinationRegistry> {
-    load_external_destinations_with_store(config, db, None, &std::collections::BTreeSet::new())
-        .await
-}
-
-/// [`load_external_destinations`] with an open library and deployment skips.
-///
-/// `store` supplies instance documents. `skip` plugin keys are left to the
-/// deployment reconciler. Database connect bootstrap is not involved.
-///
-/// # Errors
-///
-/// Returns an error when discovery fails or an enabled destination guest fails
-/// to spawn.
-pub async fn load_external_destinations_with_store(
-    config: &Config,
-    db: Option<&DatabaseConnection>,
-    store: Option<&bookclerk_library::LibraryStore>,
-    skip: &std::collections::BTreeSet<String>,
-) -> PluginResult<DestinationRegistry> {
-    let mut registry = DestinationRegistry::default();
-    let plugins = crate::discover_plugins(config)?;
-    let storage: Vec<_> = plugins
-        .into_iter()
-        .filter(|plugin| plugin.manifest.has_entrypoint(crate::Entrypoint::Storage))
-        .collect();
-
-    if config.output.s3.enabled {
-        let spec = crate::occupancy_spec(&config.output.s3.plugin, S3_PLUGIN_ID);
-        match crate::resolve_plugin_slot(&storage, spec)? {
-            Some(plugin) if !plugin.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) => {
-                return Err(crate::PluginError::message(format!(
-                    "[output.s3].plugin `{spec}` is not an s3 destination (alias {})",
-                    plugin.alias()
-                )));
-            }
-            Some(plugin) if plugin.manifest.api_version != PRODUCT_API_VERSION => {
-                tracing::warn!(
-                    id = %plugin.manifest.id,
-                    plugin_key = %plugin.plugin_key().canonical(),
-                    api_version = plugin.manifest.api_version,
-                    "output plugin is not api_version 3; skipping"
-                );
-            }
-            Some(plugin) if skip.contains(plugin.plugin_key().canonical()) => {
-                tracing::info!(
-                    plugin_key = %plugin.plugin_key().canonical(),
-                    "skipping S3 destination owned by a local deployment"
-                );
-            }
-            Some(plugin) => {
-                let (storage_backend, session) = spawn_s3_guest(plugin, config, db, store)
-                    .await
-                    .map_err(|err| {
-                        crate::PluginError::message(format!(
-                            "failed to start S3 output plugin guest: {err}"
-                        ))
-                    })?;
-                tracing::info!(
-                    id = %plugin.manifest.id,
-                    plugin_key = %plugin.plugin_key().canonical(),
-                    path = %plugin.command.display(),
-                    "loaded external S3 output plugin"
-                );
-                registry.s3 = Some(Arc::new(storage_backend));
-                registry.set_plugin_session(session);
-            }
-            None => {
-                tracing::debug!(
-                    spec,
-                    "S3 output enabled but no matching storage plugin is installed"
-                );
-            }
-        }
-    }
-
-    if config.output.local.enabled {
-        let spec = crate::occupancy_spec(&config.output.local.plugin, LOCAL_PLUGIN_ID);
-        match crate::resolve_plugin_slot(&storage, spec)? {
-            Some(plugin) if !plugin.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) => {
-                return Err(crate::PluginError::message(format!(
-                    "[output.local].plugin `{spec}` is not a local destination (alias {})",
-                    plugin.alias()
-                )));
-            }
-            Some(plugin) if skip.contains(plugin.plugin_key().canonical()) => {
-                tracing::info!(
-                    plugin_key = %plugin.plugin_key().canonical(),
-                    "skipping local destination owned by a local deployment"
-                );
-            }
-            Some(plugin) => {
-                super::destination_local::try_load_local(plugin, config, store, &mut registry)
-                    .await
-                    .map_err(|err| {
-                        crate::PluginError::message(format!(
-                            "failed to start local output plugin guest: {err}"
-                        ))
-                    })?;
-            }
-            None => {
-                tracing::debug!(
-                    spec,
-                    "local output enabled but no matching storage plugin is installed"
-                );
-            }
-        }
-    }
-    Ok(registry)
-}
-
 /// Spawns one deployed storage plugin without touching the destination registry.
 ///
 /// The caller publishes the result under the registry write lock. Spawn and
@@ -432,23 +339,27 @@ pub(crate) async fn spawn_deployed_storage(
     store: Option<&bookclerk_library::LibraryStore>,
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<SpawnedDestination> {
-    if plugin.alias().eq_ignore_ascii_case(S3_PLUGIN_ID) {
-        let db = store.map(bookclerk_library::LibraryStore::db);
-        let (storage_backend, session) =
-            spawn_s3_guest_prepared(plugin, config, db, prepared).await?;
+    let settings = DestinationSettings::from_granted_config(&prepared.granted_config);
+    // First-party identity is the PluginKey plus verified provenance, never
+    // the manifest alias: an `s3` or `local` alias twin spawns as a generic
+    // storage guest with no host-side backend and no implied endpoint grant.
+    if crate::is_first_party_s3_output(plugin) {
+        let (storage_backend, session) = spawn_s3_from_instance(plugin, config, prepared).await?;
         return Ok(SpawnedDestination {
             session,
             backend: Some(Arc::new(storage_backend)),
             kind: DeployedKind::S3,
+            settings,
         });
     }
-    if plugin.alias().eq_ignore_ascii_case(LOCAL_PLUGIN_ID) {
+    if crate::is_first_party_local_output(plugin) {
         let (storage, session) =
             super::destination_local::spawn_local_prepared(plugin, config, prepared).await?;
         return Ok(SpawnedDestination {
             session,
             backend: Some(Arc::new(storage)),
             kind: DeployedKind::Local,
+            settings,
         });
     }
     let session = Arc::new(
@@ -467,121 +378,27 @@ pub(crate) async fn spawn_deployed_storage(
         session,
         backend: None,
         kind: DeployedKind::Other,
+        settings,
     })
-}
-
-/// Spawns the S3 destination as an external Cap'n Proto guest.
-async fn spawn_s3_guest(
-    plugin: &DiscoveredPlugin,
-    config: &Config,
-    db: Option<&DatabaseConnection>,
-    store: Option<&bookclerk_library::LibraryStore>,
-) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
-    let table = crate::settings_table(config, plugin);
-    let transitional = toml_to_json(&toml::Value::Table(table));
-    let prepared = crate::instance_bindings::prepare_open_bindings(
-        store,
-        &config.paths().files_dir,
-        plugin,
-        transitional,
-    )
-    .await?;
-    spawn_s3_guest_prepared(plugin, config, db, prepared).await
-}
-
-/// Spawns the S3 guest with bindings the caller already resolved.
-async fn spawn_s3_guest_prepared(
-    plugin: &DiscoveredPlugin,
-    config: &Config,
-    db: Option<&DatabaseConnection>,
-    prepared: crate::instance_bindings::PreparedOpen,
-) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
-    if prepared.from_instance {
-        return spawn_s3_from_instance(plugin, config, db, prepared).await;
-    }
-    let config_json = prepared.spawn_config_table;
-    let s3_config = config.output.s3.clone();
-    let prefix = normalize_storage_prefix(s3_config.prefix.trim());
-    let credentials = resolve_host_credentials(db)
-        .await
-        .map_err(|err| crate::PluginError::message(err.to_string()))?;
-    let ctx = OutputS3ContextDto {
-        plugin_data_dir: String::new(),
-        bucket: s3_config.bucket.clone(),
-        prefix,
-        region: s3_config.region.clone(),
-        endpoint: s3_config.endpoint.clone(),
-        force_path_style: s3_config.force_path_style,
-        credentials: None,
-    };
-    let grant = crate::consent::spawn_grant(&config.paths().files_dir, plugin)?;
-    let mut extra_env = Vec::new();
-    if crate::is_first_party_s3_output(plugin)
-        && crate::consent::grant_has_binding(&grant, "secrets")
-    {
-        if let Some(creds) = &credentials {
-            extra_env.push((
-                bookclerk_storage::ENV_AWS_ACCESS_KEY_ID,
-                std::ffi::OsString::from(&creds.access_key_id),
-            ));
-            extra_env.push((
-                bookclerk_storage::ENV_AWS_SECRET_ACCESS_KEY,
-                std::ffi::OsString::from(&creds.secret_access_key),
-            ));
-            if let Some(token) = &creds.session_token {
-                extra_env.push((
-                    bookclerk_storage::ENV_AWS_SESSION_TOKEN,
-                    std::ffi::OsString::from(token),
-                ));
-            }
-        }
-    }
-    let session = Arc::new(
-        PluginSession::spawn_for_account_with_env(
-            plugin,
-            config,
-            config_json,
-            crate::OPERATOR_ACCOUNT,
-            &extra_env,
-        )
-        .await?,
-    );
-    let open_bindings = if prepared.from_instance {
-        prepared.bindings
-    } else {
-        BindingValues::config(
-            bookclerk_plugin_sdk::ExtensibleConfig::json_from(&ctx)
-                .map_err(|err| crate::PluginError::message(err.to_string()))?,
-        )
-    };
-    session.open(open_bindings).await?;
-    Ok((PluginStorage::new(Arc::clone(&session)), session))
 }
 
 /// Spawns a deployed S3 guest from the instance document.
 ///
-/// Bucket, region, prefix, endpoint, and `forcePathStyle` come from the
-/// document. Credentials stay in `SECRETS`. When the document has none, the
-/// operator `encrypted_secrets` row or `BOOKCLERK_AWS_*` is copied into that
-/// binding for this open. They are not written into `CONFIG` or the spawn
-/// config table.
+/// Bucket, region, prefix, endpoint, and `force_path_style` come from the
+/// document. Credentials are the instance's `access_key_id` /
+/// `secret_access_key` / `session_token` secrets, delivered in `SECRETS`;
+/// without them the guest falls back to the AWS SDK default provider chain
+/// inside its jail. Nothing is written into `CONFIG` or the spawn config
+/// table.
 async fn spawn_s3_from_instance(
     plugin: &DiscoveredPlugin,
     config: &Config,
-    db: Option<&DatabaseConnection>,
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<(PluginStorage, Arc<PluginSession>)> {
     let context = instance_s3_context(&prepared)?;
-    let operator = operator_s3_credentials(db).await?;
-    let secrets = s3_open_secrets(&prepared, operator.as_ref())?;
-    let endpoint = context
-        .get("endpoint")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(str::to_string);
+    let secrets = s3_open_secrets(&prepared);
     let services = crate::SessionServices {
-        deployed_s3_endpoint: Some(endpoint),
+        deployed_endpoint: s3_deployed_endpoint(plugin, &context),
         ..crate::SessionServices::default()
     };
     let session = Arc::new(
@@ -605,6 +422,26 @@ async fn spawn_s3_from_instance(
     Ok((PluginStorage::new(Arc::clone(&session)), session))
 }
 
+/// The host-implied endpoint grant for an S3 spawn: the document's
+/// `endpoint` for the verified first-party S3 package only
+/// ([`crate::is_first_party_s3_output`]). An alias twin gets `None`.
+pub(crate) fn s3_deployed_endpoint(
+    plugin: &DiscoveredPlugin,
+    context: &serde_json::Value,
+) -> Option<Option<String>> {
+    if !crate::is_first_party_s3_output(plugin) {
+        return None;
+    }
+    Some(
+        context
+            .get("endpoint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|endpoint| !endpoint.is_empty())
+            .map(str::to_string),
+    )
+}
+
 /// Bucket and region from the instance document, with no credentials.
 pub(crate) fn instance_s3_context(
     prepared: &crate::instance_bindings::PreparedOpen,
@@ -614,7 +451,7 @@ pub(crate) fn instance_s3_context(
     let region = json_text(body, &["region"]);
     if bucket.is_empty() || region.is_empty() {
         return Err(crate::PluginError::message(
-            "deployed s3 instance config is missing bucket or region; [output.s3] is not the authority",
+            "s3 instance config is missing bucket or region; set them on the plugin instance",
         ));
     }
     let endpoint = {
@@ -633,52 +470,16 @@ pub(crate) fn instance_s3_context(
     serde_json::to_value(&ctx).map_err(|err| crate::PluginError::message(err.to_string()))
 }
 
-/// `SECRETS` for one deployed S3 open.
-///
-/// Instance secrets win. Otherwise the operator credential pair is injected
-/// into this open only.
+/// `SECRETS` for one deployed S3 open: the instance's sealed credentials,
+/// or an empty payload when the document names none.
+#[must_use]
 pub(crate) fn s3_open_secrets(
     prepared: &crate::instance_bindings::PreparedOpen,
-    operator: Option<&S3Credentials>,
-) -> PluginResult<bookclerk_plugin_sdk::ExtensibleConfig> {
+) -> bookclerk_plugin_sdk::ExtensibleConfig {
     if credentials_from_secrets(&prepared.bindings.secrets).is_some() {
-        return Ok(prepared.bindings.secrets.clone());
+        return prepared.bindings.secrets.clone();
     }
-    let Some(credentials) = operator else {
-        return Err(crate::PluginError::message(
-            "deployed s3 instance has no credentials in SECRETS, BOOKCLERK_AWS_*, or operator encrypted_secrets",
-        ));
-    };
-    bookclerk_config::register_secret(&credentials.access_key_id);
-    bookclerk_config::register_secret(&credentials.secret_access_key);
-    if let Some(token) = &credentials.session_token {
-        bookclerk_config::register_secret(token);
-    }
-    let mut value = prepared
-        .bindings
-        .secrets
-        .json_value()
-        .unwrap_or_else(|_| serde_json::json!({}));
-    if !value.is_object() {
-        value = serde_json::json!({});
-    }
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "accessKeyId".into(),
-            serde_json::Value::String(credentials.access_key_id.clone()),
-        );
-        object.insert(
-            "secretAccessKey".into(),
-            serde_json::Value::String(credentials.secret_access_key.clone()),
-        );
-        if let Some(token) = &credentials.session_token {
-            object.insert(
-                "sessionToken".into(),
-                serde_json::Value::String(token.clone()),
-            );
-        }
-    }
-    Ok(bookclerk_plugin_sdk::ExtensibleConfig::json(&value))
+    bookclerk_plugin_sdk::ExtensibleConfig::default()
 }
 
 /// Builds an [`OutputS3ContextDto`] credentials object from instance secrets.
@@ -736,45 +537,70 @@ fn json_text(value: &serde_json::Value, keys: &[&str]) -> String {
     String::new()
 }
 
-/// Operator AWS keys for one open: `BOOKCLERK_AWS_*`, else the operator secret row.
-pub(crate) async fn operator_s3_credentials(
-    db: Option<&DatabaseConnection>,
-) -> PluginResult<Option<S3Credentials>> {
-    resolve_host_credentials(db)
-        .await
-        .map_err(|err| crate::PluginError::message(err.to_string()))
-}
-
-/// Resolves AWS keys from `BOOKCLERK_AWS_*` env, else unseals the operator `encrypted_secrets` row (process DEK).
-async fn resolve_host_credentials(
-    db: Option<&DatabaseConnection>,
-) -> std::result::Result<Option<S3Credentials>, StorageError> {
-    if let (Ok(access), Ok(secret)) = (
-        std::env::var(bookclerk_storage::ENV_AWS_ACCESS_KEY_ID),
-        std::env::var(bookclerk_storage::ENV_AWS_SECRET_ACCESS_KEY),
-    ) {
-        let session = std::env::var(bookclerk_storage::ENV_AWS_SESSION_TOKEN).ok();
-        return Ok(Some(S3Credentials {
-            access_key_id: access,
-            secret_access_key: secret,
-            session_token: session,
-            label: None,
-        }));
-    }
-    if let Some(db) = db {
-        return load_s3_credentials(db).await;
-    }
-    Ok(None)
-}
-
-/// Converts plugin settings TOML to JSON for guest spawn; invalid values become `null`.
-fn toml_to_json(value: &toml::Value) -> Value {
-    serde_json::to_value(value).unwrap_or(Value::Null)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::s3_deployed_endpoint;
+    use crate::discover::DiscoveredPlugin;
     use crate::protocol::{OutputS3ContextDto, S3CredentialsDto};
+    use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
+    use bookclerk_plugin_manifest::PluginManifest;
+
+    const S3_TOML: &str = r#"
+api_version = 3
+id = "s3"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["storage"]
+
+[capabilities.network]
+mode = "outbound"
+
+[vars]
+"#;
+
+    fn discovered(root: &std::path::Path) -> DiscoveredPlugin {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join("plugin.toml"), S3_TOML).unwrap();
+        let command = root.join("guest");
+        std::fs::write(&command, b"#!/bin/sh\n").unwrap();
+        let manifest = PluginManifest::parse(S3_TOML).unwrap();
+        DiscoveredPlugin::try_new(manifest, root.to_path_buf(), command, None)
+            .expect("test plugin tree must evaluate")
+    }
+
+    /// Defense in depth: the document endpoint is a host-implied TCP grant,
+    /// so only the verified first-party S3 PluginKey may carry it. An alias
+    /// twin (same manifest id, different key) gets nothing from the document.
+    #[test]
+    fn document_endpoint_is_granted_by_plugin_key_not_alias() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let mut real = discovered(a.path());
+        let key = PluginKey::platform("bookclerk-plugin-destination-s3", "s3").unwrap();
+        real.identity.plugin_key = key.clone();
+        real.identity.artifact.plugin_key = key;
+        real.identity.provenance = PluginProvenance::VerifiedInstalled;
+        let twin = discovered(b.path());
+        assert_eq!(real.alias(), twin.alias());
+        assert_ne!(real.plugin_key(), twin.plugin_key());
+        let context = serde_json::json!({ "endpoint": "http://127.0.0.1:9000" });
+
+        assert_eq!(
+            s3_deployed_endpoint(&real, &context),
+            Some(Some("http://127.0.0.1:9000".to_string()))
+        );
+        assert_eq!(
+            s3_deployed_endpoint(&real, &serde_json::json!({})),
+            Some(None),
+            "a first-party instance with no endpoint grants nothing"
+        );
+        assert_eq!(
+            s3_deployed_endpoint(&twin, &context),
+            None,
+            "an alias twin must not inherit the document endpoint grant"
+        );
+    }
 
     #[test]
     fn s3_destination_json_omits_paths_and_secrets() {
@@ -823,8 +649,7 @@ mod tests {
             },
             spawn_config_table: config.clone(),
             granted_config: config,
-            from_instance: true,
-            config_revision: Some(1),
+            config_revision: 1,
         }
     }
 
@@ -860,113 +685,45 @@ mod tests {
         let camel_context = super::instance_s3_context(&camel).expect("camel");
         assert_eq!(camel_context["forcePathStyle"], true);
         assert!(camel_context.get("credentials").is_none());
-        let kept = super::s3_open_secrets(&camel, None).expect("instance secrets win");
+        let kept = super::s3_open_secrets(&camel);
         assert_eq!(kept.json_value().expect("json")["accessKeyId"], "AKIATEST");
         assert!(context.get("credentials").is_none(), "{context}");
         assert!(!context.to_string().contains("AKIASECRET"), "{context}");
     }
 
     #[test]
-    fn instance_s3_secrets_fall_back_to_operator_credentials() {
-        let prepared = prepared(
+    fn s3_open_secrets_are_the_instance_secrets_or_nothing() {
+        let without = prepared(
             serde_json::json!({"bucket": "library", "region": "us-east-1"}),
             serde_json::json!({}),
         );
-        let err = super::s3_open_secrets(&prepared, None).expect_err("missing");
-        assert!(err.to_string().contains("encrypted_secrets"), "{err}");
-
-        let secrets = super::s3_open_secrets(
-            &prepared,
-            Some(&bookclerk_storage::S3Credentials {
-                access_key_id: "AKIATEST".into(),
-                secret_access_key: "secret".into(),
-                session_token: None,
-                label: None,
-            }),
-        )
-        .expect("secrets");
-        let value = secrets.json_value().expect("json");
-        assert_eq!(value["accessKeyId"], "AKIATEST");
-        assert!(super::instance_s3_context(&prepared)
+        let empty = super::s3_open_secrets(&without);
+        assert!(
+            empty
+                .json_value()
+                .expect("json")
+                .as_object()
+                .is_none_or(|o| o.is_empty()),
+            "no instance credentials means an empty SECRETS payload"
+        );
+        assert!(super::instance_s3_context(&without)
             .expect("context")
             .get("credentials")
             .is_none());
-    }
 
-    #[tokio::test]
-    async fn operator_row_is_visible_when_the_database_is_passed() {
-        let _lock = bookclerk_config::ProcessEnvGuard::enter();
-        let previous = AwsEnv::clear();
-        let files = tempfile::tempdir().expect("files");
-        bookclerk_library::configure_master_key(files.path()).expect("dek");
-        let db = bookclerk_plugin_database_sqlite::open_memory()
-            .await
-            .expect("sqlite");
-        bookclerk_storage::save_s3_credentials(
-            &db,
-            &bookclerk_storage::S3Credentials {
-                access_key_id: "AKIADB".into(),
-                secret_access_key: "from-db".into(),
-                session_token: None,
-                label: None,
-            },
-        )
-        .await
-        .expect("save operator row");
-
-        let from_db = super::operator_s3_credentials(Some(&db))
-            .await
-            .expect("db")
-            .expect("operator row");
-        assert_eq!(from_db.access_key_id, "AKIADB");
-        assert!(
-            super::operator_s3_credentials(None)
-                .await
-                .expect("no env")
-                .is_none(),
-            "db=None must not see the operator encrypted_secrets row"
+        let with = prepared(
+            serde_json::json!({"bucket": "library", "region": "us-east-1"}),
+            serde_json::json!({
+                "access_key_id": "AKIATEST",
+                "secret_access_key": "secret",
+                "session_token": "tok"
+            }),
         );
-        drop(previous);
-    }
-
-    struct AwsEnv {
-        access: Option<String>,
-        secret: Option<String>,
-        token: Option<String>,
-    }
-
-    impl AwsEnv {
-        #[allow(unsafe_code)]
-        fn clear() -> Self {
-            let saved = Self {
-                access: std::env::var(bookclerk_storage::ENV_AWS_ACCESS_KEY_ID).ok(),
-                secret: std::env::var(bookclerk_storage::ENV_AWS_SECRET_ACCESS_KEY).ok(),
-                token: std::env::var(bookclerk_storage::ENV_AWS_SESSION_TOKEN).ok(),
-            };
-            unsafe {
-                std::env::remove_var(bookclerk_storage::ENV_AWS_ACCESS_KEY_ID);
-                std::env::remove_var(bookclerk_storage::ENV_AWS_SECRET_ACCESS_KEY);
-                std::env::remove_var(bookclerk_storage::ENV_AWS_SESSION_TOKEN);
-            }
-            saved
-        }
-    }
-
-    impl Drop for AwsEnv {
-        fn drop(&mut self) {
-            restore(bookclerk_storage::ENV_AWS_ACCESS_KEY_ID, &self.access);
-            restore(bookclerk_storage::ENV_AWS_SECRET_ACCESS_KEY, &self.secret);
-            restore(bookclerk_storage::ENV_AWS_SESSION_TOKEN, &self.token);
-        }
-    }
-
-    #[allow(unsafe_code)]
-    fn restore(key: &str, value: &Option<String>) {
-        unsafe {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
+        let secrets = super::s3_open_secrets(&with);
+        let value = secrets.json_value().expect("json");
+        assert_eq!(value["access_key_id"], "AKIATEST");
+        let credentials = super::credentials_from_secrets(&with.bindings.secrets).expect("creds");
+        assert_eq!(credentials["accessKeyId"], "AKIATEST");
+        assert_eq!(credentials["sessionToken"], "tok");
     }
 }

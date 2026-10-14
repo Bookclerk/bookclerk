@@ -29,7 +29,6 @@ impl PluginWorker for ChirpRoot {
             scalar_limits: ScalarLimits::default().into(),
             capabilities: manifest_capabilities(include_str!("../plugin.toml"))?,
             portal_auth_mode: PortalAuthMode::Password,
-            password_env_var: Some(bookclerk_plugin_source_chirp::PASSWORD_ENV.into()),
             sort_key: 3,
             brand: Some(Brand {
                 id: "chirp".into(),

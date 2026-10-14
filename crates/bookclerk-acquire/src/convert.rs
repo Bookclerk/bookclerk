@@ -497,7 +497,7 @@ mod tests {
 
     async fn acquired_book(store: &LibraryStore) -> bookclerk_library::BookRecord {
         store
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         store

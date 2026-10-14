@@ -118,7 +118,7 @@ bookclerk-plugin-{kind}-{id}
 | --- | --- | --- |
 | Prefix | Always `bookclerk-plugin-` | — |
 | `{kind}` | One of `source`, `integration`, `output`, `database` | `source` |
-| `{id}` | Globally unique across kinds. Lowercase `a-z`, `0-9`, `_` only; 2–32 chars; no leading/trailing or doubled `_`; must match `plugin.toml` `id` and `[sources.<id>]` / … | `spotify`, `my_store` |
+| `{id}` | Globally unique across kinds. Lowercase `a-z`, `0-9`, `_` only; 2–32 chars; no leading/trailing or doubled `_`; must match `plugin.toml` `id` | `spotify`, `my_store` |
 
 **Examples**
 
@@ -316,7 +316,7 @@ Alias uniqueness (one host plugin namespace / `$BOOKCLERK_FILES_DIR`):
 - Same PluginKey + different manifest alias → **rejected** (even with
   `--replace`). Alias changes are not supported by ordinary
   install/update/replace; they need an explicit future migration because
-  `[sources.<id>]` / `[integrations.<id>]` stay keyed by alias
+  accounts keep the alias as their display `source`
 - Corrupt disk with two PluginKeys sharing an alias → discovery fails closed
 - Distinct hosts with distinct `$FILES_DIR` values may install the same alias
   and PluginKey independently (no shared-database lock)

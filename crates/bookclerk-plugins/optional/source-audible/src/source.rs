@@ -1,13 +1,12 @@
 //! [`ContentSource`] adapter for Audible.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::drm::{
     decrypt_adrm, decrypt_cenc, join_cache_component, CencDecryptRequest, DecryptRequest,
 };
 use async_trait::async_trait;
-use bookclerk_config::{AudioQuality, Config};
+use bookclerk_config::AudioQuality;
 use bookclerk_library::{secret_kind, SourceScope};
 use bookclerk_media::{
     brand_durations_from_chapter_info, brand_trim_range, parse_mp4,
@@ -17,7 +16,7 @@ use bookclerk_source::{
     revoke_credentials_default, CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed,
     FetchOptions, ImportCredentialsOptions, LoginOptions, OAuthProgress, PlainAudioPart,
     PlainFetch, PortalAuthMode, PurchaseHintOpts, Result, ScanOptions, ScanSummary, SourceAccount,
-    SourceBrand, SourceError, SourceFetch, SourcePurchaseHint, SourceRegistry,
+    SourceBrand, SourceError, SourceFetch, SourcePurchaseHint,
 };
 use serde_json::Value;
 
@@ -38,11 +37,12 @@ pub const ID: &str = "audible";
 
 /// Audible storefront adapter implementing [`ContentSource`].
 ///
-/// Construct with [`AudibleSource::from_config`] for host registration, or
-/// [`AudibleSource::new`] / [`AudibleSource::with_bitrate`] in tests.
+/// Construct with [`AudibleSource::new`]; the host delivers the instance's
+/// `bitrate` setting through `CONFIG` at open, and tests use
+/// [`AudibleSource::with_bitrate`] directly.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AudibleSource {
-    /// License bitrate tier (`[sources.audible] bitrate`).
+    /// License bitrate tier (the instance's `bitrate` setting).
     pub bitrate: AudioQuality,
 }
 
@@ -51,17 +51,6 @@ impl AudibleSource {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Parse `[sources.audible]` knobs from config.
-    #[must_use]
-    pub fn from_config(config: &Config) -> Self {
-        let bitrate = config
-            .sources
-            .get_string(ID, "bitrate")
-            .and_then(parse_audio_quality)
-            .unwrap_or_default();
-        Self { bitrate }
     }
 
     /// Overrides the license bitrate tier used for download requests.
@@ -524,15 +513,6 @@ const AUDIBLE_CONFIG_OPTIONS: &[bookclerk_source::SourceConfigOption] =
         ],
     }];
 
-/// Maps `high` / `normal` (case-insensitive) onto [`AudioQuality`]; other strings are `None`.
-fn parse_audio_quality(raw: &str) -> Option<AudioQuality> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "high" => Some(AudioQuality::High),
-        "normal" => Some(AudioQuality::Normal),
-        _ => None,
-    }
-}
-
 /// Flattens nested Audible chapter JSON into `(title, start_ms)` pairs, sorted and de-duplicated by start.
 fn flatten_chapters(info: &Value) -> Vec<(String, u64)> {
     let mut out = Vec::new();
@@ -578,18 +558,5 @@ fn map_audible_err(err: AudibleError) -> SourceError {
         AudibleError::Io(err) => SourceError::Io(err),
         AudibleError::Other(err) => SourceError::Other(err),
         other => SourceError::Api(other.to_string()),
-    }
-}
-
-/// Parse `[sources.audible]` into an [`AudibleSource`].
-#[must_use]
-pub fn from_config(config: &Config) -> AudibleSource {
-    AudibleSource::from_config(config)
-}
-
-/// Register Audible when `[sources.audible] enabled` (default true).
-pub fn register(registry: &mut SourceRegistry, config: &Config) {
-    if config.sources.is_enabled(ID) {
-        registry.register(Arc::new(from_config(config)));
     }
 }

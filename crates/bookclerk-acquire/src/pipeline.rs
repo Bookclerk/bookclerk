@@ -442,7 +442,7 @@ async fn fetch_title_enforcing_quota(
         max_cache_bytes: bounded.then_some(remaining),
         cancel: bounded.then(|| cancel.clone()),
     };
-    let scope = library.scope(source.id());
+    let scope = bookclerk_source::source_scope(library, source);
     let fetch_fut = source.fetch_title(&scope, &req.account_id, &req.asin, &opts);
     let fetch = if bounded {
         let watchdog = async {
@@ -2947,7 +2947,7 @@ mod tests {
                 .await
                 .unwrap();
             store
-                .upsert_account("user-1", "us", None, true, "audible")
+                .upsert_account("audible", "user-1", "us", None, true, "audible")
                 .await
                 .unwrap();
             let book = store
@@ -3066,7 +3066,7 @@ mod tests {
     async fn oversized_companion_pdf_soft_fails_and_retries_on_existing_audio() {
         let store = test_store().await;
         store
-            .upsert_account("user-1", "us", None, true, "audible")
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
             .await
             .unwrap();
         let book = store

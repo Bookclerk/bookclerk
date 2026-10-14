@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bookclerk_config::Config;
 use bookclerk_library::SourceScope;
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions,
     LoginOptions, PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
-    SourceBrand, SourceFetch, SourcePurchaseHint, SourceRegistry,
+    SourceBrand, SourceFetch, SourcePurchaseHint,
 };
 
 use crate::auth::ChirpAuthFile;
@@ -21,13 +20,10 @@ use crate::sync::{scan_library, ScanOptions as ChirpScanOptions};
 /// Describe / config id for this store (`chirp` in `[sources.chirp]`).
 pub const ID: &str = "chirp";
 
-/// Env var read for non-interactive password login when Accounts UI is unavailable.
-pub const PASSWORD_ENV: &str = "BOOKCLERK_CHIRP_PASSWORD";
-
 /// Chirp storefront adapter implementing [`ContentSource`].
 ///
-/// Prefer [`ChirpSource::from_config`] when registering with the host; use
-/// [`ChirpSource::with_graphql_url`] for wiremock / staging.
+/// Construct with [`ChirpSource::new`]; use [`ChirpSource::with_graphql_url`]
+/// for wiremock / staging.
 #[derive(Debug, Clone)]
 pub struct ChirpSource {
     /// Chirp GraphQL origin; production default or a wiremock/staging override.
@@ -47,12 +43,6 @@ impl ChirpSource {
         Self {
             graphql_url: DEFAULT_GRAPHQL_URL.to_string(),
         }
-    }
-
-    /// Parse `[sources.chirp]` (enable flag only today).
-    #[must_use]
-    pub fn from_config(_config: &Config) -> Self {
-        Self::new()
     }
 
     /// Overrides the GraphQL endpoint (tests / staging).
@@ -160,10 +150,6 @@ impl ContentSource for ChirpSource {
             accent: "#14B8A6",
             icon_url: "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128",
         }
-    }
-
-    fn password_env_var(&self) -> Option<&'static str> {
-        Some(PASSWORD_ENV)
     }
 
     fn sort_key(&self) -> u32 {
@@ -731,19 +717,6 @@ fn source_account_from_auth(auth: &ChirpAuthFile) -> SourceAccount {
         marketplace: auth.marketplace.clone(),
         label: auth.label.clone().or_else(|| Some(auth.email.clone())),
         scan_enabled: true,
-    }
-}
-
-/// Parse `[sources.chirp]` into a [`ChirpSource`].
-#[must_use]
-pub fn from_config(config: &Config) -> ChirpSource {
-    ChirpSource::from_config(config)
-}
-
-/// Register Chirp when `[sources.chirp] enabled` (default true).
-pub fn register(registry: &mut SourceRegistry, config: &Config) {
-    if config.sources.is_enabled(ID) {
-        registry.register(Arc::new(from_config(config)));
     }
 }
 

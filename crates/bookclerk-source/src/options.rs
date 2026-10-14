@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 
 use bookclerk_config::{
-    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, FileTimestampMode,
-    LameConfig, NamingProfile, OutputBackendKind, OutputConfig, OutputFormat, PathLimits,
-    PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
+    resolve_replacement_characters, AudioQuality, ChapterJsonMode, Config, DestinationNaming,
+    FileTimestampMode, LameConfig, NamingProfile, OutputBackendKind, OutputConfig, OutputFormat,
+    PathLimits, PathSanitizationMode, ReplacementRule, ResolvedNamingTemplates,
 };
 use serde::{Deserialize, Serialize};
 
@@ -155,12 +155,15 @@ impl From<&OutputConfig> for DownloadOptions {
 }
 
 impl From<&Config> for DownloadOptions {
+    /// Global `[output]` naming with no destination prefix: what a listing,
+    /// match, or convert pass uses when no destination document applies.
     fn from(cfg: &Config) -> Self {
-        let primary = cfg
-            .output
-            .primary_backend()
-            .unwrap_or(OutputBackendKind::Local);
-        Self::for_output_backend(cfg, primary)
+        Self::for_destination(
+            cfg,
+            OutputBackendKind::Local,
+            &DestinationNaming::default(),
+            "",
+        )
     }
 }
 
@@ -174,25 +177,24 @@ impl DownloadOptions {
     /// Build acquire options stamped for one output destination.
     ///
     /// Packaging knobs come from global `[output]`; naming templates prefer
-    /// that destination's overrides (`[output.local]` / `[output.s3]`).
+    /// the destination's own overrides, which the `local` / `s3` plugin
+    /// declares as `[[settings]]` and the host reads from the deployed
+    /// instance document. `prefix` is that document's key prefix.
     #[must_use]
-    pub fn for_output_backend(cfg: &Config, kind: OutputBackendKind) -> Self {
+    pub fn for_destination(
+        cfg: &Config,
+        kind: OutputBackendKind,
+        naming: &DestinationNaming,
+        prefix: &str,
+    ) -> Self {
         let storage_is_s3 = matches!(kind, OutputBackendKind::S3);
-        let naming = cfg.output.naming_for(kind);
         let mut opts = Self::from(&cfg.output);
         opts.save_podcasts_to_parent_folder = cfg.library.save_podcasts_to_parent_folder;
         opts.naming_profile = naming.effective_profile(&cfg.output);
         opts.folder_template = naming.effective_folder_template(&cfg.output);
         opts.file_template = naming.effective_file_template(&cfg.output);
         opts.chapter_file_template = naming.effective_chapter_file_template(&cfg.output);
-        let prefix = match kind {
-            OutputBackendKind::Local => {
-                bookclerk_config::normalize_storage_prefix(cfg.output.local.prefix.trim())
-            }
-            OutputBackendKind::S3 => {
-                bookclerk_config::normalize_storage_prefix(cfg.output.s3.prefix.trim())
-            }
-        };
+        let prefix = bookclerk_config::normalize_storage_prefix(prefix.trim());
         opts.replacement_characters = resolve_replacement_characters(
             &cfg.output.replacement_characters,
             cfg.output.path_sanitization,
@@ -280,21 +282,27 @@ mod tests {
     use bookclerk_config::Config;
 
     #[test]
-    fn for_output_backend_applies_destination_naming_overrides() {
+    fn for_destination_applies_destination_naming_overrides() {
         let mut cfg = Config::default();
         cfg.output.naming_profile = NamingProfile::Classic;
         cfg.output.folder_template = Some("<global folder>".into());
         cfg.output.file_template = Some("<global file>".into());
         cfg.output.chapter_file_template = Some("<global chapter>".into());
-        cfg.output.local.naming.file_template = Some("<local file>".into());
-        cfg.output.s3.enabled = true;
-        cfg.output.s3.bucket = "books".into();
-        cfg.output.s3.naming.naming_profile = Some(NamingProfile::Audiobookshelf);
-        cfg.output.s3.naming.folder_template = Some("<s3 folder>".into());
-        cfg.output.s3.naming.chapter_file_template = Some("<s3 chapter>".into());
+        let local_naming = DestinationNaming {
+            file_template: Some("<local file>".into()),
+            ..Default::default()
+        };
+        let s3_naming = DestinationNaming {
+            naming_profile: Some(NamingProfile::Audiobookshelf),
+            folder_template: Some("<s3 folder>".into()),
+            chapter_file_template: Some("<s3 chapter>".into()),
+            ..Default::default()
+        };
 
-        let local = DownloadOptions::for_output_backend(&cfg, OutputBackendKind::Local);
-        let s3 = DownloadOptions::for_output_backend(&cfg, OutputBackendKind::S3);
+        let local =
+            DownloadOptions::for_destination(&cfg, OutputBackendKind::Local, &local_naming, "");
+        let s3 =
+            DownloadOptions::for_destination(&cfg, OutputBackendKind::S3, &s3_naming, "library");
 
         assert_eq!(local.naming_profile, NamingProfile::Classic);
         assert_eq!(local.folder_template.as_deref(), Some("<global folder>"));
@@ -303,9 +311,14 @@ mod tests {
             local.chapter_file_template.as_deref(),
             Some("<global chapter>")
         );
+
         assert_eq!(s3.naming_profile, NamingProfile::Audiobookshelf);
         assert_eq!(s3.folder_template.as_deref(), Some("<s3 folder>"));
         assert_eq!(s3.file_template.as_deref(), Some("<global file>"));
         assert_eq!(s3.chapter_file_template.as_deref(), Some("<s3 chapter>"));
+        assert_eq!(
+            s3.path_limits.max_storage_key_bytes,
+            bookclerk_config::S3_MAX_OBJECT_KEY_BYTES - "library/".len()
+        );
     }
 }

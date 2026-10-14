@@ -676,8 +676,8 @@ async fn sqlite_library_round_trip_replaces_not_merges() {
     apply_host_schema(&db).await.unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -692,8 +692,8 @@ async fn sqlite_library_round_trip_replaces_not_merges() {
 
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('extra', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'extra', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -712,8 +712,8 @@ async fn second_recovery_point_reuses_unchanged_objects() {
     apply_host_schema(&db).await.unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -764,8 +764,8 @@ async fn gc_retains_live_objects_and_drops_orphans() {
     .unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('later', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'later', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -898,8 +898,8 @@ async fn gc_fails_closed_when_published_manifest_is_unreadable() {
     .unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('later', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'later', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -1052,8 +1052,8 @@ async fn omitted_backup_table_fails_verify_before_restore_mutates() {
     apply_host_schema(&db).await.unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -1147,8 +1147,8 @@ async fn restore_fails_closed_when_target_frozen_history_is_newer() {
     apply_host_schema(&db).await.unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -1241,8 +1241,8 @@ async fn restore_uses_capability_kind_not_seaorm_backend() {
     apply_host_schema(&src).await.unwrap();
     src.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -1558,8 +1558,8 @@ async fn restore_without_atomic_unit_restore_fails_before_drop() {
     apply_host_schema(&db).await.unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -1926,8 +1926,8 @@ async fn restore_sqlite_keeps_foreign_keys_enforced() {
     apply_host_schema(&src).await.unwrap();
     src.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -1958,8 +1958,8 @@ async fn restore_sqlite_keeps_foreign_keys_enforced() {
     let err = dest
         .execute_raw(Statement::from_string(
             DbBackend::Sqlite,
-            "INSERT INTO books (uuid, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('u', 'audible', 'missing', 'p', 'us', 't', 't', 't')",
+            "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
+             VALUES ('u', 'audible', 'audible', 'missing', 'p', 'us', 't', 't', 't')",
         ))
         .await
         .expect_err("orphan book insert must fail");
@@ -2162,8 +2162,8 @@ async fn quoted_unicode_text_round_trips() {
     apply_host_schema(&db).await.unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Sqlite,
-        "INSERT INTO accounts (account_id, marketplace, source, label, created_at, updated_at) \
-         VALUES ('a1', 'us', 'audible', 'it''s \"quoted\" and 🦀', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, label, created_at, updated_at) \
+         VALUES ('audible', 'a1', 'us', 'audible', 'it''s \"quoted\" and 🦀', 't', 't')",
     ))
     .await
     .unwrap();
@@ -2486,8 +2486,8 @@ async fn postgres_library_backup_round_trip() {
     apply_host_schema(&db).await.unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Postgres,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -2499,8 +2499,8 @@ async fn postgres_library_backup_round_trip() {
     let outcome = backup_library(&db, &req).await.unwrap().unwrap();
     db.execute_raw(Statement::from_string(
         DbBackend::Postgres,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('extra', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'extra', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -2624,8 +2624,8 @@ async fn postgres_library_restores_to_sqlite() {
     apply_host_schema(&pg).await.unwrap();
     pg.execute_raw(Statement::from_string(
         DbBackend::Postgres,
-        "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-         VALUES ('keep', 'us', 'audible', 't', 't')",
+        "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+         VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
     ))
     .await
     .unwrap();
@@ -2665,8 +2665,8 @@ async fn postgres_sqlite_library_restores_to_postgres() {
     sqlite
         .execute_raw(Statement::from_string(
             DbBackend::Sqlite,
-            "INSERT INTO accounts (account_id, marketplace, source, created_at, updated_at) \
-             VALUES ('keep', 'us', 'audible', 't', 't')",
+            "INSERT INTO accounts (plugin_key, account_id, marketplace, source, created_at, updated_at) \
+             VALUES ('audible', 'keep', 'us', 'audible', 't', 't')",
         ))
         .await
         .unwrap();

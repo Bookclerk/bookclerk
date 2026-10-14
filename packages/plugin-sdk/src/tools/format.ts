@@ -243,6 +243,30 @@ export function formatManifest(m: Manifest): string {
     lines.push("[vars]");
     emitTableRows(lines, m.vars);
   }
+  for (const spec of m.settings ?? []) {
+    lines.push("");
+    lines.push("[[settings]]");
+    lines.push(`key = ${esc(spec.key)}`);
+    if (spec.label) lines.push(`label = ${esc(spec.label)}`);
+    lines.push(`type = ${esc(spec.type)}`);
+    if (spec.values && spec.values.length > 0) {
+      const rendered = spec.values.map((value) =>
+        value.label
+          ? `{ id = ${esc(value.id)}, label = ${esc(value.label)} }`
+          : `{ id = ${esc(value.id)} }`,
+      );
+      lines.push(`values = [${rendered.join(", ")}]`);
+    }
+    if (spec.default !== undefined) {
+      const literal = emitValue(spec.default);
+      if (literal === null) {
+        throw new Error(`plugin.toml: [[settings]] default for \`${spec.key}\` cannot be formatted`);
+      }
+      lines.push(`default = ${literal}`);
+    }
+    if (spec.required) lines.push("required = true");
+    if (spec.description) lines.push(`description = ${esc(spec.description)}`);
+  }
   emitNamedBinding(lines, "[secrets]", m.secrets);
   for (const kv of m.kv_namespaces ?? []) {
     emitNamedBinding(lines, "[[kv_namespaces]]", kv);

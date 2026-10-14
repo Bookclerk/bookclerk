@@ -143,10 +143,11 @@ function errorMessage(err: unknown): string {
  * Optional identity refinement returned by `BookclerkEntrypoint.describe()`.
  *
  * The launcher derives the full wire `PluginDescribe` from `plugin.toml`
- * (`apiVersion`, `id`, `capabilities`, `cli`, …); an author `describe()` may
- * add or override presentation fields such as `displayName`, `brand`,
- * `rpcFeatures`, or `configOptions`. Identity and capabilities always come
- * from the manifest.
+ * (`apiVersion`, `id`, `capabilities`, `configOptions`, `cli`, …); an author
+ * `describe()` may add or override presentation fields such as
+ * `displayName`, `brand`, or `rpcFeatures`. Identity, capabilities, and the
+ * `[[settings]]`-derived `configOptions` always come from the manifest: a
+ * guest list that differs from the manifest fails the spawn on the host.
  */
 export type PluginDescribe = Partial<WirePluginDescribe>;
 
@@ -2415,6 +2416,13 @@ function mergeDescribe(
     guestCli && Array.isArray(guestCli.commands) && guestCli.commands.length > 0
       ? guestCli
       : base.cli ?? guestCli;
+  // `[[settings]]` is the authority for configOptions; an empty guest list
+  // defers to the manifest projection and the host rejects a differing one.
+  const guestOptions = guest.configOptions;
+  const configOptions =
+    Array.isArray(guestOptions) && guestOptions.length > 0
+      ? guestOptions
+      : base.configOptions ?? guestOptions;
   return {
     ...base,
     ...guest,
@@ -2422,6 +2430,7 @@ function mergeDescribe(
     id: base.id ?? guest.id,
     capabilities: base.capabilities ?? guest.capabilities,
     ...(cli === undefined ? {} : { cli }),
+    ...(configOptions === undefined ? {} : { configOptions }),
   } as WirePluginDescribe;
 }
 

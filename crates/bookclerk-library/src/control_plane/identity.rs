@@ -411,12 +411,11 @@ pub async fn load_host(store: &LibraryStore, host_id: &str) -> Result<HostRecord
     Ok(record_from_model(row))
 }
 
-/// Lists host ids. Used to prove one heartbeat does not delete another host.
+/// Lists host ids, sorted.
 ///
 /// # Errors
 ///
 /// Returns an error when the read fails.
-#[cfg(test)]
 pub async fn list_host_ids(store: &LibraryStore) -> Result<Vec<String>> {
     let rows = hosts::Entity::find()
         .all(store.db())
@@ -425,6 +424,23 @@ pub async fn list_host_ids(store: &LibraryStore) -> Result<Vec<String>> {
     let mut ids: Vec<String> = rows.into_iter().map(|row| row.host_id).collect();
     ids.sort();
     Ok(ids)
+}
+
+/// Every host row, sorted by id.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn list_hosts(store: &LibraryStore) -> Result<Vec<HostRecord>> {
+    let mut rows: Vec<HostRecord> = hosts::Entity::find()
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .into_iter()
+        .map(record_from_model)
+        .collect();
+    rows.sort_by(|a, b| a.host_id.cmp(&b.host_id));
+    Ok(rows)
 }
 
 /// This process's incarnation. Stable until the process exits.

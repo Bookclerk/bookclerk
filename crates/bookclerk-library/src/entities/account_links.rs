@@ -11,9 +11,11 @@ pub struct Model {
     pub id: i64,
     /// Foreign key to `portal_identities.id`.
     pub identity_id: i64,
+    /// Provenance-qualified PluginKey that owns the account.
+    pub plugin_key: String,
     /// Store or operator account id this row belongs to.
     pub account_id: String,
-    /// Content-source plugin id (`audible`, `libro`, …).
+    /// Display alias of the owning plugin (`audible`, `libro`, …).
     pub source: String,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,

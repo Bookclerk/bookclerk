@@ -27,7 +27,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ConfigError, Result};
 use crate::extras::{FileTimestampMode, LameConfig, PathSanitizationMode, ReplacementRule};
 use crate::naming_profile::{NamingProfile, ResolvedNamingTemplates};
 use crate::path_limits::DEFAULT_MAX_FILENAME_LENGTH;
@@ -101,14 +100,12 @@ impl DestinationNaming {
     }
 }
 
-/// Serde default for [`OutputLocalConfig::enabled`] when the TOML key is omitted.
-fn default_true() -> bool {
-    true
-}
-
-/// Acquire packaging + destination backends (`[output]`).
+/// Acquire packaging (`[output]`).
 ///
-/// Store-specific ingest knobs live under [`crate::SourcesConfig`] / `[sources.*]`.
+/// Destination plugins (`local`, `s3`, …) declare their own `[[settings]]`
+/// (root, bucket, prefix, per-destination naming overrides) and are
+/// configured on their plugin instances; nothing destination-specific lives
+/// in `config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct OutputConfig {
@@ -193,10 +190,6 @@ pub struct OutputConfig {
     pub replacement_characters: Vec<ReplacementRule>,
     /// Max length per path segment. Default 255; `0` disables truncation.
     pub max_filename_length: u32,
-    /// Local filesystem destination plugin (`[output.local]`).
-    pub local: OutputLocalConfig,
-    /// S3 / MinIO destination plugin (`[output.s3]`).
-    pub s3: OutputS3Config,
 }
 
 impl Default for OutputConfig {
@@ -241,8 +234,6 @@ impl Default for OutputConfig {
             path_sanitization: PathSanitizationMode::Auto,
             replacement_characters: Vec::new(),
             max_filename_length: DEFAULT_MAX_FILENAME_LENGTH as u32,
-            local: OutputLocalConfig::default(),
-            s3: OutputS3Config::default(),
         }
     }
 }
@@ -284,103 +275,6 @@ impl OutputConfig {
             self.chapter_file_template.as_deref(),
         )
     }
-
-    /// Enabled destination plugins (may be more than one).
-    #[must_use]
-    pub fn enabled_backends(&self) -> Vec<OutputBackendKind> {
-        let mut out = Vec::new();
-        if self.local.enabled {
-            out.push(OutputBackendKind::Local);
-        }
-        if self.s3.enabled {
-            out.push(OutputBackendKind::S3);
-        }
-        out
-    }
-
-    /// True when at least one destination plugin is enabled.
-    #[must_use]
-    pub fn has_enabled_destination(&self) -> bool {
-        !self.enabled_backends().is_empty()
-    }
-
-    /// Prefix used for path-length budgeting when generating storage keys.
-    ///
-    /// When S3 is among the enabled destinations, its prefix is used (stricter
-    /// full-key budget). Otherwise the local prefix is used.
-    #[must_use]
-    pub fn path_limit_prefix(&self) -> String {
-        if self.s3.enabled {
-            normalize_storage_prefix(self.s3.prefix.trim())
-        } else {
-            normalize_storage_prefix(self.local.prefix.trim())
-        }
-    }
-
-    /// Whether any enabled destination is S3 (for path sanitization / key budget).
-    #[must_use]
-    pub fn is_s3(&self) -> bool {
-        self.s3.enabled
-    }
-
-    /// Human-readable list of enabled destination ids (`local`, `s3`, …).
-    #[must_use]
-    pub fn enabled_backend_names(&self) -> Vec<&'static str> {
-        self.enabled_backends()
-            .into_iter()
-            .map(|kind| match kind {
-                OutputBackendKind::Local => "local",
-                OutputBackendKind::S3 => "s3",
-            })
-            .collect()
-    }
-
-    /// Validate that at least one destination is enabled and S3 has a bucket when used.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::ConfigError::Invalid`] when no destination is enabled or
-    /// S3 is enabled without a bucket.
-    pub fn validate_destinations(&self) -> Result<()> {
-        if !self.has_enabled_destination() {
-            return Err(ConfigError::Invalid(
-                "enable at least one of [output.local] or [output.s3]".into(),
-            ));
-        }
-        if self.s3.enabled && self.s3.bucket.trim().is_empty() {
-            return Err(ConfigError::Invalid(
-                "output.s3.enabled=true requires output.s3.bucket".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Per-destination naming overrides for `kind`.
-    #[must_use]
-    pub fn naming_for(&self, kind: OutputBackendKind) -> &DestinationNaming {
-        match kind {
-            OutputBackendKind::Local => &self.local.naming,
-            OutputBackendKind::S3 => &self.s3.naming,
-        }
-    }
-
-    /// Resolved templates for `kind` (destination overrides → global → profile).
-    #[must_use]
-    pub fn resolve_naming_for(&self, kind: OutputBackendKind) -> ResolvedNamingTemplates {
-        self.naming_for(kind).resolve_over(self)
-    }
-
-    /// Preferred destination for the library `storage_key` mirror (local if enabled).
-    #[must_use]
-    pub fn primary_backend(&self) -> Option<OutputBackendKind> {
-        if self.local.enabled {
-            Some(OutputBackendKind::Local)
-        } else if self.s3.enabled {
-            Some(OutputBackendKind::S3)
-        } else {
-            None
-        }
-    }
 }
 
 /// Behavior when some output destinations already have a title and others do not.
@@ -417,97 +311,11 @@ pub enum BadBookAction {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputBackendKind {
-    /// Filesystem destination under `[output.local]` (default primary).
+    /// Filesystem destination (the `local` plugin; default primary).
     #[default]
     Local,
-    /// Object-store destination under `[output.s3]`.
+    /// Object-store destination (the `s3` plugin).
     S3,
-}
-
-/// Local filesystem destination (`[output.local]`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct OutputLocalConfig {
-    /// When true, write acquired media under [`Self::root`] (default true).
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Occupant PluginKey (or alias) for the local destination guest.
-    ///
-    /// Empty means the `local` alias, which the host accepts only when exactly
-    /// one discovered install uses that id.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub plugin: String,
-    /// Root directory for acquired audiobooks.
-    pub root: PathBuf,
-    /// Optional key prefix under [`Self::root`] (trailing slash optional).
-    pub prefix: String,
-    /// Optional naming overrides for this destination only.
-    #[serde(flatten)]
-    pub naming: DestinationNaming,
-}
-
-impl Default for OutputLocalConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            plugin: String::new(),
-            root: PathBuf::from("Audiobooks"),
-            prefix: String::new(),
-            naming: DestinationNaming::default(),
-        }
-    }
-}
-
-/// S3 / MinIO destination (`[output.s3]`).
-///
-/// Credentials resolve in order:
-/// 1. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` env (optional
-///    `AWS_SESSION_TOKEN`) — process env override (not written to the DB unless
-///    you run `bookclerk config s3-credentials set`)
-/// 2. `encrypted_secrets` row (`kind=s3`, `account_type=operator`,
-///    `account_id=default`, `name=default`) — fail closed if the row is
-///    encrypted and `BOOKCLERK_AUTH_PASSWORD` cannot unlock it
-/// 3. AWS SDK default provider chain (`~/.aws/credentials`, SSO, EC2/ECS/EKS
-///    roles, …)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct OutputS3Config {
-    /// When true, write acquired media to the configured S3/MinIO bucket (default false).
-    pub enabled: bool,
-    /// Occupant PluginKey (or alias) for the S3 destination guest.
-    ///
-    /// Empty means the `s3` alias, which the host accepts only when exactly one
-    /// discovered install uses that id.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub plugin: String,
-    /// Destination bucket name (required when [`Self::enabled`] is true).
-    pub bucket: String,
-    /// Key prefix under the bucket (trailing slash optional; default `library/`).
-    pub prefix: String,
-    /// AWS region id (default `us-east-1`); also used by MinIO path-style clients.
-    pub region: String,
-    /// Optional custom endpoint (MinIO, LocalStack, etc.).
-    pub endpoint: Option<String>,
-    /// Force path-style addressing (typical for MinIO).
-    pub force_path_style: bool,
-    /// Optional naming overrides for this destination only.
-    #[serde(flatten)]
-    pub naming: DestinationNaming,
-}
-
-impl Default for OutputS3Config {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            plugin: String::new(),
-            bucket: String::new(),
-            prefix: String::from("library/"),
-            region: String::from("us-east-1"),
-            endpoint: None,
-            force_path_style: false,
-            naming: DestinationNaming::default(),
-        }
-    }
 }
 
 /// Normalize a storage key prefix: empty stays empty; otherwise ensure a trailing `/`.
@@ -549,42 +357,5 @@ mod tests {
         assert_eq!(resolved.folder, "<author>/<title>");
         assert_eq!(resolved.file, "<asin>");
         assert_eq!(resolved.chapter_file, "global <ch#>");
-    }
-
-    #[test]
-    fn destination_naming_flattens_onto_destination_tables() {
-        let cfg: OutputConfig = toml::from_str(
-            r#"
-            [local]
-            enabled = true
-            folder_template = "<local folder>"
-
-            [s3]
-            enabled = true
-            bucket = "books"
-            file_template = "<asin>"
-            chapter_file_template = "<ch#>"
-            "#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            cfg.naming_for(OutputBackendKind::Local)
-                .folder_template
-                .as_deref(),
-            Some("<local folder>")
-        );
-        assert_eq!(
-            cfg.naming_for(OutputBackendKind::S3)
-                .file_template
-                .as_deref(),
-            Some("<asin>")
-        );
-        assert_eq!(
-            cfg.naming_for(OutputBackendKind::S3)
-                .chapter_file_template
-                .as_deref(),
-            Some("<ch#>")
-        );
     }
 }

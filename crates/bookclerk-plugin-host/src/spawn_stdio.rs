@@ -256,7 +256,7 @@ pub(crate) async fn spawn_stdio_guest(
     config_table: Value,
     extra_env: &[(&str, OsString)],
     local_output_root: Option<&std::path::Path>,
-    deployed_s3_endpoint: Option<Option<&str>>,
+    deployed_endpoint: Option<Option<&str>>,
 ) -> Result<SpawnedStdio> {
     if let Some(message) = plugin.manifest.unimplemented_surface() {
         return Err(PluginError::message(message));
@@ -266,7 +266,7 @@ pub(crate) async fn spawn_stdio_guest(
     tokio::task::yield_now().await;
     let alias = plugin.manifest.id.clone();
     let persisted_grant = spawn_grant(&config.paths().files_dir, plugin)?;
-    let grant = effective_spawn_grant(&persisted_grant, plugin, config, deployed_s3_endpoint);
+    let grant = effective_spawn_grant(&persisted_grant, plugin, config, deployed_endpoint);
     let spawn_config = spawn_config_for_grant(&grant, config_table);
     // Unix takes the cgroup and guest IPC directory out of the jail. Windows
     // only moves fields, so `mut` is unused there.
@@ -3007,13 +3007,13 @@ pub(crate) fn with_spawn_detail(err: PluginError, extra: String) -> PluginError 
 
 /// Applies host-implied network overlays to a persisted spawn grant.
 ///
-/// `deployed_s3_endpoint` is `Some` for a deployed S3 instance. That value
+/// `deployed_endpoint` is `Some` for a deployed S3 instance. That value
 /// replaces `[output.s3].endpoint` on the grant this spawn injects.
 pub(crate) fn effective_spawn_grant(
     persisted: &PluginGrant,
     plugin: &DiscoveredPlugin,
     config: &Config,
-    deployed_s3_endpoint: Option<Option<&str>>,
+    deployed_endpoint: Option<Option<&str>>,
 ) -> PluginGrant {
     let mut grant = persisted.clone();
     crate::consent::overlay_host_implied_network_with(
@@ -3021,7 +3021,7 @@ pub(crate) fn effective_spawn_grant(
         plugin,
         config,
         &overlay_discovered_plugins(config, plugin),
-        deployed_s3_endpoint,
+        deployed_endpoint,
     );
     grant
 }

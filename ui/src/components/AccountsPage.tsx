@@ -108,14 +108,14 @@ export function AccountsPage({
     }
   }
 
-  async function onRevoke(accountId: string) {
+  async function onRevoke(connection: PortalConnection) {
     if (!window.confirm("Revoke store credentials? Acquired books are kept.")) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await portalRevokeConnection(accountId);
+      await portalRevokeConnection(connection.plugin_key || connection.source, connection.account_id);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Revoke failed");
@@ -169,7 +169,7 @@ export function AccountsPage({
         <section className="space-y-3">
           <h2 className="text-lg font-semibold text-ink">Bookstore sources</h2>
           {sources.length === 0 ? (
-            <p className="text-sm text-ink/50">No sources enabled.</p>
+            <p className="text-sm text-ink/50">No storefront plugin is deployed on this host.</p>
           ) : (
             <ul className="divide-y divide-ink/10 bg-card">
               {sources.map((s) => {
@@ -267,7 +267,7 @@ export function AccountsPage({
             <ul className="divide-y divide-ink/10 bg-card">
               {connections.map((c) => (
                 <li
-                  key={c.account_id}
+                  key={`${c.plugin_key}:${c.account_id}`}
                   className="flex flex-wrap items-center justify-between gap-2 px-3 py-3"
                 >
                   <div className="flex items-center gap-3">
@@ -284,7 +284,7 @@ export function AccountsPage({
                       </p>
                       <p className="text-xs text-ink/50">
                         {c.source} · {c.connection_status}
-                        {!c.source_enabled ? " · source disabled" : ""}
+                        {!c.source_enabled ? " · source not deployed on this host" : ""}
                       </p>
                     </div>
                   </div>
@@ -292,7 +292,7 @@ export function AccountsPage({
                     <Button
                       variant="ghost"
                       disabled={busy}
-                      onClick={() => void onRevoke(c.account_id)}
+                      onClick={() => void onRevoke(c)}
                     >
                       <Unlink className="h-4 w-4" />
                       Revoke

@@ -390,7 +390,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         let mut book = NewBook::minimal("B00TEST", "acct", "us", "Harry Potter");
@@ -413,7 +413,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         let mut book = NewBook::minimal("B00TEST01", "acct", "us", "Indexed Book");
@@ -446,7 +446,7 @@ mod tests {
             .await
             .unwrap();
         library
-            .upsert_account("acct", "us", None, true, "audible")
+            .upsert_account("audible", "acct", "us", None, true, "audible")
             .await
             .unwrap();
         let past = u32::try_from(CATALOG_PAGE_ROWS).unwrap();

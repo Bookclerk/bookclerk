@@ -1,8 +1,10 @@
-//! Reconcile present plugin deployments onto this host.
+//! Reconcile plugin deployments onto this host.
 //!
 //! The loop selects `plugin_deployments` for the local [`HostId`] only. Other
-//! hosts are not installed and do not receive observation writes. Startup does
-//! not download plugins: a missing ledger row is installed only when the caller
+//! hosts are not installed and do not receive observation writes. A row whose
+//! desired state is `absent` retires the running guest and records `retired`;
+//! a `present` row is installed, spawned, and health-checked. Startup does not
+//! download plugins: a missing ledger row is installed only when the caller
 //! supplies a local package. A plugin already discovered on disk is left in
 //! place.
 
@@ -13,12 +15,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    bounded_observation_detail, current_process_incarnation, ensure_plugin_deployment,
-    ensure_plugin_instance, graphicaudio_config_from_pairs, import_instance_config_if_absent,
-    list_present_deployments_for_host, load_instance_config, load_observation,
-    load_plugin_instance, resolve_instance_bindings, upsert_observation, ConfigActor,
-    DeploymentObservation, DeploymentStatus, InstanceBindingGrant, InstancePackagePolicy,
-    GRAPHICAUDIO_IMPORT_KEYS, GRAPHICAUDIO_MANIFEST_ID,
+    bounded_observation_detail, current_process_incarnation, default_instance_for_key,
+    list_deployments_for_host, load_instance_config, load_observation, load_plugin_instance,
+    resolve_instance_bindings, stale_against_pin, upsert_observation, DeploymentObservation,
+    DeploymentStatus, DESIRED_PRESENT,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use bookclerk_plugin_catalog::{
@@ -28,7 +28,7 @@ use bookclerk_plugin_sdk::ExtensibleConfig;
 use chrono::Utc;
 
 use crate::consent::PluginGrantStore;
-use crate::instance_bindings::graphicaudio_plugin_key;
+use crate::instance_bindings::binding_grant_flags;
 use crate::Result;
 
 /// Local archive the reconciler may install when the ledger has no row.
@@ -182,6 +182,8 @@ struct SharedPlugins<'a> {
     config: &'a Config,
     /// `None` until the first deployment on this tick needs a root.
     cached: std::sync::Mutex<Option<Vec<crate::DiscoveredPlugin>>>,
+    /// Package version per installed root, parsed at most once per tick.
+    versions: std::sync::Mutex<HashMap<PathBuf, String>>,
 }
 
 impl<'a> SharedPlugins<'a> {
@@ -190,7 +192,32 @@ impl<'a> SharedPlugins<'a> {
         Self {
             config,
             cached: std::sync::Mutex::new(None),
+            versions: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Semver `version` of the manifest installed at `root`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the version cache lock is poisoned.
+    fn installed_version(&self, root: &Path) -> std::result::Result<String, String> {
+        if let Some(version) = self
+            .versions
+            .lock()
+            .expect("installed version cache")
+            .get(root)
+        {
+            return Ok(version.clone());
+        }
+        let version = installed_manifest(root)?
+            .package_version()
+            .map_err(|err| err.to_string())?;
+        self.versions
+            .lock()
+            .expect("installed version cache")
+            .insert(root.to_path_buf(), version.clone());
+        Ok(version)
     }
 
     /// Install directory for `canonical`, hashing plugin trees only on the first call.
@@ -211,74 +238,6 @@ impl<'a> SharedPlugins<'a> {
     }
 }
 
-/// Ensures the GraphicAudio instance, its imported document, and a local deployment.
-///
-/// A second call returns the same instance id. After the document exists this
-/// function does not read `[sources.graphicaudio]` or `BOOKCLERK_GA_ACCESS`.
-/// `sources.graphicaudio.enabled = false` returns before creating a deployment.
-/// An existing deployment stays so a later enable can start it. Invalid
-/// `access` fails the import and does not write the document.
-///
-/// # Errors
-///
-/// Returns an error when the ledger cannot be read, the import is invalid, or
-/// the deployment row cannot be written.
-pub async fn enroll_graphicaudio_instance(
-    store: &LibraryStore,
-    config: &Config,
-    host_id: &str,
-) -> Result<()> {
-    if !config.sources.is_enabled(GRAPHICAUDIO_MANIFEST_ID) {
-        return Ok(());
-    }
-    let Some(plugin_key) = graphicaudio_plugin_key(config)? else {
-        return Ok(());
-    };
-    let actor = ConfigActor::Bootstrap;
-    let instance = ensure_plugin_instance(store, &actor, &plugin_key)
-        .await
-        .map_err(library_err)?;
-    match load_instance_config(store, &instance.id).await {
-        Ok(_) => {}
-        Err(LibraryError::NotFound(_)) => {
-            let body =
-                graphicaudio_config_from_pairs(graphicaudio_pairs(config)).map_err(library_err)?;
-            import_instance_config_if_absent(
-                store,
-                &actor,
-                &instance.id,
-                InstancePackagePolicy::GraphicAudio,
-                &body,
-                &format!("import-ga-{}", instance.id),
-            )
-            .await
-            .map_err(library_err)?;
-        }
-        Err(err) => return Err(library_err(err)),
-    }
-    ensure_plugin_deployment(store, &actor, &instance.id, host_id)
-        .await
-        .map_err(library_err)?;
-    Ok(())
-}
-
-/// Copies non-secret GraphicAudio keys that are present in TOML.
-///
-/// Absent keys are omitted. `BOOKCLERK_GA_ACCESS` is not consulted.
-fn graphicaudio_pairs(config: &Config) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
-    for key in GRAPHICAUDIO_IMPORT_KEYS {
-        let Some(value) = config.sources.get_string(GRAPHICAUDIO_MANIFEST_ID, key) else {
-            continue;
-        };
-        if value.is_empty() {
-            continue;
-        }
-        pairs.push(((*key).to_string(), value.to_string()));
-    }
-    pairs
-}
-
 /// Reconciles every present deployment for `host_id`.
 ///
 /// # Errors
@@ -293,13 +252,41 @@ pub async fn reconcile_local_deployments(
     packages: &AuthorizedLocalPackages,
     runtime: &dyn DeploymentRuntime,
 ) -> Result<()> {
-    let deployments = list_present_deployments_for_host(store, host_id)
+    let rows = list_deployments_for_host(store, host_id)
         .await
         .map_err(library_err)?;
+    let (deployments, absent): (Vec<_>, Vec<_>) = rows
+        .into_iter()
+        .partition(|deployment| deployment.desired == DESIRED_PRESENT);
     let present: std::collections::BTreeSet<String> = deployments
         .iter()
         .map(|deployment| deployment.plugin_instance_id.as_str().to_string())
         .collect();
+    let incarnation = current_process_incarnation().to_string();
+    let tracked = runtime.tracked_instance_ids().await;
+    for deployment in absent {
+        let instance_id = deployment.plugin_instance_id.as_str();
+        let was_tracked = tracked.iter().any(|id| id == instance_id);
+        if was_tracked {
+            runtime.retire_instance(instance_id).await;
+        }
+        let already_retired = load_observation(store, &deployment.deployment_id, host_id)
+            .await
+            .map_err(library_err)?
+            .is_some_and(|existing| existing.status == DeploymentStatus::Retired);
+        if was_tracked || !already_retired {
+            record_observation(
+                store,
+                &deployment.deployment_id,
+                host_id,
+                &incarnation,
+                DeploymentStatus::Retired,
+                "desired absent",
+                None,
+            )
+            .await;
+        }
+    }
     let discovered = SharedPlugins::new(config);
     for deployment in deployments {
         if let Err(err) = reconcile_one(
@@ -381,26 +368,6 @@ async fn reconcile_one(
         .await;
         return Ok(());
     };
-    let flags = InstanceBindingGrant {
-        config: crate::grant_has_binding(&grant, "config"),
-        secrets: crate::grant_has_binding(&grant, "secrets"),
-    };
-    let bindings = match resolve_instance_bindings(store, &instance.id, &flags).await {
-        Ok(bindings) => bindings,
-        Err(err) => {
-            note(DeploymentStatus::Error, err.to_string(), None).await;
-            return Ok(());
-        }
-    };
-
-    let mut request = DeploymentSpawn {
-        plugin_instance_id: instance.id.to_string(),
-        plugin_key: instance.plugin_key.clone(),
-        plugin_root: None,
-        config: bindings.config.clone(),
-        secrets: bindings.secrets.clone(),
-        config_revision: bindings.config_revision,
-    };
     let plugin_key = match PluginKey::parse(&instance.plugin_key) {
         Ok(key) => key,
         Err(err) => {
@@ -421,39 +388,11 @@ async fn reconcile_one(
         return Ok(());
     }
     let files_dir = config.paths().files_dir.clone();
-    if let Some(alias) = storefront_alias(&plugin_key, packages, &files_dir) {
-        if !config.sources.is_enabled(&alias) {
-            note(DeploymentStatus::Error, "source is disabled".into(), None).await;
-            runtime.retire_instance(instance.id.as_str()).await;
-            return Ok(());
-        }
-    }
-    if let Some(alias) = integration_alias(&plugin_key, packages, &files_dir) {
-        if integration_explicitly_disabled(config, &alias) {
-            note(
-                DeploymentStatus::Error,
-                "integration is disabled".into(),
-                None,
-            )
-            .await;
-            runtime.retire_instance(instance.id.as_str()).await;
-            return Ok(());
-        }
-    }
 
     let existing = load_observation(store, &deployment.deployment_id, host_id)
         .await
         .map_err(library_err)?;
     if let Some(existing) = &existing {
-        if existing.status == DeploymentStatus::Healthy
-            && existing.incarnation == incarnation
-            && existing.applied_config_revision == Some(bindings.config_revision)
-            && runtime
-                .guest_still_running(deployment.plugin_instance_id.as_str())
-                .await
-        {
-            return Ok(());
-        }
         if error_backoff_active(existing) {
             return Ok(());
         }
@@ -502,6 +441,24 @@ async fn reconcile_one(
                 return Ok(());
             }
         };
+        // The staged tree's manifest supplies the schema for the pre-commit
+        // health probe; the committed tree is read again below.
+        let request = match installed_settings_schema(&outcome.plugin_root) {
+            Ok(schema) => resolve_spawn(store, &instance, &grant, &schema).await,
+            Err(err) => Err(err),
+        };
+        let request = match request {
+            Ok(request) => request,
+            Err(err) => {
+                let mut detail = err;
+                if let Err(rollback) = Installer::rollback(&outcome) {
+                    detail = format!("{detail}; rollback: {rollback}");
+                }
+                drop(lock);
+                note(DeploymentStatus::Error, detail, None).await;
+                return Ok(());
+            }
+        };
         if let Err(err) = runtime
             .health_before_commit(&outcome.plugin_root, &request)
             .await
@@ -527,12 +484,86 @@ async fn reconcile_one(
         note(DeploymentStatus::Error, "not installed".into(), None).await;
         return Ok(());
     };
+    // Cheap checks first. A package older than the pinned schema version is
+    // not spawned (its documents may already carry the newer shape), and a
+    // healthy guest on the current document revision is left alone before
+    // anything parses the manifest or unseals a secret.
+    let local_version = match discovered.installed_version(&root) {
+        Ok(version) => version,
+        Err(err) => {
+            note(DeploymentStatus::Error, err, None).await;
+            return Ok(());
+        }
+    };
+    match stale_against_pin(store, plugin_key.canonical(), &local_version).await {
+        Ok(None) => {}
+        Ok(Some(pinned)) => {
+            let instance_id = deployment.plugin_instance_id.as_str();
+            if runtime
+                .tracked_instance_ids()
+                .await
+                .iter()
+                .any(|id| id == instance_id)
+            {
+                runtime.retire_instance(instance_id).await;
+            }
+            note(
+                DeploymentStatus::Error,
+                format!(
+                    "installed version {local_version} is older than {} pinned by host {}; not spawned",
+                    pinned.package_version, pinned.recorded_by_host
+                ),
+                None,
+            )
+            .await;
+            return Ok(());
+        }
+        Err(err) => {
+            note(DeploymentStatus::Error, err.to_string(), None).await;
+            return Ok(());
+        }
+    }
+    let document_revision = match load_instance_config(store, &instance.id).await {
+        Ok(document) => document.revision,
+        Err(err) => {
+            note(DeploymentStatus::Error, err.to_string(), None).await;
+            return Ok(());
+        }
+    };
+    if let Some(existing) = &existing {
+        if existing.status == DeploymentStatus::Healthy
+            && existing.incarnation == incarnation
+            && existing.applied_config_revision == Some(document_revision)
+            && runtime
+                .guest_still_running(deployment.plugin_instance_id.as_str())
+                .await
+        {
+            return Ok(());
+        }
+    }
+    // The installed manifest's `[[settings]]` is the schema this spawn
+    // validates against; keys the operator wrote under an older manifest
+    // are dropped and logged by the resolver.
+    let schema = match installed_settings_schema(&root) {
+        Ok(schema) => schema,
+        Err(err) => {
+            note(DeploymentStatus::Error, err, None).await;
+            return Ok(());
+        }
+    };
+    let mut request = match resolve_spawn(store, &instance, &grant, &schema).await {
+        Ok(request) => request,
+        Err(err) => {
+            note(DeploymentStatus::Error, err, None).await;
+            return Ok(());
+        }
+    };
     note(DeploymentStatus::Installed, String::new(), None).await;
     request.plugin_root = Some(root);
     note(
         DeploymentStatus::Running,
         String::new(),
-        Some(bindings.config_revision),
+        Some(request.config_revision),
     )
     .await;
     match runtime.spawn_and_health(&request).await {
@@ -559,75 +590,49 @@ async fn reconcile_one(
     Ok(())
 }
 
-/// Display alias when this deployment is a content source.
-///
-/// Package kind answers first. An installed `plugin.toml` answers next, for
-/// any source, including one that is no longer sitting in `plugin-packages/`.
-/// This does not hash plugin binaries and does not treat every ledger id as
-/// a storefront.
-fn storefront_alias(
-    plugin_key: &PluginKey,
-    packages: &AuthorizedLocalPackages,
-    files_dir: &Path,
-) -> Option<String> {
-    manifest_alias(
-        plugin_key,
-        packages,
-        files_dir,
-        bookclerk_plugin_catalog::PluginKind::Source,
-        crate::PluginFamily::Source,
-    )
-}
-
-/// Display alias when this deployment is an integration.
-fn integration_alias(
-    plugin_key: &PluginKey,
-    packages: &AuthorizedLocalPackages,
-    files_dir: &Path,
-) -> Option<String> {
-    manifest_alias(
-        plugin_key,
-        packages,
-        files_dir,
-        bookclerk_plugin_catalog::PluginKind::Integration,
-        crate::PluginFamily::Integration,
-    )
-}
-
-/// Package kind, else the installed manifest's family.
-fn manifest_alias(
-    plugin_key: &PluginKey,
-    packages: &AuthorizedLocalPackages,
-    files_dir: &Path,
-    package_kind: bookclerk_plugin_catalog::PluginKind,
-    family: crate::PluginFamily,
-) -> Option<String> {
-    if let Some(package) = packages.get(plugin_key.canonical()) {
-        if package.manifest.kind == package_kind {
-            return Some(package.manifest.id.clone());
-        }
-        return None;
+/// Resolves `CONFIG` / `SECRETS` for `instance` against `schema` into a spawn request.
+async fn resolve_spawn(
+    store: &LibraryStore,
+    instance: &bookclerk_library::control_plane::PluginInstance,
+    grant: &crate::PluginGrant,
+    schema: &bookclerk_plugin_abi::SettingsSchema,
+) -> std::result::Result<DeploymentSpawn, String> {
+    let flags = binding_grant_flags(grant);
+    let bindings = resolve_instance_bindings(store, &instance.id, &flags, schema)
+        .await
+        .map_err(|err| err.to_string())?;
+    if !bindings.dropped_keys.is_empty() {
+        tracing::warn!(
+            plugin_key = %instance.plugin_key,
+            plugin_instance_id = %instance.id,
+            dropped = ?bindings.dropped_keys,
+            "instance document keys not declared by the installed manifest were dropped"
+        );
     }
-    let root = installed_root(files_dir, plugin_key)?;
-    let text = std::fs::read_to_string(root.join("plugin.toml")).ok()?;
-    let manifest = bookclerk_plugin_manifest::parse(&text).ok()?;
-    manifest
-        .families()
-        .contains(&family)
-        .then(|| manifest.id.clone())
+    Ok(DeploymentSpawn {
+        plugin_instance_id: instance.id.to_string(),
+        plugin_key: instance.plugin_key.clone(),
+        plugin_root: None,
+        config: bindings.config,
+        secrets: bindings.secrets,
+        config_revision: bindings.config_revision,
+    })
 }
 
-/// True only when `[integrations.<alias>]` exists and `enabled` is false.
-///
-/// A missing table defaults to disabled for startup registration. That default
-/// must not retire a deployment that was created without a config table.
-fn integration_explicitly_disabled(config: &Config, alias: &str) -> bool {
-    config
-        .integrations
-        .plugin_table(alias)
-        .and_then(|table| table.get("enabled"))
-        .and_then(toml::Value::as_bool)
-        == Some(false)
+/// The manifest installed at `root`.
+fn installed_manifest(
+    root: &Path,
+) -> std::result::Result<bookclerk_plugin_manifest::PluginManifest, String> {
+    let text = std::fs::read_to_string(root.join("plugin.toml"))
+        .map_err(|err| format!("read plugin.toml: {err}"))?;
+    bookclerk_plugin_manifest::parse(&text).map_err(|err| format!("plugin.toml: {err}"))
+}
+
+/// `[[settings]]` of the manifest installed at `root`.
+fn installed_settings_schema(
+    root: &Path,
+) -> std::result::Result<bookclerk_plugin_abi::SettingsSchema, String> {
+    installed_manifest(root).map(|manifest| manifest.settings_schema())
 }
 
 /// Skip respawn while a recent error observation is still inside the backoff.
@@ -715,6 +720,10 @@ pub struct LiveDeploymentRuntime {
     guests: std::sync::Mutex<HashMap<String, TrackedGuest>>,
     /// Lifecycle context for integrations this process starts.
     integration_context: std::sync::Mutex<bookclerk_integrations::IntegrationContext>,
+    /// Serializes reconcile passes: the periodic tick and an on-demand pass
+    /// after a config reload must not install or spawn the same deployment
+    /// twice.
+    reconcile_lock: tokio::sync::Mutex<()>,
 }
 
 impl LiveDeploymentRuntime {
@@ -737,7 +746,14 @@ impl LiveDeploymentRuntime {
             integration_context: std::sync::Mutex::new(
                 bookclerk_integrations::IntegrationContext::default(),
             ),
+            reconcile_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Lock a caller holds for the duration of one reconcile pass.
+    #[must_use]
+    pub fn reconcile_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.reconcile_lock
     }
 
     /// Stores the daemon lifecycle context used when a deployment starts an integration.
@@ -1010,14 +1026,13 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
         request: &DeploymentSpawn,
     ) -> std::result::Result<(), String> {
         let config = self.config.read().await.clone();
-        let store = self.store.read().await.clone();
         let plugin = open_installed_plugin(plugin_root, &config.paths().files_dir)?;
         let prepared = crate::instance_bindings::prepared_open_from_resolved(
             request.config.clone(),
             request.secrets.clone(),
             request.config_revision,
         );
-        probe_guest_health(&plugin, &config, prepared, store.db()).await
+        probe_guest_health(&plugin, &config, prepared).await
     }
 
     async fn retire_instance(&self, plugin_instance_id: &str) {
@@ -1124,16 +1139,6 @@ fn open_installed_plugin(
     .map_err(|err| err.to_string())
 }
 
-/// Document `endpoint` when the S3 context includes one.
-fn json_endpoint(context: &serde_json::Value) -> Option<String> {
-    context
-        .get("endpoint")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(str::to_string)
-}
-
 /// Starts the staged guest, calls health, and drops the temporary session.
 ///
 /// The install lock is still held. This function does not acquire it.
@@ -1141,7 +1146,6 @@ async fn probe_guest_health(
     plugin: &crate::DiscoveredPlugin,
     config: &Config,
     prepared: crate::PreparedOpen,
-    db: &sea_orm::DatabaseConnection,
 ) -> std::result::Result<(), String> {
     let services = crate::SessionServices::default();
     if plugin
@@ -1179,7 +1183,7 @@ async fn probe_guest_health(
         let mut extra_env: Vec<(&str, std::ffi::OsString)> = Vec::new();
         let mut open_bindings = prepared.bindings.clone();
         let mut spawn_config = prepared.spawn_config_table.clone();
-        if crate::is_first_party_local_output(plugin) && prepared.from_instance {
+        if crate::is_first_party_local_output(plugin) {
             let root = crate::host::instance_local_root(config, &prepared.granted_config)
                 .map_err(|err| err.to_string())?;
             extra_env.push((
@@ -1188,15 +1192,11 @@ async fn probe_guest_health(
             ));
             services.local_output_root = Some(root);
         }
-        if crate::is_first_party_s3_output(plugin) && prepared.from_instance {
+        if crate::is_first_party_s3_output(plugin) {
             let context =
                 crate::host::instance_s3_context(&prepared).map_err(|err| err.to_string())?;
-            let operator = crate::host::operator_s3_credentials(Some(db))
-                .await
-                .map_err(|err| err.to_string())?;
-            let secrets = crate::host::s3_open_secrets(&prepared, operator.as_ref())
-                .map_err(|err| err.to_string())?;
-            services.deployed_s3_endpoint = Some(json_endpoint(&context));
+            let secrets = crate::host::s3_open_secrets(&prepared);
+            services.deployed_endpoint = crate::host::s3_deployed_endpoint(plugin, &context);
             spawn_config = context.clone();
             open_bindings.config = bookclerk_plugin_sdk::ExtensibleConfig::json(&context);
             open_bindings.secrets = secrets;
@@ -1250,7 +1250,19 @@ async fn spawn_storefront(
     match source.check_health().await {
         Ok(()) => {
             runtime.remember(&request.plugin_instance_id, tracked);
-            runtime.sources.write().await.register(Arc::new(source));
+            let default_instance = {
+                let store = runtime.store.read().await.clone();
+                default_instance_for_key(&store, &request.plugin_key)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|instance| instance.id.to_string())
+            };
+            let mut sources = runtime.sources.write().await;
+            sources.register(Arc::new(source));
+            if let Some(default_instance) = default_instance {
+                sources.set_default_instance(&request.plugin_key, &default_instance);
+            }
             SpawnHealth::Healthy
         }
         Err(err) => SpawnHealth::HealthFailed {
@@ -1268,10 +1280,8 @@ async fn spawn_integration(
     request: &DeploymentSpawn,
     prepared: crate::PreparedOpen,
 ) -> SpawnHealth {
-    let allow_credential_login = crate::settings_table(config, plugin)
-        .get("allow_credential_login")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
+    let allow_credential_login =
+        crate::host_control_plane::allow_credential_login(&prepared.granted_config);
     let mut integration = match crate::ExternalIntegration::spawn_prepared(
         plugin,
         config,

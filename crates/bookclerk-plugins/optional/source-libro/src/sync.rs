@@ -217,6 +217,7 @@ pub fn audiobook_to_new_book(book: &Audiobook, account_id: &str, marketplace: &s
         .and_then(parse_libro_datetime);
 
     NewBook {
+        plugin_key: String::new(),
         uuid: None,
         product_id: isbn.clone(),
         source: String::from("libro"),

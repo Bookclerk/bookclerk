@@ -69,7 +69,7 @@ async fn signin_saves_auth_to_db() {
     let source = ChirpSource::with_graphql_url(server.uri());
     let account = source
         .login(
-            &store.scope("chirp"),
+            &store.scope("chirp", "chirp"),
             LoginOptions {
                 marketplace: "us".into(),
                 label: Some("Chirp".into()),
@@ -87,7 +87,7 @@ async fn signin_saves_auth_to_db() {
     assert_eq!(account.account_id, "42");
 
     // Verify credentials were persisted to the DB.
-    let auth = load_auth_from_db(&store.scope("chirp"), "42")
+    let auth = load_auth_from_db(&store.scope("chirp", "chirp"), "42")
         .await
         .unwrap()
         .expect("auth must be present in DB");
@@ -127,7 +127,7 @@ async fn empty_library_scan_upserts_zero() {
             marketplace: "us".into(),
             label: None,
         },
-        &store.scope("chirp"),
+        &store.scope("chirp", "chirp"),
         "9",
     )
     .await
@@ -135,7 +135,7 @@ async fn empty_library_scan_upserts_zero() {
 
     let source = ChirpSource::with_graphql_url(server.uri());
     let summary = source
-        .scan(&store.scope("chirp"), ScanOptions::default())
+        .scan(&store.scope("chirp", "chirp"), ScanOptions::default())
         .await
         .unwrap();
     assert_eq!(summary.books_upserted, 0);
@@ -189,7 +189,7 @@ async fn library_scan_upserts_books() {
             marketplace: "us".into(),
             label: None,
         },
-        &store.scope("chirp"),
+        &store.scope("chirp", "chirp"),
         "9",
     )
     .await
@@ -197,7 +197,7 @@ async fn library_scan_upserts_books() {
 
     let source = ChirpSource::with_graphql_url(server.uri());
     let summary = source
-        .scan(&store.scope("chirp"), ScanOptions::default())
+        .scan(&store.scope("chirp", "chirp"), ScanOptions::default())
         .await
         .unwrap();
     assert_eq!(summary.books_upserted, 1);
@@ -293,7 +293,7 @@ async fn fetch_via_content_source() {
             marketplace: "us".into(),
             label: None,
         },
-        &store.scope("chirp"),
+        &store.scope("chirp", "chirp"),
         "1",
     )
     .await
@@ -303,7 +303,7 @@ async fn fetch_via_content_source() {
     let source = ChirpSource::with_graphql_url(server.uri());
     let fetch = source
         .fetch_title(
-            &store.scope("chirp"),
+            &store.scope("chirp", "chirp"),
             "1",
             "ab-2",
             &bookclerk_source::FetchOptions {

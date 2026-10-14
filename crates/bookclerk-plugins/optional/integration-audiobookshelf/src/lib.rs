@@ -15,14 +15,8 @@ pub use client::{
     AbsApiClient, AbsLibrary, AbsLibraryItem, AbsMediaProgress, AbsUser, AbsUserDetail,
 };
 pub use guest::AbsGuestState;
-pub use integration::AbsIntegration;
+pub use integration::{AbsIntegration, AudiobookshelfConfig};
 pub use listening::{collect_listening_snapshots, sync_listening_progress};
-
-use std::sync::Arc;
-
-use bookclerk_config::Config;
-use bookclerk_integrations::{IntegrationRegistry, Result};
-use tracing::info;
 
 /// Integration id used in describe() and `[integrations.audiobookshelf]`.
 pub const ID: &str = "audiobookshelf";
@@ -39,28 +33,4 @@ pub fn oidc_client_templates() -> Vec<bookclerk_plugin_sdk::OidcClientTemplate> 
         issue_refresh_token: true,
         origin_config_key: "integrations.audiobookshelf.base_url".into(),
     }]
-}
-
-/// Registers Audiobookshelf when `[integrations.audiobookshelf] enabled`.
-///
-/// When enabled but misconfigured (e.g. missing API key), the adapter is still
-/// registered so health/diagnose surface the error instead of silently omitting
-/// it.
-///
-/// # Arguments
-///
-/// * `registry` - Host integration registry to receive the adapter.
-/// * `config` - Loaded Bookclerk config (reads the audiobookshelf section).
-///
-/// # Errors
-///
-/// Returns an integration error only when registration itself fails; missing
-/// credentials are deferred to health/diagnose.
-pub fn register(registry: &mut IntegrationRegistry, config: &Config) -> Result<()> {
-    let abs = config.integrations.audiobookshelf();
-    if abs.enabled {
-        info!("enabling audiobookshelf integration");
-        registry.register(Arc::new(AbsIntegration::from_config(abs)));
-    }
-    Ok(())
 }

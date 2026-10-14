@@ -25,15 +25,18 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[auth]` | Optional `[auth].password` wrapping `master.key` (prefer `BOOKCLERK_AUTH_PASSWORD`); optional `[auth.oidc]` identity broker |
 | `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
 | `[plugins]` | How external plugin guests are jailed (see [plugins.md](plugins.md)) |
-| `[output]` | Format, Widevine, naming, sidecars, multi-destination policy |
-| `[output.local]` / `[output.s3]` | Destination plugins (`enabled`, roots, per-dest naming) |
-| `[sources.<id>]` | Per-storefront enable + store knobs |
+| `[output]` | Format, Widevine, naming, sidecars, multi-destination policy (shared; per-destination settings are plugin settings) |
 | `[daemon]` | Listen address, JSON logs |
-| `[integrations]` / `[integrations.<id>]` | Portal + outbound integrations |
+| `[integrations]` | Portal: `public_origin`, claim-ticket and portal session TTLs |
 | `[discovery]` | Recommendations, embeddings, Open Library, listening sync |
 | `[diagnostics]` | Opt-in report sharing |
 | `[jobs]` / `[jobs.concurrency]` | Durable queue admission, leases, network-class concurrency |
 | `[events]` | Outbox retention and local delivery-worker concurrency |
+
+Storefronts, destinations, and integrations are **not** in this file. Each
+is a plugin instance in the database: its settings come from the plugin's
+`[[settings]]` schema and "enabled" is a deployment on a host. See
+[Plugin instances](#plugin-instances) below.
 
 ## Important environment variables
 
@@ -49,11 +52,6 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_LOG` / `RUST_LOG` | Log filter |
 | `BOOKCLERK_AUTH_PASSWORD` | Wraps `master.key` at rest (preferred over `[auth].password`); required for legacy `json-encrypted` rows |
 | `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` | Upstream OIDC/OAuth client secret for provider id `<ID>` (hyphens become underscores) |
-| `BOOKCLERK_LIBRO_PASSWORD` | Libro.fm login |
-| `BOOKCLERK_CHIRP_PASSWORD` | Chirp login |
-| `BOOKCLERK_GA_PASSWORD` | GraphicAudio login |
-| `BOOKCLERK_GA_ACCESS` | GraphicAudio access mode (`web`/`zip`/`device`) |
-| `BOOKCLERK_ABS_API_KEY` | Audiobookshelf API key |
 | `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on/off |
 | `BOOKCLERK_DISCOVERY_OPENLIBRARY_ENABLED` | Open Library enrichment on/off |
 | `BOOKCLERK_DISCOVERY_RECOMMEND_LIMIT` | Default recommendation count |
@@ -66,16 +64,17 @@ Classic Libation setting names are accepted as aliases where documented in
 | `BOOKCLERK_MEDIA_WORKERS` | Concurrent codec jobs (`0` = one per core, capped at 8) |
 | `BOOKCLERK_MEDIA_ISOLATION` | `required` / `best-effort` / `off` |
 | `BOOKCLERK_MEDIA_WORKER` | Path to `bookclerk-media-worker` |
-| `BOOKCLERK_OUTPUT_LOCAL_ROOT` | Local destination root |
-| `BOOKCLERK_OUTPUT_S3_*` / `BOOKCLERK_S3_*` | S3 destination settings (bucket/region/endpoint/…) |
-| `BOOKCLERK_AWS_ACCESS_KEY_ID` / `BOOKCLERK_AWS_SECRET_ACCESS_KEY` | S3 credentials env override (optional `BOOKCLERK_AWS_SESSION_TOKEN`; wins over `encrypted_secrets` and SDK chain) |
-| `BOOKCLERK_SOURCE_<ID>_ENABLED` | Force-enable/disable any source/plugin id (`<ID>` uppercased; e.g. `BOOKCLERK_SOURCE_ECHO_ENABLED=0`) |
 | `BOOKCLERK_PLUGIN_DIRS` | Extra plugin search roots (OS path list) |
 | `BOOKCLERK_PLUGIN_ISOLATION` | `required` / `best-effort` / `off` for plugin guests |
 | `BOOKCLERK_PLUGIN_JAIL` | Path to `bookclerk-jail` |
 | `BOOKCLERK_PLUGIN_WORKERD` | Path to `bookclerk-workerd` (the front door every plugin spawns through) |
 | `BOOKCLERK_WORKERD_BIN` | Path to the pinned Cloudflare `workerd` (default: beside `bookclerk-workerd`) |
 | `BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL` | Diagnostics collector (build-time or runtime) |
+
+There are no environment overrides for plugin settings or enablement
+(formerly `BOOKCLERK_SOURCE_<ID>_ENABLED`, `BOOKCLERK_OUTPUT_*`,
+`BOOKCLERK_S3_*`, `BOOKCLERK_AWS_*`, `BOOKCLERK_GA_*`, `BOOKCLERK_ABS_*`,
+`BOOKCLERK_*_PASSWORD`). Those values live in the database.
 
 ## Library
 
@@ -138,30 +137,16 @@ batch them with `events.*`. `GET /api/settings` includes `events.revision` in
 `effective`.
 
 Running processes re-read the document about every 5 seconds and on startup.
-A reload reads that document before it replaces live integrations, sources,
-destinations, the library connection, or operator auth. If the read fails, the
-previous runtime stays in place. Source, integration, and storage sessions
-bound to a present plugin instance id are copied onto the replacement
-registries and are not stopped. A transitional guest for the same plugin key
-is retired. A newer revision of the same cluster is not
-replaced by the older snapshot.
+A reload reads that document before it replaces the library connection or
+operator auth. If the read fails, the previous runtime stays in place. Guests
+bound to a plugin instance keep running across a reload; when the database
+connection itself changed, every guest is retired and the reconciler brings
+this host's present deployments back. A newer revision of the same cluster is
+not replaced by the older snapshot.
 Retention and the in-flight cap apply on the next dispatcher tick. The number
 of local delivery tasks is chosen at process start. Other `[events]` neighbors
-in this file (`[library]`, `[jobs]`, sources, output, media, plugins,
+in this file (`[library]`, `[jobs]`, the shared `[output]`, media, plugins,
 diagnostics) are still TOML and environment configuration.
-
-GraphicAudio `access`, `base_url`, `store_url`, `bitrate`, and `container`
-move to the plugin instance document the first time that manifest is
-installed. After the document exists, `PATCH /api/settings` rejects those
-keys. Change them with `PUT /api/config/plugin-instances/{id}/config`
-(`expected_revision`, scalar `settings`, and secret ref names). The device
-token stays on the account credential, not in the document.
-`sources.graphicaudio.enabled` stays in `config.toml`. Setting it to false
-retires the running guest on reconcile and on reload. `bookclerk library scan`
-and `bookclerk library acquire` read the instance document and require
-`--instance` when more than one instance shares the plugin key. Plugins with no
-instance document still read their `[sources.*]` / `[integrations.*]` /
-`[output.*]` tables.
 
 Acked/rejected deliveries use `retention_days`. Parent events with no remaining
 live deliveries are kept until that same cutoff so a late node can still
@@ -196,6 +181,43 @@ database settings. Omit
 reuses the host id. A file bound to a different cluster id fails without
 rewriting either side.
 
+## Plugin instances
+
+Everything a storefront, destination, or integration plugin can be configured
+with is declared by the plugin itself in `plugin.toml` `[[settings]]` and
+stored per **plugin instance** in the database. Enrollment (CLI and daemon
+alike) pins that schema, creates the plugin's default instance with the
+declared defaults, and records a deployment row for this host. "Enabled"
+means `desired = present` on a host.
+
+```bash
+bookclerk plugins list                               # instances, deployments, observations
+bookclerk plugins enable s3 [--host <id>]            # desired = present
+bookclerk plugins disable s3 [--host <id>]           # desired = absent → guest retired
+bookclerk plugins config get s3                      # schema defaults under the document
+bookclerk plugins config set s3 bucket my-audiobooks
+bookclerk plugins config set s3 secret_access_key --secret   # stdin, sealed
+bookclerk plugins config unset s3 prefix
+bookclerk plugins instances create s3 --name "Backup bucket"
+```
+
+The daemon's operator API mirrors this under `/api/config/plugin-instances`
+(list / create, `GET`/`PUT …/{id}/config` with `expected_revision`,
+`PUT …/{id}/deployments/{host_id}`), plus `/api/config/hosts` and
+`/api/config/plugin-schemas`. **Settings → Plugins** is built from the same
+schema. `PATCH /api/settings` no longer accepts plugin keys.
+
+Writes are compare-and-swap on the document revision and validate against
+the pinned schema, so a stale write or an unknown key is rejected. Secrets
+(`type = "secret"`) are sealed into `encrypted_secrets` and never echoed
+back. Several instances of one plugin may exist, and may run on one host; a
+bare plugin key routes to the default instance, and `library scan|acquire
+--instance` pins another. Store accounts are keyed by plugin key, not
+instance, so every instance serves the same connected accounts. Details:
+[plugins.md](plugins.md#enabling-and-settings-database),
+[destinations.md](destinations.md), [sources.md](sources.md),
+[integrations.md](integrations.md).
+
 ## Identity broker (`[auth.oidc]`)
 
 Optional. Bookclerk remains the OIDC issuer for Audiobookshelf; these providers
@@ -229,9 +251,9 @@ isolation = "required"  # required | best-effort | off
 External plugin guests are started by `bookclerk-jail`, which confines them to
 their own install, data, scratch, and cache directories before becoming the
 plugin. `required` refuses to load a plugin it cannot jail, including when the
-launcher is not installed. This is about *how* guests run; which plugins load and
-what they are configured with stays in `[sources.<id>]` /
-`[integrations.<id>]`. See [plugins.md](plugins.md).
+launcher is not installed. This is about *how* guests run; which plugins run
+on this host and what they are configured with is the database (plugin
+instances and deployments). See [plugins.md](plugins.md).
 
 Both confinement tiers are visible in `bookclerk config show`
 (`media.isolation`, `media.worker_bin`, `plugins.isolation`, `plugins.jail_bin`);
@@ -251,6 +273,11 @@ download_pdf = true
 fixup_metadata = true
 multi_destination = "sync_missing"
 ```
+
+This shared table is still `config.toml`; moving it to a `core.output`
+cluster document is tracked in [ADR: Control plane](adr/control-plane.md).
+Per-destination roots, prefixes, naming overrides, and credentials are the
+`local` / `s3` plugin settings.
 
 Destination and naming detail: [destinations.md](destinations.md).
 Store-specific knobs: [sources.md](sources.md).

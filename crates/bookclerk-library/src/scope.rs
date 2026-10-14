@@ -1,9 +1,12 @@
 //! Plugin-scoped library access.
 //!
 //! First-party and third-party content sources share the same boundary:
-//! a [`SourceScope`] can only read/write rows whose `source` / `provider`
-//! matches the plugin id. Host code that needs the full store keeps its own
-//! [`LibraryStore`] handle — this type does not expose one.
+//! a [`SourceScope`] can only read/write rows whose `plugin_key` / `provider`
+//! matches the provenance-qualified PluginKey it was opened for. Rows are not
+//! tied to a plugin instance: every instance of that plugin, on any host,
+//! sees the same accounts, credentials, and books. Host code that needs the
+//! full store keeps its own [`LibraryStore`] handle — this type does not
+//! expose one.
 
 use serde_json::Value;
 
@@ -15,38 +18,54 @@ use crate::secrets::{
 };
 use crate::store::{LibraryStore, NewBook};
 
-/// Host-enforced view of [`LibraryStore`] for one content-source plugin id.
+/// Host-enforced view of [`LibraryStore`] for one content-source plugin.
 ///
-/// Both in-repo first-party adapters and external JSON-RPC plugins must use
-/// this type (via a `bookclerk_source::ContentSource` adapter or the external
-/// host adapter). Secrets and books for other plugins are invisible.
+/// Both in-repo first-party adapters and external plugins must use this type
+/// (via a `bookclerk_source::ContentSource` adapter or the external host
+/// adapter). Secrets and books for other plugin keys are invisible. A
+/// third-party package that reuses a first-party alias has a different key
+/// and therefore sees nothing.
 #[derive(Clone)]
 pub struct SourceScope {
-    /// Full library store; all accessors filter to [`Self::source_id`].
+    /// Full library store; all accessors filter to [`Self::plugin_key`].
     store: LibraryStore,
-    /// Plugin id (`audible`, `libro`, …) that owns rows visible through this scope.
+    /// Provenance-qualified PluginKey that owns rows visible through this scope.
+    plugin_key: String,
+    /// Display alias (`audible`, `libro`, …) written to the `source` column.
     source_id: String,
 }
 
 impl std::fmt::Debug for SourceScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SourceScope")
+            .field("plugin_key", &self.plugin_key)
             .field("source_id", &self.source_id)
             .finish_non_exhaustive()
     }
 }
 
 impl SourceScope {
-    /// Build a scope for `source_id` over `store`.
+    /// Build a scope for `plugin_key` over `store`, labelling rows `source_id`.
     #[must_use]
-    pub fn new(store: LibraryStore, source_id: impl Into<String>) -> Self {
+    pub fn new(
+        store: LibraryStore,
+        plugin_key: impl Into<String>,
+        source_id: impl Into<String>,
+    ) -> Self {
         Self {
             store,
+            plugin_key: plugin_key.into(),
             source_id: source_id.into(),
         }
     }
 
-    /// Stable plugin id (`audible`, `libro`, external `plugin.toml` id, …).
+    /// Provenance-qualified PluginKey this scope isolates on.
+    #[must_use]
+    pub fn plugin_key(&self) -> &str {
+        &self.plugin_key
+    }
+
+    /// Display alias (`audible`, `libro`, external `plugin.toml` id, …).
     #[must_use]
     pub fn source_id(&self) -> &str {
         &self.source_id
@@ -68,6 +87,7 @@ impl SourceScope {
     ) -> Result<AccountRecord> {
         self.store
             .upsert_account(
+                &self.plugin_key,
                 account_id,
                 marketplace,
                 label,
@@ -89,7 +109,13 @@ impl SourceScope {
         label: Option<&str>,
     ) -> Result<AccountRecord> {
         self.store
-            .ensure_account(account_id, marketplace, label, &self.source_id)
+            .ensure_account(
+                &self.plugin_key,
+                account_id,
+                marketplace,
+                label,
+                &self.source_id,
+            )
             .await
     }
 
@@ -107,7 +133,7 @@ impl SourceScope {
         let all = self.store.list_accounts().await?;
         Ok(all
             .into_iter()
-            .filter(|a| a.source.eq_ignore_ascii_case(&self.source_id))
+            .filter(|a| a.plugin_key == self.plugin_key)
             .collect())
     }
 
@@ -117,27 +143,32 @@ impl SourceScope {
     ///
     /// Returns an error when the operation fails.
     pub async fn get_account(&self, account_id: &str) -> Result<Option<AccountRecord>> {
-        let Some(acct) = self.store.get_account(account_id).await? else {
-            return Ok(None);
-        };
-        if acct.source.eq_ignore_ascii_case(&self.source_id) {
-            Ok(Some(acct))
-        } else {
-            Ok(None)
-        }
+        self.store.get_account(&self.plugin_key, account_id).await
     }
 
     // ── Books ────────────────────────────────────────────────────────────────
 
-    /// Upsert a book; `source` is forced to this plugin id.
+    /// Upsert a book; `plugin_key` and `source` are forced to this plugin.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
         let mut book = book.clone();
+        book.plugin_key = self.plugin_key.clone();
         book.source = self.source_id.clone();
         self.store.upsert_book(&book).await
+    }
+
+    /// Look up one of this plugin's books by uuid, product id, ASIN, or ISBN.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation fails.
+    pub async fn get_book(&self, title_id: &str, account_id: &str) -> Result<Option<BookRecord>> {
+        self.store
+            .get_book_in(Some(&self.plugin_key), title_id, account_id)
+            .await
     }
 
     // ── Secrets (provider locked to plugin id) ───────────────────────────────
@@ -156,7 +187,7 @@ impl SourceScope {
         let record = build_sealed_record(
             plaintext,
             secret_kind::SOURCE_AUTH,
-            &self.source_id,
+            &self.plugin_key,
             secret_account_type::INTEGRATION,
             account_id,
             name,
@@ -167,7 +198,7 @@ impl SourceScope {
     /// Seal and store an arbitrary secret kind under this plugin's provider.
     ///
     /// Used for Widevine CDMs (`secret_kind::WIDEVINE`) and similar. Provider is
-    /// always this plugin id.
+    /// always this plugin key.
     ///
     /// # Errors
     ///
@@ -182,7 +213,7 @@ impl SourceScope {
         let record = build_sealed_record(
             plaintext,
             kind,
-            &self.source_id,
+            &self.plugin_key,
             secret_account_type::INTEGRATION,
             account_id,
             name,
@@ -214,7 +245,7 @@ impl SourceScope {
         let record = get_secret(
             self.store.db(),
             kind,
-            Some(&self.source_id),
+            Some(&self.plugin_key),
             secret_account_type::INTEGRATION,
             Some(account_id),
             name,
@@ -254,7 +285,7 @@ impl SourceScope {
         get_secret(
             self.store.db(),
             kind,
-            Some(&self.source_id),
+            Some(&self.plugin_key),
             secret_account_type::INTEGRATION,
             Some(account_id),
             name,
@@ -272,9 +303,7 @@ impl SourceScope {
         Ok(all
             .into_iter()
             .filter(|r| {
-                r.provider
-                    .as_deref()
-                    .is_some_and(|p| p.eq_ignore_ascii_case(&self.source_id))
+                r.provider.as_deref() == Some(self.plugin_key.as_str())
                     && r.account_type == secret_account_type::INTEGRATION
             })
             .collect())
@@ -289,7 +318,7 @@ impl SourceScope {
         delete_secret(
             self.store.db(),
             secret_kind::SOURCE_AUTH,
-            Some(&self.source_id),
+            Some(&self.plugin_key),
             secret_account_type::INTEGRATION,
             Some(account_id),
             name,
@@ -306,7 +335,7 @@ impl SourceScope {
         delete_secret(
             self.store.db(),
             kind,
-            Some(&self.source_id),
+            Some(&self.plugin_key),
             secret_account_type::INTEGRATION,
             Some(account_id),
             name,
@@ -344,9 +373,16 @@ impl SourceScope {
 
 impl LibraryStore {
     /// Plugin-scoped view — first-party and third-party sources use this.
+    ///
+    /// `plugin_key` isolates rows; `source_id` is the display alias written
+    /// to the `source` column.
     #[must_use]
-    pub fn scope(&self, source_id: impl Into<String>) -> SourceScope {
-        SourceScope::new(self.clone(), source_id)
+    pub fn scope(
+        &self,
+        plugin_key: impl Into<String>,
+        source_id: impl Into<String>,
+    ) -> SourceScope {
+        SourceScope::new(self.clone(), plugin_key, source_id)
     }
 }
 
@@ -364,8 +400,8 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let audible = store.scope("audible");
-        let libro = store.scope("libro");
+        let audible = store.scope("platform:bookclerk/audible", "audible");
+        let libro = store.scope("platform:bookclerk/libro", "libro");
 
         audible
             .save_source_auth("alice", "alice.audible.auth", b"audible-secret")
@@ -401,10 +437,22 @@ mod tests {
             .unwrap();
         let mut foreign = NewBook::minimal("ISBN1", "bob", "us", "B");
         foreign.source = "audible".into(); // attacker claim — forced back to libro
+        foreign.plugin_key = "platform:bookclerk/audible".into();
         libro.upsert_book(&foreign).await.unwrap();
 
         let books = store.list_books(None).await.unwrap();
         let libro_book = books.iter().find(|b| b.product_id == "ISBN1").unwrap();
         assert_eq!(libro_book.source, "libro");
+        assert_eq!(libro_book.plugin_key, "platform:bookclerk/libro");
+
+        // A third-party package that reuses the `audible` alias has a
+        // different key and sees none of these rows.
+        let impostor = store.scope("path:file:///opt/audible", "audible");
+        assert!(impostor.list_accounts().await.unwrap().is_empty());
+        assert!(impostor
+            .load_source_auth("alice", "alice.audible.auth")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

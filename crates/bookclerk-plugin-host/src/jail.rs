@@ -353,7 +353,7 @@ impl GuestJail {
     /// [`Self::plan`] with a deployed local destination root.
     ///
     /// When `local_output_root` is set, that directory is the write grant and
-    /// the directory that is created. `[output.local].root` is not used.
+    /// the directory that is created. There is no `config.toml` output root.
     ///
     /// # Errors
     ///
@@ -381,7 +381,7 @@ impl GuestJail {
         ensure_plugin_state_within_budget_limit(id, &data, &scratch, disk_budget)?;
         // Fail closed while planning: a missing/unwritable local output root
         // must not become a late, opaque guest IO failure after jail start.
-        if let Some(root) = local_storage_write_root(plugin, config, local_output_root) {
+        if let Some(root) = local_storage_write_root(plugin, local_output_root) {
             std::fs::create_dir_all(&root).map_err(|err| {
                 PluginError::message(format!(
                     "could not create local output root {}: {err}",
@@ -881,7 +881,7 @@ fn build_spec_with_grant(
     let (writes, reads, net, preserve_fds, unix_socket_dirs, label_suffix) = match role {
         JailRole::Combined => {
             let mut writes = vec![data.to_path_buf(), scratch.to_path_buf()];
-            if let Some(root) = local_storage_write_root(plugin, config, local_output_root) {
+            if let Some(root) = local_storage_write_root(plugin, local_output_root) {
                 writes.push(root);
             }
             if is_sqlite_database_plugin(plugin) {
@@ -918,7 +918,7 @@ fn build_spec_with_grant(
         }
         JailRole::Guest => {
             let mut writes = vec![data.to_path_buf(), scratch.to_path_buf()];
-            if let Some(root) = local_storage_write_root(plugin, config, local_output_root) {
+            if let Some(root) = local_storage_write_root(plugin, local_output_root) {
                 writes.push(root);
             }
             if is_sqlite_database_plugin(plugin) {
@@ -1316,36 +1316,17 @@ fn check_launcher(path: &Path, source: &str) -> std::result::Result<PathBuf, Str
 }
 
 /// Absolute `[output.local].root`, joined to `files_dir` when the config path is relative.
-/// Writable local output directory for a platform local guest.
-///
-/// A deployed instance root replaces `[output.local].root`. Transitional
-/// guests keep the TOML root, and only when local output is enabled.
+/// Writable local output directory for a platform local guest: the deployed
+/// instance's `root`. A third-party plugin that reuses the `local` alias
+/// never receives it.
 fn local_storage_write_root(
     plugin: &DiscoveredPlugin,
-    config: &Config,
     instance_root: Option<&Path>,
 ) -> Option<PathBuf> {
     if !is_platform_local_storage(plugin) {
         return None;
     }
-    if let Some(root) = instance_root {
-        return Some(root.to_path_buf());
-    }
-    config
-        .output
-        .local
-        .enabled
-        .then(|| resolved_local_output_root(config))
-}
-
-/// Absolute `[output.local].root`, joined to `files_dir` when the config path is relative.
-fn resolved_local_output_root(config: &Config) -> PathBuf {
-    let root = &config.output.local.root;
-    if root.is_absolute() {
-        root.clone()
-    } else {
-        config.paths().files_dir.join(root)
-    }
+    instance_root.map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -1580,12 +1561,10 @@ entrypoints = ["{entrypoint}"]
     fn fake_first_party_aliases_do_not_get_host_private_grants() {
         let files = tempfile::tempdir().expect("tempdir");
         let install = tempfile::tempdir().expect("tempdir");
-        let mut config = config_at(files.path());
-        config.output.local.enabled = true;
-        config.output.local.root = files.path().join("books");
-        std::fs::create_dir_all(&config.output.local.root).expect("output root");
+        let config = config_at(files.path());
         ensure_sqlite_library_files(&config).expect("touch sqlite files");
-        let output_root = resolved_local_output_root(&config);
+        let output_root = files.path().join("books");
+        std::fs::create_dir_all(&output_root).expect("output root");
         for (id, entrypoint) in [
             ("sqlite", "databaseAdapter"),
             ("postgres", "databaseAdapter"),

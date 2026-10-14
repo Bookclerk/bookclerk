@@ -128,6 +128,18 @@ pub fn is_first_party_s3_output(plugin: &DiscoveredPlugin) -> bool {
         && plugin.plugin_key().package() == "bookclerk-plugin-destination-s3"
 }
 
+/// True when this install is the verified Bookclerk Audiobookshelf integration.
+///
+/// Only this plugin receives the host-implied network grant for the server
+/// its instance document names (`base_url`). The live manifest alias is not
+/// consulted: an alias twin is a different PluginKey with its own consent.
+#[must_use]
+pub fn is_first_party_audiobookshelf(plugin: &DiscoveredPlugin) -> bool {
+    plugin.identity.provenance.is_verified_artifact()
+        && bookclerk_plugin_catalog::is_first_party_integration(plugin.plugin_key())
+        && plugin.plugin_key().package() == "bookclerk-plugin-integration-audiobookshelf"
+}
+
 /// Path-only identity used when an install tree cannot be hashed (test fixtures).
 fn local_identity(root: &Path, manifest: &PluginManifest) -> PluginInstallIdentity {
     let plugin_key = PluginKey::from_install_path(root, &manifest.id)
@@ -449,95 +461,36 @@ fn kind_or_alias_match(left: &str, right: &str) -> bool {
     left_kind.is_some() && left_kind == right_kind
 }
 
-/// Writes this install's canonical PluginKey into each family occupancy field.
+/// Records `plugin` as the `[database].plugin` occupant.
 ///
-/// Call after flipping `enabled` (CLI / Settings). Occupancy is how loaders
-/// name a singleton slot; stamping the key means a later install cannot
-/// steal the slot by reusing the alias.
+/// Database adapters are the bootstrap exception: they stay selected in
+/// `config.toml` because the connection is needed before the database can be
+/// read. Every other plugin is enabled by a `plugin_deployments` row.
 ///
 /// # Errors
 ///
-/// Returns when the plugin exports `Storage` but is not `s3` or `local`
-/// (those destinations are not mapped in `config.toml` yet).
+/// Returns an error when `plugin` is not a database adapter.
 pub fn stamp_occupancy_plugin_key(config: &mut Config, plugin: &DiscoveredPlugin) -> Result<()> {
-    let canonical = plugin.plugin_key().canonical().to_string();
-    for family in plugin.manifest.families() {
-        match family {
-            PluginFamily::Source => {
-                config
-                    .sources
-                    .set_string(plugin.alias(), "plugin", canonical.clone());
-            }
-            PluginFamily::Integration => {
-                config
-                    .integrations
-                    .plugin_table_mut(plugin.alias())
-                    .insert("plugin".into(), toml::Value::String(canonical.clone()));
-            }
-            PluginFamily::Output if is_first_party_s3_output(plugin) => {
-                config.output.s3.plugin = canonical.clone();
-            }
-            PluginFamily::Output if is_first_party_local_output(plugin) => {
-                config.output.local.plugin = canonical.clone();
-            }
-            PluginFamily::Output => {
-                // Third-party destinations have no occupancy field. Multi-family
-                // guests still stamp their other families (CLI enable skips here).
-                if plugin.manifest.families().len() > 1 {
-                    continue;
-                }
-                return Err(PluginError::message(format!(
-                    "output plugin `{}` enable/disable is not mapped to config.toml yet",
-                    plugin.alias()
-                )));
-            }
-            PluginFamily::Database => {
-                config.database.plugin = canonical.clone();
-            }
-        }
+    if !plugin.manifest.families().contains(&PluginFamily::Database) {
+        return Err(PluginError::message(format!(
+            "plugin `{}` is enabled per host with `bookclerk plugins enable`, not in config.toml",
+            plugin.alias()
+        )));
     }
+    config.database.plugin = plugin.plugin_key().canonical().to_string();
     Ok(())
 }
 
-/// Rewrites unique alias occupancy strings to canonical PluginKeys.
+/// Rewrites a unique `[database].plugin` alias to the canonical PluginKey.
 ///
-/// Ambiguous aliases and vacant slots are left unchanged so loaders still
-/// fail closed. An empty `discovered` slice is a no-op so a settings
-/// discovery timeout cannot wipe occupancy.
+/// An ambiguous alias or vacant slot is left unchanged so loaders still fail
+/// closed. An empty `discovered` slice is a no-op so a settings discovery
+/// timeout cannot wipe occupancy.
 pub fn upgrade_unique_alias_occupancy(config: &mut Config, discovered: &[DiscoveredPlugin]) {
     if discovered.is_empty() {
         return;
     }
     upgrade_occupancy_field(&mut config.database.plugin, discovered);
-    if !config.output.s3.plugin.trim().is_empty() || config.output.s3.enabled {
-        let spec = occupancy_spec(&config.output.s3.plugin, "s3").to_string();
-        if let Some(key) = unique_canonical_occupancy(&spec, discovered) {
-            config.output.s3.plugin = key;
-        }
-    }
-    if !config.output.local.plugin.trim().is_empty() || config.output.local.enabled {
-        let spec = occupancy_spec(&config.output.local.plugin, "local").to_string();
-        if let Some(key) = unique_canonical_occupancy(&spec, discovered) {
-            config.output.local.plugin = key;
-        }
-    }
-    let source_ids: Vec<String> = config.sources.plugins.keys().cloned().collect();
-    for id in source_ids {
-        let spec = occupancy_spec(config.sources.occupancy(&id), &id).to_string();
-        if let Some(key) = unique_canonical_occupancy(&spec, discovered) {
-            config.sources.set_string(&id, "plugin", key);
-        }
-    }
-    let integration_ids: Vec<String> = config.integrations.plugins.keys().cloned().collect();
-    for id in integration_ids {
-        let spec = occupancy_spec(config.integrations.occupancy(&id), &id).to_string();
-        if let Some(key) = unique_canonical_occupancy(&spec, discovered) {
-            config
-                .integrations
-                .plugin_table_mut(&id)
-                .insert("plugin".into(), toml::Value::String(key));
-        }
-    }
 }
 
 /// Canonical PluginKey when `spec` uniquely resolves and is not already that key.
@@ -766,49 +719,31 @@ fn resolve_command(root: &Path, command: &Path) -> Result<PathBuf> {
     Ok(root.join(command))
 }
 
-/// Opaque knobs from main `config.toml` for this plugin id (by primary family).
+/// Bootstrap connection settings for a database adapter from `config.toml`.
+///
+/// Database adapters are the one plugin family whose configuration stays in
+/// the bootstrap file: the process needs it to open the library before the
+/// database-backed control plane exists. Every other family receives its
+/// settings from the plugin instance document.
 #[must_use]
 pub fn settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::Table {
     settings_table_for(config, plugin, plugin.manifest.primary_family())
 }
 
-/// Resolves the `config.toml` table for `plugin` under one specific handler
-/// `family`.
+/// [`settings_table`] for one explicit handler `family`.
 ///
-/// A plugin exporting several entrypoints (for example `storefront` + an
-/// event consumer) owns one settings table per family (`[sources.<id>]` and
-/// `[integrations.<id>]`); callers rendering per-family settings groups pick
-/// the family explicitly instead of relying on [`PluginManifest::primary_family`].
-///
-/// [`PluginManifest::primary_family`]: crate::PluginManifest::primary_family
+/// Only [`PluginFamily::Database`](crate::PluginFamily::Database) has a
+/// `config.toml` table; every other family returns an empty table.
 pub fn settings_table_for(
     config: &Config,
     plugin: &DiscoveredPlugin,
     family: crate::PluginFamily,
 ) -> toml::Table {
     match family {
-        crate::PluginFamily::Source => config
-            .sources
-            .table(&plugin.manifest.id)
-            .cloned()
-            .unwrap_or_default(),
-        crate::PluginFamily::Integration => {
-            let mut table = config
-                .integrations
-                .plugin_table(&plugin.manifest.id)
-                .cloned()
-                .unwrap_or_default();
-            inject_abs_api_key_from_env(&plugin.manifest.id, &mut table);
-            table
-        }
-        crate::PluginFamily::Output if is_first_party_s3_output(plugin) => {
-            output_s3_settings_table(&config.output.s3)
-        }
-        crate::PluginFamily::Output if is_first_party_local_output(plugin) => {
-            output_local_settings_table(&config.output.local)
-        }
         crate::PluginFamily::Database => database_settings_table(config, plugin),
-        crate::PluginFamily::Output => toml::Table::new(),
+        crate::PluginFamily::Source
+        | crate::PluginFamily::Integration
+        | crate::PluginFamily::Output => toml::Table::new(),
     }
 }
 
@@ -838,45 +773,6 @@ fn database_settings_table(config: &Config, plugin: &DiscoveredPlugin) -> toml::
     match value {
         Ok(toml::Value::Table(table)) => table,
         _ => toml::Table::new(),
-    }
-}
-
-/// Serializes `[output.s3]` into the spawn settings table.
-fn output_s3_settings_table(cfg: &bookclerk_config::OutputS3Config) -> toml::Table {
-    match toml::Value::try_from(cfg) {
-        Ok(toml::Value::Table(table)) => table,
-        _ => toml::Table::new(),
-    }
-}
-
-/// Serializes `[output.local]` into the spawn settings table.
-fn output_local_settings_table(cfg: &bookclerk_config::OutputLocalConfig) -> toml::Table {
-    match toml::Value::try_from(cfg) {
-        Ok(toml::Value::Table(table)) => table,
-        _ => toml::Table::new(),
-    }
-}
-
-/// When ABS config lacks `api_key`, inject `BOOKCLERK_ABS_API_KEY` into the
-/// spawn config table (plugin processes do not inherit Bookclerk env secrets).
-fn inject_abs_api_key_from_env(plugin_id: &str, table: &mut toml::Table) {
-    match plugin_id.trim().to_ascii_lowercase().as_str() {
-        "audiobookshelf" | "abs" => {}
-        _ => return,
-    }
-    let missing = table
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().is_empty())
-        .unwrap_or(true);
-    if !missing {
-        return;
-    }
-    if let Ok(v) = std::env::var("BOOKCLERK_ABS_API_KEY") {
-        let trimmed = v.trim();
-        if !trimmed.is_empty() {
-            table.insert("api_key".into(), toml::Value::String(trimmed.to_string()));
-        }
     }
 }
 
@@ -936,16 +832,10 @@ mode = "deny"
         assert_eq!(found[0].manifest.id, "echo");
         assert_eq!(found[0].command, bin);
 
-        // Settings come from main config, not the manifest.
-        let mut cfg2 = cfg;
-        cfg2.integrations
-            .plugin_table_mut("echo")
-            .insert("greeting".into(), toml::Value::String("hi".into()));
-        let settings = settings_table(&cfg2, &found[0]);
-        assert_eq!(
-            settings.get("greeting").and_then(|v| v.as_str()),
-            Some("hi")
-        );
+        // Non-database plugins have no `config.toml` table: their settings
+        // live in the instance document.
+        let settings = settings_table(&cfg, &found[0]);
+        assert!(settings.is_empty(), "{settings:?}");
     }
 
     fn write_plugin(dir: &Path, id: &str, entrypoint: &str) {
@@ -1049,17 +939,6 @@ mode = "deny"
             "echo",
             found[0].plugin_key().canonical()
         ));
-        let mut cfg_echo = cfg.clone();
-        cfg_echo.integrations.set_enabled("echo", true);
-        cfg_echo
-            .integrations
-            .plugin_table_mut("echo")
-            .insert("plugin".into(), toml::Value::String("echo".into()));
-        upgrade_unique_alias_occupancy(&mut cfg_echo, &found);
-        assert_eq!(
-            cfg_echo.integrations.occupancy("echo"),
-            found[0].plugin_key().canonical()
-        );
     }
 
     #[test]
@@ -1110,35 +989,19 @@ mode = "deny"
         assert_eq!(cfg.database.plugin, sqlite.plugin_key().canonical());
 
         let echo = resolve_plugin_ref(&found, "echo").unwrap();
-        cfg.integrations.set_enabled("echo", true);
-        stamp_occupancy_plugin_key(&mut cfg, echo).unwrap();
-        assert_eq!(
-            cfg.integrations.occupancy("echo"),
-            echo.plugin_key().canonical()
-        );
-
-        let s3 = resolve_plugin_ref(&found, "s3").unwrap();
-        let err = stamp_occupancy_plugin_key(&mut cfg, s3)
+        let err = stamp_occupancy_plugin_key(&mut cfg, echo)
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("not mapped"),
-            "path-install s3 alias must not occupy [output.s3]: {err}"
+            err.contains("plugins enable"),
+            "non-database plugins are deployed, not stamped into config.toml: {err}"
         );
-        cfg.output.s3.enabled = true;
-        cfg.output.s3.plugin = "s3".into();
+        let s3 = resolve_plugin_ref(&found, "s3").unwrap();
+        assert!(stamp_occupancy_plugin_key(&mut cfg, s3).is_err());
 
         cfg.database.plugin = "sqlite".into();
-        cfg.integrations
-            .plugin_table_mut("echo")
-            .insert("plugin".into(), toml::Value::String("echo".into()));
         upgrade_unique_alias_occupancy(&mut cfg, &found);
         assert_eq!(cfg.database.plugin, sqlite.plugin_key().canonical());
-        assert_eq!(
-            cfg.integrations.occupancy("echo"),
-            echo.plugin_key().canonical()
-        );
-        assert_eq!(cfg.output.s3.plugin, s3.plugin_key().canonical());
 
         upgrade_unique_alias_occupancy(&mut cfg, &[]);
         assert_eq!(cfg.database.plugin, sqlite.plugin_key().canonical());
@@ -1311,7 +1174,6 @@ binding = "DB"
         cfg.database.sqlite.path = Some(std::path::PathBuf::from("secret-library.db"));
         cfg.database.postgres.url = Some("postgres://secret@db/library".into());
         cfg.database.d1.account_id = "acct_secret".into();
-        cfg.output.local.root = std::path::PathBuf::from("/secret/output");
         let found = discover_plugins(&cfg).unwrap();
         for id in ["sqlite", "postgres", "d1", "local"] {
             let plugin = found.iter().find(|p| p.alias() == id).expect(id);

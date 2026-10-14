@@ -58,16 +58,11 @@ export BOOKCLERK_FILES_DIR=./BookclerkFiles
 mkdir -p "$BOOKCLERK_FILES_DIR"
 cp config/config.example.toml "$BOOKCLERK_FILES_DIR/config.toml"
 
-# Audible (browser / QR OAuth — OTP/2FA completed in the browser)
-bookclerk auth login -m us
-
-# Other stores (password via env — never on argv)
-# export BOOKCLERK_LIBRO_PASSWORD='…'
-# bookclerk auth login --source libro --email you@example.com
-# export BOOKCLERK_CHIRP_PASSWORD='…'
-# bookclerk auth login --source chirp --email you@example.com
-# export BOOKCLERK_GA_PASSWORD='…'
-# bookclerk auth login --source graphicaudio --email you@example.com
+# Connect stores in the web UI (Accounts): Audible via browser / QR OAuth
+# (OTP/2FA completed in the browser); Libro.fm, Chirp and GraphicAudio via
+# email + password, sealed into the database. Passwords are never read from
+# the environment or argv.
+bookclerk login   # prints a loopback sign-in URL for a running bookclerkd
 
 bookclerk library scan
 bookclerk library acquire --asin B0EXAMPLE   # or --isbn / UUID / product id
@@ -108,38 +103,24 @@ enrich_from_audible = true
 [output]
 format = "enriched_m4b"
 naming_profile = "audiobookshelf"
-
-[output.local]
-enabled = true
-root = "/data/Audiobooks"
-
-[output.s3]
-enabled = false
-# bucket = "my-audiobooks"
-# region = "us-east-1"
-
-[sources.audible]
-enabled = true
-
-[sources.libro]
-enabled = true
-
-[sources.chirp]
-enabled = true
-
-[sources.graphicaudio]
-enabled = true
-access = "web"          # web | zip | device
-
-[integrations.audiobookshelf]
-enabled = false
-# base_url = "http://audiobookshelf:80"
 ```
 
-S3 credentials resolve as: env `BOOKCLERK_AWS_ACCESS_KEY_ID` /
-`BOOKCLERK_AWS_SECRET_ACCESS_KEY` (optional `BOOKCLERK_AWS_SESSION_TOKEN`) →
-`encrypted_secrets` → AWS SDK default provider chain (may still use standard
-`AWS_*` via the SDK). Store passwords use per-source env vars (see
+Storefronts, destinations, and integrations are plugin instances in the
+database, not TOML. Each plugin declares its settings in `plugin.toml`
+`[[settings]]`; "enabled" is a deployment on a host:
+
+```bash
+bookclerk plugins list
+bookclerk plugins config set local root /data/Audiobooks
+bookclerk plugins config set s3 bucket my-audiobooks
+bookclerk plugins config set s3 secret_access_key --secret   # value on stdin
+bookclerk plugins enable s3
+bookclerk plugins config set graphicaudio access web          # web | zip | device
+bookclerk plugins enable audiobookshelf
+```
+
+The same operations are in **Settings → Plugins**. Store passwords are
+entered in Accounts and sealed in the database (see
 [docs/sources.md](docs/sources.md)).
 
 ## Binaries

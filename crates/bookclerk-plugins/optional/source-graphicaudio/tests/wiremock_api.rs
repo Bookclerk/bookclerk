@@ -52,7 +52,7 @@ async fn login_saves_auth_to_db() {
         GraphicAudioSource::with_base_url(server.uri()).with_access(GraphicAudioAccess::Device);
     let account = source
         .login(
-            &store.scope("graphicaudio"),
+            &store.scope("graphicaudio", "graphicaudio"),
             LoginOptions {
                 marketplace: "us".into(),
                 label: Some("GA".into()),
@@ -70,10 +70,13 @@ async fn login_saves_auth_to_db() {
     assert_eq!(account.account_id, "reader@example.com");
 
     // Verify credentials were persisted to the DB.
-    let auth = load_auth_from_db(&store.scope("graphicaudio"), "reader@example.com")
-        .await
-        .unwrap()
-        .expect("auth must be present in DB");
+    let auth = load_auth_from_db(
+        &store.scope("graphicaudio", "graphicaudio"),
+        "reader@example.com",
+    )
+    .await
+    .unwrap()
+    .expect("auth must be present in DB");
     assert_eq!(auth.token, "ga-token-xyz");
     assert!(!auth.client_id.is_empty());
 }
@@ -119,7 +122,7 @@ async fn scan_skips_samples_upserts_owned() {
             marketplace: "us".into(),
             label: None,
         },
-        &store.scope("graphicaudio"),
+        &store.scope("graphicaudio", "graphicaudio"),
         "a@ex.com",
     )
     .await
@@ -128,7 +131,10 @@ async fn scan_skips_samples_upserts_owned() {
     let source =
         GraphicAudioSource::with_base_url(server.uri()).with_access(GraphicAudioAccess::Device);
     let summary = source
-        .scan(&store.scope("graphicaudio"), ScanOptions::default())
+        .scan(
+            &store.scope("graphicaudio", "graphicaudio"),
+            ScanOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(summary.books_upserted, 1);
@@ -209,7 +215,7 @@ async fn fetch_title_via_content_source() {
             marketplace: "us".into(),
             label: None,
         },
-        &store.scope("graphicaudio"),
+        &store.scope("graphicaudio", "graphicaudio"),
         "u@ex.com",
     )
     .await
@@ -220,7 +226,7 @@ async fn fetch_title_via_content_source() {
     let cache = tempfile::tempdir().unwrap();
     let fetch = source
         .fetch_title(
-            &store.scope("graphicaudio"),
+            &store.scope("graphicaudio", "graphicaudio"),
             "u@ex.com",
             "7",
             &bookclerk_source::FetchOptions {
@@ -347,7 +353,7 @@ async fn magento_zip_fetch_via_content_source() {
             marketplace: "us".into(),
             label: None,
         },
-        &db_store.scope("graphicaudio"),
+        &db_store.scope("graphicaudio", "graphicaudio"),
         "u@ex.com",
     )
     .await
@@ -360,7 +366,7 @@ async fn magento_zip_fetch_via_content_source() {
         .with_magento_password(test_password());
     let fetch = source
         .fetch_title(
-            &db_store.scope("graphicaudio"),
+            &db_store.scope("graphicaudio", "graphicaudio"),
             "u@ex.com",
             "99",
             &bookclerk_source::FetchOptions {
@@ -455,7 +461,7 @@ async fn browser_player_fetch_via_content_source() {
             marketplace: "us".into(),
             label: None,
         },
-        &db_store.scope("graphicaudio"),
+        &db_store.scope("graphicaudio", "graphicaudio"),
         "u@ex.com",
     )
     .await
@@ -468,7 +474,7 @@ async fn browser_player_fetch_via_content_source() {
         .with_magento_password(test_password());
     let fetch = source
         .fetch_title(
-            &db_store.scope("graphicaudio"),
+            &db_store.scope("graphicaudio", "graphicaudio"),
             "u@ex.com",
             "5273",
             &bookclerk_source::FetchOptions {

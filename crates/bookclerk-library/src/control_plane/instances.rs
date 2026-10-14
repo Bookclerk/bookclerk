@@ -63,6 +63,8 @@ pub struct PluginInstance {
     pub id: PluginInstanceId,
     /// Canonical plugin key. Immutable after create.
     pub plugin_key: String,
+    /// Operator-facing name; empty for the default instance.
+    pub display_name: String,
     /// RFC 3339 insert time.
     pub created_at: String,
     /// Audit identity of the creator.
@@ -80,11 +82,13 @@ pub async fn create_plugin_instance(
     store: &LibraryStore,
     actor: &ConfigActor,
     plugin_key: &str,
+    display_name: &str,
 ) -> Result<PluginInstance> {
     authorize_create(actor)?;
     validate_plugin_key(plugin_key)?;
+    validate_display_name(display_name)?;
     let id = PluginInstanceId::mint();
-    insert_instance(store.db(), actor, &id, plugin_key).await?;
+    insert_instance(store.db(), actor, &id, plugin_key, display_name).await?;
     load_plugin_instance(store, &id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("plugin instance {id}")))
@@ -111,7 +115,7 @@ pub async fn ensure_plugin_instance(
     authorize_create(actor)?;
     validate_plugin_key(plugin_key)?;
     for _ in 0..4 {
-        match enrolled_or_oldest(store.db(), plugin_key).await {
+        match enrolled_or_oldest(store, plugin_key).await {
             Ok(Some(existing)) => return Ok(existing),
             Ok(None) => {}
             Err(err) if enrollment_contention(&err) => continue,
@@ -137,9 +141,9 @@ pub async fn ensure_plugin_instance(
                     ),
                     super::batch::exec(
                         "INSERT INTO plugin_instances (
-                            plugin_instance_id, plugin_key, created_at, created_by
+                            plugin_instance_id, plugin_key, display_name, created_at, created_by
                          )
-                         SELECT ?, ?, ?, ?
+                         SELECT ?, ?, '', ?, ?
                           WHERE NOT EXISTS (
                               SELECT 1 FROM plugin_instance_defaults WHERE plugin_key = ?
                           )",
@@ -183,13 +187,11 @@ pub async fn ensure_plugin_instance(
             Err(err) => return Err(err),
         }
     }
-    enrolled_or_oldest(store.db(), plugin_key)
-        .await?
-        .ok_or_else(|| {
-            LibraryError::Other(anyhow::anyhow!(
-                "plugin instance enrollment for `{plugin_key}` lost the insert race"
-            ))
-        })
+    enrolled_or_oldest(store, plugin_key).await?.ok_or_else(|| {
+        LibraryError::Other(anyhow::anyhow!(
+            "plugin instance enrollment for `{plugin_key}` lost the insert race"
+        ))
+    })
 }
 
 /// Loads one instance by id.
@@ -229,9 +231,8 @@ pub async fn list_plugin_instances_for_key(
 
 /// Earliest instance row for `plugin_key`, if any.
 ///
-/// Oldest-wins. Do not use this for spawn or CLI selection: two instances may
-/// share a key, and those callers fail closed or take an explicit instance id.
-/// No production path calls this helper.
+/// Oldest-wins. Prefer [`default_instance_for_key`], which honours the
+/// `plugin_instance_defaults` claim and falls back to this order.
 ///
 /// # Errors
 ///
@@ -241,6 +242,67 @@ pub async fn find_plugin_instance_by_key(
     plugin_key: &str,
 ) -> Result<Option<PluginInstance>> {
     find_by_plugin_key(store, plugin_key).await
+}
+
+/// The instance a host routes to when a job does not pin one: the
+/// `plugin_instance_defaults` claim for `plugin_key`, else the oldest row.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn default_instance_for_key(
+    store: &LibraryStore,
+    plugin_key: &str,
+) -> Result<Option<PluginInstance>> {
+    enrolled_or_oldest(store, plugin_key).await
+}
+
+/// Every instance row, ordered by plugin key then creation time.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn list_all_plugin_instances(store: &LibraryStore) -> Result<Vec<PluginInstance>> {
+    let rows = plugin_instances::Entity::find()
+        .order_by_asc(plugin_instances::Column::PluginKey)
+        .order_by_asc(plugin_instances::Column::CreatedAt)
+        .order_by_asc(plugin_instances::Column::PluginInstanceId)
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(rows.into_iter().map(instance_from_model).collect())
+}
+
+/// Deletes an instance that has no deployments. Its configuration document,
+/// audit rows, and sealed secrets are left for retention cleanup.
+///
+/// # Errors
+///
+/// Returns an error when the actor may not write, a deployment still
+/// references the instance, or the delete fails.
+pub async fn delete_plugin_instance(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    id: &PluginInstanceId,
+) -> Result<()> {
+    authorize_create(actor)?;
+    if super::deployments::instance_has_deployment(store, id).await? {
+        return Err(LibraryError::Conflict(format!(
+            "plugin instance {id} still has deployments; set them absent and remove them first"
+        )));
+    }
+    bookclerk_db_exec::execute_canonical(
+        store.db(),
+        "DELETE FROM plugin_instance_defaults WHERE plugin_instance_id = ?",
+        [id.as_str().into()],
+    )
+    .await
+    .map_err(LibraryError::Orm)?;
+    plugin_instances::Entity::delete_by_id(id.as_str().to_string())
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(())
 }
 
 /// Inserts one row. The id is the caller's.
@@ -253,12 +315,14 @@ async fn insert_instance(
     actor: &ConfigActor,
     id: &PluginInstanceId,
     plugin_key: &str,
+    display_name: &str,
 ) -> Result<()> {
     let now = Utc::now().to_rfc3339();
     let created_by = actor.audit_id().to_string();
     let model = plugin_instances::ActiveModel {
         plugin_instance_id: Set(id.as_str().to_string()),
         plugin_key: Set(plugin_key.to_string()),
+        display_name: Set(display_name.trim().to_string()),
         created_at: Set(now),
         created_by: Set(created_by),
     };
@@ -271,30 +335,39 @@ async fn insert_instance(
 
 /// The enrolled default, or the oldest row when enrollment has not run.
 async fn enrolled_or_oldest(
-    conn: &impl ConnectionTrait,
+    store: &LibraryStore,
     plugin_key: &str,
 ) -> Result<Option<PluginInstance>> {
-    if let Some(id) = default_instance_id(conn, plugin_key).await? {
+    if let Some(id) = default_instance_id(store, plugin_key).await? {
         let parsed = PluginInstanceId::parse(&id)?;
-        if let Some(instance) = load_plugin_instance_conn(conn, &parsed).await? {
+        if let Some(instance) = load_plugin_instance_conn(store.db(), &parsed).await? {
             return Ok(Some(instance));
         }
     }
-    find_by_plugin_key_conn(conn, plugin_key).await
+    find_by_plugin_key_conn(store.db(), plugin_key).await
 }
 
 /// Enrolled default instance id for `plugin_key`, when one was claimed.
-async fn default_instance_id(
-    conn: &impl ConnectionTrait,
-    plugin_key: &str,
-) -> Result<Option<String>> {
-    let rows = bookclerk_db_exec::query_canonical(
-        conn,
-        "SELECT plugin_instance_id FROM plugin_instance_defaults WHERE plugin_key = ?",
-        [plugin_key.into()],
-    )
-    .await
-    .map_err(LibraryError::Orm)?;
+///
+/// Canonical `?` SQL: lowered for the engine when the store runs on a
+/// physical in-process connection (SQLite or a Postgres pool), sent as-is
+/// over the canonical transport otherwise.
+async fn default_instance_id(store: &LibraryStore, plugin_key: &str) -> Result<Option<String>> {
+    const SQL: &str =
+        "SELECT plugin_instance_id FROM plugin_instance_defaults WHERE plugin_key = ?";
+    let values = [sea_orm::Value::from(plugin_key)];
+    let type_env = crate::migrations::host_sql_type_env();
+    if store.leftover_in_process() {
+        let rows =
+            crate::sql_plan::query_sql_on(true, store.db(), SQL, values, &type_env, 1).await?;
+        return rows
+            .first()
+            .map(|row| super::batch::text_cell(row, 0))
+            .transpose();
+    }
+    let rows = bookclerk_db_exec::query_canonical_stamped(store.db(), SQL, values, &type_env)
+        .await
+        .map_err(LibraryError::Orm)?;
     match rows.first() {
         Some(row) => Ok(Some(
             row.try_get("", "plugin_instance_id")
@@ -373,6 +446,7 @@ fn instance_from_model(row: plugin_instances::Model) -> PluginInstance {
     PluginInstance {
         id: PluginInstanceId(row.plugin_instance_id),
         plugin_key: row.plugin_key,
+        display_name: row.display_name,
         created_at: row.created_at,
         created_by: row.created_by,
     }
@@ -389,6 +463,16 @@ fn authorize_create(actor: &ConfigActor) -> Result<()> {
 }
 
 /// Rejects an empty or oversized plugin key before insert.
+fn validate_display_name(name: &str) -> Result<()> {
+    if name.len() > 64 || name.chars().any(char::is_control) {
+        return Err(LibraryError::Other(anyhow::anyhow!(
+            "invalid plugin instance: display_name must be at most 64 bytes without control characters"
+        )));
+    }
+    Ok(())
+}
+
+/// Rejects an empty or oversized plugin key.
 fn validate_plugin_key(plugin_key: &str) -> Result<()> {
     if plugin_key.is_empty() || plugin_key.len() > 512 || plugin_key.contains('\u{0000}') {
         return Err(LibraryError::Other(anyhow::anyhow!(

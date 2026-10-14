@@ -552,7 +552,6 @@ These are required to open the DB or derive the master key and cannot be stored 
 
 > **No `Accounts/` directory for secrets.** All runtime credentials (Audible, Libro.fm,
 > Chirp, GraphicAudio, Widevine CDM, and S3 destination keys) are stored in
-> `encrypted_secrets`. S3 also accepts env override via `BOOKCLERK_AWS_ACCESS_KEY_ID` +
-> `BOOKCLERK_AWS_SECRET_ACCESS_KEY` (+ optional `BOOKCLERK_AWS_SESSION_TOKEN`) and
-> falls back to the AWS SDK default provider chain when no DB row is present.
+> `encrypted_secrets`. S3 keys are `secret` settings of the `s3` plugin instance;
+> the guest falls back to the AWS SDK default provider chain when none are set.
 > Bookclerk no longer creates or reads an `Accounts/` directory.

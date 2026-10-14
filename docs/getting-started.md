@@ -40,7 +40,7 @@ cargo run -p bookclerk-cli -- version
 export BOOKCLERK_FILES_DIR=./BookclerkFiles
 mkdir -p "$BOOKCLERK_FILES_DIR"
 cp config/config.example.toml "$BOOKCLERK_FILES_DIR/config.toml"
-# edit sources, output.local.root, integrations as needed
+# [database] and daemon settings only; plugins are configured in the database (below)
 ```
 
 On first use Bookclerk also creates `library.db`, `cache/`, `search_index/`,
@@ -84,7 +84,17 @@ export BOOKCLERK_AUTH_PASSWORD='your-strong-passphrase'
 ### Password stores (Libro.fm, Chirp, GraphicAudio)
 
 Connect from Accounts with email + password (passwords are never placed on CLI
-argv). Details per store: [sources.md](sources.md).
+argv or read from the environment). Details per store: [sources.md](sources.md).
+
+### Destinations and plugin settings
+
+```bash
+bookclerk plugins list
+bookclerk plugins config set local root /data/Audiobooks
+bookclerk plugins enable s3 && bookclerk plugins config set s3 bucket my-audiobooks
+```
+
+See [configuration.md](configuration.md#plugin-instances).
 
 ### Account hygiene
 
