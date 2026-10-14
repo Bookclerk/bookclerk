@@ -12,3 +12,4 @@ pub mod integrations;
 pub mod library;
 pub mod migrate;
 pub mod plugins;
+pub mod queues;

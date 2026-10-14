@@ -3,8 +3,9 @@
  *
  * Default export extends `BookclerkEntrypoint` from
  * `@bookclerk/plugin-sdk/workerd` (injected by bookclerk-workerd) and handles
- * the `book_acquired` event trigger declared in `plugin.toml`. The `cli`
- * entrypoint is the exported `Cli` class. Keep in sync with `src/index.ts`.
+ * the `book_acquired` event trigger and the `echo` queue trigger declared in
+ * `plugin.toml`. The `cli` entrypoint is the exported `Cli` class. Keep in
+ * sync with `src/index.ts`.
  */
 
 import {
@@ -63,7 +64,7 @@ export class Cli extends CliEntrypoint {
   }
 }
 
-/** Default entrypoint: event trigger for `[[events.consumers]]`. */
+/** Default entrypoint: `event` and `queue` triggers for `[[events.consumers]]` and `[[queues.consumers]]`. */
 export default class EchoPlugin extends BookclerkEntrypoint {
   async describe() {
     return { displayName: "Echo Integration (workerd TypeScript)" };
@@ -96,6 +97,22 @@ export default class EchoPlugin extends BookclerkEntrypoint {
         default:
           msg.ack();
       }
+    }
+  }
+
+  /**
+   * @param {import("@bookclerk/plugin-sdk/workerd").QueueBatch} batch
+   */
+  async queue(batch) {
+    for (const msg of batch.messages) {
+      if (msg.contentType === "text" && msg.text() === "retry") {
+        msg.retry({ delaySeconds: 1, reason: "echo retry" });
+        continue;
+      }
+      console.log(`${PLUGIN_ID} saw queue ${batch.queue} message ${msg.id}`);
+      // Echo the body onward when the host granted the producer binding.
+      await this.env.ECHO_OUT?.send(msg.body, { contentType: "bytes" });
+      msg.ack();
     }
   }
 }

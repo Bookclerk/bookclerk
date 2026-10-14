@@ -13,11 +13,25 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_library::LibraryStore;
-use bookclerk_plugin_abi::{DomainEvent, EventResult};
+use bookclerk_plugin_abi::{DomainEvent, EventResult, QueueBatch, QueueResult};
 
 use crate::brand::Brand;
 use crate::error::{IntegrationError, Result};
 use crate::types::{ExternalUser, IntegrationHealth};
+
+/// Declared `[[queues.consumers]]` row (mirrors `plugin.toml`): the queue the
+/// integration's `queue(batch)` trigger consumes and its redelivery policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueSubscription {
+    /// Queue name.
+    pub queue: String,
+    /// Redeliveries before a message is dead-lettered.
+    pub max_retries: u32,
+    /// Queue that receives a copy once `max_retries` is exhausted.
+    pub dead_letter_queue: Option<String>,
+    /// Seconds a retried message waits when the consumer names no delay.
+    pub retry_delay_secs: u32,
+}
 
 /// Declared durable `onEvent` subscription (mirrors `plugin.toml`).
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +141,35 @@ pub trait Integration: Send + Sync {
     /// Durable outbox subscriptions. Empty means this integration is not a subscriber.
     fn event_subscriptions(&self) -> Vec<EventSubscription> {
         Vec::new()
+    }
+
+    /// Declared `[[queues.consumers]]` rows. Empty means this integration
+    /// consumes no plugin-owned queue.
+    fn queue_subscriptions(&self) -> Vec<QueueSubscription> {
+        Vec::new()
+    }
+
+    /// Deliver one ordered [`QueueBatch`] to the `queue(batch)` trigger and
+    /// return exactly one [`QueueResult`] per message, aborting when `cancel`
+    /// is set (fence loss).
+    ///
+    /// Delivery is at-least-once: consume idempotently on
+    /// [`bookclerk_plugin_abi::QueueMessage::id`]. Returning `Err` is treated
+    /// like a retryable transport failure.
+    ///
+    /// # Errors
+    ///
+    /// The default returns [`IntegrationError::Message`] because the
+    /// integration declares no queue consumers.
+    async fn deliver_queue_batch_cancelable(
+        &self,
+        batch: QueueBatch,
+        _cancel: Arc<AtomicBool>,
+    ) -> Result<Vec<QueueResult>> {
+        Err(IntegrationError::message(format!(
+            "integration consumes no queues (queue `{}`)",
+            batch.queue
+        )))
     }
 
     /// Probes connectivity and configuration for this integration.

@@ -52,6 +52,7 @@ mod install_preflight;
 mod instance_bindings;
 mod jail;
 mod manifest;
+mod queue_producer;
 mod registry;
 mod rpc;
 mod rpc_session;
@@ -148,6 +149,7 @@ pub use manifest::{
     TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
     MAX_EMBEDDED_LOGO_BYTES,
 };
+pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
     family_keyword, host_target_triple, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,

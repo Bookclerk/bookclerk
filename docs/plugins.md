@@ -1244,6 +1244,7 @@ methods (abort is stream cancel / `RpcTarget` disposal).
 class BookclerkEntrypoint<Env> extends WorkerEntrypoint<Env> {
   describe?(): Promise<PluginDescribe>;                 // optional refinement
   event?(batch: EventBatch): Promise<void>;             // [[events.consumers]]
+  queue?(batch: QueueBatch): Promise<void>;             // [[queues.consumers]]
   job?(job: JobController): Promise<JobCompletion | void>; // [triggers] jobs
   databaseMigrations?(binding: string): Promise<PluginMigration[]>; // [[databases]]
   shutdown?(): Promise<void>;
@@ -1368,7 +1369,7 @@ export `cli` (and optional event/job triggers) — not a `kind = "integration"`.
 
 | Workers concept | Bookclerk v3 |
 | --- | --- |
-| `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `job` triggers) |
+| `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `queue` / `job` triggers) |
 | Named `export class` entrypoints | `entrypoints = ["storefront", …]` + matching `*Entrypoint` subclass |
 | `env.DB` | `[[databases]]` → granted on `env` |
 | `env.KV` | `[[kv_namespaces]]` durable KV binding. Not implemented yet. |
@@ -1428,6 +1429,87 @@ a `GrantedEvents` `RpcTarget`; `publish()` POSTs the event to
 database-only grants are `forbidden`) and enforces the payload cap before
 forwarding to the host publisher. Author isolates never see `GRANTED` or the
 grant token.
+
+## Queues
+
+`[queues]` gives a plugin Workers-shaped queues on the host outbox. A
+`[[queues.producers]]` row is an `env` binding that sends to one queue; a
+`[[queues.consumers]]` row delivers that queue to the default export's
+`queue(batch)` trigger. Queue names are `[a-z0-9][a-z0-9._-]*`; the `core.`
+and `host.` prefixes are the host's (`core.events` is the domain-event bus
+that `[[events.*]]` rows bind to). Two plugins that name the same queue share
+it: one produces, the other consumes.
+
+```toml
+[[queues.producers]]
+queue = "thumbnails"
+binding = "THUMBNAILS"          # env.THUMBNAILS
+
+[[queues.consumers]]
+queue = "thumbnails"
+max_batch_size = 10             # messages per queue(batch) call (≤ 100)
+max_retries = 3                 # redeliveries before dead-letter
+dead_letter_queue = "thumbnails-dlq"
+retry_delay = 30                # seconds when retry() names no delay
+```
+
+```ts
+// Producer: Workers `Queue`-shaped.
+const { messageIds } = await env.THUMBNAILS.send({ bookId }, { delaySeconds: 5 });
+await env.THUMBNAILS.sendBatch(
+  [{ body: "plain", contentType: "text" }, { body: bytes, contentType: "bytes" }],
+  { delaySeconds: 0 },
+);
+
+// Consumer: one ordered batch from one queue, one outcome per message.
+export default class MyPlugin extends BookclerkEntrypoint<Env> {
+  async queue(batch: QueueBatch) {
+    for (const msg of batch.messages) {          // msg.id, msg.timestamp, msg.attempts, msg.source
+      try {
+        await handle(msg.json());                // or msg.text() / msg.body
+        msg.ack();
+      } catch {
+        msg.retry({ delaySeconds: 60, reason: "downstream busy" });
+      }
+    }
+  }
+}
+```
+
+Rules, mirroring `event(batch)`:
+
+- **Outcomes.** `ack()` marks the message delivered; `retry()` redelivers
+  after `delaySeconds`, or after the consumer's `retry_delay` when none is
+  given. Untouched messages ack when the handler returns and retry when it
+  throws. Delivery is at-least-once: consume idempotently on `msg.id`.
+- **Dead letters.** A message that is still retrying after `max_retries`
+  redeliveries is parked as `dead_letter`; when the consumer names a
+  `dead_letter_queue` the host first copies the message there, so a second
+  consumer (or an operator) can pick it up.
+- **Bodies.** `contentType` is `json` (default; the body is JSON text),
+  `text` (UTF-8), or `bytes` (raw). Bodies are capped at 64 KiB
+  (`MAX_EVENT_PAYLOAD_BYTES`); a batch sends at most `MAX_LIST_PAGE`
+  messages. Sends never coalesce: every `send` is a new message.
+- **Forced provenance.** `source` is the sending plugin's PluginKey and the
+  account is the opening invocation's; the queue is fixed by the manifest
+  row, never chosen per call.
+- **Consent.** Each producer binding and each consumer queue is a grant
+  token (`queue:<BINDING>`, `queue_consumer:<queue>`) in the consent request.
+  A binding the operator has not granted is absent from `env`; a queue the
+  grant does not cover is never delivered. `describe()` cannot widen either
+  list beyond `plugin.toml`.
+- **Transports.** Native guests receive producers on `Bindings.queues` as
+  Cap'n Proto capabilities and the batch on `QueueConsumer.queue`. Under
+  workerd the adapter isolate mints one queue-only grant token per binding
+  and hands the author a `GrantedQueue` `RpcTarget`; `send` / `sendBatch`
+  POST to `/queues/send` on the launcher's `GRANTED` channel, where the grant
+  and the caps are re-checked before the host producer writes the outbox.
+
+Operators see queues with `bookclerk queues list` (counters and live
+consumers per queue) and `bookclerk queues inspect <name>` (recent messages
+and deliveries), backed by `GET /api/queues` and `GET /api/queues/{name}`.
+Delivery rows are the same `event_deliveries` the `bookclerk events` verbs
+act on (`retry`, `ack`, `cancel`).
 
 ### Common
 

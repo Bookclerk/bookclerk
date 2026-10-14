@@ -65,7 +65,12 @@ and a coarse hourly cadence, not every dispatcher tick. Operator APIs: `GET /api
 `POST /api/events/deliveries/{id}/acknowledge`,
 `POST /api/events/deliveries/{id}/cancel`,
 `POST /api/events/deliveries/{id}/resume`. CLI:
-`bookclerk events list|dead-letters|retry|ack|cancel|resume`.
+`bookclerk events list|dead-letters|retry|ack|cancel|resume`. Plugin-owned
+queues (`[queues]` in `plugin.toml`) ride the same outbox tables under their
+own `queue_name`; `GET /api/queues`, `GET /api/queues/{name}` and
+`bookclerk queues list|inspect <name>` show per-queue counters, live
+consumers, recent messages and deliveries (see
+[plugins.md#queues](plugins.md#queues)).
 
 See [architecture.md](architecture.md), [plugins.md](plugins.md), and
 [operations.md](operations.md).

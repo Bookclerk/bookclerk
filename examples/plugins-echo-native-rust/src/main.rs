@@ -1,7 +1,8 @@
 //! Reference Echo integration — native Rust guest.
 //!
 //! Speaks Cap'n Proto `api_version = 3` via [`PluginWorker`]: `open` exports the
-//! `eventConsumer` trigger plus the `remoteLibrary` and `cli` entrypoints.
+//! `eventConsumer` and `queueConsumer` triggers plus the `remoteLibrary` and
+//! `cli` entrypoints.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -13,8 +14,8 @@ use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{serve, PluginError};
 use bookclerk_plugin_sdk::{
     Bindings, DomainEvent, Entrypoints, EventConsumer, EventResult, HealthOk, Invocation,
-    PluginCli, PluginDescribe, PluginWorker, RemoteLibrary, ScalarLimits, FEATURE_SCALAR_LIMITS,
-    PRODUCT_API_VERSION,
+    PluginCli, PluginDescribe, PluginWorker, QueueBatch, QueueConsumer, QueueMessage, QueueResult,
+    QueueRetry, RemoteLibrary, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 
 /// Manifest / describe id for the reference Echo integration (`echo_native_rust`).
@@ -65,6 +66,7 @@ impl PluginWorker for EchoRoot {
     ) -> Result<Entrypoints, PluginError> {
         Ok(Entrypoints {
             event_consumer: Some(Box::new(EchoIntegration)),
+            queue_consumer: Some(Box::new(EchoIntegration)),
             remote_library: Some(Box::new(EchoIntegration)),
             cli: Some(Box::new(EchoIntegration)),
             ..Entrypoints::default()
@@ -124,6 +126,26 @@ impl RemoteLibrary for EchoIntegration {
 impl EventConsumer for EchoIntegration {
     async fn event(&self, batch: Vec<DomainEvent>) -> Result<Vec<EventResult>, PluginError> {
         Ok(batch.into_iter().map(echo_result).collect())
+    }
+}
+
+#[async_trait(?Send)]
+impl QueueConsumer for EchoIntegration {
+    async fn queue(&self, batch: QueueBatch) -> Result<Vec<QueueResult>, PluginError> {
+        Ok(batch.messages.into_iter().map(echo_queue_result).collect())
+    }
+}
+
+/// Maps a queue message onto the [`QueueResult`] it exercises: a `text` body
+/// of `retry` asks for redelivery, everything else is acked.
+fn echo_queue_result(message: QueueMessage) -> QueueResult {
+    if message.content_type == "text" && message.body == b"retry" {
+        QueueResult::Retry(QueueRetry {
+            delay_seconds: 1,
+            reason: "echo retry".into(),
+        })
+    } else {
+        QueueResult::Ack
     }
 }
 
