@@ -266,6 +266,12 @@ pub async fn register_and_heartbeat(
     incarnation: &str,
     observation: &NodeObservation,
 ) -> Result<NodeRecord> {
+    if !super::node_queue::is_valid_node_id(node_id) {
+        return Err(LibraryError::Invalid(format!(
+            "invalid node id `{node_id}`: it must be a lowercase queue-name suffix \
+             (a UUID, or `[a-z0-9][a-z0-9._-]*`) short enough for `node.<id>`"
+        )));
+    }
     let now = Utc::now().to_rfc3339();
     let state = current_schema_state(store.db()).await?;
     let compatible = schema_compatible(&state);

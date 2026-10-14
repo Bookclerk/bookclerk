@@ -1494,7 +1494,10 @@ async fn postgres_kv_and_node_queues_cross_two_pools() {
     .await
     .unwrap();
     assert!(matches!(applied, EventsReplace::Applied(_)), "{applied:?}");
-    for node in [&session_a.node.node_id, &session_b.node.node_id] {
+    for (which, node) in [
+        ("a", &session_a.node.node_id),
+        ("b", &session_b.node.node_id),
+    ] {
         let rows = store_a
             .list_domain_events_for_queue(&node_queue_name(node), 10)
             .await
@@ -1502,7 +1505,7 @@ async fn postgres_kv_and_node_queues_cross_two_pools() {
         assert!(
             rows.iter()
                 .any(|row| row.payload.contains("configuration.changed")),
-            "node {node} was woken"
+            "node {which} was not woken"
         );
     }
 }

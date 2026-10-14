@@ -498,7 +498,7 @@ try:
     row = con.execute(
         "SELECT logical_cpus, cpu_max_quota_us, cpu_max_period_us, memory_max_bytes, "
         "memory_current_bytes, memory_anon_bytes, files_dir_free_bytes, scratch_bytes "
-        "FROM hosts ORDER BY heartbeat_at DESC LIMIT 1"
+        "FROM nodes ORDER BY heartbeat_at DESC LIMIT 1"
     ).fetchone()
     print(json.dumps(dict(row) if row else {}))
 except Exception as err:
@@ -509,7 +509,7 @@ PY
 host_rc=$?
 set -e
 if [[ "${host_rc}" != 0 || -z "${host_row}" ]]; then
-  echo "envelope: could not read hosts.logical_cpus (exit ${host_rc})" >&2
+  echo "envelope: could not read nodes.logical_cpus (exit ${host_rc})" >&2
   host_row="{}"
 fi
 

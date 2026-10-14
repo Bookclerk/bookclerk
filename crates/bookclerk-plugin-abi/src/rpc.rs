@@ -2460,6 +2460,10 @@ struct KvNamespaceServer {
 }
 
 /// Fails closed when a KV key is empty or longer than `maxKvKeyBytes`.
+///
+/// # Errors
+///
+/// `invalidParams` for an empty key, `payloadTooLarge` for an oversized one.
 fn check_kv_key(key: &str) -> Result<()> {
     if key.is_empty() {
         return Err(PluginError::invalid_params("kv key must not be empty"));
@@ -2474,6 +2478,10 @@ fn check_kv_key(key: &str) -> Result<()> {
 }
 
 /// Fails closed when a KV value or its metadata exceeds the ABI caps.
+///
+/// # Errors
+///
+/// `payloadTooLarge` when the value or the metadata is over its cap.
 fn check_kv_put(value: &[u8], options: &crate::KvPutOptions) -> Result<()> {
     if value.len() > MAX_KV_VALUE_BYTES as usize {
         return Err(PluginError::payload_too_large(format!(

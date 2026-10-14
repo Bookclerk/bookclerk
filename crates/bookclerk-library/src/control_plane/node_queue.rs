@@ -15,7 +15,6 @@
 //! not live when the message was dispatched.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::error::Result;
 use crate::models::{is_valid_queue_name, PublishDomainEventSpec, NODE_QUEUE_PREFIX};
@@ -112,18 +111,18 @@ impl NodeMessage {
     }
 }
 
-/// Queue a node consumes: `node.<node_id>` when the id fits the queue
-/// grammar (node ids are UUIDs), else `node.h-<sha256 prefix>` so any
-/// node id still maps to one stable, valid queue.
+/// Queue a node consumes: `node.<node_id>`. Registration accepts only node
+/// ids for which this is a valid queue name ([`is_valid_node_id`]).
 #[must_use]
 pub fn node_queue_name(node_id: &str) -> String {
-    let direct = format!("{NODE_QUEUE_PREFIX}{}", node_id.to_ascii_lowercase());
-    if is_valid_queue_name(&direct) {
-        return direct;
-    }
-    let digest = Sha256::digest(node_id.as_bytes());
-    let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
-    format!("{NODE_QUEUE_PREFIX}h-{hex}")
+    format!("{NODE_QUEUE_PREFIX}{node_id}")
+}
+
+/// True when `node_id` can name a node: `node.<node_id>` is a valid queue
+/// name. Minted ids are lowercase UUIDs, which always qualify.
+#[must_use]
+pub fn is_valid_node_id(node_id: &str) -> bool {
+    !node_id.is_empty() && is_valid_queue_name(&node_queue_name(node_id))
 }
 
 /// Catalog id of a node's own consumer (`node:<node_id>`).
