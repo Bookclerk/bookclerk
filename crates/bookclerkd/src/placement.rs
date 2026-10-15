@@ -111,6 +111,7 @@ mod tests {
 
     #[tokio::test]
     async fn placement_routes_label_place_schedule_and_guard_enable() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         let files = tempfile::tempdir().unwrap();
         let files_path = files.path();
         std::fs::write(files_path.join("config.toml"), "").unwrap();
