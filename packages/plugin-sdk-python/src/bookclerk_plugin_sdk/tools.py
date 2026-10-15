@@ -196,22 +196,143 @@ def declares_python(m: dict[str, Any]) -> bool:
 
 
 def unimplemented_surface(m: dict[str, Any]) -> str | None:
-    """Spawn/load message when KV or Queues are declared.
+    """Spawn/load refusal for a declared-but-unbuilt surface.
 
-    The refusal is runtime-agnostic: a native plugin that declares KV or
-    Queues fails spawn the same way a workerd plugin does.
+    Every manifest surface is implemented today (``[[kv_namespaces]]`` and
+    ``[queues]`` included); the hook stays so a future table can refuse load
+    with "not implemented yet" without touching the callers.
 
     Args:
         m: Manifest dictionary.
 
     Returns:
-        The refusal, or ``None`` when neither surface is declared.
+        The refusal, or ``None`` when load may continue.
     """
-    if m.get("kv_namespaces"):
-        return "[[kv_namespaces]] is not implemented yet"
-    if m.get("queues") is not None:
-        return "[queues] is not implemented yet"
+    del m
     return None
+
+
+MAX_QUEUE_NAME_LEN = 63
+"""Longest queue name."""
+
+RESERVED_QUEUE_PREFIXES = ("core.", "node.")
+"""Queue-name prefixes only the host may use."""
+
+_QUEUE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def is_valid_queue_name(name: str) -> bool:
+    """True when ``name`` is ``[a-z0-9][a-z0-9._-]*`` and at most 63 chars.
+
+    Args:
+        name: Candidate queue name.
+
+    Returns:
+        Whether the grammar accepts it.
+    """
+    return 0 < len(name) <= MAX_QUEUE_NAME_LEN and _QUEUE_NAME_RE.match(name) is not None
+
+
+def _validate_queue_name(field: str, name: Any) -> None:
+    text = name if isinstance(name, str) else ""
+    if not is_valid_queue_name(text):
+        raise ValueError(
+            f"plugin.toml: {field} `{text}` must be `[a-z0-9][a-z0-9._-]*` "
+            f"and at most {MAX_QUEUE_NAME_LEN} chars"
+        )
+    if text.startswith(RESERVED_QUEUE_PREFIXES):
+        raise ValueError(
+            f"plugin.toml: {field} `{text}` uses a host-reserved prefix (`core.`, `node.`)"
+        )
+
+
+def _validate_int(field: str, value: Any, low: int, high: int, message: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < low or value > high:
+        raise ValueError(f"plugin.toml: {field} {message}")
+
+
+HOST_EVENT_TYPES = frozenset({"book_acquired"})
+"""Domain event types only the host emits; plugins consume them but cannot produce them."""
+
+MAX_KV_NAMESPACE_VALUE_BYTES = 1_048_576
+"""Largest ``max_value_bytes`` a ``[[kv_namespaces]]`` row may declare (1 MiB)."""
+MAX_KV_NAMESPACE_KEYS = 1_000_000
+"""Largest ``max_keys`` a ``[[kv_namespaces]]`` row may declare."""
+
+
+def _kv_namespace_name(row: dict[str, Any]) -> str:
+    """Namespace a ``[[kv_namespaces]]`` row names (binding lowercased by default)."""
+    namespace = row.get("namespace")
+    if namespace is None:
+        return str(row.get("binding") or "KV").lower()
+    return str(namespace)
+
+
+def _validate_kv_namespaces(m: dict[str, Any]) -> None:
+    for index, row in enumerate(m.get("kv_namespaces") or []):
+        namespace = _kv_namespace_name(row)
+        if not is_valid_queue_name(namespace):
+            raise ValueError(
+                f"plugin.toml: kv_namespaces[{index}].namespace `{namespace}` must be "
+                f"`[a-z0-9][a-z0-9._-]*` and at most {MAX_QUEUE_NAME_LEN} chars"
+            )
+        _validate_int(
+            f"kv_namespaces[{index}].max_value_bytes",
+            row.get("max_value_bytes", 65_536),
+            1,
+            MAX_KV_NAMESPACE_VALUE_BYTES,
+            f"must be 1..={MAX_KV_NAMESPACE_VALUE_BYTES}",
+        )
+        _validate_int(
+            f"kv_namespaces[{index}].max_keys",
+            row.get("max_keys", 10_000),
+            1,
+            MAX_KV_NAMESPACE_KEYS,
+            f"must be 1..={MAX_KV_NAMESPACE_KEYS}",
+        )
+
+
+def _validate_queues(m: dict[str, Any]) -> None:
+    queues = m.get("queues") or {}
+    if not isinstance(queues, dict):
+        raise ValueError("plugin.toml: [queues] must be a table")
+    for index, producer in enumerate(queues.get("producers") or []):
+        _validate_queue_name(f"queues.producers[{index}].queue", producer.get("queue"))
+        if not str(producer.get("binding") or "").strip():
+            raise ValueError(f"plugin.toml: queues.producers[{index}].binding is required")
+    seen: set[str] = set()
+    for index, consumer in enumerate(queues.get("consumers") or []):
+        queue = consumer.get("queue")
+        _validate_queue_name(f"queues.consumers[{index}].queue", queue)
+        if queue in seen:
+            raise ValueError(
+                f"plugin.toml: queues.consumers[{index}].queue `{queue}` is duplicated"
+            )
+        seen.add(queue)
+        field = f"queues.consumers[{index}]"
+        _validate_int(f"{field}.max_batch_size", consumer.get("max_batch_size", 10), 1, 100, "must be 1..=100")
+        _validate_int(
+            f"{field}.max_batch_timeout",
+            consumer.get("max_batch_timeout", 5),
+            0,
+            60,
+            "must be at most 60 seconds",
+        )
+        _validate_int(f"{field}.max_retries", consumer.get("max_retries", 3), 0, 100, "must be at most 100")
+        _validate_int(
+            f"{field}.retry_delay", consumer.get("retry_delay", 0), 0, 43200, "must be at most 43200 seconds"
+        )
+        if consumer.get("max_concurrency") is not None:
+            _validate_int(
+                f"{field}.max_concurrency", consumer.get("max_concurrency"), 1, 2**31, "must be at least 1"
+            )
+        dlq = consumer.get("dead_letter_queue")
+        if dlq is not None:
+            _validate_queue_name(f"{field}.dead_letter_queue", dlq)
+            if dlq == queue:
+                raise ValueError(
+                    f"plugin.toml: {field}.dead_letter_queue must differ from the consumed queue"
+                )
 
 
 def _embed_class(path: str) -> str | None:
@@ -527,18 +648,27 @@ def _validate_surface(m: dict[str, Any]) -> None:
         seen.add(entrypoint)
     events = m.get("events") or {}
     consumers = list(events.get("consumers") or [])
+    queue_consumers = list(((m.get("queues") or {}).get("consumers") or []))
     jobs = list((m.get("triggers") or {}).get("jobs") or [])
-    if not entrypoints and not consumers and not jobs:
+    if not entrypoints and not consumers and not queue_consumers and not jobs:
         raise ValueError(
             "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, "
-            "or `[triggers].jobs`"
+            "`[[queues.consumers]]`, or `[triggers].jobs`"
         )
+    _validate_queues(m)
+    _validate_kv_namespaces(m)
     for consumer in consumers:
         if not str(consumer.get("type") or "").strip():
             raise ValueError("plugin.toml: [[events.consumers]] `type` is required")
-    for producer in events.get("producers") or []:
+    for index, producer in enumerate(events.get("producers") or []):
         if not str(producer.get("type") or "").strip():
             raise ValueError("plugin.toml: [[events.producers]] `type` is required")
+        if producer.get("type") in HOST_EVENT_TYPES:
+            raise ValueError(
+                f"plugin.toml: events.producers[{index}].type `{producer.get('type')}` is emitted "
+                "by the host (after a source's acquire handler returns); plugins may consume it "
+                "but not publish it"
+            )
     if m.get("cli") is not None and "cli" not in seen:
         raise ValueError('plugin.toml: `[cli]` requires `"cli"` in `entrypoints`')
     if ((m.get("oidc") or {}).get("clients") or []) and "oidc" not in seen:
@@ -573,12 +703,14 @@ def _validate_surface(m: dict[str, Any]) -> None:
         named.append(
             ("events.producers", str(producer.get("binding") or "EVENTS"), index)
         )
+    for index, producer in enumerate((m.get("queues") or {}).get("producers") or []):
+        named.append(("queues.producers", str(producer.get("binding") or ""), index))
     for table, name, index in named:
         if not _DATABASE_BINDING_RE.match(name) or len(name) > 32:
             raise ValueError(
                 f"plugin.toml: [{table}][{index}] binding must be `[A-Z][A-Z0-9_]*`"
             )
-        if table == "kv_namespaces" and name in reserved:
+        if table in ("kv_namespaces", "queues.producers") and name in reserved:
             raise ValueError(
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
             )
@@ -908,58 +1040,27 @@ def _table_rows(lines: list[str], table: dict[str, Any]) -> None:
             lines.append(f"{key} = {rendered}")
 
 
-def _is_array_of_records(value: Any) -> bool:
-    """True for a non-empty list whose elements are all dicts."""
-    return (
-        isinstance(value, list)
-        and len(value) > 0
-        and all(isinstance(row, dict) for row in value)
-    )
-
-
-def _reject_dropped_queue_tables(queues: dict[str, Any]) -> None:
-    """Fail when a ``[queues]`` value would be omitted instead of emitted."""
-    for key, value in queues.items():
-        if _is_array_of_records(value):
-            for row in value:
-                for field, field_value in row.items():
-                    if _value(field_value) is None:
-                        raise ValueError(
-                            "plugin.toml: [queues] "
-                            f"`{key}.{field}` value cannot be formatted"
-                        )
-            continue
-        if _value(value) is None:
-            raise ValueError(
-                f"plugin.toml: [queues] `{key}` value cannot be formatted"
-            )
-
-
 def _emit_queues(lines: list[str], queues: Any) -> None:
-    """Write a declared ``[queues]`` table back out. Absent means omitted.
-
-    Only a non-empty list of dicts uses ``[[queues.key]]``. Scalar lists and
-    empty lists stay inline arrays. Nested tables raise instead of disappearing.
-    """
+    """Write ``[[queues.producers]]`` and ``[[queues.consumers]]`` rows."""
     if not isinstance(queues, dict):
-        if queues is not None:
-            raise ValueError("plugin.toml: [queues] value cannot be formatted")
         return
-    _reject_dropped_queue_tables(queues)
-    scalars = {
-        key: value for key, value in queues.items() if not _is_array_of_records(value)
-    }
-    lists = {key: value for key, value in queues.items() if _is_array_of_records(value)}
-    if scalars or not lists:
+    for producer in queues.get("producers") or []:
         lines.append("")
-        lines.append("[queues]")
-        _table_rows(lines, scalars)
-    for key in sorted(lists):
-        for row in lists[key]:
-            lines.append("")
-            lines.append(f"[[queues.{key}]]")
-            if isinstance(row, dict):
-                _table_rows(lines, row)
+        lines.append("[[queues.producers]]")
+        lines.append(f"queue = {_esc(str(producer['queue']))}")
+        lines.append(f"binding = {_esc(str(producer['binding']))}")
+    for consumer in queues.get("consumers") or []:
+        lines.append("")
+        lines.append("[[queues.consumers]]")
+        lines.append(f"queue = {_esc(str(consumer['queue']))}")
+        for key in ("max_batch_size", "max_batch_timeout", "max_retries"):
+            if consumer.get(key) is not None:
+                lines.append(f"{key} = {consumer[key]}")
+        if consumer.get("dead_letter_queue") is not None:
+            lines.append(f"dead_letter_queue = {_esc(str(consumer['dead_letter_queue']))}")
+        for key in ("retry_delay", "max_concurrency"):
+            if consumer.get(key) is not None:
+                lines.append(f"{key} = {consumer[key]}")
 
 
 def _named_binding(lines: list[str], header: str, binding: Any) -> None:
@@ -982,9 +1083,6 @@ def format_manifest(m: dict[str, Any]) -> str:
 
     Returns:
         Canonical ``plugin.toml`` text ending with a newline.
-
-    Raises:
-        ValueError: When ``[queues]`` contains a nested table or a datetime.
     """
     lines: list[str] = []
     lines.append(f"api_version = {m['api_version']}")
@@ -1072,6 +1170,11 @@ def format_manifest(m: dict[str, Any]) -> str:
     _named_binding(lines, f"[{_SEALED_TABLE}]", m.get(_SEALED_TABLE))
     for kv in m.get("kv_namespaces") or []:
         _named_binding(lines, "[[kv_namespaces]]", kv)
+        if kv.get("namespace") is not None:
+            lines.append(f"namespace = {_esc(str(kv['namespace']))}")
+        for key in ("max_value_bytes", "max_keys"):
+            if kv.get(key) is not None:
+                lines.append(f"{key} = {int(kv[key])}")
     _emit_queues(lines, m.get("queues"))
     _named_binding(lines, "[work_fs]", m.get("work_fs"))
     _named_binding(lines, f"[{_LOOPBACK_TABLE}]", m.get(_LOOPBACK_TABLE))
@@ -1370,8 +1473,18 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
         props.append(
             (
                 str(kv.get("binding") or "KV"),
-                "Any",
-                "`[[kv_namespaces]]` durable KV binding. Not implemented yet.",
+                "KvNamespace",
+                f"`[[kv_namespaces]]` durable KV namespace `{_kv_namespace_name(kv)}` "
+                "(Workers `KVNamespace`-shaped).",
+            )
+        )
+    for producer in (m.get("queues") or {}).get("producers") or []:
+        props.append(
+            (
+                str(producer.get("binding")),
+                "QueueBinding",
+                f"`[[queues.producers]]` producer into queue `{producer.get('queue')}` "
+                "(Workers `Queue`-shaped `send` / `send_batch`).",
             )
         )
     loopback = m.get(_LOOPBACK_TABLE)
@@ -1418,7 +1531,7 @@ def render_env_types(m: dict[str, Any]) -> str:
     lines = [
         f"# Generated by `bookclerk-plugin types` from plugin.toml (id={m['id']}). Do not edit.",
         f"# Regenerate after changing [vars], [{_SEALED_TABLE}], [[events.producers]], [[databases]],",
-        f"# [work_fs], [[kv_namespaces]], or [{_LOOPBACK_TABLE}].",
+        f"# [[queues.producers]], [work_fs], [[kv_namespaces]], or [{_LOOPBACK_TABLE}].",
         "from __future__ import annotations",
         "",
         "from typing import Any, Protocol",
@@ -1426,6 +1539,9 @@ def render_env_types(m: dict[str, Any]) -> str:
     if any(t == "DatabaseBinding" for _, t, _ in props):
         lines.append("")
         lines.append("from bookclerk_plugin_sdk.db_value import DatabaseBinding")
+    workerd_types = sorted({t for _, t, _ in props if t in ("KvNamespace", "QueueBinding")})
+    if workerd_types:
+        lines.append(f"from bookclerk_plugin_sdk.workerd import {', '.join(workerd_types)}")
     lines += [
         "",
         "",

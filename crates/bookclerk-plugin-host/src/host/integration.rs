@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use bookclerk_config::Config;
 use bookclerk_integrations::{
     Brand, EventSubscription, ExternalUser, Integration, IntegrationContext, IntegrationHealth,
-    ProvidedOidcClient,
+    ProvidedOidcClient, QueueSubscription,
 };
 use bookclerk_plugin_sdk::{
     AuthenticateUserParams, DomainEvent, EventResult, ScanLibraryParams, PRODUCT_API_VERSION,
@@ -38,6 +38,8 @@ pub struct ExternalIntegration {
     allow_credential_login: bool,
     /// Durable outbox subscriptions from `plugin.toml`.
     event_subscriptions: Vec<EventSubscription>,
+    /// `[[queues.consumers]]` rows from `plugin.toml`.
+    queue_subscriptions: Vec<QueueSubscription>,
     /// Cancels the host-side `event_poll` loop from [`Self::start`].
     poll_cancel: Arc<AtomicBool>,
     /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded poll loop exits.
@@ -110,6 +112,18 @@ impl ExternalIntegration {
                 filter: s.filter.clone().filter(|v| !v.is_null()),
             })
             .collect();
+        let queue_subscriptions = plugin
+            .manifest
+            .queues
+            .consumers
+            .iter()
+            .map(|c| QueueSubscription {
+                queue: c.queue.clone(),
+                max_retries: c.max_retries,
+                dead_letter_queue: c.dead_letter_queue.clone(),
+                retry_delay_secs: c.retry_delay,
+            })
+            .collect();
         session.open(prepared.bindings).await?;
         Ok(Self {
             session,
@@ -120,6 +134,7 @@ impl ExternalIntegration {
             brand,
             allow_credential_login,
             event_subscriptions,
+            queue_subscriptions,
             poll_cancel: Arc::new(AtomicBool::new(false)),
             poll_epoch: Arc::new(AtomicU64::new(0)),
             plugin_instance_id: None,
@@ -317,6 +332,23 @@ impl Integration for ExternalIntegration {
 
     fn event_subscriptions(&self) -> Vec<EventSubscription> {
         self.event_subscriptions.clone()
+    }
+
+    fn queue_subscriptions(&self) -> Vec<QueueSubscription> {
+        self.queue_subscriptions.clone()
+    }
+
+    async fn deliver_queue_batch_cancelable(
+        &self,
+        batch: bookclerk_integrations::QueueBatch,
+        cancel: Arc<AtomicBool>,
+    ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::QueueResult>> {
+        if !self.session.consumes_queues() {
+            return Err(bookclerk_integrations::IntegrationError::message(
+                "plugin declares no [[queues.consumers]]",
+            ));
+        }
+        Ok(self.session.deliver_queue(batch, cancel).await?)
     }
 
     async fn health(&self) -> bookclerk_integrations::Result<IntegrationHealth> {
@@ -554,7 +586,7 @@ mode = "outbound"
         .unwrap();
         plugin.identity.plugin_key = key.clone();
         plugin.identity.artifact.plugin_key = key;
-        plugin.identity.provenance = PluginProvenance::VerifiedInstalled;
+        plugin.identity.provenance = PluginProvenance::VerifiedStaged;
         plugin
     }
 

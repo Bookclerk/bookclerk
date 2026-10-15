@@ -16,6 +16,7 @@ import {
   type CliSchema,
   type EventBatch,
   type PluginDescribe,
+  type QueueBatch,
 } from "@bookclerk/plugin-sdk/workerd";
 import type { Env } from "../bookclerk-configuration.js";
 
@@ -65,7 +66,7 @@ export class Cli extends CliEntrypoint<Env> {
   }
 }
 
-/** Default entrypoint: event trigger for `[[events.consumers]]`. */
+/** Default entrypoint: `event` and `queue` triggers for `[[events.consumers]]` and `[[queues.consumers]]`. */
 export default class EchoPlugin extends BookclerkEntrypoint<Env> {
   override async describe(): Promise<PluginDescribe> {
     return { displayName: "Echo Integration (workerd TypeScript)" };
@@ -95,6 +96,19 @@ export default class EchoPlugin extends BookclerkEntrypoint<Env> {
         default:
           msg.ack();
       }
+    }
+  }
+
+  override async queue(batch: QueueBatch): Promise<void> {
+    for (const msg of batch.messages) {
+      if (msg.contentType === "text" && msg.text() === "retry") {
+        msg.retry({ delaySeconds: 1, reason: "echo retry" });
+        continue;
+      }
+      console.log(`${PLUGIN_ID} saw queue ${batch.queue} message ${msg.id}`);
+      // Echo the body onward when the host granted the producer binding.
+      await this.env.ECHO_OUT?.send(msg.body, { contentType: "bytes" });
+      msg.ack();
     }
   }
 }

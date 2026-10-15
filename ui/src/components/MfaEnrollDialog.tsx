@@ -118,7 +118,7 @@ export function MfaEnrollDialog({
               Two-factor authentication required
             </h1>
             <p className="mt-1.5 text-sm text-ink/70">
-              This host requires a passkey or authenticator app before you can
+              This server requires a passkey or authenticator app before you can
               use the library. Set one up now, or log out and finish later.
               Logging out does not lock your account.
             </p>

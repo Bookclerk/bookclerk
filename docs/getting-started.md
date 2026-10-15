@@ -91,7 +91,7 @@ argv or read from the environment). Details per store: [sources.md](sources.md).
 ```bash
 bookclerk plugins list
 bookclerk plugins config set local root /data/Audiobooks
-bookclerk plugins enable s3 && bookclerk plugins config set s3 bucket my-audiobooks
+bookclerk plugins deploy s3 && bookclerk plugins config set s3 bucket my-audiobooks
 ```
 
 See [configuration.md](configuration.md#plugin-instances).

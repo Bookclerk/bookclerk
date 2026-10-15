@@ -35,3 +35,13 @@ binding = "DB"
 type = "book_acquired"
 schema_versions = [1]
 supports_suspend = true
+
+# Plugin-owned queues on the outbox: `queue(batch)` consumes `echo`; the
+# `ECHO_OUT` binding sends to `echo.out` (absent when the host grants no outbox).
+[[queues.consumers]]
+queue = "echo"
+max_retries = 2
+
+[[queues.producers]]
+queue = "echo.out"
+binding = "ECHO_OUT"

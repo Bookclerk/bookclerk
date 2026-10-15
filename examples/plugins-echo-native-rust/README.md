@@ -11,7 +11,7 @@ and [docs/plugins.md](../../docs/plugins.md).
 cargo build -p bookclerk-plugin-echo-native-rust
 # or: cargo stage-plugins --examples
 bookclerk plugins approve echo_native_rust --yes
-bookclerk plugins enable echo_native_rust
+bookclerk plugins deploy echo_native_rust
 bookclerk plugins echo_native_rust ping --message hi
 ```
 

@@ -54,6 +54,7 @@ pub async fn emit_book_acquired(
             dedup_key: format!("book_acquired:{}", book.uuid),
             payload,
             ordering_key: book.uuid.clone(),
+            ..bookclerk_library::PublishDomainEventSpec::default()
         })
         .await
 }

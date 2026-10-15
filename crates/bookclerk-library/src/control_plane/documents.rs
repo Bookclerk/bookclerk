@@ -20,8 +20,8 @@ pub const CLUSTER_SCOPE_ID: &str = "singleton";
 /// Scope type stored for cluster documents.
 pub const CLUSTER_SCOPE_TYPE: &str = "cluster";
 
-/// Scope type stored for host documents.
-pub const HOST_SCOPE_TYPE: &str = "host";
+/// Scope type stored for node documents.
+pub const NODE_SCOPE_TYPE: &str = "node";
 
 /// Scope type stored for one plugin instance's configuration.
 pub const PLUGIN_INSTANCE_SCOPE_TYPE: &str = "plugin_instance";
@@ -52,7 +52,7 @@ pub enum ConfigActor {
         /// Stable audit id (`cli`, `operator`, …).
         id: String,
     },
-    /// Portal administrator. Cannot write cluster or host configuration.
+    /// Portal administrator. Cannot write cluster or node configuration.
     Administrator {
         /// User id recorded if a write is attempted.
         id: String,
@@ -66,6 +66,10 @@ pub enum ConfigActor {
     /// instance document to a newer pinned schema; it is never constructed
     /// for an API caller.
     Bootstrap,
+    /// The placement scheduler (one daemon, under the `scheduler` lease). It
+    /// writes only `placed` / `unplaced` deployments; it is never
+    /// constructed for an API caller.
+    Scheduler,
 }
 
 impl ConfigActor {
@@ -74,6 +78,7 @@ impl ConfigActor {
         match self {
             Self::Operator { id } | Self::Administrator { id } | Self::Member { id } => id,
             Self::Bootstrap => "bootstrap",
+            Self::Scheduler => "scheduler",
         }
     }
 
@@ -91,9 +96,9 @@ impl ConfigActor {
 /// Address of one configuration document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentKey {
-    /// `cluster`, `host`, or `plugin_instance`.
+    /// `cluster`, `node`, or `plugin_instance`.
     pub scope_type: String,
-    /// `singleton`, a host id, or a plugin instance id.
+    /// `singleton`, a node id, or a plugin instance id.
     pub scope_id: String,
     /// Domain namespace.
     pub namespace: String,
@@ -110,12 +115,12 @@ impl DocumentKey {
         }
     }
 
-    /// Host-scoped domain.
+    /// Node-scoped domain.
     #[must_use]
-    pub fn host(host_id: &str, namespace: &str) -> Self {
+    pub fn node(node_id: &str, namespace: &str) -> Self {
         Self {
-            scope_type: HOST_SCOPE_TYPE.to_string(),
-            scope_id: host_id.to_string(),
+            scope_type: NODE_SCOPE_TYPE.to_string(),
+            scope_id: node_id.to_string(),
             namespace: namespace.to_string(),
         }
     }
@@ -123,7 +128,7 @@ impl DocumentKey {
     /// Plugin-instance configuration document.
     ///
     /// The address is `(plugin_instance, instance_id, config)`. It does not
-    /// include a plugin key, capability, alias, or host id.
+    /// include a plugin key, capability, alias, or node id.
     #[must_use]
     pub fn plugin_instance(instance_id: &str) -> Self {
         Self {
@@ -518,6 +523,18 @@ pub async fn replace_document(
         .await?
         .ok_or_else(|| LibraryError::NotFound(key.namespace.clone()))?;
     if stored.write_operation_id == operation_id || stored.revision == receipt.revision {
+        // Cluster settings and instance documents both land here; every node
+        // re-reads what it runs on the next pass.
+        super::node_queue::notify_all_nodes(
+            store,
+            super::node_queue::NodeMessage::ConfigurationChanged {
+                scope_type: stored.key.scope_type.clone(),
+                scope_id: stored.key.scope_id.clone(),
+                namespace: stored.key.namespace.clone(),
+                revision: stored.revision,
+            },
+        )
+        .await;
         Ok(ReplaceOutcome::Applied(stored))
     } else {
         Ok(ReplaceOutcome::Replayed {
@@ -727,19 +744,19 @@ fn replacement_hash(
 
 /// Error for a write the actor is not allowed to perform.
 fn unauthorized() -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!(
-        "unauthorized configuration write: operator authority is required"
-    ))
+    LibraryError::Forbidden(
+        "unauthorized configuration write: operator authority is required".into(),
+    )
 }
 
 /// Error for a document or operation id that fails validation.
 fn invalid(detail: &str) -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!("invalid configuration: {detail}"))
+    LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }
 
 /// Error for a domain schema version this binary does not apply.
 pub(super) fn unsupported(namespace: &str, version: i64) -> LibraryError {
-    LibraryError::Other(anyhow::anyhow!(
+    LibraryError::Invalid(format!(
         "unsupported configuration schema version {version} for {namespace}"
     ))
 }

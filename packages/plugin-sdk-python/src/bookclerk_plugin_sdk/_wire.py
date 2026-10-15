@@ -258,7 +258,7 @@ def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(1, v["displayName"])
     s.set_text_list(2, v["rpcFeatures"])
     _scalar_limits_codec.write(s.init_struct(3, 2, 0), v["scalarLimits"], caps)
-    _plugin_capabilities_codec.write(s.init_struct(4, 0, 6), v["capabilities"], caps)
+    _plugin_capabilities_codec.write(s.init_struct(4, 0, 8), v["capabilities"], caps)
     s.set_u16(2, _ord(A.PORTAL_AUTH_MODES, v["portalAuthMode"], "PortalAuthMode"))
     if v.get("passwordEnvVar") is not None:
         s.set_text(5, v["passwordEnvVar"])
@@ -278,7 +278,7 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
         "displayName": s.get_text(1),
         "rpcFeatures": s.get_text_list(2),
         "scalarLimits": _scalar_limits_codec.read(s.get_struct(3, 2, 0), caps),
-        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 0, 6), caps),
+        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 0, 8), caps),
         "portalAuthMode": _from_ord(A.PORTAL_AUTH_MODES, s.get_u16(2), "PortalAuthMode"),
         "aliases": s.get_text_list(6),
         "sortKey": s.get_u32(2),
@@ -397,6 +397,12 @@ def _write_bindings(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("storage") is not None:
         if v["storage"] is not None:
             s.set_cap(6, caps.export_cap(v["storage"]))
+    items = s.init_struct_list(7, len(v["queues"]), 0, 3)
+    for item, elem in zip(items, v["queues"], strict=True):
+        _named_queue_codec.write(item, elem, caps)
+    items = s.init_struct_list(8, len(v["kv"]), 0, 3)
+    for item, elem in zip(items, v["kv"], strict=True):
+        _named_kv_codec.write(item, elem, caps)
 
 
 def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
@@ -405,6 +411,8 @@ def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
         "secrets": _extensible_config_codec.read(s.get_struct(1, 1, 2), caps),
         "adapter": _database_adapter_config_codec.read(s.get_struct(2, 1, 4), caps),
         "databases": [_named_database_codec.read(item, caps) for item in s.get_struct_list(4, 0, 2)],
+        "queues": [_named_queue_codec.read(item, caps) for item in s.get_struct_list(7, 0, 3)],
+        "kv": [_named_kv_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
     }
     events = caps.import_cap(s.get_cap_index(3))
     if not (events is None):
@@ -418,8 +426,8 @@ def _read_bindings(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_bindings_codec = _Codec(0, 7, _write_bindings, _read_bindings)
-"""Wire codec for ``Bindings`` (0 data words, 7 pointers)."""
+_bindings_codec = _Codec(0, 9, _write_bindings, _read_bindings)
+"""Wire codec for ``Bindings`` (0 data words, 9 pointers)."""
 
 
 def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -447,6 +455,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("oidc") is not None:
         if v["oidc"] is not None:
             s.set_cap(7, caps.export_cap(v["oidc"]))
+    if v.get("queueConsumer") is not None:
+        if v["queueConsumer"] is not None:
+            s.set_cap(8, caps.export_cap(v["queueConsumer"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -476,18 +487,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     oidc = caps.import_cap(s.get_cap_index(7))
     if not (oidc is None):
         out["oidc"] = oidc
+    queue_consumer = caps.import_cap(s.get_cap_index(8))
+    if not (queue_consumer is None):
+        out["queueConsumer"] = queue_consumer
     return out
 
 
-_entrypoints_codec = _Codec(0, 8, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 8 pointers)."""
+_entrypoints_codec = _Codec(0, 9, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 9 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 8), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 9), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
@@ -498,7 +512,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 8), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 9), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -1345,6 +1359,52 @@ _named_database_codec = _Codec(0, 2, _write_named_database, _read_named_database
 """Wire codec for ``NamedDatabase`` (0 data words, 2 pointers)."""
 
 
+def _write_named_queue(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_text(1, v["queue"])
+    if v.get("producer") is not None:
+        if v["producer"] is not None:
+            s.set_cap(2, caps.export_cap(v["producer"]))
+
+
+def _read_named_queue(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "name": s.get_text(0),
+        "queue": s.get_text(1),
+    }
+    producer = caps.import_cap(s.get_cap_index(2))
+    if not (producer is None):
+        out["producer"] = producer
+    return out
+
+
+_named_queue_codec = _Codec(0, 3, _write_named_queue, _read_named_queue)
+"""Wire codec for ``NamedQueue`` (0 data words, 3 pointers)."""
+
+
+def _write_named_kv(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_text(1, v["namespace"])
+    if v.get("kv") is not None:
+        if v["kv"] is not None:
+            s.set_cap(2, caps.export_cap(v["kv"]))
+
+
+def _read_named_kv(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "name": s.get_text(0),
+        "namespace": s.get_text(1),
+    }
+    kv = caps.import_cap(s.get_cap_index(2))
+    if not (kv is None):
+        out["kv"] = kv
+    return out
+
+
+_named_kv_codec = _Codec(0, 3, _write_named_kv, _read_named_kv)
+"""Wire codec for ``NamedKv`` (0 data words, 3 pointers)."""
+
+
 def _write_event_consumer_spec(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["eventType"])
     s.set_u32_list(1, v["schemaVersions"])
@@ -1372,6 +1432,8 @@ def _write_plugin_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
     s.set_text_list(3, v["jobs"])
     s.set_text_list(4, v["databases"])
     s.set_text_list(5, v["bindings"])
+    s.set_text_list(6, v["queueConsumers"])
+    s.set_text_list(7, v["queueProducers"])
 
 
 def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -1382,11 +1444,13 @@ def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "jobs": s.get_text_list(3),
         "databases": s.get_text_list(4),
         "bindings": s.get_text_list(5),
+        "queueConsumers": s.get_text_list(6),
+        "queueProducers": s.get_text_list(7),
     }
 
 
-_plugin_capabilities_codec = _Codec(0, 6, _write_plugin_capabilities, _read_plugin_capabilities)
-"""Wire codec for ``PluginCapabilities`` (0 data words, 6 pointers)."""
+_plugin_capabilities_codec = _Codec(0, 8, _write_plugin_capabilities, _read_plugin_capabilities)
+"""Wire codec for ``PluginCapabilities`` (0 data words, 8 pointers)."""
 
 
 def _write_brand(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -3064,6 +3128,408 @@ _invocation_codec = _Codec(1, 4, _write_invocation, _read_invocation)
 """Wire codec for ``Invocation`` (1 data words, 4 pointers)."""
 
 
+def _write_queue_message(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["id"])
+    s.set_u64(0, v["timestampUnixMs"])
+    s.set_data(1, v["body"])
+    s.set_text(2, v["contentType"])
+    s.set_u32(2, v["attempts"])
+    s.set_text(3, v["source"])
+
+
+def _read_queue_message(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "id": s.get_text(0),
+        "timestampUnixMs": s.get_u64(0),
+        "body": s.get_data(1),
+        "contentType": s.get_text(2),
+        "attempts": s.get_u32(2),
+        "source": s.get_text(3),
+    }
+
+
+_queue_message_codec = _Codec(2, 4, _write_queue_message, _read_queue_message)
+"""Wire codec for ``QueueMessage`` (2 data words, 4 pointers)."""
+
+
+def _write_queue_batch(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["queue"])
+    items = s.init_struct_list(1, len(v["messages"]), 2, 4)
+    for item, elem in zip(items, v["messages"], strict=True):
+        _queue_message_codec.write(item, elem, caps)
+
+
+def _read_queue_batch(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "queue": s.get_text(0),
+        "messages": [_queue_message_codec.read(item, caps) for item in s.get_struct_list(1, 2, 4)],
+    }
+
+
+_queue_batch_codec = _Codec(0, 2, _write_queue_batch, _read_queue_batch)
+"""Wire codec for ``QueueBatch`` (0 data words, 2 pointers)."""
+
+
+def _write_queue_retry(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u32(0, v["delaySeconds"])
+    s.set_text(0, v["reason"])
+
+
+def _read_queue_retry(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "delaySeconds": s.get_u32(0),
+        "reason": s.get_text(0),
+    }
+
+
+_queue_retry_codec = _Codec(1, 1, _write_queue_retry, _read_queue_retry)
+"""Wire codec for ``QueueRetry`` (1 data words, 1 pointers)."""
+
+
+def _write_queue_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ack":
+        s.set_u16(0, 0)
+    elif kind == "retry":
+        s.set_u16(0, 1)
+        _queue_retry_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
+    else:
+        raise ValueError(f"unknown QueueResult union member: {kind}")
+
+
+def _read_queue_result(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ack"}
+    elif disc == 1:
+        return {"kind": "retry", "value": _queue_retry_codec.read(s.get_struct(0, 1, 1), caps)}
+    raise ValueError(f"unknown QueueResult union member: {disc}")
+
+
+_queue_result_codec = _Codec(1, 1, _write_queue_result, _read_queue_result)
+"""Wire codec for ``QueueResult`` (1 data words, 1 pointers)."""
+
+
+def _write_queue_batch_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["results"]), 1, 1)
+    for item, elem in zip(items, v["results"], strict=True):
+        _queue_result_codec.write(item, elem, caps)
+
+
+def _read_queue_batch_ok(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "results": [_queue_result_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+    }
+
+
+_queue_batch_ok_codec = _Codec(0, 1, _write_queue_batch_ok, _read_queue_batch_ok)
+"""Wire codec for ``QueueBatchOk`` (0 data words, 1 pointers)."""
+
+
+def _write_queue_batch_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _queue_batch_ok_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown QueueBatchReply union member: {kind}")
+
+
+def _read_queue_batch_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _queue_batch_ok_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown QueueBatchReply union member: {disc}")
+
+
+_queue_batch_reply_codec = _Codec(1, 1, _write_queue_batch_reply, _read_queue_batch_reply)
+"""Wire codec for ``QueueBatchReply`` (1 data words, 1 pointers)."""
+
+
+def _write_queue_send_message(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_data(0, v["body"])
+    s.set_text(1, v["contentType"])
+    s.set_u32(0, v["delaySeconds"])
+
+
+def _read_queue_send_message(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "body": s.get_data(0),
+        "contentType": s.get_text(1),
+        "delaySeconds": s.get_u32(0),
+    }
+
+
+_queue_send_message_codec = _Codec(1, 2, _write_queue_send_message, _read_queue_send_message)
+"""Wire codec for ``QueueSendMessage`` (1 data words, 2 pointers)."""
+
+
+def _write_queue_send_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["messageIds"])
+
+
+def _read_queue_send_ok(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "messageIds": s.get_text_list(0),
+    }
+
+
+_queue_send_ok_codec = _Codec(0, 1, _write_queue_send_ok, _read_queue_send_ok)
+"""Wire codec for ``QueueSendOk`` (0 data words, 1 pointers)."""
+
+
+def _write_queue_send_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _queue_send_ok_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown QueueSendReply union member: {kind}")
+
+
+def _read_queue_send_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _queue_send_ok_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown QueueSendReply union member: {disc}")
+
+
+_queue_send_reply_codec = _Codec(1, 1, _write_queue_send_reply, _read_queue_send_reply)
+"""Wire codec for ``QueueSendReply`` (1 data words, 1 pointers)."""
+
+
+def _write_kv_put_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u64(0, v["expirationUnixMs"])
+    s.set_u64(1, v["expirationTtlSeconds"])
+    s.set_text(0, v["metadata"])
+
+
+def _read_kv_put_options(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "expirationUnixMs": s.get_u64(0),
+        "expirationTtlSeconds": s.get_u64(1),
+        "metadata": s.get_text(0),
+    }
+
+
+_kv_put_options_codec = _Codec(2, 1, _write_kv_put_options, _read_kv_put_options)
+"""Wire codec for ``KvPutOptions`` (2 data words, 1 pointers)."""
+
+
+def _write_kv_get_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["found"])
+    s.set_data(0, v["value"])
+    s.set_text(1, v["metadata"])
+    s.set_u64(1, v["expirationUnixMs"])
+
+
+def _read_kv_get_ok(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "found": s.get_bool(0),
+        "value": s.get_data(0),
+        "metadata": s.get_text(1),
+        "expirationUnixMs": s.get_u64(1),
+    }
+
+
+_kv_get_ok_codec = _Codec(2, 2, _write_kv_get_ok, _read_kv_get_ok)
+"""Wire codec for ``KvGetOk`` (2 data words, 2 pointers)."""
+
+
+def _write_kv_get_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _kv_get_ok_codec.write(s.init_struct(0, 2, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown KvGetReply union member: {kind}")
+
+
+def _read_kv_get_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _kv_get_ok_codec.read(s.get_struct(0, 2, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown KvGetReply union member: {disc}")
+
+
+_kv_get_reply_codec = _Codec(1, 1, _write_kv_get_reply, _read_kv_get_reply)
+"""Wire codec for ``KvGetReply`` (1 data words, 1 pointers)."""
+
+
+def _write_kv_put_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u64(0, v["expirationUnixMs"])
+
+
+def _read_kv_put_ok(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "expirationUnixMs": s.get_u64(0),
+    }
+
+
+_kv_put_ok_codec = _Codec(1, 0, _write_kv_put_ok, _read_kv_put_ok)
+"""Wire codec for ``KvPutOk`` (1 data words, 0 pointers)."""
+
+
+def _write_kv_delete_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["existed"])
+
+
+def _read_kv_delete_ok(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "existed": s.get_bool(0),
+    }
+
+
+_kv_delete_ok_codec = _Codec(1, 0, _write_kv_delete_ok, _read_kv_delete_ok)
+"""Wire codec for ``KvDeleteOk`` (1 data words, 0 pointers)."""
+
+
+def _write_kv_put_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _kv_put_ok_codec.write(s.init_struct(0, 1, 0), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown KvPutReply union member: {kind}")
+
+
+def _read_kv_put_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _kv_put_ok_codec.read(s.get_struct(0, 1, 0), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown KvPutReply union member: {disc}")
+
+
+_kv_put_reply_codec = _Codec(1, 1, _write_kv_put_reply, _read_kv_put_reply)
+"""Wire codec for ``KvPutReply`` (1 data words, 1 pointers)."""
+
+
+def _write_kv_delete_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _kv_delete_ok_codec.write(s.init_struct(0, 1, 0), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown KvDeleteReply union member: {kind}")
+
+
+def _read_kv_delete_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _kv_delete_ok_codec.read(s.get_struct(0, 1, 0), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown KvDeleteReply union member: {disc}")
+
+
+_kv_delete_reply_codec = _Codec(1, 1, _write_kv_delete_reply, _read_kv_delete_reply)
+"""Wire codec for ``KvDeleteReply`` (1 data words, 1 pointers)."""
+
+
+def _write_kv_list_options(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["prefix"])
+    s.set_text(1, v["cursor"])
+    s.set_u32(0, v["limit"])
+
+
+def _read_kv_list_options(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "prefix": s.get_text(0),
+        "cursor": s.get_text(1),
+        "limit": s.get_u32(0),
+    }
+
+
+_kv_list_options_codec = _Codec(1, 2, _write_kv_list_options, _read_kv_list_options)
+"""Wire codec for ``KvListOptions`` (1 data words, 2 pointers)."""
+
+
+def _write_kv_list_key(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+    s.set_text(1, v["metadata"])
+    s.set_u64(0, v["expirationUnixMs"])
+
+
+def _read_kv_list_key(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+        "metadata": s.get_text(1),
+        "expirationUnixMs": s.get_u64(0),
+    }
+
+
+_kv_list_key_codec = _Codec(1, 2, _write_kv_list_key, _read_kv_list_key)
+"""Wire codec for ``KvListKey`` (1 data words, 2 pointers)."""
+
+
+def _write_kv_list_ok(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["keys"]), 1, 2)
+    for item, elem in zip(items, v["keys"], strict=True):
+        _kv_list_key_codec.write(item, elem, caps)
+    s.set_bool(0, v["listComplete"])
+    s.set_text(1, v["cursor"])
+
+
+def _read_kv_list_ok(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "keys": [_kv_list_key_codec.read(item, caps) for item in s.get_struct_list(0, 1, 2)],
+        "listComplete": s.get_bool(0),
+        "cursor": s.get_text(1),
+    }
+
+
+_kv_list_ok_codec = _Codec(1, 2, _write_kv_list_ok, _read_kv_list_ok)
+"""Wire codec for ``KvListOk`` (1 data words, 2 pointers)."""
+
+
+def _write_kv_list_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _kv_list_ok_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown KvListReply union member: {kind}")
+
+
+def _read_kv_list_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _kv_list_ok_codec.read(s.get_struct(0, 1, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown KvListReply union member: {disc}")
+
+
+_kv_list_reply_codec = _Codec(1, 1, _write_kv_list_reply, _read_kv_list_reply)
+"""Wire codec for ``KvListReply`` (1 data words, 1 pointers)."""
+
+
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "null":
@@ -4367,6 +4833,210 @@ _event_publisher_publish_results_codec = _Codec(0, 1, _write_event_publisher_pub
 """Wire codec for ``EventPublisherPublishResults`` (0 data words, 1 pointers)."""
 
 
+def _write_queue_consumer_queue_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _queue_batch_codec.write(s.init_struct(0, 0, 2), v["batch"], caps)
+
+
+def _read_queue_consumer_queue_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "batch": _queue_batch_codec.read(s.get_struct(0, 0, 2), caps),
+    }
+
+
+_queue_consumer_queue_params_codec = _Codec(0, 1, _write_queue_consumer_queue_params, _read_queue_consumer_queue_params)
+"""Wire codec for ``QueueConsumerQueueParams`` (0 data words, 1 pointers)."""
+
+
+def _write_queue_consumer_queue_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _queue_batch_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_queue_consumer_queue_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _queue_batch_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_queue_consumer_queue_results_codec = _Codec(0, 1, _write_queue_consumer_queue_results, _read_queue_consumer_queue_results)
+"""Wire codec for ``QueueConsumerQueueResults`` (0 data words, 1 pointers)."""
+
+
+def _write_queue_producer_send_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _queue_send_message_codec.write(s.init_struct(0, 1, 2), v["message"], caps)
+
+
+def _read_queue_producer_send_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "message": _queue_send_message_codec.read(s.get_struct(0, 1, 2), caps),
+    }
+
+
+_queue_producer_send_params_codec = _Codec(0, 1, _write_queue_producer_send_params, _read_queue_producer_send_params)
+"""Wire codec for ``QueueProducerSendParams`` (0 data words, 1 pointers)."""
+
+
+def _write_queue_producer_send_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _queue_send_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_queue_producer_send_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _queue_send_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_queue_producer_send_results_codec = _Codec(0, 1, _write_queue_producer_send_results, _read_queue_producer_send_results)
+"""Wire codec for ``QueueProducerSendResults`` (0 data words, 1 pointers)."""
+
+
+def _write_queue_producer_send_batch_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["messages"]), 1, 2)
+    for item, elem in zip(items, v["messages"], strict=True):
+        _queue_send_message_codec.write(item, elem, caps)
+    s.set_u32(0, v["delaySeconds"])
+
+
+def _read_queue_producer_send_batch_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "messages": [_queue_send_message_codec.read(item, caps) for item in s.get_struct_list(0, 1, 2)],
+        "delaySeconds": s.get_u32(0),
+    }
+
+
+_queue_producer_send_batch_params_codec = _Codec(1, 1, _write_queue_producer_send_batch_params, _read_queue_producer_send_batch_params)
+"""Wire codec for ``QueueProducerSendBatchParams`` (1 data words, 1 pointers)."""
+
+
+def _write_queue_producer_send_batch_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _queue_send_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_queue_producer_send_batch_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _queue_send_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_queue_producer_send_batch_results_codec = _Codec(0, 1, _write_queue_producer_send_batch_results, _read_queue_producer_send_batch_results)
+"""Wire codec for ``QueueProducerSendBatchResults`` (0 data words, 1 pointers)."""
+
+
+def _write_kv_namespace_get_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+
+
+def _read_kv_namespace_get_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+    }
+
+
+_kv_namespace_get_params_codec = _Codec(0, 1, _write_kv_namespace_get_params, _read_kv_namespace_get_params)
+"""Wire codec for ``KvNamespaceGetParams`` (0 data words, 1 pointers)."""
+
+
+def _write_kv_namespace_get_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _kv_get_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_kv_namespace_get_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _kv_get_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_kv_namespace_get_results_codec = _Codec(0, 1, _write_kv_namespace_get_results, _read_kv_namespace_get_results)
+"""Wire codec for ``KvNamespaceGetResults`` (0 data words, 1 pointers)."""
+
+
+def _write_kv_namespace_put_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+    s.set_data(1, v["value"])
+    _kv_put_options_codec.write(s.init_struct(2, 2, 1), v["options"], caps)
+
+
+def _read_kv_namespace_put_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+        "value": s.get_data(1),
+        "options": _kv_put_options_codec.read(s.get_struct(2, 2, 1), caps),
+    }
+
+
+_kv_namespace_put_params_codec = _Codec(0, 3, _write_kv_namespace_put_params, _read_kv_namespace_put_params)
+"""Wire codec for ``KvNamespacePutParams`` (0 data words, 3 pointers)."""
+
+
+def _write_kv_namespace_put_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _kv_put_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_kv_namespace_put_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _kv_put_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_kv_namespace_put_results_codec = _Codec(0, 1, _write_kv_namespace_put_results, _read_kv_namespace_put_results)
+"""Wire codec for ``KvNamespacePutResults`` (0 data words, 1 pointers)."""
+
+
+def _write_kv_namespace_delete_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+
+
+def _read_kv_namespace_delete_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+    }
+
+
+_kv_namespace_delete_params_codec = _Codec(0, 1, _write_kv_namespace_delete_params, _read_kv_namespace_delete_params)
+"""Wire codec for ``KvNamespaceDeleteParams`` (0 data words, 1 pointers)."""
+
+
+def _write_kv_namespace_delete_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _kv_delete_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_kv_namespace_delete_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _kv_delete_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_kv_namespace_delete_results_codec = _Codec(0, 1, _write_kv_namespace_delete_results, _read_kv_namespace_delete_results)
+"""Wire codec for ``KvNamespaceDeleteResults`` (0 data words, 1 pointers)."""
+
+
+def _write_kv_namespace_list_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _kv_list_options_codec.write(s.init_struct(0, 1, 2), v["options"], caps)
+
+
+def _read_kv_namespace_list_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "options": _kv_list_options_codec.read(s.get_struct(0, 1, 2), caps),
+    }
+
+
+_kv_namespace_list_params_codec = _Codec(0, 1, _write_kv_namespace_list_params, _read_kv_namespace_list_params)
+"""Wire codec for ``KvNamespaceListParams`` (0 data words, 1 pointers)."""
+
+
+def _write_kv_namespace_list_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _kv_list_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_kv_namespace_list_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _kv_list_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_kv_namespace_list_results_codec = _Codec(0, 1, _write_kv_namespace_list_results, _read_kv_namespace_list_results)
+"""Wire codec for ``KvNamespaceListResults`` (0 data words, 1 pointers)."""
+
+
 def _write_content_source_login_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _login_params_codec.write(s.init_struct(0, 2, 10), v["params"], caps)
 
@@ -5421,13 +6091,13 @@ _plugin_worker_describe_results_codec = _Codec(0, 1, _write_plugin_worker_descri
 
 def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
-    _bindings_codec.write(s.init_struct(1, 0, 7), v["bindings"], caps)
+    _bindings_codec.write(s.init_struct(1, 0, 9), v["bindings"], caps)
 
 
 def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "invocation": _invocation_codec.read(s.get_struct(0, 1, 4), caps),
-        "bindings": _bindings_codec.read(s.get_struct(1, 0, 7), caps),
+        "bindings": _bindings_codec.read(s.get_struct(1, 0, 9), caps),
     }
 
 

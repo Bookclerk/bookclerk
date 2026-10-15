@@ -245,33 +245,87 @@ def test_check_rejects_typescript_main():
 
 
 def test_check_accepts_kv_and_queues_declarations():
-    assert "not_implemented_kv" in check_plugin(FIXTURES / "not-implemented-kv")
-    assert "not_implemented_queues" in check_plugin(FIXTURES / "not-implemented-queues")
+    assert "valid_kv" in check_plugin(FIXTURES / "valid-kv")
+    assert "valid_queues" in check_plugin(FIXTURES / "valid-queues")
 
 
-def test_materialize_refuses_kv_and_queues_fixtures():
+def test_check_rejects_plugin_producing_host_event():
+    with pytest.raises(ValueError, match="emitted by the host"):
+        check_plugin(FIXTURES / "invalid-producer-host-event")
+
+
+def test_check_rejects_bad_kv_namespace():
+    with pytest.raises(ValueError, match="namespace"):
+        check_plugin(FIXTURES / "invalid-kv-namespace")
+
+
+def test_materialize_accepts_kv_fixture():
     import tomllib
 
     from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
 
-    for name in ("not-implemented-kv", "not-implemented-queues"):
-        manifest = tomllib.loads((FIXTURES / name / "plugin.toml").read_text(encoding="utf-8"))
-        with pytest.raises(ValueError, match="not implemented yet"):
-            materialize_config(
-                FIXTURES / name,
-                manifest,
-                listen_port=0,
-                bridge_token="token",
-            )
+    manifest = tomllib.loads(
+        (FIXTURES / "valid-kv" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    materialize_config(
+        FIXTURES / "valid-kv",
+        manifest,
+        listen_port=0,
+        bridge_token="token",
+    )
+
+
+def test_kv_rows_format_and_type():
+    import tomllib
+
+    from bookclerk_plugin_sdk.tools import render_env_types
+
+    manifest = tomllib.loads(
+        (FIXTURES / "valid-kv" / "plugin.toml").read_text(encoding="utf-8")
+    )
+    rendered = format_manifest(manifest)
+    assert 'namespace = "sync.cursors"' in rendered
+    assert "max_value_bytes = 4096" in rendered
+    assert "max_keys = 500" in rendered
+    stub = render_env_types(manifest)
+    assert "from bookclerk_plugin_sdk.workerd import KvNamespace" in stub
+    assert "    KV: KvNamespace" in stub
+    assert "    CURSORS: KvNamespace" in stub
+    assert "sync.cursors" in stub
 
 
 def test_format_keeps_queues_declaration():
-    text = (FIXTURES / "not-implemented-queues" / "plugin.toml").read_text(encoding="utf-8")
+    text = (FIXTURES / "valid-queues" / "plugin.toml").read_text(encoding="utf-8")
     import tomllib
 
     rendered = format_manifest(tomllib.loads(text))
     assert "[[queues.producers]]" in rendered
+    assert "[[queues.consumers]]" in rendered
+    assert 'dead_letter_queue = "jobs-dlq"' in rendered
     assert "not implemented" not in rendered.lower()
+
+
+def test_validate_rejects_reserved_and_duplicate_queues():
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    base = {
+        "api_version": 3,
+        "id": "echo",
+        "runtime": "native",
+        "command": "./echo",
+        "entrypoints": ["cli"],
+        "capabilities": {"network": {"mode": "deny"}},
+    }
+    with pytest.raises(ValueError, match="host-reserved"):
+        validate_manifest({**base, "queues": {"producers": [{"queue": "core.events", "binding": "Q"}]}})
+    with pytest.raises(ValueError, match="is duplicated"):
+        validate_manifest({**base, "queues": {"consumers": [{"queue": "jobs"}, {"queue": "jobs"}]}})
+    with pytest.raises(ValueError, match="collides"):
+        validate_manifest({**base, "queues": {"producers": [{"queue": "jobs", "binding": "EVENTS"}]}})
+    with pytest.raises(ValueError, match="must differ"):
+        validate_manifest(
+            {**base, "queues": {"consumers": [{"queue": "jobs", "dead_letter_queue": "jobs"}]}}
+        )
 
 
 def test_calendar_date_rejects_unicode_digits_and_unquoted_toml_dates():
@@ -313,62 +367,6 @@ def test_format_manifest_does_not_insert_python_flags():
     )
     assert "python_workers" not in rendered
 
-
-def test_format_queues_rejects_nested_tables():
-    with pytest.raises(ValueError, match="cannot be formatted"):
-        format_manifest(
-            {
-                "api_version": 3,
-                "id": "echo",
-                "runtime": "native",
-                "command": "./echo",
-                "entrypoints": ["cli"],
-                "queues": {"meta": {"region": "us"}},
-                "capabilities": {"network": {"mode": "deny"}},
-            }
-        )
-
-
-def test_format_queues_rejects_toml_dates():
-    import tomllib
-
-    text = """
-api_version = 3
-id = "echo"
-runtime = "native"
-command = "./echo"
-entrypoints = ["cli"]
-
-[queues]
-since = 2026-01-01
-
-[capabilities.network]
-mode = "deny"
-"""
-    with pytest.raises(ValueError, match="cannot be formatted"):
-        format_manifest(tomllib.loads(text))
-
-
-def test_format_queues_keeps_scalar_and_empty_arrays():
-    rendered = format_manifest(
-        {
-            "api_version": 3,
-            "id": "echo",
-            "runtime": "native",
-            "command": "./echo",
-            "entrypoints": ["cli"],
-            "queues": {
-                "producers": [{"binding": "MY_QUEUE", "queue": "jobs"}],
-                "names": ["a"],
-                "empty": [],
-            },
-        }
-    )
-    assert "[[queues.producers]]" in rendered
-    assert 'names = ["a"]' in rendered
-    assert "empty = []" in rendered
-    assert "[[queues.names]]" not in rendered
-    assert "[[queues.empty]]" not in rendered
 
 
 def test_format_omits_module_path_when_absent():
@@ -974,3 +972,23 @@ def test_workerd_cache_and_currency(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     except ValueError as err:
         assert "symlink" in str(err).lower()
     assert outside.read_bytes() == b"OUT"
+
+def test_manifest_capabilities_report_queues():
+    from bookclerk_plugin_sdk.sparse_workerd.config import manifest_capabilities
+
+    caps = manifest_capabilities(
+        {
+            "id": "q",
+            "entrypoints": ["cli"],
+            "queues": {
+                "producers": [
+                    {"queue": "jobs", "binding": "JOBS"},
+                    {"queue": "jobs", "binding": "JOBS_AGAIN"},
+                ],
+                "consumers": [{"queue": "notify"}],
+            },
+        }
+    )
+    assert caps["queueConsumers"] == ["notify"]
+    assert caps["queueProducers"] == ["jobs"]
+    assert caps["bindings"] == ["JOBS", "JOBS_AGAIN"]

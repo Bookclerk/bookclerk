@@ -380,6 +380,11 @@ class Bindings(TypedDict):
             filesystem); null unless `[work_fs]` is granted. Job input/output travel on
             `JobRunner.job(controller)`, never here. Null when the guest does not export
             this capability.
+        queues: Named `[[queues.producers]]` bindings: one host-served producer per
+            binding, each sending into the queue the row names. Empty when the manifest
+            declares none.
+        kv: Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
+            binding, scoped to this plugin. Empty when the manifest declares none.
     """
 
     config: ExtensibleConfig
@@ -389,6 +394,8 @@ class Bindings(TypedDict):
     databases: list[NamedDatabase]
     cancel: NotRequired[Cancellation | None]
     storage: NotRequired[Destination | None]
+    queues: list[NamedQueue]
+    kv: list[NamedKv]
 
 
 class Entrypoints(TypedDict):
@@ -411,6 +418,8 @@ class Entrypoints(TypedDict):
             this capability.
         cli: `cli` entrypoint. Null when the guest does not export this capability.
         oidc: `oidc` entrypoint. Null when the guest does not export this capability.
+        queueConsumer: `[[queues.consumers]]` trigger: `queue(batch)` handler. Null when
+            the guest does not export this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -421,6 +430,7 @@ class Entrypoints(TypedDict):
     remoteLibrary: NotRequired[RemoteLibrary | None]
     cli: NotRequired[PluginCli | None]
     oidc: NotRequired[Oidc | None]
+    queueConsumer: NotRequired[QueueConsumer | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -1634,6 +1644,136 @@ class NamedDatabase(TypedDict):
     database: NotRequired[GuestDatabase | None]
 
 
+class QueueConsumer(Protocol):
+    """`[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
+    at-least-once; consumers must be idempotent on `QueueMessage.id`.
+    """
+
+    async def queue(self, batch: QueueBatch) -> QueueBatchReply:
+        """Deliver one ordered batch of messages from one queue.
+
+        Args:
+            batch: Messages in delivery order.
+
+        Returns:
+            ``QueueBatchReply``
+        """
+        ...
+
+
+class QueueProducer(Protocol):
+    """Queue producer binding: host-served send into the queue a
+    `[[queues.producers]]` row names, granted through `Bindings.queues`.
+    """
+
+    async def send(self, message: QueueSendMessage) -> QueueSendReply:
+        """Send one message.
+
+        Args:
+            message: Body, encoding, and delay.
+
+        Returns:
+            ``QueueSendReply``
+        """
+        ...
+
+    async def send_batch(self, messages: list[QueueSendMessage], delay_seconds: int) -> QueueSendReply:
+        """Send up to `maxListPage` messages in order; `delaySeconds` applies to
+        every message that carries no delay of its own.
+
+        Args:
+            messages: Messages in send order.
+            delay_seconds: Default delay for the batch.
+
+        Returns:
+            ``QueueSendReply``
+        """
+        ...
+
+
+class NamedQueue(TypedDict):
+    """One named queue producer delivered on `Bindings.queues`.
+
+    Attributes:
+        name: Binding name from `plugin.toml` `[[queues.producers]]`.
+        queue: Queue the binding sends to.
+        producer: Host-served producer for that queue. Null when the guest does not
+            export this capability.
+    """
+
+    name: str
+    queue: str
+    producer: NotRequired[QueueProducer | None]
+
+
+class KvNamespace(Protocol):
+    """Durable key/value namespace: a Workers `KVNamespace`-shaped binding the host
+    serves from the library database, scoped to the plugin and the namespace a
+    `[[kv_namespaces]]` row names, granted through `Bindings.kv`. Values live in
+    the cluster, so an instance moved to another host reads its own keys.
+    """
+
+    async def get(self, key: str) -> KvGetReply:
+        """Read one key; `found = false` when absent or expired.
+
+        Args:
+            key: Key, at most `maxKvKeyBytes` UTF-8 bytes.
+
+        Returns:
+            ``KvGetReply``
+        """
+        ...
+
+    async def put(self, key: str, value: bytes, options: KvPutOptions) -> KvPutReply:
+        """Write one key, replacing any previous value and metadata.
+
+        Args:
+            key: Key, at most `maxKvKeyBytes` UTF-8 bytes.
+            value: Value, at most the namespace's `max_value_bytes`.
+            options: Expiration and metadata.
+
+        Returns:
+            ``KvPutReply``
+        """
+        ...
+
+    async def delete(self, key: str) -> KvDeleteReply:
+        """Delete one key; a missing key is not an error.
+
+        Args:
+            key: Key to delete.
+
+        Returns:
+            ``KvDeleteReply``
+        """
+        ...
+
+    async def list(self, options: KvListOptions) -> KvListReply:
+        """List keys in lexical order, one page at a time.
+
+        Args:
+            options: Prefix, cursor, and page size.
+
+        Returns:
+            ``KvListReply``
+        """
+        ...
+
+
+class NamedKv(TypedDict):
+    """One named durable namespace delivered on `Bindings.kv`.
+
+    Attributes:
+        name: Binding name from `plugin.toml` `[[kv_namespaces]]`.
+        namespace: Namespace the binding is scoped to.
+        kv: Host-served namespace. Null when the guest does not export this capability.
+    """
+
+    name: str
+    namespace: str
+    kv: NotRequired[KvNamespace | None]
+
+
 class ContentSource(Protocol):
     """Storefront content source (not byte Source). Every method takes and
     returns typed structs from the "Typed method payloads" section.
@@ -1914,7 +2054,10 @@ class PluginCapabilities(TypedDict):
         jobs: Command types the default entrypoint runs (`job(controller)` trigger).
         databases: Plugin-owned database binding names (`[[databases]]`).
         bindings: Other named bindings the guest expects on `env` (`CONFIG`, `SECRETS`,
-            `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, ...).
+            `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, `[[queues.producers]]` names, ...).
+        queueConsumers: Queues the default entrypoint consumes (`queue(batch)` trigger).
+        queueProducers: Queues the guest may send to through its `[[queues.producers]]`
+            bindings.
     """
 
     entrypoints: list[Entrypoint]
@@ -1923,6 +2066,8 @@ class PluginCapabilities(TypedDict):
     jobs: list[str]
     databases: list[str]
     bindings: list[str]
+    queueConsumers: list[str]
+    queueProducers: list[str]
 
 
 class Brand(TypedDict):
@@ -3363,6 +3508,426 @@ class Invocation(TypedDict):
     causationId: str
 
 
+class QueueMessage(TypedDict):
+    """One message on a Workers-style queue, delivered by `QueueConsumer.queue`.
+
+    Attributes:
+        id: Outbox row id; stable across redeliveries.
+        timestampUnixMs: When the producer sent the message (UTC Unix milliseconds).
+        body: Encoded body; at most `maxEventPayloadBytes`.
+        contentType: Body encoding: `json`, `text`, or `bytes`.
+        attempts: Delivery counter, starting at 1.
+        source: Producer plugin id; empty when the host sent it.
+    """
+
+    id: str
+    timestampUnixMs: int
+    body: bytes
+    contentType: str
+    attempts: int
+    source: str
+
+
+class QueueBatch(TypedDict):
+    """One `QueueConsumer.queue` delivery: messages from one queue in send order.
+
+    Attributes:
+        queue: Queue the messages were sent to.
+        messages: Messages in delivery order; the reply carries one `QueueResult` per
+            entry.
+    """
+
+    queue: str
+    messages: list[QueueMessage]
+
+
+class QueueRetry(TypedDict):
+    """Redeliver a queue message later.
+
+    Attributes:
+        delaySeconds: Seconds before redelivery; zero applies the consumer's
+            `retry_delay`.
+        reason: Short human reason.
+    """
+
+    delaySeconds: int
+    reason: str
+
+
+class QueueResultAck(TypedDict):
+    """``QueueResult`` member ``ack``.
+
+    Handled; the host marks the message delivered.
+
+    Attributes:
+        kind: Always ``"ack"``.
+    """
+
+    kind: Literal["ack"]
+
+
+class QueueResultRetry(TypedDict):
+    """``QueueResult`` member ``retry``.
+
+    Redeliver later.
+
+    Attributes:
+        kind: Always ``"retry"``.
+        value: Redeliver later.
+    """
+
+    kind: Literal["retry"]
+    value: QueueRetry
+
+
+QueueResult = Union[
+    QueueResultAck,
+    QueueResultRetry,
+]
+"""Per-message outcome inside a `QueueConsumer.queue` batch reply."""
+
+
+class QueueBatchOk(TypedDict):
+    """Success payload of `QueueConsumer.queue`: exactly one entry per
+    `QueueBatch.messages` entry, in order. A short list is a host-side error
+    and the missing tail is retried.
+
+    Attributes:
+        results: Per-message outcomes in delivery order.
+    """
+
+    results: list[QueueResult]
+
+
+class QueueBatchReplyOk(TypedDict):
+    """``QueueBatchReply`` member ``ok``.
+
+    Success: per-message outcomes.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: per-message outcomes.
+    """
+
+    kind: Literal["ok"]
+    value: QueueBatchOk
+
+
+class QueueBatchReplyErr(TypedDict):
+    """``QueueBatchReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+QueueBatchReply = Union[
+    QueueBatchReplyOk,
+    QueueBatchReplyErr,
+]
+"""Result union of `QueueConsumer.queue`."""
+
+
+class QueueSendMessage(TypedDict):
+    """One message to send through a `[[queues.producers]]` binding.
+
+    Attributes:
+        body: Encoded body; at most `maxEventPayloadBytes`.
+        contentType: Body encoding: `json` (default when empty), `text`, or `bytes`.
+        delaySeconds: Seconds before the message may be delivered; zero means now.
+    """
+
+    body: bytes
+    contentType: str
+    delaySeconds: int
+
+
+class QueueSendOk(TypedDict):
+    """Success payload of `QueueProducer.send` / `sendBatch`.
+
+    Attributes:
+        messageIds: Outbox row ids in send order.
+    """
+
+    messageIds: list[str]
+
+
+class QueueSendReplyOk(TypedDict):
+    """``QueueSendReply`` member ``ok``.
+
+    Success: the ids the host assigned.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the ids the host assigned.
+    """
+
+    kind: Literal["ok"]
+    value: QueueSendOk
+
+
+class QueueSendReplyErr(TypedDict):
+    """``QueueSendReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+QueueSendReply = Union[
+    QueueSendReplyOk,
+    QueueSendReplyErr,
+]
+"""Result union of `QueueProducer.send` / `sendBatch`."""
+
+
+class KvPutOptions(TypedDict):
+    """Expiration and metadata for `KvNamespace.put`.
+
+    Attributes:
+        expirationUnixMs: Absolute expiry (UTC Unix milliseconds); zero means none.
+        expirationTtlSeconds: Relative expiry in seconds from the write; zero means
+            none. Ignored when `expirationUnixMs` is set.
+        metadata: Opaque JSON metadata text, at most `maxKvMetadataBytes`; empty means
+            none.
+    """
+
+    expirationUnixMs: int
+    expirationTtlSeconds: int
+    metadata: str
+
+
+class KvGetOk(TypedDict):
+    """Success payload of `KvNamespace.get`.
+
+    Attributes:
+        found: True when the key exists and has not expired.
+        value: Stored value; empty when not found.
+        metadata: Stored metadata JSON text; empty when none.
+        expirationUnixMs: Absolute expiry (UTC Unix milliseconds); zero means none.
+    """
+
+    found: bool
+    value: bytes
+    metadata: str
+    expirationUnixMs: int
+
+
+class KvGetReplyOk(TypedDict):
+    """``KvGetReply`` member ``ok``.
+
+    Success: the value, when found.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the value, when found.
+    """
+
+    kind: Literal["ok"]
+    value: KvGetOk
+
+
+class KvGetReplyErr(TypedDict):
+    """``KvGetReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+KvGetReply = Union[
+    KvGetReplyOk,
+    KvGetReplyErr,
+]
+"""Result union of `KvNamespace.get`."""
+
+
+class KvPutOk(TypedDict):
+    """Success payload of `KvNamespace.put`.
+
+    Attributes:
+        expirationUnixMs: Effective absolute expiry (UTC Unix milliseconds); zero means
+            none.
+    """
+
+    expirationUnixMs: int
+
+
+class KvDeleteOk(TypedDict):
+    """Success payload of `KvNamespace.delete`.
+
+    Attributes:
+        existed: True when a live value existed before the delete.
+    """
+
+    existed: bool
+
+
+class KvPutReplyOk(TypedDict):
+    """``KvPutReply`` member ``ok``.
+
+    Success: the write is durable.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the write is durable.
+    """
+
+    kind: Literal["ok"]
+    value: KvPutOk
+
+
+class KvPutReplyErr(TypedDict):
+    """``KvPutReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+KvPutReply = Union[
+    KvPutReplyOk,
+    KvPutReplyErr,
+]
+"""Result union of `KvNamespace.put`."""
+
+
+class KvDeleteReplyOk(TypedDict):
+    """``KvDeleteReply`` member ``ok``.
+
+    Success: the key is gone (or never existed).
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: the key is gone (or never existed).
+    """
+
+    kind: Literal["ok"]
+    value: KvDeleteOk
+
+
+class KvDeleteReplyErr(TypedDict):
+    """``KvDeleteReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+KvDeleteReply = Union[
+    KvDeleteReplyOk,
+    KvDeleteReplyErr,
+]
+"""Result union of `KvNamespace.delete`."""
+
+
+class KvListOptions(TypedDict):
+    """Page request for `KvNamespace.list`.
+
+    Attributes:
+        prefix: Only keys starting with this prefix; empty means all.
+        cursor: Opaque cursor from a previous page; empty means the first page.
+        limit: Most keys to return; zero means the host default, at most `maxListPage`.
+    """
+
+    prefix: str
+    cursor: str
+    limit: int
+
+
+class KvListKey(TypedDict):
+    """One key on a `KvNamespace.list` page.
+
+    Attributes:
+        key: Key name.
+        metadata: Stored metadata JSON text; empty when none.
+        expirationUnixMs: Absolute expiry (UTC Unix milliseconds); zero means none.
+    """
+
+    key: str
+    metadata: str
+    expirationUnixMs: int
+
+
+class KvListOk(TypedDict):
+    """Success payload of `KvNamespace.list`.
+
+    Attributes:
+        keys: Keys in lexical order.
+        listComplete: True when no further page exists.
+        cursor: Cursor for the next page; empty when `listComplete`.
+    """
+
+    keys: list[KvListKey]
+    listComplete: bool
+    cursor: str
+
+
+class KvListReplyOk(TypedDict):
+    """``KvListReply`` member ``ok``.
+
+    Success: one page of keys.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one page of keys.
+    """
+
+    kind: Literal["ok"]
+    value: KvListOk
+
+
+class KvListReplyErr(TypedDict):
+    """``KvListReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+KvListReply = Union[
+    KvListReplyOk,
+    KvListReplyErr,
+]
+"""Result union of `KvNamespace.list`."""
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -4608,6 +5173,11 @@ __all__ = [
     "EventConsumer",
     "EventPublisher",
     "NamedDatabase",
+    "QueueConsumer",
+    "QueueProducer",
+    "NamedQueue",
+    "KvNamespace",
+    "NamedKv",
     "ContentSource",
     "RemoteLibrary",
     "PluginCli",
@@ -4704,6 +5274,40 @@ __all__ = [
     "PublishReplyErr",
     "PublishReply",
     "Invocation",
+    "QueueMessage",
+    "QueueBatch",
+    "QueueRetry",
+    "QueueResultAck",
+    "QueueResultRetry",
+    "QueueResult",
+    "QueueBatchOk",
+    "QueueBatchReplyOk",
+    "QueueBatchReplyErr",
+    "QueueBatchReply",
+    "QueueSendMessage",
+    "QueueSendOk",
+    "QueueSendReplyOk",
+    "QueueSendReplyErr",
+    "QueueSendReply",
+    "KvPutOptions",
+    "KvGetOk",
+    "KvGetReplyOk",
+    "KvGetReplyErr",
+    "KvGetReply",
+    "KvPutOk",
+    "KvDeleteOk",
+    "KvPutReplyOk",
+    "KvPutReplyErr",
+    "KvPutReply",
+    "KvDeleteReplyOk",
+    "KvDeleteReplyErr",
+    "KvDeleteReply",
+    "KvListOptions",
+    "KvListKey",
+    "KvListOk",
+    "KvListReplyOk",
+    "KvListReplyErr",
+    "KvListReply",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

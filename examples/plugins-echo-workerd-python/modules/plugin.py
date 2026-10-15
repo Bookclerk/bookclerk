@@ -14,6 +14,7 @@ from bookclerk_plugin_sdk.workerd import (
     BookclerkEntrypoint,
     CliEntrypoint,
     EventBatch,
+    QueueBatch,
     cli_args,
     json_payload,
 )
@@ -79,4 +80,17 @@ class Default(BookclerkEntrypoint):
             if msg.type == "book_acquired":
                 title_id = msg.json().get("titleId", "")
                 print(f"{PLUGIN_ID} saw book_acquired titleId={title_id}")
+            msg.ack()
+
+    async def queue(self, batch: QueueBatch) -> None:
+        """Ack every ``echo`` message; a ``text`` body of ``retry`` asks for redelivery."""
+        for msg in batch.messages:
+            if msg.content_type == "text" and msg.text() == "retry":
+                msg.retry(delay_seconds=1, reason="echo retry")
+                continue
+            print(f"{PLUGIN_ID} saw queue {batch.queue} message {msg.id}")
+            # Echo the body onward when the host granted the producer binding.
+            echo_out = self.env.get("ECHO_OUT")
+            if echo_out is not None:
+                await echo_out.send(msg.body, content_type="bytes")
             msg.ack()

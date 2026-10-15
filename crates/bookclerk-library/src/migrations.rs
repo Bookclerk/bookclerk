@@ -725,7 +725,7 @@ mod tests {
             lowered.contains("lower((uuid COLLATE \"C\"))"),
             "expression index must match the collated predicate"
         );
-        assert!(lowered.contains("UNIQUE(account_id, source, event_type, dedup_key)"));
+        assert!(lowered.contains("UNIQUE(queue_name, account_id, source, event_type, dedup_key)"));
         // Word-boundary safety: string literals stay untouched.
         assert!(lowered.contains(r#"'["openid","profile","email"]'"#));
         assert!(!lowered.contains("domain_events_v27"));

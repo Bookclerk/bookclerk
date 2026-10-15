@@ -116,12 +116,14 @@ BookclerkFiles/
   library.db          # incl. encrypted_secrets (auth + Widevine CDM + S3 keys)
   cache/
   search_index/
-  plugins/            # host-local install trees (immutable to guests)
-    <plugin-key-fs-id>/
+  plugins/            # host-local trees (immutable to guests)
+    .versions/<digest>/        # materialized installed versions, shared by instances
+    <plugin-key-fs-id>/        # platform guests, dev trees, older installs
   plugin-state/       # host-local mutable guest state
     <plugin-key-fs-id>/data/   # one guest's HOME inside the jail
     <plugin-key-fs-id>/tmp/    # one guest's TMPDIR inside the jail
-  install-ledger.json # host-owned install trust anchor
+  install-ledger.json # trust anchor for host-local installs
+  plugin-packages/    # operator-placed packages, published as releases
   .plugin-mutation.lock
   logs/               # reserved (Bookclerk does not rotate log files)
 ```

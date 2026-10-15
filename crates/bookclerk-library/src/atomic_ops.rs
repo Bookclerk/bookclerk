@@ -209,6 +209,15 @@ pub enum DbAtomicParams {
         /// FIFO key copied onto deliveries.
         #[serde(default)]
         ordering_key: String,
+        /// Queue name; empty means the domain-event bus (`core.events`).
+        #[serde(default)]
+        queue_name: String,
+        /// Body encoding (`json`, `text`, `bytes`); empty means `json`.
+        #[serde(default)]
+        content_type: String,
+        /// RFC 3339 earliest delivery time; empty means now.
+        #[serde(default)]
+        deliver_after: String,
     },
     /// Update a book row and optionally publish `book_acquired` in the same batch.
     #[serde(rename_all = "camelCase")]

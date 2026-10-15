@@ -1117,7 +1117,7 @@ async fn windows_job_extras_deny_the_next_direct_ping() {
                 assert_eq!(job["cpu_hard_cap"], true, "{job}");
                 let expect = bookclerk_sandbox::windows_job_cpu_rate(
                     bookclerk_plugin_host::PLUGIN_JAIL_CPU_RATE_DEFAULT,
-                    bookclerk_sandbox::host_logical_cpus(),
+                    bookclerk_sandbox::node_logical_cpus(),
                 );
                 assert_eq!(
                     job["cpu_rate"].as_u64(),

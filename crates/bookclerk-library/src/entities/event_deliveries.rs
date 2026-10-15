@@ -57,6 +57,8 @@ pub struct Model {
     pub wake_filter_json: String,
     /// Host-derived wake grants JSON (`schemaVersions` + intersected filter).
     pub wake_grants_json: String,
+    /// Queue of the parent event, copied at dispatch.
+    pub queue_name: String,
 }
 
 /// Declared SeaORM relations (parent event is queried by `event_id`).

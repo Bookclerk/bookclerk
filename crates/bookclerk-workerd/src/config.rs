@@ -1935,20 +1935,11 @@ mode = "deny"
         );
     }
 
-    #[test]
-    fn materialize_refuses_unimplemented_kv_and_queues() {
-        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        for (extra, needle) in [
-            ("[[kv_namespaces]]\nbinding = \"KV\"\n", "kv_namespaces"),
-            (
-                "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n",
-                "queues",
-            ),
-        ] {
-            let body = format!(
-                r#"
+    /// One workerd manifest body with `extra` spliced in before
+    /// `[capabilities.network]`.
+    fn workerd_manifest_with(extra: &str) -> String {
+        format!(
+            r#"
 api_version = 3
 id = "echo"
 runtime = "workerd"
@@ -1964,28 +1955,69 @@ entrypoint = "default"
 [capabilities.network]
 mode = "deny"
 "#
-            );
-            let manifest = PluginManifest::parse(&body).expect(needle);
-            let err = materialize(
-                dir.path(),
-                &manifest,
-                &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
-                WorkerdLimits::default().effective(),
-                ListenSpec::InheritedTcp { port: 9 },
-                None,
-                "test-bridge-token",
-                None,
-            )
-            .err()
-            .expect(needle);
-            let message = format!("{err:#}");
-            assert!(message.contains("not implemented yet"), "{message}");
-            assert!(message.contains(needle), "{message}");
-            assert!(
-                !message.to_ascii_lowercase().contains("database"),
-                "{message}"
-            );
-        }
+        )
+    }
+
+    #[test]
+    fn materialize_accepts_kv_namespaces() {
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
+
+        // KV bindings are served through the bridge at open time, so the
+        // generated workerd config needs no static binding for them.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _modules = create_dir_under(dir.path(), "modules");
+        write_under(
+            dir.path(),
+            Path::new("modules").join("index.js"),
+            "export default { async fetch() { return new Response('ok'); } };\n",
+        );
+        let body = workerd_manifest_with(
+            "[[kv_namespaces]]\nbinding = \"KV\"\n\n[[kv_namespaces]]\nbinding = \"CURSORS\"\nnamespace = \"sync.cursors\"\n",
+        );
+        let manifest = PluginManifest::parse(&body).expect("kv manifest");
+        assert!(manifest.unimplemented_surface().is_none());
+        materialize(
+            dir.path(),
+            &manifest,
+            &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            None,
+            "test-bridge-token",
+            None,
+        )
+        .expect("kv materializes");
+    }
+
+    #[test]
+    fn materialize_accepts_queue_producers_and_consumers() {
+        use bookclerk_plugin_manifest::{PluginManifest, WorkerdLimits};
+
+        // Queue bindings are served through the bridge at open time, so the
+        // generated workerd config needs no static binding for them.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _modules = create_dir_under(dir.path(), "modules");
+        write_under(
+            dir.path(),
+            Path::new("modules").join("index.js"),
+            "export default { async fetch() { return new Response('ok'); } };\n",
+        );
+        let body = workerd_manifest_with(
+            "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n\n[[queues.consumers]]\nqueue = \"jobs\"\n",
+        );
+        let manifest = PluginManifest::parse(&body).expect("queue manifest");
+        assert!(manifest.unimplemented_surface().is_none());
+        materialize(
+            dir.path(),
+            &manifest,
+            &EgressProxy::from_policy(bookclerk_plugin_manifest::EgressPolicy::deny()),
+            WorkerdLimits::default().effective(),
+            ListenSpec::InheritedTcp { port: 9 },
+            None,
+            "test-bridge-token",
+            None,
+        )
+        .expect("queues materialize");
     }
 
     #[test]

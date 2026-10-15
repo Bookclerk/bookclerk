@@ -8,7 +8,7 @@
  */
 
 import type { DatabaseBinding } from "./db-execute.js";
-import type { PluginEvent, PublishOk } from "./generated.js";
+import type { PluginEvent, PublishOk, QueueSendOk } from "./generated.js";
 
 /** Plain JSON object (string keys, JSON values). */
 export type JsonObject = Record<string, unknown>;
@@ -32,6 +32,179 @@ export interface EventPublisherBinding {
    * @returns Outbox row identity (`duplicate` when the dedup key matched).
    */
   publish(event: PublishEvent): Promise<PublishOk>;
+}
+
+/** Per-send options for a {@link QueueBinding}. */
+export interface QueueSendOptions {
+  /**
+   * Body encoding: `json` (default; the body is JSON-encoded), `text`
+   * (UTF-8 string), or `bytes` (raw `Uint8Array`).
+   */
+  contentType?: "json" | "text" | "bytes";
+  /** Seconds before the message may be delivered; `0` means now. */
+  delaySeconds?: number;
+}
+
+/** One entry of {@link QueueBinding.sendBatch}. */
+export interface QueueSendBatchEntry extends QueueSendOptions {
+  /** Message body (JSON value, string, or bytes per `contentType`). */
+  body: unknown;
+}
+
+/**
+ * `[[queues.producers]]` binding (`env.<BINDING>`): Workers `Queue`-shaped
+ * producer into the queue the row names. The host assigns ids, stamps the
+ * sending plugin as `source`, and bounds each body at `maxEventPayloadBytes`.
+ */
+export interface QueueBinding {
+  /**
+   * Send one message.
+   *
+   * @param body - JSON value (default), string, or bytes per `contentType`.
+   * @param options - Encoding and delay.
+   * @returns The outbox id the host assigned.
+   */
+  send(body: unknown, options?: QueueSendOptions): Promise<QueueSendOk>;
+  /**
+   * Send up to `maxListPage` messages in order.
+   *
+   * @param messages - Bodies with per-message options.
+   * @param options - Default delay for entries that carry none.
+   * @returns The outbox ids in send order.
+   */
+  sendBatch(
+    messages: ReadonlyArray<QueueSendBatchEntry>,
+    options?: Pick<QueueSendOptions, "delaySeconds">,
+  ): Promise<QueueSendOk>;
+}
+
+/** How {@link KvNamespaceBinding.get} decodes a stored value. */
+export type KvValueType = "text" | "json" | "arrayBuffer";
+
+/** Options for {@link KvNamespaceBinding.put} (Workers KV names). */
+export interface KvPutOptionsBinding {
+  /** Absolute expiry in seconds since the Unix epoch. */
+  expiration?: number;
+  /** Relative expiry in seconds from the write; ignored when `expiration` is set. */
+  expirationTtl?: number;
+  /** JSON-serializable metadata, at most `maxKvMetadataBytes` once encoded. */
+  metadata?: unknown;
+}
+
+/** Page request for {@link KvNamespaceBinding.list}. */
+export interface KvListOptionsBinding {
+  /** Only keys starting with this prefix. */
+  prefix?: string;
+  /** Cursor from a previous page. */
+  cursor?: string;
+  /** Most keys to return (host default when omitted, at most `maxListPage`). */
+  limit?: number;
+}
+
+/** One key on a {@link KvNamespaceBinding.list} page. */
+export interface KvListKeyBinding {
+  /** Key name. */
+  name: string;
+  /** Absolute expiry in seconds since the Unix epoch, when set. */
+  expiration?: number;
+  /** Stored metadata, when set. */
+  metadata?: unknown;
+}
+
+/** One page of {@link KvNamespaceBinding.list}. */
+export interface KvListResultBinding {
+  /** Keys in lexical order. */
+  keys: KvListKeyBinding[];
+  /** True when no further page exists. */
+  list_complete: boolean;
+  /** Cursor for the next page; absent when `list_complete`. */
+  cursor?: string;
+}
+
+/** Value plus metadata from {@link KvNamespaceBinding.getWithMetadata}. */
+export interface KvValueWithMetadata<T> {
+  /** Decoded value, or `null` when the key is absent or expired. */
+  value: T | null;
+  /** Stored metadata, or `null` when none. */
+  metadata: unknown;
+}
+
+/**
+ * `[[kv_namespaces]]` binding (`env.<BINDING>`, default `KV`): Workers
+ * `KVNamespace`-shaped durable storage the host serves from the library
+ * database, scoped to this plugin and the namespace the row names. Values
+ * follow the instance across hosts.
+ */
+export interface KvNamespaceBinding {
+  /**
+   * Read one key.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @param type - Decoding (`text` by default).
+   * @returns The value, or `null` when absent or expired.
+   */
+  get(key: string, type?: "text"): Promise<string | null>;
+  /**
+   * Read one key and parse it as JSON.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @param type - `json`.
+   * @returns The parsed value, or `null` when absent or expired.
+   */
+  get<T = unknown>(key: string, type: "json"): Promise<T | null>;
+  /**
+   * Read one key as bytes.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @param type - `arrayBuffer`.
+   * @returns The bytes, or `null` when absent or expired.
+   */
+  get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
+  /**
+   * Read one key with its metadata.
+   *
+   * @param key - Key to read.
+   * @param type - Decoding (`text` by default).
+   * @returns Value and metadata; both `null` when absent.
+   */
+  getWithMetadata(key: string, type?: "text"): Promise<KvValueWithMetadata<string>>;
+  /**
+   * Read one key as JSON with its metadata.
+   *
+   * @param key - Key to read.
+   * @param type - `json`.
+   * @returns Parsed value and metadata; both `null` when absent.
+   */
+  getWithMetadata<T = unknown>(key: string, type: "json"): Promise<KvValueWithMetadata<T>>;
+  /**
+   * Read one key as bytes with its metadata.
+   *
+   * @param key - Key to read.
+   * @param type - `arrayBuffer`.
+   * @returns Bytes and metadata; both `null` when absent.
+   */
+  getWithMetadata(key: string, type: "arrayBuffer"): Promise<KvValueWithMetadata<ArrayBuffer>>;
+  /**
+   * Write one key, replacing any previous value and metadata.
+   *
+   * @param key - Key to write.
+   * @param value - String (stored as UTF-8) or bytes.
+   * @param options - Expiration and metadata.
+   */
+  put(key: string, value: string | ArrayBuffer | ArrayBufferView, options?: KvPutOptionsBinding): Promise<void>;
+  /**
+   * Delete one key; a missing key is not an error.
+   *
+   * @param key - Key to delete.
+   */
+  delete(key: string): Promise<void>;
+  /**
+   * List keys in lexical order, one page at a time.
+   *
+   * @param options - Prefix, cursor, and page size.
+   * @returns One page of keys.
+   */
+  list(options?: KvListOptionsBinding): Promise<KvListResultBinding>;
 }
 
 /**
@@ -106,10 +279,13 @@ export interface BookclerkEnv {
   EVENTS?: EventPublisherBinding;
   /** `[work_fs]` object storage. */
   WORK_FS?: StorageBinding;
-  /** `[[kv_namespaces]]` durable KV binding. Not implemented yet. */
-  KV?: unknown;
+  /** `[[kv_namespaces]]` durable KV binding (default name). */
+  KV?: KvNamespaceBinding;
   /** `[oauth]` loopback helper; surface reserved. */
   OAUTH?: unknown;
-  /** Named `[[databases]]` bindings and any renamed `binding = "..."` entries. */
-  [binding: string]: DatabaseBinding | EventPublisherBinding | StorageBinding | JsonObject | unknown;
+  /**
+   * Named `[[databases]]` bindings, `[[queues.producers]]` bindings, and any
+   * renamed `binding = "..."` entries.
+   */
+  [binding: string]: DatabaseBinding | EventPublisherBinding | QueueBinding | StorageBinding | JsonObject | unknown;
 }

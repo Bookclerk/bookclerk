@@ -1,7 +1,7 @@
 //! Durable plugin instance identity.
 //!
 //! [`PluginInstanceId`] is minted once. Restart, alias text, entrypoint list,
-//! capability list, and [`HostId`](crate::control_plane::HostIdentity) do not
+//! capability list, and [`NodeId`](crate::control_plane::NodeIdentity) do not
 //! change it. Two instances may name the same canonical plugin key.
 
 use chrono::Utc;
@@ -19,7 +19,7 @@ use crate::store::LibraryStore;
 /// Stable id of one plugin instance.
 ///
 /// A hyphenated UUID version 4. It does not parse as a plugin key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PluginInstanceId(String);
 
 impl PluginInstanceId {
@@ -36,9 +36,7 @@ impl PluginInstanceId {
     /// Returns an error when `raw` is not a UUID.
     pub fn parse(raw: &str) -> Result<Self> {
         let id = Uuid::parse_str(raw.trim()).map_err(|_| {
-            LibraryError::Other(anyhow::anyhow!(
-                "invalid plugin instance id: expected a UUID"
-            ))
+            LibraryError::Invalid("invalid plugin instance id: expected a UUID".into())
         })?;
         Ok(Self(id.hyphenated().to_string()))
     }
@@ -298,6 +296,10 @@ pub async fn delete_plugin_instance(
     )
     .await
     .map_err(LibraryError::Orm)?;
+    crate::entities::plugin_placements::Entity::delete_by_id(id.as_str().to_string())
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
     plugin_instances::Entity::delete_by_id(id.as_str().to_string())
         .exec(store.db())
         .await
@@ -456,18 +458,18 @@ fn instance_from_model(row: plugin_instances::Model) -> PluginInstance {
 fn authorize_create(actor: &ConfigActor) -> Result<()> {
     match actor {
         ConfigActor::Operator { .. } | ConfigActor::Bootstrap => Ok(()),
-        ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => Err(LibraryError::Other(
-            anyhow::anyhow!("unauthorized configuration write: operator authority is required"),
-        )),
+        ConfigActor::Scheduler | ConfigActor::Administrator { .. } | ConfigActor::Member { .. } => {
+            Err(LibraryError::Forbidden(
+                "unauthorized configuration write: operator authority is required".into(),
+            ))
+        }
     }
 }
 
 /// Rejects an empty or oversized plugin key before insert.
 fn validate_display_name(name: &str) -> Result<()> {
     if name.len() > 64 || name.chars().any(char::is_control) {
-        return Err(LibraryError::Other(anyhow::anyhow!(
-            "invalid plugin instance: display_name must be at most 64 bytes without control characters"
-        )));
+        return Err(LibraryError::Invalid("invalid plugin instance: display_name must be at most 64 bytes without control characters".into()));
     }
     Ok(())
 }
@@ -475,9 +477,9 @@ fn validate_display_name(name: &str) -> Result<()> {
 /// Rejects an empty or oversized plugin key.
 fn validate_plugin_key(plugin_key: &str) -> Result<()> {
     if plugin_key.is_empty() || plugin_key.len() > 512 || plugin_key.contains('\u{0000}') {
-        return Err(LibraryError::Other(anyhow::anyhow!(
-            "invalid plugin instance: plugin_key must be 1..=512 characters without NUL"
-        )));
+        return Err(LibraryError::Invalid(
+            "invalid plugin instance: plugin_key must be 1..=512 characters without NUL".into(),
+        ));
     }
     Ok(())
 }

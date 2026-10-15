@@ -32,8 +32,10 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `invalid-producer-database/` | `check` fails (event producer binding collides with `[[databases]]`) |
 | `valid-producer-shares-oauth-name/` | `check` ok (an event producer may reuse a custom `[oauth]` binding name) |
 | `invalid-undeclared-python/` | `check` fails (disk-only `.py` is not a declared Python module, even if flags are added later) |
-| `not-implemented-kv/` | `check` ok (`[[kv_namespaces]]` stays legal). Load and spawn fail with "not implemented yet". |
-| `not-implemented-queues/` | `check` ok (`[queues]` stays legal). Load and spawn fail with "not implemented yet". |
+| `valid-kv/` | `check` ok: a default `KV` row plus a named namespace with its own `max_value_bytes` / `max_keys`; materializes and spawns |
+| `invalid-kv-namespace/` | `check` fails (`namespace` outside `[a-z0-9][a-z0-9._-]*`) |
+| `invalid-producer-host-event/` | `check` fails (`[[events.producers]] type = "book_acquired"` is host-emitted) |
+| `valid-queues/` | `check` ok (`[[queues.producers]]` send binding plus a `[[queues.consumers]]` trigger with a dead-letter queue) |
 
 Language-specific helpers (`sync-embed`, Python workerd flags) are covered in
 each SDK's own tests against the Echo examples.

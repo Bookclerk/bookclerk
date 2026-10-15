@@ -238,7 +238,7 @@ export function LoginPage({
           {claimMode
             ? "Set a password if this account does not have one yet, then continue."
             : operatorToken
-              ? "This host has no Owner yet. Paste the operator token to finish setup, or sign in if you already have an account."
+              ? "This server has no Owner yet. Paste the operator token to finish setup, or sign in if you already have an account."
               : "Sign in with your Bookclerk username and password."}
         </p>
 

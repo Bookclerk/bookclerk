@@ -3,7 +3,7 @@
 //! The CLI opens the control plane the same way `bookclerkd` does
 //! ([`bookclerk_plugin_host::open_host_control_plane`]): every local plugin
 //! is enrolled, and guests come only from the deployments the database wants
-//! present on this host, with `CONFIG` / `SECRETS` resolved from their
+//! present on this node, with `CONFIG` / `SECRETS` resolved from their
 //! instance documents. The CLI spawns guests for the lifetime of one command
 //! and writes no deployment observations; those stay with the daemon's
 //! reconciler.
@@ -54,7 +54,7 @@ pub async fn open_library(config: &Config) -> anyhow::Result<LibraryStore> {
     Ok(store)
 }
 
-/// Spawns every storefront deployment present on this host.
+/// Spawns every storefront deployment present on this node.
 ///
 /// # Errors
 ///
@@ -65,7 +65,7 @@ pub async fn sources(host: &HostControlPlane) -> anyhow::Result<SourceRegistry> 
         .await?)
 }
 
-/// Spawns every integration deployment present on this host.
+/// Spawns every integration deployment present on this node.
 ///
 /// # Errors
 ///
@@ -76,7 +76,7 @@ pub async fn integrations(host: &HostControlPlane) -> anyhow::Result<Integration
         .await?)
 }
 
-/// Spawns every storage deployment present on this host.
+/// Spawns every storage deployment present on this node.
 ///
 /// # Errors
 ///
@@ -113,7 +113,7 @@ pub fn resolve_source(
                 .collect();
             if known.is_empty() {
                 Err(anyhow::anyhow!(
-                    "{err} (no storefront is deployed on this host — `bookclerk plugins enable <plugin>`)"
+                    "{err} (no storefront is deployed on this node — `bookclerk plugins deploy <plugin>`)"
                 ))
             } else {
                 Err(anyhow::anyhow!("{err} (registered: {})", known.join(", ")))

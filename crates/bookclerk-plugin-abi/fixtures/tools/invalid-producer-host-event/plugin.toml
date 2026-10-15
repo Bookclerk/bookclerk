@@ -1,5 +1,5 @@
 api_version = 3
-id = "not_implemented_queues"
+id = "invalid_producer_host_event"
 version = "0.1.0"
 runtime = "workerd"
 entrypoints = ["cli"]
@@ -10,9 +10,8 @@ main_module = "index.js"
 modules_dir = "modules"
 entrypoint = "default"
 
-[[queues.producers]]
-binding = "MY_QUEUE"
-queue = "jobs"
+[[events.producers]]
+type = "book_acquired"
 
 [capabilities.network]
 mode = "deny"

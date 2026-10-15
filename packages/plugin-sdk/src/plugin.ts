@@ -22,7 +22,14 @@
 
 import "./cloudflare-workers.d.ts";
 import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
-import { MAX_CHECKPOINT_BYTES, MAX_EVENT_PAYLOAD_BYTES } from "./abi.js";
+import {
+  MAX_CHECKPOINT_BYTES,
+  MAX_EVENT_PAYLOAD_BYTES,
+  MAX_KV_KEY_BYTES,
+  MAX_KV_METADATA_BYTES,
+  MAX_KV_VALUE_BYTES,
+  MAX_LIST_PAGE,
+} from "./abi.js";
 import {
   createDatabaseBinding,
   decodeExecuteResultReply,
@@ -32,7 +39,21 @@ import {
   type ExecuteReply,
   type ExecuteRequest,
 } from "./db-execute.js";
-import type { BookclerkEnv, EventPublisherBinding, JsonObject, PublishEvent } from "./env.js";
+import type {
+  BookclerkEnv,
+  EventPublisherBinding,
+  JsonObject,
+  KvListOptionsBinding,
+  KvListResultBinding,
+  KvNamespaceBinding,
+  KvPutOptionsBinding,
+  KvValueType,
+  KvValueWithMetadata,
+  PublishEvent,
+  QueueBinding,
+  QueueSendBatchEntry,
+  QueueSendOptions,
+} from "./env.js";
 import { PluginError } from "./errors.js";
 import {
   dispatchInvoke,
@@ -73,6 +94,8 @@ import type {
   PublishOk,
   PurchaseHint,
   PurchaseHintParams,
+  QueueMessage as WireQueueMessage,
+  QueueSendOk,
   ScanLibraryParams,
   ScanParams,
   ScanSummary,
@@ -493,6 +516,26 @@ export interface GrantedContext {
   events?: EventPublisherBinding;
   /** Named `[[databases]]` bindings. */
   databases?: NamedDatabase[];
+  /** `[[queues.producers]]` bindings, when granted. */
+  queues?: NamedQueue[];
+  /** `[[kv_namespaces]]` bindings, when granted. */
+  kv?: NamedKv[];
+}
+
+/** One granted `[[kv_namespaces]]` binding on the granted context. */
+export interface NamedKv {
+  /** Binding name (`env.<name>`). */
+  name: string;
+  /** Ready namespace (crosses the adapter → author RPC boundary). */
+  kv: KvNamespaceBinding;
+}
+
+/** One granted `[[queues.producers]]` binding on the granted context. */
+export interface NamedQueue {
+  /** Binding name (`env.<name>`). */
+  name: string;
+  /** Ready producer (crosses the adapter → author RPC boundary). */
+  queue: QueueBinding;
 }
 
 /**
@@ -531,11 +574,15 @@ export interface NamedDatabase {
  * plus the grant tokens the adapter exchanges for the author's `EVENTS` and
  * `env.<BINDING>` stubs. Authors never receive this shape.
  */
-export interface BridgeContext extends Omit<GrantedContext, "databases"> {
+export interface BridgeContext extends Omit<GrantedContext, "databases" | "queues" | "kv"> {
   /** Granted-channel bearer for `env.EVENTS.publish`; stripped before dispatch. */
   eventsToken?: string;
   /** Named `[[databases]]` binding → database-only bearer for `/db/execute`. */
   databases?: Record<string, string>;
+  /** `[[queues.producers]]` binding → queue-only bearer for `/queues/send`. */
+  queues?: Record<string, string>;
+  /** `[[kv_namespaces]]` binding → kv-only bearer for `/kv/*`. */
+  kv?: Record<string, string>;
 }
 
 /** Job-runner bridge context: the durable job id plus {@link GrantedContext}. */
@@ -627,6 +674,18 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
           const transport = entry.transport;
           merged[entry.name] = createDatabaseBinding({ execute: (request) => transport.execute(request) });
         }
+      }
+    }
+    if (Array.isArray(context.queues)) {
+      for (const entry of context.queues) {
+        if (!entry || typeof entry.name !== "string" || !entry.name || !entry.queue) continue;
+        merged[entry.name] = entry.queue;
+      }
+    }
+    if (Array.isArray(context.kv)) {
+      for (const entry of context.kv) {
+        if (!entry || typeof entry.name !== "string" || !entry.name || !entry.kv) continue;
+        merged[entry.name] = entry.kv;
       }
     }
   }
@@ -953,6 +1012,170 @@ export function eventBatchResults(batch: EventBatch, failed: unknown): EventOutc
 }
 
 // ---------------------------------------------------------------------------
+// Queue trigger: `queue(batch)` shaped like Workers `queue(batch)`
+// ---------------------------------------------------------------------------
+
+/** Options for {@link QueueMessage.retry}. */
+export interface QueueRetryOptions {
+  /** Seconds before redelivery; `0` applies the consumer's `retry_delay`. */
+  delaySeconds?: number;
+  /** Short operator-facing reason. */
+  reason?: string;
+}
+
+/** Recorded per-message outcome of a `queue()` handler (bridge projection of `QueueResult`). */
+export type QueueOutcome = { kind: "ack" } | { kind: "retry"; delaySeconds: number; reason: string };
+
+/**
+ * One delivered queue message (`QueueMessage` struct), Workers `Message`-shaped.
+ *
+ * Exactly one outcome is recorded per message; the first of `ack` / `retry`
+ * wins and later calls are ignored. Messages left untouched are acked when
+ * `queue()` resolves and retried when it throws.
+ */
+export class QueueMessage {
+  #result: QueueOutcome | null = null;
+
+  /** Outbox row id; stable across redeliveries. */
+  readonly id: string;
+  /** When the producer sent the message. */
+  readonly timestamp: Date;
+  /** Encoded body bytes. */
+  readonly body: Uint8Array;
+  /** Body encoding: `json`, `text`, or `bytes`. */
+  readonly contentType: string;
+  /** Delivery counter, starting at 1. */
+  readonly attempts: number;
+  /** Producer plugin id; empty when the host sent it. */
+  readonly source: string;
+  /** Raw wire envelope. */
+  readonly raw: Partial<WireQueueMessage>;
+
+  constructor(message: Partial<WireQueueMessage> | undefined) {
+    const m = message && typeof message === "object" ? message : {};
+    this.id = String(m.id ?? "");
+    this.timestamp = new Date(Number(m.timestampUnixMs ?? 0) || 0);
+    const body: unknown = m.body;
+    this.body =
+      body instanceof Uint8Array
+        ? body
+        : body instanceof ArrayBuffer
+          ? new Uint8Array(body)
+          : new Uint8Array();
+    this.contentType = String(m.contentType ?? "") || "json";
+    this.attempts = Number(m.attempts ?? 1) || 1;
+    this.source = String(m.source ?? "");
+    this.raw = m;
+  }
+
+  /**
+   * Decode {@link QueueMessage.body} as JSON.
+   *
+   * @returns Parsed body (`null` for an empty body).
+   */
+  json<T = unknown>(): T {
+    if (this.body.byteLength === 0) return null as T;
+    return JSON.parse(new TextDecoder().decode(this.body)) as T;
+  }
+
+  /**
+   * Decode {@link QueueMessage.body} as UTF-8 text.
+   *
+   * @returns The body text.
+   */
+  text(): string {
+    return new TextDecoder().decode(this.body);
+  }
+
+  /**
+   * Recorded outcome.
+   *
+   * @returns The outcome, or `null` while undecided.
+   */
+  get result(): QueueOutcome | null {
+    return this.#result;
+  }
+
+  #record(result: QueueOutcome): void {
+    if (this.#result === null) this.#result = Object.freeze(result);
+  }
+
+  /** Mark handled; the host marks the message delivered. */
+  ack(): void {
+    this.#record({ kind: "ack" });
+  }
+
+  /**
+   * Redeliver later: after `delaySeconds`, or — when omitted — after the
+   * consumer's `retry_delay`.
+   *
+   * @param options - Redelivery timing and reason.
+   */
+  retry(options?: QueueRetryOptions): void {
+    this.#record({
+      kind: "retry",
+      delaySeconds: Math.max(0, Math.floor(Number(options?.delaySeconds ?? 0) || 0)),
+      reason: String(options?.reason ?? ""),
+    });
+  }
+}
+
+/** One `queue(batch)` delivery (`QueueBatch` struct), Workers `MessageBatch`-shaped. */
+export class QueueBatch {
+  /** Queue the messages were sent to. */
+  readonly queue: string;
+  /** Messages in delivery order. */
+  readonly messages: readonly QueueMessage[];
+  /** Invocation identity of this delivery. */
+  invocation: Invocation;
+
+  constructor(
+    queue: string | undefined,
+    messages: ReadonlyArray<Partial<WireQueueMessage>> | undefined,
+    invocation?: Invocation,
+  ) {
+    this.queue = String(queue ?? "");
+    this.messages = Object.freeze(
+      (Array.isArray(messages) ? messages : []).map((message) => new QueueMessage(message)),
+    );
+    this.invocation = invocation ?? invocationOf(undefined);
+  }
+
+  /** Ack every message. */
+  ackAll(): void {
+    for (const m of this.messages) m.ack();
+  }
+
+  /**
+   * Retry every message.
+   *
+   * @param options - Redelivery timing and reason.
+   */
+  retryAll(options?: QueueRetryOptions): void {
+    for (const m of this.messages) m.retry(options);
+  }
+}
+
+/**
+ * Translate recorded {@link QueueMessage} outcomes into the wire list.
+ * `failed` is the error thrown by the author's `queue()`; undecided messages
+ * then retry instead of ack.
+ *
+ * @param batch - Delivered batch after the handler ran.
+ * @param failed - Error thrown by the handler, if any.
+ * @returns One outcome per message, in order.
+ */
+export function queueBatchResults(batch: QueueBatch, failed: unknown): QueueOutcome[] {
+  return batch.messages.map((m) => {
+    if (m.result) return m.result;
+    if (failed !== undefined) {
+      return { kind: "retry", delaySeconds: 0, reason: errorMessage(failed) };
+    }
+    return { kind: "ack" };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Job trigger: `job(controller)` shaped like Workers `scheduled(controller)`
 // ---------------------------------------------------------------------------
 
@@ -1210,6 +1433,12 @@ export interface WireEventBatch {
   events: Array<Partial<DomainEvent>>;
 }
 
+/** Wire `QueueBatch` as the adapter delivers it to `bookclerkQueue`. */
+export interface WireQueueBatch {
+  queue: string;
+  messages: Array<Partial<WireQueueMessage>>;
+}
+
 /**
  * Default-export base. Optional trigger methods: {@link BookclerkEntrypoint.event}
  * and {@link BookclerkEntrypoint.job}; optional {@link BookclerkEntrypoint.describe}
@@ -1253,6 +1482,13 @@ export class BookclerkEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extend
    * outcome per message; untouched messages ack on return and retry on throw.
    */
   event?(batch: EventBatch): Promise<void> | void;
+
+  /**
+   * `[[queues.consumers]]` trigger: handle one delivered batch from one
+   * queue. Record an outcome per message; untouched messages ack on return
+   * and retry on throw.
+   */
+  queue?(batch: QueueBatch): Promise<void> | void;
 
   /**
    * `[triggers] jobs` trigger: run one durable job. Return to complete,
@@ -1300,6 +1536,29 @@ export class BookclerkEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extend
       return eventBatchResults(batch, undefined);
     } catch (err) {
       return eventBatchResults(batch, err ?? new Error("event handler failed"));
+    }
+  }
+
+  /**
+   * Adapter dispatch for the `queue(batch)` trigger.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wireBatch - Wire `QueueBatch`.
+   * @returns One outcome per message, in order.
+   * @internal
+   */
+  async bookclerkQueue(context: GrantedContext, wireBatch: WireQueueBatch): Promise<QueueOutcome[]> {
+    if (typeof this.queue !== "function") {
+      throw unsupported("queue");
+    }
+    applyInvocationEnv(this, context);
+    const messages = Array.isArray(wireBatch?.messages) ? wireBatch.messages : [];
+    const batch = new QueueBatch(wireBatch?.queue, messages, invocationOf(context));
+    try {
+      await this.queue(batch);
+      return queueBatchResults(batch, undefined);
+    } catch (err) {
+      return queueBatchResults(batch, err ?? new Error("queue handler failed"));
     }
   }
 
@@ -1929,7 +2188,12 @@ export interface GrantedFetcher {
 /** Author default entrypoint as seen through the `PLUGIN` service binding. */
 export type AuthorStub = Pick<
   BookclerkEntrypoint,
-  "bookclerkDescribe" | "bookclerkEvent" | "bookclerkJob" | "bookclerkDatabaseMigrations" | "bookclerkShutdown"
+  | "bookclerkDescribe"
+  | "bookclerkEvent"
+  | "bookclerkQueue"
+  | "bookclerkJob"
+  | "bookclerkDatabaseMigrations"
+  | "bookclerkShutdown"
 >;
 
 /** Named author entrypoint as seen through a `PLUGIN_<ENTRYPOINT>` binding. */
@@ -2162,6 +2426,293 @@ class GrantedEvents extends RpcTarget implements EventPublisherBinding {
 }
 
 /**
+ * Encode one {@link QueueBinding} body per its content type.
+ *
+ * @param body - Author-supplied body.
+ * @param contentType - `json` (default), `text`, or `bytes`.
+ * @returns Body bytes and the normalized content type.
+ */
+function queueBodyBytes(body: unknown, contentType: string | undefined): { body: Uint8Array; contentType: string } {
+  const kind = contentType || "json";
+  if (kind === "bytes") {
+    if (body instanceof Uint8Array) return { body, contentType: kind };
+    if (body instanceof ArrayBuffer) return { body: new Uint8Array(body), contentType: kind };
+    throw PluginError.fromWire("invalid_params", "bytes queue message requires a Uint8Array body");
+  }
+  if (kind === "text") {
+    if (typeof body !== "string") {
+      throw PluginError.fromWire("invalid_params", "text queue message requires a string body");
+    }
+    return { body: new TextEncoder().encode(body), contentType: kind };
+  }
+  if (kind !== "json") {
+    throw PluginError.fromWire("invalid_params", `unknown queue content type \`${kind}\``);
+  }
+  return { body: new TextEncoder().encode(JSON.stringify(body ?? null)), contentType: kind };
+}
+
+/**
+ * `[[queues.producers]]` binding handed to the author: the adapter exchanges
+ * the binding's queue-only grant token on `POST /queues/send`, so the author
+ * isolate never holds the bearer itself.
+ */
+class GrantedQueue extends RpcTarget implements QueueBinding {
+  #granted: GrantedFetcher;
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the queue grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  /**
+   * Send one message.
+   *
+   * @param body - JSON value, string, or bytes per `options.contentType`.
+   * @param options - Encoding and delay.
+   * @returns The outbox id the host assigned.
+   */
+  async send(body: unknown, options?: QueueSendOptions): Promise<QueueSendOk> {
+    return this.sendBatch([{ body, ...(options ?? {}) }]);
+  }
+
+  /**
+   * Send up to `maxListPage` messages in order.
+   *
+   * @param messages - Bodies with per-message options.
+   * @param options - Default delay for entries that carry none.
+   * @returns The outbox ids in send order.
+   */
+  async sendBatch(
+    messages: ReadonlyArray<QueueSendBatchEntry>,
+    options?: Pick<QueueSendOptions, "delaySeconds">,
+  ): Promise<QueueSendOk> {
+    if (!Array.isArray(messages) || messages.length === 0) {
+      throw PluginError.fromWire("invalid_params", "sendBatch requires at least one message");
+    }
+    if (messages.length > MAX_LIST_PAGE) {
+      throw PluginError.fromWire("payload_too_large", `queue batch of ${messages.length} exceeds ${MAX_LIST_PAGE}`);
+    }
+    const wireMessages = messages.map((entry) => {
+      const encoded = queueBodyBytes(entry?.body, entry?.contentType);
+      if (encoded.body.byteLength > MAX_EVENT_PAYLOAD_BYTES) {
+        throw PluginError.fromWire(
+          "payload_too_large",
+          `queue message body of ${encoded.body.byteLength} bytes exceeds ${MAX_EVENT_PAYLOAD_BYTES}`,
+        );
+      }
+      return {
+        body: encoded.body,
+        contentType: encoded.contentType,
+        delaySeconds: Math.max(0, Math.floor(Number(entry?.delaySeconds ?? 0) || 0)),
+      };
+    });
+    const wire = toBridgeJson({
+      messages: wireMessages,
+      delaySeconds: Math.max(0, Math.floor(Number(options?.delaySeconds ?? 0) || 0)),
+    });
+    const resp = await this.#granted.fetch("http://granted/queues/send", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(wire),
+    });
+    const value = (await resp.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string };
+      messageIds?: unknown;
+    };
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `queue send HTTP ${resp.status}`);
+    }
+    return { messageIds: Array.isArray(value.messageIds) ? value.messageIds.map((id) => String(id)) : [] };
+  }
+}
+
+/**
+ * Fails closed on an empty key or one longer than `maxKvKeyBytes`.
+ *
+ * @param key - Key the guest passed.
+ * @returns The key, once checked.
+ */
+function checkKvKey(key: unknown): string {
+  if (typeof key !== "string" || key.length === 0) {
+    throw PluginError.fromWire("invalid_params", "kv key must be a non-empty string");
+  }
+  const bytes = new TextEncoder().encode(key).byteLength;
+  if (bytes > MAX_KV_KEY_BYTES) {
+    throw PluginError.fromWire("payload_too_large", `kv key of ${bytes} bytes exceeds ${MAX_KV_KEY_BYTES}`);
+  }
+  return key;
+}
+
+/**
+ * Stored metadata text → value (`null` when none or unparsable).
+ *
+ * @param text - Metadata as stored.
+ * @returns The parsed value, or `null`.
+ */
+function parseKvMetadata(text: unknown): unknown {
+  if (typeof text !== "string" || text === "") return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decode a stored value per {@link KvValueType}.
+ *
+ * @param bytes - Stored bytes.
+ * @param type - Requested decoding.
+ * @returns Decoded value.
+ */
+function decodeKvValue(bytes: Uint8Array, type: KvValueType): unknown {
+  if (type === "arrayBuffer") {
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+  const text = new TextDecoder().decode(bytes);
+  if (type === "json") return JSON.parse(text) as unknown;
+  return text;
+}
+
+/**
+ * `[[kv_namespaces]]` binding handed to the author: the adapter exchanges the
+ * binding's kv-only grant token on `POST /kv/<op>`, so the author isolate
+ * never holds the bearer itself. Key, value, and metadata caps are checked
+ * here before the request leaves; the host applies the namespace's own
+ * `max_value_bytes` and `max_keys`.
+ */
+class GrantedKv extends RpcTarget implements KvNamespaceBinding {
+  #granted: GrantedFetcher;
+  #auth: Record<string, string>;
+
+  /**
+   * @param granted - Granted reverse channel.
+   * @param auth - Bearer header for the kv grant.
+   */
+  constructor(granted: GrantedFetcher, auth: Record<string, string>) {
+    super();
+    this.#granted = granted;
+    this.#auth = auth;
+  }
+
+  async #call(op: string, body: unknown): Promise<Record<string, unknown>> {
+    const resp = await this.#granted.fetch(`http://granted/kv/${op}`, {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/json" },
+      body: JSON.stringify(toBridgeJson(body)),
+    });
+    const value = (await resp.json().catch(() => ({}))) as Record<string, unknown> & {
+      error?: { code?: string; message?: string };
+    };
+    if (value && value.error) {
+      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+    }
+    if (!resp.ok) {
+      throw PluginError.fromWire("internal", `kv ${op} HTTP ${resp.status}`);
+    }
+    return value ?? {};
+  }
+
+  get(key: string, type?: "text"): Promise<string | null>;
+  get<T = unknown>(key: string, type: "json"): Promise<T | null>;
+  get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
+  async get(key: string, type: KvValueType = "text"): Promise<unknown> {
+    const found = await this.#read(key, type);
+    return found.value;
+  }
+
+  getWithMetadata(key: string, type?: "text"): Promise<KvValueWithMetadata<string>>;
+  getWithMetadata<T = unknown>(key: string, type: "json"): Promise<KvValueWithMetadata<T>>;
+  getWithMetadata(key: string, type: "arrayBuffer"): Promise<KvValueWithMetadata<ArrayBuffer>>;
+  async getWithMetadata(key: string, type: KvValueType = "text"): Promise<KvValueWithMetadata<unknown>> {
+    return this.#read(key, type);
+  }
+
+  async #read(key: string, type: KvValueType): Promise<KvValueWithMetadata<unknown>> {
+    const reply = await this.#call("get", { key: checkKvKey(key) });
+    if (!reply.found) return { value: null, metadata: null };
+    const bytes = typeof reply.value === "string" ? base64ToBytes(reply.value) : new Uint8Array();
+    return { value: decodeKvValue(bytes, type), metadata: parseKvMetadata(reply.metadata) };
+  }
+
+  async put(
+    key: string,
+    value: string | ArrayBuffer | ArrayBufferView,
+    options?: KvPutOptionsBinding,
+  ): Promise<void> {
+    let bytes: Uint8Array;
+    if (typeof value === "string") {
+      bytes = new TextEncoder().encode(value);
+    } else if (value instanceof ArrayBuffer) {
+      bytes = new Uint8Array(value);
+    } else if (ArrayBuffer.isView(value)) {
+      bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    } else {
+      throw PluginError.fromWire("invalid_params", "kv value must be a string, ArrayBuffer, or view");
+    }
+    if (bytes.byteLength > MAX_KV_VALUE_BYTES) {
+      throw PluginError.fromWire(
+        "payload_too_large",
+        `kv value of ${bytes.byteLength} bytes exceeds ${MAX_KV_VALUE_BYTES}`,
+      );
+    }
+    const metadata = options?.metadata === undefined ? "" : JSON.stringify(options.metadata);
+    const metadataBytes = new TextEncoder().encode(metadata).byteLength;
+    if (metadataBytes > MAX_KV_METADATA_BYTES) {
+      throw PluginError.fromWire(
+        "payload_too_large",
+        `kv metadata of ${metadataBytes} bytes exceeds ${MAX_KV_METADATA_BYTES}`,
+      );
+    }
+    const expiration = Math.max(0, Math.floor(Number(options?.expiration ?? 0) || 0));
+    const ttl = Math.max(0, Math.floor(Number(options?.expirationTtl ?? 0) || 0));
+    await this.#call("put", {
+      key: checkKvKey(key),
+      value: bytes,
+      options: { expirationUnixMs: expiration * 1000, expirationTtlSeconds: ttl, metadata },
+    });
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.#call("delete", { key: checkKvKey(key) });
+  }
+
+  async list(options?: KvListOptionsBinding): Promise<KvListResultBinding> {
+    const limit = Math.max(0, Math.floor(Number(options?.limit ?? 0) || 0));
+    if (limit > MAX_LIST_PAGE) {
+      throw PluginError.fromWire("invalid_params", `kv list limit of ${limit} exceeds ${MAX_LIST_PAGE}`);
+    }
+    const reply = await this.#call("list", {
+      options: { prefix: options?.prefix ?? "", cursor: options?.cursor ?? "", limit },
+    });
+    const keys = Array.isArray(reply.keys) ? (reply.keys as Array<Record<string, unknown>>) : [];
+    const cursor = typeof reply.cursor === "string" && reply.cursor ? reply.cursor : undefined;
+    return {
+      keys: keys.map((entry) => {
+        const ms = Number(entry.expirationUnixMs ?? 0) || 0;
+        const metadata = parseKvMetadata(entry.metadata);
+        return {
+          name: String(entry.key ?? ""),
+          ...(ms > 0 ? { expiration: Math.floor(ms / 1000) } : {}),
+          ...(metadata !== null ? { metadata } : {}),
+        };
+      }),
+      list_complete: Boolean(reply.listComplete),
+      ...(cursor ? { cursor } : {}),
+    };
+  }
+}
+
+/**
  * Named `[[databases]]` binding transport handed to the author: the adapter
  * exchanges the binding's database-only grant token on `POST /db/execute`,
  * so the author isolate never holds the bearer itself. ABI failures come
@@ -2357,18 +2908,20 @@ export function wrapPluginFromNative() {
 }
 
 /** Wire names of the trigger families the launcher may ask `openInvocation` about. */
-export const TRIGGER_FAMILIES: Readonly<Record<"eventConsumer" | "jobRunner", string>> =
+export const TRIGGER_FAMILIES: Readonly<Record<"eventConsumer" | "queueConsumer" | "jobRunner", string>> =
   Object.freeze({
     eventConsumer: "eventConsumer",
+    queueConsumer: "queueConsumer",
     jobRunner: "jobRunner",
   });
 
 /**
  * Filters requested entrypoint / trigger family names against the manifest
  * capabilities: named entrypoints must be declared in `entrypoints`,
- * `eventConsumer` needs a non-empty `consumes`, and `jobRunner` needs
- * `jobs` or the `storage` entrypoint (storage guests run the host
- * `stream_copy` job). Unknown names and a missing manifest fail closed.
+ * `eventConsumer` needs a non-empty `consumes`, `queueConsumer` needs a
+ * non-empty `queueConsumers`, and `jobRunner` needs `jobs` or the `storage`
+ * entrypoint (storage guests run the host `stream_copy` job). Unknown names
+ * and a missing manifest fail closed.
  *
  * @param capabilities - Manifest capabilities from `PLUGIN_DESCRIBE`.
  * @param requested - Family names the launcher wants to export.
@@ -2381,6 +2934,7 @@ export function allowedEntrypointFamilies(
   if (!capabilities || typeof capabilities !== "object") return [];
   const entrypoints = Array.isArray(capabilities.entrypoints) ? capabilities.entrypoints : [];
   const consumes = Array.isArray(capabilities.consumes) ? capabilities.consumes : [];
+  const queueConsumers = Array.isArray(capabilities.queueConsumers) ? capabilities.queueConsumers : [];
   const jobs = Array.isArray(capabilities.jobs) ? capabilities.jobs : [];
   const exportsStorage = entrypoints.includes("storage");
   const out: string[] = [];
@@ -2388,6 +2942,8 @@ export function allowedEntrypointFamilies(
     if (typeof name !== "string" || out.includes(name)) continue;
     if (name === TRIGGER_FAMILIES.eventConsumer) {
       if (consumes.length > 0) out.push(name);
+    } else if (name === TRIGGER_FAMILIES.queueConsumer) {
+      if (queueConsumers.length > 0) out.push(name);
     } else if (name === TRIGGER_FAMILIES.jobRunner) {
       if (jobs.length > 0 || exportsStorage) out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name as EntrypointName)) {
@@ -2455,15 +3011,16 @@ function createInvocationAdapter() {
     }
 
     /**
-     * Turn the bridge context into the author-facing one: the host's events
-     * grant token becomes an `EVENTS` stub and never reaches the author.
+     * Turn the bridge context into the author-facing one: the host's events,
+     * database, and queue grant tokens become `EVENTS` / `env.<BINDING>`
+     * stubs and never reach the author.
      *
      * @param ctx - Bridge context from the launcher.
      * @returns Author-facing granted context.
      */
     #bindContext(ctx: BridgeContext | undefined): GrantedContext {
       const source = ctx && typeof ctx === "object" ? ctx : {};
-      const { eventsToken, databases, ...rest } = source;
+      const { eventsToken, databases, queues, kv, ...rest } = source;
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
@@ -2481,6 +3038,22 @@ function createInvocationAdapter() {
           });
         }
         if (named.length > 0) bound.databases = named;
+      }
+      if (queues && typeof queues === "object" && !Array.isArray(queues) && granted) {
+        const named: NamedQueue[] = [];
+        for (const [name, token] of Object.entries(queues)) {
+          if (!name || typeof token !== "string" || !token) continue;
+          named.push({ name, queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` }) });
+        }
+        if (named.length > 0) bound.queues = named;
+      }
+      if (kv && typeof kv === "object" && !Array.isArray(kv) && granted) {
+        const named: NamedKv[] = [];
+        for (const [name, token] of Object.entries(kv)) {
+          if (!name || typeof token !== "string" || !token) continue;
+          named.push({ name, kv: new GrantedKv(granted, { Authorization: `Bearer ${token}` }) });
+        }
+        if (named.length > 0) bound.kv = named;
       }
       return bound;
     }

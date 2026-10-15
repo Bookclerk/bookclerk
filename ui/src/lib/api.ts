@@ -1620,19 +1620,45 @@ export interface PluginSettingOption {
 }
 
 /**
- * This host's deployment of a plugin instance, with its latest observation.
+ * This node's deployment of a plugin instance, with its latest observation.
  */
 export interface PluginDeploymentView {
   deployment_id: string;
-  host_id: string;
-  /** `present` (enabled) or `absent` (disabled). */
-  desired: "present" | "absent" | string;
+  node_id: string;
+  /**
+   * `present` / `absent` when an operator manages the instance (the Enabled
+   * switch), `placed` / `unplaced` when the cluster scheduler does. The
+   * host runs it for `present` and `placed`.
+   */
+  desired: "present" | "absent" | "placed" | "unplaced" | string;
   revision: number;
-  /** `installed`, `running`, `healthy`, `error`, or `retired` when observed. */
+  /** `materialized`, `running`, `healthy`, `error`, or `retired` when observed. */
   status?: string;
   detail?: string;
   applied_config_revision?: number;
   observed_at?: string;
+}
+
+/**
+ * Scheduler placement of a plugin instance: the operator's intent and the
+ * last scheduler pass's result.
+ */
+export interface PluginPlacementView {
+  /**
+   * Nodes that should run the instance: a count (0 stops every replica) or
+   * `"all"` (every live, schedulable host with budget room).
+   */
+  replicas: number | "all";
+  /** Label constraints (`nas`, `zone=eu`, `!slow`, `host=<id>`). */
+  constraints: string[];
+  /** Compare-and-swap revision of the intent. */
+  revision: number;
+  /** Replicas the last scheduler pass placed. */
+  placed: number;
+  /** Why fewer than requested are placed; empty when satisfied. */
+  detail: string;
+  scheduled_at: string;
+  updated_at: string;
 }
 
 /**
@@ -1644,7 +1670,7 @@ export interface PluginSettingsGroup {
   family: string;
   /** Provenance-qualified PluginKey when this row came from a discovered install. */
   plugin_key?: string;
-  /** Host-evaluated provenance (`platform_bundled`, `verified_installed`, …). */
+  /** Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …). */
   provenance?: string;
   /** Google favicon (or portal brand) URL for Settings list rows. */
   logo?: string;
@@ -1657,8 +1683,12 @@ export interface PluginSettingsGroup {
   is_default?: boolean;
   /** Instance document revision for compare-and-swap writes. */
   config_revision?: number;
-  /** This host's deployment of the instance, when one exists. */
+  /** This node's deployment of the instance, when one exists. */
   deployment?: PluginDeploymentView;
+  /** Scheduler placement; absent when the instance is managed by hand. */
+  placement?: PluginPlacementView;
+  /** Nodes whose deployment of the instance is `present`. */
+  present_on?: string[];
 }
 
 /**
@@ -2026,19 +2056,19 @@ export async function putPluginInstanceConfig(
  * Sets whether a plugin instance should run on a host (the enable switch).
  *
  * @param instanceId - Plugin instance id.
- * @param hostId - Target host id.
+ * @param nodeId - Target node id.
  * @param desired - `present` to run it there, `absent` to retire it.
  * @param expectedRevision - Deployment revision last observed, for compare-and-swap.
  * @returns The deployment row after the write.
  */
 export async function putPluginDeployment(
   instanceId: string,
-  hostId: string,
+  nodeId: string,
   desired: "present" | "absent",
   expectedRevision?: number,
 ): Promise<PluginDeploymentView> {
   const res = await fetch(
-    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/deployments/${encodeURIComponent(hostId)}`,
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/deployments/${encodeURIComponent(nodeId)}`,
     {
       method: "PUT",
       credentials: "include",
@@ -2047,6 +2077,151 @@ export async function putPluginDeployment(
     },
   );
   return parseJson<PluginDeploymentView>(res);
+}
+
+/**
+ * Hands an instance's deployments to the cluster scheduler, or changes its
+ * placement (compare-and-swap on `expected_revision`; 0 creates).
+ *
+ * @param instanceId - Plugin instance id.
+ * @param body - Replica count, label constraints, and the revision last seen.
+ * @returns The stored placement.
+ */
+export async function putPluginPlacement(
+  instanceId: string,
+  body: { replicas: number | "all"; constraints: string[]; expected_revision: number },
+): Promise<{ plugin_instance_id: string; placement: PluginPlacementView }> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/placement`,
+    {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * Drops an instance's placement: its deployments stay as they are and the
+ * Enabled switch manages them again.
+ *
+ * @param instanceId - Plugin instance id.
+ * @returns Whether a placement was removed.
+ */
+export async function deletePluginPlacement(
+  instanceId: string,
+): Promise<{ plugin_instance_id: string; deleted: boolean }> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/placement`,
+    { method: "DELETE", credentials: "include" },
+  );
+  return parseJson(res);
+}
+
+/**
+ * A node's runtime document (`node.runtime`): its label, the share of its
+ * detected capacity the scheduler may commit, and the drain switch.
+ */
+export interface NodeRuntimeView {
+  label: string;
+  /** Share of detected CPU the scheduler may commit (1..=100). */
+  cpu_budget_percent: number;
+  /** Share of detected memory the scheduler may commit (1..=100). */
+  memory_budget_percent: number;
+  /** False drains the node: nothing new is placed there. */
+  schedulable: boolean;
+}
+
+/** A node's latest heartbeat (every 15 s while its daemon runs). */
+export interface NodeStatusView {
+  heartbeat_at: string;
+  started_at: string;
+  interval_ms: number;
+  /** Detected CPU capacity in millicores. */
+  cpu_millicores: number;
+  /** Detected memory in bytes, when the node could read it. */
+  memory_bytes: number | null;
+  cpu_budget_millicores: number;
+  memory_budget_bytes: number | null;
+  schedulable: boolean;
+  /** Measured CPU in use since the previous heartbeat. */
+  cpu_used_millicores: number | null;
+  /** Measured memory available to new work. */
+  memory_available_bytes: number | null;
+  files_dir_free_bytes: number | null;
+  /** Sum of the running guests' jail ceilings. */
+  reserved: { memory_bytes: number; cpu_millicores: number };
+  running_guests: number;
+  /** Recent online fraction in parts per million (decays over about a day). */
+  availability_ppm: number;
+}
+
+/** One cluster node as `GET /api/config/nodes` returns it. */
+export interface ConfigNodeView {
+  node_id: string;
+  target: string;
+  /** Operator labels. */
+  labels: string[];
+  /** Labels every node carries (`node=<id>`, `target=<target>`). */
+  implicit_labels: string[];
+  /** True while the node's daemon heartbeats. */
+  live: boolean;
+  runtime: NodeRuntimeView;
+  /** Latest heartbeat; null when the node's daemon never ran. */
+  status: NodeStatusView | null;
+  software_version?: string;
+  /** True for the node serving this request. */
+  this_node: boolean;
+}
+
+/**
+ * Lists the cluster's nodes with their heartbeat, budgets, and labels.
+ *
+ * @returns The serving node's id and every node.
+ */
+export async function listConfigNodes(): Promise<{ node_id: string; nodes: ConfigNodeView[] }> {
+  const res = await fetch("/api/config/nodes", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Edits a node's label, budgets, or drain switch. The node applies it at
+ * its next heartbeat.
+ *
+ * @param nodeId - Node to edit.
+ * @param body - Fields to change; omitted fields keep their value.
+ * @returns The stored runtime document.
+ */
+export async function putNodeRuntime(
+  nodeId: string,
+  body: Partial<NodeRuntimeView>,
+): Promise<{ node_id: string; revision: number; runtime: NodeRuntimeView }> {
+  const res = await fetch(`/api/config/nodes/${encodeURIComponent(nodeId)}/runtime`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Replaces a node's operator labels.
+ *
+ * @param nodeId - Node to edit.
+ * @param labels - The complete label set (`nas`, `zone=eu`).
+ * @returns The updated node.
+ */
+export async function putNodeLabels(nodeId: string, labels: string[]): Promise<unknown> {
+  const res = await fetch(`/api/config/nodes/${encodeURIComponent(nodeId)}/labels`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ labels }),
+  });
+  return parseJson(res);
 }
 
 /**

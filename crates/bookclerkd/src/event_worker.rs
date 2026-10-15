@@ -5,14 +5,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bookclerk_integrations::{DomainEvent, EventResult, EventSubscription};
+use std::collections::BTreeMap;
+
+use bookclerk_integrations::{
+    DomainEvent, EventResult, EventSubscription, Integration, QueueBatch, QueueMessage,
+    QueueResult, QueueSubscription,
+};
+use bookclerk_library::control_plane::{route_ranks, RouteRank};
 use bookclerk_library::{
     catalog_subscribers_for_event, subscription_matches_event, wake_grants_from_subscriptions,
-    EventCatalogSubscription, LibraryStore,
+    EventCatalogSubscription, LibraryStore, PublishDomainEventSpec, QUEUE_CONTENT_TYPE_BYTES,
 };
 use chrono::{TimeZone, Utc};
 use tokio::time::MissedTickBehavior;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -36,9 +42,6 @@ const WAKE_PENDING_PAGE: u64 = 32;
 /// Dispatch undispatched outbox rows and run configured delivery workers.
 pub fn start_event_runtime(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let files_dir = state.config.read().await.paths().files_dir.clone();
-        let node_id = resolve_event_node_id(&files_dir);
-        let _ = state.event_node_id.set(node_id);
         upsert_event_subscriber_catalog(&state).await;
         let (retention_days, dead_letter_retention_days, workers) = {
             let cfg = state.config.read().await;
@@ -79,7 +82,8 @@ fn spawn_dispatcher(state: Arc<AppState>) {
                 let cfg = state.config.read().await;
                 (cfg.events.retention_days, cfg.paths().files_dir.clone())
             };
-            let node_id = event_node_id(&state, &files_dir);
+            crate::node_queue::upsert_catalog_row(&library, &files_dir).await;
+            let node_id = event_node_id(&files_dir);
             let more = match dispatch_pending(
                 &library,
                 retention_days,
@@ -139,6 +143,13 @@ fn spawn_event_pruner(state: Arc<AppState>) {
             {
                 warn!(error = %err, "event retention prune failed");
             }
+            // Expired `[[kv_namespaces]]` rows read as absent already; this
+            // only reclaims their storage.
+            match library.kv_prune_expired().await {
+                Ok(0) => {}
+                Ok(pruned) => debug!(pruned, "pruned expired plugin kv rows"),
+                Err(err) => warn!(error = %err, "plugin kv expiry prune failed"),
+            }
             idle.tick().await;
         }
     });
@@ -150,6 +161,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
         let owner = format!("event-{}", Uuid::new_v4());
         let mut idle = tokio::time::interval(Duration::from_secs(5));
         idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut ranks = RankCache::default();
         loop {
             let library = state.library_snapshot().await;
             if let Err(err) = library.reclaim_expired_event_deliveries().await {
@@ -157,16 +169,14 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
             }
             let files_dir = state.config.read().await.paths().files_dir.clone();
             let max_in_flight = state.config.read().await.events.concurrency.max(1);
-            let node_id = event_node_id(&state, &files_dir);
-            match claim_delivery(
-                &library,
-                &owner,
-                &loaded_plugin_ids(&state).await,
-                max_in_flight,
-                &node_id,
-            )
-            .await
-            {
+            let node_id = event_node_id(&files_dir);
+            let mut claim_ids = loaded_plugin_ids(&state).await;
+            claim_ids.extend(crate::node_queue::consumer_id(&files_dir));
+            let groups = claim_groups(
+                &claim_ids,
+                ranks.get(&library, &files_dir, &claim_ids).await,
+            );
+            match claim_delivery(&library, &owner, &groups, max_in_flight, &node_id).await {
                 Ok(Some(delivery)) => {
                     run_delivery(&state, &library, delivery).await;
                 }
@@ -192,7 +202,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
 /// of one key each get their own row so event delivery does not collapse them.
 pub async fn upsert_event_subscriber_catalog(state: &AppState) {
     let cfg = state.config.read().await.clone();
-    let node_id = event_node_id(state, &cfg.paths().files_dir);
+    let node_id = event_node_id(&cfg.paths().files_dir);
     let loaded = {
         let integrations = state.integrations.read().await;
         integrations
@@ -205,7 +215,7 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
                     .filter(|id| !id.is_empty())
                     .map(str::to_string),
                 alias: integration.id().to_string(),
-                runtime_subs: catalog_from_runtime(&integration.event_subscriptions()),
+                runtime_subs: catalog_from_integration(integration.as_ref()),
             })
             .collect::<Vec<_>>()
     };
@@ -226,10 +236,11 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
     match discovered {
         Ok(Ok(plugins)) => {
             for plugin in plugins {
-                if !plugin.manifest.consumes_events() {
+                if !plugin.manifest.consumes_events() && plugin.manifest.queues.consumers.is_empty()
+                {
                     continue;
                 }
-                // Not loaded on this host: no present deployment runs it here,
+                // Not loaded on this node: no present deployment runs it here,
                 // so its catalog row is recorded disabled until one does.
                 let enabled = false;
                 let plugin_id = plugin.plugin_key().canonical().to_string();
@@ -322,32 +333,13 @@ struct LoadedSubscriber {
     runtime_subs: Vec<EventCatalogSubscription>,
 }
 
-/// Process-stable per-files-dir node id used as the catalog heartbeat key.
-fn event_node_id(state: &AppState, files_dir: &Path) -> String {
-    state
-        .event_node_id
-        .get_or_init(|| resolve_event_node_id(files_dir))
-        .clone()
-}
-
-/// Read or mint the node id once. Persistence is best-effort.
-fn resolve_event_node_id(files_dir: &Path) -> String {
-    let path = files_dir.join("event_node_id");
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let trimmed = existing.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    let id = Uuid::new_v4().to_string();
-    if let Err(err) = std::fs::create_dir_all(files_dir) {
-        warn!(error = %err, "event_node_id directory create failed");
-        return id;
-    }
-    if let Err(err) = std::fs::write(&path, &id) {
-        warn!(error = %err, "event_node_id write failed");
-    }
-    id
+/// This node's id, the key of its rows in the subscriber catalog. Falls back
+/// to a process-lifetime id when the node identity cannot be read, so a
+/// catalog row never matches another node's.
+fn event_node_id(files_dir: &Path) -> String {
+    static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    crate::node_queue::node_id(files_dir)
+        .unwrap_or_else(|| FALLBACK.get_or_init(|| Uuid::new_v4().to_string()).clone())
 }
 
 /// Map `[[events.consumers]]` rows onto the durable catalog JSON shape.
@@ -369,20 +361,97 @@ fn catalog_from_manifest(
                 s.resource_class.clone()
             },
             filter: s.filter.clone().filter(|v| !v.is_null()),
+            queue: String::new(),
+            max_retries: s.max_retries,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
         })
         .collect()
 }
 
-/// Catalog rows the operator grant actually authorizes (manifest ∩ grant).
+/// Map `[[queues.consumers]]` rows onto the durable catalog JSON shape.
+fn queue_catalog_from_manifest(
+    plugin: &bookclerk_plugin_host::DiscoveredPlugin,
+) -> Vec<EventCatalogSubscription> {
+    plugin
+        .manifest
+        .queues
+        .consumers
+        .iter()
+        .map(|c| {
+            queue_catalog_row(
+                &c.queue,
+                c.max_retries,
+                c.dead_letter_queue.clone(),
+                c.retry_delay,
+            )
+        })
+        .collect()
+}
+
+/// One catalog row for a plugin-owned queue consumer.
+fn queue_catalog_row(
+    queue: &str,
+    max_retries: u32,
+    dead_letter_queue: Option<String>,
+    retry_delay_secs: u32,
+) -> EventCatalogSubscription {
+    EventCatalogSubscription {
+        max_retries: Some(max_retries),
+        dead_letter_queue,
+        retry_delay_secs,
+        ..EventCatalogSubscription::queue(queue)
+    }
+}
+
+/// Catalog rows the operator grant actually authorizes (manifest ∩ grant):
+/// event consumers matched on type, schemas, and filter; queue consumers
+/// matched on the `queue_consumer:<queue>` grant token.
 fn granted_catalog_subscriptions(
     plugin: &bookclerk_plugin_host::DiscoveredPlugin,
     stored: Option<&bookclerk_plugin_host::PluginGrant>,
 ) -> Vec<EventCatalogSubscription> {
     let requested = bookclerk_plugin_host::consent_request(&plugin.manifest, plugin.plugin_key());
-    let admitted = stored
-        .map(|g| bookclerk_plugin_host::effective_grant(g, &requested).consumers)
+    let effective = stored.map(|g| bookclerk_plugin_host::effective_grant(g, &requested));
+    let admitted = effective
+        .as_ref()
+        .map(|g| g.consumers.clone())
         .unwrap_or_default();
-    filter_catalog_by_granted_consumers(&catalog_from_manifest(plugin), &admitted)
+    let mut rows = filter_catalog_by_granted_consumers(&catalog_from_manifest(plugin), &admitted);
+    rows.extend(
+        queue_catalog_from_manifest(plugin)
+            .into_iter()
+            .filter(|row| {
+                effective
+                    .as_ref()
+                    .is_some_and(|g| g.allows_queue_consumer(row.queue_name()))
+            }),
+    );
+    rows
+}
+
+/// Catalog rows a loaded integration advertises at runtime: its event
+/// subscriptions plus one row per `[[queues.consumers]]` queue.
+fn catalog_from_integration(integration: &dyn Integration) -> Vec<EventCatalogSubscription> {
+    let mut rows = catalog_from_runtime(&integration.event_subscriptions());
+    rows.extend(catalog_from_queue_subscriptions(
+        &integration.queue_subscriptions(),
+    ));
+    rows
+}
+
+/// Map runtime `[[queues.consumers]]` rows onto the catalog shape.
+fn catalog_from_queue_subscriptions(subs: &[QueueSubscription]) -> Vec<EventCatalogSubscription> {
+    subs.iter()
+        .map(|s| {
+            queue_catalog_row(
+                &s.queue,
+                s.max_retries,
+                s.dead_letter_queue.clone(),
+                s.retry_delay_secs,
+            )
+        })
+        .collect()
 }
 
 /// Keep catalog rows that match a granted consumer on type, schemas, and
@@ -430,6 +499,10 @@ fn catalog_from_runtime(subs: &[EventSubscription]) -> Vec<EventCatalogSubscript
                 s.resource_class.clone()
             },
             filter: s.filter.clone(),
+            queue: String::new(),
+            max_retries: None,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
         })
         .collect()
 }
@@ -618,28 +691,109 @@ fn claim_ids_for_loaded(rows: &[LoadedClaimId]) -> Vec<String> {
     ids
 }
 
-/// Claim the next ready delivery, replaying a lost RPC within [`CLAIM_REPLAY_BUDGET`].
+/// How long a cached route ranking stays valid (heartbeats come every 15 s).
+const RANK_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// This node's route ranks for its loaded instances, refreshed every
+/// [`RANK_CACHE_TTL`].
+#[derive(Default)]
+struct RankCache {
+    /// When the ranks were read, and for which claim ids.
+    read: Option<(Instant, Vec<String>)>,
+    /// Instance id → this node's rank among live nodes running it.
+    ranks: BTreeMap<String, RouteRank>,
+}
+
+impl RankCache {
+    /// Current ranks; on a read failure every id is treated as rank 0, so
+    /// work still flows (ranking only orders hosts, it never blocks one).
+    async fn get(
+        &mut self,
+        library: &LibraryStore,
+        files_dir: &std::path::Path,
+        claim_ids: &[String],
+    ) -> &BTreeMap<String, RouteRank> {
+        let fresh = self
+            .read
+            .as_ref()
+            .is_some_and(|(at, ids)| at.elapsed() < RANK_CACHE_TTL && ids == claim_ids);
+        if !fresh {
+            let node_id = crate::node_queue::node_id(files_dir).unwrap_or_default();
+            self.ranks = match route_ranks(library, &node_id, claim_ids).await {
+                Ok(ranks) => ranks,
+                Err(err) => {
+                    warn!(error = %err, "delivery route ranks unavailable; claiming unranked");
+                    BTreeMap::new()
+                }
+            };
+            self.read = Some((Instant::now(), claim_ids.to_vec()));
+        }
+        &self.ranks
+    }
+}
+
+/// Claim ids grouped by how long this node lets their deliveries wait:
+/// ids this node is best placed for (and ids that are not routed, such as
+/// plugin keys and the host's own queue) first with no wait, then each
+/// lower rank with [`bookclerk_library::control_plane::ROUTE_DEFER_PER_RANK`]
+/// more.
+fn claim_groups(
+    claim_ids: &[String],
+    ranks: &BTreeMap<String, RouteRank>,
+) -> Vec<(Duration, Vec<String>)> {
+    let mut by_defer: BTreeMap<Duration, Vec<String>> = BTreeMap::new();
+    for id in claim_ids {
+        let defer = ranks.get(id).map_or(Duration::ZERO, |rank| rank.defer());
+        by_defer.entry(defer).or_default().push(id.clone());
+    }
+    by_defer.into_iter().collect()
+}
+
+/// Claim the next ready delivery, best-ranked ids first, replaying a lost
+/// RPC within [`CLAIM_REPLAY_BUDGET`].
 async fn claim_delivery(
+    library: &LibraryStore,
+    owner: &str,
+    groups: &[(Duration, Vec<String>)],
+    max_in_flight: u32,
+    node_id: &str,
+) -> Result<Option<bookclerk_library::EventDeliveryRecord>, bookclerk_library::LibraryError> {
+    for (defer, plugin_ids) in groups {
+        if plugin_ids.is_empty() {
+            continue;
+        }
+        let due_by = chrono::Utc::now()
+            - chrono::Duration::from_std(*defer).unwrap_or(chrono::Duration::zero());
+        if let Some(row) =
+            claim_group(library, owner, plugin_ids, max_in_flight, node_id, due_by).await?
+        {
+            return Ok(Some(row));
+        }
+    }
+    Ok(None)
+}
+
+/// One claim over `plugin_ids` for deliveries due by `due_by`.
+async fn claim_group(
     library: &LibraryStore,
     owner: &str,
     plugin_ids: &[String],
     max_in_flight: u32,
     node_id: &str,
+    due_by: chrono::DateTime<chrono::Utc>,
 ) -> Result<Option<bookclerk_library::EventDeliveryRecord>, bookclerk_library::LibraryError> {
-    if plugin_ids.is_empty() {
-        return Ok(None);
-    }
     let operation_id = Uuid::new_v4().to_string();
     let deadline = Instant::now() + CLAIM_REPLAY_BUDGET;
     loop {
         match library
-            .claim_next_event_delivery(
+            .claim_next_event_delivery_due_by(
                 owner,
                 LEASE_SECS,
                 &operation_id,
                 plugin_ids,
                 max_in_flight.max(1),
                 node_id,
+                due_by,
             )
             .await
         {
@@ -675,6 +829,10 @@ async fn run_delivery(
             .await;
         return;
     };
+    if bookclerk_library::control_plane::is_node_consumer_id(&delivery.plugin_id) {
+        crate::node_queue::run_node_delivery(library, &event, &delivery).await;
+        return;
+    }
     let integration = {
         let integrations = state.integrations.read().await;
         integrations.get(&delivery.plugin_id)
@@ -686,7 +844,7 @@ async fn run_delivery(
             .await;
         return;
     };
-    let local_subs = catalog_from_runtime(&integration.event_subscriptions());
+    let local_subs = catalog_from_integration(integration.as_ref());
     if !local_subs
         .iter()
         .any(|s| subscription_matches_event(s, &event))
@@ -702,70 +860,26 @@ async fn run_delivery(
             .await;
         return;
     }
+    if event.is_queue_message() {
+        run_queue_delivery(
+            library,
+            integration.as_ref(),
+            &event,
+            &delivery,
+            &local_subs,
+        )
+        .await;
+        return;
+    }
     let domain = domain_event_for_delivery(&event, &delivery);
     let cancel = Arc::new(AtomicBool::new(false));
     let operator_cancel = Arc::new(AtomicBool::new(false));
-    let heartbeat = {
-        let library = library.clone();
-        let fence = fence.clone();
-        let cancel = Arc::clone(&cancel);
-        let operator_cancel = Arc::clone(&operator_cancel);
-        tokio::spawn(async move {
-            let lease = Duration::from_secs(LEASE_SECS);
-            let mut confirmed_until = Instant::now() + lease;
-            let mut tick = tokio::time::interval(Duration::from_secs(LEASE_SECS.max(10) / 3));
-            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            loop {
-                tick.tick().await;
-                match library
-                    .event_delivery_cancel_requested(&fence.delivery_id)
-                    .await
-                {
-                    Ok(true) => {
-                        warn!(
-                            delivery_id = %fence.delivery_id,
-                            "event delivery cancel requested; cancelling onEvent"
-                        );
-                        operator_cancel.store(true, Ordering::SeqCst);
-                        cancel.store(true, Ordering::SeqCst);
-                        break;
-                    }
-                    Ok(false) => {}
-                    Err(err) => {
-                        warn!(
-                            delivery_id = %fence.delivery_id,
-                            error = %err,
-                            "event_delivery_cancel_requested failed; continuing heartbeat"
-                        );
-                    }
-                }
-                let classified =
-                    classify_heartbeat(library.heartbeat_event_delivery(&fence, LEASE_SECS).await);
-                if let HeartbeatTick::Transient(err) = &classified {
-                    warn!(
-                        delivery_id = %fence.delivery_id,
-                        error = %err,
-                        "heartbeat_event_delivery failed; will retry until confirmed lease expires"
-                    );
-                }
-                match apply_heartbeat_tick(&classified, Instant::now(), confirmed_until, lease) {
-                    HeartbeatDecision::Continue {
-                        confirmed_until: next,
-                    } => {
-                        confirmed_until = next;
-                    }
-                    HeartbeatDecision::StopFenceLost => {
-                        warn!(
-                            delivery_id = %fence.delivery_id,
-                            "event delivery fence lost; cancelling onEvent"
-                        );
-                        cancel.store(true, Ordering::SeqCst);
-                        break;
-                    }
-                }
-            }
-        })
-    };
+    let heartbeat = spawn_delivery_heartbeat(
+        library.clone(),
+        fence.clone(),
+        Arc::clone(&cancel),
+        Arc::clone(&operator_cancel),
+    );
     let started = Instant::now();
     let result = match integration
         .deliver_domain_event_cancelable(domain, Arc::clone(&cancel))
@@ -960,6 +1074,285 @@ async fn run_delivery(
     }
 }
 
+/// Heartbeats a claimed delivery until the handler returns: renews the lease,
+/// honours an operator cancel request, and trips `cancel` when the fence is
+/// lost. The caller aborts the task once the handler has returned.
+fn spawn_delivery_heartbeat(
+    library: LibraryStore,
+    fence: bookclerk_library::EventDeliveryFence,
+    cancel: Arc<AtomicBool>,
+    operator_cancel: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let lease = Duration::from_secs(LEASE_SECS);
+        let mut confirmed_until = Instant::now() + lease;
+        let mut tick = tokio::time::interval(Duration::from_secs(LEASE_SECS.max(10) / 3));
+        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            match library
+                .event_delivery_cancel_requested(&fence.delivery_id)
+                .await
+            {
+                Ok(true) => {
+                    warn!(
+                        delivery_id = %fence.delivery_id,
+                        "event delivery cancel requested; cancelling onEvent"
+                    );
+                    operator_cancel.store(true, Ordering::SeqCst);
+                    cancel.store(true, Ordering::SeqCst);
+                    break;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    warn!(
+                        delivery_id = %fence.delivery_id,
+                        error = %err,
+                        "event_delivery_cancel_requested failed; continuing heartbeat"
+                    );
+                }
+            }
+            let classified =
+                classify_heartbeat(library.heartbeat_event_delivery(&fence, LEASE_SECS).await);
+            if let HeartbeatTick::Transient(err) = &classified {
+                warn!(
+                    delivery_id = %fence.delivery_id,
+                    error = %err,
+                    "heartbeat_event_delivery failed; will retry until confirmed lease expires"
+                );
+            }
+            match apply_heartbeat_tick(&classified, Instant::now(), confirmed_until, lease) {
+                HeartbeatDecision::Continue {
+                    confirmed_until: next,
+                } => {
+                    confirmed_until = next;
+                }
+                HeartbeatDecision::StopFenceLost => {
+                    warn!(
+                        delivery_id = %fence.delivery_id,
+                        "event delivery fence lost; cancelling onEvent"
+                    );
+                    cancel.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+        }
+    })
+}
+
+/// Runs one claimed delivery of a plugin-owned queue message: builds the
+/// single-message [`QueueBatch`], calls the integration's `queue(batch)`
+/// trigger, and persists the per-message outcome. A retry past the
+/// consumer's `max_retries` dead-letters the delivery and, when the
+/// subscription names a `dead_letter_queue`, forwards a copy of the message
+/// there first.
+async fn run_queue_delivery(
+    library: &LibraryStore,
+    integration: &dyn Integration,
+    event: &bookclerk_library::DomainEventRecord,
+    delivery: &bookclerk_library::EventDeliveryRecord,
+    local_subs: &[EventCatalogSubscription],
+) {
+    let fence = delivery.fence();
+    let subscription = local_subs
+        .iter()
+        .find(|s| s.is_queue() && s.queue_name() == event.queue_name)
+        .cloned();
+    let batch = QueueBatch {
+        queue: event.queue_name.clone(),
+        messages: vec![queue_message_for_delivery(event, delivery)],
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let operator_cancel = Arc::new(AtomicBool::new(false));
+    let heartbeat = spawn_delivery_heartbeat(
+        library.clone(),
+        fence.clone(),
+        Arc::clone(&cancel),
+        Arc::clone(&operator_cancel),
+    );
+    let started = Instant::now();
+    let outcome = integration
+        .deliver_queue_batch_cancelable(batch, Arc::clone(&cancel))
+        .await;
+    heartbeat.abort();
+    let _ = library
+        .record_event_handler_latency(i64::try_from(started.elapsed().as_millis()).unwrap_or(0))
+        .await;
+    if operator_cancel.load(Ordering::SeqCst) {
+        warn!(delivery_id = %delivery.id, "queue delivery cancelled by operator");
+        let _ = library
+            .reject_event_delivery(&fence, "cancelled by operator")
+            .await;
+        return;
+    }
+    if cancel.load(Ordering::SeqCst) {
+        warn!(
+            delivery_id = %delivery.id,
+            "queue delivery fence lost; ignoring handler result"
+        );
+        return;
+    }
+    let result = match outcome {
+        Ok(mut results) => match results.pop() {
+            Some(result) if results.is_empty() => result,
+            _ => {
+                warn!(
+                    delivery_id = %delivery.id,
+                    plugin = %delivery.plugin_id,
+                    "queue handler returned a result list of the wrong length; retrying"
+                );
+                QueueResult::Retry(bookclerk_integrations::QueueRetry {
+                    delay_seconds: 0,
+                    reason: "queue handler returned the wrong number of results".into(),
+                })
+            }
+        },
+        Err(err) => {
+            warn!(
+                delivery_id = %delivery.id,
+                plugin = %delivery.plugin_id,
+                queue = %event.queue_name,
+                error = %err,
+                "queue delivery invocation failed"
+            );
+            // A failure on the last attempt dead-letters the delivery, so the
+            // message goes to the consumer's dead-letter queue first, as an
+            // exhausted retry does.
+            if delivery.attempt_count >= delivery.max_attempts {
+                if let Some(dlq) = subscription
+                    .as_ref()
+                    .and_then(|s| s.dead_letter_queue.clone())
+                {
+                    forward_to_dead_letter_queue(library, event, &dlq).await;
+                }
+            }
+            let _ = library.fail_event_delivery(&fence, &err.to_string()).await;
+            return;
+        }
+    };
+    let persist = match result {
+        QueueResult::Ack => {
+            info!(
+                delivery_id = %delivery.id,
+                plugin = %delivery.plugin_id,
+                queue = %event.queue_name,
+                outcome = "ack",
+                "queue delivery completed"
+            );
+            library.ack_event_delivery(&fence).await
+        }
+        QueueResult::Retry(retry) => {
+            let exhausted = delivery.attempt_count >= delivery.max_attempts;
+            if exhausted {
+                warn!(
+                    delivery_id = %delivery.id,
+                    plugin = %delivery.plugin_id,
+                    queue = %event.queue_name,
+                    outcome = "dead_letter",
+                    reason = %retry.reason,
+                    attempts = delivery.attempt_count,
+                    "queue delivery retry exhausted"
+                );
+                if let Some(dlq) = subscription
+                    .as_ref()
+                    .and_then(|s| s.dead_letter_queue.clone())
+                {
+                    forward_to_dead_letter_queue(library, event, &dlq).await;
+                }
+            } else {
+                info!(
+                    delivery_id = %delivery.id,
+                    plugin = %delivery.plugin_id,
+                    queue = %event.queue_name,
+                    outcome = "retry",
+                    reason = %retry.reason,
+                    "queue delivery retry scheduled"
+                );
+            }
+            let delay = if retry.delay_seconds > 0 {
+                i64::from(retry.delay_seconds)
+            } else {
+                subscription
+                    .as_ref()
+                    .map(|s| i64::from(s.retry_delay_secs))
+                    .filter(|d| *d > 0)
+                    .unwrap_or(5)
+            };
+            let wake = Utc::now() + chrono::Duration::seconds(delay);
+            library
+                .retry_event_delivery(&fence, wake, &retry.reason)
+                .await
+        }
+    };
+    if let Err(err) = persist {
+        warn!(delivery_id = %delivery.id, error = %err, "queue delivery persist failed");
+    }
+}
+
+/// Copies an exhausted queue message onto its consumer's dead-letter queue.
+async fn forward_to_dead_letter_queue(
+    library: &LibraryStore,
+    event: &bookclerk_library::DomainEventRecord,
+    dead_letter_queue: &str,
+) {
+    let spec = PublishDomainEventSpec {
+        id: String::new(),
+        event_type: String::new(),
+        schema_version: event.schema_version,
+        account_id: event.account_id.clone(),
+        source: event.source.clone(),
+        correlation_id: event.correlation_id.clone(),
+        causation_id: event.id.clone(),
+        dedup_key: format!("dlq:{}", event.id),
+        payload: event.payload.clone(),
+        ordering_key: event.ordering_key.clone(),
+        queue_name: dead_letter_queue.to_string(),
+        content_type: event.content_type.clone(),
+        delay_seconds: 0,
+    };
+    match library.publish_domain_event(spec).await {
+        Ok(_) => info!(
+            message_id = %event.id,
+            queue = %event.queue_name,
+            dead_letter_queue,
+            "queue message forwarded to dead-letter queue"
+        ),
+        Err(err) => warn!(
+            message_id = %event.id,
+            queue = %event.queue_name,
+            dead_letter_queue,
+            error = %err,
+            "dead-letter queue forward failed"
+        ),
+    }
+}
+
+/// Map an outbox row plus the claimed delivery onto an ABI [`QueueMessage`].
+///
+/// `bytes` bodies are stored base64-encoded and decoded here; `json` and
+/// `text` bodies travel as their UTF-8 bytes.
+fn queue_message_for_delivery(
+    event: &bookclerk_library::DomainEventRecord,
+    delivery: &bookclerk_library::EventDeliveryRecord,
+) -> QueueMessage {
+    use base64::Engine as _;
+    let body = if event.content_type == QUEUE_CONTENT_TYPE_BYTES {
+        base64::engine::general_purpose::STANDARD
+            .decode(event.payload.as_bytes())
+            .unwrap_or_default()
+    } else {
+        event.payload.clone().into_bytes()
+    };
+    QueueMessage {
+        id: event.id.clone(),
+        timestamp_unix_ms: u64::try_from(event.created_at.timestamp_millis()).unwrap_or(0),
+        body,
+        content_type: event.content_type.clone(),
+        attempts: u32::try_from(delivery.attempt_count.max(1)).unwrap_or(1),
+        source: event.source.clone(),
+    }
+}
+
 /// True when a subscription for this exact type and schema advertises suspend.
 fn suspend_allowed(subs: &[EventSubscription], event_type: &str, schema_version: i64) -> bool {
     subs.iter().any(|s| {
@@ -1036,6 +1429,9 @@ mod tests {
             dispatch_state: "dispatched".into(),
             created_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
             wake_pending: false,
+            queue_name: bookclerk_library::CORE_EVENTS_QUEUE.into(),
+            content_type: bookclerk_library::QUEUE_CONTENT_TYPE_JSON.into(),
+            deliver_after: None,
         }
     }
 
@@ -1066,21 +1462,19 @@ mod tests {
             wake_event_type: String::new(),
             wake_filter_json: String::new(),
             wake_grants_json: String::new(),
+            queue_name: bookclerk_library::CORE_EVENTS_QUEUE.into(),
         }
     }
 
     #[test]
-    fn event_node_id_reuses_persisted_value() {
+    fn catalog_rows_and_the_node_queue_share_the_node_id() {
         let dir = tempfile::tempdir().unwrap();
-        let first = resolve_event_node_id(dir.path());
-        let second = resolve_event_node_id(dir.path());
-        assert_eq!(first, second);
+        let catalog = event_node_id(dir.path());
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("event_node_id"))
-                .unwrap()
-                .trim(),
-            first
+            Some(catalog.clone()),
+            crate::node_queue::node_id(dir.path())
         );
+        assert_eq!(catalog, event_node_id(dir.path()));
     }
 
     #[test]
@@ -1102,6 +1496,10 @@ mod tests {
                 supports_suspend: true,
                 resource_class: "network".into(),
                 filter: None,
+                queue: String::new(),
+                max_retries: None,
+                dead_letter_queue: None,
+                retry_delay_secs: 0,
             },
             EventCatalogSubscription {
                 event_type: "book_deleted".into(),
@@ -1109,6 +1507,10 @@ mod tests {
                 supports_suspend: false,
                 resource_class: "network".into(),
                 filter: None,
+                queue: String::new(),
+                max_retries: None,
+                dead_letter_queue: None,
+                retry_delay_secs: 0,
             },
         ];
         let mut admitted = std::collections::BTreeSet::new();
@@ -1134,6 +1536,10 @@ mod tests {
             supports_suspend: true,
             resource_class: "network".into(),
             filter: None,
+            queue: String::new(),
+            max_retries: None,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
         }];
         let mut admitted = std::collections::BTreeSet::new();
         admitted.insert(bookclerk_plugin_host::GrantedEventConsumer {
@@ -1156,6 +1562,10 @@ mod tests {
                 supports_suspend: false,
                 resource_class: "network".into(),
                 filter: None,
+                queue: String::new(),
+                max_retries: None,
+                dead_letter_queue: None,
+                retry_delay_secs: 0,
             },
             EventCatalogSubscription {
                 event_type: "book_acquired".into(),
@@ -1163,6 +1573,10 @@ mod tests {
                 supports_suspend: false,
                 resource_class: "network".into(),
                 filter: Some(serde_json::json!({"titleId":"u1"})),
+                queue: String::new(),
+                max_retries: None,
+                dead_letter_queue: None,
+                retry_delay_secs: 0,
             },
         ];
         let mut admitted = std::collections::BTreeSet::new();
@@ -1288,6 +1702,7 @@ mod tests {
             dedup_key: dedup.into(),
             payload: r#"{"titleId":"t","source":"audible"}"#.into(),
             ordering_key: String::new(),
+            ..PublishDomainEventSpec::default()
         }
     }
 
@@ -1460,6 +1875,112 @@ schema_versions = [1]
         bookclerk_plugin_host::DiscoveredPlugin::new(manifest, root.to_path_buf(), command)
     }
 
+    fn discovered_queue_echo(root: &std::path::Path) -> bookclerk_plugin_host::DiscoveredPlugin {
+        std::fs::create_dir_all(root).unwrap();
+        let toml = r#"
+api_version = 3
+id = "qecho"
+version = "0.1.0"
+runtime = "native"
+command = "./guest"
+entrypoints = ["cli"]
+
+[capabilities.network]
+mode = "deny"
+
+[[queues.consumers]]
+queue = "echo"
+max_retries = 2
+dead_letter_queue = "echo-dlq"
+retry_delay = 7
+
+[[queues.consumers]]
+queue = "other"
+"#;
+        std::fs::write(root.join("plugin.toml"), toml).unwrap();
+        let command = root.join("guest");
+        std::fs::write(&command, b"#!/bin/sh\n").unwrap();
+        let manifest = bookclerk_plugin_host::PluginManifest::parse(toml).unwrap();
+        bookclerk_plugin_host::DiscoveredPlugin::new(manifest, root.to_path_buf(), command)
+    }
+
+    #[test]
+    fn queue_catalog_rows_follow_the_consumer_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = discovered_queue_echo(dir.path());
+        assert!(
+            granted_catalog_subscriptions(&plugin, None).is_empty(),
+            "no stored grant means no queue rows"
+        );
+        let requested =
+            bookclerk_plugin_host::consent_request(&plugin.manifest, plugin.plugin_key());
+        assert!(requested.allows_queue_consumer("echo"));
+        let mut narrowed = requested.clone();
+        narrowed
+            .bindings
+            .retain(|b| b != &bookclerk_plugin_host::queue_consumer_grant("other"));
+        let rows = granted_catalog_subscriptions(&plugin, Some(&narrowed));
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let row = &rows[0];
+        assert!(row.is_queue());
+        assert_eq!(row.queue_name(), "echo");
+        assert_eq!(row.max_retries, Some(2));
+        assert_eq!(row.max_attempts(), Some(3));
+        assert_eq!(row.dead_letter_queue.as_deref(), Some("echo-dlq"));
+        assert_eq!(row.retry_delay_secs, 7);
+        let full = granted_catalog_subscriptions(&plugin, Some(&requested));
+        assert_eq!(
+            full.iter().map(|r| r.queue_name()).collect::<Vec<_>>(),
+            ["echo", "other"]
+        );
+    }
+
+    #[test]
+    fn queue_message_decodes_bytes_bodies_and_copies_attempts() {
+        let mut event = sample_event();
+        event.queue_name = "echo".into();
+        event.content_type = bookclerk_library::QUEUE_CONTENT_TYPE_BYTES.into();
+        event.payload = "/wA=".into();
+        event.source = "producer".into();
+        let mut delivery = sample_delivery();
+        delivery.attempt_count = 3;
+        let message = queue_message_for_delivery(&event, &delivery);
+        assert_eq!(message.id, "evt-1");
+        assert_eq!(message.body, vec![0xff, 0x00]);
+        assert_eq!(message.content_type, "bytes");
+        assert_eq!(message.attempts, 3);
+        assert_eq!(message.source, "producer");
+        assert_eq!(message.timestamp_unix_ms, 1_700_000_000_000);
+
+        event.content_type = bookclerk_library::QUEUE_CONTENT_TYPE_JSON.into();
+        event.payload = r#"{"n":1}"#.into();
+        delivery.attempt_count = 0;
+        let message = queue_message_for_delivery(&event, &delivery);
+        assert_eq!(message.body, br#"{"n":1}"#);
+        assert_eq!(message.attempts, 1, "attempts start at 1");
+    }
+
+    #[test]
+    fn runtime_queue_subscriptions_map_onto_catalog_rows() {
+        let rows = catalog_from_queue_subscriptions(&[QueueSubscription {
+            queue: "echo".into(),
+            max_retries: 4,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
+        }]);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_queue());
+        assert_eq!(rows[0].queue_name(), "echo");
+        assert_eq!(rows[0].max_retries, Some(4));
+        let event = {
+            let mut e = sample_event();
+            e.queue_name = "echo".into();
+            e
+        };
+        assert!(subscription_matches_event(&rows[0], &event));
+        assert!(!subscription_matches_event(&rows[0], &sample_event()));
+    }
+
     #[test]
     fn durable_plugin_identity_prefers_plugin_key() {
         assert_eq!(
@@ -1547,6 +2068,62 @@ schema_versions = [1]
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn claim_groups_put_best_ranked_and_unrouted_ids_first() {
+        let ranks = BTreeMap::from([
+            (
+                "instance-best".to_string(),
+                RouteRank {
+                    rank: 0,
+                    nodes: vec!["here".into(), "there".into()],
+                },
+            ),
+            (
+                "instance-second".to_string(),
+                RouteRank {
+                    rank: 1,
+                    nodes: vec!["there".into(), "here".into()],
+                },
+            ),
+            (
+                "instance-third".to_string(),
+                RouteRank {
+                    rank: 2,
+                    nodes: vec!["a".into(), "b".into(), "here".into()],
+                },
+            ),
+        ]);
+        let ids: Vec<String> = [
+            "instance-third",
+            "path:echo",
+            "instance-second",
+            "instance-best",
+            "node:here",
+        ]
+        .map(String::from)
+        .to_vec();
+        let step = bookclerk_library::control_plane::ROUTE_DEFER_PER_RANK;
+        assert_eq!(
+            super::claim_groups(&ids, &ranks),
+            vec![
+                (
+                    Duration::ZERO,
+                    vec![
+                        "path:echo".to_string(),
+                        "instance-best".to_string(),
+                        "node:here".to_string()
+                    ]
+                ),
+                (step, vec!["instance-second".to_string()]),
+                (step * 2, vec!["instance-third".to_string()]),
+            ]
+        );
+        assert_eq!(
+            super::claim_groups(&ids, &BTreeMap::new()),
+            vec![(Duration::ZERO, ids.clone())]
+        );
     }
 
     #[test]
@@ -1654,5 +2231,109 @@ schema_versions = [1]
             missed.is_none(),
             "two instances must not claim the shared key"
         );
+    }
+
+    /// A queue consumer whose every invocation fails (the trait's default
+    /// `deliver_queue_batch_cancelable`).
+    struct FailingConsumer;
+
+    #[async_trait::async_trait]
+    impl Integration for FailingConsumer {
+        fn id(&self) -> &str {
+            "echo"
+        }
+
+        async fn start(
+            &self,
+            _ctx: bookclerk_integrations::IntegrationContext,
+        ) -> bookclerk_integrations::Result<()> {
+            Ok(())
+        }
+
+        async fn stop(&self) -> bookclerk_integrations::Result<()> {
+            Ok(())
+        }
+
+        async fn health(
+            &self,
+        ) -> bookclerk_integrations::Result<bookclerk_integrations::IntegrationHealth> {
+            Ok(bookclerk_integrations::IntegrationHealth {
+                id: "echo".into(),
+                enabled: true,
+                ok: true,
+                detail: None,
+            })
+        }
+
+        async fn deliver_domain_event(
+            &self,
+            _event: DomainEvent,
+        ) -> bookclerk_integrations::Result<EventResult> {
+            Ok(EventResult::Ack)
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_failure_on_the_last_attempt_goes_to_the_dead_letter_queue() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let published = store
+            .publish_domain_event(PublishDomainEventSpec {
+                dedup_key: "q:last-attempt".into(),
+                payload: r#"{"n":1}"#.into(),
+                queue_name: "echo".into(),
+                ..PublishDomainEventSpec::default()
+            })
+            .await
+            .unwrap();
+        let PublishDomainEventOutcome::Created { id: event_id } = published else {
+            panic!("{published:?}");
+        };
+        store
+            .dispatch_event_deliveries(
+                &event_id,
+                &[EventSubscriber {
+                    max_attempts: Some(1),
+                    ..EventSubscriber::plugin("echo")
+                }],
+                "q-last-attempt",
+            )
+            .await
+            .unwrap();
+        let delivery = store
+            .claim_next_event_delivery(
+                "worker",
+                60,
+                &uuid::Uuid::new_v4().to_string(),
+                &["echo".into()],
+                32,
+                "",
+            )
+            .await
+            .unwrap()
+            .expect("claim");
+        assert_eq!(delivery.attempt_count, delivery.max_attempts);
+        let event = store.get_domain_event(&event_id).await.unwrap().unwrap();
+        let mut consumer = EventCatalogSubscription::queue("echo");
+        consumer.dead_letter_queue = Some("echo-dlq".into());
+
+        run_queue_delivery(&store, &FailingConsumer, &event, &delivery, &[consumer]).await;
+
+        let row = store
+            .get_event_delivery(&delivery.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "dead_letter");
+        let dead = store
+            .list_domain_events_for_queue("echo-dlq", 10)
+            .await
+            .unwrap();
+        assert_eq!(dead.len(), 1, "{dead:?}");
+        assert_eq!(dead[0].causation_id, event_id);
+        assert_eq!(dead[0].payload, r#"{"n":1}"#);
     }
 }

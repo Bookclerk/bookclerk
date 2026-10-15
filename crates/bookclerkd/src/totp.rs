@@ -309,7 +309,7 @@ pub(crate) async fn after_password_verified(
             return Ok(Some(totp_error(
                 StatusCode::FORBIDDEN,
                 "passkey_required",
-                "This host requires a passkey or authenticator app. Sign in with a passkey.",
+                "This server requires a passkey or authenticator app. Sign in with a passkey.",
             )));
         }
     }
@@ -526,7 +526,7 @@ async fn put_mfa_policy(
                     return Err(totp_error(
                         StatusCode::FORBIDDEN,
                         "mfa_enrollment_required",
-                        "This host requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                        "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
                     ));
                 }
             }

@@ -2514,6 +2514,8 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         spec: bookclerk_library::PublishDomainEventSpec,
     ) -> bookclerk_library::Result<bookclerk_library::PublishDomainEventOutcome> {
         let spec = bookclerk_library::prepare_publish_domain_event(spec)?;
+        let deliver_after =
+            bookclerk_library::deliver_after_for(&spec, &chrono::Utc::now().to_rfc3339());
         let result = self
             .call(DbAtomicParams::PublishDomainEvent {
                 id: spec.id,
@@ -2526,6 +2528,9 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
                 dedup_key: spec.dedup_key,
                 payload: spec.payload,
                 ordering_key: spec.ordering_key,
+                queue_name: spec.queue_name,
+                content_type: spec.content_type,
+                deliver_after,
             })
             .await?;
         match result.status.as_str() {
@@ -2645,18 +2650,7 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
     ) -> bookclerk_library::Result<()> {
         let event = match event {
             Some(spec) => bookclerk_library::prepare_publish_domain_event(spec)?,
-            None => bookclerk_library::PublishDomainEventSpec {
-                id: String::new(),
-                event_type: String::new(),
-                schema_version: 0,
-                account_id: String::new(),
-                source: String::new(),
-                correlation_id: String::new(),
-                causation_id: String::new(),
-                dedup_key: String::new(),
-                payload: String::new(),
-                ordering_key: String::new(),
-            },
+            None => bookclerk_library::PublishDomainEventSpec::default(),
         };
         let result = self
             .call(DbAtomicParams::SetAcquireStatus {

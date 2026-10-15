@@ -14,7 +14,7 @@ pub struct Model {
     /// Instance this deployment runs.
     pub plugin_instance_id: String,
     /// Host that should install and run the instance.
-    pub host_id: String,
+    pub node_id: String,
     /// Desired presence: `present` or `absent`.
     pub desired: String,
     /// Monotonic compare-and-swap revision. Starts at 1.

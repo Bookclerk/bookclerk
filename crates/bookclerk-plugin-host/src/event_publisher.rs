@@ -40,9 +40,12 @@ impl EventOutbox {
         declared: impl IntoIterator<Item = String>,
         granted: &BTreeSet<String>,
     ) -> Option<Self> {
+        // Host-emitted types (`book_acquired`) never reach a plugin's
+        // publisher, even from a grant recorded before the reservation.
         let producers: BTreeSet<String> = declared
             .into_iter()
             .filter(|event_type| granted.contains(event_type))
+            .filter(|event_type| !bookclerk_plugin_manifest::is_host_event_type(event_type))
             .collect();
         if producers.is_empty() {
             return None;
@@ -148,6 +151,7 @@ impl OutboxEventPublisher {
             dedup_key,
             payload,
             ordering_key: String::new(),
+            ..PublishDomainEventSpec::default()
         })
     }
 }
@@ -219,6 +223,28 @@ mod tests {
         assert!(publisher(&["demo_pinged"], &["demo_pinged"])
             .await
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn host_event_types_never_reach_a_plugin_publisher() {
+        // A grant recorded before the reservation still cannot publish
+        // `book_acquired`: the host emits it once a source's acquire returns.
+        assert!(publisher(&["book_acquired"], &["book_acquired"])
+            .await
+            .is_none());
+        let mixed = publisher(
+            &["book_acquired", "demo_pinged"],
+            &["book_acquired", "demo_pinged"],
+        )
+        .await
+        .expect("other producers stay");
+        let err = mixed
+            .spec(PluginEvent {
+                event_type: "book_acquired".into(),
+                ..PluginEvent::default()
+            })
+            .expect_err("host-emitted");
+        assert_eq!(err.code, bookclerk_plugin_abi::PluginErrorCode::Forbidden);
     }
 
     #[tokio::test]

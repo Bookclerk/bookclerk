@@ -62,7 +62,7 @@ deployment there is `present`:
 ```bash
 bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
 bookclerk plugins config set audiobookshelf api_key --secret   # value on stdin
-bookclerk plugins enable audiobookshelf
+bookclerk plugins deploy audiobookshelf
 ```
 
 Typical behavior when enabled:
@@ -241,7 +241,7 @@ External integrations enrol with an `absent` deployment. Install under
 
 ```bash
 bookclerk plugins approve echo --yes
-bookclerk plugins enable echo
+bookclerk plugins deploy echo
 ```
 
 See the echo example walkthrough in [plugins.md](plugins.md).

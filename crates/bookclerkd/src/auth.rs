@@ -924,7 +924,7 @@ async fn reject_if_enrollment_required(
         Some(json_auth_error(
             StatusCode::FORBIDDEN,
             "mfa_enrollment_required",
-            "This host requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+            "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
         ))
     } else {
         None
@@ -3625,6 +3625,12 @@ pub(crate) mod tests {
     ///
     /// `oidc_rp` persist tests replace `master.key`; without this lock a redeem
     /// retry can HMAC with a different DEK and get 400.
+    ///
+    /// Bootstrapping the control plane replaces the process DEK too
+    /// (`align_cluster_root` installs the files dir's key), and so does a config
+    /// reload, which re-enrolls the node. Tests that do either hold this lock
+    /// for their whole run, or they can swap the key between another test's
+    /// seal and unseal.
     pub(crate) async fn process_dek_lock() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -3731,7 +3737,6 @@ pub(crate) mod tests {
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
-            event_node_id: std::sync::OnceLock::new(),
             deployment_runtime: std::sync::OnceLock::new(),
         });
         if seed_users {
@@ -4287,7 +4292,6 @@ pub(crate) mod tests {
                 last_bound_listen: RwLock::new(None),
                 tray: RwLock::new(None),
                 tray_handoff: Mutex::new(None),
-                event_node_id: std::sync::OnceLock::new(),
                 deployment_runtime: std::sync::OnceLock::new(),
             });
             let app = crate::api::router(state.clone(), None);

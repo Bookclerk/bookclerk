@@ -94,7 +94,7 @@ async fn plugin_instance_ids_are_stable_uuids_independent_of_key() {
         assert!(Uuid::parse_str(id.as_str()).is_ok());
         assert_ne!(id.as_str(), key);
         assert_ne!(id.as_str(), alias);
-        assert_ne!(id.as_str(), session.host.host_id);
+        assert_ne!(id.as_str(), session.node.node_id);
         assert!(
             !id.as_str().contains(':'),
             "a plugin key has a scheme; the instance id does not"
@@ -186,7 +186,7 @@ async fn ensure_shares_one_id_across_two_sqlite_connections() {
     assert!(listed.iter().any(|row| row.id == explicit.id));
 }
 
-/// Applies a host batch on an open connection and never calls `BEGIN`.
+/// Applies a node batch on an open connection and never calls `BEGIN`.
 struct OpenBatchExec {
     /// Same file the store already migrated.
     db: sea_orm::DatabaseConnection,
@@ -623,7 +623,7 @@ async fn resolve_merges_schema_defaults_and_drops_retired_keys() {
 }
 
 #[tokio::test]
-async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
+async fn foreign_node_deployment_is_not_listed_for_the_local_node() {
     let _guard = master_key_test_lock_async().await;
     let dir = tempfile::tempdir().unwrap();
     let store = file_store(dir.path().join("library.db").as_path()).await;
@@ -635,28 +635,28 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
         &store,
         &ConfigActor::Bootstrap,
         &instance.id,
-        &session.host.host_id,
-        DESIRED_PRESENT,
+        &session.node.node_id,
+        DesiredState::Present,
     )
     .await
     .unwrap();
-    let foreign_host = Uuid::new_v4().hyphenated().to_string();
+    let foreign_node = Uuid::new_v4().hyphenated().to_string();
     let foreign = ensure_plugin_deployment(
         &store,
         &ConfigActor::Bootstrap,
         &instance.id,
-        &foreign_host,
-        DESIRED_PRESENT,
+        &foreign_node,
+        DesiredState::Present,
     )
     .await
     .unwrap();
-    let visible = list_present_deployments_for_host(&store, &session.host.host_id)
+    let visible = list_present_deployments_for_node(&store, &session.node.node_id)
         .await
         .unwrap();
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].deployment_id, local.deployment_id);
     assert!(
-        load_observation(&store, &foreign.deployment_id, &foreign_host)
+        load_observation(&store, &foreign.deployment_id, &foreign_node)
             .await
             .unwrap()
             .is_none()
@@ -665,8 +665,8 @@ async fn foreign_host_deployment_is_not_listed_for_the_local_host() {
         &store,
         &ConfigActor::Bootstrap,
         &instance.id,
-        &session.host.host_id,
-        DESIRED_PRESENT,
+        &session.node.node_id,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -687,8 +687,8 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &store,
         &operator(),
         &instance.id,
-        &session.host.host_id,
-        DESIRED_PRESENT,
+        &session.node.node_id,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -696,7 +696,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &store,
         &DeploymentObservation {
             deployment_id: deployment.deployment_id.clone(),
-            host_id: session.host.host_id.clone(),
+            node_id: session.node.node_id.clone(),
             incarnation: "inc-1".into(),
             status: DeploymentStatus::Healthy,
             detail: String::new(),
@@ -711,7 +711,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &operator(),
         &deployment.deployment_id,
         9,
-        DESIRED_PRESENT,
+        DesiredState::Present,
         "stale-deployment",
     )
     .await
@@ -727,7 +727,7 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         &operator(),
         &deployment.deployment_id,
         1,
-        DESIRED_PRESENT,
+        DesiredState::Present,
         "replace-deployment",
     )
     .await
@@ -736,24 +736,183 @@ async fn deployment_replace_conflicts_without_touching_observations() {
         panic!("expected apply");
     };
     assert_eq!(next.revision, 2);
-    assert_eq!(next.desired, DESIRED_PRESENT);
+    assert_eq!(next.desired, DesiredState::Present);
     let replay = replace_plugin_deployment(
         &store,
         &operator(),
         &deployment.deployment_id,
         1,
-        DESIRED_PRESENT,
+        DesiredState::Present,
         "replace-deployment",
     )
     .await
     .unwrap();
     assert_eq!(replay, DeploymentReplace::Replayed { revision: 2 });
-    let observed = load_observation(&store, &deployment.deployment_id, &session.host.host_id)
+    let observed = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(observed.status, DeploymentStatus::Healthy);
     assert_eq!(observed.applied_config_revision, Some(1));
+}
+
+/// Node-queue messages on `node`'s queue, oldest first.
+async fn node_messages(store: &LibraryStore, node: &str) -> Vec<NodeMessage> {
+    let mut rows = store
+        .list_domain_events_for_queue(&node_queue_name(node), 100)
+        .await
+        .expect("queue rows");
+    rows.reverse();
+    rows.into_iter()
+        .map(|row| {
+            assert!(
+                row.event_type.is_empty(),
+                "node messages carry no event type"
+            );
+            assert!(row.source.is_empty(), "the node publishes them");
+            serde_json::from_str(&row.payload).expect("node message body")
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn deployment_and_document_writes_wake_nodes_through_their_queues() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let session = bootstrap(&store, dir.path()).await;
+    let local = session.node.node_id.clone();
+    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
+        .await
+        .unwrap();
+    let deployment = ensure_plugin_deployment(
+        &store,
+        &operator(),
+        &instance.id,
+        &local,
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
+    // A second ensure of the same pair writes nothing and publishes nothing.
+    ensure_plugin_deployment(
+        &store,
+        &operator(),
+        &instance.id,
+        &local,
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
+    // A deployment for another node wakes that node, not this one.
+    let foreign = ensure_plugin_deployment(
+        &store,
+        &operator(),
+        &instance.id,
+        "node-b",
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
+    let absent = replace_plugin_deployment(
+        &store,
+        &operator(),
+        &deployment.deployment_id,
+        1,
+        DesiredState::Absent,
+        "set-absent",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(absent, DeploymentReplace::Applied(_)),
+        "{absent:?}"
+    );
+    // The replay of a committed write does not publish twice.
+    replace_plugin_deployment(
+        &store,
+        &operator(),
+        &deployment.deployment_id,
+        1,
+        DesiredState::Absent,
+        "set-absent",
+    )
+    .await
+    .unwrap();
+    delete_plugin_deployment(&store, &operator(), &deployment.deployment_id)
+        .await
+        .unwrap();
+    let changed = |desired: &str, revision: i64| NodeMessage::DeploymentChanged {
+        deployment_id: deployment.deployment_id.clone(),
+        plugin_instance_id: instance.id.as_str().to_string(),
+        desired: desired.into(),
+        revision,
+    };
+    assert_eq!(
+        node_messages(&store, &local).await,
+        vec![
+            changed("present", 1),
+            changed("absent", 2),
+            changed("deleted", 0),
+        ]
+    );
+    assert_eq!(
+        node_messages(&store, "node-b").await,
+        vec![NodeMessage::DeploymentChanged {
+            deployment_id: foreign.deployment_id.clone(),
+            plugin_instance_id: instance.id.as_str().to_string(),
+            desired: DesiredState::Present.as_str().into(),
+            revision: 1,
+        }]
+    );
+
+    // A committed configuration write wakes every registered node.
+    let applied = replace_events(
+        &store,
+        &operator(),
+        session.events.revision,
+        &bookclerk_library_events(9),
+        "events-wake",
+    )
+    .await
+    .unwrap();
+    let EventsReplace::Applied(doc) = applied else {
+        panic!("events write applies: {applied:?}");
+    };
+    let config = node_messages(&store, &local).await;
+    assert_eq!(
+        config.last(),
+        Some(&NodeMessage::ConfigurationChanged {
+            scope_type: doc.scope_type.clone(),
+            scope_id: doc.scope_id.clone(),
+            namespace: doc.namespace.clone(),
+            revision: doc.revision,
+        })
+    );
+    // `node-b` has no `nodes` row, so it is not a registered node to wake.
+    assert_eq!(node_messages(&store, "node-b").await.len(), 1);
+}
+
+fn bookclerk_library_events(retention: u64) -> EventsSettingsV1 {
+    EventsSettingsV1 {
+        retention_days: retention,
+        dead_letter_retention_days: 30,
+        concurrency: 1,
+    }
+}
+
+#[test]
+fn node_ids_are_queue_name_suffixes() {
+    let uuid = "3f2b8c1e-7a4d-4e5f-9b0a-1c2d3e4f5a6b";
+    assert_eq!(node_queue_name(uuid), format!("node.{uuid}"));
+    assert!(super::is_valid_node_id(uuid));
+    assert!(super::is_valid_node_id("node-b"));
+    for bad in ["", "Node-A", "a node/with spaces", &"x".repeat(59)] {
+        assert!(!super::is_valid_node_id(bad), "{bad}");
+    }
+    assert_eq!(node_consumer_id(uuid), format!("node:{uuid}"));
+    assert!(is_node_consumer_id(&node_consumer_id(uuid)));
+    assert!(!is_node_consumer_id("path:file:///tmp/a#echo"));
 }
 
 #[tokio::test]
@@ -773,9 +932,9 @@ async fn two_connections_observe_one_instance_document() {
     let store_b = file_store(&path).await;
     let session_b = bootstrap(&store_b, files_b.path()).await;
     assert_eq!(session_a.cluster_id, session_b.cluster_id);
-    assert_ne!(session_a.host.host_id, session_b.host.host_id);
+    assert_ne!(session_a.node.node_id, session_b.node.node_id);
 
-    // Host A enrols the plugin: one default instance, seeded from defaults.
+    // Node A enrols the plugin: one default instance, seeded from defaults.
     let key = "platform:bookclerk/shared-fixture";
     let instance = ensure_plugin_instance(&store_a, &ConfigActor::Bootstrap, key)
         .await
@@ -791,7 +950,7 @@ async fn two_connections_observe_one_instance_document() {
     .await
     .unwrap();
 
-    // Host B enrols the same plugin key and lands on the same instance.
+    // Node B enrols the same plugin key and lands on the same instance.
     let from_b = ensure_plugin_instance(&store_b, &ConfigActor::Bootstrap, key)
         .await
         .unwrap();
@@ -799,7 +958,7 @@ async fn two_connections_observe_one_instance_document() {
     let doc_b = load_instance_config(&store_b, &instance.id).await.unwrap();
     assert_eq!(doc_b.revision, seeded.revision);
 
-    // An operator on host B writes; host A observes the new revision.
+    // An operator on node B writes; node A observes the new revision.
     let mut body = PluginInstanceConfigV1::empty();
     body.settings
         .insert("mode".into(), SettingValue::String("zip".into()));
@@ -810,7 +969,7 @@ async fn two_connections_observe_one_instance_document() {
         &fixture_schema(),
         seeded.revision,
         &body,
-        "host-b-writes",
+        "node-b-writes",
     )
     .await
     .unwrap();
@@ -821,7 +980,7 @@ async fn two_connections_observe_one_instance_document() {
     assert_eq!(seen_by_a.revision, doc.revision);
     assert_eq!(seen_by_a.body.settings_json()["mode"], "zip");
 
-    // Host A's write against the revision it last saw is rejected.
+    // Node A's write against the revision it last saw is rejected.
     let stale = replace_instance_config(
         &store_a,
         &operator(),
@@ -829,7 +988,7 @@ async fn two_connections_observe_one_instance_document() {
         &fixture_schema(),
         seeded.revision,
         &mode_device(),
-        "host-a-stale",
+        "node-a-stale",
     )
     .await
     .unwrap();
@@ -840,7 +999,7 @@ async fn two_connections_observe_one_instance_document() {
         }
     );
 
-    // A spawn on either host resolves the same CONFIG at the same revision.
+    // A spawn on either node resolves the same CONFIG at the same revision.
     let grant = InstanceBindingGrant {
         config: true,
         secrets: false,
@@ -855,14 +1014,14 @@ async fn two_connections_observe_one_instance_document() {
     assert_eq!(on_a.config_revision, doc.revision);
     assert_eq!(on_a.config.json_value().unwrap()["retries"], 2);
 
-    // Deployments are host-scoped: the same instance is present on A and
-    // absent on B, and each host reads the other's row without owning it.
+    // Deployments are node-scoped: the same instance is present on A and
+    // absent on B, and each node reads the other's row without owning it.
     ensure_plugin_deployment(
         &store_a,
         &ConfigActor::Bootstrap,
         &instance.id,
-        &session_a.host.host_id,
-        DESIRED_PRESENT,
+        &session_a.node.node_id,
+        DesiredState::Present,
     )
     .await
     .unwrap();
@@ -870,27 +1029,27 @@ async fn two_connections_observe_one_instance_document() {
         &store_b,
         &ConfigActor::Bootstrap,
         &instance.id,
-        &session_b.host.host_id,
-        DESIRED_ABSENT,
+        &session_b.node.node_id,
+        DesiredState::Absent,
     )
     .await
     .unwrap();
-    let present_on_a = list_present_deployments_for_host(&store_b, &session_a.host.host_id)
+    let present_on_a = list_present_deployments_for_node(&store_b, &session_a.node.node_id)
         .await
         .unwrap();
     assert_eq!(present_on_a.len(), 1);
     assert_eq!(present_on_a[0].plugin_instance_id, instance.id);
     assert!(
-        list_present_deployments_for_host(&store_a, &session_b.host.host_id)
+        list_present_deployments_for_node(&store_a, &session_b.node.node_id)
             .await
             .unwrap()
             .is_empty()
     );
-    let b_row = load_deployment_for_host(&store_a, &instance.id, &session_b.host.host_id)
+    let b_row = load_deployment_for_node(&store_a, &instance.id, &session_b.node.node_id)
         .await
         .unwrap()
-        .expect("host B's row is visible from host A");
-    assert_eq!(b_row.desired, DESIRED_ABSENT);
+        .expect("node B's row is visible from node A");
+    assert_eq!(b_row.desired, DesiredState::Absent);
 }
 
 #[tokio::test]
@@ -901,34 +1060,34 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
     let store = file_store(dir.path().join("library.db").as_path()).await;
     let _session = bootstrap(&store, dir.path()).await;
     const KEY: &str = "platform:bookclerk/fxver";
-    fn pin<'a>(version: &'a str, host: &'a str) -> impl Fn(&'a SettingsSchema) -> SchemaPin<'a> {
+    fn pin<'a>(version: &'a str, node: &'a str) -> impl Fn(&'a SettingsSchema) -> SchemaPin<'a> {
         move |schema| SchemaPin {
             plugin_key: KEY,
             manifest_id: "fxver",
             package_version: version,
             schema,
-            host_id: host,
+            node_id: node,
         }
     }
 
     // A version is required.
     let v1 = fixture_schema();
-    let err = pin_plugin_schema(&store, &pin("", "host-a")(&v1))
+    let err = pin_plugin_schema(&store, &pin("", "node-a")(&v1))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("`version` is required"), "{err}");
-    let err = pin_plugin_schema(&store, &pin("v1", "host-a")(&v1))
+    let err = pin_plugin_schema(&store, &pin("v1", "node-a")(&v1))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("not a semantic version"), "{err}");
 
     // First pin, then an unchanged re-run.
-    let first = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
+    let first = pin_plugin_schema(&store, &pin("0.1.0", "node-a")(&v1))
         .await
         .unwrap();
     assert_eq!(first.change, SchemaPinChange::Pinned);
     assert_eq!(first.schema.package_version, "0.1.0");
-    let again = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
+    let again = pin_plugin_schema(&store, &pin("0.1.0", "node-a")(&v1))
         .await
         .unwrap();
     assert_eq!(again.change, SchemaPinChange::Unchanged);
@@ -972,7 +1131,7 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
             description: None,
         },
     ]);
-    let upgraded = pin_plugin_schema(&store, &pin("0.2.0", "host-b")(&v2))
+    let upgraded = pin_plugin_schema(&store, &pin("0.2.0", "node-b")(&v2))
         .await
         .unwrap();
     assert_eq!(
@@ -981,7 +1140,7 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
             previous_version: "0.1.0".into()
         }
     );
-    assert_eq!(upgraded.schema.recorded_by_host, "host-b");
+    assert_eq!(upgraded.schema.recorded_by_node, "node-b");
     let pruned = reconcile_instance_configs_to_schema(&store, KEY, &v2)
         .await
         .unwrap();
@@ -1033,9 +1192,9 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
     assert!(doc.body.settings.is_empty());
     doc.body.validate(&v2_int).expect("retyped document fits");
 
-    // The host still on 0.1.0 is stale: the row is untouched and the
+    // The node still on 0.1.0 is stale: the row is untouched and the
     // reconciler-side check agrees.
-    let stale = pin_plugin_schema(&store, &pin("0.1.0", "host-a")(&v1))
+    let stale = pin_plugin_schema(&store, &pin("0.1.0", "node-a")(&v1))
         .await
         .unwrap();
     assert_eq!(
@@ -1045,7 +1204,7 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
         }
     );
     assert_eq!(stale.schema.package_version, "0.2.0");
-    assert_eq!(stale.schema.recorded_by_host, "host-b");
+    assert_eq!(stale.schema.recorded_by_node, "node-b");
     assert_eq!(stale.schema.schema, v2);
     assert_eq!(
         stale_against_pin(&store, KEY, "0.1.0")
@@ -1071,7 +1230,7 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
 
     // Same version, different schema: re-pinned in place. The same schema
     // from a differently formatted manifest is unchanged.
-    let repinned = pin_plugin_schema(&store, &pin("0.2.0", "host-a")(&v2_int))
+    let repinned = pin_plugin_schema(&store, &pin("0.2.0", "node-a")(&v2_int))
         .await
         .unwrap();
     assert_eq!(repinned.change, SchemaPinChange::Repinned);
@@ -1079,12 +1238,12 @@ async fn schema_pin_follows_the_package_version_and_prunes_documents() {
         repinned.schema.schema_sha256,
         schema_fingerprint(&v2_int).unwrap()
     );
-    assert_eq!(repinned.schema.recorded_by_host, "host-a");
-    let same = pin_plugin_schema(&store, &pin("0.2.0", "host-b")(&v2_int))
+    assert_eq!(repinned.schema.recorded_by_node, "node-a");
+    let same = pin_plugin_schema(&store, &pin("0.2.0", "node-b")(&v2_int))
         .await
         .unwrap();
     assert_eq!(same.change, SchemaPinChange::Unchanged);
-    assert_eq!(same.schema.recorded_by_host, "host-a");
+    assert_eq!(same.schema.recorded_by_node, "node-a");
 }
 
 #[tokio::test]
@@ -1114,13 +1273,13 @@ async fn concurrent_pins_never_leave_an_older_version_on_top() {
             manifest_id: "fxrace",
             package_version: "0.1.0",
             schema: &v1,
-            host_id: "host-0",
+            node_id: "node-0",
         },
     )
     .await
     .unwrap();
     assert_eq!(first.change, SchemaPinChange::Pinned);
-    // Two hosts race from the same 0.1.0 read: whichever order the writes
+    // Two nodes race from the same 0.1.0 read: whichever order the writes
     // land in, 0.3.0 ends on top and 0.2.0 reports itself stale or upgraded
     // from 0.1.0 (never over 0.3.0).
     let newer = SchemaPin {
@@ -1128,14 +1287,14 @@ async fn concurrent_pins_never_leave_an_older_version_on_top() {
         manifest_id: "fxrace",
         package_version: "0.3.0",
         schema: &v3,
-        host_id: "host-a",
+        node_id: "node-a",
     };
     let older = SchemaPin {
         plugin_key: KEY,
         manifest_id: "fxrace",
         package_version: "0.2.0",
         schema: &v2,
-        host_id: "host-b",
+        node_id: "node-b",
     };
     let (a, b) = tokio::join!(
         pin_plugin_schema(&store, &newer),
@@ -1156,10 +1315,189 @@ async fn concurrent_pins_never_leave_an_older_version_on_top() {
     assert!(older_outcome_ok, "{:?}", b.change);
     let pinned = load_plugin_schema(&store, KEY).await.unwrap().unwrap();
     assert_eq!(pinned.package_version, "0.3.0");
-    assert_eq!(pinned.recorded_by_host, "host-a");
+    assert_eq!(pinned.recorded_by_node, "node-a");
     assert_eq!(pinned.schema, v3);
     assert!(stale_against_pin(&store, KEY, "0.2.0")
         .await
         .unwrap()
         .is_some());
+}
+
+fn version_fixture(version: &str, payload: char) -> PluginVersion {
+    PluginVersion {
+        plugin_key: "cargo:https://index.crates.io/#bookclerk-plugin-demo".into(),
+        version: version.into(),
+        manifest_id: "demo".into(),
+        manifest_toml: format!("id = \"demo\"\nversion = \"{version}\"\n"),
+        settings: fixture_schema(),
+        artifacts: vec![PluginArtifact {
+            target: "any".into(),
+            url: format!("{ARTIFACT_BLOB_SCHEME}{}", "a".repeat(64)),
+            format: "tar.gz".into(),
+            archive_root: ".".into(),
+            archive_sha256: "a".repeat(64),
+            payload_root_sha256: payload.to_string().repeat(64),
+            executable: "guest".into(),
+        }],
+        publisher_verified: true,
+        grant_json: String::new(),
+        coordinate: String::new(),
+        installed_at: String::new(),
+        installed_by: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn installs_activate_roll_back_and_wake_every_node() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let session = bootstrap(&store, dir.path()).await;
+    let node = session.node.node_id.clone();
+    let key = version_fixture("1.0.0", 'b').plugin_key;
+
+    let created = add_plugin_version(&store, &operator(), version_fixture("1.0.0", 'b'))
+        .await
+        .unwrap();
+    assert!(matches!(created, AddVersion::Created(_)));
+    assert_eq!(created.version().installed_by, "operator");
+    let again = add_plugin_version(&store, &operator(), version_fixture("1.0.0", 'b'))
+        .await
+        .unwrap();
+    assert!(
+        matches!(again, AddVersion::Existing(_)),
+        "same content is a no-op"
+    );
+    let err = add_plugin_version(&store, &operator(), version_fixture("1.0.0", 'c'))
+        .await
+        .expect_err("a version never changes content");
+    assert!(err.to_string().contains("different content"), "{err}");
+    let member = ConfigActor::Member { id: "u".into() };
+    assert!(
+        add_plugin_version(&store, &member, version_fixture("9.0.0", 'd'))
+            .await
+            .is_err()
+    );
+
+    assert!(load_active_version(&store, &key).await.unwrap().is_none());
+    let (pointer, pin) = activate_version(&store, &operator(), &key, "1.0.0", &node)
+        .await
+        .unwrap();
+    assert_eq!((pointer.version.as_str(), pointer.revision), ("1.0.0", 1));
+    assert_eq!(pin.change, SchemaPinChange::Pinned);
+    assert_eq!(
+        load_active_version(&store, &key)
+            .await
+            .unwrap()
+            .unwrap()
+            .version,
+        "1.0.0"
+    );
+
+    add_plugin_version(&store, &operator(), version_fixture("1.1.0", 'e'))
+        .await
+        .unwrap();
+    let (pointer, pin) = activate_version(&store, &operator(), &key, "1.1.0", &node)
+        .await
+        .unwrap();
+    assert_eq!(pointer.revision, 2);
+    assert!(matches!(pin.change, SchemaPinChange::Upgraded { .. }));
+    // Rollback: the pointer and the schema pin follow the older release.
+    let (pointer, pin) = activate_version(&store, &operator(), &key, "1.0.0", &node)
+        .await
+        .unwrap();
+    assert_eq!((pointer.version.as_str(), pointer.revision), ("1.0.0", 3));
+    assert_eq!(
+        pin.change,
+        SchemaPinChange::RolledBack {
+            previous_version: "1.1.0".into()
+        }
+    );
+    // Re-activating the active version changes nothing.
+    let (same, _) = activate_version(&store, &operator(), &key, "1.0.0", &node)
+        .await
+        .unwrap();
+    assert_eq!(same.revision, 3);
+    assert!(activate_version(&store, &operator(), &key, "7.0.0", &node)
+        .await
+        .is_err());
+
+    let approved = approve_version_grant(&store, &operator(), &key, "1.0.0", "{\"ok\":true}")
+        .await
+        .unwrap();
+    assert_eq!(approved.grant_json, "{\"ok\":true}");
+    assert_eq!(list_versions(&store, Some(&key)).await.unwrap().len(), 2);
+
+    assert!(clear_install(&store, &operator(), &key).await.unwrap());
+    assert!(load_active_version(&store, &key).await.unwrap().is_none());
+    assert!(!clear_install(&store, &operator(), &key).await.unwrap());
+
+    let messages = node_messages(&store, &node).await;
+    let version_moves: Vec<_> = messages
+        .iter()
+        .filter_map(|m| match m {
+            NodeMessage::InstallChanged { version, .. } => Some(version.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        version_moves,
+        ["1.0.0", "1.1.0", "1.0.0", "1.0.0", ""],
+        "activate, update, rollback, grant approval, clear"
+    );
+}
+
+#[tokio::test]
+async fn artifact_blobs_are_capped_and_digest_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path()).await;
+    let url = put_artifact_blob(&store, b"archive bytes").await.unwrap();
+    let sha = url.strip_prefix(ARTIFACT_BLOB_SCHEME).expect("blob url");
+    assert_eq!(
+        load_artifact_blob(&store, sha).await.unwrap().as_deref(),
+        Some(&b"archive bytes"[..])
+    );
+    assert_eq!(
+        put_artifact_blob(&store, b"archive bytes").await.unwrap(),
+        url
+    );
+    assert!(load_artifact_blob(&store, &"0".repeat(64))
+        .await
+        .unwrap()
+        .is_none());
+    let too_big = vec![0u8; MAX_ARTIFACT_BLOB_BYTES + 1];
+    assert!(put_artifact_blob(&store, &too_big).await.is_err());
+}
+
+#[tokio::test]
+async fn a_version_installed_through_one_connection_is_active_on_another() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let node_a = file_store(&path).await;
+    let session = bootstrap(&node_a, dir.path()).await;
+    let release = version_fixture("2.0.0", 'f');
+    let key = release.plugin_key.clone();
+    add_plugin_version(&node_a, &operator(), release)
+        .await
+        .unwrap();
+    activate_version(&node_a, &operator(), &key, "2.0.0", &session.node.node_id)
+        .await
+        .unwrap();
+    drop(node_a);
+    let node_b = file_store(&path).await;
+    let active = load_active_version(&node_b, &key)
+        .await
+        .unwrap()
+        .expect("the pointer is a cluster record");
+    assert_eq!(active.version, "2.0.0");
+    assert_eq!(active.artifact_for("linux-x64-gnu").unwrap().target, "any");
+    assert_eq!(
+        load_plugin_schema(&node_b, &key)
+            .await
+            .unwrap()
+            .unwrap()
+            .package_version,
+        "2.0.0"
+    );
 }

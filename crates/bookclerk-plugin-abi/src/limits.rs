@@ -13,6 +13,16 @@ pub const MAX_EVENT_PAYLOAD_BYTES: u32 = crate::plugin_capnp::MAX_EVENT_PAYLOAD_
 /// Maximum decoded size of an ordinary RPC scalar value (not a stream window).
 pub const MAX_SCALAR_BYTES: u32 = crate::plugin_capnp::MAX_SCALAR_BYTES;
 
+/// Largest `KvNamespace` value in bytes (a `[[kv_namespaces]]` row may lower
+/// its own cap but never raise it past this).
+pub const MAX_KV_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_KV_VALUE_BYTES;
+
+/// Longest `KvNamespace` key in UTF-8 bytes.
+pub const MAX_KV_KEY_BYTES: u32 = crate::plugin_capnp::MAX_KV_KEY_BYTES;
+
+/// Largest `KvNamespace` metadata JSON text in bytes.
+pub const MAX_KV_METADATA_BYTES: u32 = crate::plugin_capnp::MAX_KV_METADATA_BYTES;
+
 /// Maximum bytes returned by one `ByteSource.pull` (flow-control window).
 pub const MAX_STREAM_WINDOW_BYTES: u32 = crate::plugin_capnp::MAX_STREAM_WINDOW_BYTES;
 

@@ -38,8 +38,10 @@ mod spawn_path;
 mod spec;
 
 pub use capacity::{
-    cgroup_sample_is_low_resource, filesystem_free_bytes, logical_cpu_count, process_cgroup_dir,
-    read_cgroup_sample, CgroupSample, LOW_RESOURCE_MEMORY_MAX_BYTES,
+    cgroup_sample_is_low_resource, cpu_used_millicores, filesystem_free_bytes, logical_cpu_count,
+    parse_cpu_stat_usage, parse_meminfo, parse_proc_stat, process_cgroup_dir, read_cgroup_sample,
+    read_cpu_times, read_system_memory, CgroupSample, CpuTimes, SystemMemory,
+    LOW_RESOURCE_MEMORY_MAX_BYTES,
 };
 #[cfg(unix)]
 pub use guest_ipc::{create_guest_ipc_dir, ensure_guest_ipc_fits, MACOS_SUN_PATH_CAPACITY};
@@ -187,7 +189,7 @@ pub struct Policy {
 
 /// Number of logical CPUs visible to this process (at least 1).
 #[must_use]
-pub fn host_logical_cpus() -> u32 {
+pub fn node_logical_cpus() -> u32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(1)
@@ -199,12 +201,12 @@ pub fn host_logical_cpus() -> u32 {
 /// Example: 8 logical CPUs → `800` (eight full cores of CFS/Job bandwidth).
 #[must_use]
 pub fn host_cpu_rate_max() -> u32 {
-    host_logical_cpus().saturating_mul(100)
+    node_logical_cpus().saturating_mul(100)
 }
 
 /// Tokio worker threads for `bookclerk-workerd`.
 ///
-/// Fixed so a session `pids.max` does not grow with [`host_logical_cpus`].
+/// Fixed so a session `pids.max` does not grow with [`node_logical_cpus`].
 pub const GATEWAY_WORKER_THREADS: usize = 2;
 
 /// Blocking-pool ceiling for `bookclerk-workerd`.
