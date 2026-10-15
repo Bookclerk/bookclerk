@@ -97,6 +97,40 @@ pub struct NodeRecord {
     pub target: String,
     /// Operator-assigned placement labels, sorted.
     pub labels: Vec<String>,
+    /// How the node joined the cluster.
+    pub kind: NodeKind,
+    /// User who owns this node and may administer it, when one is assigned.
+    pub owner_user_id: Option<i64>,
+}
+
+/// How a node joined the cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeKind {
+    /// Shares the library database and `master.key`. Every node is one today.
+    Owner,
+    /// Keeps its own database and operator, and enrolled to contribute work.
+    Host,
+}
+
+impl NodeKind {
+    /// Stored text.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Host => "host",
+        }
+    }
+
+    /// Parses stored text; anything unknown reads as [`Self::Owner`].
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "host" => Self::Host,
+            _ => Self::Owner,
+        }
+    }
 }
 
 /// Bookclerk artifact target this binary runs as (`linux-x64-gnu`,
@@ -513,6 +547,8 @@ fn record_from_model(row: nodes::Model) -> NodeRecord {
         scratch_bytes: row.scratch_bytes,
         target: row.target,
         labels: parse_labels(&row.labels_json),
+        kind: NodeKind::parse(&row.kind),
+        owner_user_id: row.owner_user_id,
     }
 }
 

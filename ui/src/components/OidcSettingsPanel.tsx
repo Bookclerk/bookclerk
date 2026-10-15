@@ -602,6 +602,7 @@ function ProviderCard({
               onChange={(e) => patch({ default_role: e.target.value })}
             >
               <option value="member">Member</option>
+              <option value="host">Host</option>
               <option value="administrator">Administrator</option>
               <option value="owner">Owner</option>
             </select>
@@ -663,7 +664,7 @@ function ProviderCard({
                 placeholder={"bookclerk-owners = owner\nbookclerk-admins = administrator"}
               />
               <span className="text-xs font-normal text-ink/50">
-                One <code>claim = owner|administrator|member</code> per line. Never{" "}
+                One <code>claim = owner|administrator|host|member</code> per line. Never{" "}
                 <code>operator</code>.
               </span>
             </label>

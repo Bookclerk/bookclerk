@@ -21,13 +21,26 @@ export function showSettingsNav(_role?: AuthRole): boolean {
 }
 
 /**
+ * Whether the cluster Status page is available to this role: operators,
+ * Owners, Administrators, and Hosts (who see the nodes they own).
+ *
+ * @param role - Effective session role.
+ * @returns True when Status appears in the nav and may be opened.
+ */
+export function showStatusNav(role?: AuthRole): boolean {
+  return (
+    role === "operator" || role === "owner" || role === "administrator" || role === "host"
+  );
+}
+
+/**
  * Primary nav links for an effective role (Settings always included).
  *
- * @param _role - Effective session role (unused; Settings is always shown).
+ * @param role - Effective session role; Status is added for node administrators.
  * @returns Nav link ids and labels.
  */
-export function navLinksForRole(
-  _role?: AuthRole,
-): { id: AppView; label: string }[] {
-  return [...BASE_LINKS, { id: "settings", label: "Settings" }];
+export function navLinksForRole(role?: AuthRole): { id: AppView; label: string }[] {
+  const links = [...BASE_LINKS];
+  if (showStatusNav(role)) links.push({ id: "status", label: "Status" });
+  return [...links, { id: "settings", label: "Settings" }];
 }

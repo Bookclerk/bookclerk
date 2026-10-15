@@ -70,6 +70,37 @@ pub enum ConfigActor {
     /// writes only `placed` / `unplaced` deployments; it is never
     /// constructed for an API caller.
     Scheduler,
+    /// The user who owns one node. Writes that node's `node.runtime`
+    /// document only. Built by [`super::verify_node_owner`], which checks
+    /// `nodes.owner_user_id`, so a caller cannot claim a node it does not own.
+    NodeOwner(VerifiedNodeOwner),
+}
+
+/// Proof that a user owned a node when the write was authorized.
+///
+/// Only [`super::verify_node_owner`] constructs one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedNodeOwner {
+    /// Owning user.
+    pub(super) user_id: i64,
+    /// Node the user owns.
+    pub(super) node_id: String,
+    /// Audit id (`node-owner:<user_id>`).
+    pub(super) audit: String,
+}
+
+impl VerifiedNodeOwner {
+    /// Owning user id.
+    #[must_use]
+    pub fn user_id(&self) -> i64 {
+        self.user_id
+    }
+
+    /// Node this owner may administer.
+    #[must_use]
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
 }
 
 impl ConfigActor {
@@ -79,17 +110,31 @@ impl ConfigActor {
             Self::Operator { id } | Self::Administrator { id } | Self::Member { id } => id,
             Self::Bootstrap => "bootstrap",
             Self::Scheduler => "scheduler",
+            Self::NodeOwner(owner) => &owner.audit,
         }
     }
 
-    /// True when this actor may insert a missing document.
-    fn can_import(&self) -> bool {
-        matches!(self, Self::Operator { .. } | Self::Bootstrap)
+    /// True when this actor may insert the missing document at `key`.
+    fn can_import(&self, key: &DocumentKey) -> bool {
+        match self {
+            Self::Operator { .. } | Self::Bootstrap => true,
+            Self::NodeOwner(owner) => owner.covers(key),
+            Self::Administrator { .. } | Self::Member { .. } | Self::Scheduler => false,
+        }
     }
 
-    /// True when this actor may replace an existing document.
-    fn can_replace(&self) -> bool {
-        matches!(self, Self::Operator { .. } | Self::Bootstrap)
+    /// True when this actor may replace the document at `key`.
+    fn can_replace(&self, key: &DocumentKey) -> bool {
+        self.can_import(key)
+    }
+}
+
+impl VerifiedNodeOwner {
+    /// A node owner writes only its own node's runtime document.
+    fn covers(&self, key: &DocumentKey) -> bool {
+        key.scope_type == NODE_SCOPE_TYPE
+            && key.scope_id == self.node_id
+            && key.namespace == super::NODE_RUNTIME_NAMESPACE
     }
 }
 
@@ -213,7 +258,7 @@ pub async fn import_if_absent(
     document_json: &str,
     operation_id: &str,
 ) -> Result<StoredDocument> {
-    authorize_import(actor)?;
+    authorize_import(actor, key)?;
     validate_payload(document_json, operation_id, actor)?;
     if let Some(existing) = load_document(store, key).await? {
         return Ok(existing);
@@ -316,7 +361,7 @@ pub async fn replace_document(
     document_json: &str,
     operation_id: &str,
 ) -> Result<ReplaceOutcome> {
-    authorize_replace(actor)?;
+    authorize_replace(actor, key)?;
     validate_payload(document_json, operation_id, actor)?;
     if expected_revision < 1 {
         return Err(invalid("expected revision must be >= 1"));
@@ -678,8 +723,8 @@ fn stored_from_model(row: configuration_documents::Model) -> StoredDocument {
 }
 
 /// Rejects actors that may not import.
-fn authorize_import(actor: &ConfigActor) -> Result<()> {
-    if actor.can_import() {
+fn authorize_import(actor: &ConfigActor, key: &DocumentKey) -> Result<()> {
+    if actor.can_import(key) {
         Ok(())
     } else {
         Err(unauthorized())
@@ -687,8 +732,8 @@ fn authorize_import(actor: &ConfigActor) -> Result<()> {
 }
 
 /// Rejects actors that may not replace a document.
-fn authorize_replace(actor: &ConfigActor) -> Result<()> {
-    if actor.can_replace() {
+fn authorize_replace(actor: &ConfigActor, key: &DocumentKey) -> Result<()> {
+    if actor.can_replace(key) {
         Ok(())
     } else {
         Err(unauthorized())

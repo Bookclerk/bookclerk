@@ -483,6 +483,10 @@ export function SettingsPage({
   const confinementHasErrors = Boolean(jailMemoryError || jailCpuError || jailProcessError);
   const isImpersonating = Boolean(session?.impersonating);
   const showOperatorChrome = role === "operator" && !isImpersonating;
+  // Node owners (Hosts, and Administrators or Owners who own nodes) see the
+  // nodes they own; the API scopes the list.
+  const showNodes =
+    showOperatorChrome || role === "owner" || role === "administrator" || role === "host";
   const showSignInSettings = role === "operator" || role === "owner";
   const canManageUsers = role === "operator" || role === "owner" || role === "administrator";
   const showUserAdmin = canManageUsers;
@@ -515,13 +519,13 @@ export function SettingsPage({
     if (!showSignInSettings && activeTab === "signin") {
       setActiveTab("account");
     }
-    if (
-      !showOperatorChrome &&
-      (activeTab === "server" || activeTab === "plugins" || activeTab === "nodes")
-    ) {
+    if (!showOperatorChrome && (activeTab === "server" || activeTab === "plugins")) {
       setActiveTab("account");
     }
-  }, [showUserAdmin, showSignInSettings, showOperatorChrome, activeTab]);
+    if (!showNodes && activeTab === "nodes") {
+      setActiveTab("account");
+    }
+  }, [showUserAdmin, showSignInSettings, showOperatorChrome, showNodes, activeTab]);
 
   function buildPluginValues(nextSettings: SettingsResponse): Record<string, string> {
     const out: Record<string, string> = {};
@@ -1334,21 +1338,23 @@ export function SettingsPage({
                 >
                   Plugins
                 </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === "nodes"}
-                  className={cn(
-                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                    activeTab === "nodes"
-                      ? "bg-ink text-paper shadow-sm"
-                      : "text-ink/60 hover:text-ink",
-                  )}
-                  onClick={() => setActiveTab("nodes")}
-                >
-                  Nodes
-                </button>
               </>
+            ) : null}
+            {showNodes ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "nodes"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "nodes"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("nodes")}
+              >
+                Nodes
+              </button>
             ) : null}
           </div>
         </div>
@@ -1412,15 +1418,8 @@ export function SettingsPage({
 
         {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
 
-        {activeTab === "nodes" && showOperatorChrome ? (
-          <div className="flex flex-col gap-4">
-            {error ? (
-              <p className="text-sm font-medium text-brick" role="alert">
-                {error}
-              </p>
-            ) : null}
-            <NodesPanel onError={setError} onSessionExpired={onSessionExpired} />
-          </div>
+        {activeTab === "nodes" && showNodes ? (
+          <NodesPanel onSessionExpired={onSessionExpired} />
         ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

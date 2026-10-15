@@ -5,37 +5,20 @@ import { Input } from "@/components/ui/input";
 import {
   isApiError,
   listConfigNodes,
+  listUsers,
   putNodeLabels,
+  putNodeOwner,
   putNodeRuntime,
   type ConfigNodeView,
+  type ListedUser,
+  type NodeCapabilities,
   type NodeStatusView,
 } from "@/lib/api";
+import { age, cores, ownerName, size } from "@/lib/nodeFormat";
 import { cn } from "@/lib/utils";
 
 /** How often the panel re-reads heartbeats (nodes report every 15 s). */
 const REFRESH_MS = 15_000;
-
-/** `1536` millicores → `1.5`. */
-function cores(millicores: number): string {
-  return (millicores / 1000).toFixed(millicores % 1000 === 0 ? 0 : 1);
-}
-
-/** Bytes → `3.2 GiB` / `512 MiB`. */
-function size(bytes: number | null | undefined): string {
-  if (bytes == null) return "?";
-  const gib = bytes / 2 ** 30;
-  return gib >= 1 ? `${gib.toFixed(1)} GiB` : `${Math.round(bytes / 2 ** 20)} MiB`;
-}
-
-/** Seconds since an RFC 3339 time, as `12 s ago` / `3 min ago` / `2 h ago`. */
-function age(iso: string): string {
-  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
-  if (!Number.isFinite(seconds)) return "unknown";
-  if (seconds < 90) return `${seconds} s ago`;
-  if (seconds < 90 * 60) return `${Math.round(seconds / 60)} min ago`;
-  if (seconds < 48 * 3600) return `${Math.round(seconds / 3600)} h ago`;
-  return `${Math.round(seconds / 86400)} d ago`;
-}
 
 /** Splits `nas, zone=eu` into trimmed, non-empty labels. */
 function parseLabels(text: string): string[] {
@@ -87,8 +70,12 @@ function Meter({
   );
 }
 
-/** Capacity, budget, accounting, and availability from one heartbeat. */
-function NodeMeters({ status }: { status: NodeStatusView }) {
+/**
+ * Capacity, budget, accounting, and availability from one heartbeat.
+ *
+ * @param props - The node's latest heartbeat.
+ */
+export function NodeMeters({ status }: { status: NodeStatusView }) {
   const memoryUsed =
     status.memory_bytes != null && status.memory_available_bytes != null
       ? status.memory_bytes - status.memory_available_bytes
@@ -125,13 +112,24 @@ function NodeMeters({ status }: { status: NodeStatusView }) {
 
 interface NodeRowProps {
   node: ConfigNodeView;
+  capabilities: NodeCapabilities;
+  /** Users an operator may assign as the node's owner. */
+  users: ListedUser[];
   onChanged: () => Promise<void>;
-  onError: (message: string) => void;
+  /** Shows a node action's failure in the panel; `null` clears it. */
+  onError: (message: string | null) => void;
   onSessionExpired: () => void;
 }
 
 /** One node: heartbeat summary, meters, and its editable runtime document. */
-function NodeRow({ node, onChanged, onError, onSessionExpired }: NodeRowProps) {
+function NodeRow({
+  node,
+  capabilities,
+  users,
+  onChanged,
+  onError,
+  onSessionExpired,
+}: NodeRowProps) {
   const [label, setLabel] = useState(node.runtime.label);
   const [cpu, setCpu] = useState(String(node.runtime.cpu_budget_percent));
   const [memory, setMemory] = useState(String(node.runtime.memory_budget_percent));
@@ -152,6 +150,7 @@ function NodeRow({ node, onChanged, onError, onSessionExpired }: NodeRowProps) {
 
   async function run(action: () => Promise<unknown>, failure: string) {
     setBusy(true);
+    onError(null);
     try {
       await action();
       await onChanged();
@@ -179,7 +178,8 @@ function NodeRow({ node, onChanged, onError, onSessionExpired }: NodeRowProps) {
       }
     }
     const nextLabels = parseLabels(labels);
-    const labelsChanged = nextLabels.join(",") !== node.labels.join(",");
+    const labelsChanged =
+      capabilities.can_edit_labels && nextLabels.join(",") !== node.labels.join(",");
     void run(async () => {
       await putNodeRuntime(node.node_id, {
         label: label.trim(),
@@ -221,10 +221,47 @@ function NodeRow({ node, onChanged, onError, onSessionExpired }: NodeRowProps) {
         {drained ? (
           <Badge className="bg-brick/10 text-brick normal-case tracking-normal">Drained</Badge>
         ) : null}
+        {node.kind === "host" ? (
+          <Badge className="bg-ink/5 text-ink/60 normal-case tracking-normal">Host node</Badge>
+        ) : null}
         {node.target ? (
           <span className="font-mono text-[11px] text-ink/45">{node.target}</span>
         ) : null}
       </div>
+      {capabilities.can_assign_owner ? (
+        <label className="flex flex-wrap items-center gap-2 text-xs text-ink/60">
+          Owner
+          <select
+            className="rounded-md border border-ink/15 bg-paper px-2 py-1 text-xs text-ink"
+            value={node.owner ? String(node.owner.user_id) : ""}
+            disabled={busy}
+            onChange={(e) => {
+              const value = e.target.value;
+              void run(
+                () => putNodeOwner(node.node_id, value === "" ? null : Number(value)),
+                "Failed to assign the node's owner",
+              );
+            }}
+          >
+            <option value="">No owner</option>
+            {node.owner && !users.some((user) => user.id === node.owner?.user_id) ? (
+              <option value={node.owner.user_id}>
+                {ownerName(node.owner)} (cannot administer nodes)
+              </option>
+            ) : null}
+            {users.map((user) => (
+              <option key={user.id} value={user.id}>
+                {user.display_name || user.login_name || `user ${user.id}`} ({user.role})
+              </option>
+            ))}
+          </select>
+          <span className="text-ink/45">
+            The owner may change this node's budgets, drain switch, and name.
+          </span>
+        </label>
+      ) : node.owner ? (
+        <p className="text-xs text-ink/55">Owned by {ownerName(node.owner)}</p>
+      ) : null}
 
       {status ? (
         <>
@@ -278,16 +315,23 @@ function NodeRow({ node, onChanged, onError, onSessionExpired }: NodeRowProps) {
             onKeyDown={onKeyDown}
           />
         </label>
-        <label className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/60">
-          Labels
-          <Input
-            placeholder="nas, zone=eu"
-            value={labels}
-            disabled={busy}
-            onChange={(e) => setLabels(e.target.value)}
-            onKeyDown={onKeyDown}
-          />
-        </label>
+        {capabilities.can_edit_labels ? (
+          <label className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/60">
+            Labels
+            <Input
+              placeholder="nas, zone=eu"
+              value={labels}
+              disabled={busy}
+              onChange={(e) => setLabels(e.target.value)}
+              onKeyDown={onKeyDown}
+            />
+          </label>
+        ) : node.labels.length > 0 ? (
+          <p className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/60">
+            Labels
+            <span className="font-mono text-ink/70">{node.labels.join(", ")}</span>
+          </p>
+        ) : null}
         <Button type="button" variant="secondary" disabled={busy} onClick={save}>
           Save
         </Button>
@@ -310,34 +354,43 @@ function NodeRow({ node, onChanged, onError, onSessionExpired }: NodeRowProps) {
 }
 
 interface NodesPanelProps {
-  /** Shows a page-level error. */
-  onError: (message: string) => void;
   /** Called on a 401 so the page can return to sign-in. */
   onSessionExpired: () => void;
 }
+
+/** Roles whose owner may administer a node; mirrors `UserRole::can_administer_owned_nodes`. */
+const NODE_OWNER_ROLES = new Set(["host", "administrator", "owner"]);
 
 /**
  * Cluster nodes as their heartbeats report them, with each node's budget
  * and drain switch. The scheduler places plugins by this headroom, and
  * deliveries go to the live node with the most room first.
  */
-export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
+export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
   const [nodes, setNodes] = useState<ConfigNodeView[] | null>(null);
-  // The timer outlives renders; read the latest callbacks through a ref so
+  const [capabilities, setCapabilities] = useState<NodeCapabilities | null>(null);
+  const [users, setUsers] = useState<ListedUser[]>([]);
+  // Errors stay on this panel: a failed node edit is not a settings-page
+  // failure and must not follow the user to another tab.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // The timer outlives renders; read the latest callback through a ref so
   // a parent re-render does not restart polling.
-  const callbacks = useRef({ onError, onSessionExpired });
-  callbacks.current = { onError, onSessionExpired };
+  const callbacks = useRef({ onSessionExpired });
+  callbacks.current = { onSessionExpired };
 
   const refresh = useCallback(async () => {
     try {
       const body = await listConfigNodes();
       setNodes(body.nodes);
+      setCapabilities(body.capabilities);
+      setLoadError(null);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         callbacks.current.onSessionExpired();
         return;
       }
-      callbacks.current.onError(err instanceof Error ? err.message : "Failed to load nodes");
+      setLoadError(err instanceof Error ? err.message : "Failed to load nodes");
     }
   }, []);
 
@@ -347,10 +400,26 @@ export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
+  // Only an operator assigns owners. It picks from active users whose role
+  // may administer a node; the API refuses anyone else.
+  const canAssignOwner = capabilities?.can_assign_owner ?? false;
+  useEffect(() => {
+    if (!canAssignOwner) return;
+    listUsers()
+      .then((all) =>
+        setUsers(
+          all.filter((user) => user.status === "active" && NODE_OWNER_ROLES.has(user.role)),
+        ),
+      )
+      .catch(() => setUsers([]));
+  }, [canAssignOwner]);
+
+  const owned = capabilities?.scope === "owned";
+
   return (
     <section className="space-y-5">
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold text-ink">Nodes</h2>
+        <h2 className="text-lg font-semibold text-ink">{owned ? "Your nodes" : "Nodes"}</h2>
         <p className="text-sm text-ink/55">
           Every daemon reports its capacity, use, and running guests every 15 seconds through the
           shared database. The budget is the share of a node's CPU and memory the scheduler may
@@ -359,18 +428,27 @@ export function NodesPanel({ onError, onSessionExpired }: NodesPanelProps) {
           plugins deployed by hand keep running.
         </p>
       </div>
-      {nodes == null ? (
+      {loadError || actionError ? (
+        <p className="text-sm font-medium text-brick" role="alert">
+          {actionError ?? loadError}
+        </p>
+      ) : null}
+      {nodes == null || capabilities == null ? (
         <p className="text-sm text-ink/50">Loading nodes…</p>
       ) : nodes.length === 0 ? (
-        <p className="text-sm text-ink/50">No nodes registered.</p>
+        <p className="text-sm text-ink/50">
+          {owned ? "You do not own any nodes yet." : "No nodes registered."}
+        </p>
       ) : (
         <ul className="divide-y divide-ink/10 bg-card">
           {nodes.map((node) => (
             <NodeRow
               key={node.node_id}
               node={node}
+              capabilities={capabilities}
+              users={users}
               onChanged={refresh}
-              onError={onError}
+              onError={setActionError}
               onSessionExpired={onSessionExpired}
             />
           ))}
