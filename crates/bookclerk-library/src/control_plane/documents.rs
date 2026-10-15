@@ -74,6 +74,30 @@ pub enum ConfigActor {
     /// document only. Built by [`super::verify_node_owner`], which checks
     /// `nodes.owner_user_id`, so a caller cannot claim a node it does not own.
     NodeOwner(VerifiedNodeOwner),
+    /// An active portal Owner. Writes the cluster's host-enrollment switch
+    /// (`core.host_enrollment`) only; every other document stays an
+    /// operator write. Built by [`super::verify_cluster_owner`], which reads
+    /// the user's stored role and status.
+    ClusterOwner(VerifiedClusterOwner),
+}
+
+/// Proof that a user was an active Owner when the write was authorized.
+///
+/// Only [`super::verify_cluster_owner`] constructs one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedClusterOwner {
+    /// Owner's user id.
+    pub(super) user_id: i64,
+    /// Audit id (`owner:<user_id>`).
+    pub(super) audit: String,
+}
+
+impl VerifiedClusterOwner {
+    /// Owner's user id.
+    #[must_use]
+    pub fn user_id(&self) -> i64 {
+        self.user_id
+    }
 }
 
 /// Proof that a user owned a node when the write was authorized.
@@ -111,6 +135,7 @@ impl ConfigActor {
             Self::Bootstrap => "bootstrap",
             Self::Scheduler => "scheduler",
             Self::NodeOwner(owner) => &owner.audit,
+            Self::ClusterOwner(owner) => &owner.audit,
         }
     }
 
@@ -119,6 +144,11 @@ impl ConfigActor {
         match self {
             Self::Operator { .. } | Self::Bootstrap => true,
             Self::NodeOwner(owner) => owner.covers(key),
+            Self::ClusterOwner(_) => {
+                key.scope_type == CLUSTER_SCOPE_TYPE
+                    && key.scope_id == CLUSTER_SCOPE_ID
+                    && key.namespace == super::HOST_ENROLLMENT_NAMESPACE
+            }
             Self::Administrator { .. } | Self::Member { .. } | Self::Scheduler => false,
         }
     }

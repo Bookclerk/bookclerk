@@ -6,8 +6,8 @@ use bookclerk_config::{
     NamingProfile,
 };
 use bookclerk_library::control_plane::{
-    bootstrap_control_plane, load_events, replace_events, ConfigActor, EventsReplace,
-    EventsSettingsV1,
+    bootstrap_control_plane, load_events, load_host_enrollment, replace_events,
+    set_host_enrollment_enabled, ConfigActor, EventsReplace, EventsSettingsV1,
 };
 use bookclerk_library::{
     inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
@@ -151,6 +151,9 @@ pub async fn run(
             if dotted.starts_with("events.") {
                 return get_events_setting(config, dotted, format).await;
             }
+            if dotted == HOST_ENROLLMENT_ENABLED_KEY {
+                return get_host_enrollment(config, format).await;
+            }
             let value = lookup(config, dotted)
                 .ok_or_else(|| anyhow::anyhow!("unknown config key: {key}"))?;
             let payload = serde_json::json!({ "key": dotted, "value": value });
@@ -165,6 +168,9 @@ pub async fn run(
                 .to_string();
             if dotted.starts_with("events.") {
                 return set_events_setting(config, &dotted, &value, format).await;
+            }
+            if dotted == HOST_ENROLLMENT_ENABLED_KEY {
+                return set_host_enrollment(config, &value, format).await;
             }
             apply_setting_overrides(&mut cfg, &[(&dotted, value.as_str())]);
             let path = cfg.paths().config_file.clone();
@@ -723,6 +729,55 @@ async fn set_events_setting(
     emit(format, &payload, || {
         println!("set {dotted}={shown}");
         println!("authority=database revision={revision}");
+    })
+}
+
+/// Config key of the cluster's host-enrollment switch (`core.host_enrollment`).
+const HOST_ENROLLMENT_ENABLED_KEY: &str = "host_enrollment.enabled";
+
+/// Prints whether host nodes may enroll into this cluster.
+async fn get_host_enrollment(config: &Config, format: OutputFormat) -> anyhow::Result<()> {
+    let (store, _session) = open_control_plane(config).await?;
+    let settings = load_host_enrollment(&store).await?;
+    let payload = serde_json::json!({
+        "key": HOST_ENROLLMENT_ENABLED_KEY,
+        "value": settings.body.enabled,
+        "authority": "database",
+        "revision": settings.revision,
+    });
+    emit(format, &payload, || {
+        println!("{}", settings.body.enabled);
+        match settings.revision {
+            Some(revision) => println!("authority=database revision={revision}"),
+            None => println!("authority=database (default)"),
+        }
+    })
+}
+
+/// Turns host enrollment on or off for the cluster.
+async fn set_host_enrollment(
+    config: &Config,
+    value: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let enabled = match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => anyhow::bail!("{HOST_ENROLLMENT_ENABLED_KEY} must be true or false"),
+    };
+    let (store, _session) = open_control_plane(config).await?;
+    let doc =
+        set_host_enrollment_enabled(&store, &ConfigActor::Operator { id: "cli".into() }, enabled)
+            .await?;
+    let payload = serde_json::json!({
+        "key": HOST_ENROLLMENT_ENABLED_KEY,
+        "value": doc.body.enabled,
+        "authority": "database",
+        "revision": doc.revision,
+    });
+    emit(format, &payload, || {
+        println!("set {HOST_ENROLLMENT_ENABLED_KEY}={}", doc.body.enabled);
+        println!("authority=database revision={}", doc.revision);
     })
 }
 

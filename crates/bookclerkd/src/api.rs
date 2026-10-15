@@ -953,6 +953,23 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         ))
         .with_state(state.clone());
 
+    // Host enrollment links: any signed-in user acts for themselves; the
+    // library lets the operator or an Owner act for others.
+    let user_scoped = Router::new()
+        .route(
+            "/api/config/node-invites",
+            get(crate::node_api::get_node_invites).post(crate::node_api::post_node_invite),
+        )
+        .route(
+            "/api/config/node-invites/{id}",
+            delete(crate::node_api::delete_node_invite),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_operator_or_user_auth,
+        ))
+        .with_state(state.clone());
+
     let shared = Router::new()
         .route("/api/library/books", get(list_books))
         .route("/api/library/books/{uuid}", get(get_book))
@@ -1033,6 +1050,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .merge(operator_or_admin)
         .merge(operator_only)
         .merge(node_admin)
+        .merge(user_scoped)
         .merge(shared)
         .with_state(state.clone());
 

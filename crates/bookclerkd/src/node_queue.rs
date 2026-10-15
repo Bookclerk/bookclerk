@@ -68,6 +68,11 @@ pub fn wake_for(message: &NodeMessage) {
             CONFIG_WAKEUP.notify_one();
             DEPLOYMENT_WAKEUP.notify_one();
         }
+        NodeMessage::NodeRevoked { node_id } => {
+            // No host connections are served yet (the node API socket is a
+            // later step); the socket that holds this host closes on it.
+            debug!(%node_id, "host node credential revoked");
+        }
     }
 }
 

@@ -13,6 +13,7 @@ mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod node_api;
 mod node_queue;
 mod oidc;
 mod oidc_rp;
