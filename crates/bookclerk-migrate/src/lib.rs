@@ -157,11 +157,34 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                 cfg.paths = Some(bookclerk_config::Paths::from_files_dir(
                     opts.dest_files_dir.clone(),
                 ));
-                if let Err(err) = bookclerk_plugin_host::enroll_node(&cfg, &dest_store.store).await
-                {
-                    summary.warnings.push(format!(
+                // The imported Settings.json packaging seeds `core.output`
+                // when this database has no output document yet. The scratch
+                // directory is host-local and stays this host's.
+                if summary.settings_imported {
+                    let in_progress = cfg.output.in_progress.clone();
+                    cfg.output = config.output.clone();
+                    cfg.output.in_progress = in_progress;
+                }
+                match bookclerk_plugin_host::enroll_node(&cfg, &dest_store.store).await {
+                    Ok(enrolled) => {
+                        let seeded =
+                            bookclerk_library::control_plane::OutputSettingsV1::from_config(
+                                &cfg.output,
+                            )
+                            .ok();
+                        if summary.settings_imported
+                            && seeded.as_ref() != Some(&enrolled.session.output.body)
+                        {
+                            summary.warnings.push(format!(
+                                "core.output already exists (revision {}); imported packaging \
+                                 settings were not applied — use `bookclerk config set output.*`",
+                                enrolled.session.output.revision
+                            ));
+                        }
+                    }
+                    Err(err) => summary.warnings.push(format!(
                         "plugin enrollment failed; instance settings may not be written: {err}"
-                    ));
+                    )),
                 }
             }
             if let Some(local_key) = opts.local_plugin_key.as_deref() {

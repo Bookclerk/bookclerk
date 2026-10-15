@@ -18,7 +18,8 @@ use bookclerk_config::Config;
 use bookclerk_integrations::IntegrationRegistry;
 use bookclerk_library::control_plane::{
     bootstrap_control_plane, default_instance_for_key, list_present_deployments_for_node,
-    load_plugin_instance, overlay_events, ControlPlaneSession, PluginDeployment, PluginInstance,
+    load_plugin_instance, overlay_core_documents, ControlPlaneSession, PluginDeployment,
+    PluginInstance,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_source::SourceRegistry;
@@ -133,11 +134,11 @@ pub async fn enroll_node(config: &Config, store: &LibraryStore) -> Result<NodeEn
         &paths.files_dir,
         &scratch_dir,
         config.auth_password().as_deref(),
-        &config.events,
+        &config,
     )
     .await
     .map_err(|err| crate::PluginError::message(err.to_string()))?;
-    overlay_events(&mut config, &session.events, &session.cluster_id);
+    overlay_core_documents(&mut config, &session);
     let enrolled = enroll_local_plugins(store, &config, &session.node.node_id).await?;
     Ok(NodeEnrollment {
         config,

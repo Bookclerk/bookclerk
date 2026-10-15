@@ -244,8 +244,12 @@ pub(crate) enum FilterCommand {
 
 /// Dispatches a `library` subcommand against the opened library store.
 pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()> {
-    let paths = config.paths();
     let host = open_host(config).await?;
+    // Database-authoritative domains (`core.events`, `core.output`) are
+    // overlaid on the host config; read that, not the TOML seed.
+    let overlaid = host.config.clone();
+    let config = &overlaid;
+    let paths = config.paths();
     let store = host.store.clone();
 
     match command {

@@ -30,7 +30,9 @@ pub struct Config {
     /// Library database backend plugin (`[database]`).
     #[serde(default)]
     pub database: crate::database::DatabaseConfig,
-    /// Acquire packaging and destination backends (`[output]`).
+    /// Acquire packaging (`[output]`). After control-plane enrollment every
+    /// field except the host-local `in_progress` is overlaid from the
+    /// `core.output` database document; the TOML table only seeds it once.
     pub output: OutputConfig,
     /// HTTP control-plane / tray settings (`[daemon]`).
     pub daemon: DaemonConfig,
@@ -69,6 +71,14 @@ pub struct Config {
     /// replaces this authority explicitly. Not serialized to `config.toml`.
     #[serde(skip)]
     pub events_authority: Option<String>,
+    /// Revision of the DB-authoritative `[output]` document (`core.output`)
+    /// after overlay. Absent until control-plane bootstrap or reconcile loads
+    /// it; compared only with [`Self::output_authority`]. Not serialized.
+    #[serde(skip)]
+    pub output_revision: Option<i64>,
+    /// Cluster id that produced [`Self::output_revision`]. Not serialized.
+    #[serde(skip)]
+    pub output_authority: Option<String>,
 }
 
 /// Auth encryption settings (`[auth]` section).

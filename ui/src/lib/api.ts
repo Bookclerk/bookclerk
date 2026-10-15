@@ -2009,7 +2009,9 @@ export async function fetchSettings(): Promise<SettingsResponse> {
  * Applies a batch of operator setting key/value updates from the Settings form.
  *
  * The batch is one authority. File-backed keys (listen, auth, plugins) are not
- * combined with `events.*`, which the daemon stores in the library database.
+ * combined with `events.*` or `output.*`, which the daemon stores as the
+ * `core.events` and `core.output` documents in the library database; a mixed
+ * batch is rejected with 400 and a lost compare-and-swap with 409.
  *
  * @param body - List of `{ key, value }` updates (plugin knobs use dotted keys).
  * @returns Refreshed settings payload after the patch.
