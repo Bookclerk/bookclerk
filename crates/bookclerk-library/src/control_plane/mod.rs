@@ -12,6 +12,7 @@ mod documents;
 mod identity;
 mod instance_config;
 mod instances;
+mod job_routing;
 mod node_queue;
 mod node_status;
 mod ownership;
@@ -19,6 +20,7 @@ mod placement;
 mod routing;
 mod schemas;
 mod secret;
+mod semaphore;
 mod versions;
 
 use std::path::Path;
@@ -56,6 +58,11 @@ pub use instances::{
     ensure_plugin_instance, find_plugin_instance_by_key, list_all_plugin_instances,
     list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
 };
+pub use job_routing::{
+    account_semaphore, claim_routed_job, class_semaphore, instance_semaphore, job_semaphores,
+    node_can_run_job, resolve_job_requirements, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
+    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+};
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
     publish_to_all_nodes, NodeMessage, NODE_CONSUMER_PREFIX,
@@ -84,6 +91,11 @@ pub use schemas::{
     SchemaPinChange, SchemaPinOutcome,
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
+pub use semaphore::{
+    acquire_permit, acquire_permits, live_permits, release_permits, renew_fenced_lease,
+    renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit, SemaphoreRequest,
+    MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
+};
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,
     list_versions, load_active_version, load_artifact_blob, load_install, load_version,
@@ -694,6 +706,8 @@ fn invalid_events(detail: &str) -> LibraryError {
 
 #[cfg(test)]
 mod instance_tests;
+#[cfg(test)]
+mod job_routing_tests;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]

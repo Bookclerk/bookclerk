@@ -74,16 +74,55 @@ fn enqueue_spec(
 ///
 /// Takes a shared [`AppState::job_runtime`] permit so a database swap cannot
 /// interleave with admission.
-async fn admit(state: &AppState, spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
+async fn admit(state: &AppState, mut spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
     let _permit = tokio::time::timeout(Duration::from_secs(15), state.job_runtime.read())
         .await
         .map_err(|_| anyhow::anyhow!("job admission paused (database reload in progress)"))?;
     let library = state.library_snapshot().await;
+    if spec.payload.requires.is_empty() {
+        let bound = if spec.kind == JobKind::Acquire {
+            node_bound_output_keys(state).await
+        } else {
+            std::collections::BTreeSet::new()
+        };
+        spec.payload.requires = bookclerk_library::control_plane::resolve_job_requirements(
+            &library,
+            spec.kind,
+            &spec.payload,
+            &bound,
+        )
+        .await?;
+    }
     let outcome = library.enqueue_job(spec).await?;
     if matches!(outcome, EnqueueOutcome::Created { .. }) {
         state.job_notify.notify_one();
     }
     Ok(outcome.into())
+}
+
+/// Plugin keys of the outputs that live on one node's disk.
+///
+/// Today that is the verified first-party `local` destination. An acquire
+/// writes to every deployed one, so it is routed to a node running them
+/// (see `control_plane::resolve_job_requirements`). A discovery failure
+/// leaves the set empty, which routes nothing.
+async fn node_bound_output_keys(state: &AppState) -> std::collections::BTreeSet<String> {
+    let config = state.config.read().await.clone();
+    if config.paths.is_none() {
+        // A config that was not loaded from disk has no plugin directories.
+        return std::collections::BTreeSet::new();
+    }
+    match bookclerk_plugin_host::discover_plugins(&config) {
+        Ok(plugins) => plugins
+            .iter()
+            .filter(|plugin| bookclerk_plugin_host::is_first_party_local_output(plugin))
+            .map(|plugin| plugin.plugin_key().to_string())
+            .collect(),
+        Err(err) => {
+            warn!(error = %err, "plugin discovery failed; acquire is not routed to node-bound outputs");
+            std::collections::BTreeSet::new()
+        }
+    }
 }
 
 /// True when the fence asked to stop or the row is flagged cancelled.
