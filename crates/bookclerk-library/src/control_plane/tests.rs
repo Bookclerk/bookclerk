@@ -956,7 +956,7 @@ async fn single_node_sqlite_bootstrap_is_one_node_and_one_events_document() {
     assert!(node_identity_path(files.path()).is_file());
 }
 
-fn postgres_tests_enabled() -> bool {
+pub(super) fn postgres_tests_enabled() -> bool {
     let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL")
         .ok()
         .filter(|value| !value.trim().is_empty());
@@ -989,7 +989,7 @@ fn postgres_url_with_db(url: &str, db_name: &str) -> String {
     }
 }
 
-async fn postgres_stores() -> (LibraryStore, LibraryStore) {
+pub(super) async fn postgres_stores() -> (LibraryStore, LibraryStore) {
     let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL").expect("postgres url");
     let db_name = format!("cp_{}", Uuid::new_v4().as_simple());
     let admin = sea_orm::Database::connect(url.as_str())

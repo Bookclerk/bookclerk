@@ -667,6 +667,10 @@ section is the record.
   writes a new node's row `unplaced` for it, and `plugins deploy --manual`
   hands the deployments back unchanged (`placed` → `present`, `unplaced` →
   `absent`). Uninstalling a plugin drops its placements first.
+- **Jobs (after step 5).** Durable jobs record the instances they need and
+  are claimed only by a node that runs them, under counted cluster
+  semaphores built from `cluster_leases` slot rows. See *Job routing and
+  cluster semaphores* below.
 
 ### Resource-aware scheduling and routing
 
@@ -729,6 +733,47 @@ running a plugin. Nodes still only share the database.
   dispatcher would have to choose, and a dead target needs reassignment
   logic) and forwarding between nodes (they cannot connect).
 
+### Job routing and cluster semaphores
+
+Built 2026-10-15 (#192 Phase 3). Durable jobs were claimed by whichever
+daemon got to the row first, which ran them with its own sources and
+destinations, and the per-process `[jobs.concurrency]` limits added up
+across nodes.
+
+- **Requirements, recorded at admission.** `JobPayload.requires` lists the
+  plugin instance ids the claiming node must run: the pinned instance (when
+  some node deploys it) and, for acquire, every deployed instance of a
+  node-bound output (the first-party `local` destination). No new state:
+  the claim reads `plugin_deployments` (desired `present` or `placed` on
+  this node) and `plugin_deployment_observations` (this node reports the
+  guest `running` or `healthy`), as delivery routing does. A job with no
+  requirements stays claimable anywhere. Rejected: stamping a target node
+  at admission (a dead target would need reassignment, as for deliveries).
+- **Routed claim.** `claim_routed_job` reads ready candidates, filters them
+  host-side, takes the permits, and claims one row with a single CAS on
+  `state = 'pending'` and the lease generation (`claim_job_by_id`). That
+  CAS needs no interactive transaction or job-queue slot lock, so it runs
+  the same on every adapter through SeaORM. The unrouted `claim_next_job`
+  and its guest atomic plan skip any job with requirements. A lost-response
+  replay can leave a claimed row unexecuted; it expires and is reclaimed,
+  which is the fallback the unrouted claim already documented.
+- **Counted semaphores on `cluster_leases`.** A semaphore of limit `N` is
+  `N` slot rows `sem:<name>#<i>` of the existing lease table, each a fenced
+  lease; taking a permit is taking a free or expired slot below the limit.
+  No table was added and the singleton scheduler lease is the `N = 1` case.
+  Job claims take `jobs:<class>` (`[jobs.concurrency].network`, which is now
+  also the cluster-wide count), `plugin-instance:<id>`
+  (`[jobs.concurrency].plugin_instance`, default 1), and
+  `account:<plugin_key>:<account_id>` (1). Permits are renewed with the job
+  heartbeat (a failed renewal is fence loss) and released after
+  finalization; a crashed holder's slot expires and is taken over with a
+  larger token. Counting running `jobs` rows (as `event_deliveries` does
+  for `[events.concurrency]`) was rejected because one job counts against
+  several semaphores and the account a job touches is not a column.
+- **Limits stay in `config.toml`.** `[jobs]` has not moved to a database
+  document, so each node applies its own limits; nodes should agree.
+  Lowering a limit lets held slots above it drain rather than revoking them.
+
 ### Node kinds, ownership, and the Host role
 
 Decided 2026-10-14 with the owner. A cluster has two kinds of node:
@@ -767,13 +812,15 @@ nodes. The cluster summary in `/api/cluster/status` (node counts, committed
 capacity, active jobs, delivery backlog) is visible to every node
 administrator. Only an Owner or the operator assigns the Host role.
 
+- Trust follows the role. A Host's node receives only cluster work whose
+  secrets belong to that Host (accounts linked to the user); promoting the
+  user to Administrator lets the node receive any job. The check runs per
+  work item at the owner when the node claims it. Built for jobs (H-4
+  step 5, *Per-item trust and the scan planner* below); deliveries and
+  instance ownership are not yet.
+
 Decided, not yet built:
 
-- Trust follows the role. A Host's node receives only cluster work whose
-  secrets belong to that Host (accounts linked to the user, instances the
-  Host owns); promoting the user to Administrator lets the node receive
-  any placement. The check runs per work item at the owner when the node
-  claims it.
 - A node may configure its own `local` output, an instance owned by that
   node and deployed only there. It adds to the cluster's outputs rather
   than replacing them; writes stay mirrored.
@@ -891,6 +938,69 @@ Built in the first H-4 slice:
   `BOOKCLERK_TEST_ACME_DIRECTORY` / `BOOKCLERK_TEST_ACME_CA` are set; CI does
   not run Pebble yet.
 
+### Per-item trust and the scan planner
+
+Built 2026-10-15 (H-4 step 5), on the routed claim above.
+
+- **Trust predicate** (`control_plane/trust.rs`). `node_trust` reads the
+  claiming node's `nodes` row, its `node_credentials`, and its owner's
+  `users` row on every call: an owner node (stored kind exactly `owner`)
+  and a Host owned by an active Owner or Administrator are trusted with
+  every job; a Host owned by any other active user is trusted only with
+  that user's work; a Host with no owner, a disabled or unknown owner, an
+  unparsable role or status, or a missing or revoked credential is trusted
+  with nothing. Any kind other than `owner` is judged as a Host. A node id
+  with no row is trusted only for a `Claimant::Local` claim (the daemon's
+  own worker, which holds the database); a `Claimant::Remote` claim (the
+  node API) without a row gets nothing.
+- **What "that user's work" means.** `job_trusted` admits only a scan or
+  acquire that names a store account, every `accounts` row of which is
+  linked to the user through `account_links` (via the user's
+  `portal_identities`); an account id another user holds on a second
+  plugin is refused, since the job would touch both. A scan-all or
+  acquire-all with no account, a job pinned to or requiring a plugin
+  instance (instances carry no `owner_user_id` yet, so their settings are
+  the operator's), listen-sync, integration scans, plugin copies, and
+  invalid jobs are refused. Rejected: recording the requesting user on the
+  job and trusting by requester; a Host is trusted with secrets, and the
+  secrets a job unseals are its accounts', whoever asked.
+- **Where it runs.** `claim_routed_job` takes a `claimant` and filters
+  candidates through the predicate before requirements, permits, and the
+  CAS, so an untrusted job is skipped rather than claimed and refused. A
+  node trusted with nothing reads no further. `handoff_routed_job` re-reads
+  the job and the trust inputs just before secrets would be unsealed for
+  the node; if the node is no longer trusted (demoted, disabled, unlinked,
+  revoked), `release_job_claim` returns the row to `pending` under the
+  claim's fence without spending an attempt (a resumed claim gets its
+  one-shot resume flag back), the permits are released, and nothing is
+  handed over. The lease generation stays bumped, so the refused fence
+  can never write again. The daemon's own worker claims as
+  `Claimant::Local` and needs no handoff; the node API's work frames
+  (step 6) will claim as `Claimant::Remote` and hand off through it.
+- **Scan planner** (`plan_scan`). Every scan admission goes through it,
+  from the HTTP API (`require_operator_or_administrator_auth` records a
+  `ScanRequester` request extension; a handler without one answers 403),
+  the scheduler, and later a Host. Operator authority, an Owner, or an
+  Administrator scanning every account gets one scan job per distinct
+  scan-enabled account id (within the pinned instance's plugin), so each
+  can go to any node trusted with that account; with no scan-enabled
+  account the request stays one unsplit job, which only fully trusted
+  nodes claim. Any other active user gets only the scan-enabled accounts
+  they wholly own, and a named account must be theirs (403 otherwise; an
+  unknown account reads the same). `POST /api/library/scan` answers a
+  multi-job plan with `job_ids` beside `job_id`: 200 when any was
+  accepted, 409 when all were already queued, 429 when the queue was full,
+  422 `nothing_to_scan` for an empty plan. Each per-account job dedups on
+  its own key, so a repeated scan-all coalesces per account. The HTTP gate
+  still admits only operators, Owners, and Administrators; a member scan
+  route would rely on the planner's scoping.
+- **Tests.** Two SQLite connections to one file, with PostgreSQL twins
+  behind `BOOKCLERK_TEST_POSTGRES_URL`: a Member's Host claims its owner's
+  account and is refused another user's job and the scan-all until the
+  owner is promoted; a demotion between claim and handoff denies and
+  returns the job unspent; ownerless, disabled, revoked, and unknown nodes
+  claim nothing; the planner splits and scopes as above.
+
 ## Consequences
 
 - New unreleased tables: `cluster_identity`, `nodes`,
@@ -939,13 +1049,14 @@ Not in this phase, and not claimed as production HA:
 - Moving the rest of `config.toml` (library, jobs, media, plugins,
   diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap is part
   of that.
-- Job routing and cluster semaphores. Jobs (scan, acquire) carry no host
-  or plugin target: whichever daemon claims one runs it with its own
-  sources and destinations, so a host that cannot reach a store or
-  destination may take the job. Deliveries are routed (above); jobs are
-  not. Do not run two daemons against one database and expect safe
-  active/active acquire. `cluster_leases` exists now (the scheduler uses
-  it) and is the place for further singleton maintenance work.
+- Job routing beyond plugin instances. Jobs now carry the instances they
+  need and take cluster semaphores (*Job routing and cluster semaphores*
+  above), but requirements are fixed at admission and only name instances:
+  a pending job is not re-routed when a deployment moves, an all-accounts
+  scan is not split across the nodes that run each storefront, jobs are not
+  ranked by headroom the way deliveries are, and acquire still writes the
+  claiming node's own destinations rather than mirroring node-local outputs
+  across nodes. `[jobs]` limits are read from each node's `config.toml`.
 - Synchronous calls (HTTP API, portal, CLI) run on the host that receives
   them; only queued deliveries reach the best host.
 - Per-guest measured usage is not sampled. Reservations are jail ceilings,
@@ -966,11 +1077,13 @@ Not in this phase, and not claimed as production HA:
   (Phase 4).
 - Host nodes: Pebble in CI, the node socket's work frames (heartbeat, claims, renew/ack/fail,
   bindings, wakes, resume, the sealed box), `bookclerk clusters join` and the
-  rest of the host-node client, per-work-item trust, host consent, the
+  rest of the host-node client, per-item trust for deliveries and
+  instance ownership (`plugin_instances.owner_user_id`), host consent, the
   upload path, and node-local outputs (see *Node kinds, ownership, and the
   Host role* and *Host-node enrollment and transport*). Enrollment links,
-  redeem, revocation, the transport policy, the socket handshake, and the
-  ACME and self-signed TLS listeners are built. Settings has no
+  redeem, revocation, the transport policy, the socket handshake, the
+  ACME and self-signed TLS listeners, and per-item job trust with the scan
+  planner are built. Settings has no
   enrollment switch or invite screen yet (CLI and HTTP only).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use bookclerk_acquire::{acquire_book_indexed, AcquireRequest, MatchStorageOptions};
 use bookclerk_config::BadBookAction;
+use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
     is_downloadable, AcquireStatus, BookRecord, EnqueueJobSpec, EnqueueOutcome, JobKind,
     JobPayload, JobTrigger,
@@ -74,16 +75,55 @@ fn enqueue_spec(
 ///
 /// Takes a shared [`AppState::job_runtime`] permit so a database swap cannot
 /// interleave with admission.
-async fn admit(state: &AppState, spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
+async fn admit(state: &AppState, mut spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
     let _permit = tokio::time::timeout(Duration::from_secs(15), state.job_runtime.read())
         .await
         .map_err(|_| anyhow::anyhow!("job admission paused (database reload in progress)"))?;
     let library = state.library_snapshot().await;
+    if spec.payload.requires.is_empty() {
+        let bound = if spec.kind == JobKind::Acquire {
+            node_bound_output_keys(state).await
+        } else {
+            std::collections::BTreeSet::new()
+        };
+        spec.payload.requires = bookclerk_library::control_plane::resolve_job_requirements(
+            &library,
+            spec.kind,
+            &spec.payload,
+            &bound,
+        )
+        .await?;
+    }
     let outcome = library.enqueue_job(spec).await?;
     if matches!(outcome, EnqueueOutcome::Created { .. }) {
         state.job_notify.notify_one();
     }
     Ok(outcome.into())
+}
+
+/// Plugin keys of the outputs that live on one node's disk.
+///
+/// Today that is the verified first-party `local` destination. An acquire
+/// writes to every deployed one, so it is routed to a node running them
+/// (see `control_plane::resolve_job_requirements`). A discovery failure
+/// leaves the set empty, which routes nothing.
+async fn node_bound_output_keys(state: &AppState) -> std::collections::BTreeSet<String> {
+    let config = state.config.read().await.clone();
+    if config.paths.is_none() {
+        // A config that was not loaded from disk has no plugin directories.
+        return std::collections::BTreeSet::new();
+    }
+    match bookclerk_plugin_host::discover_plugins(&config) {
+        Ok(plugins) => plugins
+            .iter()
+            .filter(|plugin| bookclerk_plugin_host::is_first_party_local_output(plugin))
+            .map(|plugin| plugin.plugin_key().to_string())
+            .collect(),
+        Err(err) => {
+            warn!(error = %err, "plugin discovery failed; acquire is not routed to node-bound outputs");
+            std::collections::BTreeSet::new()
+        }
+    }
 }
 
 /// True when the fence asked to stop or the row is flagged cancelled.
@@ -110,30 +150,62 @@ async fn queue_limits(state: &AppState) -> (i64, i64) {
     )
 }
 
-/// Admit a library scan. Does not spawn a per-request task.
+/// Admit a library scan through the scan planner. Does not spawn a
+/// per-request task.
 ///
-/// `plugin_instance_id` pins the scan to one deployed instance; otherwise
-/// every plugin is scanned once through its default instance.
+/// `control_plane::plan_scan` decides what `requester` may scan: operator
+/// authority, an Owner or an Administrator scanning every account gets one
+/// job per scan-enabled account (so each can go to any node trusted with
+/// it); any other user only scans accounts they own. `plugin_instance_id`
+/// pins every planned job to one deployed instance.
+///
+/// # Returns
+///
+/// One admission outcome per planned job, in plan order. Empty when the
+/// requester owns nothing to scan.
+///
+/// # Errors
+///
+/// Fails with a wrapped [`bookclerk_library::LibraryError::Forbidden`] when
+/// the requester may not scan what was asked, and with the read or write
+/// error otherwise. Jobs admitted before a failure stay admitted.
 pub async fn enqueue_scan(
     state: Arc<AppState>,
+    requester: ScanRequester,
     account: Option<String>,
     plugin_instance_id: Option<String>,
     trigger: JobTrigger,
-) -> anyhow::Result<AdmitJob> {
+) -> anyhow::Result<Vec<AdmitJob>> {
     let (max_pending, max_attempts) = queue_limits(&state).await;
-    admit(
-        &state,
-        enqueue_spec(
-            JobKind::Scan,
-            account,
-            None,
-            plugin_instance_id,
-            trigger,
-            max_pending,
-            max_attempts,
-        ),
-    )
-    .await
+    let plan = {
+        let library = state.library_snapshot().await;
+        bookclerk_library::control_plane::plan_scan(
+            &library,
+            requester,
+            account.as_deref(),
+            plugin_instance_id.as_deref(),
+        )
+        .await?
+    };
+    let mut admitted = Vec::with_capacity(plan.len());
+    for payload in plan {
+        admitted.push(
+            admit(
+                &state,
+                enqueue_spec(
+                    JobKind::Scan,
+                    payload.account,
+                    None,
+                    payload.plugin_instance_id,
+                    trigger,
+                    max_pending,
+                    max_attempts,
+                ),
+            )
+            .await?,
+        );
+    }
+    Ok(admitted)
 }
 
 /// Admit acquire for pending titles (optional title / account filter).
