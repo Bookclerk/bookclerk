@@ -134,8 +134,9 @@ pub use secrets::{
 pub use session_client::{classify_session_client, SessionClientInfo};
 pub use sql_plan::{
     authorize_typed_request, compile_claim_event_delivery, compile_named_request,
-    execute_guest_atomic_with, interpret_typed_exec, proxy_read_kind, proxy_write_kind,
-    validate_execute_reply, validate_plan, wake_page_for_max_binds, AtomicSession, CompiledAtomic,
+    execute_guest_atomic_with, interpret_typed_exec, proxy_insert_returning_identity,
+    proxy_read_kind, proxy_write_kind, validate_execute_reply, validate_plan,
+    wake_page_for_max_binds, AtomicSession, CompiledAtomic,
 };
 pub use store::{
     event_outbox::prepare_publish_domain_event, fallback_work_key, inject_dispatch_page_failures,

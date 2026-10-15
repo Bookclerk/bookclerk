@@ -123,14 +123,14 @@ POSTGRES_STEPS: dict[str, tuple[str, list[str]]] = {
         ],
     ),
     "rpc_like": (
-        "Postgres production RPC proxy LIKE boundary",
+        "Postgres production RPC proxy boundary (LIKE, identity inserts)",
         [
             "cargo",
             "test",
             "-p",
             "bookclerk-plugin-host",
             "--lib",
-            "production_rpc_proxy_keeps_like_through_postgres_guest",
+            "through_postgres_guest",
             "--",
             "--ignored",
             "--nocapture",
