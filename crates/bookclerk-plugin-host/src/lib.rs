@@ -31,17 +31,20 @@
 //! See `docs/plugins.md`, `docs/adr/plugin-workers-rpc-workerd.md`, and
 //! `docs/plugin-registry.md`.
 
-/// Serializes every test that installs the process-wide DEK.
-///
-/// `bootstrap_control_plane` installs each test's own `master.key`, so a test
-/// in another module could swap the key between one test's seal and its
-/// unseal. One lock for the crate, not one per module.
-#[cfg(test)]
-pub(crate) static PROCESS_DEK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[cfg(test)]
 mod deployment_reconcile_tests;
 #[cfg(test)]
 mod enrollment_tests;
+
+/// Serializes tests that install or rely on the process-wide cached DEK.
+///
+/// Control-plane bootstrap and `configure_master_key` replace that DEK, and a
+/// sealed secret only unseals under the key that sealed it. Every test that
+/// bootstraps a control plane, configures a master key, or seals and later
+/// unseals secrets holds this one lock, so no test can swap the key between
+/// another test's seal and unseal.
+#[cfg(test)]
+static PROCESS_DEK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 mod authority;
 mod callback_proxy;

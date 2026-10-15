@@ -20,4 +20,6 @@ pub use plugin_backups::{export_registered_plugin_units, restore_plugin_backup_u
 pub use source::ExternalSource;
 
 #[cfg(test)]
+mod rpc_proxy_insert;
+#[cfg(test)]
 mod rpc_proxy_like;
