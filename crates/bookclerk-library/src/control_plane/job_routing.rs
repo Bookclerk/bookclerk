@@ -19,6 +19,11 @@
 //! are taken over with a new fencing token, after which the stale holder can
 //! neither renew them nor finalize the job (whose own lease generation has
 //! moved on as well).
+//!
+//! Before either, the claim filters candidates through the trust predicate
+//! ([`super::trust`]): a Host node only claims jobs whose secrets it is
+//! trusted with, and [`super::handoff_routed_job`] repeats that check before
+//! the job's secrets would be handed over.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -33,6 +38,7 @@ use super::instances::{list_all_plugin_instances, load_plugin_instance, PluginIn
 use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
+use super::trust::{job_trusted, node_trust, Claimant, NodeTrust};
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
 use crate::models::{JobKind, JobPayload, JobRecord, JobResourceClass};
@@ -79,6 +85,9 @@ pub struct JobClaimRequest<'a> {
     /// The claiming node (`node-identity.json`). Empty when unknown, in
     /// which case only jobs without requirements are claimable.
     pub node_id: &'a str,
+    /// How the node reaches the queue; decides how an unknown node id is
+    /// trusted (see [`Claimant`]).
+    pub claimant: Claimant,
     /// Worker lease owner written on the job row.
     pub owner: &'a str,
     /// Lease length; permits are taken for the same time.
@@ -94,6 +103,9 @@ pub struct RoutedJobClaim {
     pub job: JobRecord,
     /// Permits to renew with the job heartbeat and release at the end.
     pub permits: Vec<SemaphorePermit>,
+    /// True when this claim resumed a suspended job, so it spent no
+    /// attempt; a release at handoff restores that state.
+    pub resumed: bool,
 }
 
 /// The instances a new job must find on its claiming node.
@@ -246,8 +258,9 @@ pub async fn job_semaphores(
 
 /// Claims the best ready job this node can run, under the cluster semaphores.
 ///
-/// Reads the ready pending jobs of the class, best first; skips those whose
-/// requirements this node does not meet; takes the permits of the first one
+/// Reads the ready pending jobs of the class, best first; skips those the
+/// node is not trusted with ([`super::node_trust`]) or whose requirements
+/// it does not meet; takes the permits of the first one
 /// left and claims it with [`LibraryStore::claim_job_by_id`]. A lost claim
 /// gives the permits back and moves on. When the class semaphore itself is
 /// full, no further candidate is tried.
@@ -269,12 +282,20 @@ pub async fn claim_routed_job(
         .await?;
     let class = class_semaphore(request.resource_class);
     let ttl = Duration::from_secs(request.lease_secs);
+    let trust = node_trust(store, request.node_id, request.claimant).await?;
+    if trust == NodeTrust::Nothing {
+        return Ok(None);
+    }
     for job in candidates {
+        if !job_trusted(store, &trust, &job).await? {
+            continue;
+        }
         if !node_can_run_job(store, request.node_id, &job.payload.requires).await? {
             continue;
         }
         let semaphores = job_semaphores(store, &job, request.limits).await?;
         let holder = format!("{}/{}/{}", request.owner, job.id, Uuid::new_v4().simple());
+        let resumed = job.payload.resume_pending;
         let permits = match acquire_permits(store, &semaphores, &holder, ttl).await? {
             PermitAcquire::Granted(permits) => permits,
             PermitAcquire::Blocked(name) if name == class => return Ok(None),
@@ -284,7 +305,13 @@ pub async fn claim_routed_job(
             .claim_job_by_id(&job.id, request.owner, request.lease_secs)
             .await
         {
-            Ok(Some(job)) => return Ok(Some(RoutedJobClaim { job, permits })),
+            Ok(Some(job)) => {
+                return Ok(Some(RoutedJobClaim {
+                    job,
+                    permits,
+                    resumed,
+                }))
+            }
             Ok(None) => release_permits(store, &permits).await?,
             Err(err) => {
                 let _ = release_permits(store, &permits).await;

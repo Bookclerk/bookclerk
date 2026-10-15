@@ -180,6 +180,83 @@ impl LibraryStore {
         claim_candidate_on(&self.db, model, owner, &lease_expires, &now_s).await
     }
 
+    /// Returns a job claimed under `fence` to `pending` without spending an
+    /// attempt, as if the claim had not happened.
+    ///
+    /// Used when the claim is refused at handoff (the node is no longer
+    /// trusted with the job). `resumed` says the claim resumed a suspended
+    /// job: its attempt count was not raised, and the one-shot resume flag
+    /// is set again. Otherwise the count the claim added is taken back. The
+    /// lease generation stays bumped, so the refused claimer's fence can
+    /// never write to the row again.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was released; `false` when `fence` no longer owns
+    /// the running generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or write fails, or
+    /// [`LibraryError::Other`] when the stored payload is not valid JSON.
+    pub async fn release_job_claim(&self, fence: &JobFence, resumed: bool) -> Result<bool> {
+        let Some(model) = jobs::Entity::find_by_id(&fence.job_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(false);
+        };
+        if model.state != JobState::Running.as_str()
+            || model.lease_owner.as_deref() != Some(fence.owner.as_str())
+            || model.lease_generation != fence.generation
+        {
+            return Ok(false);
+        }
+        let mut update = jobs::Entity::update_many()
+            .col_expr(
+                jobs::Column::State,
+                sea_orm::sea_query::Expr::value(JobState::Pending.as_str()),
+            )
+            .col_expr(
+                jobs::Column::LeaseOwner,
+                sea_orm::sea_query::Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                jobs::Column::LeaseExpiresAt,
+                sea_orm::sea_query::Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                jobs::Column::UpdatedAt,
+                sea_orm::sea_query::Expr::value(now_str()),
+            );
+        if resumed {
+            let mut payload: JobPayload = serde_json::from_str(&model.payload)
+                .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+            payload.resume_pending = true;
+            let payload_json = serde_json::to_string(&payload)
+                .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+            update = update.col_expr(
+                jobs::Column::Payload,
+                sea_orm::sea_query::Expr::value(payload_json),
+            );
+        } else {
+            update = update.col_expr(
+                jobs::Column::AttemptCount,
+                sea_orm::sea_query::Expr::value((model.attempt_count - 1).max(0)),
+            );
+        }
+        let res = update
+            .filter(jobs::Column::Id.eq(&fence.job_id))
+            .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+            .filter(jobs::Column::LeaseOwner.eq(&fence.owner))
+            .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(res.rows_affected == 1)
+    }
+
     /// Refresh the lease when `fence` still owns the running generation.
     ///
     /// # Errors

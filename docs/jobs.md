@@ -184,6 +184,15 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 | Duplicate | 409 | Same dedup key already `pending` or `running`; `job_id` is the existing row |
 | QueueFull | 429 | `pending + running >= jobs.max_pending` |
 
+A scan goes through the scan planner first (`control_plane::plan_scan`).
+An operator, an Owner, an Administrator, or the scheduler scanning every
+account gets one `scan` job per scan-enabled account id, so the response
+also carries `job_ids` (200 when any was accepted, 409 when all were
+already queued, 429 when the queue was full, 422 `nothing_to_scan` for an
+empty plan); with no scan-enabled account it stays one `scan:account=all`
+job. Any other user scans only accounts linked to them, and naming someone
+else's account is 403.
+
 Admission, claim, and handler execution share an `RwLock` (`job_runtime`).
 A database plugin swap takes the write permit so it cannot observe an idle
 worker that is about to claim. Admission waits up to 15s for a read permit
@@ -274,6 +283,17 @@ permits (below) and claims that row with `claim_job_by_id`, one CAS on
 claimers on any number of connections admit one. A lost CAS gives the
 permits back and tries the next candidate. Requirements are fixed at
 admission: a deployment that moves later does not re-route a pending job.
+
+Before requirements and permits, the routed claim filters candidates
+through the trust predicate (`control_plane::trust`). The daemon's own
+worker holds the database and is trusted with every job. A Host node
+(H-4) owned by a user who is not an Owner or Administrator may claim only
+a scan or acquire of a named account linked to that user; a scan-all, any
+pinned or instance-bound job, listen sync, integration scans, and plugin
+copies are refused to it. `control_plane::handoff_routed_job` repeats the
+check before a job's secrets would be handed over and, if the node lost
+that trust, returns the job to `pending` without spending an attempt. See
+*Per-item trust and the scan planner* in `docs/adr/control-plane.md`.
 
 The unrouted `claim_next_job` (and its guest atomic plan) never claims a job
 with requirements; it remains for tests and tools that run one process.

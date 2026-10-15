@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use bookclerk_config::{register_secret, session_cookie_flags};
 use bookclerk_integrations::{portal_identity_from_headers, session_for_identity};
+use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
     classify_session_client, hash_password, hash_token, portal_prefs_key, user_prefs_key,
     verify_password, LibraryError, PortalIdentity, SessionClientInfo, UserRole, UserStatus,
@@ -1384,14 +1385,17 @@ pub async fn require_operator_or_user_auth(
 /// Operator token/session **or** an active Administrator user portal session.
 ///
 /// Used for scan / acquire / jobs. Full control-plane settings stay on
-/// [`require_operator_auth`] until Phase 2 elevation.
+/// [`require_operator_auth`] until Phase 2 elevation. Records who asked as a
+/// [`ScanRequester`] request extension for the scan planner; a handler that
+/// finds none refuses.
 pub async fn require_operator_or_administrator_auth(
     State(state): State<Arc<AppState>>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let auth = state.auth_snapshot().await;
     if !auth.enabled {
+        req.extensions_mut().insert(ScanRequester::Operator);
         return Ok(next.run(req).await);
     }
     if let Some(op) = resolve_operator_session(&state, &auth, req.headers()).await {
@@ -1407,13 +1411,16 @@ pub async fn require_operator_or_administrator_auth(
                 {
                     return Ok(denied);
                 }
+                req.extensions_mut().insert(ScanRequester::User(target_id));
                 return Ok(next.run(req).await);
             }
             return Err(StatusCode::FORBIDDEN);
         }
+        req.extensions_mut().insert(ScanRequester::Operator);
         return Ok(next.run(req).await);
     }
     if authorize_operator_bearer_only(&auth, req.headers()) {
+        req.extensions_mut().insert(ScanRequester::Operator);
         return Ok(next.run(req).await);
     }
     let library = state.library_snapshot().await;
@@ -1426,6 +1433,9 @@ pub async fn require_operator_or_administrator_auth(
                 {
                     return Ok(denied);
                 }
+                // The scan planner re-reads this user's role; a portal
+                // identity without a user gets no requester and is refused.
+                req.extensions_mut().insert(ScanRequester::User(user_id));
             }
             return Ok(next.run(req).await);
         }
