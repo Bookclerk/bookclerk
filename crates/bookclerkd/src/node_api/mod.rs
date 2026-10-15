@@ -4,19 +4,34 @@
 //! enrollment links (the library decides who may act for whom). A minted
 //! link's secret appears once, in the `url` fragment of the mint response;
 //! it is never logged.
+//!
+//! `POST /api/node/v1/enroll` redeems a link. It sits outside the cookie and
+//! operator auth layers (the link secret is the credential) and is never
+//! disabled by `auth.enabled = false`; [`transport::classify_transport`]
+//! runs before the body is read.
 
+pub mod transport;
+
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::http::HeaderMap;
-use axum::response::Response;
+use axum::extract::connect_info::ConnectInfo;
+use axum::extract::{Path, Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
-    list_enrollment_links, mint_enrollment_link, revoke_enrollment_link, EnrollmentActor,
-    EnrollmentLink,
+    list_enrollment_links, mint_enrollment_link, redeem_enrollment_link, revoke_enrollment_link,
+    EnrollmentActor, EnrollmentLink, EnrollmentSecret, RedeemRequest,
 };
+use bookclerk_library::LibraryError;
 use serde::Deserialize;
 use serde_json::json;
+
+use self::transport::{
+    classify_transport, refused_response, ConnInfo, ListenerKind, LocalAddr, TransportConfig,
+    TransportDecision,
+};
 
 use crate::api::AppState;
 use crate::auth::UserCaller;
@@ -130,6 +145,131 @@ pub async fn delete_node_invite(
     Ok(Json(json!({ "link": link_json(&link) })))
 }
 
+/// Largest enroll request body.
+const MAX_ENROLL_BODY_BYTES: usize = 16 * 1024;
+
+/// `POST /api/node/v1/enroll` body. Keys are base64url without padding.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnrollBody {
+    /// Link id from the token.
+    link_id: String,
+    /// Link secret from the token.
+    secret: String,
+    /// Ed25519 public signing key.
+    sign_pk: String,
+    /// X25519 public box key.
+    box_pk: String,
+    /// Host's Bookclerk version.
+    #[serde(default)]
+    software_version: String,
+}
+
+/// JSON error answer for the enroll endpoint.
+fn enroll_error(status: StatusCode, error: &str) -> Response {
+    (status, Json(json!({ "error": error }))).into_response()
+}
+
+/// Decodes a base64url public key.
+fn decode_key(raw: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw.trim())
+        .ok()
+}
+
+/// `POST /api/node/v1/enroll`: redeem an enrollment link. Answers
+/// `{cluster_id, node_id}`; 403 `transport_insecure` when the connection
+/// fails the transport policy, 403 `enrollment_refused` for any link that
+/// does not redeem.
+pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let (mut parts, body) = request.into_parts();
+    // The extractor (not a bare extension read) so a missing peer stays
+    // `None` and tests' `MockConnectInfo` is honored.
+    let peer = <ConnectInfo<SocketAddr> as axum::extract::FromRequestParts<Arc<AppState>>>::from_request_parts(&mut parts, &state)
+        .await
+        .ok()
+        .map(|ConnectInfo(addr)| addr);
+    let headers = std::mem::take(&mut parts.headers);
+    let conn = ConnInfo {
+        peer,
+        local: parts
+            .extensions
+            .get::<LocalAddr>()
+            .map(|LocalAddr(addr)| *addr),
+        listener: parts
+            .extensions
+            .get::<ListenerKind>()
+            .copied()
+            .unwrap_or(ListenerKind::Plain),
+    };
+    let decision = {
+        let cfg = state.config.read().await;
+        classify_transport(&conn, &headers, &TransportConfig::from_config(&cfg))
+    };
+    if let TransportDecision::Refused(reason) = decision {
+        tracing::warn!(
+            peer = ?conn.peer,
+            reason = reason.as_str(),
+            "node enroll refused: insecure transport"
+        );
+        return refused_response(reason);
+    }
+    let json_body = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+        });
+    if !json_body {
+        return enroll_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "expected application/json",
+        );
+    }
+    // Enroll bodies are small; refuse anything larger without buffering it.
+    let Ok(body) = axum::body::to_bytes(body, MAX_ENROLL_BODY_BYTES).await else {
+        return enroll_error(StatusCode::PAYLOAD_TOO_LARGE, "enroll request too large");
+    };
+    let Ok(body) = serde_json::from_slice::<EnrollBody>(&body) else {
+        return enroll_error(StatusCode::BAD_REQUEST, "invalid enroll request");
+    };
+    let (Some(sign_public_key), Some(box_public_key)) =
+        (decode_key(&body.sign_pk), decode_key(&body.box_pk))
+    else {
+        return enroll_error(
+            StatusCode::BAD_REQUEST,
+            "sign_pk and box_pk must be base64url",
+        );
+    };
+    let request = RedeemRequest {
+        link_id: body.link_id.trim().to_string(),
+        secret: EnrollmentSecret::from_text(body.secret.trim().to_string()),
+        sign_public_key,
+        box_public_key,
+        software_version: body.software_version,
+    };
+    let library = state.library_snapshot().await;
+    match redeem_enrollment_link(&library, &request).await {
+        Ok(enrolled) => Json(json!({
+            "cluster_id": enrolled.cluster_id,
+            "node_id": enrolled.node_id,
+        }))
+        .into_response(),
+        Err(LibraryError::Forbidden(_)) => {
+            enroll_error(StatusCode::FORBIDDEN, "enrollment_refused")
+        }
+        Err(LibraryError::Invalid(detail)) => enroll_error(StatusCode::BAD_REQUEST, &detail),
+        Err(err) => {
+            tracing::warn!(error = %err, "node enroll failed");
+            enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -144,6 +284,96 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::auth::UserCaller;
+
+    /// The enroll route as the daemon mounts it, seen from `peer` on a
+    /// listener bound to `local`.
+    fn enroll_route(state: &Arc<crate::api::AppState>, peer: &str, local: &str) -> axum::Router {
+        let peer: std::net::SocketAddr = peer.parse().unwrap();
+        let local: std::net::SocketAddr = local.parse().unwrap();
+        axum::Router::new()
+            .route(
+                "/api/node/v1/enroll",
+                axum::routing::post(super::post_enroll),
+            )
+            .layer(axum::Extension(super::transport::LocalAddr(local)))
+            .layer(axum::extract::connect_info::MockConnectInfo(peer))
+            .with_state(Arc::clone(state))
+    }
+
+    fn key(byte: u8) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([byte; 32])
+    }
+
+    #[tokio::test]
+    async fn enroll_redeems_over_loopback_and_refuses_plain_lan() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = test_state(&files).await;
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let minted = bookclerk_library::control_plane::mint_enrollment_link(
+            &store,
+            &bookclerk_library::control_plane::EnrollmentActor::User { user_id: member.id },
+            member.id,
+            "",
+            None,
+        )
+        .await
+        .unwrap();
+        let body = json!({
+            "link_id": minted.link.link_id,
+            "secret": minted.secret.expose(),
+            "sign_pk": key(4),
+            "box_pk": key(5),
+            "software_version": "1.0.0",
+        });
+
+        // A LAN peer over plain HTTP is refused before the link is read.
+        let lan = enroll_route(&state, "192.168.1.20:5000", "0.0.0.0:8787");
+        let (status, refused) = send(&lan, "POST", "/api/node/v1/enroll", body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+        assert_eq!(refused["error"], "transport_insecure");
+        assert_eq!(refused["reason"], "plain_http");
+        // Spoofed forwarding headers from that peer change nothing.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/node/v1/enroll")
+            .header("content-type", "application/json")
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-for", "127.0.0.1")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = lan.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let local = enroll_route(&state, "127.0.0.1:5000", "127.0.0.1:8787");
+        let (status, enrolled) = send(&local, "POST", "/api/node/v1/enroll", body.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{enrolled}");
+        let node_id = enrolled["node_id"].as_str().unwrap();
+        let node = bookclerk_library::control_plane::load_node(&store, node_id)
+            .await
+            .unwrap();
+        assert_eq!(node.kind, bookclerk_library::control_plane::NodeKind::Host);
+        assert_eq!(node.owner_user_id, Some(member.id));
+
+        // Single use: different keys are refused with one generic answer.
+        let mut reuse = body.clone();
+        reuse["sign_pk"] = json!(key(9));
+        let (status, again) = send(&local, "POST", "/api/node/v1/enroll", reuse).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{again}");
+        assert_eq!(again["error"], "enrollment_refused");
+        let (status, _) = send(
+            &local,
+            "POST",
+            "/api/node/v1/enroll",
+            json!({ "link_id": "x", "secret": "y", "sign_pk": "z", "box_pk": "w", "extra": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
 
     async fn send(app: &axum::Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
         let request = Request::builder()

@@ -1028,6 +1028,9 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .route("/api/auth/tray-handoff", get(auth::tray_handoff))
         .route("/api/auth/me", get(auth::me))
+        // Host-node enrollment: the link secret is the credential, and the
+        // transport policy runs first. Never behind the cookie/auth layers.
+        .route("/api/node/v1/enroll", post(crate::node_api::post_enroll))
         .route("/api/auth/elevate", post(auth::elevate))
         .route("/api/auth/bootstrap", post(auth::bootstrap))
         .route(

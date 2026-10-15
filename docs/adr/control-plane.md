@@ -739,15 +739,16 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
 - **Host nodes** are independent Bookclerk installs with their own database
   and their own operator, who enroll in an owner cluster to contribute
   work. They reach an owner node over HTTPS and never hold the cluster's
-  database credentials or DEK. Enrollment, the node API, and the transport
-  are not built yet (see *Remaining work*); `nodes.kind` already records
-  `host` for them.
+  database credentials or DEK. Enrollment and the transport policy are
+  built (see *Host-node enrollment and transport* below); the node API
+  socket and the host client are not (see *Remaining work*). A redeemed
+  enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
 names the user who owns it, assigned by an operator (`bookclerk nodes
-owner`, `PUT /api/config/nodes/{id}/owner`). Only an active Host,
-Administrator, or Owner can be assigned; a Member or a disabled user could
-not use the node routes, so the write is refused. That user may change the
+owner`, `PUT /api/config/nodes/{id}/owner`), or the user enrolls a host
+node of their own. Any active user can own a node (decided 2026-10-15,
+below); a disabled user cannot, so that write is refused. That user may change the
 node's `node.runtime` document (budgets, drain switch, display name)
 without operator authority. The library enforces it: a write carries
 `ConfigActor::NodeOwner`, which only `verify_node_owner` builds after it
@@ -756,8 +757,9 @@ reads `nodes.owner_user_id`, and which covers exactly that node's
 every other document stay operator writes. An unknown node and a node owned
 by someone else return the same 403, so a non-owner cannot probe node ids.
 
-A new **Host** user role is a Member who owns nodes. Hosts, and
-Administrators or Owners who own nodes, reach `GET /api/config/nodes`,
+A **Host** user role marks a Member who runs nodes; owning a node does not
+require it. Hosts, Administrators, Owners, and any other user who owns at
+least one node reach `GET /api/config/nodes`,
 `PUT /api/config/nodes/{id}/runtime`, and `GET /api/cluster/status` through
 `require_operator_or_node_owner_auth`, which scopes them to their own
 nodes. The cluster summary in `/api/cluster/status` (node counts, committed
@@ -786,6 +788,70 @@ Decided, not yet built:
 - Host nodes and the SPA use WebSockets rather than polling.
 - Owner nodes serve the node API over Let's Encrypt TLS, behind a detected
   TLS-terminating proxy, or only within loopback and private address space.
+  (Amended 2026-10-15: plain HTTP is allowed on loopback only; a private
+  network uses a pinned self-signed certificate.)
+
+### Host-node enrollment and transport
+
+Decided 2026-10-15 with the owner, for the H-4 design:
+
+1. **Transport.** TLS everywhere except loopback. A connection to the node
+   API is allowed as `acme` (the built-in rustls listener with a Let's
+   Encrypt certificate), `proxy` (plain HTTP from a peer in
+   `daemon.trusted_proxies` that sends exactly one `X-Forwarded-Proto:
+   https`, with an https `integrations.public_origin`), `self_signed` (the
+   built-in listener with a self-signed certificate whose SPKI pin travels
+   in the enrollment link), or `loopback` (both ends loopback, no
+   forwarding headers). Everything else, a private RFC 1918 peer over plain
+   HTTP included, gets 403 `transport_insecure`.
+2. **Scan-all.** Only Administrators and Owners trigger it. The owner's job
+   planner splits it into one job per account and distributes those under
+   the per-item trust rule; anyone else's scan covers only their accounts.
+3. **Token write-back.** A host may write back a refreshed store token only
+   for a secret ref handed out under a live fence.
+4. **Uploads.** Streamed through the owner to each output destination,
+   never staged on an owner node's disk.
+5. **Enrollment.** The operator or an Owner turns host enrollment on or off
+   for the cluster (`core.host_enrollment`, on by default). While it is on,
+   any active user may mint a link for themselves and enroll their own
+   host; the operator or an Owner may mint for any active user. The node's
+   owner is that user. Owning a node no longer requires the Host role;
+   trust still follows the role, so a Member's or Host's node only receives
+   work whose secrets belong to them.
+
+Built in the first H-4 slice:
+
+- Owner-database tables `node_enrollment_links` (only `hash_token(secret)`
+  is stored) and `node_credentials` (Ed25519 sign key, X25519 box key,
+  `revoked_at`), and the host-database table `cluster_links` (no client
+  writes it yet). All are canonical SQL-v1 with SeaORM entities.
+- `core.host_enrollment` (`{ "enabled": bool }`), a cluster document that
+  defaults to enabled while absent. Only the operator or a verified Owner
+  (`ConfigActor::ClusterOwner`, built by `verify_cluster_owner` from the
+  stored role) may write it; that actor writes no other document.
+- Mint, list, and revoke links (`bookclerk nodes invite --user <id|login>
+  [--ttl 24h]`, `bookclerk nodes invites list|revoke`, and
+  `POST|GET /api/config/node-invites`, `DELETE …/{id}` for any signed-in
+  user). A link is `https://<public_origin>/enroll#bcn1.<link_id>.<secret>`;
+  the 32-byte secret sits in the fragment, is printed once, and is never
+  logged. Links live 24 h by default, 5 minutes to 7 days.
+- Redeem is one canonical batch: the claim `UPDATE` re-checks the hash,
+  expiry, single use, revocation, the link user's status, and that
+  `core.host_enrollment` is still the revision read as enabled; the same
+  batch inserts the `nodes` row (`kind = host`, owned by the link's user),
+  `node_credentials`, and a receipt. A retry with the same secret and keys
+  answers from the receipt; anything else is one generic 403. Two
+  concurrent redeems create one node on SQLite and PostgreSQL.
+- `bookclerk nodes revoke <node>` (or the node's own owner) sets
+  `node_credentials.revoked_at` and publishes `node.revoked` to every node
+  queue; until the node socket exists, a daemon only logs it.
+- `classify_transport` in `bookclerkd` (`node_api/transport.rs`), a pure
+  function of the connection, headers, and the bootstrap `[daemon.node_api]`
+  table (`mode`, `acme_contact`, `tls_listen`). `POST /api/node/v1/enroll`
+  runs it first and sits outside the cookie and auth layers. The ACME and
+  self-signed listeners are later steps, so today those modes admit only
+  loopback connections; an incomplete `[daemon.node_api]` refuses every
+  connection.
 
 ## Consequences
 
@@ -806,6 +872,7 @@ Decided, not yet built:
   `domain_events` gains `queue_name`, `content_type`, and `deliver_after`
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
   `nodes` gains `target`, `labels_json`, `kind`, and `owner_user_id`.
+  H-4 adds `node_enrollment_links`, `node_credentials`, and `cluster_links`.
   Checksum of the
   unreleased pack changes. Existing development databases fail closed until
   recreated (`cargo reset --yes` or a new database). That matches the
@@ -859,10 +926,13 @@ Not in this phase, and not claimed as production HA:
   on storage every placed host can read through its `file://` path.
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
-- Host nodes: enrollment by an owner-generated link, the node API over
-  WebSockets with its transport rules, the host-node client, per-work-item
-  trust, and node-local outputs (see *Node kinds, ownership, and the Host
-  role*).
+- Host nodes: the ACME and self-signed TLS listeners (and the SPKI pin in
+  links), the node API over WebSockets, `bookclerk clusters join` and the
+  rest of the host-node client, per-work-item trust, host consent, the
+  upload path, and node-local outputs (see *Node kinds, ownership, and the
+  Host role* and *Host-node enrollment and transport*). Enrollment links,
+  redeem, revocation, and the transport policy are built. Settings has no
+  enrollment switch or invite screen yet (CLI and HTTP only).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).
 - Schema pinning compares package versions, not schema contents: a newer

@@ -26,7 +26,7 @@ Classic Libation setting names are accepted as aliases where documented in
 | `[media]` | Codec worker pool: concurrency and confinement (see [media.md](media.md)) |
 | `[plugins]` | How external plugin guests are jailed (see [plugins.md](plugins.md)) |
 | `[output]` | Format, Widevine, naming, sidecars, multi-destination policy (shared; per-destination settings are plugin settings) |
-| `[daemon]` | Listen address, JSON logs |
+| `[daemon]` | Listen address, JSON logs, trusted proxies, `[daemon.node_api]` transport |
 | `[integrations]` | Portal: `public_origin`, claim-ticket and portal session TTLs |
 | `[discovery]` | Recommendations, embeddings, Open Library, listening sync |
 | `[diagnostics]` | Opt-in report sharing |
@@ -183,6 +183,62 @@ database settings. Omit
 `node-identity.json` when the process should be a new host; copying that file
 reuses the host id. A file bound to a different cluster id fails without
 rewriting either side.
+
+## Host nodes
+
+A host node is a separate Bookclerk install that enrolls into this cluster
+with a single-use link (see [ADR: Control plane](adr/control-plane.md#host-node-enrollment-and-transport)).
+
+Enrollment is a cluster document, `core.host_enrollment`, on by default.
+Only the operator or an Owner turns it off:
+
+```bash
+bookclerk config get host_enrollment.enabled
+bookclerk config set host_enrollment.enabled false
+```
+
+While it is on, any active user may mint a link for themselves (Settings
+later; `POST /api/config/node-invites` today), and the operator or an Owner
+may mint for any active user:
+
+```bash
+bookclerk nodes invite --user riley --ttl 24h   # prints the link once
+bookclerk nodes invites list
+bookclerk nodes invites revoke <link_id>
+bookclerk nodes revoke <node_id>                # revoke an enrolled host
+```
+
+The link is `<public_origin>/enroll#bcn1.<link_id>.<secret>`. The secret is in
+the URL fragment, so proxies and access logs never see it; the database keeps
+only its hash. Set `integrations.public_origin` so the link points somewhere a
+host can reach. Links live 24 hours by default (5 minutes to 7 days) and
+redeem once.
+
+`[daemon.node_api]` is bootstrap configuration, like `daemon.listen`. It
+decides which connections may reach the node API (`POST /api/node/v1/enroll`
+today):
+
+```toml
+[daemon]
+trusted_proxies = ["10.0.0.2"]   # peers allowed to set X-Forwarded-*
+
+[daemon.node_api]
+mode = "loopback"                # loopback | proxy | acme | self_signed
+# acme_contact = "mailto:ops@example.com"  # required for acme
+# tls_listen = "0.0.0.0:8443"              # required for acme and self_signed
+```
+
+| Mode | Allowed |
+| --- | --- |
+| `loopback` (default) | Only connections where both ends are loopback and no forwarding header is present. Loopback is allowed in every mode. |
+| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. |
+| `acme` | The built-in TLS listener with a Let's Encrypt certificate. The listener is not built yet, so only loopback connections are allowed today. |
+| `self_signed` | The built-in TLS listener with a self-signed certificate pinned in the link. Not built yet; only loopback connections are allowed today. |
+
+Everything else gets `403 {"error": "transport_insecure"}`: plain HTTP from a
+LAN address is refused, and forwarding headers from a peer that is not a
+trusted proxy are ignored. A mode missing its required settings refuses
+every connection.
 
 ## Plugin instances
 

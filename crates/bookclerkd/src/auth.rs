@@ -78,7 +78,7 @@ fn resolve_client_ip_key(
 }
 
 /// Whether the peer IP matches a trusted-proxy entry (exact address or CIDR).
-fn peer_is_trusted(peer: IpAddr, trusted_proxies: &[String]) -> bool {
+pub(crate) fn peer_is_trusted(peer: IpAddr, trusted_proxies: &[String]) -> bool {
     trusted_proxies.iter().any(|entry| {
         let entry = entry.trim();
         if entry.is_empty() {
