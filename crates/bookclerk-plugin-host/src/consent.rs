@@ -3839,6 +3839,9 @@ domains = ["api.example.com"]
 
     #[test]
     fn platform_grant_auto_persists_for_sqlite() {
+        // Upserts a grant for the real sqlite PluginKey, which fences live
+        // sqlite guest sessions in other tests.
+        let _live = crate::authority::test_live_lock();
         let dir = tempfile::tempdir().unwrap();
         let plugin = stamped_sqlite(dir.path());
         assert_eq!(
@@ -3889,6 +3892,9 @@ mode = "deny"
 
     #[test]
     fn platform_grant_replaces_stale_grant_when_manifest_narrows() {
+        // Upserts a grant for the real sqlite PluginKey, which fences live
+        // sqlite guest sessions in other tests.
+        let _live = crate::authority::test_live_lock();
         let dir = tempfile::tempdir().unwrap();
         let plugin = discovered(
             &dir.path().join("install"),

@@ -1649,6 +1649,9 @@ entrypoints = ["{entrypoint}"]
 
     #[test]
     fn planning_sqlite_precreates_library_sidecars() {
+        // Planning persists a platform grant for the real sqlite PluginKey,
+        // which fences live sqlite guest sessions in other tests.
+        let _live = crate::authority::test_live_lock();
         let files = tempfile::tempdir().expect("tempdir");
         let mut config = config_at(files.path());
         config.plugins.isolation = Isolation::Off;

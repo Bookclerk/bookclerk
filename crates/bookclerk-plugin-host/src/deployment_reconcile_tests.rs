@@ -710,7 +710,7 @@ async fn a_version_installed_on_one_node_is_materialized_and_spawned_on_another(
 
 #[tokio::test]
 async fn absent_retires_running_guest_and_present_brings_it_back() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
@@ -810,7 +810,7 @@ async fn absent_retires_running_guest_and_present_brings_it_back() {
 
 #[tokio::test]
 async fn deleted_deployment_prunes_the_tracked_guest() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
@@ -855,7 +855,7 @@ async fn deleted_deployment_prunes_the_tracked_guest() {
 
 #[tokio::test]
 async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     reconcile_local_deployments(
@@ -940,7 +940,7 @@ async fn idle_healthy_tick_does_not_hash_and_two_installs_share_discovery() {
 
 #[tokio::test]
 async fn ledger_hit_skips_install_and_still_reaches_healthy() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let plugins = world.files.join("plugins");
     let opts = InstallOptions {
@@ -976,7 +976,7 @@ async fn ledger_hit_skips_install_and_still_reaches_healthy() {
 
 #[tokio::test]
 async fn newer_config_revision_respawns_with_the_new_value() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     let probe = Probe::new(world.files.clone(), false);
     let packages = packages(&world);
@@ -1045,7 +1045,7 @@ async fn newer_config_revision_respawns_with_the_new_value() {
 
 #[tokio::test]
 async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(true).await;
     let secret = "sealed-token-value";
     seal_instance_secret(
@@ -1154,7 +1154,7 @@ async fn sealed_secret_reaches_spawn_and_a_dangling_ref_does_not() {
 
 #[tokio::test]
 async fn prepare_open_for_instance_resolves_each_document() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     let store = file_store(&files.join("library.db")).await;
@@ -1342,7 +1342,7 @@ async fn save_manifest_grant(files: &Path, plugin: &DiscoveredPlugin) {
 
 #[tokio::test]
 async fn live_two_instances_same_key_route_to_the_default() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     stage_graphicaudio_tree(files);
@@ -1488,7 +1488,7 @@ async fn live_two_instances_same_key_route_to_the_default() {
 
 #[tokio::test]
 async fn terminating_a_healthy_guest_is_replaced_on_the_next_tick() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     stage_graphicaudio_tree(files);
@@ -1672,7 +1672,7 @@ fn duplicate_authorized_packages_reject_both() {
 #[tokio::test]
 async fn a_host_local_tree_older_than_the_pinned_schema_is_retired_and_not_spawned() {
     use bookclerk_library::control_plane::{pin_plugin_schema, SchemaPin, SchemaPinChange};
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let world = open_world(false).await;
     preinstall_host_local(&world);
     let probe = Probe::new(world.files.clone(), false);
