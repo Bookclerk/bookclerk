@@ -18,7 +18,7 @@ use bookclerk_library::{
 };
 use chrono::{TimeZone, Utc};
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::AppState;
@@ -32,8 +32,6 @@ const CLAIM_REPLAY_BUDGET: Duration = Duration::from_secs(2);
 const CLAIM_REPLAY_DELAY: Duration = Duration::from_millis(200);
 /// Lease duration granted to a delivery worker on claim.
 const LEASE_SECS: u64 = 60;
-/// Coarse independent cadence for event retention (not the dispatcher tick).
-const EVENT_PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
 /// Force a bounded late-join reconcile at least every ~60s catalog TTL.
 const RECONCILE_BACKSTOP_TICKS: u32 = 12;
 /// Page size for `wake_pending` replay after pending dispatch.
@@ -43,24 +41,9 @@ const WAKE_PENDING_PAGE: u64 = 32;
 pub fn start_event_runtime(state: Arc<AppState>) {
     tokio::spawn(async move {
         upsert_event_subscriber_catalog(&state).await;
-        let (retention_days, dead_letter_retention_days, workers) = {
-            let cfg = state.config.read().await;
-            (
-                cfg.events.retention_days,
-                cfg.events.dead_letter_retention_days,
-                cfg.events.concurrency.max(1),
-            )
-        };
-        let library = state.library_snapshot().await;
-        if let Err(err) = library
-            .prune_event_deliveries(retention_days, dead_letter_retention_days)
-            .await
-        {
-            warn!(error = %err, "event retention prune failed");
-        }
+        let workers = state.config.read().await.events.concurrency.max(1);
         info!(event_workers = workers, "starting durable event dispatcher");
         spawn_dispatcher(state.clone());
-        spawn_event_pruner(state.clone());
         for _ in 0..workers {
             spawn_delivery_worker(state.clone());
         }
@@ -118,39 +101,6 @@ fn spawn_dispatcher(state: Arc<AppState>) {
                 () = state.job_notify.notified() => {}
                 _ = idle.tick() => {}
             }
-        }
-    });
-}
-
-/// Prune terminal deliveries and expired catalog rows on a coarse cadence.
-fn spawn_event_pruner(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let mut idle = tokio::time::interval(EVENT_PRUNE_INTERVAL);
-        idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        idle.tick().await;
-        loop {
-            let (retention_days, dead_letter_retention_days) = {
-                let cfg = state.config.read().await;
-                (
-                    cfg.events.retention_days,
-                    cfg.events.dead_letter_retention_days,
-                )
-            };
-            let library = state.library_snapshot().await;
-            if let Err(err) = library
-                .prune_event_deliveries(retention_days, dead_letter_retention_days)
-                .await
-            {
-                warn!(error = %err, "event retention prune failed");
-            }
-            // Expired `[[kv_namespaces]]` rows read as absent already; this
-            // only reclaims their storage.
-            match library.kv_prune_expired().await {
-                Ok(0) => {}
-                Ok(pruned) => debug!(pruned, "pruned expired plugin kv rows"),
-                Err(err) => warn!(error = %err, "plugin kv expiry prune failed"),
-            }
-            idle.tick().await;
         }
     });
 }

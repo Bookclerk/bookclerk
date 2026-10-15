@@ -12,6 +12,7 @@ mod documents;
 mod identity;
 mod instance_config;
 mod instances;
+mod leases;
 mod node_queue;
 mod node_status;
 mod ownership;
@@ -56,6 +57,12 @@ pub use instances::{
     ensure_plugin_instance, find_plugin_instance_by_key, list_all_plugin_instances,
     list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
 };
+pub use leases::{
+    acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
+    release_lease_on, renew_lease, renew_lease_on, ClusterLease, LeaseFence, SingletonDuty,
+    EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, MIGRATION_LEASE,
+    SESSION_EXPIRY_LEASE,
+};
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
     publish_to_all_nodes, NodeMessage, NODE_CONSUMER_PREFIX,
@@ -69,13 +76,13 @@ pub use node_status::{
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use placement::undeploy_instance;
 pub use placement::{
-    acquire_lease, delete_plugin_placement, effective_node_labels, ensure_hand_managed,
-    labels_satisfy, list_plugin_placements, live_node_ids, load_lease, load_plugin_placement,
-    plan_placement, put_plugin_placement, release_lease, schedule_placements, set_node_labels,
-    validate_constraint, validate_label, validate_node_label, ClusterLease, NodeCandidate,
-    PlacementPlan, PlacementSpec, PlacementWrite, PluginPlacement, Replicas, ScheduleReport,
-    MAX_NODE_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE,
-    SCHEDULER_LEASE_TTL, TARGET_LABEL,
+    delete_plugin_placement, effective_node_labels, ensure_hand_managed, labels_satisfy,
+    list_plugin_placements, live_node_ids, load_plugin_placement, plan_placement,
+    put_plugin_placement, schedule_placements, set_node_labels, validate_constraint,
+    validate_label, validate_node_label, NodeCandidate, PlacementPlan, PlacementSpec,
+    PlacementWrite, PluginPlacement, Replicas, ScheduleReport, MAX_NODE_LABELS,
+    MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
+    TARGET_LABEL,
 };
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{
@@ -694,6 +701,8 @@ fn invalid_events(detail: &str) -> LibraryError {
 
 #[cfg(test)]
 mod instance_tests;
+#[cfg(test)]
+mod leases_tests;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]
