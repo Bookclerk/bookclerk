@@ -3,7 +3,6 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use bookclerk_config::EventsConfig;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::identity::{register_and_heartbeat, NodeObservation};
@@ -123,7 +122,7 @@ async fn the_scheduler_places_moves_and_scales_replicas_across_two_connections()
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -357,7 +356,7 @@ async fn a_version_without_an_artifact_for_a_node_target_skips_that_node() {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -479,7 +478,7 @@ async fn placement_follows_heartbeat_headroom_availability_and_drains() {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -638,7 +637,7 @@ async fn deliveries_route_to_the_live_node_with_the_most_room() {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -713,7 +712,7 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         dir.path(),
         &dir.path().join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();
@@ -842,7 +841,7 @@ async fn two_live_nodes(store: &LibraryStore, dir: &std::path::Path) -> String {
         dir,
         &dir.join("cache"),
         None,
-        &EventsConfig::default(),
+        &bookclerk_config::Config::default(),
     )
     .await
     .unwrap();

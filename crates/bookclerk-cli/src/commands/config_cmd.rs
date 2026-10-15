@@ -6,8 +6,9 @@ use bookclerk_config::{
     NamingProfile,
 };
 use bookclerk_library::control_plane::{
-    bootstrap_control_plane, load_events, replace_events, ConfigActor, EventsReplace,
-    EventsSettingsV1,
+    bootstrap_control_plane, is_output_setting_key, load_events, load_output,
+    overlay_core_documents, replace_events, replace_output, ConfigActor, EventsReplace,
+    EventsSettingsV1, OutputReplace, OutputSettingsV1, OUTPUT_SETTING_KEYS,
 };
 use bookclerk_library::{
     inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
@@ -136,8 +137,15 @@ pub async fn run(
     match command {
         ConfigCommand::Get { key, bare } => {
             if bare {
+                // `output.*` reads the database document, like `config get`.
+                let output = load_output_for_show(config).await.ok();
                 for (classic, dotted) in classic_key_aliases() {
-                    if let Some(value) = lookup(config, dotted) {
+                    let value = if is_output_setting_key(dotted) {
+                        output.as_ref().and_then(|doc| doc.body.get(dotted))
+                    } else {
+                        lookup(config, dotted)
+                    };
+                    if let Some(value) = value {
                         println!("{classic}\t{value}");
                     }
                 }
@@ -150,6 +158,9 @@ pub async fn run(
                 .unwrap_or(key.as_str());
             if dotted.starts_with("events.") {
                 return get_events_setting(config, dotted, format).await;
+            }
+            if is_output_setting_key(dotted) {
+                return get_output_setting(config, dotted, format).await;
             }
             let value = lookup(config, dotted)
                 .ok_or_else(|| anyhow::anyhow!("unknown config key: {key}"))?;
@@ -165,6 +176,9 @@ pub async fn run(
                 .to_string();
             if dotted.starts_with("events.") {
                 return set_events_setting(config, &dotted, &value, format).await;
+            }
+            if is_output_setting_key(&dotted) {
+                return set_output_setting(config, &dotted, &value, format).await;
             }
             apply_setting_overrides(&mut cfg, &[(&dotted, value.as_str())]);
             let path = cfg.paths().config_file.clone();
@@ -191,59 +205,11 @@ pub async fn run(
             })
         }
         ConfigCommand::Show => {
-            println!("output.format = {:?}", config.output.format);
-            println!("output.widevine = {}", config.output.widevine);
-            println!("output.xhe_aac = {}", config.output.xhe_aac);
+            print_output_authority(config).await;
             println!(
-                "output.widevine_cdm = {}",
-                config
-                    .output
-                    .widevine_cdm
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "-".into())
+                "output.in_progress = {} (host-local, config.toml)",
+                config.download_cache_dir().display()
             );
-            println!(
-                "output.naming_profile = {}",
-                config.output.naming_profile.as_str()
-            );
-            let resolved = config.output.resolve_naming_templates();
-            println!(
-                "output.folder_template = {}{}",
-                config.output.folder_template.as_deref().unwrap_or("-"),
-                if config.output.folder_template.is_none() {
-                    format!(" (profile: {})", resolved.folder)
-                } else {
-                    String::new()
-                }
-            );
-            println!(
-                "output.file_template = {}{}",
-                config.output.file_template.as_deref().unwrap_or("-"),
-                if config.output.file_template.is_none() {
-                    format!(" (profile: {})", resolved.file)
-                } else {
-                    String::new()
-                }
-            );
-            println!(
-                "output.path_sanitization = {:?}",
-                config.output.path_sanitization
-            );
-            println!(
-                "output.max_filename_length = {}",
-                config.output.max_filename_length
-            );
-            println!("output.download_cover = {}", config.output.download_cover);
-            println!("output.download_pdf = {}", config.output.download_pdf);
-            println!("output.create_cue = {}", config.output.create_cue);
-            println!("output.fixup_metadata = {}", config.output.fixup_metadata);
-            println!(
-                "output.chapter_json = {:?}",
-                config.output.effective_chapter_json()
-            );
-            println!("output.cover_size = {}", config.output.cover_size);
-            println!("output.chapter_layout = {}", config.output.chapter_layout);
             println!("library.auto_acquire = {}", config.library.auto_acquire);
             println!(
                 "library.fix_storage_layout = {}",
@@ -414,7 +380,11 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
             file,
             ext,
         } => {
-            let store = crate::registry::open_library(config).await?;
+            // Naming comes from `core.output`, not the TOML seed.
+            let (store, session) = open_control_plane(config).await?;
+            let mut overlaid = config.clone();
+            overlay_core_documents(&mut overlaid, &session);
+            let config = &overlaid;
             let book = resolve_book_for_preview(&store, &asin, account.as_deref()).await?;
             let ctx = NamingContext {
                 asin: book.asin_or_isbn().to_string(),
@@ -631,7 +601,7 @@ async fn open_control_plane(
         &config.paths().files_dir,
         &scratch_dir,
         config.auth_password().as_deref(),
-        &config.events,
+        config,
     )
     .await?;
     Ok((store, session))
@@ -814,89 +784,138 @@ async fn load_events_for_show(
     Ok(load_events(&store).await?)
 }
 
+/// Loads `core.output` without importing a missing document.
+async fn load_output_for_show(
+    config: &Config,
+) -> anyhow::Result<bookclerk_library::control_plane::ConfigurationDocument<OutputSettingsV1>> {
+    let store = crate::registry::open_library(config).await?;
+    Ok(load_output(&store).await?)
+}
+
+/// Prints the shared `[output]` settings from `core.output`.
+async fn print_output_authority(config: &Config) {
+    match load_output_for_show(config).await {
+        Ok(doc) => {
+            println!("output.authority = database");
+            println!("output.revision = {}", doc.revision);
+            let resolved = bookclerk_config::ResolvedNamingTemplates::resolve(
+                doc.body.naming_profile,
+                doc.body.folder_template.as_deref(),
+                doc.body.file_template.as_deref(),
+                doc.body.chapter_file_template.as_deref(),
+            );
+            for key in OUTPUT_SETTING_KEYS {
+                let value = doc.body.get(key).unwrap_or_default();
+                let profile_default = match *key {
+                    "output.folder_template" => Some(&resolved.folder),
+                    "output.file_template" => Some(&resolved.file),
+                    "output.chapter_file_template" => Some(&resolved.chapter_file),
+                    _ => None,
+                };
+                match profile_default {
+                    Some(default) if value.is_empty() => {
+                        println!("{key} = - (profile: {default})");
+                    }
+                    _ => println!("{key} = {value}"),
+                }
+            }
+        }
+        Err(err) => {
+            println!("output.authority = transitional");
+            let detail = safe_events_load_error(&err);
+            println!(
+                "output.format = {:?} (config.toml / environment; {detail})",
+                config.output.format
+            );
+        }
+    }
+}
+
+/// Prints one `output.*` value from the database document.
+async fn get_output_setting(
+    config: &Config,
+    dotted: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let (_store, session) = open_control_plane(config).await?;
+    let value = session
+        .output
+        .body
+        .get(dotted)
+        .ok_or_else(|| anyhow::anyhow!("{dotted} is write-only; read its canonical key"))?;
+    let payload = serde_json::json!({
+        "key": dotted,
+        "value": value,
+        "authority": "database",
+        "revision": session.output.revision,
+        "namespace": session.output.namespace,
+    });
+    emit(format, &payload, || {
+        println!("{value}");
+        println!("authority=database revision={}", session.output.revision);
+    })
+}
+
+/// Compare-and-swaps one `output.*` field in the database.
+async fn set_output_setting(
+    config: &Config,
+    dotted: &str,
+    value: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let (store, session) = open_control_plane(config).await?;
+    let mut body = session.output.body.clone();
+    body.set(dotted, value)?;
+    let shown = body.get(dotted).unwrap_or_else(|| value.trim().to_string());
+    if body == session.output.body {
+        let payload = serde_json::json!({
+            "key": dotted,
+            "value": shown,
+            "authority": "database",
+            "revision": session.output.revision,
+        });
+        return emit(format, &payload, || {
+            println!("output unchanged");
+            println!("authority=database revision={}", session.output.revision);
+        });
+    }
+    let outcome = replace_output(
+        &store,
+        &ConfigActor::Operator { id: "cli".into() },
+        session.output.revision,
+        &body,
+        &cli_operation_id(),
+    )
+    .await?;
+    let revision = match outcome {
+        OutputReplace::Applied(doc) => doc.revision,
+        OutputReplace::Replayed { revision } => revision,
+        OutputReplace::Conflict { current_revision } => anyhow::bail!(
+            "revision conflict: output was not changed; current revision is {current_revision}"
+        ),
+    };
+    let payload = serde_json::json!({
+        "key": dotted,
+        "value": shown,
+        "authority": "database",
+        "revision": revision,
+    });
+    emit(format, &payload, || {
+        println!("set {dotted}={shown}");
+        println!("authority=database revision={revision}");
+    })
+}
+
 /// Formats one dotted config key as a string for `config get`.
 fn lookup(config: &Config, key: &str) -> Option<String> {
     let paths = config.paths.as_ref();
     Some(match key {
-        "output.format" => format!("{:?}", config.output.format).to_ascii_lowercase(),
-        "output.widevine" => config.output.widevine.to_string(),
-        "output.xhe_aac" => config.output.xhe_aac.to_string(),
-        "output.widevine_cdm" => config
-            .output
-            .widevine_cdm
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        "output.naming_profile" => config.output.naming_profile.as_str().to_string(),
-        "output.folder_template" => config.output.folder_template.clone().unwrap_or_default(),
-        "output.file_template" => config.output.file_template.clone().unwrap_or_default(),
-        "output.path_sanitization" => {
-            format!("{:?}", config.output.path_sanitization).to_ascii_lowercase()
-        }
-        "output.max_filename_length" => config.output.max_filename_length.to_string(),
-        "output.download_cover" => config.output.download_cover.to_string(),
-        "output.download_pdf" => config.output.download_pdf.to_string(),
-        "output.create_cue" => config.output.create_cue.to_string(),
-        "output.fixup_metadata" => config.output.fixup_metadata.to_string(),
-        "output.chapter_json" => {
-            format!("{:?}", config.output.effective_chapter_json()).to_ascii_lowercase()
-        }
-        "output.save_chapter_json" => config
-            .output
-            .effective_chapter_json()
-            .wants_any()
-            .to_string(),
-        "output.save_metadata_json" => config.output.save_metadata_json.to_string(),
-        "output.cover_size" => config.output.cover_size.clone(),
-        "output.chapter_layout" => config.output.chapter_layout.clone(),
-        "output.overwrite_existing" => config.output.overwrite_existing.to_string(),
         "output.in_progress" => config
             .output
             .in_progress
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
-        "output.bad_book_action" => format!("{:?}", config.output.bad_book_action),
-        "output.split_mp3_max_mb" => config.output.split_mp3_max_mb.to_string(),
-        "output.chapter_file_template" => config
-            .output
-            .chapter_file_template
-            .clone()
-            .unwrap_or_default(),
-        "output.chapter_title_template" => config
-            .output
-            .chapter_title_template
-            .clone()
-            .unwrap_or_default(),
-        "output.minimum_file_duration_minutes" => {
-            config.output.minimum_file_duration_minutes.to_string()
-        }
-        "output.combine_nested_chapter_titles" => {
-            config.output.combine_nested_chapter_titles.to_string()
-        }
-        "output.merge_opening_and_end_credits" => {
-            config.output.merge_opening_and_end_credits.to_string()
-        }
-        "output.strip_unabridged" => config.output.strip_unabridged.to_string(),
-        "output.strip_audible_brand_audio" => config.output.strip_audible_brand_audio.to_string(),
-        "output.download_clips_bookmarks" => config.output.download_clips_bookmarks.to_string(),
-        "output.retain_aax_file" => config.output.retain_aax_file.to_string(),
-        "output.download_speed_limit_kbps" => config.output.download_speed_limit_kbps.to_string(),
-        "output.lame.target" => config.output.lame.target.clone(),
-        "output.lame.vbr_quality" => config.output.lame.vbr_quality.to_string(),
-        "output.lame.bitrate_kbps" => config.output.lame.bitrate_kbps.to_string(),
-        "output.lame.mode" => config.output.lame.mode.clone(),
-        "output.lame.downsample_mono" => config.output.lame.downsample_mono.to_string(),
-        "output.lame.constant_bitrate" => config.output.lame.constant_bitrate.to_string(),
-        "output.max_sample_rate" => config
-            .output
-            .max_sample_rate
-            .map(|n| n.to_string())
-            .unwrap_or_default(),
-        "output.creation_time" => format!("{:?}", config.output.creation_time).to_ascii_lowercase(),
-        "output.last_write_time" => {
-            format!("{:?}", config.output.last_write_time).to_ascii_lowercase()
-        }
         "library.auto_acquire" => config.library.auto_acquire.to_string(),
         "library.scan_interval_minutes" => config.library.scan_interval_minutes.to_string(),
         "library.import_episodes" => config.library.import_episodes.to_string(),
