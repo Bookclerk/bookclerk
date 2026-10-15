@@ -91,6 +91,95 @@ impl LibraryStore {
         }
     }
 
+    /// Ready pending jobs of `resource_class`, best first, for a routed claim.
+    ///
+    /// Each returned row is readable and not cancel-requested. On the way,
+    /// pending rows with an unknown class or an unreadable command become
+    /// `invalid_job`, and cancel-requested pending rows become `cancelled`,
+    /// exactly as [`Self::claim_next_job`] does. Every write is a CAS on
+    /// `state = 'pending'`, so a concurrent claimer is never overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or write fails.
+    pub async fn list_job_claim_candidates(
+        &self,
+        resource_class: JobResourceClass,
+        limit: u64,
+    ) -> Result<Vec<JobRecord>> {
+        let now_s = Utc::now().to_rfc3339();
+        sanitize_unreadable_pending_on(&self.db, &now_s).await?;
+        let rows = jobs::Entity::find()
+            .filter(jobs::Column::ResourceClass.eq(resource_class.as_str()))
+            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+            .filter(jobs::Column::RunAfter.lte(now_s.clone()))
+            .order_by_desc(jobs::Column::Priority)
+            .order_by_asc(jobs::Column::CreatedAt)
+            .limit(limit.max(1))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for model in rows {
+            if model.cancel_requested != 0 {
+                self.mark_job_cancelled_cas(
+                    &model.id,
+                    None,
+                    "cancelled",
+                    "cancelled by operator",
+                    None,
+                )
+                .await?;
+                continue;
+            }
+            let id = model.id.clone();
+            match try_map_job(model) {
+                Ok(job) => out.push(job),
+                Err(reason) => mark_pending_job_invalid_on(&self.db, &id, &reason, &now_s).await?,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Claims the pending job `job_id` for `owner` with a single CAS.
+    ///
+    /// The update matches `state = 'pending'` and the lease generation read
+    /// just before it, so of several concurrent claimers on any number of
+    /// connections exactly one moves the row to `running` (and bumps the
+    /// generation that fences every later write). No transaction is needed:
+    /// a pending → running move does not change the admission count.
+    ///
+    /// # Returns
+    ///
+    /// The claimed record, or `None` when the row is missing, not pending,
+    /// not yet due, cancel-requested, unreadable, or another claimer won.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or write fails.
+    pub async fn claim_job_by_id(
+        &self,
+        job_id: &str,
+        owner: &str,
+        lease_secs: u64,
+    ) -> Result<Option<JobRecord>> {
+        let Some(model) = jobs::Entity::find_by_id(job_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let now = Utc::now();
+        let now_s = now.to_rfc3339();
+        if model.state != JobState::Pending.as_str() || parse_dt(&model.run_after) > now {
+            return Ok(None);
+        }
+        let lease_expires =
+            (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60))).to_rfc3339();
+        claim_candidate_on(&self.db, model, owner, &lease_expires, &now_s).await
+    }
+
     /// Refresh the lease when `fence` still owns the running generation.
     ///
     /// # Errors
@@ -1153,117 +1242,149 @@ where
     let lease_expires =
         (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60))).to_rfc3339();
     for model in candidates {
-        if model.cancel_requested != 0 {
-            let _ = jobs::Entity::update_many()
-                .col_expr(
-                    jobs::Column::State,
-                    sea_orm::sea_query::Expr::value(JobState::Cancelled.as_str()),
-                )
-                .col_expr(
-                    jobs::Column::CancelRequested,
-                    sea_orm::sea_query::Expr::value(1i64),
-                )
-                .col_expr(
-                    jobs::Column::FinishedAt,
-                    sea_orm::sea_query::Expr::value(Some(now_s.clone())),
-                )
-                .col_expr(
-                    jobs::Column::UpdatedAt,
-                    sea_orm::sea_query::Expr::value(now_s.clone()),
-                )
-                .filter(jobs::Column::Id.eq(&model.id))
-                .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-                .exec(db)
-                .await
-                .map_err(LibraryError::Orm)?;
+        if job_has_requirements(&model) {
+            // Routed jobs are claimed only through the routed claim, which
+            // checks the node and takes the job's cluster semaphores.
             continue;
         }
-        if let Err(reason) = try_map_job(model.clone()) {
-            mark_pending_job_invalid_on(db, &model.id, &reason, &now_s).await?;
-            continue;
+        if let Some(job) = claim_candidate_on(db, model, owner, &lease_expires, &now_s).await? {
+            return Ok(Some(job));
         }
-        let mut payload: JobPayload = serde_json::from_str(&model.payload).unwrap_or_default();
-        let resuming = payload.resume_pending;
-        let attempt = if resuming {
-            model.attempt_count.max(1)
-        } else {
-            model.attempt_count + 1
-        };
-        let payload_json = if resuming {
-            payload.resume_pending = false;
-            Some(
-                serde_json::to_string(&payload)
-                    .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?,
-            )
-        } else {
-            None
-        };
-        let generation = model.lease_generation + 1;
-        let started = model.started_at.clone().unwrap_or_else(|| now_s.clone());
-        let mut update = jobs::Entity::update_many()
+    }
+    Ok(None)
+}
+
+/// True when the row's payload names instances the claimer must run.
+fn job_has_requirements(model: &jobs::Model) -> bool {
+    serde_json::from_str::<JobPayload>(&model.payload)
+        .map(|payload| !payload.requires.is_empty())
+        .unwrap_or(false)
+}
+
+/// Claims one pending row by compare-and-swap on its lease generation.
+///
+/// A cancel-requested row is moved to `cancelled` and an unreadable one to
+/// `invalid_job` instead; both return `None`, as does a lost CAS.
+async fn claim_candidate_on<C: ConnectionTrait>(
+    db: &C,
+    model: jobs::Model,
+    owner: &str,
+    lease_expires: &str,
+    now_s: &str,
+) -> Result<Option<JobRecord>> {
+    if model.cancel_requested != 0 {
+        let _ = jobs::Entity::update_many()
             .col_expr(
                 jobs::Column::State,
-                sea_orm::sea_query::Expr::value(JobState::Running.as_str()),
+                sea_orm::sea_query::Expr::value(JobState::Cancelled.as_str()),
             )
             .col_expr(
-                jobs::Column::AttemptCount,
-                sea_orm::sea_query::Expr::value(attempt),
+                jobs::Column::CancelRequested,
+                sea_orm::sea_query::Expr::value(1i64),
             )
             .col_expr(
-                jobs::Column::LeaseOwner,
-                sea_orm::sea_query::Expr::value(Some(owner.to_string())),
-            )
-            .col_expr(
-                jobs::Column::LeaseExpiresAt,
-                sea_orm::sea_query::Expr::value(Some(lease_expires.clone())),
-            )
-            .col_expr(
-                jobs::Column::LeaseGeneration,
-                sea_orm::sea_query::Expr::value(generation),
-            )
-            .col_expr(
-                jobs::Column::StartedAt,
-                sea_orm::sea_query::Expr::value(Some(started)),
+                jobs::Column::FinishedAt,
+                sea_orm::sea_query::Expr::value(Some(now_s.to_string())),
             )
             .col_expr(
                 jobs::Column::UpdatedAt,
-                sea_orm::sea_query::Expr::value(now_s.clone()),
+                sea_orm::sea_query::Expr::value(now_s.to_string()),
             )
-            .col_expr(
-                jobs::Column::ErrorKind,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                jobs::Column::ErrorMessage,
-                sea_orm::sea_query::Expr::value(Option::<String>::None),
-            );
-        if let Some(payload_json) = payload_json {
-            update = update.col_expr(
-                jobs::Column::Payload,
-                sea_orm::sea_query::Expr::value(payload_json),
-            );
-        }
-        let res = update
             .filter(jobs::Column::Id.eq(&model.id))
             .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
             .exec(db)
             .await
             .map_err(LibraryError::Orm)?;
-        if res.rows_affected != 1 {
-            continue;
-        }
-        let Some(updated) = jobs::Entity::find_by_id(&model.id)
-            .one(db)
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            continue;
-        };
-        return Ok(Some(try_map_job(updated).map_err(|reason| {
-            LibraryError::Other(anyhow::anyhow!("claimed unreadable job: {reason}"))
-        })?));
+        return Ok(None);
     }
-    Ok(None)
+    if let Err(reason) = try_map_job(model.clone()) {
+        mark_pending_job_invalid_on(db, &model.id, &reason, now_s).await?;
+        return Ok(None);
+    }
+    let mut payload: JobPayload = serde_json::from_str(&model.payload).unwrap_or_default();
+    let resuming = payload.resume_pending;
+    let attempt = if resuming {
+        model.attempt_count.max(1)
+    } else {
+        model.attempt_count + 1
+    };
+    let payload_json = if resuming {
+        payload.resume_pending = false;
+        Some(
+            serde_json::to_string(&payload)
+                .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?,
+        )
+    } else {
+        None
+    };
+    let generation = model.lease_generation + 1;
+    let started = model
+        .started_at
+        .clone()
+        .unwrap_or_else(|| now_s.to_string());
+    let mut update = jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::State,
+            sea_orm::sea_query::Expr::value(JobState::Running.as_str()),
+        )
+        .col_expr(
+            jobs::Column::AttemptCount,
+            sea_orm::sea_query::Expr::value(attempt),
+        )
+        .col_expr(
+            jobs::Column::LeaseOwner,
+            sea_orm::sea_query::Expr::value(Some(owner.to_string())),
+        )
+        .col_expr(
+            jobs::Column::LeaseExpiresAt,
+            sea_orm::sea_query::Expr::value(Some(lease_expires.to_string())),
+        )
+        .col_expr(
+            jobs::Column::LeaseGeneration,
+            sea_orm::sea_query::Expr::value(generation),
+        )
+        .col_expr(
+            jobs::Column::StartedAt,
+            sea_orm::sea_query::Expr::value(Some(started)),
+        )
+        .col_expr(
+            jobs::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(now_s.to_string()),
+        )
+        .col_expr(
+            jobs::Column::ErrorKind,
+            sea_orm::sea_query::Expr::value(Option::<String>::None),
+        )
+        .col_expr(
+            jobs::Column::ErrorMessage,
+            sea_orm::sea_query::Expr::value(Option::<String>::None),
+        );
+    if let Some(payload_json) = payload_json {
+        update = update.col_expr(
+            jobs::Column::Payload,
+            sea_orm::sea_query::Expr::value(payload_json),
+        );
+    }
+    let res = update
+        .filter(jobs::Column::Id.eq(&model.id))
+        .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+        .filter(jobs::Column::LeaseGeneration.eq(model.lease_generation))
+        .exec(db)
+        .await
+        .map_err(LibraryError::Orm)?;
+    if res.rows_affected != 1 {
+        return Ok(None);
+    }
+    let Some(updated) = jobs::Entity::find_by_id(&model.id)
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+    else {
+        return Ok(None);
+    };
+    try_map_job(updated)
+        .map(Some)
+        .map_err(|reason| LibraryError::Other(anyhow::anyhow!("claimed unreadable job: {reason}")))
 }
 
 /// Transactional quota reservation for one scratch path.
