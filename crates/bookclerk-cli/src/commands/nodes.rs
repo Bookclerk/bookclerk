@@ -12,6 +12,7 @@ use bookclerk_library::control_plane::{
     set_node_labels, set_node_owner, update_node_runtime, ConfigActor, NodeRuntimeSettingsV1,
     NodeStatus,
 };
+use bookclerk_library::UserRecord;
 use clap::Subcommand;
 use serde_json::json;
 
@@ -264,19 +265,20 @@ pub async fn run(
                 store,
                 &ConfigActor::Operator { id: "cli".into() },
                 &node_id,
-                owner,
+                owner.as_ref().map(|user| user.id),
             )
             .await?;
             let payload = json!({
                 "node_id": updated.node_id,
                 "owner_user_id": updated.owner_user_id,
             });
-            let owner = match updated.owner_user_id {
-                Some(user_id) => Some(owner_label(store, user_id).await?),
-                None => None,
-            };
+            // Text output names the user `--user` resolved to.
             emit(format, &payload, || match &owner {
-                Some(owner) => println!("node {} is owned by {owner}", updated.node_id),
+                Some(user) => println!(
+                    "node {} is owned by {}",
+                    updated.node_id,
+                    describe_user(user)
+                ),
                 None => println!("node {} has no owner", updated.node_id),
             })
         }
@@ -293,36 +295,46 @@ async fn owner_label(
     user_id: i64,
 ) -> anyhow::Result<String> {
     Ok(match store.get_user(user_id).await? {
-        Some(user) => format!(
-            "{} ({})",
-            user.display_name
-                .or(user.login_name)
-                .unwrap_or_else(|| "unnamed user".into()),
-            user.role
-        ),
+        Some(user) => describe_user(&user),
         None => "a deleted user".into(),
     })
 }
 
-/// The id of the user named by `--user`: a login name, or else a numeric
-/// user id. A number that is both one user's login name and another's id
+/// A user's display or login name and role, as text output shows an owner.
+fn describe_user(user: &UserRecord) -> String {
+    format!(
+        "{} ({})",
+        user.display_name
+            .as_deref()
+            .or(user.login_name.as_deref())
+            .unwrap_or("unnamed user"),
+        user.role
+    )
+}
+
+/// The user named by `--user`: a login name, or else a numeric user id. A number that is both one user's login name and another's id
 /// is refused rather than guessed.
 ///
 /// # Errors
 ///
 /// Returns an error when no user matches, the match is ambiguous, or the
 /// lookup fails.
-async fn resolve_user(store: &bookclerk_library::LibraryStore, user: &str) -> anyhow::Result<i64> {
+async fn resolve_user(
+    store: &bookclerk_library::LibraryStore,
+    user: &str,
+) -> anyhow::Result<UserRecord> {
     let user = user.trim();
-    let by_login = store.get_user_by_login_name(user).await?.map(|r| r.id);
+    let by_login = store.get_user_by_login_name(user).await?;
     let by_id = match user.parse::<i64>() {
-        Ok(id) => store.get_user(id).await?.map(|r| r.id),
+        Ok(id) => store.get_user(id).await?,
         Err(_) => None,
     };
     match (by_login, by_id) {
-        (Some(login), Some(id)) if login != id => anyhow::bail!(
-            "`{user}` is the login name of user {login} and also user id {id}; \
-             assign it with PUT /api/config/nodes/{{id}}/owner and an explicit user_id"
+        (Some(login), Some(numbered)) if login.id != numbered.id => anyhow::bail!(
+            "`{user}` is the login name of user {} and also user id {}; \
+             assign it with PUT /api/config/nodes/{{id}}/owner and an explicit user_id",
+            login.id,
+            numbered.id
         ),
         (Some(found), _) | (None, Some(found)) => Ok(found),
         (None, None) => anyhow::bail!("no user with login name or id `{user}`"),
@@ -376,12 +388,15 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resolve_user(&store, "riley").await.unwrap(), riley.id);
+        assert_eq!(resolve_user(&store, "riley").await.unwrap().id, riley.id);
         assert_eq!(
-            resolve_user(&store, &riley.id.to_string()).await.unwrap(),
+            resolve_user(&store, &riley.id.to_string())
+                .await
+                .unwrap()
+                .id,
             riley.id
         );
-        assert_eq!(resolve_user(&store, "4242").await.unwrap(), numeric.id);
+        assert_eq!(resolve_user(&store, "4242").await.unwrap().id, numeric.id);
         assert!(resolve_user(&store, "nobody").await.is_err());
         assert!(resolve_user(&store, "999999").await.is_err());
 
