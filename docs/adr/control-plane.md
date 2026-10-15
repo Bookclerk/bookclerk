@@ -846,9 +846,11 @@ Not in this phase, and not claimed as production HA:
 - Per-guest measured usage is not sampled. Reservations are jail ceilings,
   so a guest that idles well below its ceiling still occupies it in the
   scheduler's view. Free disk is reported but not placed on.
-- Memory and measured use are read on Linux only. On macOS and Windows a
-  heartbeat carries the CPU count, so those hosts are ranked by CPU alone
-  and not held to a memory budget.
+- Measured use is whole-machine on every platform (Linux `/proc` and the
+  cgroup, macOS Mach host statistics, Windows `GlobalMemoryStatusEx` /
+  `GetSystemTimes`). Only Linux reads a container ceiling (cgroup v2); a
+  daemon inside a Windows Job Object or another platform's resource limit
+  is ranked against the whole machine.
 - Rollouts: activating a version updates every placed node on its next
   wakeup at once; there is no staged or health-gated rollout across
   replicas. Placement does not read health: a replica on a host whose guest

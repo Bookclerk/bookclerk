@@ -1218,11 +1218,11 @@ async fn heartbeat_persists_fake_cgroup_observations() {
     assert_eq!(node.memory_current_bytes, Some(4096));
     assert_eq!(node.memory_anon_bytes, Some(2048));
     assert_eq!(node.scratch_bytes, Some(32));
-    // `filesystem_free_bytes` is implemented on Linux and macOS. Windows has no
-    // populated value, so the heartbeat stores None there.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    // `filesystem_free_bytes` is implemented on Linux, macOS, and Windows.
+    // Other platforms store None.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     assert!(node.files_dir_free_bytes.is_some());
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     assert!(node.files_dir_free_bytes.is_none());
     assert!(node.logical_cpus.is_some());
     assert_eq!(node.created_at, session.node.created_at);
