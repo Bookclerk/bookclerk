@@ -97,6 +97,7 @@ PostgreSQL 16+, or Cloudflare D1
 | Workerd isolate launcher | `bookclerk-workerd` (pinned Cloudflare workerd + bridge/egress) |
 | Acquire orchestration | `bookclerk-acquire` |
 | Naming templates | `bookclerk-naming` |
+| Host-node protocol | `bookclerk-node-proto` (node socket frames, handshake signatures, key checks) |
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |
 | Search | `bookclerk-search` |
 | Discovery / recommendations | `bookclerk-discover` (via registered `ContentSource` catalog APIs) |

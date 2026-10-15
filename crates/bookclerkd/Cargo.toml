@@ -18,7 +18,9 @@ default = []
 
 [dependencies]
 anyhow.workspace = true
-axum.workspace = true
+# `ws`: the host-node socket at /api/node/v1/connect.
+axum = { workspace = true, features = ["ws"] }
+bookclerk-node-proto.workspace = true
 chrono.workspace = true
 clap.workspace = true
 bookclerk-config.workspace = true
@@ -54,6 +56,22 @@ qrcode.workspace = true
 jsonwebtoken.workspace = true
 openidconnect.workspace = true
 svg-hush.workspace = true
+# Node API TLS listener (`[daemon.node_api] mode = "acme" | "self_signed"`):
+# TLS-ALPN-01 certificates from Let's Encrypt, served with rustls on aws-lc
+# (the provider the rest of the tree already uses).
+rustls-acme = { version = "0.15", default-features = false, features = [
+  "aws-lc-rs",
+  "tls12",
+  "webpki-roots",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+  "aws_lc_rs",
+  "tls12",
+] }
+webpki-roots = "1"
+# Self-signed node API certificate; already in the tree via rustls-acme.
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs"] }
+futures.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -72,6 +90,8 @@ bookclerk-library = { workspace = true, features = ["test-support"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 http-body-util = "0.1"
 tempfile.workspace = true
+# Same version axum's `ws` feature uses: a host-side client for socket tests.
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
 wiremock.workspace = true
 

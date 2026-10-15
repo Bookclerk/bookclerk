@@ -99,7 +99,8 @@ pub use redact::{
     sanitize_for_remote_upload, secrets_registry_test_lock, truncate_upload_message, REDACTED,
 };
 pub use settings::{
-    AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig, DiagnosticsConfig,
-    DiscoveryConfig, LibraryConfig, NodeApiConfig, NodeApiMode, ProcessEnvGuard,
+    read_node_api_spki_pin, AudioQuality, AuthConfig, Config, DaemonAuthConfig, DaemonConfig,
+    DiagnosticsConfig, DiscoveryConfig, LibraryConfig, NodeApiConfig, NodeApiMode, ProcessEnvGuard,
+    LETS_ENCRYPT_DIRECTORY, NODE_API_ACME_DIR, NODE_API_SELF_SIGNED_DIR, NODE_API_SPKI_PIN_FILE,
     TRAY_HANDOFF_TTL_SECS_DEFAULT, TRAY_HANDOFF_TTL_SECS_MAX, TRAY_HANDOFF_TTL_SECS_MIN,
 };

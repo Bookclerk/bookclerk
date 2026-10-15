@@ -397,7 +397,20 @@ pub async fn run(
                 mint_enrollment_link(store, &cli_enrollment_actor(), owner.id, &label, Some(ttl))
                     .await?;
             let (origin, configured) = invite_origin(config);
-            let url = minted.url(&origin, None);
+            // A self-signed owner pins its certificate in the link. The daemon
+            // writes the pin when it first starts the TLS listener.
+            let self_signed =
+                config.daemon.node_api.mode == bookclerk_config::NodeApiMode::SelfSigned;
+            let spki_pin = self_signed
+                .then(|| bookclerk_config::read_node_api_spki_pin(&config.paths().files_dir))
+                .flatten();
+            if self_signed && spki_pin.is_none() {
+                eprintln!(
+                    "note: no self-signed node API certificate yet (start bookclerkd once); \
+                     this link carries no pin, so a host cannot verify this owner"
+                );
+            }
+            let url = minted.url(&origin, spki_pin.as_deref());
             let payload = json!({
                 "link": link_json(&minted.link, chrono::Utc::now()),
                 "url": url.as_str(),

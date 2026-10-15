@@ -7,11 +7,9 @@
 //! connection is allowed in exactly one mode:
 //!
 //! - `acme`: it arrived on the built-in rustls listener with an ACME
-//!   certificate (`[daemon.node_api] mode = "acme"`; the listener is a
-//!   later step).
+//!   certificate (`[daemon.node_api] mode = "acme"`).
 //! - `self_signed`: it arrived on the built-in rustls listener with a pinned
-//!   self-signed certificate (`mode = "self_signed"`; the listener is a
-//!   later step).
+//!   self-signed certificate (`mode = "self_signed"`).
 //! - `proxy`: plain HTTP from a peer in `daemon.trusted_proxies`, carrying
 //!   exactly one `X-Forwarded-Proto: https`, with an https
 //!   `integrations.public_origin` (`mode = "proxy"`).
@@ -31,13 +29,9 @@ use axum::Json;
 use bookclerk_config::{NodeApiConfig, NodeApiMode};
 use serde_json::json;
 
-/// Which listener accepted the connection. The TLS listeners attach their
-/// kind as a request extension; they are a later step, so only `Plain` is
-/// constructed outside tests today.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "TLS listeners land in a later H-4 step")
-)]
+/// Which listener accepted the connection. The built-in TLS listener
+/// ([`super::tls`]) attaches its kind as a request extension; a request
+/// without one came through a plain `daemon.listen` listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListenerKind {
     /// The plain-HTTP `daemon.listen` listener.
@@ -310,6 +304,7 @@ mod tests {
             mode,
             acme_contact: Some("mailto:ops@example.com".into()),
             tls_listen: Some("0.0.0.0:8443".into()),
+            ..NodeApiConfig::default()
         }
     }
 
@@ -559,8 +554,7 @@ mod tests {
     fn incomplete_modes_are_misconfigured() {
         let bare = |mode| NodeApiConfig {
             mode,
-            acme_contact: None,
-            tls_listen: None,
+            ..NodeApiConfig::default()
         };
         let https = Some("https://owner.example");
         let none: Vec<String> = Vec::new();
