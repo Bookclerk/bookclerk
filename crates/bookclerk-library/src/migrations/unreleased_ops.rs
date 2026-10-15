@@ -1044,4 +1044,42 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         created_at TEXT NOT NULL
     )",
     ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS node_enrollment_links (
+        link_id TEXT PRIMARY KEY NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        for_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        label TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        redeemed_at TEXT,
+        redeemed_node_id TEXT,
+        revoked_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_node_enrollment_links_user ON node_enrollment_links(for_user_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS node_credentials (
+        node_id TEXT PRIMARY KEY NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+        sign_public_key BLOB NOT NULL,
+        box_public_key BLOB NOT NULL,
+        link_id TEXT NOT NULL UNIQUE,
+        enrolled_at TEXT NOT NULL,
+        revoked_at TEXT,
+        last_connected_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS cluster_links (
+        owner_cluster_id TEXT PRIMARY KEY NOT NULL,
+        owner_origin TEXT NOT NULL,
+        remote_node_id TEXT NOT NULL,
+        spki_pin TEXT,
+        state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'left')),
+        enrolled_at TEXT NOT NULL
+    )",
+    ),
 ];

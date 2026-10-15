@@ -13,6 +13,7 @@ mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod node_api;
 mod node_queue;
 mod oidc;
 mod oidc_rp;
@@ -248,7 +249,13 @@ async fn main() -> anyhow::Result<()> {
 
         let mut set = tokio::task::JoinSet::new();
         for listener in listeners {
-            let app = app.clone();
+            // The node API's transport policy needs both ends of a connection.
+            let app = match listener.local_addr() {
+                Ok(local) => app
+                    .clone()
+                    .layer(axum::Extension(node_api::transport::LocalAddr(local))),
+                Err(_) => app.clone(),
+            };
             let reload = listen_reload.clone();
             let shutdown_flag = process_shutdown.clone();
             set.spawn(async move {

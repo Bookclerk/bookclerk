@@ -227,8 +227,10 @@ impl UserRole {
         matches!(self, Self::Owner)
     }
 
-    /// Whether this role may administer the nodes the user owns. A Host
-    /// may; an Owner or Administrator who owns a node may too.
+    /// Whether this role reaches the node administration routes even while
+    /// the user owns no node (Host, Administrator, Owner). Any other active
+    /// user reaches them once they own a node: owning a node does not
+    /// require a role.
     #[must_use]
     pub fn can_administer_owned_nodes(self) -> bool {
         matches!(self, Self::Owner | Self::Administrator | Self::Host)
