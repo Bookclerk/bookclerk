@@ -1,13 +1,18 @@
-//! `bookclerk nodes`: the cluster's nodes and their placement labels.
+//! `bookclerk nodes`: the cluster's nodes, their placement labels, and
+//! their owners.
 //!
 //! Reads and writes the library database directly, like `plugins`. Label
 //! changes wake the cluster scheduler through every node's queue.
 
+use std::collections::BTreeMap;
+
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     effective_node_labels, list_node_statuses, list_nodes, load_node, load_node_runtime,
-    set_node_labels, update_node_runtime, ConfigActor, NodeRuntimeSettingsV1, NodeStatus,
+    set_node_labels, set_node_owner, update_node_runtime, ConfigActor, NodeRuntimeSettingsV1,
+    NodeStatus,
 };
+use bookclerk_library::UserRecord;
 use clap::Subcommand;
 use serde_json::json;
 
@@ -53,6 +58,19 @@ pub enum NodesCommand {
         #[arg(long)]
         clear: bool,
     },
+    /// Assign a node to the user who administers it, or clear its owner. The
+    /// owner (an active Host, Administrator, or Owner) may then change the
+    /// node's budgets, drain switch, and name.
+    Owner {
+        /// Node id (default: this node).
+        node: Option<String>,
+        /// Login name or user id.
+        #[arg(long, value_name = "USER", required_unless_present = "clear")]
+        user: Option<String>,
+        /// Remove the node's owner.
+        #[arg(long, conflicts_with = "user")]
+        clear: bool,
+    },
 }
 
 /// Dispatches a nodes verb.
@@ -90,6 +108,8 @@ pub async fn run(
                 };
                 rows.push(json!({
                     "node_id": node.node_id,
+                    "kind": node.kind.as_str(),
+                    "owner_user_id": node.owner_user_id,
                     "this_node": node.node_id == this_node,
                     "live": status.is_some_and(|s| s.is_live(now_ms)),
                     "target": node.target,
@@ -102,6 +122,13 @@ pub async fn run(
                     "status": status,
                     "software_version": node.software_version,
                 }));
+            }
+            // Text output names each owner rather than printing user ids.
+            let mut owners = BTreeMap::new();
+            for node in &nodes {
+                if let Some(user_id) = node.owner_user_id {
+                    owners.insert(node.node_id.clone(), owner_label(store, user_id).await?);
+                }
             }
             emit(format, &json!({ "nodes": rows }), || {
                 for node in &nodes {
@@ -129,6 +156,11 @@ pub async fn run(
                         } else {
                             node.labels.join(",")
                         }
+                    );
+                    println!(
+                        "  {} node, owner {}",
+                        node.kind.as_str(),
+                        owners.get(&node.node_id).map_or("-", String::as_str)
                     );
                     match status {
                         Some(status) => println!("  {}", status_line(status)),
@@ -223,6 +255,89 @@ pub async fn run(
                 );
             })
         }
+        NodesCommand::Owner { node, user, clear } => {
+            let node_id = node.unwrap_or_else(|| this_node.clone());
+            let owner = match (user, clear) {
+                (Some(user), false) => Some(resolve_user(store, &user).await?),
+                _ => None,
+            };
+            let updated = set_node_owner(
+                store,
+                &ConfigActor::Operator { id: "cli".into() },
+                &node_id,
+                owner.as_ref().map(|user| user.id),
+            )
+            .await?;
+            let payload = json!({
+                "node_id": updated.node_id,
+                "owner_user_id": updated.owner_user_id,
+            });
+            // Text output names the user `--user` resolved to.
+            emit(format, &payload, || match &owner {
+                Some(user) => println!(
+                    "node {} is owned by {}",
+                    updated.node_id,
+                    describe_user(user)
+                ),
+                None => println!("node {} has no owner", updated.node_id),
+            })
+        }
+    }
+}
+
+/// How text output names a node's owner: the display or login name and role.
+///
+/// # Errors
+///
+/// Returns an error when the user lookup fails.
+async fn owner_label(
+    store: &bookclerk_library::LibraryStore,
+    user_id: i64,
+) -> anyhow::Result<String> {
+    Ok(match store.get_user(user_id).await? {
+        Some(user) => describe_user(&user),
+        None => "a deleted user".into(),
+    })
+}
+
+/// A user's display or login name and role, as text output shows an owner.
+fn describe_user(user: &UserRecord) -> String {
+    format!(
+        "{} ({})",
+        user.display_name
+            .as_deref()
+            .or(user.login_name.as_deref())
+            .unwrap_or("unnamed user"),
+        user.role
+    )
+}
+
+/// The user named by `--user`: a login name, or else a numeric user id. A number that is both one user's login name and another's id
+/// is refused rather than guessed.
+///
+/// # Errors
+///
+/// Returns an error when no user matches, the match is ambiguous, or the
+/// lookup fails.
+async fn resolve_user(
+    store: &bookclerk_library::LibraryStore,
+    user: &str,
+) -> anyhow::Result<UserRecord> {
+    let user = user.trim();
+    let by_login = store.get_user_by_login_name(user).await?;
+    let by_id = match user.parse::<i64>() {
+        Ok(id) => store.get_user(id).await?,
+        Err(_) => None,
+    };
+    match (by_login, by_id) {
+        (Some(login), Some(numbered)) if login.id != numbered.id => anyhow::bail!(
+            "`{user}` is the login name of user {} and also user id {}; \
+             assign it with PUT /api/config/nodes/{{id}}/owner and an explicit user_id",
+            login.id,
+            numbered.id
+        ),
+        (Some(found), _) | (None, Some(found)) => Ok(found),
+        (None, None) => anyhow::bail!("no user with login name or id `{user}`"),
     }
 }
 
@@ -248,4 +363,58 @@ fn status_line(status: &NodeStatus) -> String {
         status.availability_ppm as f64 / 10_000.0,
         if status.schedulable { "" } else { " | drained" }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use bookclerk_library::{LibraryStore, UserRole};
+
+    use super::resolve_user;
+
+    #[tokio::test]
+    async fn resolve_user_reads_logins_before_ids_and_refuses_ambiguous_numbers() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        let riley = store
+            .create_user_with_login(UserRole::Host, Some("Riley"), Some("riley"), None)
+            .await
+            .unwrap();
+        // A numeric login whose number is not also a user id.
+        let numeric = store
+            .create_user_with_login(UserRole::Host, Some("Numeric"), Some("4242"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(resolve_user(&store, "riley").await.unwrap().id, riley.id);
+        assert_eq!(
+            resolve_user(&store, &riley.id.to_string())
+                .await
+                .unwrap()
+                .id,
+            riley.id
+        );
+        assert_eq!(resolve_user(&store, "4242").await.unwrap().id, numeric.id);
+        assert!(resolve_user(&store, "nobody").await.is_err());
+        assert!(resolve_user(&store, "999999").await.is_err());
+
+        // A login that is another user's id is ambiguous.
+        let shadow = store
+            .create_user_with_login(
+                UserRole::Host,
+                Some("Shadow"),
+                Some(&riley.id.to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_ne!(shadow.id, riley.id);
+        let err = resolve_user(&store, &riley.id.to_string())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("also user id"), "{err}");
+    }
 }

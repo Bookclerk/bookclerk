@@ -799,10 +799,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         files_dir_free_bytes INTEGER,
         scratch_bytes INTEGER,
         target TEXT NOT NULL DEFAULT '',
-        labels_json TEXT NOT NULL DEFAULT '[]'
+        labels_json TEXT NOT NULL DEFAULT '[]',
+        kind TEXT NOT NULL DEFAULT 'owner' CHECK (kind IN ('owner', 'host')),
+        owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_heartbeat ON nodes(heartbeat_at)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner_user_id)"),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS configuration_documents (
         scope_type TEXT NOT NULL,

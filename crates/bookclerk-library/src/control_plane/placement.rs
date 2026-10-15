@@ -240,7 +240,8 @@ fn authorize(actor: &ConfigActor) -> Result<()> {
         ConfigActor::Bootstrap
         | ConfigActor::Scheduler
         | ConfigActor::Administrator { .. }
-        | ConfigActor::Member { .. } => Err(LibraryError::Forbidden(
+        | ConfigActor::Member { .. }
+        | ConfigActor::NodeOwner(_) => Err(LibraryError::Forbidden(
             "unauthorized configuration write: operator authority is required".into(),
         )),
     }

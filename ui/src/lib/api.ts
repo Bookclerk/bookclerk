@@ -13,11 +13,11 @@ export type AcquireStatus =
 /**
  * Primary authenticated SPA views mirrored in the URL path.
  */
-export type AppView = "discover" | "library" | "accounts" | "wishlist" | "settings";
+export type AppView = "discover" | "library" | "accounts" | "wishlist" | "status" | "settings";
 /**
  * Session role returned by the daemon auth APIs.
  */
-export type AuthRole = "operator" | "owner" | "administrator" | "member";
+export type AuthRole = "operator" | "owner" | "administrator" | "host" | "member";
 
 /**
  * Linked portal identity attached to a user session.
@@ -398,6 +398,7 @@ function normalizeView(raw: string | undefined): AppView {
     raw === "accounts" ||
     raw === "discover" ||
     raw === "wishlist" ||
+    raw === "status" ||
     raw === "settings"
   ) {
     return raw;
@@ -410,6 +411,7 @@ function normalizeRole(raw: string | undefined): AuthRole | undefined {
     raw === "operator" ||
     raw === "owner" ||
     raw === "administrator" ||
+    raw === "host" ||
     raw === "member"
   ) {
     return raw;
@@ -2174,15 +2176,92 @@ export interface ConfigNodeView {
   software_version?: string;
   /** True for the node serving this request. */
   this_node: boolean;
+  /** `owner` (shares the database) or `host` (its own database, enrolled to contribute). */
+  kind: "owner" | "host";
+  /** User who administers this node, when one is assigned. */
+  owner: { user_id: number; display_name: string | null; role: string } | null;
+}
+
+/** What the caller may do on the nodes it was sent. */
+export interface NodeCapabilities {
+  /** `all` for an operator; `owned` for a user who owns nodes. */
+  scope: "all" | "owned";
+  can_edit_runtime: boolean;
+  can_edit_labels: boolean;
+  can_assign_owner: boolean;
+}
+
+/** `GET /api/config/nodes`. */
+export interface NodesResponse {
+  node_id: string;
+  nodes: ConfigNodeView[];
+  capabilities: NodeCapabilities;
 }
 
 /**
- * Lists the cluster's nodes with their heartbeat, budgets, and labels.
+ * Lists the nodes the caller may see: every node for an operator, the
+ * owned ones for a node owner.
  *
- * @returns The serving node's id and every node.
+ * @returns The serving node's id, the visible nodes, and what the caller may edit.
  */
-export async function listConfigNodes(): Promise<{ node_id: string; nodes: ConfigNodeView[] }> {
+export async function listConfigNodes(): Promise<NodesResponse> {
   const res = await fetch("/api/config/nodes", { credentials: "include" });
+  return parseJson(res);
+}
+
+/** Cluster-wide health from `GET /api/cluster/status`. */
+export interface ClusterSummary {
+  nodes: number;
+  live: number;
+  drained: number;
+  host_nodes: number;
+  cpu_budget_millicores: number;
+  cpu_reserved_millicores: number;
+  memory_budget_bytes: number;
+  memory_reserved_bytes: number;
+  running_guests: number;
+  active_jobs: number;
+  deliveries: {
+    pending: number;
+    running: number;
+    dead_letter: number;
+    oldest_pending_age_secs: number | null;
+  };
+}
+
+/** `GET /api/cluster/status`: cluster health plus the nodes the caller may see. */
+export interface ClusterStatusResponse extends NodesResponse {
+  cluster: ClusterSummary;
+}
+
+/**
+ * Cluster health every node administrator may see, with detail for the
+ * caller's visible nodes.
+ *
+ * @returns Cluster summary, visible nodes, and the caller's capabilities.
+ */
+export async function fetchClusterStatus(): Promise<ClusterStatusResponse> {
+  const res = await fetch("/api/cluster/status", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Assigns a node to the user who administers it, or clears its owner.
+ *
+ * @param nodeId - Node to assign.
+ * @param userId - Owning user, or `null` to clear.
+ * @returns The node id and its owner.
+ */
+export async function putNodeOwner(
+  nodeId: string,
+  userId: number | null,
+): Promise<{ node_id: string; owner_user_id: number | null }> {
+  const res = await fetch(`/api/config/nodes/${encodeURIComponent(nodeId)}/owner`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId }),
+  });
   return parseJson(res);
 }
 
@@ -2445,7 +2524,7 @@ export async function portalRevokeConnection(source: string, accountId: string):
  * @returns Resolves when logout completes.
  */
 export async function signOut(role?: AuthRole): Promise<void> {
-  if (role === "administrator" || role === "member") {
+  if (role === "administrator" || role === "host" || role === "member") {
     await portalLogout();
     return;
   }

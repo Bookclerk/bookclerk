@@ -11,6 +11,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use axum::Json;
 use bookclerk_library::control_plane::{
     load_cluster_row, load_events, overlay_events, replace_events, ConfigActor, EventsReplace,
@@ -21,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::api::AppState;
+use crate::auth::NodeAdminCaller;
 
 /// Operator actor recorded on configuration commits from the daemon.
 fn operator_actor() -> ConfigActor {
@@ -943,28 +945,157 @@ pub async fn put_plugin_deployment(
     })))
 }
 
-/// `GET /api/config/nodes`: every node that registered with the cluster.
+/// Nodes `caller` may see: every node for an operator, the owned ones for
+/// a node owner.
+async fn visible_nodes(
+    library: &LibraryStore,
+    caller: NodeAdminCaller,
+) -> Result<Vec<bookclerk_library::control_plane::NodeRecord>, Response> {
+    match caller {
+        NodeAdminCaller::Operator => bookclerk_library::control_plane::list_nodes(library)
+            .await
+            .map_err(events_error),
+        NodeAdminCaller::NodeOwner { user_id } => {
+            bookclerk_library::control_plane::nodes_owned_by(library, user_id)
+                .await
+                .map_err(events_error)
+        }
+    }
+}
+
+/// JSON for `nodes` as `caller` sees them.
+async fn nodes_json(
+    library: &LibraryStore,
+    this_node: &str,
+    nodes: &[bookclerk_library::control_plane::NodeRecord],
+) -> Result<Vec<serde_json::Value>, Response> {
+    let statuses = node_statuses(library).await?;
+    let mut out = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let runtime = node_runtime_or_default(library, &node.node_id).await?;
+        let owner = match node.owner_user_id {
+            Some(user_id) => library
+                .get_user(user_id)
+                .await
+                .map_err(events_error)?
+                .map(|user| {
+                    json!({
+                        "user_id": user.id,
+                        "display_name": user.display_name.or(user.login_name),
+                        "role": user.role.as_str(),
+                    })
+                }),
+            None => None,
+        };
+        let mut value = node_json(node, this_node, statuses.get(&node.node_id), &runtime);
+        value["owner"] = owner.unwrap_or(serde_json::Value::Null);
+        out.push(value);
+    }
+    Ok(out)
+}
+
+/// What `caller` may do on the nodes it sees.
+fn node_capabilities(caller: NodeAdminCaller) -> serde_json::Value {
+    let operator = caller == NodeAdminCaller::Operator;
+    json!({
+        "scope": if operator { "all" } else { "owned" },
+        "can_edit_runtime": true,
+        "can_edit_labels": operator,
+        "can_assign_owner": operator,
+    })
+}
+
+/// `GET /api/config/nodes`: every node for an operator; the caller's own
+/// nodes for a node owner.
 pub async fn get_nodes(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<NodeAdminCaller>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
-    let statuses = node_statuses(&library).await?;
-    let mut nodes = Vec::new();
-    for node in bookclerk_library::control_plane::list_nodes(&library)
+    let nodes = visible_nodes(&library, caller).await?;
+    let nodes = nodes_json(&library, &this_node, &nodes).await?;
+    Ok(Json(json!({
+        "node_id": this_node,
+        "nodes": nodes,
+        "capabilities": node_capabilities(caller),
+    })))
+}
+
+/// `GET /api/cluster/status`: cluster-wide health every node administrator
+/// may see (node counts, committed capacity, active jobs, delivery backlog),
+/// plus detail for the nodes the caller may see.
+pub async fn get_cluster_status(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<NodeAdminCaller>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let cfg = state.config.read().await.clone();
+    let this_node = this_node_id(&cfg)?;
+    let library = state.library_snapshot().await;
+    let all = bookclerk_library::control_plane::list_nodes(&library)
         .await
-        .map_err(events_error)?
-    {
-        let runtime = node_runtime_or_default(&library, &node.node_id).await?;
-        nodes.push(node_json(
-            &node,
-            &this_node,
-            statuses.get(&node.node_id),
-            &runtime,
-        ));
+        .map_err(events_error)?;
+    let statuses = node_statuses(&library).await?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut live = 0u64;
+    let mut drained = 0u64;
+    let mut host_nodes = 0u64;
+    let mut cpu_budget = 0i64;
+    let mut cpu_reserved = 0i64;
+    let mut memory_budget = 0i64;
+    let mut memory_reserved = 0i64;
+    let mut running_guests = 0i64;
+    for node in &all {
+        if node.kind == bookclerk_library::control_plane::NodeKind::Host {
+            host_nodes += 1;
+        }
+        let Some(status) = statuses.get(&node.node_id) else {
+            continue;
+        };
+        if !status.is_live(now_ms) {
+            continue;
+        }
+        live += 1;
+        if !status.schedulable {
+            drained += 1;
+        }
+        cpu_budget += status.cpu_budget_millicores;
+        cpu_reserved += status.reserved.cpu_millicores;
+        memory_budget += status.memory_budget_bytes.unwrap_or(0);
+        memory_reserved += status.reserved.memory_bytes;
+        running_guests += status.running_guests;
     }
-    Ok(Json(json!({ "node_id": this_node, "nodes": nodes })))
+    let active_jobs = library.count_active_jobs().await.map_err(events_error)?;
+    let events = library
+        .event_delivery_metrics()
+        .await
+        .map_err(events_error)?;
+    let visible = visible_nodes(&library, caller).await?;
+    let nodes = nodes_json(&library, &this_node, &visible).await?;
+    Ok(Json(json!({
+        "cluster": {
+            "nodes": all.len(),
+            "live": live,
+            "drained": drained,
+            "host_nodes": host_nodes,
+            "cpu_budget_millicores": cpu_budget,
+            "cpu_reserved_millicores": cpu_reserved,
+            "memory_budget_bytes": memory_budget,
+            "memory_reserved_bytes": memory_reserved,
+            "running_guests": running_guests,
+            "active_jobs": active_jobs,
+            "deliveries": {
+                "pending": events.pending,
+                "running": events.running,
+                "dead_letter": events.dead_letter,
+                "oldest_pending_age_secs": events.oldest_pending_age_secs,
+            },
+        },
+        "node_id": this_node,
+        "nodes": nodes,
+        "capabilities": node_capabilities(caller),
+    })))
 }
 
 /// Every node's latest heartbeat, by node id.
@@ -1022,6 +1153,8 @@ fn node_json(
         "runtime": runtime,
         "status": status,
         "this_node": node.node_id == this_node,
+        "kind": node.kind.as_str(),
+        "owner_user_id": node.owner_user_id,
     })
 }
 
@@ -1044,20 +1177,32 @@ pub(crate) struct PutNodeRuntime {
 }
 
 /// `PUT /api/config/nodes/{node_id}/runtime`: edit a node's label, budgets,
-/// or drain switch. Applies at that node's next heartbeat.
+/// or drain switch. Applies at that node's next heartbeat. A node owner may
+/// edit only the nodes it owns.
 pub async fn put_node_runtime(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<NodeAdminCaller>,
     axum::extract::Path(node_id): axum::extract::Path<String>,
     Json(body): Json<PutNodeRuntime>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
     let node_id = node_id.trim().to_string();
-    bookclerk_library::control_plane::load_node(&library, &node_id)
-        .await
-        .map_err(events_error)?;
+    let actor = match caller {
+        NodeAdminCaller::Operator => {
+            bookclerk_library::control_plane::load_node(&library, &node_id)
+                .await
+                .map_err(events_error)?;
+            operator_actor()
+        }
+        NodeAdminCaller::NodeOwner { user_id } => {
+            bookclerk_library::control_plane::verify_node_owner(&library, user_id, &node_id)
+                .await
+                .map_err(events_error)?
+        }
+    };
     let document = bookclerk_library::control_plane::update_node_runtime(
         &library,
-        &operator_actor(),
+        &actor,
         &node_id,
         |runtime| {
             if let Some(label) = &body.label {
@@ -1116,6 +1261,36 @@ pub async fn put_node_labels(
         statuses.get(&node.node_id),
         &runtime,
     )))
+}
+
+/// `PUT /api/config/nodes/{node_id}/owner` body.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PutNodeOwner {
+    /// User who owns the node, or `null` to clear.
+    user_id: Option<i64>,
+}
+
+/// `PUT /api/config/nodes/{node_id}/owner`: assign or clear a node's owner.
+/// The owner may then edit that node's runtime settings without operator
+/// authority.
+pub async fn put_node_owner(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(node_id): axum::extract::Path<String>,
+    Json(body): Json<PutNodeOwner>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let node = bookclerk_library::control_plane::set_node_owner(
+        &library,
+        &operator_actor(),
+        node_id.trim(),
+        body.user_id,
+    )
+    .await
+    .map_err(events_error)?;
+    Ok(Json(json!({
+        "node_id": node.node_id,
+        "owner_user_id": node.owner_user_id,
+    })))
 }
 
 /// `PUT /api/config/plugin-instances/{id}/placement` body.

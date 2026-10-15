@@ -334,32 +334,35 @@ impl OidcBrokerConfig {
     }
 }
 
-/// Accepts `owner` / `administrator` / `member`; rejects `operator` and unknown roles.
+/// Accepts `owner` / `administrator` / `host` / `member`; rejects `operator` and unknown roles.
 ///
 /// # Errors
 ///
 /// Returns [`ConfigError::Invalid`] when `role` is `operator` or not a supported member role.
 fn validate_role(role: &str, field: &str) -> Result<()> {
     match role.trim() {
-        "owner" | "administrator" | "member" => Ok(()),
+        "owner" | "administrator" | "host" | "member" => Ok(()),
         "operator" => Err(ConfigError::Invalid(format!(
             "{field} cannot be `operator` — the Operator account is local-only"
         ))),
         other => Err(ConfigError::Invalid(format!(
-            "{field} must be owner, administrator, or member (got `{other}`)"
+            "{field} must be owner, administrator, host, or member (got `{other}`)"
         ))),
     }
 }
 
 /// Pick the highest Bookclerk role from mapped claim values.
 ///
-/// Precedence: owner > administrator > member.
+/// Precedence: owner > administrator > host > member.
 #[must_use]
 pub fn resolve_mapped_role(
     role_map: &BTreeMap<String, String>,
     claim_values: &[String],
 ) -> Option<String> {
-    let mut best: Option<&'static str> = None;
+    /// Known roles, highest first.
+    const RANKED: [&str; 4] = ["owner", "administrator", "host", "member"];
+    let rank = |role: &str| RANKED.iter().position(|known| *known == role);
+    let mut best: Option<usize> = None;
     for raw in claim_values {
         let key = raw.trim();
         let Some(mapped) = role_map
@@ -369,27 +372,14 @@ pub fn resolve_mapped_role(
         else {
             continue;
         };
-        let rank = match mapped {
-            "owner" => 3,
-            "administrator" => 2,
-            "member" => 1,
-            _ => continue,
+        let Some(position) = rank(mapped) else {
+            continue;
         };
-        let current = match best {
-            Some("owner") => 3,
-            Some("administrator") => 2,
-            Some("member") => 1,
-            _ => 0,
-        };
-        if rank > current {
-            best = Some(match mapped {
-                "owner" => "owner",
-                "administrator" => "administrator",
-                _ => "member",
-            });
+        if best.is_none_or(|current| position < current) {
+            best = Some(position);
         }
     }
-    best.map(str::to_string)
+    best.map(|position| RANKED[position].to_string())
 }
 
 /// Whether an allowlist provider admits this `(email, sub)`.
@@ -470,6 +460,21 @@ mod tests {
         let role =
             resolve_mapped_role(&map, &["bookclerk-users".into(), "bookclerk-owners".into()]);
         assert_eq!(role.as_deref(), Some("owner"));
+    }
+
+    #[test]
+    fn mapped_role_ranks_host_between_administrator_and_member() {
+        let mut map = BTreeMap::new();
+        map.insert("users".into(), "member".into());
+        map.insert("hosts".into(), "host".into());
+        map.insert("admins".into(), "administrator".into());
+        map.insert("typo".into(), "hosts".into());
+        let host = resolve_mapped_role(&map, &["users".into(), "hosts".into(), "typo".into()]);
+        assert_eq!(host.as_deref(), Some("host"));
+        let admin = resolve_mapped_role(&map, &["hosts".into(), "admins".into()]);
+        assert_eq!(admin.as_deref(), Some("administrator"));
+        assert!(validate_role("host", "default_role").is_ok());
+        assert!(validate_role("hosts", "default_role").is_err());
     }
 
     #[test]

@@ -172,6 +172,7 @@ mod tests {
                 "/api/config/plugin-instances/{id}/deployments/{node_id}",
                 put(crate::config_authority::put_plugin_deployment),
             )
+            .layer(axum::Extension(crate::auth::NodeAdminCaller::Operator))
             .with_state(Arc::clone(&state));
 
         let (status, labelled) = send(
@@ -250,5 +251,159 @@ mod tests {
             send(&app, "PUT", &deployment_uri, json!({ "desired": "absent" })).await;
         assert_eq!(status, StatusCode::OK, "{disabled}");
         assert_eq!(disabled["desired"], "absent");
+    }
+
+    /// Node routes for one caller, as the daemon mounts them.
+    fn node_routes(
+        state: &Arc<crate::api::AppState>,
+        caller: crate::auth::NodeAdminCaller,
+    ) -> axum::Router {
+        axum::Router::new()
+            .route("/api/config/nodes", get(crate::config_authority::get_nodes))
+            .route(
+                "/api/config/nodes/{node_id}/runtime",
+                put(crate::config_authority::put_node_runtime),
+            )
+            .route(
+                "/api/cluster/status",
+                get(crate::config_authority::get_cluster_status),
+            )
+            .route(
+                "/api/config/nodes/{node_id}/owner",
+                put(crate::config_authority::put_node_owner),
+            )
+            .layer(axum::Extension(caller))
+            .with_state(Arc::clone(state))
+    }
+
+    #[tokio::test]
+    async fn a_node_owner_sees_and_edits_only_its_own_nodes() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let files_path = files.path();
+        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        let db_path = files_path.join("library.db");
+        let db = bookclerk_plugin_database_sqlite::open(&db_path)
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let mine = bootstrap_control_plane(
+            &store,
+            files_path,
+            &files_path.join("cache"),
+            None,
+            &EventsConfig::default(),
+        )
+        .await
+        .unwrap()
+        .node
+        .node_id;
+        // A second node in the same cluster, owned by nobody. Every node
+        // shares the cluster's `master.key`.
+        std::fs::copy(
+            bookclerk_library::master_key_path(files_path),
+            bookclerk_library::master_key_path(other.path()),
+        )
+        .unwrap();
+        let theirs = bootstrap_control_plane(
+            &store,
+            other.path(),
+            &other.path().join("cache"),
+            None,
+            &EventsConfig::default(),
+        )
+        .await
+        .unwrap()
+        .node
+        .node_id;
+        let host = store
+            .create_user(bookclerk_library::UserRole::Host, Some("Hosting"), None)
+            .await
+            .unwrap();
+        let config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        let state = Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            config,
+        ));
+        let operator = node_routes(&state, crate::auth::NodeAdminCaller::Operator);
+        let owner = node_routes(
+            &state,
+            crate::auth::NodeAdminCaller::NodeOwner { user_id: host.id },
+        );
+
+        // Before an operator assigns it, the host owns nothing.
+        let (status, listed) = send(&owner, "GET", "/api/config/nodes", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed["nodes"], json!([]));
+        assert_eq!(listed["capabilities"]["scope"], "owned");
+        assert_eq!(listed["capabilities"]["can_edit_labels"], false);
+
+        let (status, assigned) = send(
+            &operator,
+            "PUT",
+            &format!("/api/config/nodes/{mine}/owner"),
+            json!({ "user_id": host.id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{assigned}");
+        assert_eq!(assigned["owner_user_id"], host.id);
+        let (status, _) = send(
+            &operator,
+            "PUT",
+            &format!("/api/config/nodes/{mine}/owner"),
+            json!({ "user_id": host.id + 1000 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // The owner lists only its node, with the owner attached.
+        let (_, listed) = send(&owner, "GET", "/api/config/nodes", Value::Null).await;
+        let nodes = listed["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0]["node_id"], json!(mine));
+        assert_eq!(nodes[0]["kind"], "owner");
+        assert_eq!(nodes[0]["owner"]["user_id"], host.id);
+        assert_eq!(nodes[0]["owner"]["role"], "host");
+        let (_, all) = send(&operator, "GET", "/api/config/nodes", Value::Null).await;
+        assert_eq!(all["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(all["capabilities"]["scope"], "all");
+
+        // It edits its own node's budgets and drain switch...
+        let (status, edited) = send(
+            &owner,
+            "PUT",
+            &format!("/api/config/nodes/{mine}/runtime"),
+            json!({ "cpu_budget_percent": 50, "schedulable": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{edited}");
+        assert_eq!(edited["runtime"]["cpu_budget_percent"], 50);
+        assert_eq!(edited["runtime"]["schedulable"], false);
+        // ...but not another node's, and an unknown node reads the same.
+        for node in [theirs.as_str(), "no-such-node"] {
+            let (status, refused) = send(
+                &owner,
+                "PUT",
+                &format!("/api/config/nodes/{node}/runtime"),
+                json!({ "cpu_budget_percent": 10 }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{node}: {refused}");
+        }
+
+        // Cluster status counts every node but details only the owned one.
+        let (status, cluster) = send(&owner, "GET", "/api/cluster/status", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{cluster}");
+        assert_eq!(cluster["cluster"]["nodes"], 2);
+        assert_eq!(cluster["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(cluster["nodes"][0]["node_id"], json!(mine));
+        let (_, cluster) = send(&operator, "GET", "/api/cluster/status", Value::Null).await;
+        assert_eq!(cluster["nodes"].as_array().unwrap().len(), 2);
     }
 }

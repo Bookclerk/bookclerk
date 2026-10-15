@@ -29,6 +29,7 @@ upstream issuer) is not supportable.
 | **Operator** | Control plane via shared operator token + durable hashed sessions. **Cannot** connect bookstore sources. Can **impersonate** any User. Creates the linked **Owner** on bootstrap. **Never** an OAuth/OIDC subject — not JIT’d, linked, or offered on the SSO login page. SPA operator-token paste is offered only before an active Owner exists; afterwards use tray handoff or Owner elevate. |
 | **Owner** | Super-user (multiple allowed). Administrator caps plus **elevate to Operator** after step-up (IdP `prompt=login`, passkey, or local password). Last active Owner cannot be demoted/disabled/deleted. Non-elevated Owners may provision Members and Administrators, not other Owners. May be mapped from an upstream IdP role. |
 | **Administrator** | Normal User + admin caps (provision Members only; cannot create, assign, or manage Administrator or Owner). **Cannot** elevate. May be JIT / role-synced from an IdP. |
+| **Host** | Member who owns cluster nodes: changes their budgets, drain switch, and name, and sees the Status page for the cluster plus those nodes. Placement labels stay with the operator. Assigned by an Owner or the Operator, never by an Administrator; promote to Administrator to trust the user with other users' work. May be mapped from an IdP role (ranked between Administrator and Member). |
 | **Member** | Normal User; may connect sources under policy. May be JIT from IdP or social provision policies. |
 
 ### Federation and OIDC

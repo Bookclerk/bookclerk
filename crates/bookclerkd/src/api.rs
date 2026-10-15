@@ -891,14 +891,13 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             put(crate::config_authority::put_plugin_placement_route)
                 .delete(crate::config_authority::delete_plugin_placement_route),
         )
-        .route("/api/config/nodes", get(crate::config_authority::get_nodes))
         .route(
             "/api/config/nodes/{node_id}/labels",
             put(crate::config_authority::put_node_labels),
         )
         .route(
-            "/api/config/nodes/{node_id}/runtime",
-            put(crate::config_authority::put_node_runtime),
+            "/api/config/nodes/{node_id}/owner",
+            put(crate::config_authority::put_node_owner),
         )
         .route(
             "/api/config/plugins",
@@ -933,6 +932,24 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_operator_auth,
+        ))
+        .with_state(state.clone());
+
+    // Node administration: operators see and edit every node; a user who
+    // owns nodes (Host, Administrator, Owner) sees and edits only those.
+    let node_admin = Router::new()
+        .route("/api/config/nodes", get(crate::config_authority::get_nodes))
+        .route(
+            "/api/config/nodes/{node_id}/runtime",
+            put(crate::config_authority::put_node_runtime),
+        )
+        .route(
+            "/api/cluster/status",
+            get(crate::config_authority::get_cluster_status),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_operator_or_node_owner_auth,
         ))
         .with_state(state.clone());
 
@@ -1015,6 +1032,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .merge(operator_or_admin)
         .merge(operator_only)
+        .merge(node_admin)
         .merge(shared)
         .with_state(state.clone());
 
@@ -1060,6 +1078,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/library",
                 "/wishlist",
                 "/accounts",
+                // The Status page. `/status` stays the legacy JSON route.
+                "/cluster",
                 "/settings",
             ];
             for path in SPA_DOC_PATHS {

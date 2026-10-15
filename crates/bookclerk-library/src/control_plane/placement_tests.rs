@@ -703,6 +703,138 @@ async fn deliveries_route_to_the_live_node_with_the_most_room() {
     assert_eq!(vps.nodes, vec!["vps"]);
 }
 
+#[tokio::test]
+async fn a_node_owner_edits_only_its_own_node_runtime() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(&dir.path().join("library.db")).await;
+    let session = bootstrap_control_plane(
+        &store,
+        dir.path(),
+        &dir.path().join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .unwrap();
+    let mine = session.node.node_id.clone();
+    register(&store, "node-other", &session.cluster_id).await;
+    let host = store
+        .create_user(crate::UserRole::Host, Some("Hosting"), None)
+        .await
+        .unwrap();
+    let stranger = store
+        .create_user(crate::UserRole::Host, Some("Stranger"), None)
+        .await
+        .unwrap();
+
+    // Every node starts as an owner node with no owner.
+    let node = load_node(&store, &mine).await.unwrap();
+    assert_eq!(node.kind, NodeKind::Owner);
+    assert_eq!(node.owner_user_id, None);
+
+    // Only an operator assigns ownership, and only to a real user.
+    let refused = set_node_owner(&store, &ConfigActor::Bootstrap, &mine, Some(host.id))
+        .await
+        .unwrap_err();
+    assert!(matches!(refused, LibraryError::Forbidden(_)), "{refused}");
+    let unknown = set_node_owner(&store, &operator(), &mine, Some(host.id + 1000))
+        .await
+        .unwrap_err();
+    assert!(matches!(unknown, LibraryError::NotFound(_)), "{unknown}");
+    // A Member cannot use the node routes and a disabled user cannot sign
+    // in, so neither may be made an owner.
+    let member = store
+        .create_user(crate::UserRole::Member, Some("Member"), None)
+        .await
+        .unwrap();
+    let not_admin = set_node_owner(&store, &operator(), &mine, Some(member.id))
+        .await
+        .unwrap_err();
+    assert!(matches!(not_admin, LibraryError::Invalid(_)), "{not_admin}");
+    let gone = store
+        .create_user(crate::UserRole::Host, Some("Gone"), None)
+        .await
+        .unwrap();
+    store
+        .set_user_status(gone.id, crate::UserStatus::Disabled)
+        .await
+        .unwrap();
+    let disabled = set_node_owner(&store, &operator(), &mine, Some(gone.id))
+        .await
+        .unwrap_err();
+    assert!(matches!(disabled, LibraryError::Invalid(_)), "{disabled}");
+    assert_eq!(load_node(&store, &mine).await.unwrap().owner_user_id, None);
+    let owned = set_node_owner(&store, &operator(), &mine, Some(host.id))
+        .await
+        .unwrap();
+    assert_eq!(owned.owner_user_id, Some(host.id));
+    assert_eq!(
+        nodes_owned_by(&store, host.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.node_id)
+            .collect::<Vec<_>>(),
+        vec![mine.clone()]
+    );
+    assert!(nodes_owned_by(&store, stranger.id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // The owner changes budgets and drain on its node.
+    let actor = verify_node_owner(&store, host.id, &mine).await.unwrap();
+    let doc = update_node_runtime(&store, &actor, &mine, |rt| {
+        rt.cpu_budget_percent = 40;
+        rt.schedulable = false;
+    })
+    .await
+    .unwrap();
+    assert_eq!(doc.body.cpu_budget_percent, 40);
+    assert!(!doc.body.schedulable);
+    assert_eq!(doc.updated_by, format!("node-owner:{}", host.id));
+
+    // It cannot touch another node, set labels, or write other documents.
+    let other = verify_node_owner(&store, host.id, "node-other")
+        .await
+        .unwrap_err();
+    assert!(matches!(other, LibraryError::Forbidden(_)), "{other}");
+    let missing = verify_node_owner(&store, host.id, "no-such-node")
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, LibraryError::Forbidden(_)), "{missing}");
+    let foreign = update_node_runtime(&store, &actor, "node-other", |rt| {
+        rt.cpu_budget_percent = 10;
+    })
+    .await
+    .unwrap_err();
+    assert!(matches!(foreign, LibraryError::Forbidden(_)), "{foreign}");
+    let labels = set_node_labels(&store, &actor, &mine, &labels(&["gpu"]))
+        .await
+        .unwrap_err();
+    assert!(matches!(labels, LibraryError::Forbidden(_)), "{labels}");
+    let current_events = load_events(&store).await.unwrap();
+    let events = replace_events(
+        &store,
+        &actor,
+        current_events.revision,
+        &current_events.body,
+        "owner-events",
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(events, LibraryError::Forbidden(_)), "{events}");
+    let stranger_actor = verify_node_owner(&store, stranger.id, &mine).await;
+    assert!(stranger_actor.is_err());
+
+    // Clearing ownership revokes the next verification.
+    set_node_owner(&store, &operator(), &mine, None)
+        .await
+        .unwrap();
+    assert!(verify_node_owner(&store, host.id, &mine).await.is_err());
+}
+
 /// A two-node cluster with live heartbeats, for the hand-back tests.
 async fn two_live_nodes(store: &LibraryStore, dir: &std::path::Path) -> String {
     let session = bootstrap_control_plane(

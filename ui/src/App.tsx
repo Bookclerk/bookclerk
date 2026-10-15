@@ -22,6 +22,7 @@ import {
   syncUrlToView,
   viewFromPath,
 } from "@/lib/routes";
+import { showStatusNav } from "@/lib/nav";
 
 const AccountsPage = lazy(() =>
   import("@/components/AccountsPage").then((m) => ({ default: m.AccountsPage })),
@@ -39,6 +40,9 @@ const MfaEnrollDialog = lazy(() =>
 );
 const SettingsPage = lazy(() =>
   import("@/components/SettingsPage").then((m) => ({ default: m.SettingsPage })),
+);
+const StatusPage = lazy(() =>
+  import("@/components/StatusPage").then((m) => ({ default: m.StatusPage })),
 );
 const WishlistPage = lazy(() =>
   import("@/components/WishlistPage").then((m) => ({ default: m.WishlistPage })),
@@ -76,6 +80,8 @@ function formatAuthRole(role?: AuthRole | string): string {
       return "Owner";
     case "administrator":
       return "Administrator";
+    case "host":
+      return "Host";
     case "member":
       return "Member";
     case "operator":
@@ -269,6 +275,8 @@ export default function App() {
     );
   } else if (view === "discover") {
     page = <DiscoverPage onLogout={onLogout} nav={nav} role={role} />;
+  } else if (view === "status" && showStatusNav(role)) {
+    page = <StatusPage onLogout={onLogout} nav={nav} role={role} />;
   }
 
   const impersonatedRole = formatAuthRole(

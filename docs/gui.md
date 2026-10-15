@@ -30,6 +30,7 @@ The SPA supports operator and first-party user sessions:
 | **Operator** | Paste operator token (`bookclerk daemon token`) **before** an Owner exists; afterwards the system tray **Copy sign-in link**, `bookclerk login`, or Owner elevate | Full library, scan/acquire, jobs, Discover, Wishlist, Settings (daemon/plugins/confinement), impersonate; **cannot** connect bookstore sources. SPA operator-token paste is refused once an active Owner exists (`POST /api/auth/login` → 403). Bearer API and loopback `GET /api/auth/tray-handoff?code=` (default 180s one-time code, never the durable token) keep working. |
 | **Owner** | Invite magic link / password / passkey / SSO / integration login | Administrator powers + **elevate** to operator (IdP step-up, passkey, or password). Server/Plugins + impersonation |
 | **Administrator** | Invite magic link / password / passkey / SSO / integration login | Member powers + acquire/scan/jobs; provision users (no elevate) |
+| **Host** | Invite magic link, password, passkey, SSO, or integration return-visit | Member powers + **Status** and **Settings → Nodes** for the nodes they own (budgets, drain, name) |
 | **Member** | Invite magic link, password, passkey, SSO, or integration return-visit | Discover, Wishlist, shared library browse, Accounts (store connect); Settings Account (Profile / Security / Sessions) |
 
 | Item | Detail |
@@ -128,7 +129,7 @@ Branded daemon HTML (invite / 404) cannot read that row and only queries
   - **User Management** (operator, owner, or administrator): bootstrap first
     Owner, create users (email + copyable invite magic link), role/status,
     remint invite, reset password. Role options follow the provisioner matrix
-    (Administrator → Members only; Owner → Members and Administrators;
+    (Administrator → Members only; Owner → Members, Hosts, and Administrators;
     Operator / elevated Owner → all roles). Presence on each row: dashed grey
     ring (never signed in), solid grey (last seen, session expired),
     brick/orange (signed in but idle), teal (active in the last ~5 minutes),
