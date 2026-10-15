@@ -16,10 +16,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    activate_version, approve_version_grant, clear_install, delete_plugin_placement,
-    list_deployments_for_instance, list_installs, list_plugin_instances_for_key, list_versions,
-    load_install, load_or_create_node_identity, load_plugin_schema, load_version,
-    replace_plugin_deployment, ConfigActor, DesiredState, PluginInstall, PluginVersion,
+    activate_version, approve_version_grant, clear_install, list_installs,
+    list_plugin_instances_for_key, list_versions, load_install, load_or_create_node_identity,
+    load_plugin_schema, load_version, undeploy_instance, ConfigActor, PluginInstall, PluginVersion,
 };
 use bookclerk_plugin_catalog::{
     safe_join, BookclerkPackageManifest, Installer, PackageCoordinate, TrustPolicy,
@@ -308,34 +307,15 @@ pub async fn delete_plugin_install(
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
     let mut disabled = 0;
+    // Every instance must be stopped before the active version goes; a
+    // deployment that lost a race reports 409 and leaves the install alone.
     for instance in list_plugin_instances_for_key(&library, &key)
         .await
         .map_err(library_error)?
     {
-        // A placed instance would be redeployed by the scheduler; removing
-        // the plugin removes its placement first.
-        delete_plugin_placement(&library, &operator_actor(), &instance.id)
+        disabled += undeploy_instance(&library, &operator_actor(), &instance.id)
             .await
             .map_err(library_error)?;
-        for deployment in list_deployments_for_instance(&library, &instance.id)
-            .await
-            .map_err(library_error)?
-        {
-            if !deployment.desired.runs() {
-                continue;
-            }
-            replace_plugin_deployment(
-                &library,
-                &operator_actor(),
-                &deployment.deployment_id,
-                deployment.revision,
-                DesiredState::Absent,
-                &uuid::Uuid::new_v4().to_string(),
-            )
-            .await
-            .map_err(library_error)?;
-            disabled += 1;
-        }
     }
     let cleared = clear_install(&library, &operator_actor(), &key)
         .await

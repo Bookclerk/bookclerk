@@ -138,12 +138,17 @@ function NodeRow({ node, onChanged, onError, onSessionExpired }: NodeRowProps) {
   const [labels, setLabels] = useState(node.labels.join(", "));
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    setLabel(node.runtime.label);
-    setCpu(String(node.runtime.cpu_budget_percent));
-    setMemory(String(node.runtime.memory_budget_percent));
-    setLabels(node.labels.join(", "));
-  }, [node.runtime, node.labels]);
+  // Reset a field only when its stored value changes. Every poll hands back
+  // new objects with the same values, which must not wipe an edit in
+  // progress, and a change to one field must not wipe another.
+  const storedLabel = node.runtime.label;
+  const storedCpu = String(node.runtime.cpu_budget_percent);
+  const storedMemory = String(node.runtime.memory_budget_percent);
+  const storedLabels = node.labels.join(", ");
+  useEffect(() => setLabel(storedLabel), [storedLabel]);
+  useEffect(() => setCpu(storedCpu), [storedCpu]);
+  useEffect(() => setMemory(storedMemory), [storedMemory]);
+  useEffect(() => setLabels(storedLabels), [storedLabels]);
 
   async function run(action: () => Promise<unknown>, failure: string) {
     setBusy(true);

@@ -13,10 +13,9 @@ use std::path::Path;
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    activate_version, approve_version_grant, clear_install, delete_plugin_placement,
-    list_deployments_for_instance, list_installs, list_plugin_instances_for_key,
-    list_plugin_schemas, list_versions, load_active_version, load_version,
-    replace_plugin_deployment, ConfigActor, DeploymentReplace, DesiredState, PluginVersion,
+    activate_version, approve_version_grant, clear_install, list_installs,
+    list_plugin_instances_for_key, list_plugin_schemas, list_versions, load_active_version,
+    load_version, undeploy_instance, ConfigActor, PluginVersion,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
@@ -405,29 +404,11 @@ pub async fn run_uninstall(
         return Ok(false);
     };
     let mut disabled = 0;
+    // Every instance must be stopped before the active version goes; a
+    // deployment that keeps losing a race fails the command and leaves the
+    // install in place.
     for instance in list_plugin_instances_for_key(store, &version.plugin_key).await? {
-        // The scheduler would redeploy a placed instance; drop its placement.
-        delete_plugin_placement(store, &cli_actor(), &instance.id).await?;
-        for deployment in list_deployments_for_instance(store, &instance.id).await? {
-            if !deployment.desired.runs() {
-                continue;
-            }
-            let replaced = replace_plugin_deployment(
-                store,
-                &cli_actor(),
-                &deployment.deployment_id,
-                deployment.revision,
-                DesiredState::Absent,
-                &format!(
-                    "cli-remove-{}-{}",
-                    deployment.deployment_id, deployment.revision
-                ),
-            )
-            .await?;
-            if matches!(replaced, DeploymentReplace::Applied(_)) {
-                disabled += 1;
-            }
-        }
+        disabled += undeploy_instance(store, &cli_actor(), &instance.id).await?;
     }
     clear_install(store, &cli_actor(), &version.plugin_key).await?;
     let payload = json!({

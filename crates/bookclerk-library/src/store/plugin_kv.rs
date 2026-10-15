@@ -395,6 +395,34 @@ mod tests {
 
     const PLUGIN: &str = "path:file:///tmp/kv-plugin#kv";
 
+    /// `kv_count` and the prunes compare stored expiries with `now` as text.
+    /// That is only sound while `to_rfc3339` sorts in time order, including
+    /// across a whole second, where the fraction is omitted: the `+00:00`
+    /// offset sorts below both `.` and digits.
+    #[test]
+    fn stored_expiry_text_sorts_in_time_order() {
+        let whole = DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let instants = [
+            whole - chrono::Duration::nanoseconds(1),
+            whole,
+            whole + chrono::Duration::nanoseconds(1),
+            whole + chrono::Duration::microseconds(500),
+            whole + chrono::Duration::milliseconds(123),
+            whole + chrono::Duration::milliseconds(500),
+            whole + chrono::Duration::seconds(1),
+        ];
+        for pair in instants.windows(2) {
+            assert!(
+                pair[0].to_rfc3339() < pair[1].to_rfc3339(),
+                "{} sorts after {}",
+                pair[0].to_rfc3339(),
+                pair[1].to_rfc3339()
+            );
+        }
+    }
+
     async fn memory_store() -> LibraryStore {
         LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()

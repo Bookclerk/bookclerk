@@ -295,6 +295,10 @@ pub async fn ensure_plugin_deployment(
 /// The batch carries a revision predicate and a `replacePluginDeployment`
 /// receipt. It does not update observation rows.
 ///
+/// The scheduler writes only its own states, with one exception: it may
+/// hand a row back (`placed` to `present`, `unplaced` to `absent`) when the
+/// row's placement is gone, finishing a deletion a racing pass outran.
+///
 /// # Errors
 ///
 /// Returns an error when the actor may not write `desired`, the deployment
@@ -307,8 +311,12 @@ pub async fn replace_plugin_deployment(
     desired: DesiredState,
     operation_id: &str,
 ) -> Result<DeploymentReplace> {
-    authorize_replace(actor, desired)?;
+    let hand_back = matches!(actor, ConfigActor::Scheduler) && !desired.is_scheduled();
+    if !hand_back {
+        authorize_replace(actor, desired)?;
+    }
     validate_operation_id(operation_id)?;
+    let target = desired;
     let desired = desired.as_str();
     if expected_revision < 1 {
         return Err(invalid("expected revision must be >= 1"));
@@ -327,6 +335,9 @@ pub async fn replace_plugin_deployment(
         return Ok(DeploymentReplace::Conflict {
             current_revision: current.revision,
         });
+    }
+    if hand_back && !(current.desired.is_scheduled() && current.desired.handed_back() == target) {
+        return Err(unauthorized_state(actor, target));
     }
     let now = Utc::now().to_rfc3339();
     let expires = (Utc::now() + Duration::hours(24)).to_rfc3339();

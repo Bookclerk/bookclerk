@@ -889,15 +889,32 @@ pub async fn put_plugin_deployment(
     let existing = load_deployment_for_node(&library, &instance_id, &node_id)
         .await
         .map_err(events_error)?;
-    let row = match existing {
+    let (existing, expected_revision, created) = match existing {
+        Some(current) => (current, body.expected_revision, false),
         None => {
-            ensure_plugin_deployment(&library, &operator_actor(), &instance_id, &node_id, desired)
-                .await
-                .map_err(events_error)?
+            // `ensure` returns a row another writer (enrollment, a second
+            // request) created first, whatever its state. When that state is
+            // not the one asked for, replace it against its revision rather
+            // than report it as applied.
+            let created = ensure_plugin_deployment(
+                &library,
+                &operator_actor(),
+                &instance_id,
+                &node_id,
+                desired,
+            )
+            .await
+            .map_err(events_error)?;
+            let revision = created.revision;
+            (created, Some(revision), true)
         }
-        Some(current) if current.desired == desired && body.expected_revision.is_none() => current,
-        Some(current) => {
-            let expected = body.expected_revision.unwrap_or(current.revision);
+    };
+    let row = match existing {
+        current if current.desired == desired && (created || body.expected_revision.is_none()) => {
+            current
+        }
+        current => {
+            let expected = expected_revision.unwrap_or(current.revision);
             match replace_plugin_deployment(
                 &library,
                 &operator_actor(),
