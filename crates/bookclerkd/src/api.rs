@@ -1028,14 +1028,6 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .route("/api/auth/tray-handoff", get(auth::tray_handoff))
         .route("/api/auth/me", get(auth::me))
-        // Host-node enrollment: the link secret is the credential, and the
-        // transport policy runs first. Never behind the cookie/auth layers.
-        .route("/api/node/v1/enroll", post(crate::node_api::post_enroll))
-        // Host-node socket: the node's Ed25519 key is the credential.
-        .route(
-            "/api/node/v1/connect",
-            get(crate::node_api::ws::get_connect),
-        )
         .route("/api/auth/elevate", post(auth::elevate))
         .route("/api/auth/bootstrap", post(auth::bootstrap))
         .route(
@@ -1056,6 +1048,9 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             post(auth::reset_user_password),
         )
         .merge(operator_or_admin)
+        // Host-node enrollment and socket: never behind the cookie/auth
+        // layers; the transport policy runs first.
+        .merge(crate::node_api::node_router(state.clone()))
         .merge(operator_only)
         .merge(node_admin)
         .merge(user_scoped)

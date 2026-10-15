@@ -850,9 +850,8 @@ Built in the first H-4 slice:
   function of the connection, headers, and the bootstrap `[daemon.node_api]`
   table (`mode`, `acme_contact`, `tls_listen`). `POST /api/node/v1/enroll`
   runs it first and sits outside the cookie and auth layers. The ACME and
-  self-signed listeners are later steps, so today those modes admit only
-  loopback connections; an incomplete `[daemon.node_api]` refuses every
-  connection.
+  self-signed listeners came in a later step (below); an incomplete
+  `[daemon.node_api]` refuses every connection.
 - Enroll checks that both public keys are canonical Curve25519 points in
   the prime-order subgroup (`bookclerk-node-proto::validate_*_public_key`),
   so small-order, mixed-order, twist, and non-canonical keys are refused
@@ -877,6 +876,20 @@ Built in the first H-4 slice:
   connection for the same node supersede the old one (4409), and closes on
   a binary or malformed frame (4400). Work frames are later steps; until
   then each request frame is answered `error {code: "unsupported"}`.
+- The built-in TLS listener (`node_api/tls.rs`) on `tls_listen`, serving
+  only the node API routes over HTTP/1.1 and tagging requests for
+  `classify_transport`. `acme` uses `rustls-acme` (TLS-ALPN-01 on the same
+  listener, Let's Encrypt production by default, `acme_directory` /
+  `acme_directory_ca` for staging or a private CA) with its cache under
+  `$FILES/acme/` (0700). `self_signed` generates a P-256 certificate once
+  under `$FILES/node-api/self-signed/` (0700, key 0600) and writes its SPKI
+  pin beside it; `POST /api/config/node-invites` and `bookclerk nodes
+  invite` append the pin to links.
+  In both modes the node API stays unmounted on every listener (404
+  `node_api_unmounted`) until the listener has a certificate, so an ACME
+  failure never falls back to plain HTTP. A Pebble issuance test runs when
+  `BOOKCLERK_TEST_ACME_DIRECTORY` / `BOOKCLERK_TEST_ACME_CA` are set; CI does
+  not run Pebble yet.
 
 ## Consequences
 
@@ -951,14 +964,13 @@ Not in this phase, and not claimed as production HA:
   on storage every placed host can read through its `file://` path.
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
-- Host nodes: the ACME and self-signed TLS listeners (and the SPKI pin in
-  links), the node socket's work frames (heartbeat, claims, renew/ack/fail,
+- Host nodes: Pebble in CI, the node socket's work frames (heartbeat, claims, renew/ack/fail,
   bindings, wakes, resume, the sealed box), `bookclerk clusters join` and the
   rest of the host-node client, per-work-item trust, host consent, the
   upload path, and node-local outputs (see *Node kinds, ownership, and the
   Host role* and *Host-node enrollment and transport*). Enrollment links,
-  redeem, revocation, the transport policy, and the socket handshake are
-  built. Settings has no
+  redeem, revocation, the transport policy, the socket handshake, and the
+  ACME and self-signed TLS listeners are built. Settings has no
   enrollment switch or invite screen yet (CLI and HTTP only).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).

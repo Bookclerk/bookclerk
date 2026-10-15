@@ -14,6 +14,7 @@
 //! sits outside those layers and authenticates with the node's enrolled
 //! Ed25519 key.
 
+pub mod tls;
 pub mod transport;
 pub mod ws;
 #[cfg(test)]
@@ -114,11 +115,18 @@ pub async fn post_node_invite(
     )
     .await
     .map_err(events_error)?;
-    let origin = {
+    let (origin, spki_pin) = {
         let cfg = state.config.read().await;
-        crate::origin::effective_origin_from_config(&cfg, Some(&headers))
+        // A self-signed owner pins its certificate in the link.
+        let pin = (cfg.daemon.node_api.mode == bookclerk_config::NodeApiMode::SelfSigned)
+            .then(|| bookclerk_config::read_node_api_spki_pin(&cfg.paths().files_dir))
+            .flatten();
+        (
+            crate::origin::effective_origin_from_config(&cfg, Some(&headers)),
+            pin,
+        )
     };
-    let url = minted.url(&origin, None);
+    let url = minted.url(&origin, spki_pin.as_deref());
     Ok(Json(json!({
         "link": link_json(&minted.link),
         "url": url.as_str(),
@@ -175,8 +183,24 @@ async fn connection_info(state: &Arc<AppState>, parts: &mut Parts) -> ConnInfo {
     }
 }
 
-/// Runs [`classify_transport`] for a node-API request. Answers the 403
-/// `transport_insecure` response to send when the connection is refused.
+/// The node API routes, as every listener mounts them: outside the cookie
+/// and operator auth layers.
+pub fn node_router<S>(state: Arc<AppState>) -> axum::Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    axum::Router::new()
+        // The link secret is the credential; the transport policy runs first.
+        .route("/api/node/v1/enroll", axum::routing::post(post_enroll))
+        // Host-node socket: the node's Ed25519 key is the credential.
+        .route("/api/node/v1/connect", axum::routing::get(ws::get_connect))
+        .with_state(state)
+}
+
+/// Checks that the node API is mounted ([`tls::node_api_mounted`]), then
+/// runs [`classify_transport`]. Answers 404 `node_api_unmounted` while a
+/// TLS mode has no certificate, or 403 `transport_insecure` when the
+/// connection is refused.
 async fn check_transport(
     state: &Arc<AppState>,
     parts: &mut Parts,
@@ -185,6 +209,16 @@ async fn check_transport(
     let conn = connection_info(state, parts).await;
     let decision = {
         let cfg = state.config.read().await;
+        if !tls::node_api_mounted(
+            cfg.daemon.node_api.mode,
+            parts.extensions.get::<tls::NodeApiGate>(),
+        ) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "node_api_unmounted" })),
+            )
+                .into_response());
+        }
         classify_transport(&conn, &parts.headers, &TransportConfig::from_config(&cfg))
     };
     match decision {
@@ -413,7 +447,12 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    async fn send(app: &axum::Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+    pub(super) async fn send(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
         let request = Request::builder()
             .method(method)
             .uri(uri)
@@ -430,7 +469,10 @@ mod tests {
     }
 
     /// Invite routes for one caller, as the daemon mounts them.
-    fn invite_routes(state: &Arc<crate::api::AppState>, caller: UserCaller) -> axum::Router {
+    pub(super) fn invite_routes(
+        state: &Arc<crate::api::AppState>,
+        caller: UserCaller,
+    ) -> axum::Router {
         axum::Router::new()
             .route(
                 "/api/config/node-invites",
