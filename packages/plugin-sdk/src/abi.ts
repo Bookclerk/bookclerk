@@ -29,6 +29,18 @@ export const MAX_CONFIG_PAYLOAD_BYTES = 65536 as const;
 /** Maximum decoded size of a domain-event scalar payload (not a stream). */
 export const MAX_EVENT_PAYLOAD_BYTES = 65536 as const;
 
+/**
+ * Largest `KvNamespace` value in bytes; a `[[kv_namespaces]]` row may lower
+ * its own cap but never raise it past this.
+ */
+export const MAX_KV_VALUE_BYTES = 1048576 as const;
+
+/** Longest `KvNamespace` key in UTF-8 bytes. */
+export const MAX_KV_KEY_BYTES = 512 as const;
+
+/** Largest `KvNamespace` metadata JSON text in bytes. */
+export const MAX_KV_METADATA_BYTES = 1024 as const;
+
 /** Maximum already-separated operations in one plugin-owned migration. */
 export const MAX_PLUGIN_MIGRATION_OPS = 256 as const;
 

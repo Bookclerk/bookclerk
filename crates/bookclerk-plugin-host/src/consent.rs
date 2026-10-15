@@ -181,6 +181,37 @@ pub const KNOWN_HOST_BINDINGS: &[&str] = &["config", "secrets", "plugin_kv", "wo
 /// Grant-entry prefix for named plugin database bindings (`database:<NAME>`).
 pub const DATABASE_BINDING_PREFIX: &str = "database:";
 
+/// Grant `bindings` entry prefix for one `[[queues.producers]]` binding
+/// (`queue:<BINDING>`): the plugin may send through that `env` binding.
+pub const QUEUE_PRODUCER_BINDING_PREFIX: &str = "queue:";
+
+/// Grant `bindings` entry prefix for one `[[queues.consumers]]` row
+/// (`queue_consumer:<queue>`): the host may deliver that queue to the plugin.
+pub const QUEUE_CONSUMER_BINDING_PREFIX: &str = "queue_consumer:";
+
+/// Grant token for sending through the `[[queues.producers]]` binding `binding`.
+#[must_use]
+pub fn queue_producer_grant(binding: &str) -> String {
+    format!("{QUEUE_PRODUCER_BINDING_PREFIX}{binding}")
+}
+
+/// Grant token for consuming `queue`.
+#[must_use]
+pub fn queue_consumer_grant(queue: &str) -> String {
+    format!("{QUEUE_CONSUMER_BINDING_PREFIX}{queue}")
+}
+
+/// Consented queue consumer names on a grant.
+#[must_use]
+pub fn granted_queue_consumers(grant: &PluginGrant) -> Vec<String> {
+    grant
+        .bindings
+        .iter()
+        .filter_map(|b| b.strip_prefix(QUEUE_CONSUMER_BINDING_PREFIX))
+        .map(str::to_string)
+        .collect()
+}
+
 /// The binding name when a grant entry is a named database binding.
 #[must_use]
 pub fn database_binding_name(binding: &str) -> Option<&str> {
@@ -454,6 +485,19 @@ impl PluginGrant {
         self.consumers
             .iter()
             .any(|c| c.event_type == event_type && c.schema_versions.contains(&schema_version))
+    }
+
+    /// True when this grant authorizes delivering messages from `queue`.
+    #[must_use]
+    pub fn allows_queue_consumer(&self, queue: &str) -> bool {
+        grant_has_binding(self, &queue_consumer_grant(queue))
+    }
+
+    /// True when this grant authorizes sending through the queue producer
+    /// `binding`.
+    #[must_use]
+    pub fn allows_queue_producer(&self, binding: &str) -> bool {
+        grant_has_binding(self, &queue_producer_grant(binding))
     }
 
     /// True when this grant authorizes handling `job_type`.
@@ -832,6 +876,12 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
     }
     for name in &b.databases {
         bindings.insert(format!("{DATABASE_BINDING_PREFIX}{name}"));
+    }
+    for producer in &manifest.queues.producers {
+        bindings.insert(queue_producer_grant(&producer.binding));
+    }
+    for consumer in &manifest.queues.consumers {
+        bindings.insert(queue_consumer_grant(&consumer.queue));
     }
     let flags = manifest
         .workerd
@@ -1800,8 +1850,8 @@ pub fn host_cpu_rate_max() -> u32 {
 
 /// Logical CPUs visible to this process (at least 1).
 #[must_use]
-pub fn host_logical_cpus() -> u32 {
-    bookclerk_sandbox::host_logical_cpus()
+pub fn node_logical_cpus() -> u32 {
+    bookclerk_sandbox::node_logical_cpus()
 }
 
 /// Format cores for operator-facing text (`0.80`).
@@ -1871,6 +1921,16 @@ fn grant_binding_for_described(manifest: &PluginManifest, env_name: &str) -> Opt
         CONFIG_BINDING, DEFAULT_KV_BINDING, DEFAULT_OAUTH_BINDING, DEFAULT_SECRETS_BINDING,
         DEFAULT_WORK_FS_BINDING,
     };
+    // Queue producer bindings are checked by `validate_described_capabilities`
+    // through `queue_producers`; the env name itself needs no grant token here.
+    if manifest
+        .queues
+        .producers
+        .iter()
+        .any(|p| p.binding == env_name)
+    {
+        return None;
+    }
     if env_name == CONFIG_BINDING {
         return Some("config");
     }
@@ -1977,6 +2037,22 @@ pub fn spawn_grant(
     files_dir: &Path,
     plugin: &crate::discover::DiscoveredPlugin,
 ) -> Result<PluginGrant> {
+    if let Some(version_grant) = &plugin.version_grant {
+        // A released plugin's consent is the grant recorded on its release
+        // row (approved once for the cluster), checked against this tree's
+        // manifest exactly as a host grant would be.
+        let requested = consent_request(&plugin.manifest, plugin.plugin_key());
+        return if grant_covers(version_grant, &requested) {
+            Ok(effective_grant(version_grant, &requested))
+        } else {
+            Err(PluginError::message(format!(
+                "plugin `{}` release grant does not cover this release; re-approve with \
+                 `bookclerk plugins approve {}`",
+                plugin.alias(),
+                plugin.alias()
+            )))
+        };
+    }
     if plugin.identity.provenance.grants_platform_defaults()
         && bookclerk_plugin_catalog::is_platform_plugin_key(plugin.plugin_key())
     {
@@ -2466,6 +2542,29 @@ pub fn validate_described_capabilities(
         }
         require_binding(grant, &format!("{DATABASE_BINDING_PREFIX}{database}"))?;
     }
+    for queue in &described.queue_consumers {
+        if !declared.queue_consumers.contains(queue) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() consumes queue `{queue}` not declared in plugin.toml"
+            )));
+        }
+        require_binding(grant, &queue_consumer_grant(queue))?;
+    }
+    for queue in &described.queue_producers {
+        if !declared.queue_producers.contains(queue) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() sends to queue `{queue}` not declared in plugin.toml"
+            )));
+        }
+        for producer in manifest
+            .queues
+            .producers
+            .iter()
+            .filter(|p| &p.queue == queue)
+        {
+            require_binding(grant, &queue_producer_grant(&producer.binding))?;
+        }
+    }
     for binding in &described.bindings {
         if !declared.bindings.contains(binding) {
             return Err(PluginError::message(format!(
@@ -2565,7 +2664,7 @@ mod tests {
         let key = bookclerk_plugin_catalog::PluginKey::platform(package, id).unwrap();
         plugin.identity.plugin_key = key.clone();
         plugin.identity.artifact.plugin_key = key;
-        plugin.identity.provenance = PluginProvenance::VerifiedInstalled;
+        plugin.identity.provenance = PluginProvenance::VerifiedStaged;
         plugin
     }
 
@@ -4434,6 +4533,115 @@ type = "demo_pinged"
         .unwrap_err()
         .to_string();
         assert!(err.contains("grant lacks event producer"), "{err}");
+    }
+
+    #[test]
+    fn queue_grants_follow_the_manifest_and_describe_cannot_widen_them() {
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "demo"
+runtime = "native"
+command = "./demo"
+entrypoints = ["cli"]
+
+[capabilities.network]
+mode = "deny"
+
+[[queues.producers]]
+queue = "notify"
+binding = "NOTIFY"
+
+[[queues.consumers]]
+queue = "jobs"
+max_retries = 2
+"#,
+        )
+        .unwrap();
+        assert_eq!(queue_producer_grant("NOTIFY"), "queue:NOTIFY");
+        assert_eq!(queue_consumer_grant("jobs"), "queue_consumer:jobs");
+
+        let grant = consent_request_alias(&manifest);
+        assert!(
+            grant.bindings.contains("queue:NOTIFY"),
+            "{:?}",
+            grant.bindings
+        );
+        assert!(
+            grant.bindings.contains("queue_consumer:jobs"),
+            "{:?}",
+            grant.bindings
+        );
+        assert!(grant.allows_queue_producer("NOTIFY"));
+        assert!(grant.allows_queue_consumer("jobs"));
+        assert!(!grant.allows_queue_consumer("notify"));
+        assert!(!grant.allows_queue_producer("JOBS"));
+        assert_eq!(granted_queue_consumers(&grant), vec!["jobs".to_string()]);
+        assert_eq!(
+            grant_binding_for_described(&manifest, "NOTIFY"),
+            None,
+            "queue producer env names are checked through queue_producers"
+        );
+
+        let described = manifest.capabilities();
+        assert_eq!(described.queue_consumers, vec!["jobs".to_string()]);
+        assert_eq!(described.queue_producers, vec!["notify".to_string()]);
+        validate_described_capabilities(&manifest, &grant, &described, PortalAuthMode::Unspecified)
+            .unwrap();
+
+        let mut widened_consumer = described.clone();
+        widened_consumer.queue_consumers.push("other".into());
+        let err = validate_described_capabilities(
+            &manifest,
+            &grant,
+            &widened_consumer,
+            PortalAuthMode::Unspecified,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("consumes queue `other` not declared"), "{err}");
+
+        let mut widened_producer = described.clone();
+        widened_producer.queue_producers.push("other".into());
+        let err = validate_described_capabilities(
+            &manifest,
+            &grant,
+            &widened_producer,
+            PortalAuthMode::Unspecified,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("sends to queue `other` not declared"), "{err}");
+
+        // A grant recorded before the queue rows were added does not cover
+        // them: the pending structural delta carries the tokens and describe()
+        // cannot claim either side until the operator approves.
+        let mut narrowed = grant.clone();
+        narrowed.bindings.retain(|b| {
+            !b.starts_with(QUEUE_PRODUCER_BINDING_PREFIX)
+                && !b.starts_with(QUEUE_CONSUMER_BINDING_PREFIX)
+        });
+        assert!(grant_covers(&narrowed, &grant));
+        let pending = pending_structural(&narrowed, &grant);
+        assert!(
+            pending.bindings.contains("queue:NOTIFY"),
+            "{:?}",
+            pending.bindings
+        );
+        assert!(
+            pending.bindings.contains("queue_consumer:jobs"),
+            "{:?}",
+            pending.bindings
+        );
+        let err = validate_described_capabilities(
+            &manifest,
+            &narrowed,
+            &described,
+            PortalAuthMode::Unspecified,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("queue_consumer:jobs"), "{err}");
     }
 
     #[test]

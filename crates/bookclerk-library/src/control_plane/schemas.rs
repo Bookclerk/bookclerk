@@ -1,17 +1,17 @@
 //! Pinned plugin settings schemas (`plugin_schemas`).
 //!
-//! A host that discovers or installs a plugin pins the manifest's
+//! A node that discovers or installs a plugin pins the manifest's
 //! `[[settings]]` schema here together with the package version that
 //! produced it. Instance documents are validated against the pinned row, so
-//! an API host that does not have the guest installed can still validate a
+//! an API node that does not have the guest installed can still validate a
 //! write. Versions order the pin: a newer local package re-pins (and the
 //! caller reconciles documents to the new schema), an equal version with a
 //! different schema re-pins in place, and an older local package is
 //! [`SchemaPinChange::Stale`] and must not spawn. Equality is the
 //! fingerprint of the normalized schema, not the manifest bytes, so line
 //! endings or comments never flip the pin. Every write is a compare-and-swap
-//! on the row that was read, so two hosts pinning at once cannot leave an
-//! older version on top of a newer one. The row records which host wrote it.
+//! on the row that was read, so two nodes pinning at once cannot leave an
+//! older version on top of a newer one. The row records which node wrote it.
 
 use std::cmp::Ordering;
 
@@ -41,8 +41,8 @@ pub struct PinnedPluginSchema {
     pub schema: SettingsSchema,
     /// RFC 3339 time of the last pin.
     pub recorded_at: String,
-    /// Host that recorded the last pin.
-    pub recorded_by_host: String,
+    /// Node that recorded the last pin.
+    pub recorded_by_node: String,
 }
 
 /// Inputs for [`pin_plugin_schema`].
@@ -56,8 +56,8 @@ pub struct SchemaPin<'a> {
     pub package_version: &'a str,
     /// Declared settings.
     pub schema: &'a SettingsSchema,
-    /// Host recording the pin.
-    pub host_id: &'a str,
+    /// Node recording the pin.
+    pub node_id: &'a str,
 }
 
 /// How [`pin_plugin_schema`] changed the row.
@@ -65,7 +65,7 @@ pub struct SchemaPin<'a> {
 pub enum SchemaPinChange {
     /// The row already matched the local manifest and version.
     Unchanged,
-    /// No host had pinned this plugin before.
+    /// No node had pinned this plugin before.
     Pinned,
     /// The local package is newer than the pin; the row now carries it.
     /// Callers prune instance documents to the new schema.
@@ -77,10 +77,16 @@ pub enum SchemaPinChange {
     /// place. Callers prune instance documents as for an upgrade.
     Repinned,
     /// The local package is older than the pin. The row was not touched and
-    /// the plugin must not be spawned by this host.
+    /// the plugin must not be spawned by this node.
     Stale {
         /// The local manifest's version.
         local_version: String,
+    },
+    /// The active release moved to an older version (a rollback); the row
+    /// follows it. Callers prune instance documents as for an upgrade.
+    RolledBack {
+        /// Version the row carried before this pin.
+        previous_version: String,
     },
 }
 
@@ -89,7 +95,7 @@ pub enum SchemaPinChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaPinOutcome {
     /// The pinned row. For [`SchemaPinChange::Stale`] this is the newer pin
-    /// another host wrote, not the local manifest.
+    /// another node wrote, not the local manifest.
     pub schema: PinnedPluginSchema,
     /// What happened to the row.
     pub change: SchemaPinChange,
@@ -125,6 +131,31 @@ pub async fn pin_plugin_schema(
     store: &LibraryStore,
     pin: &SchemaPin<'_>,
 ) -> Result<SchemaPinOutcome> {
+    pin_schema(store, pin, false).await
+}
+
+/// Pins the schema of the plugin's active release.
+///
+/// The pinned schema of a released plugin is the active release's schema,
+/// so an older version is pinned too ([`SchemaPinChange::RolledBack`])
+/// instead of being refused as stale.
+///
+/// # Errors
+///
+/// As [`pin_plugin_schema`].
+pub async fn pin_version_schema(
+    store: &LibraryStore,
+    pin: &SchemaPin<'_>,
+) -> Result<SchemaPinOutcome> {
+    pin_schema(store, pin, true).await
+}
+
+/// Shared compare-and-swap loop; `follow_release` pins an older version.
+async fn pin_schema(
+    store: &LibraryStore,
+    pin: &SchemaPin<'_>,
+    follow_release: bool,
+) -> Result<SchemaPinOutcome> {
     let local_version = parse_package_version(pin.package_version)
         .map_err(|detail| LibraryError::Schema(format!("plugin `{}`: {detail}", pin.plugin_key)))?
         .to_string();
@@ -142,7 +173,7 @@ pub async fn pin_plugin_schema(
                 schema_version: Set(i64::from(SETTINGS_SCHEMA_VERSION)),
                 settings_json: Set(settings_json.clone()),
                 recorded_at: Set(Utc::now().to_rfc3339()),
-                recorded_by_host: Set(pin.host_id.to_string()),
+                recorded_by_node: Set(pin.node_id.to_string()),
             };
             let inserted = plugin_schemas::Entity::insert(model)
                 .on_conflict(
@@ -154,7 +185,7 @@ pub async fn pin_plugin_schema(
                 .await
                 .map_err(LibraryError::Orm)?;
             if inserted == 0 {
-                continue; // another host pinned first; decide against its row
+                continue; // another node pinned first; decide against its row
             }
             let schema = require_plugin_schema(store, pin.plugin_key).await?;
             return Ok(SchemaPinOutcome {
@@ -167,6 +198,9 @@ pub async fn pin_plugin_schema(
                 LibraryError::Schema(format!("plugin `{}`: {detail}", pin.plugin_key))
             })?;
         let change = match order {
+            Ordering::Less if follow_release => SchemaPinChange::RolledBack {
+                previous_version: existing.package_version.clone(),
+            },
             Ordering::Less => {
                 return Ok(SchemaPinOutcome {
                     schema: existing,
@@ -197,9 +231,9 @@ pub async fn pin_plugin_schema(
             schema_version: Set(i64::from(SETTINGS_SCHEMA_VERSION)),
             settings_json: Set(settings_json.clone()),
             recorded_at: Set(Utc::now().to_rfc3339()),
-            recorded_by_host: Set(pin.host_id.to_string()),
+            recorded_by_node: Set(pin.node_id.to_string()),
         };
-        // Compare-and-swap on what was read: a row another host moved in the
+        // Compare-and-swap on what was read: a row another node moved in the
         // meantime is not touched, and the loop decides against it instead.
         let updated = plugin_schemas::Entity::update_many()
             .set(update)
@@ -225,7 +259,7 @@ pub async fn pin_plugin_schema(
 /// Whether the pinned row for `plugin_key` is newer than `local_version`.
 ///
 /// `None` when nothing is pinned yet. Used by the reconciler before a spawn
-/// so a host that was not the one to upgrade the pin still refuses to run an
+/// so a node that was not the one to upgrade the pin still refuses to run an
 /// older package against documents written for the newer schema.
 ///
 /// # Errors
@@ -244,7 +278,7 @@ pub async fn stale_against_pin(
     Ok((order == Ordering::Less).then_some(pinned))
 }
 
-/// The pinned schema for `plugin_key`, if any host has pinned one.
+/// The pinned schema for `plugin_key`, if any node has pinned one.
 ///
 /// # Errors
 ///
@@ -279,14 +313,14 @@ pub async fn list_plugin_schemas(store: &LibraryStore) -> Result<Vec<PinnedPlugi
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::NotFound`] when no host has pinned the plugin yet.
+/// Returns [`LibraryError::NotFound`] when no node has pinned the plugin yet.
 pub async fn require_plugin_schema(
     store: &LibraryStore,
     plugin_key: &str,
 ) -> Result<PinnedPluginSchema> {
     load_plugin_schema(store, plugin_key).await?.ok_or_else(|| {
         LibraryError::NotFound(format!(
-            "plugin `{plugin_key}` has no pinned settings schema; install it on a host first"
+            "plugin `{plugin_key}` has no pinned settings schema; install it on a node first"
         ))
     })
 }
@@ -312,6 +346,6 @@ fn schema_from_model(row: plugin_schemas::Model) -> Result<PinnedPluginSchema> {
         package_version: row.package_version,
         schema,
         recorded_at: row.recorded_at,
-        recorded_by_host: row.recorded_by_host,
+        recorded_by_node: row.recorded_by_node,
     })
 }

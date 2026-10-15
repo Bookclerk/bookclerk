@@ -161,7 +161,7 @@ chapter_layout = "tree"
 # Destination plugins (`local`, `s3`) are deployed plugin instances, not
 # config.toml tables. Enable one per host and set its settings on the
 # instance:
-#   bookclerk plugins enable local
+#   bookclerk plugins deploy local
 #   bookclerk plugins config set local root /data/Audiobooks
 #   bookclerk plugins config set s3 bucket my-audiobooks
 #   bookclerk plugins config set s3 secret_access_key --secret   # value on stdin
@@ -204,7 +204,7 @@ json_logs = true
 # are deployed plugin instances too; they default to disabled until approved
 # and enabled on a host:
 #   bookclerk plugins approve audiobookshelf
-#   bookclerk plugins enable audiobookshelf
+#   bookclerk plugins deploy audiobookshelf
 #   bookclerk plugins config set audiobookshelf base_url http://audiobookshelf:80
 #   bookclerk plugins config set audiobookshelf api_key --secret   # value on stdin
 

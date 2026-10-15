@@ -117,6 +117,18 @@ enum Commands {
         /// Nested `events` verb (list, dead-letters, retry, ack, cancel, resume).
         command: commands::events::EventsCommand,
     },
+    /// Cluster nodes: liveness, capacity, budgets, and placement labels.
+    Nodes {
+        #[command(subcommand)]
+        /// Nested `nodes` verb (list, set, label).
+        command: commands::nodes::NodesCommand,
+    },
+    /// Plugin-owned queues on the outbox: counters, consumers, messages.
+    Queues {
+        #[command(subcommand)]
+        /// Nested `queues` verb (list, inspect).
+        command: commands::queues::QueuesCommand,
+    },
     /// Print a loopback operator sign-in URL (requires a running daemon).
     Login,
     /// Diagnostics ring buffer and opt-in upload.
@@ -361,6 +373,8 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         Commands::Db { command } => commands::db::run(command, &config, format).await,
         Commands::Daemon { command } => commands::daemon_cmd::run(command, &config, format).await,
         Commands::Events { command } => commands::events::run(command, &config, format).await,
+        Commands::Nodes { command } => commands::nodes::run(command, &config, format).await,
+        Commands::Queues { command } => commands::queues::run(command, &config, format).await,
         Commands::Login => commands::daemon_cmd::run_login(&config, format).await,
         Commands::Diagnostics { command } => {
             commands::diagnostics_cmd::run(command, &config, format)

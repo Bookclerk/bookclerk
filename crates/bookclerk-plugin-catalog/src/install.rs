@@ -291,7 +291,7 @@ impl Installer {
                 None,
                 &dest,
                 &incoming_key,
-                PluginProvenance::VerifiedInstalled,
+                PluginProvenance::VerifiedStaged,
                 true,
             )?;
             return Ok(InstallOutcome {
@@ -423,7 +423,7 @@ impl Installer {
             Some(exe_digest),
             &dest,
             &incoming_key,
-            PluginProvenance::VerifiedInstalled,
+            PluginProvenance::VerifiedStaged,
             false,
         ) {
             Ok(receipt) => receipt,
@@ -446,7 +446,7 @@ impl Installer {
                 &runtime.id,
                 &receipt.manifest_sha256,
                 &receipt.payload_root_sha256,
-                PluginProvenance::VerifiedInstalled,
+                PluginProvenance::VerifiedStaged,
             ) {
                 restore_tree(&backup);
                 let _ = restore_ledger_entry(dir, &incoming_key, previous_ledger.clone());
@@ -1448,7 +1448,19 @@ fn installed_alias_owners(plugins_root: &Path) -> Result<Vec<(PluginKey, String,
     Ok(out)
 }
 
-/// Copies a `file://` or local path, or HTTPS/localhost HTTP, refusing oversized bodies.
+/// Fetches an artifact URL (`file://` or local path, or HTTPS/localhost
+/// HTTP bounded by [`MAX_DOWNLOAD_BYTES`] and [`DOWNLOAD_TIMEOUT`]) into
+/// `dest`, refusing oversized bodies.
+///
+/// # Errors
+///
+/// Returns an error when the URL is unsupported, the host is offline for a
+/// remote URL, or the transfer fails or exceeds the cap.
+pub fn fetch_artifact(url: &str, dest: &Path, offline: bool) -> Result<()> {
+    download_to(url, dest, offline)
+}
+
+/// Implementation of [`fetch_artifact`] (the installer's own name for it).
 fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
     if let Some(path) = url.strip_prefix("file://") {
         fs::copy(path, dest)?;
@@ -1471,13 +1483,15 @@ fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
             "remote install requires https:// (or localhost http for fixtures)",
         ));
     }
-    let _ = MAX_REDIRECTS;
-    let _ = DOWNLOAD_TIMEOUT;
     let mut response = ureq::get(url)
         .header(
             "User-Agent",
             concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-install)"),
         )
+        .config()
+        .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .max_redirects(MAX_REDIRECTS)
+        .build()
         .call()
         .map_err(|e| CatalogError::message(format!("download failed: {e}")))?;
     let status = response.status();

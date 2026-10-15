@@ -90,7 +90,7 @@ pub use paths::{
 pub use pipeline_opts::{ChapterJsonMode, OutputFormat};
 pub use platform::detect_distro;
 pub use plugins::{
-    host_cpu_rate_max, host_logical_cpus, IntegrationsConfig, PluginRegistryEntry, PluginsConfig,
+    host_cpu_rate_max, node_logical_cpus, IntegrationsConfig, PluginRegistryEntry, PluginsConfig,
     PluginsJailConfig,
 };
 pub use redact::{

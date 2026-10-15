@@ -28,6 +28,10 @@ pub struct DiscoveredPlugin {
     pub command: PathBuf,
     /// Host-evaluated provenance-qualified identity.
     pub identity: PluginInstallIdentity,
+    /// Consent grant recorded on the cluster release this tree was
+    /// materialized from; `None` for host-local trees, whose grant lives in
+    /// `plugin-grants.json`.
+    pub version_grant: Option<crate::PluginGrant>,
 }
 
 impl DiscoveredPlugin {
@@ -63,6 +67,7 @@ impl DiscoveredPlugin {
             root,
             command,
             identity,
+            version_grant: None,
         })
     }
 
@@ -77,7 +82,53 @@ impl DiscoveredPlugin {
             root,
             command,
             identity,
+            version_grant: None,
         }
+    }
+
+    /// Builds a plugin from a tree materialized from a cluster release.
+    ///
+    /// The caller has already verified the tree's payload-root digest
+    /// against the release row; identity, version, and the consent grant
+    /// come from that row, not from a receipt or the host grant file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the spawn command cannot be resolved, the
+    /// manifest cannot be hashed, or `plugin_key` is malformed.
+    pub fn from_release(
+        manifest: PluginManifest,
+        root: PathBuf,
+        plugin_key: &str,
+        version: &str,
+        payload_root_sha256: &str,
+        archive_sha256: &str,
+        grant: crate::PluginGrant,
+    ) -> Result<Self> {
+        let key =
+            PluginKey::parse(plugin_key).map_err(|err| PluginError::message(err.to_string()))?;
+        let command = resolve_spawn_command(&root, &manifest)?;
+        let manifest_sha256 = bookclerk_plugin_catalog::manifest_sha256(&root)
+            .map_err(|err| PluginError::message(err.to_string()))?;
+        let identity = PluginInstallIdentity {
+            plugin_key: key.clone(),
+            alias: manifest.id.clone(),
+            artifact: bookclerk_plugin_catalog::ArtifactIdentity {
+                plugin_key: key,
+                version: version.to_string(),
+                manifest_sha256,
+                payload_root_sha256: payload_root_sha256.to_string(),
+                archive_sha256: Some(archive_sha256.to_string()),
+            },
+            provenance: bookclerk_plugin_catalog::PluginProvenance::Installed,
+        };
+        Ok(Self {
+            manifest,
+            root,
+            command,
+            identity,
+            version_grant: Some(grant),
+        })
     }
 
     /// Display / CLI alias (`plugin.toml` id).
@@ -95,7 +146,7 @@ impl DiscoveredPlugin {
 
 /// First-party database adapter kind when provenance + PluginKey match.
 ///
-/// `PlatformBundled` (platform sqlite) and `VerifiedInstalled` (crates.io /
+/// `PlatformBundled` (platform sqlite) and `VerifiedStaged` (crates.io /
 /// platform postgres and D1) both qualify. `LocalDevelopment` and `Modified`
 /// never do. Alias text (`id = "sqlite"`) is not consulted.
 #[must_use]
@@ -473,7 +524,7 @@ fn kind_or_alias_match(left: &str, right: &str) -> bool {
 pub fn stamp_occupancy_plugin_key(config: &mut Config, plugin: &DiscoveredPlugin) -> Result<()> {
     if !plugin.manifest.families().contains(&PluginFamily::Database) {
         return Err(PluginError::message(format!(
-            "plugin `{}` is enabled per host with `bookclerk plugins enable`, not in config.toml",
+            "plugin `{}` is enabled per host with `bookclerk plugins deploy`, not in config.toml",
             plugin.alias()
         )));
     }
@@ -993,7 +1044,7 @@ mode = "deny"
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("plugins enable"),
+            err.contains("plugins deploy"),
             "non-database plugins are deployed, not stamped into config.toml: {err}"
         );
         let s3 = resolve_plugin_ref(&found, "s3").unwrap();

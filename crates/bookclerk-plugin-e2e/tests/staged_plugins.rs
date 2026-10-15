@@ -16,7 +16,9 @@ use bookclerk_plugin_host::{
     consent_request, discover_plugins, CliInvokeParams, Entrypoint, PluginFamily, PluginGrantStore,
     PluginSession, SearchCatalogParams, HOST_SHARED_ACCOUNT, OPERATOR_ACCOUNT,
 };
-use bookclerk_plugin_sdk::{CatalogField, CatalogSort, ListDealsParams};
+use bookclerk_plugin_sdk::{
+    CatalogField, CatalogSort, ListDealsParams, QueueBatch, QueueMessage, QueueResult, QueueRetry,
+};
 
 /// Per-plugin spawn/describe budget. A hung Cap'n Proto handshake must fail
 /// the job rather than stall `fmt / clippy / test` until the runner timeout.
@@ -217,6 +219,62 @@ async fn staged_first_party_plugins_describe() {
                     );
                 }
             }
+        }
+
+        // `[[queues.consumers]]` conformance: one `queue(batch)` call answers
+        // exactly one result per message, in order. The Echo guests ack
+        // everything except a `text` body of `retry`.
+        if let Some(consumer) = plugin.manifest.queues.consumers.first() {
+            let batch = QueueBatch {
+                queue: consumer.queue.clone(),
+                messages: vec![
+                    QueueMessage {
+                        id: "q-1".into(),
+                        timestamp_unix_ms: 1_700_000_000_000,
+                        body: br#"{"n":1}"#.to_vec(),
+                        content_type: "json".into(),
+                        attempts: 1,
+                        source: "staged_plugins".into(),
+                    },
+                    QueueMessage {
+                        id: "q-2".into(),
+                        timestamp_unix_ms: 1_700_000_000_001,
+                        body: b"retry".to_vec(),
+                        content_type: "text".into(),
+                        attempts: 2,
+                        source: "staged_plugins".into(),
+                    },
+                ],
+            };
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let results =
+                tokio::time::timeout(STAGED_RPC_TIMEOUT, session.deliver_queue(batch, cancel))
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "{} queue(batch) timed out after {STAGED_RPC_TIMEOUT:?}",
+                            plugin.manifest.id
+                        )
+                    })
+                    .unwrap_or_else(|e| {
+                        panic!("{} queue(batch) must answer: {e}", plugin.manifest.id)
+                    });
+            assert_eq!(
+                results,
+                vec![
+                    QueueResult::Ack,
+                    QueueResult::Retry(QueueRetry {
+                        delay_seconds: 1,
+                        reason: "echo retry".into(),
+                    }),
+                ],
+                "{} queue(batch) must ack the json message and retry the `retry` text",
+                plugin.manifest.id
+            );
+            eprintln!(
+                "staged_plugins: {} queue(batch) on `{}` ok",
+                plugin.manifest.id, consumer.queue
+            );
         }
 
         if plugin.manifest.id == "echo_workerd_fetch" && session.has_entrypoint(Entrypoint::Cli) {

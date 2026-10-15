@@ -94,11 +94,11 @@ pub use migrations::{
 pub use models::{
     catalog_subscribers_for_event, collapse_live_subscriber_nodes, content_kind_from_classic,
     content_kind_to_classic, event_filter_matches, event_matches_wake_grants,
-    intersect_event_filters, is_downloadable, is_episode, is_podcast_parent, job_backoff_run_after,
-    normalize_theme, portal_prefs_key, push_queue_wisher, subscription_matches_event,
-    user_prefs_key, wake_grants_from_subscriptions, AccountLinkRecord, AccountRecord,
-    AcquireStatus, BookRecord, ClaimTicketRecord, DomainEventRecord, EmbeddingRecord,
-    EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription, EventDeliveryFence,
+    intersect_event_filters, is_downloadable, is_episode, is_podcast_parent, is_valid_queue_name,
+    job_backoff_run_after, normalize_theme, portal_prefs_key, push_queue_wisher, queue_name_or_bus,
+    subscription_matches_event, user_prefs_key, wake_grants_from_subscriptions, AccountLinkRecord,
+    AccountRecord, AcquireStatus, BookRecord, ClaimTicketRecord, DomainEventRecord,
+    EmbeddingRecord, EnqueueJobSpec, EnqueueOutcome, EventCatalogSubscription, EventDeliveryFence,
     EventDeliveryMetrics, EventDeliveryRecord, EventSubscriber, EventSubscriberCatalogRecord,
     EventSubscriberNodeRecord, EventWakeGrant, GlobalQueueEntry, JobFence, JobKind, JobPayload,
     JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger, ListeningProgressRecord,
@@ -107,9 +107,10 @@ pub use models::{
     RequestStatus, SecurityAuditEvent, StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord,
     UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
     UserRecord, UserRole, UserSsoPicture, UserStatus, WishlistPurchaseHint, WishlistStoreEdition,
-    WorkRecord, EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK,
-    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, JOB_PAYLOAD_VERSION, MAX_QUEUE_WISHERS,
-    OPERATOR_PREFS_KEY,
+    WorkRecord, CORE_EVENTS_QUEUE, EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK,
+    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, JOB_PAYLOAD_VERSION, MAX_QUEUE_NAME_LEN,
+    MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
+    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT,
 };
 pub use operator_token::{
     read_or_create_operator_token, resolve_operator_token, rotate_operator_token,
@@ -139,11 +140,14 @@ pub use sql_plan::{
     wake_page_for_max_binds, AtomicSession, CompiledAtomic,
 };
 pub use store::{
-    event_outbox::prepare_publish_domain_event, fallback_work_key, inject_dispatch_page_failures,
-    plugin_databases::PluginDatabaseRecord, prefer_enrichment_source, set_dispatch_chunk_for_test,
-    wishlist_identities_match, BookPage, CatalogEnrichmentFields, LibraryStore, NewBook,
-    NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NewWork, SavedFilterRecord,
-    UserBookFields, WishlistIdentity, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    event_outbox::{deliver_after_for, prepare_publish_domain_event},
+    fallback_work_key, inject_dispatch_page_failures,
+    plugin_databases::PluginDatabaseRecord,
+    plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
+    prefer_enrichment_source, set_dispatch_chunk_for_test, wishlist_identities_match, BookPage,
+    CatalogEnrichmentFields, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
+    NewTitleRequestSource, NewWork, SavedFilterRecord, UserBookFields, WishlistIdentity,
+    BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
 };
 pub use text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,

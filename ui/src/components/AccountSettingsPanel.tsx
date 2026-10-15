@@ -651,7 +651,7 @@ export function AccountSettingsPanel({
 
         {user && session?.second_factor?.required && !session.second_factor.enrolled ? (
           <div className="rounded-md border border-brick/30 bg-brick/10 px-3 py-2.5 text-sm text-ink/80">
-            This host requires a passkey or authenticator app. Add one below to keep using the library.
+            This server requires a passkey or authenticator app. Add one below to keep using the library.
           </div>
         ) : null}
 
@@ -660,7 +660,7 @@ export function AccountSettingsPanel({
             <SecurityCard
               icon={<KeyRound className="h-4 w-4" aria-hidden />}
               title="Password"
-              description="Sign in with a Bookclerk password on this host."
+              description="Sign in with a Bookclerk password on this server."
             >
               <form
                 className="flex flex-col gap-3"
@@ -962,7 +962,7 @@ export function AccountSettingsPanel({
             <SecurityCard
               icon={<Trash2 className="h-4 w-4" aria-hidden />}
               title="Delete account"
-              description="Removes your wishlist, store links, and sessions. Acquired library titles remain on this host."
+              description="Removes your wishlist, store links, and sessions. Acquired library titles stay in the library."
               className="border-brick/20 bg-brick/5"
               titleClassName="text-brick"
               iconClassName="text-brick/70"

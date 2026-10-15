@@ -52,9 +52,29 @@ const enc = new TextEncoder();
 
 // --- Author isolate stand-ins --------------------------------------------
 
-const calls = { event: 0, storefront: [] };
+const calls = { event: 0, queue: 0, queueSends: [], storefront: [] };
 
 class Plugin extends BookclerkEntrypoint {
+  async queue(batch) {
+    calls.queue += 1;
+    const sent = await this.env.NOTIFY.send({ seen: batch.queue }, { delaySeconds: 3 });
+    calls.queueSends.push(sent);
+    // `env.KV` round-trips through the adapter's kv grant.
+    const kv = this.env.KV;
+    calls.kvMissing = await kv.get("cursor");
+    await kv.put("cursor", "page-7", { expirationTtl: 60, metadata: { page: 7 } });
+    calls.kvText = await kv.get("cursor");
+    calls.kvJson = await kv.getWithMetadata("cursor", "json").catch((err) => String(err));
+    calls.kvBytes = new TextDecoder().decode(await kv.get("cursor", "arrayBuffer"));
+    calls.kvList = await kv.list({ prefix: "cur" });
+    await kv.delete("cursor");
+    calls.kvAfterDelete = await kv.get("cursor");
+    calls.kvTooBig = await kv.put("big", new Uint8Array(1_048_577)).catch((err) => err.code);
+    for (const msg of batch.messages) {
+      if (msg.id === "msg-2") msg.retry({ delaySeconds: 7, reason: "again" });
+      else msg.ack();
+    }
+  }
   async event(batch) {
     calls.event += 1;
     for (const msg of batch.messages) {
@@ -163,6 +183,37 @@ const granted = {
     const u = new URL(url);
     this.requests.push({ path: u.pathname, method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body });
     if (u.pathname === "/progress") return new Response(null, { status: 200 });
+    if (u.pathname.startsWith("/kv/")) {
+      const body = JSON.parse(init.body);
+      const store = (this.kv ??= new Map());
+      switch (u.pathname) {
+        case "/kv/get": {
+          const row = store.get(body.key);
+          return Response.json(
+            row ? { found: true, value: row.value, metadata: row.metadata, expirationUnixMs: 0 } : { found: false },
+          );
+        }
+        case "/kv/put":
+          store.set(body.key, { value: body.value, metadata: body.options.metadata, options: body.options });
+          return Response.json({ expirationUnixMs: 0 });
+        case "/kv/delete":
+          return Response.json({ existed: store.delete(body.key) });
+        case "/kv/list":
+          return Response.json({
+            keys: [...store.keys()]
+              .filter((k) => k.startsWith(body.options.prefix))
+              .map((key) => ({ key, metadata: store.get(key).metadata, expirationUnixMs: 61_000 })),
+            listComplete: true,
+            cursor: "",
+          });
+        default:
+          return new Response("nope", { status: 404 });
+      }
+    }
+    if (u.pathname === "/queues/send") {
+      const sent = JSON.parse(init.body);
+      return Response.json({ messageIds: sent.messages.map((_, i) => `q-${i + 1}`) }, { status: 200 });
+    }
     if (u.pathname === "/cancel") {
       this.cancelState.polls += 1;
       if (init.signal?.aborted) throw new Error("aborted");
@@ -206,6 +257,8 @@ const contextJson = JSON.stringify(
     invocation: { id: "inv-1", accountId: "acct" },
     config: jsonPayload({ greeting: "hi", who: "acct" }),
     secrets: jsonPayload({ token: "s3cr3t" }),
+    queues: { NOTIFY: "qtok" },
+    kv: { KV: "ktok" },
   }),
 );
 
@@ -406,6 +459,62 @@ function decodeReply(reply, resultsCodec, caps) {
       { kind: "retry", value: { retryAtUnixMs: 0, reason: "again" } },
     ],
   });
+}
+
+// --- QueueConsumer: one author call per batch; env.<QUEUE> sends via GRANTED --
+
+{
+  const message = (id) => ({
+    id,
+    timestampUnixMs: 1_700_000_000_000,
+    body: enc.encode('{"n":1}'),
+    contentType: "json",
+    attempts: 1,
+    source: "echo",
+  });
+  const before = granted.requests.length;
+  const result = decodeReply(
+    await invoke("QueueConsumer", "queue", W.QueueConsumerQueueParamsCodec, {
+      batch: { queue: "jobs", messages: [message("msg-1"), message("msg-2")] },
+    }),
+    W.QueueConsumerQueueResultsCodec,
+  );
+  assert.equal(calls.queue, 1, "the whole batch is one author call");
+  assert.deepEqual(result, {
+    kind: "ok",
+    value: {
+      results: [{ kind: "ack" }, { kind: "retry", value: { delaySeconds: 7, reason: "again" } }],
+    },
+  });
+  assert.deepEqual(calls.queueSends, [{ messageIds: ["q-1"] }], "send returns the host-assigned ids");
+  const send = granted.requests.slice(before).find((r) => r.path === "/queues/send");
+  assert.ok(send, "env.NOTIFY.send went through the granted channel");
+  assert.equal(send.headers.Authorization, "Bearer qtok", "the queue grant token never reaches the author");
+  const body = JSON.parse(send.body);
+  assert.equal(body.delaySeconds, 0);
+  assert.equal(body.messages.length, 1);
+  assert.equal(body.messages[0].contentType, "json");
+  assert.equal(body.messages[0].delaySeconds, 3);
+  assert.equal(Buffer.from(body.messages[0].body, "base64").toString(), '{"seen":"jobs"}');
+
+  // env.KV: Workers KVNamespace shape over `/kv/*` with the kv-only token.
+  assert.equal(calls.kvMissing, null, "absent key reads as null");
+  assert.equal(calls.kvText, "page-7");
+  assert.match(String(calls.kvJson), /JSON|Unexpected token/, "text that is not JSON fails the json decode");
+  assert.equal(calls.kvBytes, "page-7");
+  assert.deepEqual(calls.kvList, {
+    keys: [{ name: "cursor", expiration: 61, metadata: { page: 7 } }],
+    list_complete: true,
+  });
+  assert.equal(calls.kvAfterDelete, null);
+  assert.equal(calls.kvTooBig, "payload_too_large", "oversize values never leave the isolate");
+  const kvCalls = granted.requests.slice(before).filter((r) => r.path.startsWith("/kv/"));
+  assert.ok(kvCalls.length >= 6, "every KV op went through the granted channel");
+  assert.ok(kvCalls.every((r) => r.headers.Authorization === "Bearer ktok"), "the kv grant token never reaches the author");
+  const put = JSON.parse(kvCalls.find((r) => r.path === "/kv/put").body);
+  assert.equal(Buffer.from(put.value, "base64").toString(), "page-7");
+  assert.deepEqual(put.options, { expirationUnixMs: 0, expirationTtlSeconds: 60, metadata: '{"page":7}' });
+  assert.ok(!kvCalls.some((r) => r.path === "/kv/put" && JSON.parse(r.body).key === "big"));
 }
 
 // --- JobRunner: four capability descriptors -------------------------------

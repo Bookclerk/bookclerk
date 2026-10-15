@@ -650,8 +650,14 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         wake_cursor_at TEXT NOT NULL DEFAULT '',
         wake_cursor_id TEXT NOT NULL DEFAULT '',
         dispatch_snapshot_json TEXT NOT NULL DEFAULT '',
-        UNIQUE(account_id, source, event_type, dedup_key)
+        queue_name TEXT NOT NULL DEFAULT 'core.events',
+        content_type TEXT NOT NULL DEFAULT 'json',
+        deliver_after TEXT NOT NULL DEFAULT '',
+        UNIQUE(queue_name, account_id, source, event_type, dedup_key)
     )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_domain_events_queue ON domain_events(queue_name, created_at, id)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_domain_events_dispatch ON domain_events(dispatch_state, created_at)",
@@ -689,9 +695,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         wake_event_type TEXT NOT NULL DEFAULT '',
         wake_filter_json TEXT NOT NULL DEFAULT '',
         wake_grants_json TEXT NOT NULL DEFAULT '',
+        queue_name TEXT NOT NULL DEFAULT 'core.events',
         UNIQUE(event_id, plugin_id),
         FOREIGN KEY(event_id) REFERENCES domain_events(id) ON DELETE CASCADE
     )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_queue_state ON event_deliveries(queue_name, state)",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_event_deliveries_claim ON event_deliveries(state, run_after, created_at)",
@@ -771,8 +781,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS hosts (
-        host_id TEXT PRIMARY KEY NOT NULL,
+        r"CREATE TABLE IF NOT EXISTS nodes (
+        node_id TEXT PRIMARY KEY NOT NULL,
         cluster_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         incarnation TEXT NOT NULL,
@@ -787,10 +797,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         memory_current_bytes INTEGER,
         memory_anon_bytes INTEGER,
         files_dir_free_bytes INTEGER,
-        scratch_bytes INTEGER
+        scratch_bytes INTEGER,
+        target TEXT NOT NULL DEFAULT '',
+        labels_json TEXT NOT NULL DEFAULT '[]'
     )",
     ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_hosts_heartbeat ON hosts(heartbeat_at)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_nodes_heartbeat ON nodes(heartbeat_at)"),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS configuration_documents (
         scope_type TEXT NOT NULL,
@@ -882,7 +894,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         schema_version INTEGER NOT NULL,
         settings_json TEXT NOT NULL,
         recorded_at TEXT NOT NULL,
-        recorded_by_host TEXT NOT NULL
+        recorded_by_node TEXT NOT NULL
     )",
     ),
     MigrationOp::Schema(
@@ -902,34 +914,131 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE TABLE IF NOT EXISTS plugin_deployments (
         deployment_id TEXT PRIMARY KEY NOT NULL,
         plugin_instance_id TEXT NOT NULL,
-        host_id TEXT NOT NULL,
-        desired TEXT NOT NULL CHECK (desired IN ('present', 'absent')),
+        node_id TEXT NOT NULL,
+        desired TEXT NOT NULL CHECK (desired IN ('present', 'absent', 'placed', 'unplaced')),
         revision INTEGER NOT NULL,
         updated_at TEXT NOT NULL,
         updated_by TEXT NOT NULL,
-        UNIQUE (plugin_instance_id, host_id),
+        UNIQUE (plugin_instance_id, node_id),
         FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
     )",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_plugin_deployments_host_id
-        ON plugin_deployments(host_id)",
+        ON plugin_deployments(node_id)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS plugin_deployment_observations (
         deployment_id TEXT NOT NULL,
-        host_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
         incarnation TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('installed', 'running', 'healthy', 'error', 'retired')),
+        status TEXT NOT NULL CHECK (status IN ('materialized', 'running', 'healthy', 'error', 'retired')),
         detail TEXT NOT NULL,
         applied_config_revision INTEGER,
         observed_at TEXT NOT NULL,
-        PRIMARY KEY (deployment_id, host_id),
+        reserved_memory_bytes INTEGER,
+        reserved_cpu_millicores INTEGER,
+        PRIMARY KEY (deployment_id, node_id),
         FOREIGN KEY (deployment_id) REFERENCES plugin_deployments(deployment_id)
     )",
     ),
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_plugin_deployment_observations_host_id
-        ON plugin_deployment_observations(host_id)",
+        ON plugin_deployment_observations(node_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_kv (
+        plugin_key TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        metadata TEXT NOT NULL DEFAULT '',
+        expires_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, namespace, key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_plugin_kv_expires
+        ON plugin_kv(expires_at)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_versions (
+        plugin_key TEXT NOT NULL,
+        version TEXT NOT NULL,
+        manifest_id TEXT NOT NULL,
+        manifest_toml TEXT NOT NULL,
+        settings_json TEXT NOT NULL,
+        artifacts_json TEXT NOT NULL,
+        publisher_verified INTEGER NOT NULL,
+        grant_json TEXT NOT NULL DEFAULT '',
+        coordinate TEXT NOT NULL DEFAULT '',
+        installed_at TEXT NOT NULL,
+        installed_by TEXT NOT NULL,
+        PRIMARY KEY (plugin_key, version)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_installs (
+        plugin_key TEXT PRIMARY KEY NOT NULL,
+        version TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_placements (
+        plugin_instance_id TEXT PRIMARY KEY NOT NULL,
+        replicas INTEGER CHECK (replicas IS NULL OR replicas >= 0),
+        constraints_json TEXT NOT NULL DEFAULT '[]',
+        revision INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        placed INTEGER NOT NULL DEFAULT 0,
+        detail TEXT NOT NULL DEFAULT '',
+        scheduled_at TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS node_status (
+        node_id TEXT PRIMARY KEY NOT NULL,
+        incarnation TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        heartbeat_ms INTEGER NOT NULL,
+        interval_ms INTEGER NOT NULL,
+        cpu_millicores INTEGER NOT NULL,
+        memory_bytes INTEGER,
+        cpu_budget_millicores INTEGER NOT NULL,
+        memory_budget_bytes INTEGER,
+        schedulable INTEGER NOT NULL,
+        cpu_used_millicores INTEGER,
+        memory_available_bytes INTEGER,
+        files_dir_free_bytes INTEGER,
+        reserved_cpu_millicores INTEGER NOT NULL,
+        reserved_memory_bytes INTEGER NOT NULL,
+        running_guests INTEGER NOT NULL,
+        availability_ppm INTEGER NOT NULL,
+        online_since_ms INTEGER NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS cluster_leases (
+        name TEXT PRIMARY KEY NOT NULL,
+        holder TEXT NOT NULL,
+        token INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        renewed_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_artifacts (
+        sha256 TEXT PRIMARY KEY NOT NULL,
+        data TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    )",
     ),
 ];

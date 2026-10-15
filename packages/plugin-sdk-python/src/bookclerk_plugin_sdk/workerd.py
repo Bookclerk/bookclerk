@@ -100,9 +100,13 @@ __all__ = [
     "EventMessage",
     "GuestDatabase",
     "JobController",
+    "KvNamespace",
     "NamedEntrypoint",
     "OidcEntrypoint",
     "PluginError",
+    "QueueBatch",
+    "QueueBinding",
+    "QueueMessage",
     "RemoteLibraryEntrypoint",
     "StorageEntrypoint",
     "StorefrontEntrypoint",
@@ -114,7 +118,10 @@ __all__ = [
     "js",
     "json_payload",
     "py",
+    "queue_batch_results",
     "transport_database",
+    "transport_kv",
+    "transport_queue",
 ]
 
 
@@ -385,6 +392,22 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
             transport = _get(entry, "transport")
             if transport is not None:
                 granted[name] = transport_database(transport)
+    queues = _get(ctx, "queues")
+    if queues is not None:
+        for entry in queues:
+            name = _get(entry, "name")
+            queue = _get(entry, "queue")
+            if not isinstance(name, str) or not name or queue is None:
+                continue
+            granted[name] = transport_queue(queue)
+    kv = _get(ctx, "kv")
+    if kv is not None:
+        for entry in kv:
+            name = _get(entry, "name")
+            namespace = _get(entry, "kv")
+            if not isinstance(name, str) or not name or namespace is None:
+                continue
+            granted[name] = transport_kv(namespace)
     return _EnvView(raw_env, granted)
 
 
@@ -627,6 +650,311 @@ def event_batch_results(batch: EventBatch, failed: BaseException | None) -> list
 
 
 # ---------------------------------------------------------------------------
+# Queue trigger: ``queue(batch)`` shaped like Workers ``queue(batch)``
+# ---------------------------------------------------------------------------
+
+
+class QueueMessage:
+    """One delivered queue message (``QueueMessage`` struct), Workers ``Message``-shaped.
+
+    Exactly one outcome is recorded per message; the first of ``ack`` /
+    ``retry`` wins and later calls are ignored. Messages left untouched are
+    acked when ``queue()`` returns and retried when it raises.
+    """
+
+    def __init__(self, message: Any) -> None:
+        m = py(message) or {}
+        self.id: str = str(_get(m, "id", ""))
+        self.timestamp_unix_ms: int = int(_get(m, "timestampUnixMs", 0) or 0)
+        self.body: bytes = _bytes(_get(m, "body"))
+        self.content_type: str = str(_get(m, "contentType", "") or "") or "json"
+        self.attempts: int = int(_get(m, "attempts", 1) or 1)
+        self.source: str = str(_get(m, "source", ""))
+        self.raw: Any = m
+        self._result: dict[str, Any] | None = None
+
+    def json(self) -> Any:
+        """Decode ``body`` as JSON (``None`` for an empty body).
+
+        Returns:
+            The parsed body.
+        """
+        if not self.body:
+            return None
+        return json.loads(self.body.decode("utf-8"))
+
+    def text(self) -> str:
+        """Decode ``body`` as UTF-8 text.
+
+        Returns:
+            The body text.
+        """
+        return self.body.decode("utf-8")
+
+    @property
+    def result(self) -> dict[str, Any] | None:
+        """Recorded outcome (flat ``{"kind": ...}``), or ``None`` while undecided."""
+        return self._result
+
+    def _record(self, result: dict[str, Any]) -> None:
+        if self._result is None:
+            self._result = result
+
+    def ack(self) -> None:
+        """Mark handled; the host marks the message delivered."""
+        self._record({"kind": "ack"})
+
+    def retry(self, *, delay_seconds: float = 0, reason: str = "") -> None:
+        """Redeliver later.
+
+        Args:
+            delay_seconds: Seconds before redelivery; ``0`` applies the
+                consumer's ``retry_delay``.
+            reason: Short operator-facing reason.
+        """
+        self._record(
+            {
+                "kind": "retry",
+                "delaySeconds": max(0, int(delay_seconds or 0)),
+                "reason": str(reason or ""),
+            }
+        )
+
+
+class QueueBatch:
+    """One ``queue(batch)`` delivery (``QueueBatch`` struct), Workers ``MessageBatch``-shaped."""
+
+    def __init__(
+        self, queue: Any, messages: Any, invocation: dict[str, Any] | None = None
+    ) -> None:
+        self.queue: str = str(queue or "")
+        raw = py(messages) or []
+        self.messages: tuple[QueueMessage, ...] = tuple(QueueMessage(m) for m in raw)
+        self.invocation: dict[str, Any] = invocation or {}
+
+    def ack_all(self) -> None:
+        """Acknowledge every message."""
+        for m in self.messages:
+            m.ack()
+
+    def retry_all(self, **options: Any) -> None:
+        """Retry every message with the same :meth:`QueueMessage.retry` options.
+
+        Args:
+            **options: Keyword arguments forwarded to :meth:`QueueMessage.retry`.
+        """
+        for m in self.messages:
+            m.retry(**options)
+
+
+def queue_batch_results(batch: QueueBatch, failed: BaseException | None) -> list[dict[str, Any]]:
+    """Translate recorded outcomes into the wire ``QueueResult`` list.
+
+    Args:
+        batch: The delivered batch.
+        failed: Exception raised by the author's ``queue()``, if any; undecided
+            messages then retry instead of ack.
+
+    Returns:
+        One flat ``{"kind": ...}`` result per message, in delivery order.
+    """
+    out: list[dict[str, Any]] = []
+    for m in batch.messages:
+        if m.result is not None:
+            out.append(m.result)
+        elif failed is not None:
+            out.append({"kind": "retry", "delaySeconds": 0, "reason": _error_message(failed)})
+        else:
+            out.append({"kind": "ack"})
+    return out
+
+
+class QueueBinding:
+    """``[[queues.producers]]`` binding (``env.<BINDING>``): Workers ``Queue``-shaped producer.
+
+    The adapter isolate owns the queue grant and serves ``send`` over the
+    granted channel; this wrapper converts Python bodies into the JS values
+    the adapter stub expects.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def send(
+        self,
+        body: Any,
+        *,
+        content_type: str = "json",
+        delay_seconds: int = 0,
+    ) -> dict[str, Any]:
+        """Send one message.
+
+        Args:
+            body: JSON value (default), ``str`` for ``text``, or ``bytes`` for ``bytes``.
+            content_type: ``json``, ``text``, or ``bytes``.
+            delay_seconds: Seconds before the message may be delivered.
+
+        Returns:
+            ``{"messageIds": [...]}`` with the outbox id the host assigned.
+        """
+        return await self.send_batch(
+            [{"body": body, "content_type": content_type}], delay_seconds=delay_seconds
+        )
+
+    async def send_batch(
+        self, messages: list[dict[str, Any]], *, delay_seconds: int = 0
+    ) -> dict[str, Any]:
+        """Send up to ``MAX_LIST_PAGE`` messages in order.
+
+        Args:
+            messages: ``{"body": ..., "content_type": ..., "delay_seconds": ...}`` entries.
+            delay_seconds: Default delay for entries that carry none.
+
+        Returns:
+            ``{"messageIds": [...]}`` with the outbox ids in send order.
+        """
+        entries = []
+        for message in messages or []:
+            entries.append(
+                {
+                    "body": _get(message, "body"),
+                    "contentType": str(_get(message, "content_type") or _get(message, "contentType") or "json"),
+                    "delaySeconds": int(
+                        _get(message, "delay_seconds") or _get(message, "delaySeconds") or 0
+                    ),
+                }
+            )
+        reply = await self._stub.sendBatch(
+            js(entries), js({"delaySeconds": int(delay_seconds or 0)})
+        )
+        out = py(reply) or {}
+        return {"messageIds": [str(i) for i in (_get(out, "messageIds") or [])]}
+
+
+def transport_queue(stub: Any) -> QueueBinding:
+    """Wrap the adapter's granted queue stub as a :class:`QueueBinding`.
+
+    Args:
+        stub: ``QueueBinding``-shaped JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return QueueBinding(stub)
+
+
+class KvNamespace:
+    """``[[kv_namespaces]]`` binding (``env.<BINDING>``): Workers ``KVNamespace``-shaped storage.
+
+    The host serves the namespace from the library database, scoped to this
+    plugin and the namespace the row names, so values follow the instance
+    across hosts. The adapter isolate owns the kv grant; this wrapper converts
+    Python values into the JS values the adapter stub expects.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def get(self, key: str, type: str = "text") -> Any:
+        """Read one key.
+
+        Args:
+            key: Key, at most ``MAX_KV_KEY_BYTES`` UTF-8 bytes.
+            type: ``text`` (``str``), ``json`` (decoded value), or ``bytes``.
+
+        Returns:
+            The value, or ``None`` when absent or expired.
+        """
+        value, _ = await self.get_with_metadata(key, type)
+        return value
+
+    async def get_with_metadata(self, key: str, type: str = "text") -> tuple[Any, Any]:
+        """Read one key with its metadata.
+
+        Args:
+            key: Key to read.
+            type: ``text``, ``json``, or ``bytes``.
+
+        Returns:
+            ``(value, metadata)``; both ``None`` when absent.
+        """
+        js_type = "arrayBuffer" if type == "bytes" else type
+        if js_type not in ("text", "json", "arrayBuffer"):
+            raise ValueError(f"unknown kv value type `{type}`")
+        reply = py(await self._stub.getWithMetadata(key, js_type)) or {}
+        value = _get(reply, "value")
+        if js_type == "arrayBuffer" and value is not None and not isinstance(value, bytes):
+            value = bytes(py(value) or b"")
+        return value, _get(reply, "metadata")
+
+    async def put(
+        self,
+        key: str,
+        value: str | bytes,
+        *,
+        expiration: int | None = None,
+        expiration_ttl: int | None = None,
+        metadata: Any = None,
+    ) -> None:
+        """Write one key, replacing any previous value and metadata.
+
+        Args:
+            key: Key to write.
+            value: ``str`` (stored as UTF-8) or ``bytes``.
+            expiration: Absolute expiry in seconds since the Unix epoch.
+            expiration_ttl: Relative expiry in seconds from the write.
+            metadata: JSON-serializable metadata.
+        """
+        options: dict[str, Any] = {}
+        if expiration is not None:
+            options["expiration"] = int(expiration)
+        if expiration_ttl is not None:
+            options["expirationTtl"] = int(expiration_ttl)
+        if metadata is not None:
+            options["metadata"] = metadata
+        await self._stub.put(key, js(value), js(options))
+
+    async def delete(self, key: str) -> None:
+        """Delete one key; a missing key is not an error."""
+        await self._stub.delete(key)
+
+    async def list(
+        self, *, prefix: str = "", cursor: str = "", limit: int = 0
+    ) -> dict[str, Any]:
+        """List keys in lexical order, one page at a time.
+
+        Args:
+            prefix: Only keys starting with this prefix.
+            cursor: Cursor from a previous page.
+            limit: Most keys to return (host default when 0).
+
+        Returns:
+            ``{"keys": [{"name", "expiration"?, "metadata"?}], "list_complete": bool, "cursor"?: str}``.
+        """
+        options: dict[str, Any] = {}
+        if prefix:
+            options["prefix"] = prefix
+        if cursor:
+            options["cursor"] = cursor
+        if limit:
+            options["limit"] = int(limit)
+        reply = py(await self._stub.list(js(options))) or {}
+        return dict(reply) if isinstance(reply, dict) else {"keys": [], "list_complete": True}
+
+
+def transport_kv(stub: Any) -> KvNamespace:
+    """Wrap the adapter's granted KV stub as a :class:`KvNamespace`.
+
+    Args:
+        stub: ``KvNamespaceBinding``-shaped JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return KvNamespace(stub)
+
+
+# ---------------------------------------------------------------------------
 # Job trigger: ``job(controller)`` shaped like Workers ``scheduled(controller)``
 # ---------------------------------------------------------------------------
 
@@ -825,6 +1153,27 @@ class BookclerkEntrypoint(WorkerEntrypoint):
         except Exception as err:  # noqa: BLE001 - every failure becomes a retry
             return js(event_batch_results(batch, err))
         return js(event_batch_results(batch, None))
+
+    async def bookclerkQueue(self, context=None, wire_batch=None):
+        """Adapter dispatch: deliver one ``QueueBatch`` to ``queue(batch)``.
+
+        Raises:
+            PluginError: ``unsupported`` when the author defines no ``queue``.
+        """
+        handler = getattr(self, "queue", None)
+        if not callable(handler):
+            raise _unsupported("queue")
+        _apply_invocation_env(self, context)
+        batch = QueueBatch(
+            _get(wire_batch, "queue", ""),
+            _get(wire_batch, "messages", []) or [],
+            _invocation_of(context),
+        )
+        try:
+            await _await_maybe(handler(batch))
+        except Exception as err:  # noqa: BLE001 - every failure becomes a retry
+            return js(queue_batch_results(batch, err))
+        return js(queue_batch_results(batch, None))
 
     async def bookclerkJob(self, context=None, invocation=None, granted=None):
         """Adapter dispatch: run one durable job through ``job(controller)``.

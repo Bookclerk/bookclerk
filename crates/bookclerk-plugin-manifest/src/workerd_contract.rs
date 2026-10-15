@@ -5,8 +5,7 @@
 //! and module rules. A `compatibility_date` newer than the pin stays legal:
 //! check and load warn, then run at the pin, because workerd refuses a date
 //! past the one baked into the binary. `[[kv_namespaces]]` and `[queues]` are
-//! not rejected here: they stay legal declarations and fail later at load or
-//! spawn with "not implemented yet".
+//! host bindings served at `open`, so nothing here constrains them.
 
 use crate::error::{Error, Result};
 use crate::types::ModuleSpec;

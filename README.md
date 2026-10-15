@@ -114,9 +114,9 @@ bookclerk plugins list
 bookclerk plugins config set local root /data/Audiobooks
 bookclerk plugins config set s3 bucket my-audiobooks
 bookclerk plugins config set s3 secret_access_key --secret   # value on stdin
-bookclerk plugins enable s3
+bookclerk plugins deploy s3
 bookclerk plugins config set graphicaudio access web          # web | zip | device
-bookclerk plugins enable audiobookshelf
+bookclerk plugins deploy audiobookshelf
 ```
 
 The same operations are in **Settings → Plugins**. Store passwords are

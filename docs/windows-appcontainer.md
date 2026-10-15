@@ -189,7 +189,7 @@ operator must read the rejected file and remove those ACEs by hand
 (`icacls <path> /remove *S-1-15-2-…`). If revoke of the in-memory grants
 failed in the same drop, those grants are written to a new `session-*.json`
 so the next sweep can retry them.
-`bookclerk plugins remove --purge-state` revokes that plugin's journal first
+`bookclerk plugins uninstall --purge-state` revokes that plugin's journal first
 and leaves plugin-state in place if a readable record remains, if a live
 session holds the lock, or if a `.json.rejected` file remains.
 `--discard-acl-journals` (with `--purge-state`) deletes rejected records with

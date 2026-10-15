@@ -1,19 +1,19 @@
-//! SeaORM entity for durable host identity and liveness observations.
+//! SeaORM entity for durable node identity and liveness observations.
 
 use sea_orm::entity::prelude::*;
 
-/// Row shape for one Bookclerk host in the cluster.
+/// Row shape for one Bookclerk node in the cluster.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-#[sea_orm(table_name = "hosts")]
+#[sea_orm(table_name = "nodes")]
 pub struct Model {
-    /// Stable host identifier. Not derived from hostname.
+    /// Stable node identifier. Not derived from hostname.
     #[sea_orm(primary_key, auto_increment = false)]
-    pub host_id: String,
-    /// Cluster this host enrolled into.
+    pub node_id: String,
+    /// Cluster this node enrolled into.
     pub cluster_id: String,
     /// RFC 3339 timestamp of the first successful registration.
     pub created_at: String,
-    /// Latest process incarnation observed for this host.
+    /// Latest process incarnation observed for this node.
     pub incarnation: String,
     /// RFC 3339 timestamp of the latest heartbeat.
     pub heartbeat_at: String,
@@ -39,9 +39,13 @@ pub struct Model {
     pub files_dir_free_bytes: Option<i64>,
     /// Byte size of the acquire scratch tree under the download cache.
     pub scratch_bytes: Option<i64>,
+    /// Bookclerk artifact target of the reporting binary (`linux-x64-gnu`, …).
+    pub target: String,
+    /// JSON array of operator-assigned placement labels.
+    pub labels_json: String,
 }
 
-/// Declared SeaORM relations (hosts are addressed by `host_id`).
+/// Declared SeaORM relations (nodes are addressed by `node_id`).
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 

@@ -21,7 +21,8 @@
 # - The guest root is `PluginWorker`: `describe()`, then
 #   `open(invocation, bindings)` returns the exported `Entrypoints` for one
 #   invocation. Bindings (`env` in the Workers idiom) carry config, secrets,
-#   the `EVENTS` publisher, and named `[[databases]]` sessions.
+#   the `EVENTS` publisher, named `[[queues.producers]]` producers, and named
+#   `[[databases]]` sessions.
 #
 # Authors never see transport-private capability table indexes. Public types
 # are the interfaces below plus TypeScript `BookclerkEntrypoint`. ByteSource is
@@ -47,6 +48,13 @@ const maxIdentifierBytes :UInt32 = 64;
 const maxConfigPayloadBytes :UInt32 = 65536;
 # Maximum decoded size of a domain-event scalar payload (not a stream).
 const maxEventPayloadBytes :UInt32 = 65536;
+# Largest `KvNamespace` value in bytes; a `[[kv_namespaces]]` row may lower
+# its own cap but never raise it past this.
+const maxKvValueBytes :UInt32 = 1048576;
+# Longest `KvNamespace` key in UTF-8 bytes.
+const maxKvKeyBytes :UInt32 = 512;
+# Largest `KvNamespace` metadata JSON text in bytes.
+const maxKvMetadataBytes :UInt32 = 1024;
 # Plugin `databaseMigrations` is a startup-time scalar (not a stream). Count is
 # `maxListPage`. Each SQL text is `maxScalarBytes`. Ops-per-migration, total
 # operations across the registration, and the aggregate UTF-8 bytes of ids +
@@ -289,6 +297,13 @@ struct Bindings {
   # filesystem); null unless `[work_fs]` is granted. Job input/output travel on
   # `JobRunner.job(controller)`, never here.
   storage @6 :Destination;
+  # Named `[[queues.producers]]` bindings: one host-served producer per
+  # binding, each sending into the queue the row names. Empty when the
+  # manifest declares none.
+  queues @7 :List(NamedQueue);
+  # Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
+  # binding, scoped to this plugin. Empty when the manifest declares none.
+  kv @8 :List(NamedKv);
 }
 
 # Exported entrypoints returned by `PluginWorker.open`. One capability per
@@ -311,6 +326,8 @@ struct Entrypoints {
   cli @6 :PluginCli;
   # `oidc` entrypoint.
   oidc @7 :Oidc;
+  # `[[queues.consumers]]` trigger: `queue(batch)` handler.
+  queueConsumer @8 :QueueConsumer;
 }
 
 # Result union of `PluginWorker.open`.
@@ -822,6 +839,75 @@ struct NamedDatabase {
   database @1 :GuestDatabase;
 }
 
+# `[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
+# at-least-once; consumers must be idempotent on `QueueMessage.id`.
+interface QueueConsumer {
+  # Deliver one ordered batch of messages from one queue.
+  queue @0 (
+      batch :QueueBatch  # Messages in delivery order.
+  ) -> (result :QueueBatchReply);
+}
+
+# Queue producer binding: host-served send into the queue a
+# `[[queues.producers]]` row names, granted through `Bindings.queues`.
+interface QueueProducer {
+  # Send one message.
+  send @0 (
+      message :QueueSendMessage  # Body, encoding, and delay.
+  ) -> (result :QueueSendReply);
+  # Send up to `maxListPage` messages in order; `delaySeconds` applies to
+  # every message that carries no delay of its own.
+  sendBatch @1 (
+      messages :List(QueueSendMessage),  # Messages in send order.
+      delaySeconds :UInt32  # Default delay for the batch.
+  ) -> (result :QueueSendReply);
+}
+
+# One named queue producer delivered on `Bindings.queues`.
+struct NamedQueue {
+  # Binding name from `plugin.toml` `[[queues.producers]]`.
+  name @0 :Text;
+  # Queue the binding sends to.
+  queue @1 :Text;
+  # Host-served producer for that queue.
+  producer @2 :QueueProducer;
+}
+
+# Durable key/value namespace: a Workers `KVNamespace`-shaped binding the host
+# serves from the library database, scoped to the plugin and the namespace a
+# `[[kv_namespaces]]` row names, granted through `Bindings.kv`. Values live in
+# the cluster, so an instance moved to another host reads its own keys.
+interface KvNamespace {
+  # Read one key; `found = false` when absent or expired.
+  get @0 (
+      key :Text  # Key, at most `maxKvKeyBytes` UTF-8 bytes.
+  ) -> (result :KvGetReply);
+  # Write one key, replacing any previous value and metadata.
+  put @1 (
+      key :Text,  # Key, at most `maxKvKeyBytes` UTF-8 bytes.
+      value :Data,  # Value, at most the namespace's `max_value_bytes`.
+      options :KvPutOptions  # Expiration and metadata.
+  ) -> (result :KvPutReply);
+  # Delete one key; a missing key is not an error.
+  delete @2 (
+      key :Text  # Key to delete.
+  ) -> (result :KvDeleteReply);
+  # List keys in lexical order, one page at a time.
+  list @3 (
+      options :KvListOptions  # Prefix, cursor, and page size.
+  ) -> (result :KvListReply);
+}
+
+# One named durable namespace delivered on `Bindings.kv`.
+struct NamedKv {
+  # Binding name from `plugin.toml` `[[kv_namespaces]]`.
+  name @0 :Text;
+  # Namespace the binding is scoped to.
+  namespace @1 :Text;
+  # Host-served namespace.
+  kv @2 :KvNamespace;
+}
+
 # Storefront content source (not byte Source). Every method takes and
 # returns typed structs from the "Typed method payloads" section.
 interface ContentSource {
@@ -1009,8 +1095,12 @@ struct PluginCapabilities {
   # Plugin-owned database binding names (`[[databases]]`).
   databases @4 :List(Text);
   # Other named bindings the guest expects on `env` (`CONFIG`, `SECRETS`,
-  # `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, ...).
+  # `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, `[[queues.producers]]` names, ...).
   bindings @5 :List(Text);
+  # Queues the default entrypoint consumes (`queue(batch)` trigger).
+  queueConsumers @6 :List(Text);
+  # Queues the guest may send to through its `[[queues.producers]]` bindings.
+  queueProducers @7 :List(Text);
 }
 
 # Portal Accounts connect mode for storefronts.
@@ -1889,6 +1979,197 @@ struct Invocation {
   correlationId @3 :Text;
   # Id of the event or command that caused this invocation; empty when none.
   causationId @4 :Text;
+}
+
+# One message on a Workers-style queue, delivered by `QueueConsumer.queue`.
+struct QueueMessage {
+  # Outbox row id; stable across redeliveries.
+  id @0 :Text;
+  # When the producer sent the message (UTC Unix milliseconds).
+  timestampUnixMs @1 :UInt64;
+  # Encoded body; at most `maxEventPayloadBytes`.
+  body @2 :Data;
+  # Body encoding: `json`, `text`, or `bytes`.
+  contentType @3 :Text;
+  # Delivery counter, starting at 1.
+  attempts @4 :UInt32;
+  # Producer plugin id; empty when the host sent it.
+  source @5 :Text;
+}
+
+# One `QueueConsumer.queue` delivery: messages from one queue in send order.
+struct QueueBatch {
+  # Queue the messages were sent to.
+  queue @0 :Text;
+  # Messages in delivery order; the reply carries one `QueueResult` per entry.
+  messages @1 :List(QueueMessage);
+}
+
+# Redeliver a queue message later.
+struct QueueRetry {
+  # Seconds before redelivery; zero applies the consumer's `retry_delay`.
+  delaySeconds @0 :UInt32;
+  # Short human reason.
+  reason @1 :Text;
+}
+
+# Per-message outcome inside a `QueueConsumer.queue` batch reply.
+struct QueueResult {
+  union {
+    # Handled; the host marks the message delivered.
+    ack @0 :Void;
+    # Redeliver later.
+    retry @1 :QueueRetry;
+  }
+}
+
+# Success payload of `QueueConsumer.queue`: exactly one entry per
+# `QueueBatch.messages` entry, in order. A short list is a host-side error
+# and the missing tail is retried.
+struct QueueBatchOk {
+  # Per-message outcomes in delivery order.
+  results @0 :List(QueueResult);
+}
+
+# Result union of `QueueConsumer.queue`.
+struct QueueBatchReply {
+  union {
+    # Success: per-message outcomes.
+    ok @0 :QueueBatchOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# One message to send through a `[[queues.producers]]` binding.
+struct QueueSendMessage {
+  # Encoded body; at most `maxEventPayloadBytes`.
+  body @0 :Data;
+  # Body encoding: `json` (default when empty), `text`, or `bytes`.
+  contentType @1 :Text;
+  # Seconds before the message may be delivered; zero means now.
+  delaySeconds @2 :UInt32;
+}
+
+# Success payload of `QueueProducer.send` / `sendBatch`.
+struct QueueSendOk {
+  # Outbox row ids in send order.
+  messageIds @0 :List(Text);
+}
+
+# Result union of `QueueProducer.send` / `sendBatch`.
+struct QueueSendReply {
+  union {
+    # Success: the ids the host assigned.
+    ok @0 :QueueSendOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Expiration and metadata for `KvNamespace.put`.
+struct KvPutOptions {
+  # Absolute expiry (UTC Unix milliseconds); zero means none.
+  expirationUnixMs @0 :UInt64;
+  # Relative expiry in seconds from the write; zero means none. Ignored when
+  # `expirationUnixMs` is set.
+  expirationTtlSeconds @1 :UInt64;
+  # Opaque JSON metadata text, at most `maxKvMetadataBytes`; empty means none.
+  metadata @2 :Text;
+}
+
+# Success payload of `KvNamespace.get`.
+struct KvGetOk {
+  # True when the key exists and has not expired.
+  found @0 :Bool;
+  # Stored value; empty when not found.
+  value @1 :Data;
+  # Stored metadata JSON text; empty when none.
+  metadata @2 :Text;
+  # Absolute expiry (UTC Unix milliseconds); zero means none.
+  expirationUnixMs @3 :UInt64;
+}
+
+# Result union of `KvNamespace.get`.
+struct KvGetReply {
+  union {
+    # Success: the value, when found.
+    ok @0 :KvGetOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Success payload of `KvNamespace.put`.
+struct KvPutOk {
+  # Effective absolute expiry (UTC Unix milliseconds); zero means none.
+  expirationUnixMs @0 :UInt64;
+}
+
+# Success payload of `KvNamespace.delete`.
+struct KvDeleteOk {
+  # True when a live value existed before the delete.
+  existed @0 :Bool;
+}
+
+# Result union of `KvNamespace.put`.
+struct KvPutReply {
+  union {
+    # Success: the write is durable.
+    ok @0 :KvPutOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Result union of `KvNamespace.delete`.
+struct KvDeleteReply {
+  union {
+    # Success: the key is gone (or never existed).
+    ok @0 :KvDeleteOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Page request for `KvNamespace.list`.
+struct KvListOptions {
+  # Only keys starting with this prefix; empty means all.
+  prefix @0 :Text;
+  # Opaque cursor from a previous page; empty means the first page.
+  cursor @1 :Text;
+  # Most keys to return; zero means the host default, at most `maxListPage`.
+  limit @2 :UInt32;
+}
+
+# One key on a `KvNamespace.list` page.
+struct KvListKey {
+  # Key name.
+  key @0 :Text;
+  # Stored metadata JSON text; empty when none.
+  metadata @1 :Text;
+  # Absolute expiry (UTC Unix milliseconds); zero means none.
+  expirationUnixMs @2 :UInt64;
+}
+
+# Success payload of `KvNamespace.list`.
+struct KvListOk {
+  # Keys in lexical order.
+  keys @0 :List(KvListKey);
+  # True when no further page exists.
+  listComplete @1 :Bool;
+  # Cursor for the next page; empty when `listComplete`.
+  cursor @2 :Text;
+}
+
+# Result union of `KvNamespace.list`.
+struct KvListReply {
+  union {
+    # Success: one page of keys.
+    ok @0 :KvListOk;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
 }
 
 # --- rust-generated: end ---

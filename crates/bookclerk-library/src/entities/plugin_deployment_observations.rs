@@ -13,10 +13,10 @@ pub struct Model {
     pub deployment_id: String,
     /// Host that recorded the observation. Matches the deployment target when local.
     #[sea_orm(primary_key, auto_increment = false)]
-    pub host_id: String,
+    pub node_id: String,
     /// Process incarnation that recorded the row.
     pub incarnation: String,
-    /// `installed`, `running`, `healthy`, `error`, or `retired`.
+    /// `materialized`, `running`, `healthy`, `error`, or `retired`.
     pub status: String,
     /// Bounded detail. Empty when the status is `healthy`.
     pub detail: String,
@@ -24,6 +24,10 @@ pub struct Model {
     pub applied_config_revision: Option<i64>,
     /// RFC 3339 timestamp of this observation.
     pub observed_at: String,
+    /// Memory ceiling of the running guest (its grant after `[plugins.jail]`).
+    pub reserved_memory_bytes: Option<i64>,
+    /// CPU ceiling of the running guest, in millicores.
+    pub reserved_cpu_millicores: Option<i64>,
 }
 
 /// Declared SeaORM relations (observations are addressed by deployment and host).

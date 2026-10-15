@@ -2,7 +2,8 @@
 //!
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
 //! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` / `Cli` /
-//! `EventConsumer` / `EventPublisher` / `PluginWorker` method in
+//! `EventConsumer` / `EventPublisher` / `QueueConsumer` / `QueueProducer` /
+//! `PluginWorker` method in
 //! `schema/plugin.capnp`. Prefer these constants over string literals when
 //! dispatching or documenting capabilities.
 //!
@@ -21,6 +22,9 @@ pub const METHOD_NAMES: &[&str] = &[
     stop::NAME,
     event::NAME,
     publish::NAME,
+    queue::NAME,
+    send::NAME,
+    send_batch::NAME,
     poll_events::NAME,
     scan_library::NAME,
     sync_listening::NAME,
@@ -93,6 +97,32 @@ pub mod event {
 pub mod publish {
     /// Wire method name `"publish"`.
     pub const NAME: &str = "publish";
+}
+
+/// Deliver one ordered batch of queue messages (Cap'n Proto `QueueConsumer.queue`).
+///
+/// Params: [`crate::QueueBatch`]. Result: one [`crate::QueueResult`] per message.
+pub mod queue {
+    /// Wire method name `"queue"`.
+    pub const NAME: &str = "queue";
+}
+
+/// Send one message into a granted queue (Cap'n Proto `QueueProducer.send`).
+///
+/// Params: [`crate::QueueSendMessage`]. Result: [`crate::QueueSendOk`].
+pub mod send {
+    /// Wire method name `"send"`.
+    pub const NAME: &str = "send";
+}
+
+/// Send a batch of messages into a granted queue (Cap'n Proto
+/// `QueueProducer.sendBatch`).
+///
+/// Params: a list of [`crate::QueueSendMessage`] plus a default delay.
+/// Result: [`crate::QueueSendOk`].
+pub mod send_batch {
+    /// Wire method name `"sendBatch"`.
+    pub const NAME: &str = "sendBatch";
 }
 
 /// Poll for plugin-observed external users after [`start`].

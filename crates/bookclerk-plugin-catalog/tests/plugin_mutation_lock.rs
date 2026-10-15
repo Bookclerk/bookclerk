@@ -267,13 +267,13 @@ fn update_and_remove_serialize() -> Result<(), String> {
 
 /// A lock on host A must not delay an install on host B.
 fn distinct_files_dirs_do_not_block() -> Result<(), String> {
-    let host_a = tempfile::tempdir().map_err(|err| err.to_string())?;
-    let host_b = tempfile::tempdir().map_err(|err| err.to_string())?;
-    let (archive, _) = make_named_archive(host_b.path(), "foo.tar.gz", "foo");
-    let hold = spawn_hold(host_a.path(), 2500)?;
+    let node_a = tempfile::tempdir().map_err(|err| err.to_string())?;
+    let node_b = tempfile::tempdir().map_err(|err| err.to_string())?;
+    let (archive, _) = make_named_archive(node_b.path(), "foo.tar.gz", "foo");
+    let hold = spawn_hold(node_a.path(), 2500)?;
     std::thread::sleep(Duration::from_millis(150));
     let start = Instant::now();
-    let install = spawn_install(host_b.path(), &archive, "foo", false)?;
+    let install = spawn_install(node_b.path(), &archive, "foo", false)?;
     let status = wait_child(install, "host-b-install")?;
     let elapsed = start.elapsed();
     let _ = wait_child(hold, "host-a-hold");

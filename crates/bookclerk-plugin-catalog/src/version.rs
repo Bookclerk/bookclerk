@@ -108,7 +108,7 @@ fn cmp_prerelease(a: &str, b: &str) -> Ordering {
 /// greatest pre-release. Falls back to lexical max when nothing parses.
 #[must_use]
 pub fn max_version<'a>(versions: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    let mut best_release: Option<(Version, &'a str)> = None;
+    let mut best_version: Option<(Version, &'a str)> = None;
     let mut best_pre: Option<(Version, &'a str)> = None;
     let mut lexical: Option<&'a str> = None;
     for v in versions {
@@ -125,13 +125,13 @@ pub fn max_version<'a>(versions: impl IntoIterator<Item = &'a str>) -> Option<&'
                 _ => Some((parsed, v)),
             };
         } else {
-            best_release = match best_release {
+            best_version = match best_version {
                 Some((cur, s)) if cur >= parsed => Some((cur, s)),
                 _ => Some((parsed, v)),
             };
         }
     }
-    best_release.or(best_pre).map(|(_, s)| s).or(lexical)
+    best_version.or(best_pre).map(|(_, s)| s).or(lexical)
 }
 
 /// Newest version strictly greater than `current`, if any.
@@ -143,7 +143,7 @@ pub fn newest_newer_than<'a>(
     versions: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'a str> {
     let current = Version::parse(current)?;
-    let mut best_release: Option<(Version, &'a str)> = None;
+    let mut best_version: Option<(Version, &'a str)> = None;
     let mut best_pre: Option<(Version, &'a str)> = None;
     for v in versions {
         let Some(parsed) = Version::parse(v) else {
@@ -158,13 +158,13 @@ pub fn newest_newer_than<'a>(
                 _ => Some((parsed, v)),
             };
         } else {
-            best_release = match best_release {
+            best_version = match best_version {
                 Some((cur, s)) if cur >= parsed => Some((cur, s)),
                 _ => Some((parsed, v)),
             };
         }
     }
-    best_release.or(best_pre).map(|(_, s)| s)
+    best_version.or(best_pre).map(|(_, s)| s)
 }
 
 #[cfg(test)]

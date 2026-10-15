@@ -7,14 +7,16 @@ use std::path::Path;
 
 use bookclerk_config::{Config, EventsConfig};
 use bookclerk_library::control_plane::{
-    find_plugin_instance_by_key, list_plugin_schemas, load_deployment_for_host,
-    load_instance_config, DESIRED_ABSENT, DESIRED_PRESENT,
+    find_plugin_instance_by_key, list_plugin_schemas, load_deployment_for_node,
+    load_instance_config, DesiredState,
 };
 use bookclerk_library::LibraryStore;
 
 use crate::consent::{consent_request, PluginGrantStore};
 use crate::discover_plugins;
 use crate::enrollment::{enroll_local_plugins, enroll_one, is_bootstrap_only};
+
+use crate::PROCESS_DEK_TEST_LOCK as TEST_LOCK;
 
 fn storefront_manifest(id: &str) -> String {
     format!(
@@ -71,7 +73,7 @@ async fn open_host(files: &Path) -> (Config, LibraryStore, String) {
     )
     .await
     .unwrap();
-    (config, store, session.host.host_id)
+    (config, store, session.node.node_id)
 }
 
 #[tokio::test]
@@ -80,17 +82,18 @@ async fn enrollment_is_idempotent_across_restarts() {
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     stage_tree(files, "fxenroll", &storefront_manifest("fxenroll"));
-    let (config, store, host_id) = open_host(files).await;
+    let (config, store, node_id) = open_host(files).await;
 
-    let first = enroll_local_plugins(&store, &config, &host_id)
+    let first = enroll_local_plugins(&store, &config, &node_id)
         .await
         .unwrap();
     assert_eq!(first.len(), 1, "one storefront enrolled");
     let one = &first[0];
     assert_eq!(one.plugin.manifest.id, "fxenroll");
-    assert_eq!(one.deployment.host_id, host_id);
+    assert_eq!(one.deployment.node_id, node_id);
     assert_eq!(
-        one.deployment.desired, DESIRED_ABSENT,
+        one.deployment.desired,
+        DesiredState::Absent,
         "no grant yet: a third-party plugin enrols absent"
     );
     let seeded = load_instance_config(&store, &one.instance.id)
@@ -104,8 +107,8 @@ async fn enrollment_is_idempotent_across_restarts() {
     // same revisions, still one pinned schema row.
     drop(store);
     let (config, store, host_again) = open_host(files).await;
-    assert_eq!(host_again, host_id);
-    let second = enroll_local_plugins(&store, &config, &host_id)
+    assert_eq!(host_again, node_id);
+    let second = enroll_local_plugins(&store, &config, &node_id)
         .await
         .unwrap();
     assert_eq!(second.len(), 1);
@@ -140,11 +143,11 @@ async fn enrollment_is_idempotent_across_restarts() {
     )
     .await
     .unwrap();
-    let other_host = other_session.host.host_id;
-    assert_ne!(other_host, host_id);
+    let other_node = other_session.node.node_id;
+    assert_ne!(other_node, node_id);
     let on_other = enroll_one(
         &store,
-        &other_host,
+        &other_node,
         &one.plugin,
         &PluginGrantStore::default(),
     )
@@ -158,8 +161,8 @@ async fn enrollment_is_idempotent_across_restarts() {
         on_other.deployment.deployment_id,
         one.deployment.deployment_id
     );
-    assert_eq!(on_other.deployment.host_id, other_host);
-    let first_host_row = load_deployment_for_host(&store, &one.instance.id, &host_id)
+    assert_eq!(on_other.deployment.node_id, other_node);
+    let first_host_row = load_deployment_for_node(&store, &one.instance.id, &node_id)
         .await
         .unwrap()
         .unwrap();
@@ -174,7 +177,7 @@ async fn granted_plugins_enroll_present_and_database_adapters_are_not_enrolled()
     let files = dir.path();
     stage_tree(files, "fxgranted", &storefront_manifest("fxgranted"));
     stage_tree(files, "fxdbonly", &database_manifest("fxdbonly"));
-    let (config, store, host_id) = open_host(files).await;
+    let (config, store, node_id) = open_host(files).await;
 
     let discovered = discover_plugins(&config).unwrap();
     let granted = discovered
@@ -191,13 +194,14 @@ async fn granted_plugins_enroll_present_and_database_adapters_are_not_enrolled()
     grants.upsert(consent_request(&granted.manifest, granted.plugin_key()));
     grants.save(files).unwrap();
 
-    let enrolled = enroll_local_plugins(&store, &config, &host_id)
+    let enrolled = enroll_local_plugins(&store, &config, &node_id)
         .await
         .unwrap();
     assert_eq!(enrolled.len(), 1, "only the storefront enrols");
     assert_eq!(enrolled[0].plugin.manifest.id, "fxgranted");
     assert_eq!(
-        enrolled[0].deployment.desired, DESIRED_PRESENT,
+        enrolled[0].deployment.desired,
+        DesiredState::Present,
         "a covering grant enrols the deployment present"
     );
 
@@ -216,6 +220,74 @@ async fn granted_plugins_enroll_present_and_database_adapters_are_not_enrolled()
             .iter()
             .all(|row| row.plugin_key != db_key),
         "database adapters pin no schema"
+    );
+}
+
+#[tokio::test]
+async fn a_scheduler_placed_instance_enrolls_unplaced_even_with_a_grant() {
+    use bookclerk_library::control_plane::{
+        ensure_plugin_instance, put_plugin_placement, ConfigActor, PlacementSpec,
+    };
+
+    let _guard = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = dir.path();
+    stage_tree(files, "fxplaced", &storefront_manifest("fxplaced"));
+    let (config, store, node_id) = open_host(files).await;
+    let discovered = discover_plugins(&config).unwrap();
+    let plugin = discovered
+        .iter()
+        .find(|plugin| plugin.manifest.id == "fxplaced")
+        .expect("discovered");
+    let mut grants = PluginGrantStore::default();
+    grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
+    grants.save(files).unwrap();
+    let instance = ensure_plugin_instance(
+        &store,
+        &ConfigActor::Bootstrap,
+        plugin.plugin_key().canonical(),
+    )
+    .await
+    .unwrap();
+    put_plugin_placement(
+        &store,
+        &ConfigActor::Operator { id: "cli".into() },
+        &instance.id,
+        &PlacementSpec {
+            replicas: bookclerk_library::control_plane::Replicas::Count(1),
+            constraints: vec!["nas".into()],
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    let enrolled = enroll_local_plugins(&store, &config, &node_id)
+        .await
+        .unwrap();
+    assert_eq!(enrolled.len(), 1);
+    assert_eq!(enrolled[0].instance.id, instance.id);
+    assert_eq!(
+        enrolled[0].deployment.desired,
+        DesiredState::Unplaced,
+        "the scheduler, not enrollment, deploys a placed instance"
+    );
+    assert_eq!(
+        load_deployment_for_node(&store, &instance.id, &node_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .desired,
+        DesiredState::Unplaced
+    );
+}
+
+#[test]
+fn library_host_target_matches_the_catalog_target() {
+    assert_eq!(
+        bookclerk_library::control_plane::node_target(),
+        bookclerk_plugin_catalog::host_bookclerk_target(),
+        "hosts.target and release artifact targets must use one vocabulary"
     );
 }
 
@@ -249,9 +321,9 @@ async fn a_newer_package_upgrades_the_pin_and_an_older_one_is_not_enrolled() {
         "fxstale",
         &versioned_manifest("fxstale", "0.1.0", &["region"]),
     );
-    let (config, store, host_id) = open_host(files).await;
+    let (config, store, node_id) = open_host(files).await;
 
-    let first = enroll_local_plugins(&store, &config, &host_id)
+    let first = enroll_local_plugins(&store, &config, &node_id)
         .await
         .unwrap();
     assert_eq!(first.len(), 1);
@@ -284,7 +356,7 @@ async fn a_newer_package_upgrades_the_pin_and_an_older_one_is_not_enrolled() {
         versioned_manifest("fxstale", "0.2.0", &["locale"]),
     )
     .unwrap();
-    let second = enroll_local_plugins(&store, &config, &host_id)
+    let second = enroll_local_plugins(&store, &config, &node_id)
         .await
         .unwrap();
     assert_eq!(second.len(), 1);
@@ -296,29 +368,29 @@ async fn a_newer_package_upgrades_the_pin_and_an_older_one_is_not_enrolled() {
     assert_eq!(doc.revision, seeded.revision + 2);
     assert!(doc.body.settings.is_empty(), "`region` was pruned");
 
-    // Rolling the install back to 0.1.0 (or another host still on it) does
+    // Rolling the install back to 0.1.0 (or another node still on it) does
     // not enrol: the pin stays at 0.2.0 and the deployment shows why.
     std::fs::write(
         &manifest_path,
         versioned_manifest("fxstale", "0.1.0", &["region"]),
     )
     .unwrap();
-    let third = enroll_local_plugins(&store, &config, &host_id)
+    let third = enroll_local_plugins(&store, &config, &node_id)
         .await
         .unwrap();
     assert!(third.is_empty(), "stale package is skipped");
     let pinned = list_plugin_schemas(&store).await.unwrap();
     assert_eq!(pinned.len(), 1);
     assert_eq!(pinned[0].package_version, "0.2.0");
-    let observed = load_observation(&store, &one.deployment.deployment_id, &host_id)
+    let observed = load_observation(&store, &one.deployment.deployment_id, &node_id)
         .await
         .unwrap()
-        .expect("error observation on this host's deployment");
+        .expect("error observation on this node's deployment");
     assert_eq!(observed.status, DeploymentStatus::Error);
     assert!(
         observed
             .detail
-            .contains("installed version 0.1.0 is older than 0.2.0 pinned by host"),
+            .contains("installed version 0.1.0 is older than 0.2.0 pinned by node"),
         "{}",
         observed.detail
     );
@@ -334,7 +406,7 @@ async fn a_newer_package_upgrades_the_pin_and_an_older_one_is_not_enrolled() {
         .iter()
         .find(|plugin| plugin.manifest.id == "fxstale")
         .unwrap();
-    let err = enroll_one(&store, &host_id, plugin, &PluginGrantStore::default())
+    let err = enroll_one(&store, &node_id, plugin, &PluginGrantStore::default())
         .await
         .unwrap_err();
     assert!(err.to_string().contains("`version` is required"), "{err}");

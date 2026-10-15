@@ -2369,8 +2369,8 @@ pub fn guest_statement_kind(sql: &str) -> DbPlanStatementKind {
 /// trusted. A single-statement `INSERT` (after any leading CTE list) is
 /// proven when its row source is exactly one top-level `VALUES` tuple, or a
 /// table-free `SELECT` with no compound or grouping whose select list holds
-/// only placeholders, literals, operators, `COALESCE`, and scalar
-/// subqueries, so it cannot return a set. `INSERT … SELECT … FROM`,
+/// only placeholders, literals, operators, `COALESCE`, `MIN` / `MAX` over
+/// such items, and scalar subqueries, so it cannot return a set. `INSERT … SELECT … FROM`,
 /// `UPDATE … RETURNING`, `DELETE … RETURNING`, and multi-tuple `VALUES` are
 /// never proven, because the SQL text does not bound how many rows they
 /// touch.
@@ -2400,9 +2400,16 @@ pub fn returning_single_row_proven(sql: &str) -> bool {
 /// (`SELECT generate_series(1, 3)` is three rows even without `FROM`), so
 /// the select list may hold only placeholders, literals, `NULL` / `TRUE` /
 /// `FALSE`, operators, `COALESCE(…)` (Postgres rejects set-returning
-/// functions inside it; SQLite has none outside `FROM`), and parenthesized
-/// scalar subqueries `(SELECT …)` (more than one row is an error, not more
-/// rows). Anything else fails closed.
+/// functions inside it; SQLite has none outside `FROM`), `MIN(…)` / `MAX(…)`
+/// whose arguments pass the same check, and parenthesized scalar subqueries
+/// `(SELECT …)` (more than one row is an error, not more rows). Anything
+/// else fails closed.
+///
+/// `MIN` / `MAX` with several arguments are scalar in SQLite and lower to
+/// `LEAST` / `GREATEST` on Postgres; with one argument they aggregate, which
+/// over a table-free `SELECT` still yields exactly one row. Their arguments
+/// are checked because Postgres would evaluate a set-returning call inside
+/// `GREATEST`, or in the `LATERAL` the lowering adds for placeholders.
 fn select_row_source_is_single_row(main: &str) -> bool {
     let mut selects = 0usize;
     let mut select_end = None;
@@ -2440,12 +2447,13 @@ fn select_row_source_is_single_row(main: &str) -> bool {
 }
 
 /// True when every top-level item of a `SELECT` list is a placeholder,
-/// literal, `NULL` / `TRUE` / `FALSE`, operator, `COALESCE(…)`, or
-/// parenthesized scalar subquery. See [`select_row_source_is_single_row`].
+/// literal, `NULL` / `TRUE` / `FALSE`, operator, `COALESCE(…)`, `MIN(…)` /
+/// `MAX(…)` over such items, or parenthesized scalar subquery. See
+/// [`select_row_source_is_single_row`].
 fn select_list_is_scalar(list: &str) -> bool {
     let mut words_ok = true;
     for_each_top_level_keyword(list, |_, kw| {
-        if !["NULL", "TRUE", "FALSE", "COALESCE"]
+        if !["NULL", "TRUE", "FALSE", "COALESCE", "MIN", "MAX"]
             .iter()
             .any(|allowed| kw.eq_ignore_ascii_case(allowed))
         {
@@ -2461,7 +2469,7 @@ fn select_list_is_scalar(list: &str) -> bool {
     for_each_unquoted(list, |_, i| {
         match bytes[i] {
             b'(' => {
-                if depth == 0 && !paren_opens_coalesce_or_subquery(list, i) {
+                if depth == 0 && !paren_is_scalar(list, i) {
                     parens_ok = false;
                 }
                 depth += 1;
@@ -2474,10 +2482,11 @@ fn select_list_is_scalar(list: &str) -> bool {
     parens_ok
 }
 
-/// True when the `(` at `open` is `COALESCE`'s argument list or starts a
-/// `(SELECT …)` scalar subquery. Anything else before it (another function
-/// name, a quoted identifier, a comment) fails closed.
-fn paren_opens_coalesce_or_subquery(list: &str, open: usize) -> bool {
+/// True when the `(` at `open` is `COALESCE`'s argument list, the argument
+/// list of a `MIN` / `MAX` whose arguments are themselves scalar, or starts
+/// a `(SELECT …)` scalar subquery. Anything else before it (another
+/// function name, a quoted identifier, a comment) fails closed.
+fn paren_is_scalar(list: &str, open: usize) -> bool {
     let bytes = list.as_bytes();
     let mut end = open;
     while end > 0 && bytes[end - 1].is_ascii_whitespace() {
@@ -2488,7 +2497,12 @@ fn paren_opens_coalesce_or_subquery(list: &str, open: usize) -> bool {
         start -= 1;
     }
     if start < end {
-        return list[start..end].eq_ignore_ascii_case("COALESCE");
+        let name = &list[start..end];
+        if name.eq_ignore_ascii_case("MIN") || name.eq_ignore_ascii_case("MAX") {
+            return skip_balanced_parens(list, open)
+                .is_some_and(|close| select_list_is_scalar(&list[open + 1..close - 1]));
+        }
+        return name.eq_ignore_ascii_case("COALESCE");
     }
     if end > 0 && matches!(bytes[end - 1], b'"' | b'`' | b']' | b'/' | b'\'') {
         return false;
@@ -4568,6 +4582,15 @@ mod tests {
         assert!(returning_single_row_proven(
             "INSERT INTO t (a) SELECT (SELECT MAX(x) FROM u) RETURNING id"
         ));
+        // The delivery insert's `run_after`: scalar MIN/MAX over scalars.
+        assert!(returning_single_row_proven(
+            "INSERT OR IGNORE INTO t (a, b) SELECT ?, \
+             MAX(?, COALESCE((SELECT k FROM u WHERE id = ?), '')) \
+             WHERE EXISTS (SELECT 1 FROM u WHERE id = ?) RETURNING id"
+        ));
+        assert!(returning_single_row_proven(
+            "INSERT INTO t (a) SELECT min(?, max(1, ?)) RETURNING id"
+        ));
         // A table, a compound, or grouping can yield more than one row.
         assert!(!returning_single_row_proven(
             "INSERT INTO t (a) SELECT ? FROM u RETURNING id"
@@ -4593,6 +4616,16 @@ mod tests {
         ));
         assert!(!returning_single_row_proven(
             "INSERT INTO t (a) SELECT unnest(ARRAY[1, 2]) RETURNING id"
+        ));
+        // MIN/MAX arguments get the same check, so a set cannot hide inside.
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT MAX(?, generate_series(1, 3)) RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT MIN(1, (generate_series(1, 3))) RETURNING id"
+        ));
+        assert!(!returning_single_row_proven(
+            "INSERT INTO t (a) SELECT MAX(1, 2 RETURNING id"
         ));
         // Unknown words in the select list fail closed.
         assert!(!returning_single_row_proven(

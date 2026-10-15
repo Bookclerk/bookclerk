@@ -12,7 +12,7 @@ pub struct Model {
     /// Scope instance (`singleton` or a host id).
     #[sea_orm(primary_key, auto_increment = false)]
     pub scope_id: String,
-    /// Typed domain name (`core.events`, `host.runtime`).
+    /// Typed domain name (`core.events`, `node.runtime`).
     #[sea_orm(primary_key, auto_increment = false)]
     pub namespace: String,
     /// Domain schema version understood by this binary.

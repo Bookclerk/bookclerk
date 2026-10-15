@@ -36,12 +36,15 @@ const {
   EventMessage,
   JobController,
   PluginError,
+  QueueBatch,
+  QueueMessage,
   StorefrontEntrypoint,
   cliArgs,
   decodeExtensibleConfig,
   eventBatchResults,
   jobOutcomeFor,
   jsonPayload,
+  queueBatchResults,
 } = await import(join(dist, "plugin.js"));
 
 const enc = new TextEncoder();
@@ -192,6 +195,109 @@ function wireEvent(overrides = {}) {
   assert.deepEqual(thrown, [
     { kind: "ack" },
     { kind: "retry", retryAtUnixMs: 0, reason: "handler exploded" },
+  ]);
+}
+
+// --- QueueMessage / QueueBatch / queueBatchResults ------------------------
+
+function wireQueueMessage(overrides = {}) {
+  return {
+    id: "msg-1",
+    timestampUnixMs: 1_700_000_000_000,
+    body: enc.encode('{"n":1}'),
+    contentType: "json",
+    attempts: 2,
+    source: "echo",
+    ...overrides,
+  };
+}
+
+{
+  const m = new QueueMessage(wireQueueMessage());
+  assert.equal(m.id, "msg-1");
+  assert.equal(m.timestamp.getTime(), 1_700_000_000_000);
+  assert.equal(m.contentType, "json");
+  assert.equal(m.attempts, 2);
+  assert.equal(m.source, "echo");
+  assert.deepEqual(m.json(), { n: 1 });
+  assert.equal(m.text(), '{"n":1}');
+  assert.equal(m.result, null);
+  m.retry({ delaySeconds: 2.9, reason: "later" });
+  m.ack();
+  assert.deepEqual(m.result, { kind: "retry", delaySeconds: 2, reason: "later" }, "first outcome wins");
+
+  const empty = new QueueMessage(wireQueueMessage({ body: undefined, contentType: "" }));
+  assert.equal(empty.body.byteLength, 0);
+  assert.equal(empty.contentType, "json", "empty content type defaults to json");
+  assert.equal(empty.json(), null);
+
+  const batch = new QueueBatch("jobs", [wireQueueMessage(), wireQueueMessage({ id: "msg-2" }), wireQueueMessage({ id: "msg-3" })]);
+  assert.equal(batch.queue, "jobs");
+  assert.equal(batch.messages.length, 3);
+  batch.messages[0].retry({ reason: "again" });
+  assert.deepEqual(queueBatchResults(batch, undefined), [
+    { kind: "retry", delaySeconds: 0, reason: "again" },
+    { kind: "ack" },
+    { kind: "ack" },
+  ]);
+  assert.deepEqual(queueBatchResults(batch, new Error("boom"))[2], {
+    kind: "retry",
+    delaySeconds: 0,
+    reason: "boom",
+  });
+  const all = new QueueBatch("jobs", [wireQueueMessage(), wireQueueMessage({ id: "msg-2" })]);
+  all.ackAll();
+  assert.ok(all.messages.every((m) => m.result.kind === "ack"));
+}
+
+// --- BookclerkEntrypoint.bookclerkQueue -----------------------------------
+
+{
+  const seen = [];
+  class Plugin extends BookclerkEntrypoint {
+    async queue(batch) {
+      seen.push(batch.queue, batch.invocation.id, this.env.NOTIFY);
+      for (const msg of batch.messages) {
+        if (msg.id === "msg-2") msg.retry({ delaySeconds: 5, reason: "again" });
+        else msg.ack();
+      }
+    }
+  }
+  const notify = { send: async () => ({ messageIds: [] }), sendBatch: async () => ({ messageIds: [] }) };
+  const plugin = new Plugin({}, { FIXED: 1 });
+  const context = {
+    invocation: { id: "inv-q", accountId: "", deadlineUnixMs: 0, correlationId: "", causationId: "" },
+    queues: [{ name: "NOTIFY", queue: notify }],
+  };
+  const results = await plugin.bookclerkQueue(context, {
+    queue: "jobs",
+    messages: [wireQueueMessage(), wireQueueMessage({ id: "msg-2" })],
+  });
+  assert.deepEqual(results, [
+    { kind: "ack" },
+    { kind: "retry", delaySeconds: 5, reason: "again" },
+  ]);
+  assert.deepEqual(seen, ["jobs", "inv-q", notify]);
+  assert.equal(plugin.env.FIXED, 1, "static env survives the merge");
+
+  await assert.rejects(
+    () => new BookclerkEntrypoint({}, {}).bookclerkQueue(context, { queue: "jobs", messages: [] }),
+    (err) => err instanceof PluginError && err.wireCode === "unsupported",
+  );
+
+  class Throws extends BookclerkEntrypoint {
+    async queue(batch) {
+      batch.messages[0].ack();
+      throw new Error("handler exploded");
+    }
+  }
+  const thrown = await new Throws({}, {}).bookclerkQueue(context, {
+    queue: "jobs",
+    messages: [wireQueueMessage(), wireQueueMessage({ id: "msg-2" })],
+  });
+  assert.deepEqual(thrown, [
+    { kind: "ack" },
+    { kind: "retry", delaySeconds: 0, reason: "handler exploded" },
   ]);
 }
 
@@ -393,6 +499,19 @@ for (const [label, mod] of [
     `${label}: declared jobs enable jobRunner`,
   );
   assert.deepEqual(allowedEntrypointFamilies(null, ["storage"]), [], `${label}: missing manifest fails closed`);
+  assert.deepEqual(
+    allowedEntrypointFamilies(
+      { entrypoints: [], consumes: [], jobs: [], queueConsumers: ["jobs"] },
+      ["queueConsumer", "eventConsumer", "queueConsumer"],
+    ),
+    ["queueConsumer"],
+    `${label}: queueConsumer requires [[queues.consumers]]; duplicates collapse`,
+  );
+  assert.deepEqual(
+    allowedEntrypointFamilies({ entrypoints: ["cli"], consumes: [], jobs: [] }, ["queueConsumer", "cli"]),
+    ["cli"],
+    `${label}: no queue consumers nulls queueConsumer`,
+  );
 
   const Adapter = wrapPluginFromNative();
   const manifest = {

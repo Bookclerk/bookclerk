@@ -58,10 +58,13 @@ mod error;
 mod event_publisher;
 mod host;
 mod host_control_plane;
+mod install;
 mod install_preflight;
 mod instance_bindings;
 mod jail;
+mod kv_binding;
 mod manifest;
+mod queue_producer;
 mod registry;
 mod rpc;
 mod rpc_session;
@@ -96,19 +99,20 @@ pub use consent::{
     effective_extra_processes, effective_grant, effective_memory_mib, format_cpu_cores,
     grant_covers, grant_has_binding, grant_revision, grant_within_ceiling,
     granted_consumers_from_manifest, granted_database_bindings, granted_jobs_from_manifest,
-    host_cpu_cores_max, host_cpu_rate_max, host_logical_cpus, host_overlay_config_digest,
-    inject_workerd_grant_env, jail_process_overhead, network_compatible,
-    overlay_host_implied_network, pending_structural, percent_to_cores,
-    reconcile_host_overlay_authority, require_binding, require_grant, spawn_config_for_grant,
-    spawn_grant, validate_approved_grant, validate_described_capabilities,
+    granted_queue_consumers, host_cpu_cores_max, host_cpu_rate_max, host_overlay_config_digest,
+    inject_workerd_grant_env, jail_process_overhead, network_compatible, node_logical_cpus,
+    overlay_host_implied_network, pending_structural, percent_to_cores, queue_consumer_grant,
+    queue_producer_grant, reconcile_host_overlay_authority, require_binding, require_grant,
+    spawn_config_for_grant, spawn_grant, validate_approved_grant, validate_described_capabilities,
     validate_described_config_options, windows_session_active_processes, GrantedEventConsumer,
     PendingStructural, PluginGrant, PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION,
     KNOWN_HOST_BINDINGS, PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT,
     PLUGIN_JAIL_CPU_RATE_DEFAULT, PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT,
     PLUGIN_JAIL_EXTRA_PROCESSES_MAX, PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX,
-    PLUGIN_STATE_BUDGET_MIB_DEFAULT, PLUGIN_STATE_BUDGET_MIB_MAX, WINDOWS_SESSION_PROCESS_BASELINE,
-    WORKERD_GRANT_CPU_MS_ENV, WORKERD_GRANT_DOMAINS_ENV, WORKERD_GRANT_NETWORK_MODE_ENV,
-    WORKERD_GRANT_POLICY_ENV, WORKERD_GRANT_SUBREQUESTS_ENV,
+    PLUGIN_STATE_BUDGET_MIB_DEFAULT, PLUGIN_STATE_BUDGET_MIB_MAX, QUEUE_CONSUMER_BINDING_PREFIX,
+    QUEUE_PRODUCER_BINDING_PREFIX, WINDOWS_SESSION_PROCESS_BASELINE, WORKERD_GRANT_CPU_MS_ENV,
+    WORKERD_GRANT_DOMAINS_ENV, WORKERD_GRANT_NETWORK_MODE_ENV, WORKERD_GRANT_POLICY_ENV,
+    WORKERD_GRANT_SUBREQUESTS_ENV,
 };
 pub use crates_io::search_crates_io;
 pub use deployment::{
@@ -137,9 +141,16 @@ pub use host::{
     DestinationRegistry, ExternalDatabase, ExternalIntegration, ExternalSource,
 };
 pub use host_control_plane::{
-    allow_credential_login, enroll_host, open_host_control_plane,
-    open_host_control_plane_with_store, refresh_present, HostControlPlane, HostEnrollment,
+    allow_credential_login, enroll_node, open_host_control_plane,
+    open_host_control_plane_with_store, refresh_present, HostControlPlane, NodeEnrollment,
     PresentDeployment,
+};
+pub use install::{
+    add_package_version, enroll_version, grant_covers_version, host_artifact, install_plugin_key,
+    install_version, materialize_version, open_installed_plugin, sweep_version_cache,
+    version_cache_path, version_cache_root, version_consent_request, version_grant, Activate,
+    AddedVersion, InstallRequest, InstalledVersion, VersionRequest, VERSION_CACHE_DIR,
+    VERSION_CACHE_GRACE,
 };
 pub use install_preflight::{
     configured_alias_occupants, install_from_manifest_with_configured_aliases,
@@ -148,7 +159,8 @@ pub use install_preflight::{
 pub use instance_bindings::{
     binding_grant_flags, prepare_open_for_instance, prepared_open_from_resolved, PreparedOpen,
 };
-pub use jail::plugin_data_dir;
+pub use jail::{guest_reservation, plugin_data_dir};
+pub use kv_binding::{KvNamespaces, LibraryKvNamespace, KV_GRANT_BINDING};
 pub use manifest::{
     embedded_logo_api_path, entrypoint_family, logo_content_type, validate_logo,
     BindingCapabilities, CapabilitiesManifest, DatabaseBindingManifest, Entrypoint, EventConsumer,
@@ -157,6 +169,7 @@ pub use manifest::{
     TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
     MAX_EMBEDDED_LOGO_BYTES,
 };
+pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
     family_keyword, host_target_triple, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,

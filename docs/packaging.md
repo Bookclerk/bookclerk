@@ -9,12 +9,14 @@ plugin install**, and **CI** — see [plugin-registry.md](plugin-registry.md).
 | --- | --- | --- |
 | **Host** (`bookclerk`, `bookclerkd`) | Not on crates.io today | No — OS installer / GitHub Release |
 | **Platform plugins** (`sqlite`, `local`) | May publish metadata crates later | **Bundled** in platform install (`cargo package-platform`) |
-| **Storefront plugins** (Audible, Libro, …) | Discovery index when published | **Opt-in** via `bookclerk plugins install` (Phase C) |
+| **Storefront plugins** (Audible, Libro, …) | Discovery index when published | **Opt-in** via `bookclerk plugins install` (publishes a cluster release) |
 
 crates.io is a **catalog**, not a runtime dependency resolver. Nothing is compiled
 from crates.io on the operator machine. `bookclerk plugins search` works today;
-`bookclerk plugins install` downloads a **prebuilt HTTPS archive** using
-`[package.metadata.bookclerk].artifact_*` URLs (not yet implemented).
+`bookclerk plugins install` resolves a **prebuilt HTTPS archive** from the
+package's artifact URLs, verifies it once, and records it as a cluster
+release that every host materializes by digest; see
+[plugins.md#installing-plugins](plugins.md#installing-plugins).
 
 Platform releases ship hosts + `bookclerk-jail` + `bookclerk-workerd` +
 the pinned Cloudflare `workerd` binary +

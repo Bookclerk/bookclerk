@@ -22,7 +22,7 @@ pub struct Model {
     /// RFC 3339 timestamp of the last pin.
     pub recorded_at: String,
     /// Host that recorded the last pin.
-    pub recorded_by_host: String,
+    pub recorded_by_node: String,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

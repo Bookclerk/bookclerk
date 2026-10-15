@@ -4,7 +4,9 @@ import { AccountSettingsPanel } from "@/components/AccountSettingsPanel";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
+import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
+import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
   PluginConsentDialog,
@@ -59,7 +61,7 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-type SettingsTab = "account" | "users" | "signin" | "server" | "plugins";
+type SettingsTab = "account" | "users" | "signin" | "server" | "plugins" | "nodes";
 
 const ISOLATION_OPTIONS = [
   ["required", "Required"],
@@ -193,9 +195,10 @@ function isInstanceGroup(plugin: PluginSettingsGroup): boolean {
   return Boolean(plugin.plugin_instance_id);
 }
 
-/** Enabled on this host = a `present` deployment. */
+/** Runs on this node: an operator `present` or a scheduler `placed` deployment. */
 function deploymentEnabled(plugin: PluginSettingsGroup): boolean {
-  return plugin.deployment?.desired === "present";
+  const desired = plugin.deployment?.desired;
+  return desired === "present" || desired === "placed";
 }
 
 function deploymentStatusLabel(deployment: PluginDeploymentView | undefined): string | null {
@@ -225,7 +228,7 @@ function pluginConsentKey(plugin: PluginSettingsGroup): string {
 /**
  * Prefer the standard `*.enabled` knob; fall back to an "Enabled" label.
  *
- * Instance groups have no such knob: their switch is the host deployment.
+ * Instance groups have no such knob: their switch is the node deployment.
  */
 function findEnabledOption(plugin: PluginSettingsGroup): PluginSettingOption | null {
   if (isInstanceGroup(plugin)) return null;
@@ -512,7 +515,10 @@ export function SettingsPage({
     if (!showSignInSettings && activeTab === "signin") {
       setActiveTab("account");
     }
-    if (!showOperatorChrome && (activeTab === "server" || activeTab === "plugins")) {
+    if (
+      !showOperatorChrome &&
+      (activeTab === "server" || activeTab === "plugins" || activeTab === "nodes")
+    ) {
       setActiveTab("account");
     }
   }, [showUserAdmin, showSignInSettings, showOperatorChrome, activeTab]);
@@ -939,17 +945,23 @@ export function SettingsPage({
     }
   }
 
+  /** Reloads the Settings snapshot after an immediate (non-form) write. */
+  async function reloadSettings() {
+    const next = await withRequestTimeout(fetchSettings(), "Reload settings");
+    applySavedSettings(next, daemonListen);
+  }
+
   /**
-   * Flips this host's deployment of an instance and reloads the snapshot.
+   * Flips this node's deployment of an instance and reloads the snapshot.
    *
    * The write is immediate (not part of the Save form): enablement is a
    * cluster fact, not a draft value.
    */
   async function setDeployment(plugin: PluginSettingsGroup, desired: "present" | "absent") {
     const instanceId = plugin.plugin_instance_id;
-    const hostId = settings?.effective?.["host.id"];
-    if (!instanceId || !hostId) {
-      setError("This host has no identity yet; retry after bookclerkd finishes starting.");
+    const nodeId = settings?.effective?.["node.id"];
+    if (!instanceId || !nodeId) {
+      setError("This node has no identity yet; retry after bookclerkd finishes starting.");
       return;
     }
     const rowKey = pluginRowKey(plugin);
@@ -957,8 +969,8 @@ export function SettingsPage({
     setError(null);
     try {
       await withRequestTimeout(
-        putPluginDeployment(instanceId, hostId, desired, plugin.deployment?.revision),
-        `${desired === "present" ? "Enable" : "Disable"} ${plugin.id}`,
+        putPluginDeployment(instanceId, nodeId, desired, plugin.deployment?.revision),
+        `${desired === "present" ? "Deploy" : "Undeploy"} ${plugin.id}`,
       );
       const next = await withRequestTimeout(fetchSettings(), "Reload settings");
       applySavedSettings(next, daemonListen);
@@ -1232,7 +1244,7 @@ export function SettingsPage({
             <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Settings</h1>
             <p className="text-sm text-ink/60">
               {showOperatorChrome
-                ? "Account, users, sign-in providers, daemon, and plugin knobs for this host."
+                ? "Account, users, sign-in providers, daemon, and plugin knobs for this server."
                 : showSignInSettings
                   ? "Account security, user management, and sign-in providers."
                   : showUserAdmin
@@ -1322,6 +1334,20 @@ export function SettingsPage({
                 >
                   Plugins
                 </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "nodes"}
+                  className={cn(
+                    "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                    activeTab === "nodes"
+                      ? "bg-ink text-paper shadow-sm"
+                      : "text-ink/60 hover:text-ink",
+                  )}
+                  onClick={() => setActiveTab("nodes")}
+                >
+                  Nodes
+                </button>
               </>
             ) : null}
           </div>
@@ -1385,6 +1411,17 @@ export function SettingsPage({
         ) : null}
 
         {activeTab === "signin" && showSignInSettings ? <OidcSettingsPanel /> : null}
+
+        {activeTab === "nodes" && showOperatorChrome ? (
+          <div className="flex flex-col gap-4">
+            {error ? (
+              <p className="text-sm font-medium text-brick" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <NodesPanel onError={setError} onSessionExpired={onSessionExpired} />
+          </div>
+        ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (
           loading ? (
@@ -1702,7 +1739,7 @@ export function SettingsPage({
                   <h2 className="text-lg font-semibold text-ink">Plugins</h2>
                   <p className="text-sm text-ink/55">
                     Settings each plugin declares in its manifest, stored per instance in the
-                    database. Enabled means the instance runs on this host.
+                    database. Deployed means the instance runs on this node.
                   </p>
                 </div>
 
@@ -1799,7 +1836,13 @@ export function SettingsPage({
                                           : "bg-ink/5 text-ink/55 normal-case tracking-normal"
                                       }
                                     >
-                                      {enabled ? "Enabled" : "Disabled"}
+                                      {instanceGroup
+                                        ? enabled
+                                          ? "Deployed"
+                                          : "Not deployed"
+                                        : enabled
+                                          ? "Enabled"
+                                          : "Disabled"}
                                     </Badge>
                                     {deploymentStatus && deploymentStatus !== "Running" ? (
                                       <Badge
@@ -1812,6 +1855,7 @@ export function SettingsPage({
                                         <span title={plugin.deployment?.detail}>{deploymentStatus}</span>
                                       </Badge>
                                     ) : null}
+                                    <PlacementBadge plugin={plugin} />
                                     {loaded ? (
                                       <Badge className="bg-teal/10 text-ink/70 normal-case tracking-normal">
                                         Loaded
@@ -1832,9 +1876,14 @@ export function SettingsPage({
                                       id={`plugin-enabled-${rowKey}`}
                                       type="checkbox"
                                       className="h-4 w-4 accent-teal"
-                                      aria-label={`${plugin.display_name?.trim() || plugin.id} enabled`}
+                                      aria-label={`${plugin.display_name?.trim() || plugin.id} ${instanceGroup ? "deployed" : "enabled"}`}
+                                      title={
+                                        plugin.placement
+                                          ? "Placed by the cluster scheduler; change its placement instead"
+                                          : undefined
+                                      }
                                       checked={enabled}
-                                      disabled={switchBusy}
+                                      disabled={switchBusy || Boolean(plugin.placement)}
                                       onChange={(e) =>
                                         void onPluginEnabledChange(
                                           plugin,
@@ -1897,6 +1946,14 @@ export function SettingsPage({
                                       })}
                                     </div>
                                   )}
+                                  {instanceGroup ? (
+                                    <PlacementPanel
+                                      plugin={plugin}
+                                      onChanged={reloadSettings}
+                                      onError={setError}
+                                      onSessionExpired={onSessionExpired}
+                                    />
+                                  ) : null}
                                 </div>
                               ) : null}
                             </li>

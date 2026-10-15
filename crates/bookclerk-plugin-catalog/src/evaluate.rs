@@ -114,7 +114,7 @@ pub fn evaluate_install_in(
                 {
                     PluginProvenance::PlatformBundled
                 } else {
-                    PluginProvenance::VerifiedInstalled
+                    PluginProvenance::VerifiedStaged
                 }
             };
             let artifact = ArtifactIdentity {

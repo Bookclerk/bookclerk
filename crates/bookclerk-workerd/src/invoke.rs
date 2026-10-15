@@ -161,6 +161,16 @@ const INTERFACES: &[InterfaceEntry] = &[
         methods: &["event"],
     },
     InterfaceEntry {
+        id: <plugin_capnp::queue_consumer::Client as HasTypeId>::TYPE_ID,
+        name: "QueueConsumer",
+        methods: &["queue"],
+    },
+    InterfaceEntry {
+        id: <plugin_capnp::queue_producer::Client as HasTypeId>::TYPE_ID,
+        name: "QueueProducer",
+        methods: &["send", "sendBatch"],
+    },
+    InterfaceEntry {
         id: <plugin_capnp::job_runner::Client as HasTypeId>::TYPE_ID,
         name: "JobRunner",
         methods: &["job"],

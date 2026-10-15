@@ -1,0 +1,23 @@
+api_version = 3
+id = "valid_queues"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[[queues.producers]]
+binding = "MY_QUEUE"
+queue = "jobs"
+
+[[queues.consumers]]
+queue = "jobs"
+max_retries = 5
+dead_letter_queue = "jobs-dlq"
+
+[capabilities.network]
+mode = "deny"

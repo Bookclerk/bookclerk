@@ -35,6 +35,8 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::discover::DiscoveredPlugin;
 use crate::event_publisher::EventOutbox;
+use crate::kv_binding::KvNamespaces;
+use crate::queue_producer::QueueOutbox;
 use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan, SpawnTransport};
 use crate::PluginManifest;
 use crate::{PluginError, Result};
@@ -176,6 +178,14 @@ enum Work {
         cancel: Arc<AtomicBool>,
         /// Reply channel.
         reply: oneshot::Sender<Result<Vec<EventResult>>>,
+    },
+    DeliverQueue {
+        /// Ordered batch from one queue (at most `MAX_LIST_PAGE`).
+        batch: bookclerk_plugin_abi::QueueBatch,
+        /// Abort flag (delivery fence loss).
+        cancel: Arc<AtomicBool>,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<Vec<bookclerk_plugin_abi::QueueResult>>>,
     },
     CliDescribe {
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::CliSchema>>,
@@ -724,9 +734,20 @@ impl PluginSession {
         let grant = spawned.grant.clone();
         // `EVENTS` needs all three: a host outbox, a manifest producer, and
         // the operator grant covering that producer.
-        let events = services.event_outbox.and_then(|store| {
+        let events = services.event_outbox.clone().and_then(|store| {
             EventOutbox::new(store, &id, manifest.producer_types(), &grant.producers)
         });
+        // Queue producer bindings likewise need the outbox, a manifest row,
+        // and the `queue:<BINDING>` grant token.
+        let queues = services
+            .event_outbox
+            .clone()
+            .and_then(|store| QueueOutbox::new(store, &id, &manifest, &grant));
+        // `[[kv_namespaces]]` rows live on the same library; the `plugin_kv`
+        // grant token covers every row.
+        let kv = services
+            .event_outbox
+            .and_then(|store| KvNamespaces::new(store, &id, &manifest, &grant));
         let spawn_config = spawned.spawn_config.clone();
         #[cfg(windows)]
         let package_sid = spawned.package_sid.clone();
@@ -813,7 +834,16 @@ impl PluginSession {
         };
         thread::Builder::new()
             .name(vat_thread_name(&id))
-            .spawn(move || vat_thread(guard, manifest, vat_account, events, rx, ready_tx))
+            .spawn(move || {
+                vat_thread(
+                    guard,
+                    manifest,
+                    vat_account,
+                    BindingHooks { events, queues, kv },
+                    rx,
+                    ready_tx,
+                )
+            })
             .map_err(|err| PluginError::message(format!("plugin vat thread: {err}")))?;
         crate::spawn_stdio::note_spawn_stage(&format!(
             "describe wait plugin={id} gateway_pid={} guest_pid={}",
@@ -1163,6 +1193,13 @@ impl PluginSession {
         !self.describe.capabilities.consumes.is_empty()
     }
 
+    /// True when the guest's default entrypoint consumes at least one
+    /// `[[queues.consumers]]` queue.
+    #[must_use]
+    pub fn consumes_queues(&self) -> bool {
+        !self.describe.capabilities.queue_consumers.is_empty()
+    }
+
     /// One typed `storefront` method on the opened primary entrypoints.
     ///
     /// `call` runs on the vat thread; its output crosses back to the caller's
@@ -1275,6 +1312,35 @@ impl PluginSession {
             }
         }
         self.call(|reply| Work::DeliverEvents {
+            batch,
+            cancel,
+            reply,
+        })
+        .await
+    }
+
+    /// Delivers one ordered batch from a `[[queues.consumers]]` queue to the
+    /// guest's `queue(batch)` trigger.
+    ///
+    /// Returns exactly one [`bookclerk_plugin_abi::QueueResult`] per message.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the grant does not cover the queue, the
+    /// guest did not export a queue consumer, the RPC fails, or the delivery
+    /// is cancelled.
+    pub async fn deliver_queue(
+        &self,
+        batch: bookclerk_plugin_abi::QueueBatch,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Vec<bookclerk_plugin_abi::QueueResult>> {
+        if !self.grant.allows_queue_consumer(&batch.queue) {
+            return Err(PluginError::message(format!(
+                "plugin grant does not authorize queue consumer `{}`",
+                batch.queue
+            )));
+        }
+        self.call(|reply| Work::DeliverQueue {
             batch,
             cancel,
             reply,
@@ -1962,12 +2028,51 @@ struct PrimaryState {
     open: Option<PrimaryOpen>,
     /// `EVENTS` outbox hook; `None` when no producer is declared and granted.
     events: Option<EventOutbox>,
+    /// `[[queues.producers]]` outbox hook; `None` when no row is granted.
+    queues: Option<QueueOutbox>,
+    /// `[[kv_namespaces]]` hook; `None` when no row is granted.
+    kv: Option<KvNamespaces>,
+}
+
+/// Host-served bindings every `open` of one session receives: the `EVENTS`
+/// publisher, `[[queues.producers]]`, and `[[kv_namespaces]]` hooks.
+struct BindingHooks {
+    /// `EVENTS` outbox hook.
+    events: Option<EventOutbox>,
+    /// `[[queues.producers]]` outbox hook.
+    queues: Option<QueueOutbox>,
+    /// `[[kv_namespaces]]` hook.
+    kv: Option<KvNamespaces>,
 }
 
 impl PrimaryState {
     /// Fresh state before the first `open`.
-    fn new(events: Option<EventOutbox>) -> Self {
-        Self { open: None, events }
+    fn new(hooks: BindingHooks) -> Self {
+        Self {
+            open: None,
+            events: hooks.events,
+            queues: hooks.queues,
+            kv: hooks.kv,
+        }
+    }
+
+    /// KV namespace bindings, when any are granted.
+    fn kv_bindings(&self) -> Vec<(String, String, Arc<dyn bookclerk_plugin_abi::KvNamespace>)> {
+        self.kv
+            .as_ref()
+            .map(KvNamespaces::namespaces)
+            .unwrap_or_default()
+    }
+
+    /// Queue producer bindings for `invocation`, when any are granted.
+    fn queues_for(
+        &self,
+        invocation: &Invocation,
+    ) -> Vec<(String, String, Arc<dyn bookclerk_plugin_abi::QueueProducer>)> {
+        self.queues
+            .as_ref()
+            .map(|outbox| outbox.producers(invocation))
+            .unwrap_or_default()
     }
 
     /// Binding values of the current primary open (empty before `open`).
@@ -2016,6 +2121,8 @@ async fn primary_entrypoints<'a>(
                 &invocation,
                 HostBindings {
                     events: primary.events_for(&invocation),
+                    queues: primary.queues_for(&invocation),
+                    kv: primary.kv_bindings(),
                     ..HostBindings::from_values(want.clone())
                 },
             )
@@ -2477,7 +2584,7 @@ fn vat_thread(
     mut guard: SpawnGuard,
     manifest: PluginManifest,
     account_id: String,
-    events: Option<EventOutbox>,
+    hooks: BindingHooks,
     mut rx: mpsc::UnboundedReceiver<Work>,
     ready: oneshot::Sender<Result<(PluginDescribe, ScalarLimits, Vec<String>)>>,
 ) {
@@ -2590,7 +2697,7 @@ fn vat_thread(
                         return;
                     }
                 };
-                let mut primary = PrimaryState::new(events);
+                let mut primary = PrimaryState::new(hooks);
                 struct BindingOpen {
                     session: Box<dyn bookclerk_plugin_sdk::AdapterDatabaseSession>,
                     host: bookclerk_plugin_abi::HostAdapterDatabaseSessionClient,
@@ -2813,6 +2920,8 @@ fn vat_thread(
                                 lease.deadline_unix_ms,
                             );
                             let events = primary.events_for(&job_invocation);
+                            let queues = primary.queues_for(&job_invocation);
+                            let kv = primary.kv_bindings();
                             let out = tokio::select! {
                                 biased;
                                 () = wait_flag(Arc::clone(&session_cancel)) => {
@@ -2829,6 +2938,8 @@ fn vat_thread(
                                     job_invocation,
                                     values,
                                     events,
+                                    queues,
+                                    kv,
                                     dest,
                                     lease,
                                     spec,
@@ -2949,6 +3060,49 @@ fn vat_thread(
                                                 ))
                                             }
                                             out = consumer.event(batch) => out.map_err(map_abi),
+                                        },
+                                    }
+                                } => result,
+                            };
+                            let _ = reply.send(out);
+                        }
+                        Work::DeliverQueue {
+                            batch,
+                            cancel,
+                            reply,
+                        } => {
+                            let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                result = async {
+                                    let consumer = primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    .and_then(|eps| {
+                                        eps.queue_consumer
+                                            .clone()
+                                            .ok_or_else(|| missing_entrypoint("queueConsumer"))
+                                    });
+                                    match consumer {
+                                        Err(err) => Err(err),
+                                        Ok(consumer) => tokio::select! {
+                                            biased;
+                                            () = wait_flag(Arc::clone(&cancel)) => {
+                                                Err(PluginError::from_abi(
+                                                    Some("cancelled"),
+                                                    "fence lost",
+                                                ))
+                                            }
+                                            out = bookclerk_plugin_abi::QueueConsumer::queue(&consumer, batch) => out.map_err(map_abi),
                                         },
                                     }
                                 } => result,
@@ -3450,6 +3604,8 @@ async fn run_stream_copy(
     invocation: Invocation,
     values: BindingValues,
     events: Option<Arc<dyn EventPublisher>>,
+    queues: Vec<(String, String, Arc<dyn bookclerk_plugin_abi::QueueProducer>)>,
+    kv: Vec<(String, String, Arc<dyn bookclerk_plugin_abi::KvNamespace>)>,
     dest: bookclerk_plugin_sdk::DestinationClient,
     lease: JobInvocationLease,
     spec: StreamCopySpec,
@@ -3469,6 +3625,8 @@ async fn run_stream_copy(
                 databases,
                 cancel: Arc::new(FlagCancel(Arc::clone(&cancel))),
                 storage: None,
+                queues,
+                kv,
             },
         )
         .await
@@ -3723,7 +3881,7 @@ impl StorageBackend for PluginStorage {
         // A plugin session key is configuration identity, not a node. Local
         // bytes behind the guest cannot be proved portable, so scans restart
         // on another host.
-        Some(bookclerk_storage::host_placement_id())
+        Some(bookclerk_storage::node_placement_id())
     }
 
     fn clone_box(&self) -> Box<dyn StorageBackend> {

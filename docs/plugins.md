@@ -195,7 +195,7 @@ aliases from different PluginKeys on the **same host** are invalid
 installation state (discovery fails closed). Instances, deployments, schemas,
 and accounts are keyed by PluginKey in the database; only the database
 adapter (`[database].plugin`) still occupies a `config.toml` key, and it
-upgrades a unique alias to its PluginKey when `bookclerk plugins enable`
+upgrades a unique alias to its PluginKey when `bookclerk plugins deploy`
 or a settings save touches it. A bare alias is accepted only when exactly
 one install on this host uses it.
 After registration, hosts talk **only**
@@ -242,48 +242,47 @@ choice made by whoever installs the plugin, not by whoever shipped the binary.
 
 ## Host-local plugin namespace
 
-Plugin deployment state is **host-local**. Shared Bookclerk application data
-may live in a common database, but each host owns its own plugin inventory,
-trust ledger, runtime state, and mutation lock.
-
-`$BOOKCLERK_FILES_DIR` is one host plugin namespace:
+What a plugin *is* (its release, consent, instances, settings, and where it
+is deployed) lives in the library database and is shared by every host in
+the cluster; see [Releases](#installing-plugins). What a host *runs* is host-local:
+`$BOOKCLERK_FILES_DIR` holds the materialized trees, guest state, and the
+mutation lock for that host only.
 
 ```text
 $FILES_DIR/
-  plugins/<PluginKey fs-id>/     # immutable install tree (guest cwd, read-only)
+  node-identity.json             # this host's stable HostId
+  plugins/.versions/<digest>/    # materialized installed version (read-only, shared by instances)
+  plugins/.staging/              # partial extracts; never spawned from
+  plugins/<PluginKey fs-id>/     # host-local tree: platform guests, dev trees, older installs
+  plugin-packages/<name>/        # operator-placed package.json + archive.tar.gz
   plugin-state/<PluginKey fs-id>/data
   plugin-state/<PluginKey fs-id>/tmp
   plugin-state/<PluginKey fs-id>/session-<nonce>/  # host-owned; native-behind only
-  install-ledger.json            # host-owned trust anchor (not receipt.json)
-  .plugin-mutation.lock          # OS advisory lock for local install/remove
+  plugin-grants.json             # consent for host-local trees (releases carry their own)
+  install-ledger.json            # trust anchor for host-local installs only
+  .plugin-mutation.lock          # OS advisory lock for cache and tree mutation
   .plugin-hold/                  # held trees/state during remove transactions
 ```
 
-Alias uniqueness, install-ledger mutation, jail/runtime processes, and
-`.plugin-mutation.lock` are scoped to this files directory. Two hosts:
+The cache directory names a digest, not a plugin: two instances of one
+release, or two plugins that ship identical bytes, share one tree. The
+`.releases` and `.staging` names start with a dot so discovery and alias
+scanning skip them; a release is found through the database, never by
+walking `plugins/`.
 
-```text
-Host A $FILES_DIR/.plugin-mutation.lock
-Host B $FILES_DIR/.plugin-mutation.lock
-```
+`.plugin-mutation.lock` is scoped to the files directory. Two hosts that
+share one PostgreSQL or D1 database each take their own lock and never
+block each other; cluster coordination goes through database rows and
+compare-and-swap, not a shared-database advisory lock.
 
-do **not** interact, even when A and B use the same PostgreSQL/D1/shared
-Bookclerk database. That is intentional: the same alias and PluginKey may be
-installed on both hosts with no coordination through the shared database.
-Bookclerk does not take a PostgreSQL advisory lock (or any other shared-database
-lock) for plugin installation.
-
-A future stable `HostId` (for example `$FILES_DIR/host.json`) is expected to
-map naturally onto this files-dir namespace where shared-database placement
-matters (runtime availability, job eligibility, event-consumer placement,
-local SQLite ownership, rolling plugin rollout). This release does **not**
-persist a HostId, register hosts, replicate plugin inventories, or schedule
-cluster plugin deployment.
-
-`receipt.json` inside the install tree is metadata. Remove/install identity
-is bound to the host ledger plus filesystem placement
-(`basename == PluginKey.fs_id()` for `pk-*` directories). A tampered receipt
-cannot redirect `--purge-state` onto another PluginKey.
+Host-local trees remain for three cases: platform guests that ship with the
+host (`sqlite`, `local`), development trees staged by `cargo stage-plugins`
+or `cargo dev`, and installs committed before releases existed. Those use
+`plugin-grants.json` for consent and `install-ledger.json` for identity.
+`receipt.json` inside such a tree is metadata: remove/install identity is
+bound to the ledger plus filesystem placement (`basename ==
+PluginKey.fs_id()` for `pk-*` directories), so a tampered receipt cannot
+redirect `--purge-state` onto another PluginKey.
 
 ## The guest jail
 
@@ -792,7 +791,7 @@ inherited by the host and lands in the daemon log directly under the
 
 **Enable / spawn refused: run `bookclerk plugins approve` first** — consent grant is
 missing or the plugin widened `capabilities` since the last grant. Re-approve,
-then `bookclerk plugins enable <id>` (spawn also fails closed until the grant
+then `bookclerk plugins deploy <id>` (spawn also fails closed until the grant
 covers the current manifest).
 
 ## Two files, two jobs
@@ -984,11 +983,13 @@ from it. When they do, a behavior change ships with an enable date in a
 Bookclerk release, and a plugin gets the behavior of the date this release
 actually applied — not a second calendar, and not the raw author date when it
 is past the pin. `[[kv_namespaces]]` is a
-durable KV binding: declaring it is legal, and load or spawn fails with
-"not implemented yet". `[[databases]]` does not replace it. `[queues]` is the
-same kind of declaration (producers and consumers): legal in `plugin.toml`,
-not implemented yet, and not a substitute for `[[events.consumers]]` or
-`[[events.producers]]`.
+durable KV binding on the host library (see [KV namespaces](#kv-namespaces)).
+`[[databases]]` does not replace it. `[queues]` is
+typed: `[[queues.producers]]` rows are `env` send bindings and
+`[[queues.consumers]]` rows are `queue(batch)` triggers, both on the host
+outbox (see [Queues](#queues)). It is not a substitute for
+`[[events.consumers]]` or `[[events.producers]]`, which are the bindings of
+the host's own `core.events` queue.
 
 Unknown capability keys are parse errors rather than silent defaults — a typo in
 a security-relevant field must not read as "whatever we would have picked".
@@ -1064,7 +1065,7 @@ CLI remains available (always approves the full request):
 ```bash
 bookclerk plugins approve echo          # interactive summary of network/bindings
 bookclerk plugins approve echo --yes    # non-interactive
-bookclerk plugins enable echo
+bookclerk plugins deploy echo
 ```
 
 Platform guests (`sqlite`, `local`) skip the consent UX and are enabled by
@@ -1075,9 +1076,14 @@ manifest stays within the installer envelope (deny network, `config` /
 `work_fs` only). A third-party package that reuses those ids gets no
 privilege.
 
-Grants are persisted under `$BOOKCLERK_FILES_DIR/plugin-grants.json`, keyed
-by provenance-qualified PluginKey. Saving that file is the operator
-mechanism (`bookclerk plugins approve` and `POST /api/plugins/{id}/consent`).
+An installed plugin's grant is stored on its version row, so one approval
+covers every node that runs that version (`bookclerk plugins approve`,
+`plugins install --approve-capabilities`, or
+`POST /api/config/plugins/{key}/versions/{version}/approve`); see
+[Installing plugins](#installing-plugins). A host-local tree's grant is persisted under
+`$BOOKCLERK_FILES_DIR/plugin-grants.json`, keyed by provenance-qualified
+PluginKey. Saving that file is the operator mechanism for those trees
+(`bookclerk plugins approve` and `POST /api/plugins/{id}/consent`).
 `bookclerkd` watches the file (and same-process saves notify immediately)
 and **proactively** fences any live session whose persisted
 `grant_revision` no longer matches. Malformed grant files keep
@@ -1162,19 +1168,31 @@ instance** at enrollment, with a document seeded from the manifest's
 alias routes to the default instance, and jobs may pin another with
 `--instance`.
 
-**Enabled on a host** means a `present` deployment row for that instance and
-that host. The reconciler spawns present deployments, retires the guest when
-the row flips to `absent`, and records observations (`installed`, `running`,
-`healthy`, `error`, `retired`). Third-party plugins enrol `absent` until an
-operator approves their grant and enables them; platform guests (`local`,
-`sqlite`) auto-grant and come up enabled.
+**Enabled on a node** means the instance's deployment row for that node
+says to run it. Each row's `desired` state also says whose decision it is:
+
+| `desired` | Written by | The node |
+| --- | --- | --- |
+| `present` | an operator (`plugins deploy`, the Settings switch) | runs it |
+| `absent` | an operator (`plugins undeploy`) | retires it |
+| `placed` | the cluster scheduler ([placement](#placement)) | runs it |
+| `unplaced` | the cluster scheduler | retires it |
+
+Only an operator writes `present` / `absent` and only the scheduler writes
+`placed` / `unplaced`; the library refuses anything else. The reconciler
+spawns rows that run, retires the guest when a row stops running, and
+records observations (`materialized`, `running`, `healthy`, `error`,
+`retired`). Third-party plugins enrol `absent` until an operator approves
+their grant and enables them; platform guests (`local`, `sqlite`)
+auto-grant (the reconciler persists that grant before the first spawn) and
+come up enabled.
 
 ```bash
 bookclerk plugins list                                  # instances + deployments
 bookclerk plugins approve echo --yes                    # consent (third-party)
-bookclerk plugins enable echo                           # desired = present on this host
-bookclerk plugins enable echo --host <host-id>          # … on another cluster host
-bookclerk plugins disable echo
+bookclerk plugins deploy echo                           # desired = present on this host
+bookclerk plugins deploy echo --node <node-id>          # … on another cluster host
+bookclerk plugins undeploy echo
 bookclerk plugins instances list --plugin s3
 bookclerk plugins instances create s3 --name "Backup bucket"
 bookclerk plugins config get s3                         # defaults under the document
@@ -1190,11 +1208,11 @@ The daemon exposes the same operations (operator session):
 | `GET` / `POST` | `/api/config/plugin-instances` (list; create `{plugin_key, display_name}`) |
 | `DELETE` | `/api/config/plugin-instances/{id}` (no deployments left) |
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/config` (`{expected_revision, settings, secret_refs, secrets}`; `secrets` are sealed server-side) |
-| `PUT` | `/api/config/plugin-instances/{id}/deployments/{host_id}` (`{desired, expected_revision}`) |
-| `GET` | `/api/config/hosts`, `/api/config/plugin-schemas` |
+| `PUT` | `/api/config/plugin-instances/{id}/deployments/{node_id}` (`{desired, expected_revision}`) |
+| `GET` | `/api/config/nodes`; `/api/config/plugins/{key}` carries the pinned schema |
 
 **Settings → Plugins** renders each instance from its pinned schema: the
-Enabled switch writes this host's deployment (after consent when needed),
+Deployed switch writes this node's deployment (after consent when needed),
 secret fields are write-only, and Save writes the document with
 compare-and-swap. `PATCH /api/settings` only edits daemon, jail, and
 `[database]` keys now.
@@ -1209,22 +1227,279 @@ validates the document against the host's local manifest: unknown keys are
 dropped with a warning, and a missing `required` key is an `error`
 observation.
 
-The local reconciler installs from `$BOOKCLERK_FILES_DIR/plugin-packages/<name>/`
-when the ledger and discovery both miss the key. That directory is the
-operator's authorized local source: `package.json` plus `archive.tar.gz`,
-with artifact URLs limited to files inside the package directory. The
-reconciler does not download plugins. It starts the staged guest and calls
-health before commit, and it respawns a guest that has exited even when the
-last observation was healthy. The daemon keeps one guest map for the process.
-Config reload re-enrols the host and leaves running guests in place unless
+The reconciler runs a plugin's active [release](#installing-plugins) when it has
+one, materializing it by digest; it falls back to a host-local tree only for
+a plugin with no release. An operator package under
+`$BOOKCLERK_FILES_DIR/plugin-packages/<name>/` (`package.json` plus
+`archive.tar.gz`, artifact URLs limited to files inside that directory)
+is published as a release the first time a present deployment needs it,
+offline and with the key's existing `plugin-grants.json` approval carried
+onto the release. The reconciler respawns a guest that has exited even when
+the last observation was healthy. The daemon keeps one guest map for the
+process.
+Config reload re-enrols the node and leaves running guests in place unless
 the database connection changed, in which case every guest is retired and
 the reconciler brings the present deployments back.
+
+**How a node hears about a change.** Each node consumes its own queue,
+`node.<node_id>`, on the outbox. Every committed deployment write (create,
+desired-state change, delete) publishes a `deployment.changed` message to
+the deployment's node, and every committed configuration document (cluster
+settings and instance documents) publishes `configuration.changed` to every
+registered node. The daemon's delivery worker claims those messages under
+the catalog id `node:<node_id>` and wakes the deployment and configuration
+reconcilers; there is no fixed 5-second re-read any more, only a 60-second
+backstop pass for a wakeup dispatched while the node's catalog row was not
+live. Messages are wakeups, not state: the reconciler always re-reads the
+authoritative rows. The CLI only produces them (`bookclerk plugins deploy
+--node <id>` wakes that node), and `bookclerk queues list` shows each
+node queue with its `node:<id>` consumer.
 
 A deployed guest is registered under its plugin instance id. `bookclerk
 library scan` and `bookclerk library acquire` route a plugin key to its
 default instance on this host; pass `--instance` to pin another. Accounts
 are keyed by plugin key, not instance: every instance of a plugin, on every
 host, serves the same connected accounts.
+
+## Installing plugins
+
+A third-party plugin is **installed** into the cluster once: a package
+version resolved and verified once, recorded in the library database, and
+run byte-for-byte the same on every node. Installing does not touch this
+node's `plugins/`; **deploying** decides which nodes run it (see
+[placement](#placement)).
+
+```bash
+bookclerk plugins install cargo:bookclerk-plugin-source-example@1.2.0 --approve-capabilities
+bookclerk plugins install example --archive ./example.tar.gz \
+  --manifest ./bookclerk-package.json --allow-unverified-publisher
+bookclerk plugins versions [example]         # every installed version; * marks the active one
+bookclerk plugins update example [--to 1.3]  # install a newer registry version and activate it
+bookclerk plugins rollback example 1.2.0     # activate an earlier installed version
+bookclerk plugins approve example --yes      # record consent on the active version
+bookclerk plugins deploy example             # run the default instance on this node
+bookclerk plugins uninstall example          # clear the active version; undeploy everywhere
+```
+
+**Installing** checks the trust policy, fetches each artifact, and verifies
+it: a registry artifact must match the archive digest its package manifest
+declares, and a local archive's digest is computed from the operator's own
+file. The node then extracts the archive to scratch, parses `plugin.toml`,
+checks the executable is present, and computes the payload-root digest. The
+version row records the PluginKey, the version from `plugin.toml`, the
+manifest and settings schema, one artifact per target (URL, archive digest,
+payload-root digest), the coordinate it came from, and the consent grant.
+Installing the same version twice is a no-op; installing different bytes
+under an installed version is refused. A local archive's path names no
+stable plugin, so a later archive of an alias that is already installed
+reuses that alias's key. One alias names one plugin: a version may not take
+an alias another plugin's active version answers to.
+
+**Artifact URLs.** A registry artifact keeps its download URL. A local
+archive up to 1 MiB is stored in the database (`blob:sha256:<hex>`) so every
+node can materialize it. A larger local archive is referenced in place as a
+`file://` URL, which only nodes that see that path (shared storage) can
+materialize; the others record an `error` observation.
+
+**The active version.** Each PluginKey has at most one active version. The
+first installed version becomes active; a later one becomes active with
+`install --activate`, `update`, or `rollback`. An automatic install (an
+operator package, or `install` without `--activate`) never moves the active
+version back to an older one. Changing it publishes `install.changed` to
+every node queue, and each node respawns its deployments of that plugin
+from the new digest.
+
+**Consent rides on the version.** A version with no approved grant is
+recorded but not spawned; nodes report an `error` observation until it is
+approved. A new version carries the previous active version's grant forward
+when that grant still covers everything the new version requests; a version
+that asks for more needs a fresh `approve`.
+
+**Materialization.** When a present deployment needs the active version,
+the node fetches the artifact for its own target, extracts it under
+`plugins/.staging/version-<digest>.<pid>`, verifies the payload-root digest
+against the row, and renames the tree to `plugins/.versions/<digest>`. A
+partial extract never reaches the final path, a cached digest is immutable,
+and digests no deployment on the node references are swept after an hour.
+
+**Health is an observation.** A guest that fails health records an `error`
+observation and the version stays active; nothing rolls back
+automatically. Use `plugins rollback` to activate an earlier version.
+
+**Staged packages.** Platform guests (`local`, `sqlite`) ship with the node,
+and `cargo stage-plugins` stages development trees under `plugins/<fs-id>`.
+Those are staged on one machine, not installed into the cluster; their
+provenance is `platform_bundled`, `verified_staged`, or `local_development`,
+while an installed version is `installed`.
+
+The daemon exposes the same operations (operator session):
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| `GET` | `/api/config/plugins` | every installed plugin: `active_version` and its `versions` (each with `active`, `approved`, and artifacts) |
+| `POST` | `/api/config/plugins` | install: `{coordinate}` or `{package}` (a directory under `plugin-packages/`), plus `activate`, `approve`, `allow_unverified_publisher` |
+| `GET` | `/api/config/plugins/{key}` | one plugin with its versions and pinned settings `schema`; 404 when not installed |
+| `DELETE` | `/api/config/plugins/{key}` | uninstall: clear the active version, drop placements, undeploy everywhere |
+| `PUT` | `/api/config/plugins/{key}/active` | `{version}`: update or roll back |
+| `POST` | `/api/config/plugins/{key}/versions/{version}/approve` | record the requested consent |
+
+`{key}` is the percent-encoded PluginKey. A conflict with an installed
+version or alias is `409`; an unknown plugin or version is `404`.
+
+## Placement
+
+By default an operator deploys an instance node by node with `plugins
+enable --node`. **Placement** hands that job to the cluster scheduler: the
+operator says how many nodes should run the instance and which nodes may,
+and the scheduler picks the nodes with the most room and writes the
+per-node deployments. Nodes never connect to each other; everything below
+travels through the shared library database.
+
+```bash
+bookclerk nodes list                              # liveness, capacity, budget, use, labels
+bookclerk nodes set --memory-budget 50            # this node (or pass a node id)
+bookclerk nodes set <node-id> --drain             # move scheduled replicas away
+bookclerk nodes label --add nas --add zone=eu
+bookclerk plugins deploy example --replicas 2 --on nas --on '!slow'
+bookclerk plugins deploy example --replicas all   # every node with room
+bookclerk plugins deploy example --replicas 0     # keep the placement, stop every replica
+bookclerk plugins deploy example --manual         # back to enable/disable by hand
+```
+
+### Heartbeats and budgets
+
+Every daemon writes a heartbeat row to `node_status` every 15 seconds. It
+reports:
+
+- **Capacity** the node detects: logical CPUs and memory, each capped by the
+  daemon's cgroup (`cpu.max`, `memory.max`) when it runs in one.
+- **Budget**: the share of that capacity the scheduler may commit to plugin
+  guests, from the node's `node.runtime` document. Defaults are 80% of the
+  CPU and 75% of the memory, so a desktop keeps room for its user. Set them
+  with `bookclerk nodes set --cpu-budget/--memory-budget`, the nodes API,
+  or **Settings → Nodes**; the node applies a change at its next heartbeat.
+- **Reservations**: the sum of the jail ceilings (memory and CPU, after
+  `[plugins.jail]` limits) of the guests running there. The reconciler
+  records each guest's ceiling on its deployment observation when it
+  spawns it.
+- **Measured use**: CPU busy since the previous heartbeat and memory
+  available, from `/proc` and the cgroup.
+- **Availability**: how much of the recent past the node was up, as a
+  decaying average over about a day. A desktop that is off every night
+  ends up around 60%; an always-on VPS stays near 100%.
+
+Memory and measured use are read on Linux only for now. On macOS and
+Windows a heartbeat reports the CPU count (and free disk on macOS); with no
+memory figure the scheduler cannot hold such a node to a memory budget and
+ranks it by CPU headroom alone.
+
+A node is **live** while its last heartbeat is younger than three
+intervals (45 s). A node where only the CLI ran has no heartbeat and is
+never live. **Draining** a node (`nodes set --drain`, the Drain button)
+stops the scheduler placing anything there and moves its scheduled
+replicas elsewhere; deployments made by hand keep running.
+
+A node's **headroom** is its budget minus what is committed. For CPU,
+committed is the larger of the reservations and the measured use, so work
+outside Bookclerk on a shared desktop counts. For memory it is the budget
+minus the reservations, and never more than the memory the machine has
+free.
+
+### Candidates
+
+A node qualifies for an instance when:
+
+- it is live and not drained;
+- it carries every label the constraints name, and none a `!label`
+  constraint names. Labels are `name` or `name=value` (lowercase letters,
+  digits, `._/-`). Every node also carries `node=<node_id>` and
+  `target=<target>` (`linux-x64-gnu`, …), so `--on node=<id>` pins an
+  instance and `--on target=linux-arm64-gnu` restricts it to one platform;
+- for a released plugin, the active release has an artifact for the node's
+  target, or a target-independent `any` artifact (workerd packages).
+
+### Planning
+
+The scheduler estimates what one guest of the instance needs (its
+**demand**): the largest ceiling any node recorded for it, else the active
+release's grant (`memoryMib`, `cpuRatePercent`), else the grant defaults
+(512 MiB, 0.8 cores). It scores each qualifying node by how many more such
+guests fit its CPU and memory headroom, weighted by availability (an
+always-on node counts in full, a node that is never on counts half). Then:
+
+- replicas stay where they run while their node qualifies; nodes that
+  stopped qualifying (dead, drained, label removed) get `unplaced`;
+- new replicas go to the highest-scoring nodes, and only where the demand
+  fits the memory headroom (memory is the hard limit, because a guest over
+  its memory ceiling is killed; CPU only ranks);
+- a scale-down drops the replicas on the nodes with the least room first;
+- when a replica's node is over its memory budget and another qualifying
+  node has room, the replica moves there, at most one per instance per
+  pass so the cluster does not thrash;
+- `--replicas all` runs the instance on every qualifying node where it fits.
+
+Each pass commits the demand of every replica it adds against that node's
+headroom, so one pass does not stack several instances on the same node.
+When fewer nodes qualify or fit than requested, the scheduler places what
+it can and records why on the placement ("1 of 2 replica(s) placed: 2
+node(s) are live, schedulable, and match nas; 1 lack memory budget for 512
+MiB").
+Each node's reconciler then converges on its own deployment rows exactly as
+it does for hand-written ones.
+
+### Routing deliveries
+
+Event and queue deliveries addressed to an instance go to the best live
+node running it, without any node contacting another. Every node that runs
+an instance ranks the live nodes whose guest of it is up (a `running` or
+`healthy` observation) by the same score placement uses, so all nodes agree
+on the order. The best node claims a delivery as soon as it is due; the
+node ranked `r` claims it only once it has been due for `r × 10 s`. A best
+node that is saturated, stalled, or gone therefore costs at most a short
+delay before the next one takes over, and the claim's compare-and-swap
+still guarantees one runner. Ranks are re-read every 10 seconds. Deliveries
+addressed to a plugin key or alias, and a node's own queue, are not routed.
+
+Jobs (scan, acquire) are not routed yet: whichever node claims a job runs
+it with its own sources and destinations. A synchronous HTTP call runs on
+the node that receives it.
+
+### One scheduler
+
+Every daemon runs the scheduler loop, but only the holder of the
+`scheduler` row in `cluster_leases` acts. The holder renews the lease
+(60 s) on every pass; when it stops, the next daemon to try takes over with
+a larger fencing token. A pass runs on a `placement.changed` or
+`install.changed` node-queue wakeup and at least every 20 seconds.
+Deployment writes are compare-and-swap, so a holder that lost its lease
+mid-pass can at worst add one replica too many, which the next pass
+removes.
+
+### Placed instances are the scheduler's
+
+`plugins deploy|undeploy` and the deployment API refuse a placed instance
+(409), the Settings Deployed switch is read-only for it, and enrollment
+records a new node `unplaced` for it rather than `present`. `plugins deploy
+--manual` (or deleting the placement) hands the deployments back without
+changing what any node runs: `placed` becomes `present` and `unplaced`
+becomes `absent`. Uninstalling a plugin (`plugins uninstall`, `DELETE
+/api/config/plugins/{key}`) drops its placements first.
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| `PUT` | `/api/config/plugin-instances/{id}/placement` | `{replicas, constraints, expected_revision}`; `replicas` is a count or `"all"`; `expected_revision` 0 (or omitted) creates; 409 on a stale revision |
+| `DELETE` | `/api/config/plugin-instances/{id}/placement` | back to hand-managed |
+| `GET` | `/api/config/nodes` | each node's `labels`, `implicit_labels`, `target`, `live`, `runtime` (budgets, drain) and `status` (latest heartbeat) |
+| `PUT` | `/api/config/nodes/{node_id}/runtime` | any of `{label, cpu_budget_percent, memory_budget_percent, schedulable}` |
+| `PUT` | `/api/config/nodes/{node_id}/labels` | `{labels}`: the node's complete operator label set |
+
+`GET /api/config/plugin-instances` and the Settings plugin groups carry each
+instance's `placement` (requested and placed replicas, constraints, detail).
+**Settings → Plugins** shows "Placed n/m" on the row and, when expanded,
+replica and label fields plus **Manage by hand**. **Settings → Nodes** shows
+each node's heartbeat, reservations and measured use against its budget,
+and availability, with fields for the budgets and labels and a Drain
+switch.
 
 ## ABI (api_version = 3, object-capability Workers RPC)
 
@@ -1237,6 +1512,7 @@ methods (abort is stream cancel / `RpcTarget` disposal).
 class BookclerkEntrypoint<Env> extends WorkerEntrypoint<Env> {
   describe?(): Promise<PluginDescribe>;                 // optional refinement
   event?(batch: EventBatch): Promise<void>;             // [[events.consumers]]
+  queue?(batch: QueueBatch): Promise<void>;             // [[queues.consumers]]
   job?(job: JobController): Promise<JobCompletion | void>; // [triggers] jobs
   databaseMigrations?(binding: string): Promise<PluginMigration[]>; // [[databases]]
   shutdown?(): Promise<void>;
@@ -1361,12 +1637,12 @@ export `cli` (and optional event/job triggers) — not a `kind = "integration"`.
 
 | Workers concept | Bookclerk v3 |
 | --- | --- |
-| `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `job` triggers) |
+| `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `queue` / `job` triggers) |
 | Named `export class` entrypoints | `entrypoints = ["storefront", …]` + matching `*Entrypoint` subclass |
 | `env.DB` | `[[databases]]` → granted on `env` |
-| `env.KV` | `[[kv_namespaces]]` durable KV binding. Not implemented yet. |
+| `env.KV` | `[[kv_namespaces]]` → `get` / `getWithMetadata` / `put` / `delete` / `list` with `expiration`, `expirationTtl`, and `metadata` |
 | `env.SECRETS` | `[secrets]` → granted on `env` |
-| `[queues]` producers and consumers | Not implemented yet. Declaring the table is legal. |
+| `[[queues.producers]]` / `[[queues.consumers]]` | `env.<BINDING>.send` / `sendBatch` and `queue(batch)` with per-message `ack` / `retry` |
 | `[[events.consumers]]` | `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend` |
 | `[[events.producers]]` | `env.EVENTS.publish` (host outbox; forced `source`) |
 | Cron / scheduled | Not implemented yet. |
@@ -1399,6 +1675,13 @@ The host `EventPublisher` writes straight into the library outbox
   `account_id` is the opening invocation's account; a guest cannot spoof
   another producer. `correlationId` / `causationId` default to the
   invocation's values when the guest leaves them empty.
+- **Host-emitted types.** Some domain events belong to the host.
+  `book_acquired` is one: a source plugin's acquire handler returns the
+  book, then the host's acquire pipeline records it and publishes
+  `book_acquired` in the same transaction as the library row. A plugin
+  consumes it under `[[events.consumers]]` but cannot declare it under
+  `[[events.producers]]` (`check` and load fail), and the host publisher
+  refuses it even from an older grant.
 - **Producer grant.** The binding exists only when the manifest declares
   `[[events.producers]]` *and* the operator grant covers those types (the
   consent request lists them). Publishing a type outside that intersection
@@ -1421,6 +1704,141 @@ a `GrantedEvents` `RpcTarget`; `publish()` POSTs the event to
 database-only grants are `forbidden`) and enforces the payload cap before
 forwarding to the host publisher. Author isolates never see `GRANTED` or the
 grant token.
+
+## KV namespaces
+
+`[[kv_namespaces]]` gives a plugin Workers `KVNamespace`-shaped storage
+that the host serves from the library database (`plugin_kv`). Every row is
+scoped to the plugin's PluginKey and to the namespace the manifest row
+names, so the values follow the instance: a sync cursor written on one host
+is what the same instance reads after it moves to another.
+
+```toml
+[[kv_namespaces]]                # env.KV, namespace "kv"
+
+[[kv_namespaces]]
+binding = "CURSORS"              # env.CURSORS
+namespace = "sync.cursors"       # [a-z0-9][a-z0-9._-]*; default: binding lowercased
+max_value_bytes = 4096           # default 65536, at most 1 MiB
+max_keys = 500                   # default 10000, at most 1000000
+```
+
+```ts
+await env.CURSORS.put(`audible:${accountId}`, page, {
+  expirationTtl: 86_400,          // or `expiration` (seconds since epoch)
+  metadata: { scannedAt: Date.now() },
+});
+const cursor = await env.CURSORS.get(`audible:${accountId}`); // string | null
+const { value, metadata } = await env.CURSORS.getWithMetadata(key, "json");
+const page = await env.KV.list({ prefix: "audible:", limit: 100 }); // { keys, list_complete, cursor? }
+await env.KV.delete(key);
+```
+
+Rules:
+
+- **Scope.** The guest never chooses the plugin key or namespace; both come
+  from the manifest row and the spawned identity. Two rows are separate
+  stores unless they name the same `namespace`.
+- **Consent.** Declaring any row adds the `plugin_kv` binding token to the
+  consent request; without it no `env.<BINDING>` appears.
+- **Limits.** Keys are 1–512 UTF-8 bytes (`MAX_KV_KEY_BYTES`), metadata is
+  JSON of at most 1 KiB (`MAX_KV_METADATA_BYTES`), and a value is at most the
+  row's `max_value_bytes` (`payload_too_large` otherwise). A `put` of a new
+  key into a namespace already holding `max_keys` live keys fails with
+  `forbidden`; rewriting an existing key never counts against the cap.
+- **Expiry.** Expiry is lazy: an expired key reads as absent, does not
+  count against `max_keys`, and is removed by the next write that needs the
+  slot or by the host's periodic prune.
+- **Consistency.** Reads see the latest committed write (it is a library
+  row, not an edge cache), so there is no Workers-style 60-second
+  propagation window.
+- **Transports.** Native guests receive `Bindings.kv` (`NamedKv`) as Cap'n
+  Proto `KvNamespace` capabilities. Under workerd the adapter isolate mints
+  one kv-only grant token per binding and the author's `env.<BINDING>`
+  calls `POST /kv/get|put|delete|list` on the launcher's `GRANTED` channel.
+  Python guests get the same surface as `KvNamespace` (`get`,
+  `get_with_metadata`, `put`, `delete`, `list`).
+
+## Queues
+
+`[queues]` gives a plugin Workers-shaped queues on the host outbox. A
+`[[queues.producers]]` row is an `env` binding that sends to one queue; a
+`[[queues.consumers]]` row delivers that queue to the default export's
+`queue(batch)` trigger. Queue names are `[a-z0-9][a-z0-9._-]*`; the `core.`
+and `host.` prefixes are the host's (`core.events` is the domain-event bus
+that `[[events.*]]` rows bind to). Two plugins that name the same queue share
+it: one produces, the other consumes.
+
+```toml
+[[queues.producers]]
+queue = "thumbnails"
+binding = "THUMBNAILS"          # env.THUMBNAILS
+
+[[queues.consumers]]
+queue = "thumbnails"
+max_batch_size = 10             # messages per queue(batch) call (≤ 100)
+max_retries = 3                 # redeliveries before dead-letter
+dead_letter_queue = "thumbnails-dlq"
+retry_delay = 30                # seconds when retry() names no delay
+```
+
+```ts
+// Producer: Workers `Queue`-shaped.
+const { messageIds } = await env.THUMBNAILS.send({ bookId }, { delaySeconds: 5 });
+await env.THUMBNAILS.sendBatch(
+  [{ body: "plain", contentType: "text" }, { body: bytes, contentType: "bytes" }],
+  { delaySeconds: 0 },
+);
+
+// Consumer: one ordered batch from one queue, one outcome per message.
+export default class MyPlugin extends BookclerkEntrypoint<Env> {
+  async queue(batch: QueueBatch) {
+    for (const msg of batch.messages) {          // msg.id, msg.timestamp, msg.attempts, msg.source
+      try {
+        await handle(msg.json());                // or msg.text() / msg.body
+        msg.ack();
+      } catch {
+        msg.retry({ delaySeconds: 60, reason: "downstream busy" });
+      }
+    }
+  }
+}
+```
+
+Rules, mirroring `event(batch)`:
+
+- **Outcomes.** `ack()` marks the message delivered; `retry()` redelivers
+  after `delaySeconds`, or after the consumer's `retry_delay` when none is
+  given. Untouched messages ack when the handler returns and retry when it
+  throws. Delivery is at-least-once: consume idempotently on `msg.id`.
+- **Dead letters.** A message that is still retrying after `max_retries`
+  redeliveries is parked as `dead_letter`; when the consumer names a
+  `dead_letter_queue` the host first copies the message there, so a second
+  consumer (or an operator) can pick it up.
+- **Bodies.** `contentType` is `json` (default; the body is JSON text),
+  `text` (UTF-8), or `bytes` (raw). Bodies are capped at 64 KiB
+  (`MAX_EVENT_PAYLOAD_BYTES`); a batch sends at most `MAX_LIST_PAGE`
+  messages. Sends never coalesce: every `send` is a new message.
+- **Forced provenance.** `source` is the sending plugin's PluginKey and the
+  account is the opening invocation's; the queue is fixed by the manifest
+  row, never chosen per call.
+- **Consent.** Each producer binding and each consumer queue is a grant
+  token (`queue:<BINDING>`, `queue_consumer:<queue>`) in the consent request.
+  A binding the operator has not granted is absent from `env`; a queue the
+  grant does not cover is never delivered. `describe()` cannot widen either
+  list beyond `plugin.toml`.
+- **Transports.** Native guests receive producers on `Bindings.queues` as
+  Cap'n Proto capabilities and the batch on `QueueConsumer.queue`. Under
+  workerd the adapter isolate mints one queue-only grant token per binding
+  and hands the author a `GrantedQueue` `RpcTarget`; `send` / `sendBatch`
+  POST to `/queues/send` on the launcher's `GRANTED` channel, where the grant
+  and the caps are re-checked before the host producer writes the outbox.
+
+Operators see queues with `bookclerk queues list` (counters and live
+consumers per queue) and `bookclerk queues inspect <name>` (recent messages
+and deliveries), backed by `GET /api/queues` and `GET /api/queues/{name}`.
+Delivery rows are the same `event_deliveries` the `bookclerk events` verbs
+act on (`retry`, `ack`, `cancel`).
 
 ### Common
 
@@ -1530,11 +1948,10 @@ late-joins already-`dispatched` events via a missing-pair anti-join (receipt
 pairs does a bounded empty `SELECT` and zero dispatch writes. Heartbeat of this
 node’s catalog runs **before** that reconcile so a catch-up page cannot starve
 the 60s TTL. Each tick dispatches at most 32 pending outbox rows, then always
-runs a claimed wake slice (UUID fence token, not `event_node_id`) even when
+runs a claimed wake slice (UUID fence token, not the node id) even when
 undispatched remain; accepting a wake clears `wake_event_type` /
 `wake_filter_json` / `wake_grants_json` so retry is not re-woken. A dispatch error clears the empty-reconcile skip cache; a bounded
-reconcile still runs at least every 60s as a backstop. The process-stable `event_node_id` is resolved once at runtime
-start. A `suspended` result is accepted only when a subscription matches
+reconcile still runs at least every 60s as a backstop. The catalog key is the node id from `node-identity.json`. A `suspended` result is accepted only when a subscription matches
 that exact `(type, schema_version)` and sets `supports_suspend = true`;
 otherwise it is stored as a permanent reject. Non-empty `wakeOnEventType` must
 also match a declared subscription type. The host derives wake grants from
@@ -1770,7 +2187,7 @@ not a SEA binary).
 ```bash
 bookclerk plugins approve echo --yes
 bookclerk plugins list
-bookclerk plugins enable echo          # deployment desired = present on this host
+bookclerk plugins deploy echo          # deployment desired = present on this host
 bookclerk plugins config set echo greeting hello
 bookclerk integrations status
 # echo enabled=true ok=true echo plugin ready
@@ -1787,10 +2204,12 @@ the target OS/arch.
 The operator’s Bookclerk install already includes `bookclerk-workerd`, the pinned
 Cloudflare `workerd` binary, and `bookclerk-jail`.
 
-Users unpack under `plugins/` (or a `BOOKCLERK_PLUGIN_DIRS` root), **approve**
-capabilities, then set `enabled = true` in `config.toml` (or
-`bookclerk plugins enable`). No rebuild of Bookclerk is required when
-`api_version` matches.
+Operators [install](#installing-plugins) a package (`bookclerk plugins
+install`, `POST /api/config/plugins`, or a package directory under
+`plugin-packages/`), **approve** its capabilities, then deploy it with
+`bookclerk plugins deploy`. A development tree unpacked under `plugins/` (or
+a `BOOKCLERK_PLUGIN_DIRS` root) still runs as a host-local plugin. No
+rebuild of Bookclerk is required when `api_version` matches.
 
 ### First-party plugins (staged guests)
 

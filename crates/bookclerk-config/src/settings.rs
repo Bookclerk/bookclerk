@@ -460,7 +460,7 @@ impl Config {
 
         with_process_env(|| cfg.apply_env_overrides());
         // Record the path actually used for load so writers (`config set`,
-        // `plugins enable`, …) update the same file the user pointed at via
+        // `plugins deploy`, …) update the same file the user pointed at via
         // `--config` / `BOOKCLERK_CONFIG`, not only `{files_dir}/config.toml`.
         let mut paths = paths;
         paths.config_file = path;

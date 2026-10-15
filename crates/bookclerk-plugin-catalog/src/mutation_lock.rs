@@ -10,9 +10,9 @@
 //! the same alias and PluginKey may be installed on Host A and Host B
 //! without cluster-wide serialization.
 //!
-//! A future stable `HostId` (for example `$FILES_DIR/host.json`) is expected
+//! A future stable `NodeId` (for example `$FILES_DIR/host.json`) is expected
 //! to map naturally onto this files-dir namespace for placement/scheduling.
-//! This module does not persist a HostId.
+//! This module does not persist a NodeId.
 //!
 //! The lock is an OS advisory lock on an open file descriptor. The lock
 //! *file* may remain after a crash; ownership is released when the process

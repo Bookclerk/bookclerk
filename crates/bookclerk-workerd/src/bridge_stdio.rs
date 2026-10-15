@@ -34,9 +34,9 @@ use bookclerk_plugin_abi::{
     EventConsumer, EventConsumerClient, ExtensibleConfig, GuestDatabase, HostBindings, Invocation,
     JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, ObjectMetadata,
     Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient,
-    PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult, ReadResult,
-    RemoteLibrary, RemoteLibraryClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer,
+    QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient, WriteOptions,
+    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -95,6 +95,8 @@ struct WorkerdRoot {
 
 /// Wire name of the `[[events.consumers]]` trigger family on `/open`.
 const FAMILY_EVENT_CONSUMER: &str = "eventConsumer";
+/// Wire name of the `[[queues.consumers]]` trigger family on `/open`.
+const FAMILY_QUEUE_CONSUMER: &str = "queueConsumer";
 /// Wire name of the `[triggers] jobs` family on `/open`.
 const FAMILY_JOB_RUNNER: &str = "jobRunner";
 
@@ -115,6 +117,9 @@ impl WorkerdRoot {
         let mut out = Vec::new();
         if !self.capabilities.consumes.is_empty() {
             out.push(FAMILY_EVENT_CONSUMER);
+        }
+        if !self.capabilities.queue_consumers.is_empty() {
+            out.push(FAMILY_QUEUE_CONSUMER);
         }
         if self.runs_jobs() {
             out.push(FAMILY_JOB_RUNNER);
@@ -163,6 +168,8 @@ impl WorkerdRoot {
             secrets: ExtensibleConfig::default(),
             events_token: None,
             databases: BTreeMap::new(),
+            queues: BTreeMap::new(),
+            kv: BTreeMap::new(),
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -190,6 +197,16 @@ impl WorkerdRoot {
                 .collect(),
             cancel: Arc::from(bindings.cancel),
             storage: bindings.storage.map(Arc::from),
+            queues: bindings
+                .queues
+                .into_iter()
+                .map(|q| (q.name, q.queue, Arc::from(q.producer)))
+                .collect(),
+            kv: bindings
+                .kv
+                .into_iter()
+                .map(|k| (k.name, k.namespace, Arc::from(k.kv)))
+                .collect(),
         };
         let opened = client.open(&invocation, host_bindings).await?;
         Ok(native_entrypoints(opened, &allowed))
@@ -243,17 +260,61 @@ impl WorkerdRoot {
             });
             databases.insert(name, token);
         }
+        // One queue-only grant token per `[[queues.producers]]` binding: the
+        // adapter isolate sends through `/queues/send` with that token and
+        // installs a Workers `Queue`-shaped binding on the author's `env`.
+        let mut queues = BTreeMap::new();
+        let mut queue_grants = Vec::with_capacity(bindings.queues.len());
+        for named in bindings.queues {
+            let token = format!("{:032x}", rand::random::<u128>());
+            self.table.borrow_mut().insert(
+                token.clone(),
+                GrantedSlot::queue_only(
+                    Rc::from(named.producer),
+                    grant_expiry(invocation.deadline_unix_ms),
+                ),
+            );
+            queue_grants.push(RevokeGrant {
+                table: Rc::clone(&self.table),
+                grant: token.clone(),
+            });
+            queues.insert(named.name, token);
+        }
+        // One kv-only grant token per `[[kv_namespaces]]` binding: the adapter
+        // isolate reaches the namespace over `/kv/*` with that token and
+        // installs a Workers `KVNamespace`-shaped binding on the author's `env`.
+        let mut kv = BTreeMap::new();
+        let mut kv_grants = Vec::with_capacity(bindings.kv.len());
+        for named in bindings.kv {
+            let token = format!("{:032x}", rand::random::<u128>());
+            self.table.borrow_mut().insert(
+                token.clone(),
+                GrantedSlot::kv_only(
+                    Rc::from(named.kv),
+                    grant_expiry(invocation.deadline_unix_ms),
+                ),
+            );
+            kv_grants.push(RevokeGrant {
+                table: Rc::clone(&self.table),
+                grant: token.clone(),
+            });
+            kv.insert(named.name, token);
+        }
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
             secrets: bindings.secrets,
             events_token,
             databases,
+            queues,
+            kv,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
             _events: events_grant,
             _databases: database_grants,
+            _queues: queue_grants,
+            _kv: kv_grants,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -279,6 +340,9 @@ impl WorkerdRoot {
         }
         if !self.capabilities.consumes.is_empty() {
             exported.event_consumer = Some(Box::new(EventConsumerClient::new(invoke.typed())));
+        }
+        if !self.capabilities.queue_consumers.is_empty() {
+            exported.queue_consumer = Some(Box::new(QueueConsumerClient::new(invoke.typed())));
         }
         if self.exports(Entrypoint::Oidc) {
             exported.oidc = Some(Box::new(OidcClient::new(invoke.typed())));
@@ -311,11 +375,15 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         remote_library,
         cli,
         oidc,
+        queue_consumer,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
             .filter(|_| allow(FAMILY_EVENT_CONSUMER))
             .map(|c| Box::new(c) as Box<dyn EventConsumer>),
+        queue_consumer: queue_consumer
+            .filter(|_| allow(FAMILY_QUEUE_CONSUMER))
+            .map(|c| Box::new(c) as Box<dyn QueueConsumer>),
         job_runner: job_runner
             .filter(|_| allow(FAMILY_JOB_RUNNER))
             .map(|c| Box::new(c) as Box<dyn JobRunner>),
@@ -360,9 +428,11 @@ struct OpenReply {
 /// field of `/open` and the `x-bookclerk-context` header of every `/invoke`
 /// and stream request, which the isolate-side SDK installs on the author's
 /// `env`. `eventsToken` is the granted-channel bearer the adapter isolate
-/// turns into the author's `EVENTS` binding, and `databases` maps each named
-/// `[[databases]]` binding to its database-only bearer for `/db/execute`;
-/// the author sees neither token, only the bindings the adapter builds.
+/// turns into the author's `EVENTS` binding, `databases` maps each named
+/// `[[databases]]` binding to its database-only bearer for `/db/execute`,
+/// and `queues` maps each `[[queues.producers]]` binding to its queue-only
+/// bearer for `/queues/send`; the author sees no token, only the bindings
+/// the adapter builds.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeContext {
@@ -373,6 +443,12 @@ struct BridgeContext {
     events_token: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     databases: BTreeMap<String, String>,
+    /// `[[queues.producers]]` binding → queue-only bearer for `/queues/send`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    queues: BTreeMap<String, String>,
+    /// `[[kv_namespaces]]` binding → kv-only bearer for `/kv/*`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    kv: BTreeMap<String, String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -390,6 +466,8 @@ struct JobBridgeContext<'a> {
 struct OpenGrants {
     _events: Option<Rc<RevokeGrant>>,
     _databases: Vec<RevokeGrant>,
+    _queues: Vec<RevokeGrant>,
+    _kv: Vec<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -630,6 +708,8 @@ impl JobRunner for InvokeJobRunner {
                 sql_policy: GuestSqlPolicy::host_authoritative(),
                 max_request_bytes,
                 events: None,
+                queue: None,
+                kv: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -730,6 +810,8 @@ mod tests {
             secrets: ExtensibleConfig::default(),
             events_token: Some("ev".into()),
             databases: BTreeMap::from([("DB".to_string(), "tok".to_string())]),
+            queues: BTreeMap::from([("NOTIFY".to_string(), "qtok".to_string())]),
+            kv: BTreeMap::from([("KV".to_string(), "ktok".to_string())]),
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,
@@ -741,6 +823,8 @@ mod tests {
         assert_eq!(v["invocation"]["id"], "open-1");
         assert_eq!(v["eventsToken"], "ev");
         assert_eq!(v["databases"]["DB"], "tok");
+        assert_eq!(v["queues"]["NOTIFY"], "qtok");
+        assert_eq!(v["kv"]["KV"], "ktok");
         assert!(v.get("config").is_some());
     }
 }

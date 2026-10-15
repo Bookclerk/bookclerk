@@ -85,7 +85,7 @@ pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Resul
         IntegrationsCommand::Test { integration } => {
             let targets: Vec<_> = if let Some(id) = integration {
                 let Some(i) = registry.get(&id) else {
-                    anyhow::bail!("integration `{id}` is not enabled / registered");
+                    anyhow::bail!("integration `{id}` is not deployed on this node");
                 };
                 vec![i]
             } else {
@@ -147,7 +147,7 @@ pub async fn run(command: IntegrationsCommand, config: &Config) -> anyhow::Resul
         },
         IntegrationsCommand::Scan { integration, force } => {
             let Some(i) = registry.get(&integration) else {
-                anyhow::bail!("integration `{integration}` is not enabled / registered");
+                anyhow::bail!("integration `{integration}` is not deployed on this node");
             };
             if !i.supports_library_scan() {
                 anyhow::bail!(

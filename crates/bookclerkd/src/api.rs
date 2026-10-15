@@ -96,8 +96,6 @@ pub struct AppState {
     pub tray: RwLock<Option<bookclerk_tray::SharedTrayConfig>>,
     /// Single-use tray Open Bookclerk ticket (hash + deadline). Replaced on prepare; restart clears it.
     pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
-    /// Process-stable catalog heartbeat key (resolved once at event runtime start).
-    pub event_node_id: OnceLock<String>,
     /// Guest sessions for deployed instances. One map for the process lifetime.
     pub deployment_runtime: OnceLock<Arc<bookclerk_plugin_host::LiveDeploymentRuntime>>,
 }
@@ -419,7 +417,7 @@ struct PluginSettingsGroup {
     /// Provenance-qualified PluginKey when this row came from a discovered install.
     #[serde(skip_serializing_if = "Option::is_none")]
     plugin_key: Option<String>,
-    /// Host-evaluated provenance (`platform_bundled`, `verified_installed`, …).
+    /// Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     provenance: Option<String>,
     /// Google favicon (or portal brand) URL for Settings list rows.
@@ -439,9 +437,16 @@ struct PluginSettingsGroup {
     /// Instance document revision for compare-and-swap writes.
     #[serde(skip_serializing_if = "Option::is_none")]
     config_revision: Option<i64>,
-    /// This host's deployment of the instance, when one exists.
+    /// This node's deployment of the instance, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     deployment: Option<crate::config_authority::PluginDeploymentView>,
+    /// Scheduler placement; absent when the instance is hand-managed (the
+    /// Enabled switch applies only then).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    placement: Option<crate::config_authority::PlacementView>,
+    /// Nodes whose deployment of the instance is `present`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    present_on: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -829,6 +834,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route("/api/jobs/{id}/cancel", post(cancel_job))
         .route("/api/events", get(list_events))
         .route("/api/events/deliveries", get(list_event_deliveries))
+        .route("/api/queues", get(list_queues))
+        .route("/api/queues/{name}", get(inspect_queue))
         .route(
             "/api/events/deliveries/{id}/retry",
             post(retry_event_delivery),
@@ -876,13 +883,40 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 .put(crate::config_authority::put_plugin_instance_config),
         )
         .route(
-            "/api/config/plugin-instances/{id}/deployments/{host_id}",
+            "/api/config/plugin-instances/{id}/deployments/{node_id}",
             put(crate::config_authority::put_plugin_deployment),
         )
-        .route("/api/config/hosts", get(crate::config_authority::get_hosts))
         .route(
-            "/api/config/plugin-schemas",
-            get(crate::config_authority::get_plugin_schemas),
+            "/api/config/plugin-instances/{id}/placement",
+            put(crate::config_authority::put_plugin_placement_route)
+                .delete(crate::config_authority::delete_plugin_placement_route),
+        )
+        .route("/api/config/nodes", get(crate::config_authority::get_nodes))
+        .route(
+            "/api/config/nodes/{node_id}/labels",
+            put(crate::config_authority::put_node_labels),
+        )
+        .route(
+            "/api/config/nodes/{node_id}/runtime",
+            put(crate::config_authority::put_node_runtime),
+        )
+        .route(
+            "/api/config/plugins",
+            get(crate::plugin_installs::get_plugins)
+                .post(crate::plugin_installs::post_plugin_install),
+        )
+        .route(
+            "/api/config/plugins/{key}",
+            get(crate::plugin_installs::get_plugin)
+                .delete(crate::plugin_installs::delete_plugin_install),
+        )
+        .route(
+            "/api/config/plugins/{key}/active",
+            put(crate::plugin_installs::put_active_version),
+        )
+        .route(
+            "/api/config/plugins/{key}/versions/{version}/approve",
+            post(crate::plugin_installs::approve_plugin_version),
         )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
@@ -1381,13 +1415,13 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         Some(lib) => lib.clone(),
         None => state.library_snapshot().await,
     };
-    let bookclerk_plugin_host::HostEnrollment {
+    let bookclerk_plugin_host::NodeEnrollment {
         config: mut new_cfg,
         session: control_plane,
         enrolled,
-    } = bookclerk_plugin_host::enroll_host(&new_cfg, &library_for_auth).await?;
+    } = bookclerk_plugin_host::enroll_node(&new_cfg, &library_for_auth).await?;
     tracing::info!(
-        host_id = %control_plane.host.host_id,
+        node_id = %control_plane.node.node_id,
         enrolled = enrolled.len(),
         "re-enrolled local plugins on config reload"
     );
@@ -2121,15 +2155,17 @@ fn build_database_settings_group(
         is_default: false,
         config_revision: None,
         deployment: None,
+        placement: None,
+        present_on: Vec::new(),
     }
 }
 
 /// Settings groups: one per plugin instance from the control plane, plus the
-/// bootstrap database adapters discovered on this host.
+/// bootstrap database adapters discovered on this node.
 async fn plugin_settings_snapshot(
     config: &Config,
     library: &bookclerk_library::LibraryStore,
-    host_id: &str,
+    node_id: &str,
     discovered_plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
 ) -> Vec<PluginSettingsGroup> {
     let mut groups = Vec::new();
@@ -2163,7 +2199,7 @@ async fn plugin_settings_snapshot(
         groups.push(group);
     }
 
-    let views = match crate::config_authority::list_plugin_instance_views(library, host_id).await {
+    let views = match crate::config_authority::list_plugin_instance_views(library, node_id).await {
         Ok(views) => views,
         Err(err) => {
             tracing::warn!(error = %err, "plugin instances unavailable for settings");
@@ -2174,7 +2210,7 @@ async fn plugin_settings_snapshot(
         let plugin = discovered_plugins
             .iter()
             .find(|plugin| plugin.plugin_key().canonical() == view.plugin_key);
-        groups.push(instance_settings_group(view, plugin, host_id));
+        groups.push(instance_settings_group(view, plugin, node_id));
     }
     groups.sort_by(|a, b| {
         (a.family.as_str(), a.id.as_str(), &a.display_name).cmp(&(
@@ -2193,7 +2229,7 @@ async fn plugin_settings_snapshot(
 fn instance_settings_group(
     view: &crate::config_authority::PluginInstanceView,
     plugin: Option<&bookclerk_plugin_host::DiscoveredPlugin>,
-    host_id: &str,
+    node_id: &str,
 ) -> PluginSettingsGroup {
     use bookclerk_library::control_plane::SettingValue;
     use bookclerk_plugin_abi::SettingKind;
@@ -2280,8 +2316,15 @@ fn instance_settings_group(
         deployment: view
             .deployments
             .iter()
-            .find(|deployment| deployment.host_id == host_id)
+            .find(|deployment| deployment.node_id == node_id)
             .cloned(),
+        placement: view.placement.clone(),
+        present_on: view
+            .deployments
+            .iter()
+            .filter(|deployment| deployment.desired == "present" || deployment.desired == "placed")
+            .map(|deployment| deployment.node_id.clone())
+            .collect(),
     }
 }
 
@@ -2863,26 +2906,26 @@ async fn get_settings(
     let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
     let discovered_plugins = discover_plugins_for_settings(&cfg).await;
-    // A config without resolved paths (unit tests) has no host identity and
+    // A config without resolved paths (unit tests) has no node identity and
     // therefore no per-host deployment view; the plugin groups still render.
-    let host_id = cfg
+    let node_id = cfg
         .paths
         .as_ref()
         .and_then(|paths| {
-            bookclerk_library::control_plane::load_or_create_host_identity(&paths.files_dir)
+            bookclerk_library::control_plane::load_or_create_node_identity(&paths.files_dir)
                 .map_err(|err| {
-                    tracing::warn!(error = %err, "host identity unavailable for settings");
+                    tracing::warn!(error = %err, "node identity unavailable for settings");
                 })
                 .ok()
         })
-        .map(|host| host.host_id)
+        .map(|host| host.node_id)
         .unwrap_or_default();
     let auth = state.auth_snapshot().await;
     let settings = current_settings_snapshot(&cfg);
     let mut effective = settings.clone();
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
-    effective.insert("host.id".into(), host_id.clone());
+    effective.insert("node.id".into(), node_id.clone());
     for source in state.sources.read().await.all() {
         let address = source
             .plugin_instance_id()
@@ -2906,7 +2949,7 @@ async fn get_settings(
     Ok(Json(SettingsResponse {
         settings,
         effective,
-        plugins: plugin_settings_snapshot(&cfg, &library, &host_id, &discovered_plugins).await,
+        plugins: plugin_settings_snapshot(&cfg, &library, &node_id, &discovered_plugins).await,
         host_cpu_cores_max: host_cpu_cores_max(),
         jail_cpu_cores: cfg
             .plugins
@@ -2996,7 +3039,7 @@ async fn patch_settings(
 
     let mut enabling = newly_enabled_plugin_ids(&updates, &editable_plugin_options);
     // Direct `database.plugin` (and exclusive `database.<id>.enabled`) switches
-    // must not bypass consent — same bar as `bookclerk plugins enable`.
+    // must not bypass consent — same bar as `bookclerk plugins deploy`.
     for id in database_backends_requiring_grant(&updates, &current_database_plugin) {
         if !enabling.iter().any(|e| e.eq_ignore_ascii_case(&id)) {
             enabling.push(id);
@@ -3480,6 +3523,47 @@ struct DomainEventInfo {
     dedup_key: String,
     /// RFC 3339 insert time.
     created_at: String,
+    /// Queue the row belongs to (`core.events` for domain events).
+    queue_name: String,
+    /// Body encoding (`json`, `text`, `bytes`).
+    content_type: String,
+    /// Producer plugin id; empty when the host published it.
+    source: String,
+    /// RFC 3339 earliest delivery time for delayed queue messages.
+    deliver_after: Option<String>,
+}
+
+/// Operator JSON for one queue on `GET /api/queues`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueueInfo {
+    /// Queue name.
+    name: String,
+    /// True for the domain-event bus (`core.events`).
+    core: bool,
+    /// Deliveries waiting to be claimed (including suspended rows).
+    pending: i64,
+    /// Deliveries currently claimed by a worker.
+    running: i64,
+    /// Deliveries acked.
+    acked: i64,
+    /// Deliveries parked for operator review.
+    dead_letter: i64,
+    /// Live catalog consumers (plugin keys or instance ids) of this queue.
+    consumers: Vec<String>,
+}
+
+/// Operator JSON for `GET /api/queues/{name}`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueueDetail {
+    /// Queue summary.
+    #[serde(flatten)]
+    queue: QueueInfo,
+    /// Recent messages on the queue, newest first.
+    messages: Vec<DomainEventInfo>,
+    /// Recent deliveries on the queue, newest first.
+    deliveries: Vec<EventDeliveryInfo>,
 }
 
 /// Operator JSON for one `event_deliveries` row.
@@ -3516,6 +3600,8 @@ struct EventDeliveryInfo {
     resume_pending: bool,
     /// True when a suspend checkpoint is stored.
     has_checkpoint: bool,
+    /// Queue of the parent event.
+    queue_name: String,
 }
 
 /// Optional `state=` filter for `GET /api/events/deliveries`.
@@ -3523,6 +3609,23 @@ struct EventDeliveryInfo {
 struct EventDeliveryQuery {
     /// Delivery state (`dead_letter`, `pending`, …).
     state: Option<String>,
+}
+
+/// Operator projection of one outbox row.
+fn domain_event_info(e: bookclerk_library::DomainEventRecord) -> DomainEventInfo {
+    DomainEventInfo {
+        id: e.id,
+        event_type: e.event_type,
+        schema_version: e.schema_version,
+        dispatch_state: e.dispatch_state,
+        account_id: e.account_id,
+        dedup_key: e.dedup_key,
+        created_at: e.created_at.to_rfc3339(),
+        queue_name: e.queue_name,
+        content_type: e.content_type,
+        source: e.source,
+        deliver_after: e.deliver_after.map(|t| t.to_rfc3339()),
+    }
 }
 
 /// Returns recent domain-event outbox rows, newest first.
@@ -3534,19 +3637,117 @@ async fn list_events(
         .list_domain_events(100)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|e| DomainEventInfo {
-                id: e.id,
-                event_type: e.event_type,
-                schema_version: e.schema_version,
-                dispatch_state: e.dispatch_state,
-                account_id: e.account_id,
-                dedup_key: e.dedup_key,
-                created_at: e.created_at.to_rfc3339(),
-            })
-            .collect(),
-    ))
+    Ok(Json(rows.into_iter().map(domain_event_info).collect()))
+}
+
+/// Delivery counters plus live consumers for one queue.
+async fn queue_info(
+    library: &bookclerk_library::LibraryStore,
+    catalog: &[bookclerk_library::EventSubscriberCatalogRecord],
+    name: &str,
+) -> Result<QueueInfo, StatusCode> {
+    let count = |state: &'static str| async move {
+        library
+            .count_queue_deliveries(name, state)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    };
+    let mut consumers: Vec<String> = catalog
+        .iter()
+        .filter(|row| row.enabled && row.subscriptions.iter().any(|s| s.queue_name() == name))
+        .map(|row| row.plugin_id.clone())
+        .collect();
+    consumers.sort();
+    consumers.dedup();
+    Ok(QueueInfo {
+        name: name.to_string(),
+        core: name == bookclerk_library::CORE_EVENTS_QUEUE,
+        pending: count("pending").await?,
+        running: count("running").await?,
+        acked: count("acked").await?,
+        dead_letter: count("dead_letter").await?,
+        consumers,
+    })
+}
+
+/// Returns every queue the outbox or the live catalog knows about, with
+/// delivery counters and the consumers subscribed to it.
+async fn list_queues(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<QueueInfo>>, StatusCode> {
+    let library = state.library_snapshot().await;
+    let catalog = library
+        .list_live_event_subscribers()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut names = library
+        .list_queue_names()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for row in &catalog {
+        for sub in &row.subscriptions {
+            names.push(sub.queue_name().to_string());
+        }
+    }
+    names.push(bookclerk_library::CORE_EVENTS_QUEUE.to_string());
+    names.sort();
+    names.dedup();
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        out.push(queue_info(&library, &catalog, &name).await?);
+    }
+    Ok(Json(out))
+}
+
+/// Returns one queue's counters, consumers, recent messages, and deliveries.
+async fn inspect_queue(
+    State(state): State<Arc<AppState>>,
+    AxumPath(name): AxumPath<String>,
+) -> Result<Json<QueueDetail>, StatusCode> {
+    if !bookclerk_library::is_valid_queue_name(&name) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let library = state.library_snapshot().await;
+    let catalog = library
+        .list_live_event_subscribers()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let queue = queue_info(&library, &catalog, &name).await?;
+    let messages = library
+        .list_domain_events_for_queue(&name, 50)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let deliveries = library
+        .list_event_deliveries_for_queue(&name, None, 50)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(QueueDetail {
+        queue,
+        messages: messages.into_iter().map(domain_event_info).collect(),
+        deliveries: deliveries.into_iter().map(event_delivery_info).collect(),
+    }))
+}
+
+/// Operator projection of one delivery row.
+fn event_delivery_info(d: bookclerk_library::EventDeliveryRecord) -> EventDeliveryInfo {
+    EventDeliveryInfo {
+        id: d.id,
+        event_id: d.event_id,
+        plugin_id: d.plugin_id,
+        state: d.state,
+        attempt_count: d.attempt_count,
+        lease_generation: d.lease_generation,
+        invocation_sequence: d.invocation_sequence,
+        outcome: d.outcome,
+        error_message: d.error_message,
+        run_after: d.run_after.to_rfc3339(),
+        updated_at: d.updated_at.to_rfc3339(),
+        cancel_requested: d.cancel_requested,
+        resource_class: d.resource_class,
+        resume_pending: d.resume_pending,
+        queue_name: d.queue_name.clone(),
+        has_checkpoint: d.checkpoint_json.is_some(),
+    }
 }
 
 /// Returns event deliveries, optionally filtered by `state`.
@@ -3559,27 +3760,7 @@ async fn list_event_deliveries(
         .list_event_deliveries(q.state.as_deref(), 200)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|d| EventDeliveryInfo {
-                id: d.id,
-                event_id: d.event_id,
-                plugin_id: d.plugin_id,
-                state: d.state,
-                attempt_count: d.attempt_count,
-                lease_generation: d.lease_generation,
-                invocation_sequence: d.invocation_sequence,
-                outcome: d.outcome,
-                error_message: d.error_message,
-                run_after: d.run_after.to_rfc3339(),
-                updated_at: d.updated_at.to_rfc3339(),
-                cancel_requested: d.cancel_requested,
-                resource_class: d.resource_class,
-                resume_pending: d.resume_pending,
-                has_checkpoint: d.checkpoint_json.is_some(),
-            })
-            .collect(),
-    ))
+    Ok(Json(rows.into_iter().map(event_delivery_info).collect()))
 }
 
 /// Re-queue a dead-lettered delivery.
@@ -3784,7 +3965,7 @@ async fn get_book(
 }
 
 /// Serves the JPEG cover sidecar from the deployed local destination, or 404
-/// when no local destination runs on this host.
+/// when no local destination runs on this node.
 async fn get_book_cover(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
@@ -5556,6 +5737,78 @@ mode = "deny"
     }
 
     #[tokio::test]
+    async fn queue_info_counts_deliveries_and_lists_live_consumers() {
+        let store = bookclerk_library::LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("memory store"),
+        );
+        store
+            .upsert_event_subscriber(
+                "node-a",
+                "path:file:///tmp/a#qecho",
+                &[bookclerk_library::EventCatalogSubscription::queue("echo")],
+                true,
+            )
+            .await
+            .expect("catalog");
+        store
+            .upsert_event_subscriber(
+                "node-a",
+                "path:file:///tmp/b#disabled",
+                &[bookclerk_library::EventCatalogSubscription::queue("echo")],
+                false,
+            )
+            .await
+            .expect("catalog");
+        let event_id = match store
+            .publish_domain_event(bookclerk_library::PublishDomainEventSpec {
+                schema_version: 1,
+                dedup_key: "m1".into(),
+                payload: "{}".into(),
+                queue_name: "echo".into(),
+                ..bookclerk_library::PublishDomainEventSpec::default()
+            })
+            .await
+            .expect("publish")
+        {
+            bookclerk_library::PublishDomainEventOutcome::Created { id } => id,
+            other => panic!("unexpected publish outcome {other:?}"),
+        };
+        let catalog = store
+            .list_live_event_subscribers()
+            .await
+            .expect("live catalog");
+        let event = store
+            .get_domain_event(&event_id)
+            .await
+            .expect("query")
+            .expect("row");
+        let subscribers = bookclerk_library::catalog_subscribers_for_event(&catalog, &event);
+        assert_eq!(subscribers.len(), 1, "only the enabled consumer subscribes");
+        store
+            .dispatch_event_deliveries(&event_id, &subscribers, "op-1")
+            .await
+            .expect("dispatch");
+        let info = super::queue_info(&store, &catalog, "echo")
+            .await
+            .expect("queue info");
+        assert_eq!(info.name, "echo");
+        assert!(!info.core);
+        assert_eq!(info.pending, 1, "{info:?}");
+        assert_eq!(info.running, 0);
+        assert_eq!(info.acked, 0);
+        assert_eq!(info.dead_letter, 0);
+        assert_eq!(info.consumers, vec!["path:file:///tmp/a#qecho".to_string()]);
+        let core = super::queue_info(&store, &catalog, bookclerk_library::CORE_EVENTS_QUEUE)
+            .await
+            .expect("core info");
+        assert!(core.core);
+        assert_eq!(core.pending, 0);
+        assert!(core.consumers.is_empty());
+    }
+
+    #[tokio::test]
     async fn plugin_logo_http_route_serves_png() {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
@@ -5771,7 +6024,6 @@ mode = "deny"
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
-            event_node_id: std::sync::OnceLock::new(),
             deployment_runtime: std::sync::OnceLock::new(),
         });
 
@@ -5871,7 +6123,6 @@ mode = "deny"
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
-            event_node_id: std::sync::OnceLock::new(),
             deployment_runtime: std::sync::OnceLock::new(),
         });
 
@@ -5969,6 +6220,7 @@ mode = "deny"
 
     #[tokio::test]
     async fn mixed_settings_request_does_not_commit_events() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use axum::extract::State;
         use axum::http::StatusCode;
         use axum::Json;
@@ -6053,6 +6305,7 @@ mode = "deny"
 
     #[tokio::test]
     async fn events_only_settings_patch_commits() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use axum::extract::State;
         use axum::Json;
         use bookclerk_library::control_plane::{
@@ -6113,6 +6366,7 @@ mode = "deny"
 
     #[tokio::test]
     async fn reload_events_read_failure_keeps_the_previous_runtime() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
@@ -6293,7 +6547,6 @@ mode = "deny"
             last_bound_listen: RwLock::new(None),
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
-            event_node_id: std::sync::OnceLock::new(),
             deployment_runtime: std::sync::OnceLock::new(),
         });
 

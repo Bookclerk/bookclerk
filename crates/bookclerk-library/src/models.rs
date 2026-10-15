@@ -118,7 +118,7 @@ pub struct AccountRecord {
     /// Surrogate primary key assigned by the database.
     pub id: i64,
     /// Provenance-qualified PluginKey that owns this account. Any instance
-    /// of that plugin, on any host, may act for it.
+    /// of that plugin, on any node, may act for it.
     pub plugin_key: String,
     /// Store or operator account id, unique within one plugin key.
     pub account_id: String,
@@ -1628,13 +1628,19 @@ impl BookRecord {
     }
 }
 
-/// Producer-side domain event to persist in the outbox.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Producer-side domain event (or queue message) to persist in the outbox.
+///
+/// A domain event leaves `queue_name` empty (the bus, [`CORE_EVENTS_QUEUE`])
+/// and sets `event_type`. A queue message names its queue and leaves
+/// `event_type` empty; `content_type` says how `payload` is encoded and
+/// `delay_seconds` holds its deliveries back.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PublishDomainEventSpec {
     /// Stable event id (UUID). Generated when empty.
     #[serde(default)]
     pub id: String,
-    /// Event type (`book_acquired`).
+    /// Event type (`book_acquired`); empty for queue messages.
+    #[serde(default)]
     pub event_type: String,
     /// Payload schema version.
     pub schema_version: i64,
@@ -1657,6 +1663,15 @@ pub struct PublishDomainEventSpec {
     /// FIFO key copied onto each delivery (`book uuid` for `book_acquired`).
     #[serde(default)]
     pub ordering_key: String,
+    /// Queue name; empty means the domain-event bus ([`CORE_EVENTS_QUEUE`]).
+    #[serde(default)]
+    pub queue_name: String,
+    /// Body encoding (`json`, `text`, `bytes`); empty means `json`.
+    #[serde(default)]
+    pub content_type: String,
+    /// Seconds before the first delivery may be claimed (queue messages).
+    #[serde(default)]
+    pub delay_seconds: u32,
 }
 
 /// Result of [`crate::LibraryStore::publish_domain_event`].
@@ -1676,6 +1691,52 @@ pub enum PublishDomainEventOutcome {
 
 /// Default delivery resource class (`network`).
 pub const EVENT_RESOURCE_CLASS_NETWORK: &str = "network";
+/// Queue that carries the domain-event bus (`[events]` producers and consumers).
+pub const CORE_EVENTS_QUEUE: &str = "core.events";
+/// Prefix of the per-node queues (`node.<node_id>`) node subsystems consume.
+pub const NODE_QUEUE_PREFIX: &str = "node.";
+/// Queue message body is UTF-8 JSON text.
+pub const QUEUE_CONTENT_TYPE_JSON: &str = "json";
+/// Queue message body is plain UTF-8 text.
+pub const QUEUE_CONTENT_TYPE_TEXT: &str = "text";
+/// Queue message body is raw bytes stored as base64 text.
+pub const QUEUE_CONTENT_TYPE_BYTES: &str = "bytes";
+/// Longest queue name.
+pub const MAX_QUEUE_NAME_LEN: usize = 63;
+
+/// Serde default for queue-name fields: the domain-event bus.
+fn default_queue_name() -> String {
+    CORE_EVENTS_QUEUE.into()
+}
+
+/// Serde default for `content_type`: JSON.
+fn default_content_type() -> String {
+    QUEUE_CONTENT_TYPE_JSON.into()
+}
+
+/// True when `name` is `[a-z0-9][a-z0-9._-]*` and at most [`MAX_QUEUE_NAME_LEN`] chars.
+///
+/// Host-reserved names (`core.events`, `node.<id>`) satisfy this grammar; the
+/// manifest validator, not the outbox, keeps plugins off those prefixes.
+#[must_use]
+pub fn is_valid_queue_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_QUEUE_NAME_LEN
+        && name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Resolves an optional queue name: empty means [`CORE_EVENTS_QUEUE`].
+#[must_use]
+pub fn queue_name_or_bus(name: &str) -> &str {
+    if name.trim().is_empty() {
+        CORE_EVENTS_QUEUE
+    } else {
+        name.trim()
+    }
+}
 /// Live catalog rows quieter than this many seconds are ignored at dispatch.
 pub const EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS: i64 = 60;
 
@@ -1693,6 +1754,11 @@ pub struct EventSubscriber {
     /// Concurrency class copied onto the delivery row.
     #[serde(default = "default_event_resource_class")]
     pub resource_class: String,
+    /// Claims before the delivery dead-letters; `None` uses the host default
+    /// ([`EVENT_DELIVERY_MAX_ATTEMPTS`]). Derived from the consumer's
+    /// `max_retries + 1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
 }
 
 impl EventSubscriber {
@@ -1702,7 +1768,16 @@ impl EventSubscriber {
         Self {
             plugin_id: plugin_id.into(),
             resource_class: default_event_resource_class(),
+            max_attempts: None,
         }
+    }
+
+    /// Effective `max_attempts` for a new delivery row.
+    #[must_use]
+    pub fn max_attempts_or_default(&self) -> i64 {
+        self.max_attempts
+            .map_or(EVENT_DELIVERY_MAX_ATTEMPTS, i64::from)
+            .max(1)
     }
 }
 
@@ -1730,6 +1805,24 @@ pub struct EventCatalogSubscription {
     /// Optional host-owned payload object filter (top-level key equality).
     #[serde(default)]
     pub filter: Option<serde_json::Value>,
+    /// Queue this subscription consumes; empty means the domain-event bus.
+    /// A plugin-owned queue matches by name only (no type, schema, or filter).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub queue: String,
+    /// Redeliveries before dead-lettering; `None` uses the host default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+    /// Queue that receives a message once `max_retries` is exhausted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letter_queue: Option<String>,
+    /// Seconds a retried message waits before redelivery.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub retry_delay_secs: u32,
+}
+
+/// Serde skip predicate for zero delays.
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 /// Default `[1]` when a catalog subscription omits `schema_versions`.
@@ -1747,7 +1840,45 @@ impl EventCatalogSubscription {
             supports_suspend: false,
             resource_class: default_event_resource_class(),
             filter: None,
+            queue: String::new(),
+            max_retries: None,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
         }
+    }
+
+    /// Build a plugin-owned queue subscription (`[[queues.consumers]]`).
+    #[must_use]
+    pub fn queue(queue: impl Into<String>) -> Self {
+        Self {
+            event_type: String::new(),
+            schema_versions: Vec::new(),
+            supports_suspend: false,
+            resource_class: default_event_resource_class(),
+            filter: None,
+            queue: queue.into(),
+            max_retries: None,
+            dead_letter_queue: None,
+            retry_delay_secs: 0,
+        }
+    }
+
+    /// Queue this subscription consumes (`core.events` when unset).
+    #[must_use]
+    pub fn queue_name(&self) -> &str {
+        queue_name_or_bus(&self.queue)
+    }
+
+    /// True for a plugin-owned queue subscription (not the domain-event bus).
+    #[must_use]
+    pub fn is_queue(&self) -> bool {
+        self.queue_name() != CORE_EVENTS_QUEUE
+    }
+
+    /// `max_attempts` for deliveries created from this subscription.
+    #[must_use]
+    pub fn max_attempts(&self) -> Option<u32> {
+        self.max_retries.map(|r| r.saturating_add(1))
     }
 }
 
@@ -1936,8 +2067,10 @@ pub fn wake_grants_from_subscriptions(
         }
         Some(parsed)
     };
-    let eligible: Vec<&EventCatalogSubscription> =
-        subs.iter().filter(|s| s.event_type == wake).collect();
+    let eligible: Vec<&EventCatalogSubscription> = subs
+        .iter()
+        .filter(|s| !s.is_queue() && s.event_type == wake)
+        .collect();
     if eligible.is_empty() {
         return Err("wake event type not subscribed");
     }
@@ -2010,8 +2143,14 @@ pub fn subscription_matches_event(
     } else {
         sub.resource_class.trim()
     };
-    class == EVENT_RESOURCE_CLASS_NETWORK
-        && sub.event_type == event.event_type
+    if class != EVENT_RESOURCE_CLASS_NETWORK || sub.queue_name() != event.queue_name {
+        return false;
+    }
+    if sub.is_queue() {
+        // Plugin-owned queues carry opaque messages: the name is the contract.
+        return true;
+    }
+    sub.event_type == event.event_type
         && sub
             .schema_versions
             .iter()
@@ -2030,16 +2169,17 @@ pub fn catalog_subscribers_for_event(
         if !row.enabled {
             continue;
         }
-        if !row
+        let Some(sub) = row
             .subscriptions
             .iter()
-            .any(|s| subscription_matches_event(s, event))
-        {
+            .find(|s| subscription_matches_event(s, event))
+        else {
             continue;
-        }
+        };
         out.push(EventSubscriber {
             plugin_id: row.plugin_id.clone(),
             resource_class: EVENT_RESOURCE_CLASS_NETWORK.into(),
+            max_attempts: sub.max_attempts(),
         });
     }
     out
@@ -2078,6 +2218,23 @@ pub struct DomainEventRecord {
     /// True until a wake pass for this event has completed.
     #[serde(default)]
     pub wake_pending: bool,
+    /// Queue this row belongs to (`core.events` for domain events).
+    #[serde(default = "default_queue_name")]
+    pub queue_name: String,
+    /// Body encoding of `payload` (`json`, `text`, `bytes`).
+    #[serde(default = "default_content_type")]
+    pub content_type: String,
+    /// Earliest delivery time for a delayed queue message.
+    #[serde(default)]
+    pub deliver_after: Option<DateTime<Utc>>,
+}
+
+impl DomainEventRecord {
+    /// True for a plugin-owned queue message (not a domain event).
+    #[must_use]
+    pub fn is_queue_message(&self) -> bool {
+        self.queue_name != CORE_EVENTS_QUEUE
+    }
 }
 
 /// Per-subscriber delivery row.
@@ -2138,6 +2295,9 @@ pub struct EventDeliveryRecord {
     /// Host-derived wake grants JSON; empty falls back to type + `wake_filter_json`.
     #[serde(default)]
     pub wake_grants_json: String,
+    /// Queue of the parent event, copied at dispatch.
+    #[serde(default = "default_queue_name")]
+    pub queue_name: String,
 }
 
 impl EventDeliveryRecord {

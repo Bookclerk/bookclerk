@@ -8,7 +8,7 @@ bookclerkd
 ```
 
 Reads bootstrap settings from `config.toml` (or `BOOKCLERK_CONFIG`), opens the
-library database, then enrolls a stable host id (`host-identity.json`) and
+library database, then enrolls a stable host id (`node-identity.json`) and
 loads `[events]` from the database. Other sections are still TOML. Schedules:
 
 - library scan every `library.scan_interval_minutes`
@@ -149,7 +149,7 @@ User; use localhost or Owner elevate for Operator.
 | `sources.*` / `integrations.*` / `output.*` | Rebuild registries; integration watchers stopped then restarted |
 | `database.plugin` | Re-open library + destinations |
 | `[media]` | Swap media worker pool |
-| `[events]` | Database compare-and-swap. Reload overlays the committed revision; it does not copy TOML back over the database. Running processes also reconcile about every 5 seconds |
+| `[events]` | Database compare-and-swap. Reload overlays the committed revision; it does not copy TOML back over the database. Every committed write wakes each node through its `node.<node_id>` queue; a 60-second backstop pass covers a missed wakeup |
 
 `GET /api/settings` returns both `settings` (configured) and `effective`
 (runtime auth flag + loaded plugin ids). `GET /api/status` includes

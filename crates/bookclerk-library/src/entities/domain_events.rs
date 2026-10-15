@@ -45,6 +45,12 @@ pub struct Model {
     pub wake_cursor_id: String,
     /// Frozen JSON array of plugin ids for paged dispatch receipts.
     pub dispatch_snapshot_json: String,
+    /// Queue this row belongs to (`core.events` for the domain-event bus).
+    pub queue_name: String,
+    /// Body encoding of `payload` (`json`, `text`, or `bytes` as base64).
+    pub content_type: String,
+    /// RFC 3339 earliest delivery time for delayed queue messages; empty = now.
+    pub deliver_after: String,
 }
 
 /// Declared SeaORM relations (deliveries are queried by `event_id`).

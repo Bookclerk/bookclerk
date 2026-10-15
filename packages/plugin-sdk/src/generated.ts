@@ -282,6 +282,17 @@ export interface Bindings {
    * Null when the guest does not export this capability.
    */
   storage?: Destination | null;
+  /**
+   * Named `[[queues.producers]]` bindings: one host-served producer per
+   * binding, each sending into the queue the row names. Empty when the
+   * manifest declares none.
+   */
+  queues: NamedQueue[];
+  /**
+   * Named `[[kv_namespaces]]` bindings: one host-served durable namespace per
+   * binding, scoped to this plugin. Empty when the manifest declares none.
+   */
+  kv: NamedKv[];
 }
 
 /**
@@ -330,6 +341,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   oidc?: Oidc | null;
+  /**
+   * `[[queues.consumers]]` trigger: `queue(batch)` handler.
+   * Null when the guest does not export this capability.
+   */
+  queueConsumer?: QueueConsumer | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -840,6 +856,108 @@ export interface NamedDatabase {
 }
 
 /**
+ * `[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
+ * at-least-once; consumers must be idempotent on `QueueMessage.id`.
+ */
+export interface QueueConsumer {
+  /**
+   * Deliver one ordered batch of messages from one queue.
+   *
+   * @param batch - Messages in delivery order.
+   * @returns {@link QueueBatchReply}
+   */
+  queue(batch: QueueBatch): Promise<QueueBatchReply>;
+}
+
+/**
+ * Queue producer binding: host-served send into the queue a
+ * `[[queues.producers]]` row names, granted through `Bindings.queues`.
+ */
+export interface QueueProducer {
+  /**
+   * Send one message.
+   *
+   * @param message - Body, encoding, and delay.
+   * @returns {@link QueueSendReply}
+   */
+  send(message: QueueSendMessage): Promise<QueueSendReply>;
+  /**
+   * Send up to `maxListPage` messages in order; `delaySeconds` applies to
+   * every message that carries no delay of its own.
+   *
+   * @param messages - Messages in send order.
+   * @param delaySeconds - Default delay for the batch.
+   * @returns {@link QueueSendReply}
+   */
+  sendBatch(messages: QueueSendMessage[], delaySeconds: number): Promise<QueueSendReply>;
+}
+
+/** One named queue producer delivered on `Bindings.queues`. */
+export interface NamedQueue {
+  /** Binding name from `plugin.toml` `[[queues.producers]]`. */
+  name: string;
+  /** Queue the binding sends to. */
+  queue: string;
+  /**
+   * Host-served producer for that queue.
+   * Null when the guest does not export this capability.
+   */
+  producer?: QueueProducer | null;
+}
+
+/**
+ * Durable key/value namespace: a Workers `KVNamespace`-shaped binding the host
+ * serves from the library database, scoped to the plugin and the namespace a
+ * `[[kv_namespaces]]` row names, granted through `Bindings.kv`. Values live in
+ * the cluster, so an instance moved to another host reads its own keys.
+ */
+export interface KvNamespace {
+  /**
+   * Read one key; `found = false` when absent or expired.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @returns {@link KvGetReply}
+   */
+  get(key: string): Promise<KvGetReply>;
+  /**
+   * Write one key, replacing any previous value and metadata.
+   *
+   * @param key - Key, at most `maxKvKeyBytes` UTF-8 bytes.
+   * @param value - Value, at most the namespace's `max_value_bytes`.
+   * @param options - Expiration and metadata.
+   * @returns {@link KvPutReply}
+   */
+  put(key: string, value: Uint8Array, options: KvPutOptions): Promise<KvPutReply>;
+  /**
+   * Delete one key; a missing key is not an error.
+   *
+   * @param key - Key to delete.
+   * @returns {@link KvDeleteReply}
+   */
+  delete(key: string): Promise<KvDeleteReply>;
+  /**
+   * List keys in lexical order, one page at a time.
+   *
+   * @param options - Prefix, cursor, and page size.
+   * @returns {@link KvListReply}
+   */
+  list(options: KvListOptions): Promise<KvListReply>;
+}
+
+/** One named durable namespace delivered on `Bindings.kv`. */
+export interface NamedKv {
+  /** Binding name from `plugin.toml` `[[kv_namespaces]]`. */
+  name: string;
+  /** Namespace the binding is scoped to. */
+  namespace: string;
+  /**
+   * Host-served namespace.
+   * Null when the guest does not export this capability.
+   */
+  kv?: KvNamespace | null;
+}
+
+/**
  * Storefront content source (not byte Source). Every method takes and
  * returns typed structs from the "Typed method payloads" section.
  */
@@ -1052,9 +1170,13 @@ export interface PluginCapabilities {
   databases: string[];
   /**
    * Other named bindings the guest expects on `env` (`CONFIG`, `SECRETS`,
-   * `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, ...).
+   * `WORK_FS`, `OAUTH`, `KV`, `EVENTS`, `[[queues.producers]]` names, ...).
    */
   bindings: string[];
+  /** Queues the default entrypoint consumes (`queue(batch)` trigger). */
+  queueConsumers: string[];
+  /** Queues the guest may send to through its `[[queues.producers]]` bindings. */
+  queueProducers: string[];
 }
 
 /**
@@ -2126,6 +2248,166 @@ export interface Invocation {
   /** Id of the event or command that caused this invocation; empty when none. */
   causationId: string;
 }
+
+/** One message on a Workers-style queue, delivered by `QueueConsumer.queue`. */
+export interface QueueMessage {
+  /** Outbox row id; stable across redeliveries. */
+  id: string;
+  /** When the producer sent the message (UTC Unix milliseconds). */
+  timestampUnixMs: number;
+  /** Encoded body; at most `maxEventPayloadBytes`. */
+  body: Uint8Array;
+  /** Body encoding: `json`, `text`, or `bytes`. */
+  contentType: string;
+  /** Delivery counter, starting at 1. */
+  attempts: number;
+  /** Producer plugin id; empty when the host sent it. */
+  source: string;
+}
+
+/** One `QueueConsumer.queue` delivery: messages from one queue in send order. */
+export interface QueueBatch {
+  /** Queue the messages were sent to. */
+  queue: string;
+  /** Messages in delivery order; the reply carries one `QueueResult` per entry. */
+  messages: QueueMessage[];
+}
+
+/** Redeliver a queue message later. */
+export interface QueueRetry {
+  /** Seconds before redelivery; zero applies the consumer's `retry_delay`. */
+  delaySeconds: number;
+  /** Short human reason. */
+  reason: string;
+}
+
+/** Per-message outcome inside a `QueueConsumer.queue` batch reply. */
+export type QueueResult =
+  | { kind: "ack" } // Handled; the host marks the message delivered.
+  | { kind: "retry"; value: QueueRetry }; // Redeliver later.
+
+/**
+ * Success payload of `QueueConsumer.queue`: exactly one entry per
+ * `QueueBatch.messages` entry, in order. A short list is a host-side error
+ * and the missing tail is retried.
+ */
+export interface QueueBatchOk {
+  /** Per-message outcomes in delivery order. */
+  results: QueueResult[];
+}
+
+/** Result union of `QueueConsumer.queue`. */
+export type QueueBatchReply =
+  | { kind: "ok"; value: QueueBatchOk } // Success: per-message outcomes.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One message to send through a `[[queues.producers]]` binding. */
+export interface QueueSendMessage {
+  /** Encoded body; at most `maxEventPayloadBytes`. */
+  body: Uint8Array;
+  /** Body encoding: `json` (default when empty), `text`, or `bytes`. */
+  contentType: string;
+  /** Seconds before the message may be delivered; zero means now. */
+  delaySeconds: number;
+}
+
+/** Success payload of `QueueProducer.send` / `sendBatch`. */
+export interface QueueSendOk {
+  /** Outbox row ids in send order. */
+  messageIds: string[];
+}
+
+/** Result union of `QueueProducer.send` / `sendBatch`. */
+export type QueueSendReply =
+  | { kind: "ok"; value: QueueSendOk } // Success: the ids the host assigned.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Expiration and metadata for `KvNamespace.put`. */
+export interface KvPutOptions {
+  /** Absolute expiry (UTC Unix milliseconds); zero means none. */
+  expirationUnixMs: number;
+  /**
+   * Relative expiry in seconds from the write; zero means none. Ignored when
+   * `expirationUnixMs` is set.
+   */
+  expirationTtlSeconds: number;
+  /** Opaque JSON metadata text, at most `maxKvMetadataBytes`; empty means none. */
+  metadata: string;
+}
+
+/** Success payload of `KvNamespace.get`. */
+export interface KvGetOk {
+  /** True when the key exists and has not expired. */
+  found: boolean;
+  /** Stored value; empty when not found. */
+  value: Uint8Array;
+  /** Stored metadata JSON text; empty when none. */
+  metadata: string;
+  /** Absolute expiry (UTC Unix milliseconds); zero means none. */
+  expirationUnixMs: number;
+}
+
+/** Result union of `KvNamespace.get`. */
+export type KvGetReply =
+  | { kind: "ok"; value: KvGetOk } // Success: the value, when found.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Success payload of `KvNamespace.put`. */
+export interface KvPutOk {
+  /** Effective absolute expiry (UTC Unix milliseconds); zero means none. */
+  expirationUnixMs: number;
+}
+
+/** Success payload of `KvNamespace.delete`. */
+export interface KvDeleteOk {
+  /** True when a live value existed before the delete. */
+  existed: boolean;
+}
+
+/** Result union of `KvNamespace.put`. */
+export type KvPutReply =
+  | { kind: "ok"; value: KvPutOk } // Success: the write is durable.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Result union of `KvNamespace.delete`. */
+export type KvDeleteReply =
+  | { kind: "ok"; value: KvDeleteOk } // Success: the key is gone (or never existed).
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Page request for `KvNamespace.list`. */
+export interface KvListOptions {
+  /** Only keys starting with this prefix; empty means all. */
+  prefix: string;
+  /** Opaque cursor from a previous page; empty means the first page. */
+  cursor: string;
+  /** Most keys to return; zero means the host default, at most `maxListPage`. */
+  limit: number;
+}
+
+/** One key on a `KvNamespace.list` page. */
+export interface KvListKey {
+  /** Key name. */
+  key: string;
+  /** Stored metadata JSON text; empty when none. */
+  metadata: string;
+  /** Absolute expiry (UTC Unix milliseconds); zero means none. */
+  expirationUnixMs: number;
+}
+
+/** Success payload of `KvNamespace.list`. */
+export interface KvListOk {
+  /** Keys in lexical order. */
+  keys: KvListKey[];
+  /** True when no further page exists. */
+  listComplete: boolean;
+  /** Cursor for the next page; empty when `listComplete`. */
+  cursor: string;
+}
+
+/** Result union of `KvNamespace.list`. */
+export type KvListReply =
+  | { kind: "ok"; value: KvListOk } // Success: one page of keys.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =

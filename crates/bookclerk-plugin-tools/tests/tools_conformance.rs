@@ -223,17 +223,27 @@ fn check_rejects_typescript_main_as_not_implemented() {
 
 #[test]
 fn check_accepts_kv_declaration() {
-    let out = check_fixture("not-implemented-kv");
+    let out = check_fixture("valid-kv");
     assert!(
         out.status.success(),
-        "kv declaration must stay legal: {}",
+        "kv declaration must be legal: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
 
 #[test]
+fn check_rejects_bad_kv_namespace() {
+    assert_check_fails("invalid-kv-namespace", "namespace");
+}
+
+#[test]
+fn check_rejects_plugin_producing_host_event() {
+    assert_check_fails("invalid-producer-host-event", "emitted by the host");
+}
+
+#[test]
 fn check_accepts_queues_declaration() {
-    let out = check_fixture("not-implemented-queues");
+    let out = check_fixture("valid-queues");
     assert!(
         out.status.success(),
         "queues declaration must stay legal: {}",

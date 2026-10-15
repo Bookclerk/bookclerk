@@ -218,12 +218,21 @@ When exercising real store credentials in this cloud environment:
   older installed package is not enrolled or spawned) and creates the
   default instance; `bookclerk plugins config get|set|unset <plugin> <key>`
   edits the instance document (`--secret` reads the value from stdin and
-  seals it); `bookclerk plugins enable|disable <plugin> [--host]` sets the
-  deployment (`present` = enabled on that host). There are no `[sources.*]`,
+  seals it); `bookclerk plugins deploy|undeploy <plugin> [--node <id>]` sets
+  the deployment (`present` = runs on that node). `bookclerk plugins deploy
+  <plugin> --replicas N|all --on <label>` hands an instance to the cluster
+  scheduler instead, which writes `placed`/`unplaced` rows on the live nodes
+  with the most budget headroom (each daemon heartbeats capacity, budget,
+  reservations, and use into `node_status` every 15 s; budgets and drain
+  via `bookclerk nodes set`, labels via `bookclerk nodes label`);
+  per-node deploy/undeploy then refuse it until `plugins deploy --manual`.
+  `bookclerk plugins install` records a cluster-wide installed version (nodes
+  materialize it under `plugins/.versions/<digest>`); it no longer writes
+  `plugins/<fs-id>`. There are no `[sources.*]`,
   `[output.local]`, `[output.s3]`, or `[integrations.<id>]` tables and no
   `BOOKCLERK_SOURCE_*` / `BOOKCLERK_OUTPUT_*` / `BOOKCLERK_S3_*` /
   `BOOKCLERK_AWS_*` / `BOOKCLERK_ABS_*` env overrides. Only `[database]`,
-  `master.key`, `host-identity.json`, and `daemon.listen` stay bootstrap.
+  `master.key`, `node-identity.json`, and `daemon.listen` stay bootstrap.
 - S3/MinIO: `bucket`, `region`, `endpoint`, `force_path_style`, `prefix` and
   the `access_key_id` / `secret_access_key` / `session_token` secrets are the
   `s3` plugin's settings. With no sealed keys the guest uses the AWS SDK

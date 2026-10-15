@@ -8,15 +8,19 @@ mod auth;
 mod config_authority;
 mod csrf;
 mod event_worker;
+mod heartbeat;
 mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod node_queue;
 mod oidc;
 mod oidc_rp;
 mod oidc_verify;
 mod origin;
 mod passkeys;
+mod placement;
+mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
@@ -123,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
         ..
     } = bookclerk_plugin_host::open_host_control_plane(&config).await?;
     tracing::info!(
-        host_id = %control_plane.host.host_id,
+        node_id = %control_plane.node.node_id,
         cluster_id = %control_plane.cluster_id,
         events_revision = control_plane.events.revision,
         enrolled = enrolled.len(),
@@ -164,7 +168,6 @@ async fn main() -> anyhow::Result<()> {
         last_bound_listen: RwLock::new(None),
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
-        event_node_id: std::sync::OnceLock::new(),
         deployment_runtime: std::sync::OnceLock::new(),
     });
 
@@ -180,6 +183,8 @@ async fn main() -> anyhow::Result<()> {
     start_event_runtime(state.clone());
     config_authority::spawn_config_reconciler(state.clone());
     config_authority::spawn_deployment_reconciler(state.clone());
+    heartbeat::spawn_heartbeat(state.clone());
+    placement::spawn_placement_scheduler(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

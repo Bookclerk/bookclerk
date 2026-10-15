@@ -371,6 +371,9 @@ async fn host_authorize_path_runs_and_replays(
         dedup_key: "authz-dedup".into(),
         payload: "{}".into(),
         ordering_key: String::new(),
+        queue_name: String::new(),
+        content_type: String::new(),
+        deliver_after: String::new(),
     };
     let published = execute_via_host_authorize(
         db,

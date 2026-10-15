@@ -1706,7 +1706,7 @@ class _RsCtx:
             return self._type_eq(ty.inner)
         if ty.name in _RS_FLOATS:
             return False
-        if ty.name in _RS_SCALAR:
+        if ty.name in _RS_SCALAR or ty.name == "Void":
             return True
         return self.is_eq(self.res.canonical(ty.name))
 
