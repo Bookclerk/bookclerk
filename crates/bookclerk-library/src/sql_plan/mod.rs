@@ -365,6 +365,55 @@ pub fn proxy_write_kind(sql: &str) -> bookclerk_plugin_abi::DbPlanStatementKind 
     }
 }
 
+/// Rewrites a SeaORM proxy single-row `INSERT` to return the table's identity
+/// key.
+///
+/// The typed DB ABI carries no last-insert-id (D1 / Postgres portability), so
+/// a proxy write cannot report SeaORM's `last_insert_id` from `rowsAffected`.
+/// When `sql` is an `INSERT [OR …] INTO t (…) VALUES (…)` of exactly one tuple
+/// and `catalog` gives `t` an `INTEGER PRIMARY KEY AUTOINCREMENT` column, this
+/// returns `sql` with `RETURNING <identity>` appended. The result is proven
+/// single-row ([`bookclerk_plugin_abi::returning_single_row_proven`]), so it
+/// may carry `maxRows = 1` on every adapter, including D1.
+///
+/// Returns `None` for every other shape (already `RETURNING`, `INSERT …
+/// SELECT`, multi-tuple `VALUES`, `ON CONFLICT` upserts, tables without an
+/// identity column); those keep the plain execute shape.
+#[must_use]
+pub fn proxy_insert_returning_identity(
+    sql: &str,
+    catalog: &bookclerk_plugin_abi::SqlTypeEnv,
+) -> Option<String> {
+    if named::authored_kind(sql) != DbPlanStatementKind::Execute {
+        return None;
+    }
+    let identity = catalog.identity_column(insert_target_table(sql)?)?;
+    let rewritten = format!("{} RETURNING {identity}", sql.trim_end());
+    bookclerk_plugin_abi::returning_single_row_proven(&rewritten).then_some(rewritten)
+}
+
+/// Unqualified target of a leading `INSERT [OR <action>] INTO <table>`.
+fn insert_target_table(sql: &str) -> Option<&str> {
+    let mut words = sql.split_ascii_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("INSERT") {
+        return None;
+    }
+    let mut word = words.next()?;
+    if word.eq_ignore_ascii_case("OR") {
+        words.next()?;
+        word = words.next()?;
+    }
+    if !word.eq_ignore_ascii_case("INTO") {
+        return None;
+    }
+    let target = words.next()?;
+    let end = target
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(target.len());
+    let (table, tail) = target.split_at(end);
+    (!table.is_empty() && (tail.is_empty() || tail.starts_with('('))).then_some(table)
+}
+
 #[cfg(test)]
 mod limits_tests {
     use super::{
@@ -937,6 +986,60 @@ mod limits_tests {
             super::host_statement_kind("WITH seed AS (SELECT 1) DELETE FROM t RETURNING id"),
             DbPlanStatementKind::Returning
         );
+    }
+
+    #[test]
+    fn proxy_insert_returning_identity_only_rewrites_proven_identity_inserts() {
+        use bookclerk_plugin_abi::{apply_schema_sql_to_env, SqlTypeEnv};
+        let mut env = SqlTypeEnv::new();
+        apply_schema_sql_to_env(
+            &mut env,
+            "CREATE TABLE sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT NOT NULL UNIQUE)",
+        );
+        apply_schema_sql_to_env(
+            &mut env,
+            "CREATE TABLE nodes (node_id TEXT NOT NULL, plugin_id TEXT NOT NULL, \
+             PRIMARY KEY (node_id, plugin_id))",
+        );
+        let rewrite = |sql: &str| super::proxy_insert_returning_identity(sql, &env);
+
+        let sql = "INSERT INTO sessions (token) VALUES (?)";
+        let rewritten = rewrite(sql).expect("single-tuple identity insert");
+        assert_eq!(
+            rewritten,
+            "INSERT INTO sessions (token) VALUES (?) RETURNING id"
+        );
+        assert_eq!(
+            super::host_statement_kind(&rewritten),
+            DbPlanStatementKind::Returning
+        );
+        assert!(bookclerk_plugin_abi::returning_single_row_proven(
+            &rewritten
+        ));
+        assert_eq!(
+            rewrite("insert or ignore into SESSIONS(token) values (?)").as_deref(),
+            Some("insert or ignore into SESSIONS(token) values (?) RETURNING id")
+        );
+
+        for unchanged in [
+            // No identity column: callers use the natural key.
+            "INSERT INTO nodes (node_id, plugin_id) VALUES (?, ?)",
+            // Unknown table.
+            "INSERT INTO missing (token) VALUES (?)",
+            // Already returns rows.
+            "INSERT INTO sessions (token) VALUES (?) RETURNING id",
+            // Unbounded row sources: not provable for D1.
+            "INSERT INTO sessions (token) VALUES (?), (?)",
+            "INSERT INTO sessions (token) SELECT token FROM sessions",
+            "INSERT INTO sessions (token) VALUES (?) ON CONFLICT (token) DO NOTHING",
+            // Not a plain INSERT.
+            "WITH s AS (SELECT 'x' AS token) INSERT INTO sessions (token) SELECT token FROM s",
+            "UPDATE sessions SET token = ? WHERE id = ?",
+            "SELECT id FROM sessions",
+            "INSERT INTO main.sessions (token) VALUES (?)",
+        ] {
+            assert_eq!(rewrite(unchanged), None, "{unchanged}");
+        }
     }
 
     fn integer_column_add_sql(adds: usize) -> String {

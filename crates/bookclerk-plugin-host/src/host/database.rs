@@ -359,6 +359,14 @@ impl DatabaseRegistry {
     pub fn active(&self) -> Option<Arc<ExternalDatabase>> {
         self.active.clone()
     }
+
+    /// Test helper: a registry whose active guest is an already-spawned `ext`.
+    #[cfg(test)]
+    pub(crate) fn with_active(ext: ExternalDatabase) -> Self {
+        Self {
+            active: Some(Arc::new(ext)),
+        }
+    }
 }
 
 /// Discover and spawn the external database plugin matching `[database].plugin`.
@@ -1634,13 +1642,37 @@ impl RpcDatabaseProxy {
         }
     }
 
+    /// SQL catalog this proxy's statements typecheck against: the binding's
+    /// declared schema, or the host library schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin ABI `invalid_params` error when the binding catalog
+    /// cannot be loaded.
+    async fn sql_type_env(&self) -> Result<SqlTypeEnv, crate::PluginError> {
+        let Some(binding) = self.binding.as_deref() else {
+            return Ok(bookclerk_library::migrations::host_sql_type_env());
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        load_binding_sql_type_env(
+            &self.session,
+            binding,
+            &cancel,
+            0,
+            self.caps.max_result_rows,
+            self.depth() > 0,
+        )
+        .await
+        .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))
+    }
+
     /// Validates `req` against negotiated caps, stamps the host request hash,
     /// then sends typed `execute`.
     ///
     /// Guest-supplied statement kinds are replaced with host-authored kinds
     /// derived from the SQL. After validation the host stamps the canonical
-    /// Cap'n request hash. A non-empty guest hash must match that digest
-    /// (explicit retry token).
+    /// Cap'n request hash and typechecks against `catalog`. A non-empty guest
+    /// hash must match that digest (explicit retry token).
     ///
     /// # Errors
     ///
@@ -1650,6 +1682,7 @@ impl RpcDatabaseProxy {
     async fn execute_typed_validated(
         &self,
         mut req: ExecuteRequest,
+        catalog: &SqlTypeEnv,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply, crate::PluginError> {
         bookclerk_library::authorize_typed_request(&mut req, &self.caps)
             .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?;
@@ -1657,21 +1690,7 @@ impl RpcDatabaseProxy {
         let cancel = Arc::new(AtomicBool::new(false));
         let on_txn = self.depth() > 0;
         let isolation = binding_isolation(on_txn);
-        let catalog = if let Some(binding) = self.binding.as_deref() {
-            load_binding_sql_type_env(
-                &self.session,
-                binding,
-                &cancel,
-                req.deadline_unix_ms,
-                self.caps.max_result_rows,
-                on_txn,
-            )
-            .await
-            .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?
-        } else {
-            bookclerk_library::migrations::host_sql_type_env()
-        };
-        let stamped = stamp_adapter_request(req, &catalog, isolation)?;
+        let stamped = stamp_adapter_request(req, catalog, isolation)?;
         #[cfg(test)]
         note_outbound_adapter_sql(&stamped);
         let reply = if on_txn {
@@ -1708,6 +1727,27 @@ impl RpcDatabaseProxy {
             Some(binding) => self.session.db_rollback_binding(binding).await,
             None => self.session.db_rollback().await,
         }
+    }
+}
+
+/// Identity key from a proxy `INSERT … RETURNING <identity>` result.
+///
+/// No row means the insert was ignored (an `INSERT OR IGNORE` conflict);
+/// `rowsAffected` is then `0` and SeaORM reports the insert as not inserted.
+///
+/// # Errors
+///
+/// Returns when the returned key is not a non-negative integer.
+fn returned_identity(stmt: &bookclerk_plugin_abi::StatementResult) -> Result<u64, DbErr> {
+    let Some(row) = stmt.rows.first() else {
+        return Ok(0);
+    };
+    match row.values.first() {
+        Some(DbValue::Int64(id)) => u64::try_from(*id)
+            .map_err(|_| DbErr::Custom(format!("insert returned negative identity {id}"))),
+        other => Err(DbErr::Custom(format!(
+            "insert RETURNING identity is not an integer: {other:?}"
+        ))),
     }
 }
 
@@ -1765,8 +1805,9 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
             DbResultSelection::Rows,
         )?;
         let req = Self::typed_request(typed, format!("proxy-query-{}", uuid::Uuid::new_v4()));
+        let catalog = self.sql_type_env().await.map_err(map_rpc_err)?;
         let reply = self
-            .execute_typed_validated(req)
+            .execute_typed_validated(req, &catalog)
             .await
             .map_err(map_rpc_err)?;
         let stmt =
@@ -1776,28 +1817,49 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         proxy_rows_from_typed(&stmt).map_err(DbErr::Custom)
     }
 
+    /// Runs a SeaORM write.
+    ///
+    /// The typed ABI has no last-insert-id, but SeaORM reads one after a
+    /// non-`RETURNING` insert (`ActiveModel::insert` then does
+    /// `find_by_id(last_insert_id)`). A single-row `INSERT` into a table with
+    /// an identity column is therefore sent as `… RETURNING <identity>`
+    /// (host-proven `maxRows = 1`, so D1 accepts it too) and the returned key
+    /// is reported. Other writes report `last_insert_id = 0`; SeaORM only
+    /// reads it for identity inserts.
     async fn execute(&self, statement: Statement) -> std::result::Result<ProxyExecResult, DbErr> {
         if bookclerk_library::is_txn_broken() {
             return Err(bookclerk_library::txn_broken_err());
         }
-        let typed = Self::statement_to_typed(
+        let mut typed = Self::statement_to_typed(
             &statement,
             bookclerk_library::proxy_write_kind(&statement.sql),
             DbResultSelection::AffectedRows,
         )?;
+        let catalog = self.sql_type_env().await.map_err(map_rpc_err)?;
+        let returns_identity =
+            match bookclerk_library::proxy_insert_returning_identity(&typed.sql, &catalog) {
+                Some(sql) => {
+                    typed.sql = sql;
+                    typed.kind = DbPlanStatementKind::Returning;
+                    typed.max_rows = 1;
+                    typed.result_selection = DbResultSelection::Rows;
+                    true
+                }
+                None => false,
+            };
         let req = Self::typed_request(typed, format!("proxy-exec-{}", uuid::Uuid::new_v4()));
         let reply = self
-            .execute_typed_validated(req)
+            .execute_typed_validated(req, &catalog)
             .await
             .map_err(map_rpc_err)?;
-        let rows_affected = reply
-            .statements
-            .first()
-            .map(|s| s.rows_affected)
-            .unwrap_or(0);
+        let stmt = reply.statements.first();
+        let last_insert_id = match stmt {
+            Some(stmt) if returns_identity => returned_identity(stmt)?,
+            _ => 0,
+        };
         Ok(ProxyExecResult {
-            last_insert_id: 0,
-            rows_affected,
+            last_insert_id,
+            rows_affected: stmt.map_or(0, |s| s.rows_affected),
         })
     }
 
@@ -1811,7 +1873,8 @@ impl ProxyDatabaseTrait for RpcDatabaseProxy {
         };
         let req =
             RpcDatabaseProxy::typed_request(typed, format!("proxy-ping-{}", uuid::Uuid::new_v4()));
-        self.execute_typed_validated(req)
+        let catalog = self.sql_type_env().await.map_err(map_rpc_err)?;
+        self.execute_typed_validated(req, &catalog)
             .await
             .map_err(map_rpc_err)?;
         Ok(())

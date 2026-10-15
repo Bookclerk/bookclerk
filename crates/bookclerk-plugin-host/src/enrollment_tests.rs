@@ -16,8 +16,6 @@ use crate::consent::{consent_request, PluginGrantStore};
 use crate::discover_plugins;
 use crate::enrollment::{enroll_local_plugins, enroll_one, is_bootstrap_only};
 
-static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 fn storefront_manifest(id: &str) -> String {
     format!(
         "api_version = 3\nid = \"{id}\"\nversion = \"0.1.0\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
@@ -78,7 +76,7 @@ async fn open_host(files: &Path) -> (Config, LibraryStore, String) {
 
 #[tokio::test]
 async fn enrollment_is_idempotent_across_restarts() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     stage_tree(files, "fxenroll", &storefront_manifest("fxenroll"));
@@ -171,7 +169,7 @@ async fn enrollment_is_idempotent_across_restarts() {
 
 #[tokio::test]
 async fn granted_plugins_enroll_present_and_database_adapters_are_not_enrolled() {
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     stage_tree(files, "fxgranted", &storefront_manifest("fxgranted"));
@@ -243,7 +241,7 @@ async fn a_newer_package_upgrades_the_pin_and_an_older_one_is_not_enrolled() {
         load_observation, replace_instance_config, ConfigActor, DeploymentStatus,
         InstanceConfigReplace, PluginInstanceConfigV1, SettingValue,
     };
-    let _guard = TEST_LOCK.lock().await;
+    let _guard = crate::PROCESS_DEK_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let files = dir.path();
     stage_tree(
