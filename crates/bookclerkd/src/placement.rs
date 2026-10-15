@@ -278,6 +278,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_node_owner_sees_and_edits_only_its_own_nodes() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         let files = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
         let files_path = files.path();
