@@ -3625,6 +3625,12 @@ pub(crate) mod tests {
     ///
     /// `oidc_rp` persist tests replace `master.key`; without this lock a redeem
     /// retry can HMAC with a different DEK and get 400.
+    ///
+    /// Bootstrapping the control plane replaces the process DEK too
+    /// (`align_cluster_root` installs the files dir's key), and so does a config
+    /// reload, which re-enrolls the node. Tests that do either hold this lock
+    /// for their whole run, or they can swap the key between another test's
+    /// seal and unseal.
     pub(crate) async fn process_dek_lock() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))

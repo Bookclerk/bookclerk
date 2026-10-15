@@ -6220,6 +6220,7 @@ mode = "deny"
 
     #[tokio::test]
     async fn mixed_settings_request_does_not_commit_events() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use axum::extract::State;
         use axum::http::StatusCode;
         use axum::Json;
@@ -6304,6 +6305,7 @@ mode = "deny"
 
     #[tokio::test]
     async fn events_only_settings_patch_commits() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use axum::extract::State;
         use axum::Json;
         use bookclerk_library::control_plane::{
@@ -6364,6 +6366,7 @@ mode = "deny"
 
     #[tokio::test]
     async fn reload_events_read_failure_keeps_the_previous_runtime() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 

@@ -1346,6 +1346,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_read_cannot_replace_a_newer_publication() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         let (store, session, config, _files) = enrolled().await;
         let state = control_plane_test_state(store.clone(), config);
         let stale = load_events_publication(&store).await.unwrap();
@@ -1419,6 +1420,7 @@ mod tests {
 
     #[tokio::test]
     async fn database_swap_replaces_authority_and_stale_revisions_do_not() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         let (store, session, config, _files) = enrolled().await;
         let state = control_plane_test_state(store.clone(), config);
         let original = load_events_publication(&store).await.unwrap();
@@ -1451,6 +1453,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_merge_keeps_the_newer_body_until_a_swap() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         let (store, session, config, _files) = enrolled().await;
         let state = control_plane_test_state(store.clone(), config);
         let early = load_events_publication(&store).await.unwrap();
@@ -1604,6 +1607,7 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_reconcile_installs_and_runs_a_local_archive() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use std::collections::BTreeMap;
         use std::path::PathBuf;
 
@@ -1774,6 +1778,7 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_job_lookup_reaches_both_instances_of_one_key() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use std::collections::BTreeMap;
         use std::path::PathBuf;
 
@@ -1914,6 +1919,7 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_reload_keeps_deployed_sessions() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
         use std::path::PathBuf;
 
         use bookclerk_config::Isolation;
