@@ -4,6 +4,8 @@
 //! Reads and writes the library database directly, like `plugins`. Label
 //! changes wake the cluster scheduler through every node's queue.
 
+use std::collections::BTreeMap;
+
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
     effective_node_labels, list_node_statuses, list_nodes, load_node, load_node_runtime,
@@ -120,6 +122,13 @@ pub async fn run(
                     "software_version": node.software_version,
                 }));
             }
+            // Text output names each owner rather than printing user ids.
+            let mut owners = BTreeMap::new();
+            for node in &nodes {
+                if let Some(user_id) = node.owner_user_id {
+                    owners.insert(node.node_id.clone(), owner_label(store, user_id).await?);
+                }
+            }
             emit(format, &json!({ "nodes": rows }), || {
                 for node in &nodes {
                     let status = statuses.get(&node.node_id);
@@ -150,8 +159,7 @@ pub async fn run(
                     println!(
                         "  {} node, owner {}",
                         node.kind.as_str(),
-                        node.owner_user_id
-                            .map_or_else(|| "-".to_string(), |id| format!("user {id}"))
+                        owners.get(&node.node_id).map_or("-", String::as_str)
                     );
                     match status {
                         Some(status) => println!("  {}", status_line(status)),
@@ -263,12 +271,37 @@ pub async fn run(
                 "node_id": updated.node_id,
                 "owner_user_id": updated.owner_user_id,
             });
-            emit(format, &payload, || match updated.owner_user_id {
-                Some(id) => println!("node {} is owned by user {id}", updated.node_id),
+            let owner = match updated.owner_user_id {
+                Some(user_id) => Some(owner_label(store, user_id).await?),
+                None => None,
+            };
+            emit(format, &payload, || match &owner {
+                Some(owner) => println!("node {} is owned by {owner}", updated.node_id),
                 None => println!("node {} has no owner", updated.node_id),
             })
         }
     }
+}
+
+/// How text output names a node's owner: the display or login name and role.
+///
+/// # Errors
+///
+/// Returns an error when the user lookup fails.
+async fn owner_label(
+    store: &bookclerk_library::LibraryStore,
+    user_id: i64,
+) -> anyhow::Result<String> {
+    Ok(match store.get_user(user_id).await? {
+        Some(user) => format!(
+            "{} ({})",
+            user.display_name
+                .or(user.login_name)
+                .unwrap_or_else(|| "unnamed user".into()),
+            user.role
+        ),
+        None => "a deleted user".into(),
+    })
 }
 
 /// The id of the user named by `--user`: a login name, or else a numeric
