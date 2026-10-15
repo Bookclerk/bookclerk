@@ -436,13 +436,19 @@ pub async fn materialize_version(
 }
 
 /// Filesystem half of [`materialize_version`].
+///
+/// The archive is fetched and its digest checked without the plugin mutation
+/// lock, so a slow download (bounded by `DOWNLOAD_TIMEOUT`) does not block
+/// every other install, materialize, and sweep on this node. Each call
+/// stages in its own directory; the sweep leaves staging younger than
+/// [`VERSION_CACHE_GRACE`] alone. Extraction and the rename into the cache
+/// run under the lock.
 fn materialize_blocking(
     files_dir: &Path,
     artifact: &PluginArtifact,
     blob: Option<&[u8]>,
     cache: &Path,
 ) -> Result<PathBuf> {
-    let _lock = PluginMutationLock::acquire(files_dir).map_err(cat)?;
     if cache.join("plugin.toml").is_file() {
         return Ok(cache.to_path_buf());
     }
@@ -454,13 +460,10 @@ fn materialize_blocking(
         &plugins.join(".staging").join(format!(
             "version-{}.{}",
             artifact.payload_root_sha256,
-            std::process::id()
+            uuid::Uuid::new_v4().simple()
         )),
     )
     .map_err(cat)?;
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(io)?;
-    }
     std::fs::create_dir_all(&staging).map_err(io)?;
     let result = (|| {
         let archive = staging.join("archive");
@@ -474,6 +477,11 @@ fn materialize_blocking(
                 "version archive digest {actual} does not match the version ({})",
                 artifact.archive_sha256
             )));
+        }
+        let _lock = PluginMutationLock::acquire(files_dir).map_err(cat)?;
+        // Another materialization of this version may have finished first.
+        if cache.join("plugin.toml").is_file() {
+            return Ok(cache.to_path_buf());
         }
         let tree = staging.join("tree");
         extract_archive(&archive, parse_format(&artifact.format), &tree).map_err(cat)?;

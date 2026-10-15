@@ -1215,6 +1215,17 @@ async fn run_queue_delivery(
                 error = %err,
                 "queue delivery invocation failed"
             );
+            // A failure on the last attempt dead-letters the delivery, so the
+            // message goes to the consumer's dead-letter queue first, as an
+            // exhausted retry does.
+            if delivery.attempt_count >= delivery.max_attempts {
+                if let Some(dlq) = subscription
+                    .as_ref()
+                    .and_then(|s| s.dead_letter_queue.clone())
+                {
+                    forward_to_dead_letter_queue(library, event, &dlq).await;
+                }
+            }
             let _ = library.fail_event_delivery(&fence, &err.to_string()).await;
             return;
         }
@@ -2220,5 +2231,109 @@ queue = "other"
             missed.is_none(),
             "two instances must not claim the shared key"
         );
+    }
+
+    /// A queue consumer whose every invocation fails (the trait's default
+    /// `deliver_queue_batch_cancelable`).
+    struct FailingConsumer;
+
+    #[async_trait::async_trait]
+    impl Integration for FailingConsumer {
+        fn id(&self) -> &str {
+            "echo"
+        }
+
+        async fn start(
+            &self,
+            _ctx: bookclerk_integrations::IntegrationContext,
+        ) -> bookclerk_integrations::Result<()> {
+            Ok(())
+        }
+
+        async fn stop(&self) -> bookclerk_integrations::Result<()> {
+            Ok(())
+        }
+
+        async fn health(
+            &self,
+        ) -> bookclerk_integrations::Result<bookclerk_integrations::IntegrationHealth> {
+            Ok(bookclerk_integrations::IntegrationHealth {
+                id: "echo".into(),
+                enabled: true,
+                ok: true,
+                detail: None,
+            })
+        }
+
+        async fn deliver_domain_event(
+            &self,
+            _event: DomainEvent,
+        ) -> bookclerk_integrations::Result<EventResult> {
+            Ok(EventResult::Ack)
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_failure_on_the_last_attempt_goes_to_the_dead_letter_queue() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let published = store
+            .publish_domain_event(PublishDomainEventSpec {
+                dedup_key: "q:last-attempt".into(),
+                payload: r#"{"n":1}"#.into(),
+                queue_name: "echo".into(),
+                ..PublishDomainEventSpec::default()
+            })
+            .await
+            .unwrap();
+        let PublishDomainEventOutcome::Created { id: event_id } = published else {
+            panic!("{published:?}");
+        };
+        store
+            .dispatch_event_deliveries(
+                &event_id,
+                &[EventSubscriber {
+                    max_attempts: Some(1),
+                    ..EventSubscriber::plugin("echo")
+                }],
+                "q-last-attempt",
+            )
+            .await
+            .unwrap();
+        let delivery = store
+            .claim_next_event_delivery(
+                "worker",
+                60,
+                &uuid::Uuid::new_v4().to_string(),
+                &["echo".into()],
+                32,
+                "",
+            )
+            .await
+            .unwrap()
+            .expect("claim");
+        assert_eq!(delivery.attempt_count, delivery.max_attempts);
+        let event = store.get_domain_event(&event_id).await.unwrap().unwrap();
+        let mut consumer = EventCatalogSubscription::queue("echo");
+        consumer.dead_letter_queue = Some("echo-dlq".into());
+
+        run_queue_delivery(&store, &FailingConsumer, &event, &delivery, &[consumer]).await;
+
+        let row = store
+            .get_event_delivery(&delivery.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "dead_letter");
+        let dead = store
+            .list_domain_events_for_queue("echo-dlq", 10)
+            .await
+            .unwrap();
+        assert_eq!(dead.len(), 1, "{dead:?}");
+        assert_eq!(dead[0].causation_id, event_id);
+        assert_eq!(dead[0].payload, r#"{"n":1}"#);
     }
 }

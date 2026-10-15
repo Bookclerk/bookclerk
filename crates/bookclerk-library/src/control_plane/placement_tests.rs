@@ -834,3 +834,109 @@ async fn a_node_owner_edits_only_its_own_node_runtime() {
         .unwrap();
     assert!(verify_node_owner(&store, host.id, &mine).await.is_err());
 }
+
+/// A two-node cluster with live heartbeats, for the hand-back tests.
+async fn two_live_nodes(store: &LibraryStore, dir: &std::path::Path) -> String {
+    let session = bootstrap_control_plane(
+        store,
+        dir,
+        &dir.join("cache"),
+        None,
+        &EventsConfig::default(),
+    )
+    .await
+    .unwrap();
+    register(store, "node-b", &session.cluster_id).await;
+    for node in [session.node.node_id.as_str(), "node-b"] {
+        heartbeat_consumer(store, node, Duration::ZERO).await;
+    }
+    session.node.node_id
+}
+
+#[tokio::test]
+async fn a_pass_hands_back_scheduler_rows_whose_placement_is_gone() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(&dir.path().join("library.db")).await;
+    let node_a = two_live_nodes(&store, dir.path()).await;
+    let instance =
+        create_plugin_instance(&store, &operator(), "path:file:///tmp/orphan#orphan", "")
+            .await
+            .unwrap();
+    put_plugin_placement(&store, &operator(), &instance.id, &spec(2, &[]), None)
+        .await
+        .unwrap();
+    schedule_placements(&store).await.unwrap();
+    assert_eq!(
+        present_nodes(&store, &instance.id).await,
+        set(&[&node_a, "node-b"])
+    );
+
+    // A pass that raced `--manual` wrote its rows after the placement row
+    // was deleted and the hand-back had run: the rows stay `placed`.
+    crate::entities::plugin_placements::Entity::delete_by_id(instance.id.as_str().to_string())
+        .exec(store.db())
+        .await
+        .unwrap();
+    let report = schedule_placements(&store).await.unwrap();
+    assert_eq!(report.handed_back, 2, "{report:?}");
+    let rows = list_deployments_for_instance(&store, &instance.id)
+        .await
+        .unwrap();
+    assert!(
+        rows.iter().all(|row| row.desired == DesiredState::Present),
+        "{rows:?}"
+    );
+    // The scheduler may only hand back a row it owns: never rewrite one the
+    // operator already holds.
+    let refused = replace_plugin_deployment(
+        &store,
+        &ConfigActor::Scheduler,
+        &rows[0].deployment_id,
+        rows[0].revision,
+        DesiredState::Absent,
+        "scheduler-absent-on-present",
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(refused, LibraryError::Forbidden(_)), "{refused}");
+    // The operator owns the rows again.
+    ensure_hand_managed(&store, &instance.id).await.unwrap();
+    assert_eq!(schedule_placements(&store).await.unwrap().handed_back, 0);
+}
+
+#[tokio::test]
+async fn undeploy_instance_drops_the_placement_and_stops_every_replica() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(&dir.path().join("library.db")).await;
+    two_live_nodes(&store, dir.path()).await;
+    let instance = create_plugin_instance(&store, &operator(), "path:file:///tmp/gone#gone", "")
+        .await
+        .unwrap();
+    put_plugin_placement(&store, &operator(), &instance.id, &spec(2, &[]), None)
+        .await
+        .unwrap();
+    schedule_placements(&store).await.unwrap();
+    assert_eq!(present_nodes(&store, &instance.id).await.len(), 2);
+
+    assert!(
+        undeploy_instance(&store, &ConfigActor::Bootstrap, &instance.id)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        undeploy_instance(&store, &operator(), &instance.id)
+            .await
+            .unwrap(),
+        2
+    );
+    assert!(load_plugin_placement(&store, &instance.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(present_nodes(&store, &instance.id).await.is_empty());
+    // A later pass has nothing to place or hand back.
+    let report = schedule_placements(&store).await.unwrap();
+    assert_eq!((report.added, report.handed_back), (0, 0), "{report:?}");
+}

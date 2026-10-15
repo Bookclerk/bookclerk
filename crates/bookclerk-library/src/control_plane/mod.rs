@@ -67,6 +67,7 @@ pub use node_status::{
     DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
 };
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
+pub use placement::undeploy_instance;
 pub use placement::{
     acquire_lease, delete_plugin_placement, effective_node_labels, ensure_hand_managed,
     labels_satisfy, list_plugin_placements, live_node_ids, load_lease, load_plugin_placement,

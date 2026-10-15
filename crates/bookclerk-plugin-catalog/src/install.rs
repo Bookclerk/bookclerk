@@ -1483,13 +1483,15 @@ fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
             "remote install requires https:// (or localhost http for fixtures)",
         ));
     }
-    let _ = MAX_REDIRECTS;
-    let _ = DOWNLOAD_TIMEOUT;
     let mut response = ureq::get(url)
         .header(
             "User-Agent",
             concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-install)"),
         )
+        .config()
+        .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .max_redirects(MAX_REDIRECTS)
+        .build()
         .call()
         .map_err(|e| CatalogError::message(format!("download failed: {e}")))?;
     let status = response.status();

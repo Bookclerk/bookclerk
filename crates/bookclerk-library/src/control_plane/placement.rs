@@ -496,14 +496,71 @@ pub async fn put_plugin_placement(
     Ok(PlacementWrite::Applied(stored))
 }
 
+/// Rounds a hand-back or undeploy re-reads its rows and retries the ones
+/// whose compare-and-swap lost to a concurrent writer (an in-flight
+/// scheduler pass, another operator).
+const SETTLE_ROUNDS: usize = 5;
+
+/// Moves every deployment of `instance_id` for which `next` returns a state
+/// to that state, re-reading and retrying rows that lose a compare-and-swap
+/// for up to [`SETTLE_ROUNDS`] rounds. Returns how many rows changed.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Conflict`] when rows still lose after the last
+/// round, and the read or write error when one fails.
+async fn settle_deployments(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    instance_id: &PluginInstanceId,
+    what: &str,
+    next: impl Fn(DesiredState) -> Option<DesiredState>,
+) -> Result<usize> {
+    let mut changed = 0;
+    for _ in 0..SETTLE_ROUNDS {
+        let mut lost = 0;
+        for row in list_deployments_for_instance(store, instance_id).await? {
+            let Some(target) = next(row.desired) else {
+                continue;
+            };
+            let operation_id = format!("{what}-{}-{}", row.deployment_id, row.revision);
+            match replace_plugin_deployment(
+                store,
+                actor,
+                &row.deployment_id,
+                row.revision,
+                target,
+                &operation_id,
+            )
+            .await?
+            {
+                DeploymentReplace::Conflict { .. } => lost += 1,
+                DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => changed += 1,
+            }
+        }
+        if lost == 0 {
+            return Ok(changed);
+        }
+    }
+    Err(LibraryError::Conflict(format!(
+        "deployments of instance {instance_id} kept changing during {what}; retry"
+    )))
+}
+
 /// Deletes an instance's placement and hands its deployments back to the
 /// operator: each `placed` row becomes `present` and each `unplaced` row
 /// `absent`, so every node keeps doing what it does now. Returns false when
 /// there was no placement.
 ///
+/// The placement row goes first, so a scheduler pass that starts now finds
+/// no placement and leaves these rows alone. A pass already in flight skips
+/// an instance whose placement is gone, and a row it still manages to write
+/// is handed back by the next pass (see [`schedule_placements`]).
+///
 /// # Errors
 ///
-/// Returns an error when the actor is not an operator or a write fails.
+/// Returns an error when the actor is not an operator, a write fails, or a
+/// row keeps losing its compare-and-swap ([`LibraryError::Conflict`]).
 pub async fn delete_plugin_placement(
     store: &LibraryStore,
     actor: &ConfigActor,
@@ -514,23 +571,10 @@ pub async fn delete_plugin_placement(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    // Hand back after the placement row is gone, so a scheduler pass that
-    // starts now finds no placement and leaves these rows alone.
-    for row in list_deployments_for_instance(store, instance_id).await? {
-        if !row.desired.is_scheduled() {
-            continue;
-        }
-        let operation_id = format!("hand-back-{}-{}", row.deployment_id, row.revision);
-        replace_plugin_deployment(
-            store,
-            actor,
-            &row.deployment_id,
-            row.revision,
-            row.desired.handed_back(),
-            &operation_id,
-        )
-        .await?;
-    }
+    settle_deployments(store, actor, instance_id, "hand-back", |desired| {
+        desired.is_scheduled().then(|| desired.handed_back())
+    })
+    .await?;
     if res.rows_affected > 0 {
         notify_all_nodes(
             store,
@@ -542,6 +586,28 @@ pub async fn delete_plugin_placement(
         .await;
     }
     Ok(res.rows_affected > 0)
+}
+
+/// Stops `instance_id` everywhere: drops its placement (handing its rows
+/// back) and sets every running deployment `absent`. Returns how many
+/// deployments were stopped. Uninstall runs this for each instance before
+/// it clears the active version.
+///
+/// # Errors
+///
+/// Returns an error when the actor is not an operator, a write fails, or a
+/// row keeps losing its compare-and-swap ([`LibraryError::Conflict`]); the
+/// caller must then not treat the instance as stopped.
+pub async fn undeploy_instance(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    instance_id: &PluginInstanceId,
+) -> Result<usize> {
+    delete_plugin_placement(store, actor, instance_id).await?;
+    settle_deployments(store, actor, instance_id, "undeploy", |desired| {
+        desired.runs().then_some(DesiredState::Absent)
+    })
+    .await
 }
 
 /// Fails when the scheduler owns `instance_id`'s deployments, so a
@@ -830,16 +896,6 @@ impl NodeCandidate {
             .memory_headroom_bytes
             .map(|m| m.saturating_sub(demand.memory_bytes));
     }
-
-    /// Releases `demand` on this node for the rest of a pass.
-    pub fn give(&mut self, demand: GuestReservation) {
-        self.cpu_headroom_millicores = self
-            .cpu_headroom_millicores
-            .saturating_add(demand.cpu_millicores);
-        self.memory_headroom_bytes = self
-            .memory_headroom_bytes
-            .map(|m| m.saturating_add(demand.memory_bytes));
-    }
 }
 
 /// What the planner decided for one instance.
@@ -1057,6 +1113,9 @@ pub struct ScheduleReport {
     pub removed: usize,
     /// Deployment writes that lost a compare-and-swap (retried next pass).
     pub conflicts: usize,
+    /// Scheduler-owned rows of instances with no placement, handed back to
+    /// the operator (a pass that raced a `--manual` or uninstall).
+    pub handed_back: usize,
 }
 
 /// Sets `node_id`'s deployment of `instance_id` to `placed` (`true`) or
@@ -1111,9 +1170,8 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
         placements: placements.len(),
         ..ScheduleReport::default()
     };
-    if placements.is_empty() {
-        return Ok(report);
-    }
+    // No early return when nothing is placed: the hand-back of orphaned
+    // scheduler rows below still has to run.
     let now_ms = Utc::now().timestamp_millis();
     let statuses: BTreeMap<String, NodeStatus> = super::node_status::list_node_statuses(store)
         .await?
@@ -1139,6 +1197,7 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
     }
     for placement in placements {
         let instance_id = &placement.plugin_instance_id;
+        let rows = by_instance.remove(instance_id.as_str()).unwrap_or_default();
         let Some(instance) = load_plugin_instance(store, instance_id).await? else {
             continue;
         };
@@ -1151,7 +1210,6 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
                 .collect::<BTreeSet<_>>()
         });
         let demand = placement_demand(store, instance_id, release.as_ref()).await?;
-        let rows = by_instance.remove(instance_id.as_str()).unwrap_or_default();
         let present: BTreeSet<String> = rows
             .iter()
             .filter(|d| d.desired.runs())
@@ -1165,26 +1223,37 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
             &nodes,
             &present,
         );
+        // The placement may have been deleted (`--manual`, uninstall) or
+        // edited since this pass listed it; writing now would recreate
+        // scheduler rows the operator just took back. The next pass replans.
+        match load_plugin_placement(store, instance_id).await? {
+            Some(current) if current.revision == placement.revision => {}
+            _ => continue,
+        }
+        let mut running = present.clone();
+        let mut lost = 0;
         for node_id in &plan.remove {
             let row = rows.iter().find(|d| &d.node_id == node_id);
+            // Headroom is not given back: the guest stays reserved until
+            // its node stops it, so later instances in this pass must not
+            // be packed onto it.
             if write_deployment(store, instance_id, node_id, row, false).await? {
                 report.removed += 1;
-                if let Some(node) = candidates.get_mut(node_id) {
-                    node.give(demand);
-                }
+                running.remove(node_id);
             } else {
-                report.conflicts += 1;
+                lost += 1;
             }
         }
         for node_id in &plan.add {
             let row = rows.iter().find(|d| &d.node_id == node_id);
             if write_deployment(store, instance_id, node_id, row, true).await? {
                 report.added += 1;
+                running.insert(node_id.clone());
                 if let Some(node) = candidates.get_mut(node_id) {
                     node.take(demand);
                 }
             } else {
-                report.conflicts += 1;
+                lost += 1;
             }
         }
         // A row the operator handed over still reads `present`/`absent`;
@@ -1207,15 +1276,29 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
             {
                 continue;
             }
-            report.conflicts += 1;
+            lost += 1;
         }
-        if plan.placed != placement.placed || plan.detail != placement.detail {
+        report.conflicts += lost;
+        // Report what the writes did, not what the plan wanted: a write that
+        // lost its compare-and-swap leaves that node as it was.
+        let placed = u32::try_from(running.len()).unwrap_or(u32::MAX);
+        let detail = if lost == 0 {
+            plan.detail
+        } else {
+            let pending = format!("{lost} deployment write(s) lost a race; retrying next pass");
+            if plan.detail.is_empty() {
+                pending
+            } else {
+                format!("{}; {pending}", plan.detail)
+            }
+        };
+        if placed != placement.placed || detail != placement.detail {
             plugin_placements::Entity::update_many()
                 .col_expr(
                     plugin_placements::Column::Placed,
-                    Expr::value(i64::from(plan.placed)),
+                    Expr::value(i64::from(placed)),
                 )
-                .col_expr(plugin_placements::Column::Detail, Expr::value(plan.detail))
+                .col_expr(plugin_placements::Column::Detail, Expr::value(detail))
                 .col_expr(
                     plugin_placements::Column::ScheduledAt,
                     Expr::value(Utc::now().to_rfc3339()),
@@ -1224,6 +1307,38 @@ pub async fn schedule_placements(store: &LibraryStore) -> Result<ScheduleReport>
                 .exec(store.db())
                 .await
                 .map_err(LibraryError::Orm)?;
+        }
+    }
+    // Scheduler-owned rows whose placement is gone: a pass raced the
+    // placement's deletion. Hand them back as the deletion would have.
+    for rows in by_instance.into_values() {
+        let Some(first) = rows.first() else {
+            continue;
+        };
+        if !rows.iter().any(|row| row.desired.is_scheduled())
+            || load_plugin_placement(store, &first.plugin_instance_id)
+                .await?
+                .is_some()
+        {
+            continue;
+        }
+        for row in rows.iter().filter(|row| row.desired.is_scheduled()) {
+            let operation_id = format!("orphan-hand-back-{}-{}", row.deployment_id, row.revision);
+            match replace_plugin_deployment(
+                store,
+                &ConfigActor::Scheduler,
+                &row.deployment_id,
+                row.revision,
+                row.desired.handed_back(),
+                &operation_id,
+            )
+            .await?
+            {
+                DeploymentReplace::Conflict { .. } => report.conflicts += 1,
+                DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => {
+                    report.handed_back += 1;
+                }
+            }
         }
     }
     Ok(report)
