@@ -422,16 +422,24 @@ pub async fn run(
                 let now = chrono::Utc::now();
                 let links = list_enrollment_links(store, &cli_enrollment_actor()).await?;
                 let rows: Vec<_> = links.iter().map(|link| link_json(link, now)).collect();
+                // Text output names each link's user rather than printing user ids.
+                let mut owners = BTreeMap::new();
+                for link in &links {
+                    owners.insert(
+                        link.link_id.clone(),
+                        owner_label(store, link.for_user_id).await?,
+                    );
+                }
                 emit(format, &json!({ "links": rows }), || {
                     if links.is_empty() {
                         println!("no enrollment links");
                     }
                     for link in &links {
                         println!(
-                            "{} {} user={} expires={}{}{}",
+                            "{} {} for {} expires={}{}{}",
                             link.link_id,
                             link.state(now),
-                            link.for_user_id,
+                            owners.get(&link.link_id).map_or("-", String::as_str),
                             link.expires_at,
                             link.redeemed_node_id
                                 .as_deref()
