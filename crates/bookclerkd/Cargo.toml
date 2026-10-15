@@ -18,7 +18,9 @@ default = []
 
 [dependencies]
 anyhow.workspace = true
-axum.workspace = true
+# `ws`: the host-node socket at /api/node/v1/connect.
+axum = { workspace = true, features = ["ws"] }
+bookclerk-node-proto.workspace = true
 chrono.workspace = true
 clap.workspace = true
 bookclerk-config.workspace = true
@@ -70,8 +72,11 @@ async-trait.workspace = true
 bytes.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
+futures.workspace = true
 http-body-util = "0.1"
 tempfile.workspace = true
+# Same version axum's `ws` feature uses: a host-side client for socket tests.
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
 wiremock.workspace = true
 

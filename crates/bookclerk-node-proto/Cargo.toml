@@ -1,0 +1,22 @@
+[package]
+name = "bookclerk-node-proto"
+description = "Host-node protocol: node API frames, handshake signatures, and key checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+base64.workspace = true
+# Point validation for enrolled keys; already in the tree via ed25519-dalek.
+curve25519-dalek = { version = "4.1", default-features = false }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

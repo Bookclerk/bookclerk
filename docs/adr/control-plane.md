@@ -739,9 +739,10 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
 - **Host nodes** are independent Bookclerk installs with their own database
   and their own operator, who enroll in an owner cluster to contribute
   work. They reach an owner node over HTTPS and never hold the cluster's
-  database credentials or DEK. Enrollment and the transport policy are
-  built (see *Host-node enrollment and transport* below); the node API
-  socket and the host client are not (see *Remaining work*). A redeemed
+  database credentials or DEK. Enrollment, the transport policy, and the
+  node socket handshake are built (see *Host-node enrollment and
+  transport* below); the work frames and the host client are not (see
+  *Remaining work*). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -844,7 +845,7 @@ Built in the first H-4 slice:
   concurrent redeems create one node on SQLite and PostgreSQL.
 - `bookclerk nodes revoke <node>` (or the node's own owner) sets
   `node_credentials.revoked_at` and publishes `node.revoked` to every node
-  queue; until the node socket exists, a daemon only logs it.
+  queue; the owner node holding that host's socket closes it with 4403.
 - `classify_transport` in `bookclerkd` (`node_api/transport.rs`), a pure
   function of the connection, headers, and the bootstrap `[daemon.node_api]`
   table (`mode`, `acme_contact`, `tls_listen`). `POST /api/node/v1/enroll`
@@ -852,6 +853,30 @@ Built in the first H-4 slice:
   self-signed listeners are later steps, so today those modes admit only
   loopback connections; an incomplete `[daemon.node_api]` refuses every
   connection.
+- Enroll checks that both public keys are canonical Curve25519 points in
+  the prime-order subgroup (`bookclerk-node-proto::validate_*_public_key`),
+  so small-order, mixed-order, twist, and non-canonical keys are refused
+  before the link is spent.
+- The node socket, `GET /api/node/v1/connect` with subprotocol
+  `bookclerk-node.v1`, outside the cookie and auth layers (operator
+  `auth.enabled = false` does not open it). `classify_transport` runs
+  before the upgrade. The `bookclerk-node-proto` crate holds the JSON
+  frames (`{v:1, id, type, ...}`, 1 MiB, text only) and the handshake:
+  `hello {node_id, incarnation, software_version, resume}` → `challenge
+  {nonce, cluster_id}` → `auth {sig}`, an Ed25519 `verify_strict`
+  signature over `bookclerk-node-auth-v1` and length-prefixed cluster id,
+  node id, incarnation, 32-byte nonce, and the owner's canonical origin
+  (its configured `public_origin`, so a signature relayed through another
+  server fails). The owner always sends a challenge, so an unknown node and
+  a bad signature both close with 4401; a valid signature from a revoked
+  credential closes with 4403. Each refusal writes a
+  `security_audit_events` row (`node_auth_failed` / `node_auth_revoked`).
+  A welcomed node stamps `node_credentials.last_connected_at`. The session
+  pings every 20 s, closes after 60 s idle, re-reads `revoked_at` on every
+  ping tick, closes on a `node.revoked` wake with 4403, lets a newer
+  connection for the same node supersede the old one (4409), and closes on
+  a binary or malformed frame (4400). Work frames are later steps; until
+  then each request frame is answered `error {code: "unsupported"}`.
 
 ## Consequences
 
@@ -927,11 +952,13 @@ Not in this phase, and not claimed as production HA:
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
 - Host nodes: the ACME and self-signed TLS listeners (and the SPKI pin in
-  links), the node API over WebSockets, `bookclerk clusters join` and the
+  links), the node socket's work frames (heartbeat, claims, renew/ack/fail,
+  bindings, wakes, resume, the sealed box), `bookclerk clusters join` and the
   rest of the host-node client, per-work-item trust, host consent, the
   upload path, and node-local outputs (see *Node kinds, ownership, and the
   Host role* and *Host-node enrollment and transport*). Enrollment links,
-  redeem, revocation, and the transport policy are built. Settings has no
+  redeem, revocation, the transport policy, and the socket handshake are
+  built. Settings has no
   enrollment switch or invite screen yet (CLI and HTTP only).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).
