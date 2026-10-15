@@ -17,13 +17,17 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, QueryResult};
 use sea_orm::{DbBackend, Statement};
 
 use crate::backup::{backup_library, BackupReason, BackupRequest, SchemaBackupOpts};
+use crate::control_plane::{
+    acquire_lease_on, load_lease_on, release_lease_on, renew_lease_on, ClusterLease,
+    MIGRATION_LEASE,
+};
 use crate::error::{LibraryError, Result};
 #[cfg(test)]
 use crate::migrations::MigrationOp;
 use crate::migrations::{
     frozen_marker_delete_sql, frozen_marker_sql, host_migration_plan, sql_string_literal,
     unreleased_checksum, unreleased_ops, unreleased_state_marker_sql, HostMigrationStep,
-    BOOKCLERK_SCHEMA_NAMESPACE, SCHEMA_MIGRATIONS_DDL, SCHEMA_VERSION,
+    BOOKCLERK_SCHEMA_NAMESPACE, CLUSTER_LEASES_DDL, SCHEMA_MIGRATIONS_DDL, SCHEMA_VERSION,
 };
 use crate::schema_state::{SchemaState, SCHEMA_STATE_FROZEN, SCHEMA_STATE_UNRELEASED};
 use crate::schema_walk::SchemaWalk;
@@ -195,7 +199,64 @@ where
     Ok(walk)
 }
 
+/// How long a schema migration lease lasts without renewal. The migrator
+/// renews it every third of this while it works.
+pub const MIGRATION_LEASE_TTL: Duration = Duration::from_secs(120);
+
+/// How long a starter waits for another starter's migration before it fails
+/// closed. Longer than [`MIGRATION_LEASE_TTL`], so a migrator that died is
+/// replaced by a waiter rather than failing every waiter.
+pub const MIGRATION_LEASE_WAIT: Duration = Duration::from_secs(300);
+
+/// True when `state` needs DDL from this binary (as opposed to a check that
+/// passes or fails without writing).
+fn schema_needs_migration(state: &SchemaState) -> bool {
+    match state {
+        SchemaState::Uninitialized => true,
+        SchemaState::Unreleased { .. } => false,
+        SchemaState::Frozen { version, .. } => {
+            let max_plan = host_migration_plan()
+                .iter()
+                .map(|s| s.version)
+                .max()
+                .unwrap_or(0);
+            // A newer frozen database is refused by the check, not migrated.
+            *version <= max_plan && (*version < max_plan || !unreleased_ops().is_empty())
+        }
+    }
+}
+
+/// True when `state` is exactly the schema this binary applies: a start
+/// against it neither migrates nor fails closed.
+#[must_use]
+pub fn schema_state_compatible(state: &SchemaState) -> bool {
+    match state {
+        SchemaState::Uninitialized => false,
+        SchemaState::Unreleased {
+            base_version,
+            checksum,
+        } => *base_version == SCHEMA_VERSION && *checksum == unreleased_checksum(),
+        SchemaState::Frozen { version, .. } => {
+            unreleased_ops().is_empty()
+                && host_migration_plan().iter().map(|s| s.version).max() == Some(*version)
+        }
+    }
+}
+
+/// A holder id unique to this migration attempt: the process plus a nonce.
+fn migration_holder() -> String {
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    format!("pid{}-{}", std::process::id(), &nonce[..12])
+}
+
 /// Reconciles durable [`SchemaState`] with this binary's current canonical schema.
+///
+/// A database that already matches is only checked. One that needs DDL is
+/// migrated under the [`MIGRATION_LEASE`] cluster lease, so concurrent
+/// starters against one database produce exactly one migrator: the others
+/// poll until the schema matches (then check it like any start), take the
+/// lease over if the migrator's lease expires, and fail closed after
+/// [`MIGRATION_LEASE_WAIT`]. Every DDL batch is fenced on the lease.
 async fn reconcile_schema_state<F, Fut>(
     db: &DatabaseConnection,
     opts: &SchemaApplyOptions,
@@ -207,6 +268,158 @@ where
 {
     ensure_schema_migrations(db).await?;
     let state = current_schema_state(db).await?;
+    if !schema_needs_migration(&state) {
+        return reconcile_state_once(db, opts, run_batch, state).await;
+    }
+    // The lease table is part of the pack being applied; create it first.
+    // Concurrent `CREATE TABLE IF NOT EXISTS` can still collide on
+    // PostgreSQL's catalog; the loser retries and finds the table. An
+    // ambiguous failure (D1 lost the commit reply) is settled by reading the
+    // table: if it is there, the statement committed.
+    let mut attempt = 0;
+    loop {
+        match run_batch(vec![CLUSTER_LEASES_DDL.to_string()]).await {
+            Ok(()) => break,
+            Err(_) if load_lease_on(db, MIGRATION_LEASE).await.is_ok() => break,
+            Err(err) if err.is_schema_apply_retryable() => {
+                attempt += 1;
+                if attempt >= 8 {
+                    return Err(err);
+                }
+                tokio::time::sleep(Duration::from_millis(20 * attempt)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    let holder = migration_holder();
+    let deadline = tokio::time::Instant::now() + migration_lease_wait();
+    let mut delay = Duration::from_millis(50);
+    loop {
+        if let Some(lease) =
+            acquire_lease_on(db, MIGRATION_LEASE, &holder, migration_lease_ttl()).await?
+        {
+            let result = migrate_under_lease(db, opts, run_batch, &lease).await;
+            if let Err(err) = release_lease_on(db, &lease).await {
+                tracing::warn!(error = %err, "schema migration lease release failed");
+            }
+            return result;
+        }
+        let state = current_schema_state(db).await?;
+        if !schema_needs_migration(&state) {
+            return reconcile_state_once(db, opts, run_batch, state).await;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let current = load_lease_on(db, MIGRATION_LEASE).await?;
+            return Err(LibraryError::Schema(format!(
+                "another starter is migrating this database ({}); gave up after {}s. \
+                 Retry once it finishes",
+                current.map_or_else(
+                    || "lease holder unknown".to_string(),
+                    |lease| format!("lease holder {} token {}", lease.holder, lease.token)
+                ),
+                migration_lease_wait().as_secs()
+            )));
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(1));
+    }
+}
+
+/// Migrates while holding `lease`: re-reads the state (a previous holder may
+/// have finished), fences each DDL batch on the lease, and renews the lease
+/// in the background so a long pre-migrate backup does not lose it.
+async fn migrate_under_lease<F, Fut>(
+    db: &DatabaseConnection,
+    opts: &SchemaApplyOptions,
+    run_batch: &mut F,
+    lease: &ClusterLease,
+) -> Result<()>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let ttl = migration_lease_ttl();
+    let work = async {
+        let state = current_schema_state(db).await?;
+        let mut fenced = |stmts: Vec<String>| {
+            let fence = renew_lease_on(db, lease, ttl);
+            let batch = run_batch(stmts);
+            async move {
+                if fence.await?.is_none() {
+                    return Err(LibraryError::Schema(format!(
+                        "lost the schema migration lease (token {}) before a DDL batch; \
+                         another starter took over",
+                        lease.token
+                    )));
+                }
+                batch.await
+            }
+        };
+        reconcile_state_once(db, opts, &mut fenced, state).await
+    };
+    let renew = async {
+        loop {
+            tokio::time::sleep(ttl / 3).await;
+            match renew_lease_on(db, lease, ttl).await {
+                Ok(Some(_)) => {}
+                // Lost or unreadable: stop renewing; the fence refuses the
+                // next batch if the lease really is gone.
+                Ok(None) | Err(_) => std::future::pending::<()>().await,
+            }
+        }
+    };
+    tokio::select! {
+        result = work => result,
+        () = renew => unreachable!("renewal never completes"),
+    }
+}
+
+/// The migration lease TTL ([`MIGRATION_LEASE_TTL`]).
+#[cfg(not(test))]
+fn migration_lease_ttl() -> Duration {
+    MIGRATION_LEASE_TTL
+}
+
+/// The bounded wait for another migrator ([`MIGRATION_LEASE_WAIT`]).
+#[cfg(not(test))]
+fn migration_lease_wait() -> Duration {
+    MIGRATION_LEASE_WAIT
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test override of `(ttl, wait)` for the migration lease.
+    static MIGRATION_LEASE_TIMING: std::cell::Cell<Option<(Duration, Duration)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The migration lease TTL ([`MIGRATION_LEASE_TTL`]).
+#[cfg(test)]
+fn migration_lease_ttl() -> Duration {
+    MIGRATION_LEASE_TIMING
+        .with(std::cell::Cell::get)
+        .map_or(MIGRATION_LEASE_TTL, |(ttl, _)| ttl)
+}
+
+/// The bounded wait for another migrator ([`MIGRATION_LEASE_WAIT`]).
+#[cfg(test)]
+fn migration_lease_wait() -> Duration {
+    MIGRATION_LEASE_TIMING
+        .with(std::cell::Cell::get)
+        .map_or(MIGRATION_LEASE_WAIT, |(_, wait)| wait)
+}
+
+/// Checks `state` against this binary and applies what it is missing.
+async fn reconcile_state_once<F, Fut>(
+    db: &DatabaseConnection,
+    opts: &SchemaApplyOptions,
+    run_batch: &mut F,
+    state: SchemaState,
+) -> Result<()>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
     match state {
         SchemaState::Uninitialized => apply_unreleased_pack(db, run_batch).await,
         SchemaState::Unreleased {
@@ -1351,7 +1564,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL"]
-    async fn postgres_concurrent_apply_host_schema_both_ok() {
+    async fn postgres_concurrent_apply_host_schema_has_one_migrator() {
         if std::env::var("BOOKCLERK_TEST_POSTGRES_URL")
             .ok()
             .filter(|s| !s.trim().is_empty())
@@ -1383,9 +1596,17 @@ mod tests {
         };
         let db1 = sea_orm::Database::connect(&db_url).await.expect("c1");
         let db2 = sea_orm::Database::connect(&db_url).await.expect("c2");
-        let (a, b) = tokio::join!(apply_host_schema(&db1), apply_host_schema(&db2),);
+        let packs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (a, b) = tokio::join!(
+            counted_apply(&db1, packs.clone()),
+            counted_apply(&db2, packs.clone()),
+        );
         a.expect("first apply");
         b.expect("second apply");
+        // The migration lease admits exactly one migrator; the other waits.
+        assert_eq!(packs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let lease = load_lease_on(&db1, MIGRATION_LEASE).await.unwrap().unwrap();
+        assert_eq!(lease.expires_at_ms, 0, "released: {lease:?}");
     }
 
     #[tokio::test]
@@ -1765,5 +1986,161 @@ mod tests {
             "display={err} debug={err:?}"
         );
         assert!(!LibraryError::from_db_err(err).is_schema_apply_retryable());
+    }
+
+    /// Applies the host schema on `db`, counting full-pack batches in `packs`.
+    async fn counted_apply(
+        db: &DatabaseConnection,
+        packs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Result<()> {
+        let exec = db.clone();
+        apply_host_schema_with_batch(db, move |stmts| {
+            let exec = exec.clone();
+            let packs = packs.clone();
+            async move {
+                if stmts.len() > 1 {
+                    packs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                run_atomic_ddl(&exec, "schema-apply", stmts).await
+            }
+        })
+        .await
+    }
+
+    async fn two_file_connections(
+        dir: &std::path::Path,
+    ) -> (DatabaseConnection, DatabaseConnection) {
+        let path = dir.join("library.db");
+        let a = bookclerk_plugin_database_sqlite::open(&path).await.unwrap();
+        let b = bookclerk_plugin_database_sqlite::open(&path).await.unwrap();
+        (a, b)
+    }
+
+    #[tokio::test]
+    async fn concurrent_starters_produce_exactly_one_migrator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = two_file_connections(dir.path()).await;
+        let packs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (left, right) = tokio::join!(
+            counted_apply(&a, packs.clone()),
+            counted_apply(&b, packs.clone())
+        );
+        left.expect("starter a");
+        right.expect("starter b");
+        assert_eq!(packs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(matches!(
+            current_schema_state(&b).await.unwrap(),
+            SchemaState::Unreleased { .. }
+        ));
+        // The migrator released its lease; the row records who it was.
+        let lease = load_lease_on(&a, MIGRATION_LEASE).await.unwrap().unwrap();
+        assert!(lease.holder.starts_with("pid"), "{lease:?}");
+        assert_eq!(lease.expires_at_ms, 0);
+        // A matching database is only checked: no lease, no batch.
+        counted_apply(&a, packs.clone()).await.unwrap();
+        assert_eq!(packs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            load_lease_on(&a, MIGRATION_LEASE).await.unwrap().unwrap(),
+            lease
+        );
+    }
+
+    #[tokio::test]
+    async fn a_waiting_starter_takes_over_a_dead_migrators_lease() {
+        MIGRATION_LEASE_TIMING.with(|t| {
+            t.set(Some((Duration::from_millis(200), Duration::from_secs(5))));
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = two_file_connections(dir.path()).await;
+        ensure_schema_migrations(&a).await.unwrap();
+        run_atomic_ddl(&a, "lease-table", vec![CLUSTER_LEASES_DDL.to_string()])
+            .await
+            .unwrap();
+        // A starter took the lease, then died before applying anything.
+        acquire_lease_on(&a, MIGRATION_LEASE, "dead", Duration::from_millis(200))
+            .await
+            .unwrap()
+            .unwrap();
+        let packs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        counted_apply(&b, packs.clone()).await.expect("takeover");
+        assert_eq!(packs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let lease = load_lease_on(&a, MIGRATION_LEASE).await.unwrap().unwrap();
+        assert_eq!(lease.token, 2, "{lease:?}");
+        assert_ne!(lease.holder, "dead");
+        MIGRATION_LEASE_TIMING.with(|t| t.set(None));
+    }
+
+    #[tokio::test]
+    async fn a_starter_fails_closed_while_another_holds_the_migration_lease() {
+        MIGRATION_LEASE_TIMING.with(|t| {
+            t.set(Some((Duration::from_secs(60), Duration::from_millis(300))));
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = two_file_connections(dir.path()).await;
+        ensure_schema_migrations(&a).await.unwrap();
+        run_atomic_ddl(&a, "lease-table", vec![CLUSTER_LEASES_DDL.to_string()])
+            .await
+            .unwrap();
+        acquire_lease_on(&a, MIGRATION_LEASE, "busy", Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let packs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let err = counted_apply(&b, packs.clone())
+            .await
+            .expect_err("bounded wait");
+        assert!(
+            err.to_string().contains("another starter is migrating"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("busy"), "{err}");
+        assert_eq!(packs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            current_schema_state(&b).await.unwrap(),
+            SchemaState::Uninitialized
+        );
+        MIGRATION_LEASE_TIMING.with(|t| t.set(None));
+    }
+
+    #[tokio::test]
+    async fn a_migrator_that_lost_its_lease_runs_no_ddl() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = two_file_connections(dir.path()).await;
+        ensure_schema_migrations(&a).await.unwrap();
+        run_atomic_ddl(&a, "lease-table", vec![CLUSTER_LEASES_DDL.to_string()])
+            .await
+            .unwrap();
+        let stale = acquire_lease_on(&a, MIGRATION_LEASE, "stale", Duration::from_millis(50))
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        acquire_lease_on(&b, MIGRATION_LEASE, "new", Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let packs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = packs.clone();
+        let exec = a.clone();
+        let mut run = move |stmts: Vec<String>| {
+            let counter = counter.clone();
+            let exec = exec.clone();
+            async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                run_atomic_ddl(&exec, "schema-apply", stmts).await
+            }
+        };
+        let err = migrate_under_lease(&a, &SchemaApplyOptions::default(), &mut run, &stale)
+            .await
+            .expect_err("fenced");
+        assert!(
+            err.to_string().contains("lost the schema migration lease"),
+            "{err}"
+        );
+        assert_eq!(packs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            current_schema_state(&a).await.unwrap(),
+            SchemaState::Uninitialized
+        );
     }
 }
