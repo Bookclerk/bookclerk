@@ -6,9 +6,9 @@ use bookclerk_config::{
     NamingProfile,
 };
 use bookclerk_library::control_plane::{
-    bootstrap_control_plane, is_output_setting_key, load_events, load_output,
-    overlay_core_documents, replace_events, replace_output, ConfigActor, EventsReplace,
-    EventsSettingsV1, OutputReplace, OutputSettingsV1, OUTPUT_SETTING_KEYS,
+    bootstrap_control_plane, is_output_setting_key, load_events, load_output, replace_events,
+    replace_output, ConfigActor, EventsReplace, EventsSettingsV1, OutputReplace, OutputSettingsV1,
+    OUTPUT_SETTING_KEYS,
 };
 use bookclerk_library::{
     inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
@@ -380,10 +380,20 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
             file,
             ext,
         } => {
-            // Naming comes from `core.output`, not the TOML seed.
-            let (store, session) = open_control_plane(config).await?;
+            // Naming comes from `core.output` when a host has enrolled it.
+            // Preview is read-only: it never imports the TOML seed, and a
+            // missing document falls back to the local config.
+            let store = crate::registry::open_library(config).await?;
             let mut overlaid = config.clone();
-            overlay_core_documents(&mut overlaid, &session);
+            match load_output(&store).await {
+                Ok(doc) => {
+                    let files_dir = overlaid.paths.as_ref().map(|p| p.files_dir.clone());
+                    doc.body
+                        .apply_to(&mut overlaid.output, files_dir.as_deref());
+                }
+                Err(bookclerk_library::LibraryError::NotFound(_)) => {}
+                Err(err) => return Err(err.into()),
+            }
             let config = &overlaid;
             let book = resolve_book_for_preview(&store, &asin, account.as_deref()).await?;
             let ctx = NamingContext {

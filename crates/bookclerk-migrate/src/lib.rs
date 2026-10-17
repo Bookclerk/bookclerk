@@ -140,7 +140,12 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
         .clone()
         .unwrap_or_else(|| opts.dest_files_dir.join("Audiobooks"));
 
-    let dest = if source.accounts_settings.is_some() || source.library_db.is_some() {
+    // A settings-only import still opens the destination so the imported
+    // packaging settings can seed `core.output` and the plugin instances.
+    let dest = if source.accounts_settings.is_some()
+        || source.library_db.is_some()
+        || (summary.settings_imported && !opts.dry_run)
+    {
         Some(store::DestStore::open(&opts.dest_files_dir, opts.dry_run).await?)
     } else {
         None

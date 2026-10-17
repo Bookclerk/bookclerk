@@ -441,7 +441,7 @@ Bootstrap stays in TOML and env: `[database]`, `master.key`,
 instances in this phase. The shared `[output]` table (format, Widevine,
 naming profile, sidecars, multi-destination policy) has since moved to the
 `core.output` cluster document; only its host-local `in_progress` scratch
-directory stays in TOML (see *`core.output`* under *Why `[events]`*).
+directory stays in TOML (see *`core.output`* under *Decision*).
 
 KV and Queues are unchanged. Named SQL bindings do not replace them.
 

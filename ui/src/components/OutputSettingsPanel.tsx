@@ -121,16 +121,19 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
     setRevision(next.effective?.["output.revision"] ?? null);
   }, []);
 
-  const load = useCallback(async () => {
+  /** Reloads the panel; resolves `true` when the settings were applied. */
+  const load = useCallback(async (): Promise<boolean> => {
     setError(null);
     try {
       apply(await fetchSettings());
+      return true;
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         onSessionExpired();
-        return;
+        return false;
       }
       setError(err instanceof Error ? err.message : "Failed to load output settings");
+      return false;
     }
   }, [apply, onSessionExpired]);
 
@@ -150,8 +153,10 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
     setError(null);
     setNotice(null);
     try {
+      const expected = revision === null ? Number.NaN : Number(revision);
       const next = await patchSettings({
         settings: changed.map((field) => ({ key: field.key, value: values[field.key] ?? "" })),
+        ...(Number.isInteger(expected) ? { expected_output_revision: expected } : {}),
       });
       apply(next);
       setNotice("Saved. Every host applies the new revision on its next wakeup.");
@@ -161,8 +166,9 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
         return;
       }
       if (isApiError(err) && err.status === 409) {
-        setError("Output settings changed elsewhere. Reloaded the current revision.");
-        await load();
+        if (await load()) {
+          setError("Output settings changed elsewhere. Reloaded the current revision.");
+        }
         return;
       }
       setError(err instanceof Error ? err.message : "Failed to save output settings");

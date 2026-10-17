@@ -2313,7 +2313,11 @@ export async function putNodeLabels(nodeId: string, labels: string[]): Promise<u
  * @param body - Settings updates to apply.
  * @returns The settings view after the write.
  */
-export async function patchSettings(body: { settings: SettingsUpdate[] }): Promise<SettingsResponse> {
+export async function patchSettings(body: {
+  settings: SettingsUpdate[];
+  /** `core.output` revision the caller read; a stale value is rejected with 409. */
+  expected_output_revision?: number;
+}): Promise<SettingsResponse> {
   const res = await fetch("/api/settings", {
     method: "PATCH",
     credentials: "include",

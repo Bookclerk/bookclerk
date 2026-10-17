@@ -374,6 +374,10 @@ struct SettingsUpdate {
 struct PatchSettingsRequest {
     /// Key/value pairs to validate, persist, and reload.
     settings: Vec<SettingsUpdate>,
+    /// `core.output` revision the client read (`effective["output.revision"]`).
+    /// When set and stale, an `output.*` update is rejected with 409.
+    #[serde(default)]
+    expected_output_revision: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3049,6 +3053,7 @@ async fn patch_settings(
             .map_err(IntoResponse::into_response);
     }
 
+    let body_expected_output_revision = body.expected_output_revision;
     let updates: Vec<(String, String)> = body
         .settings
         .into_iter()
@@ -3198,7 +3203,12 @@ async fn patch_settings(
         crate::config_authority::commit_events_settings(&state, &events_updates).await?;
     }
     if !output_updates.is_empty() {
-        crate::config_authority::commit_output_settings(&state, &output_updates).await?;
+        crate::config_authority::commit_output_settings(
+            &state,
+            &output_updates,
+            body_expected_output_revision,
+        )
+        .await?;
     }
     if normalized_pairs.is_empty() && enabling.is_empty() {
         drop(_reload_guard);
@@ -6360,6 +6370,7 @@ mode = "deny"
                         value: "false".into(),
                     },
                 ],
+                expected_output_revision: None,
             }),
         )
         .await
@@ -6432,6 +6443,7 @@ mode = "deny"
                     key: "events.retention_days".into(),
                     value: requested.to_string(),
                 }],
+                expected_output_revision: None,
             }),
         )
         .await
@@ -6497,6 +6509,7 @@ mode = "deny"
                             value: value.into(),
                         })
                         .collect(),
+                    expected_output_revision: None,
                 }),
             )
         };
@@ -6544,6 +6557,23 @@ mode = "deny"
             assert_eq!(live.output_revision, Some(loaded.revision));
         }
         let audits = audit_count(&store, OUTPUT_NAMESPACE).await.unwrap();
+
+        // A client that read an older revision gets 409 and writes nothing.
+        let stale = super::patch_settings(
+            State(state.clone()),
+            Json(super::PatchSettingsRequest {
+                settings: vec![super::SettingsUpdate {
+                    key: "output.create_cue".into(),
+                    value: "true".into(),
+                }],
+                expected_output_revision: Some(session.output.revision),
+            }),
+        )
+        .await
+        .expect_err("stale expected revision");
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(load_output(&store).await.unwrap(), loaded);
+        assert_eq!(audit_count(&store, OUTPUT_NAMESPACE).await.unwrap(), audits);
 
         let mixed = patch(vec![
             ("output.create_cue", "true"),

@@ -531,19 +531,27 @@ pub async fn put_output_domain(
 /// Every key is applied to one copy of the current document, which is then
 /// validated and written as a single revision.
 ///
+/// `expected_revision` is the revision the caller read. When it is given and
+/// the stored document has moved on, nothing is written and the call is a
+/// conflict, so a stale editor cannot overwrite a concurrent change.
+///
 /// # Errors
 ///
-/// Returns 400 for unknown keys or invalid values and 409 when the revision
-/// lost to a concurrent write.
+/// Returns 400 for unknown keys or invalid values and 409 when
+/// `expected_revision` is stale or the revision lost to a concurrent write.
 pub async fn commit_output_settings(
     state: &AppState,
     updates: &[(String, String)],
+    expected_revision: Option<i64>,
 ) -> Result<(), Response> {
     if updates.is_empty() {
         return Ok(());
     }
     let library = state.library_snapshot().await;
     let current = load_output(&library).await.map_err(events_error)?;
+    if expected_revision.is_some_and(|expected| expected != current.revision) {
+        return Err(conflict(current.revision));
+    }
     let mut body = current.body.clone();
     for (key, value) in updates {
         body.set(key, value).map_err(|err| {

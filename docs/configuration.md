@@ -314,7 +314,9 @@ bookclerk config set output.replacement_characters '[{"find":":","replace":"-"}]
 The daemon operator API is `GET` / `PUT /api/config/domains/core.output`
 (`{"expected_revision": n, "document": {…}}` with every field of the
 schema-1 document). `PATCH /api/settings` accepts `output.*` keys through
-the same compare-and-swap path, one revision per request; a request that
+the same compare-and-swap path, one revision per request. Send the
+revision you read as `expected_output_revision`; a stale value returns 409
+and writes nothing (the web UI always sends it). A request that
 mixes `output.*` with `events.*` or file-backed keys is rejected before
 anything is written. `GET /api/settings` lists the `output.*` values and
 `output.revision` in `effective`. The web UI edits it under **Settings →
