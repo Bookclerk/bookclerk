@@ -12,13 +12,23 @@
 //!    credential closes with [`CLOSE_REVOKED`]. Each failure writes a
 //!    `security_audit_events` row.
 //!
-//! After `welcome`, the session pings every [`PING_INTERVAL_SECS`], closes
-//! after [`IDLE_TIMEOUT_SECS`] without an inbound frame, re-reads the
-//! credential on every ping tick, and closes with [`CLOSE_REVOKED`] as soon
-//! as a `node.revoked` wake arrives ([`close_node_sessions`]). Binary frames
-//! and malformed frames close with [`CLOSE_PROTOCOL`]. Work frames (claim,
-//! renew, kv, upload grants) are later steps; until then every request
-//! frame is answered with `error {code: "unsupported"}`.
+//! After `welcome` (and `resumed`, when the hello listed fences the host
+//! still holds; see [`super::work::resume`]), the session pings every
+//! [`PING_INTERVAL_SECS`], closes after [`IDLE_TIMEOUT_SECS`] without an
+//! inbound frame, re-reads the credential on every ping tick, and closes
+//! with [`CLOSE_REVOKED`] as soon as a `node.revoked` wake arrives
+//! ([`close_node_sessions`]). Binary frames and malformed frames close with
+//! [`CLOSE_PROTOCOL`].
+//!
+//! Request frames are served by [`super::work`] (heartbeat, job claim,
+//! renew, complete, fail, token write-back) and the host's `node.<id>`
+//! queue is forwarded as `wake` frames by [`super::wakes`]. Everything the
+//! owner sends goes through one bounded queue of [`SEND_QUEUE_FRAMES`]
+//! frames drained by a writer task: wakes are only claimed when the queue
+//! has room, and an answer that cannot be queued within
+//! [`IDLE_TIMEOUT_SECS`] (the host stopped reading) ends the connection.
+//! Nothing is released when a connection ends: job leases expire on their
+//! own unless the host resumes them.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -32,19 +42,27 @@ use axum::extract::{FromRequestParts, Request, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    load_cluster_row, load_node_credential, record_node_connected,
+    load_cluster_row, load_node_credential, record_node_connected, JobClaimLimits,
+    RemoteClaimSettings,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
-    canonical_origin, encode_nonce, verify_auth, AuthContext, Body, Frame, CLOSE_AUTH_FAILED,
-    CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_SUPERSEDED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
-    MAX_FRAME_BYTES, NONCE_LEN, PING_INTERVAL_SECS, SUBPROTOCOL,
+    box_public_key, canonical_origin, encode_nonce, verify_auth, AuthContext, Body, Frame,
+    HeldFence, CLOSE_AUTH_FAILED, CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_SUPERSEDED,
+    HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, MAX_FRAME_BYTES, NONCE_LEN, PING_INTERVAL_SECS,
+    SEND_QUEUE_FRAMES, SUBPROTOCOL,
 };
+use futures::stream::{SplitSink, SplitStream};
+use futures::{SinkExt as _, StreamExt as _};
 use rand::RngCore as _;
 use serde_json::json;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+use zeroize::Zeroizing;
 
+use super::wakes::WakeForwarder;
+use super::work::{self, HostContext};
 use crate::api::AppState;
 
 /// Longest node id or incarnation a hello may carry.
@@ -167,14 +185,34 @@ impl Refusal {
 struct Authed {
     /// Node id the signature proved.
     node_id: String,
+    /// Incarnation from the hello.
+    incarnation: String,
+    /// Leases the hello says the host still holds.
+    resume: Vec<HeldFence>,
+    /// The node's enrolled X25519 box key.
+    box_public_key: Vec<u8>,
+    /// This connection's owner box secret (its public key went out in
+    /// `welcome`).
+    owner_box_secret: Zeroizing<[u8; 32]>,
 }
 
 /// Runs one connection: the handshake, then the session.
 async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAddr>) {
     let library = state.library_snapshot().await;
-    let owner_origin = {
+    let (owner_origin, settings, files_dir) = {
         let cfg = state.config.read().await;
-        canonical_origin(&crate::origin::effective_origin_from_config(&cfg, None))
+        let settings = RemoteClaimSettings {
+            lease_secs: cfg.jobs.lease_seconds,
+            limits: JobClaimLimits {
+                class: cfg.jobs.concurrency.network.max(1),
+                plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
+            },
+        };
+        (
+            canonical_origin(&crate::origin::effective_origin_from_config(&cfg, None)),
+            settings,
+            cfg.paths().files_dir.clone(),
+        )
     };
     let authed = match owner_origin {
         Some(origin) => handshake(&library, &mut socket, &origin).await,
@@ -189,7 +227,16 @@ async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAdd
     };
     let (serial, close) = register(&authed.node_id);
     tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
-    session(&library, &mut socket, &authed.node_id, close).await;
+    let host = HostContext {
+        node_id: authed.node_id.clone(),
+        incarnation: authed.incarnation,
+        box_public_key: authed.box_public_key,
+        owner_box_secret: authed.owner_box_secret,
+        settings,
+    };
+    let owner_node_id = crate::node_queue::node_id(&files_dir).unwrap_or_default();
+    let wakes = WakeForwarder::new(&owner_node_id, &host.node_id, serial);
+    session(&library, socket, &host, authed.resume, wakes, close).await;
     unregister(&authed.node_id, serial);
     tracing::info!(node_id = %authed.node_id, "host node disconnected");
 }
@@ -287,6 +334,7 @@ async fn handshake(
     let Body::Hello {
         node_id,
         incarnation,
+        resume,
         ..
     } = hello.body
     else {
@@ -352,17 +400,30 @@ async fn handshake(
         Ok(false) => return Err(revoked),
         Err(_) => return Err(Refusal::auth("credential_unavailable", Some(&node_id))),
     }
+    // A fresh owner box key per connection: the host seals token
+    // write-backs to it.
+    let mut owner_box_secret = Zeroizing::new([0u8; 32]);
+    rand::rngs::OsRng.fill_bytes(owner_box_secret.as_mut_slice());
+    let box_key =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(box_public_key(&owner_box_secret));
     let welcome = Frame::new(
         "",
         Body::Welcome {
             node_id: node_id.clone(),
             cluster_id,
+            box_key,
         },
     );
     if !send_frame(socket, &welcome).await {
         return Err(Refusal::auth("closed", Some(&node_id)));
     }
-    Ok(Authed { node_id })
+    Ok(Authed {
+        node_id,
+        incarnation,
+        resume,
+        box_public_key: credential.box_public_key,
+        owner_box_secret,
+    })
 }
 
 /// True when the credential is gone or revoked. A failed read keeps the
@@ -378,16 +439,99 @@ async fn credential_revoked(library: &LibraryStore, node_id: &str) -> bool {
     }
 }
 
-/// The authenticated session loop.
+/// Seconds between attempts to forward the host's queue.
+const WAKE_POLL_SECS: u64 = 2;
+
+/// Seconds the session waits for the writer to flush a close.
+const CLOSE_FLUSH_SECS: u64 = 5;
+
+/// A text message for `frame`.
+fn text(frame: &Frame) -> Message {
+    Message::Text(frame.to_text().into())
+}
+
+/// Queues `message`, waiting up to [`IDLE_TIMEOUT_SECS`] for room. `false`
+/// when the host stopped reading or the writer is gone.
+async fn enqueue(outbox: &mpsc::Sender<Message>, message: Message) -> bool {
+    matches!(
+        tokio::time::timeout(Duration::from_secs(IDLE_TIMEOUT_SECS), outbox.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Drains the send queue into the socket until a close is sent, the queue
+/// closes, or a write fails.
+async fn writer(mut sink: SplitSink<WebSocket, Message>, mut queue: mpsc::Receiver<Message>) {
+    while let Some(message) = queue.recv().await {
+        let closing = matches!(message, Message::Close(_));
+        if sink.send(message).await.is_err() || closing {
+            break;
+        }
+    }
+    let _ = sink.close().await;
+}
+
+/// The authenticated session: a writer task behind the bounded send queue,
+/// and the loop that reads frames, pings, and forwards wakes.
 async fn session(
     library: &LibraryStore,
-    socket: &mut WebSocket,
-    node_id: &str,
-    mut close: watch::Receiver<Option<u16>>,
+    socket: WebSocket,
+    host: &HostContext,
+    resume: Vec<HeldFence>,
+    mut wakes: Option<WakeForwarder>,
+    close: watch::Receiver<Option<u16>>,
 ) {
+    let (sink, stream) = socket.split();
+    let (outbox, queue) = mpsc::channel(SEND_QUEUE_FRAMES);
+    let mut writer = tokio::spawn(writer(sink, queue));
+    if let Some((code, reason)) =
+        session_loop(library, stream, &outbox, host, resume, &mut wakes, close).await
+    {
+        tracing::info!(node_id = %host.node_id, code, reason, "closing host node connection");
+        let close = Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.into(),
+        }));
+        let _ = tokio::time::timeout(Duration::from_secs(1), outbox.send(close)).await;
+    }
+    drop(outbox);
+    if tokio::time::timeout(Duration::from_secs(CLOSE_FLUSH_SECS), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
+    if let Some(wakes) = wakes {
+        wakes.shutdown(library).await;
+    }
+}
+
+/// Reads and answers frames until the connection ends. Returns the close
+/// code and reason to send, or `None` when the connection is already gone.
+async fn session_loop(
+    library: &LibraryStore,
+    mut stream: SplitStream<WebSocket>,
+    outbox: &mpsc::Sender<Message>,
+    host: &HostContext,
+    resume: Vec<HeldFence>,
+    wakes: &mut Option<WakeForwarder>,
+    mut close: watch::Receiver<Option<u16>>,
+) -> Option<(u16, &'static str)> {
+    let node_id = host.node_id.as_str();
+    if !resume.is_empty() {
+        let resumed = work::resume(library, host, resume).await;
+        if !enqueue(outbox, text(&Frame::new("resume", resumed))).await {
+            return None;
+        }
+    }
+    if let Some(wakes) = wakes.as_ref() {
+        wakes.heartbeat(library, true).await;
+    }
     let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping.reset();
+    let mut forward = tokio::time::interval(Duration::from_secs(WAKE_POLL_SECS));
+    forward.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let idle = Duration::from_secs(IDLE_TIMEOUT_SECS);
     let mut last_inbound = Instant::now();
     loop {
@@ -396,58 +540,63 @@ async fn session(
                 let code = if changed.is_ok() { *close.borrow() } else { None };
                 let code = code.unwrap_or(CLOSE_REVOKED);
                 let reason = if code == CLOSE_SUPERSEDED { "superseded" } else { "revoked" };
-                tracing::info!(node_id, code, "closing host node connection");
-                close_with(socket, code, reason).await;
-                return;
+                return Some((code, reason));
             }
             _ = ping.tick() => {
                 if credential_revoked(library, node_id).await {
-                    close_with(socket, CLOSE_REVOKED, "revoked").await;
-                    return;
+                    return Some((CLOSE_REVOKED, "revoked"));
                 }
                 if last_inbound.elapsed() >= idle {
-                    close_with(socket, 1000, "idle").await;
-                    return;
+                    return Some((1000, "idle"));
                 }
-                if socket.send(Message::Ping(Default::default())).await.is_err() {
-                    return;
+                // A full queue already keeps the host busy; skip the ping.
+                if let Err(mpsc::error::TrySendError::Closed(_)) =
+                    outbox.try_send(Message::Ping(Default::default()))
+                {
+                    return None;
+                }
+                if let Some(wakes) = wakes.as_ref() {
+                    wakes.heartbeat(library, true).await;
                 }
             }
-            message = socket.recv() => {
-                let Some(Ok(message)) = message else { return };
+            _ = forward.tick() => {
+                if let Some(wakes) = wakes.as_mut() {
+                    wakes.forward(library, outbox).await;
+                }
+            }
+            message = stream.next() => {
+                let Some(Ok(message)) = message else { return None };
                 last_inbound = Instant::now();
                 match message {
-                    Message::Text(text) => {
-                        let Ok(frame) = Frame::parse(text.as_str()) else {
-                            close_with(socket, CLOSE_PROTOCOL, "malformed frame").await;
-                            return;
+                    Message::Text(raw) => {
+                        let Ok(frame) = Frame::parse(raw.as_str()) else {
+                            return Some((CLOSE_PROTOCOL, "malformed frame"));
                         };
                         match frame.body {
                             Body::Hello { .. } | Body::Auth { .. } => {
-                                close_with(socket, CLOSE_PROTOCOL, "handshake already done").await;
-                                return;
+                                return Some((CLOSE_PROTOCOL, "handshake already done"));
                             }
                             // Never answer an error, so two peers cannot loop.
                             Body::Error { .. } => continue,
+                            Body::Ack {} => {
+                                if let Some(wakes) = wakes.as_mut() {
+                                    wakes.ack(library, &frame.id).await;
+                                }
+                                continue;
+                            }
                             _ => {}
                         }
-                        let answer = Frame::new(
-                            frame.id,
-                            Body::Error {
-                                code: "unsupported".into(),
-                                message: "this owner does not serve that frame type yet".into(),
-                            },
-                        );
-                        if !send_frame(socket, &answer).await {
-                            return;
+                        let answer = work::answer(library, host, frame).await;
+                        if !enqueue(outbox, text(&answer)).await {
+                            tracing::warn!(node_id, "host node stopped reading; dropping the connection");
+                            return None;
                         }
                     }
                     Message::Binary(_) => {
-                        close_with(socket, CLOSE_PROTOCOL, "binary frames are refused").await;
-                        return;
+                        return Some((CLOSE_PROTOCOL, "binary frames are refused"));
                     }
                     Message::Ping(_) | Message::Pong(_) => {}
-                    Message::Close(_) => return,
+                    Message::Close(_) => return None,
                 }
             }
         }

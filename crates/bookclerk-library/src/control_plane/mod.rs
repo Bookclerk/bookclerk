@@ -18,6 +18,7 @@ mod node_queue;
 mod node_status;
 mod ownership;
 mod placement;
+mod remote_work;
 mod routing;
 mod schemas;
 mod secret;
@@ -97,6 +98,12 @@ pub use placement::{
     MAX_NODE_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE,
     SCHEDULER_LEASE_TTL, TARGET_LABEL,
 };
+pub use remote_work::{
+    claim_remote_job, finish_remote_job, job_secret_refs, remote_job_fence, remote_lease_owner,
+    renew_remote_job, write_back_job_secret, JobSecret, JobSecretRef, RemoteClaimSettings,
+    RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack, MAX_WRITE_BACK_BYTES,
+    REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
+};
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{
     list_plugin_schemas, load_plugin_schema, pin_plugin_schema, pin_version_schema,
@@ -105,9 +112,9 @@ pub use schemas::{
 };
 pub use secret::{align_cluster_root, load_cluster_row, ClusterSecret};
 pub use semaphore::{
-    acquire_permit, acquire_permits, live_permits, release_permits, renew_fenced_lease,
-    renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit, SemaphoreRequest,
-    MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
+    acquire_permit, acquire_permits, live_permits, permits_held_by, release_permits,
+    renew_fenced_lease, renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit,
+    SemaphoreRequest, MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
 };
 pub use trust::{
     accounts_owned_by, handoff_routed_job, job_trusted, node_may_claim_job, node_trust, plan_scan,
@@ -729,6 +736,8 @@ mod instance_tests;
 mod job_routing_tests;
 #[cfg(test)]
 mod placement_tests;
+#[cfg(test)]
+mod remote_work_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

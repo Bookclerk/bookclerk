@@ -976,7 +976,7 @@ Built 2026-10-15 (H-4 step 5), on the routed claim above.
   handed over. The lease generation stays bumped, so the refused fence
   can never write again. The daemon's own worker claims as
   `Claimant::Local` and needs no handoff; the node API's work frames
-  (step 6) will claim as `Claimant::Remote` and hand off through it.
+  (step 6) claim as `Claimant::Remote` and hand off through it.
 - **Scan planner** (`plan_scan`). Every scan admission goes through it,
   from the HTTP API (`require_operator_or_administrator_auth` records a
   `ScanRequester` request extension; a handler without one answers 403),
@@ -1000,6 +1000,83 @@ Built 2026-10-15 (H-4 step 5), on the routed claim above.
   owner is promoted; a demotion between claim and handoff denies and
   returns the job unspent; ownerless, disabled, revoked, and unknown nodes
   claim nothing; the planner splits and scopes as above.
+
+### Work frames, sealed secrets, wakes and resume
+
+Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
+
+- **Work frames** (`bookclerk-node-proto` frames; `node_api/work.rs`;
+  `control_plane/remote_work.rs`). `heartbeat` records `node_status` for
+  the Host like any node. `claim {item: job}` runs `claim_routed_job` as
+  `Claimant::Remote` with lease owner `host:<node_id>`, then
+  `handoff_routed_job`, and only then unseals the job's secrets; it
+  answers `work {job, fence, lease_secs, sealed_secrets}` or `none
+  {retry_after_secs}`. `renew`, `complete` and `fail` name the job id and
+  lease generation; the owner rebuilds the fence from them, so no other
+  node can present it. Renewals re-read trust and the credential, extend
+  the job lease, and renew the job's semaphore permits, which are found
+  again by holder prefix (`permits_held_by`; an expired slot nobody took
+  over still counts). A lost lease, a taken-over permit, or lost trust
+  answers `lost`. `fail` is always accepted under a live fence;
+  `complete` also needs trust and is refused for acquire, which completes
+  only when its upload commits (step 9). Deliveries are not served yet
+  (`claim {item: delivery}` answers `unsupported`).
+- **Which secrets.** For a scan or acquire naming an account: every
+  `integration` row of `encrypted_secrets` for that account id under the
+  plugin keys holding an `accounts` row with that id, the same rows the
+  trust predicate checked. Other jobs get none; instance settings and
+  secrets will travel with `instance.config` (step 7). A job whose
+  secrets do not unseal or seal (legacy formats, oversized bundle) is
+  failed with `secrets_unavailable`, so it retries with backoff and a node
+  holding the database can take it, rather than looping on the Host.
+- **Sealed box.** No `crypto_box` or HPKE crate is in the tree, so the box
+  is composed from primitives that are: X25519 (`curve25519-dalek`),
+  HKDF-SHA256 (`hkdf` 0.13, `sha2`), and XChaCha20-Poly1305
+  (`chacha20poly1305`). `box = E ‖ AEAD(key, nonce, msg, aad)` with key
+  and nonce from `HKDF(salt = E ‖ R, ikm = X25519(e, R))`; an all-zero
+  agreement is refused and the recipient key must pass the enrollment
+  key checks. A job's bundle is bound by its associated data to the node,
+  job, and lease generation, so it cannot be replayed into another claim.
+- **Token write-back** (decision 3). The owner sends a fresh box key per
+  connection in `welcome`; `secret.update {job_id, fence, ref,
+  sealed_value}` is sealed to it and bound to node, job, fence and ref.
+  It is stored (re-sealed with the owner's DEK under the same identity)
+  only when, immediately before the write, the credential is live, the
+  node is still trusted with the job, the fence is the job's live
+  generation for this node, and the ref is one of the job's secrets.
+  Rejected: plaintext values inside TLS. tungstenite traces every
+  received message at TRACE, and the daemon bridges `log` into tracing
+  with the diagnostics ring at TRACE, so a plaintext value would land in
+  diagnostics. Sealed in both directions, no secret is ever frame text.
+  Secret types redact in `Debug` and zeroize on drop.
+- **Wakes.** While a Host's socket is live, the owner node holding it
+  registers as the consumer of `node.<host_id>` (catalog row
+  `node:<host_id>` on that owner node, heartbeated with the session),
+  claims deliveries, and sends `deployment.changed`, `install.changed`
+  and `configuration.changed` as `wake` frames; each is acked only after
+  the Host's `ack`. Other messages are acked at once; unknown bodies are
+  dead-lettered. On disconnect, unacked wakes are released unspent and
+  the row is disabled.
+- **Backpressure.** Everything the owner sends goes through one queue of
+  64 frames drained by a writer task. A wake is claimed only after a
+  queue slot is reserved, and at most 64 wait for acks. With the queue
+  full nothing is claimed, so deliveries stay pending or expire and are
+  redelivered. An answer that cannot be queued within the idle timeout
+  ends the connection.
+- **Resume.** A hello lists held fences; after `welcome` the owner
+  answers `resumed {renewed, lost}`, renewing each through the same path
+  as `renew`. Nothing is released on disconnect and no session keeps
+  work state, so a Host may resume on any owner node; a fence reclaimed
+  while it was away is lost, and every later frame under it is refused.
+- **Tests.** Library: only the owner's secrets are handed; reclaimed and
+  foreign fences are lost; unlinking mid-job loses the fence; write-back
+  is refused without a live fence, for a ref not handed, and for a revoked
+  node; an acquire cannot complete. Daemon: over the socket, sealed
+  secrets open only with the enrolled key, write-back works under the
+  live fence and not otherwise, resume renews a live fence and loses a
+  reclaimed one, and with tracing and `log` captured at TRACE no token
+  appears in the logs, plain or base64; a full send queue claims no wake
+  until the Host reads; a wake is acked only after the Host's `ack`.
 
 ## Consequences
 
@@ -1075,15 +1152,16 @@ Not in this phase, and not claimed as production HA:
   on storage every placed host can read through its `file://` path.
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
-- Host nodes: Pebble in CI, the node socket's work frames (heartbeat, claims, renew/ack/fail,
-  bindings, wakes, resume, the sealed box), `bookclerk clusters join` and the
+- Host nodes: Pebble in CI, delivery claims and the KV, queue and EVENTS
+  binding frames over the node socket, `bookclerk clusters join` and the
   rest of the host-node client, per-item trust for deliveries and
   instance ownership (`plugin_instances.owner_user_id`), host consent, the
   upload path, and node-local outputs (see *Node kinds, ownership, and the
   Host role* and *Host-node enrollment and transport*). Enrollment links,
   redeem, revocation, the transport policy, the socket handshake, the
-  ACME and self-signed TLS listeners, and per-item job trust with the scan
-  planner are built. Settings has no
+  ACME and self-signed TLS listeners, per-item job trust with the scan
+  planner, and the job work frames, sealed secrets, wakes and resume are
+  built. Settings has no
   enrollment switch or invite screen yet (CLI and HTTP only).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).

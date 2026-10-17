@@ -256,6 +256,40 @@ pub async fn live_permits(
         .collect())
 }
 
+/// Permits of `name` among its first `max_slots` slots whose holder starts
+/// with `holder_prefix`, expired ones included.
+///
+/// A worker that holds permits only by name (a host that reconnected to
+/// another owner node) finds them again with this. An expired slot nobody
+/// took over is still returned, since [`renew_fenced_lease`] still renews
+/// it; a slot another holder took is not.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn permits_held_by(
+    store: &LibraryStore,
+    name: &str,
+    max_slots: u32,
+    holder_prefix: &str,
+) -> Result<Vec<SemaphorePermit>> {
+    Ok(load_slots(store, name, max_slots)
+        .await?
+        .into_iter()
+        .filter(|(_, row)| row.holder.starts_with(holder_prefix))
+        .map(|(slot, row)| SemaphorePermit {
+            semaphore: name.to_string(),
+            slot,
+            lease: ClusterLease {
+                name: row.name,
+                holder: row.holder,
+                token: row.token,
+                expires_at_ms: row.expires_at_ms,
+            },
+        })
+        .collect())
+}
+
 /// Extends `lease` by `ttl` only while the row still carries its holder and
 /// token. Unlike [`acquire_lease`], it never takes a lease over.
 ///

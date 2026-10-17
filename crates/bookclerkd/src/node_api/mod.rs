@@ -16,6 +16,8 @@
 
 pub mod tls;
 pub mod transport;
+mod wakes;
+mod work;
 pub mod ws;
 #[cfg(test)]
 mod ws_tests;
