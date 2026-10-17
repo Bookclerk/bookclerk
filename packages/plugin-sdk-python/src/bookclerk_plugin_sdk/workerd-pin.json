@@ -1,27 +1,27 @@
 {
-  "release_tag": "v1.20260810.1",
-  "bundled_compat_date": "2026-08-01",
+  "release_tag": "v1.20261010.1",
+  "bundled_compat_date": "2026-10-10",
   "version_stamp": "workerd.version",
   "assets": {
     "linux-x86_64": {
       "artifact": "workerd-linux-64.gz",
-      "sha256_hex": "9e1afea9756db8838dcb6587854f1dd7a0c582de11615b818b2e33aa52369e4e"
+      "sha256_hex": "a4530a03ab3da1e1cb0173887133a720bd48cd236135990d7cbc561c16091530"
     },
     "linux-aarch64": {
       "artifact": "workerd-linux-arm64.gz",
-      "sha256_hex": "feb8f8daff71cc2ae41d85180e6c462fdfa7926b0fc1ac9b2b732752a1031700"
+      "sha256_hex": "28955c0818f6ce6f43da9a3bc00830f0bcfc1ff832735d9999ef303a4500d7f8"
     },
     "macos-x86_64": {
       "artifact": "workerd-darwin-64.gz",
-      "sha256_hex": "210f206380eef81c50636b2e6f95e3d023fc71e9ea0255a06b40599a1a1ed5e6"
+      "sha256_hex": "77df22f80e26e34e4159b8869317001cdd6ea3ec2516476ba50d7b34eef74b6a"
     },
     "macos-aarch64": {
       "artifact": "workerd-darwin-arm64.gz",
-      "sha256_hex": "4cb7c537be16784c9cb0148d0fa9f0315aeaa4e307d9e3f03cb29cd7388f0cb0"
+      "sha256_hex": "5b2b304b2d59b1f870b2115a1ffbfdd4d1729f8e671704ed8732166a21c7583b"
     },
     "windows-x86_64": {
       "artifact": "workerd-windows-64.gz",
-      "sha256_hex": "098f30dc67d05cd07add352af31b9f66ca22dcd0409c077ffa44b6f8ed329859"
+      "sha256_hex": "8b9377af95e2649bb1d0ea20525ac31769f38c1d85f1b5922a3bbe0856462a82"
     }
   }
 }
