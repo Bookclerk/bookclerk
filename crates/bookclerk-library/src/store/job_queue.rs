@@ -13,9 +13,9 @@ use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::entities::{books, job_temp_paths, jobs};
 use crate::error::{LibraryError, Result};
 use crate::models::{
-    job_backoff_run_after, AcquireStatus, BookRecord, EnqueueJobSpec, EnqueueOutcome, JobFence,
-    JobKind, JobPayload, JobRecord, JobResourceClass, JobState, JobTempPath, JobTrigger,
-    JOB_PAYLOAD_VERSION,
+    job_backoff_run_after, AcquireStatus, BookRecord, EnqueueJobSpec, EnqueueOutcome,
+    JobClaimCursor, JobClaimPage, JobFence, JobKind, JobPayload, JobRecord, JobResourceClass,
+    JobState, JobTempPath, JobTrigger, JOB_PAYLOAD_VERSION,
 };
 
 impl LibraryStore {
@@ -91,7 +91,14 @@ impl LibraryStore {
         }
     }
 
-    /// Ready pending jobs of `resource_class`, best first, for a routed claim.
+    /// One page of ready pending jobs of `resource_class`, best first, for a
+    /// routed claim.
+    ///
+    /// Pages are keyset-ordered by `priority DESC, created_at ASC, id ASC`:
+    /// pass `None` for the first page and the previous page's
+    /// [`JobClaimPage::next`] for the following one, until it is `None`. A
+    /// caller that skips every job of a page (for example jobs another node
+    /// must run) can therefore still reach the runnable rows behind them.
     ///
     /// Each returned row is readable and not cancel-requested. On the way,
     /// pending rows with an unknown class or an unreadable command become
@@ -105,20 +112,24 @@ impl LibraryStore {
     pub async fn list_job_claim_candidates(
         &self,
         resource_class: JobResourceClass,
+        after: Option<&JobClaimCursor>,
         limit: u64,
-    ) -> Result<Vec<JobRecord>> {
+    ) -> Result<JobClaimPage> {
         let now_s = Utc::now().to_rfc3339();
-        sanitize_unreadable_pending_on(&self.db, &now_s).await?;
-        let rows = jobs::Entity::find()
-            .filter(jobs::Column::ResourceClass.eq(resource_class.as_str()))
-            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-            .filter(jobs::Column::RunAfter.lte(now_s.clone()))
-            .order_by_desc(jobs::Column::Priority)
-            .order_by_asc(jobs::Column::CreatedAt)
-            .limit(limit.max(1))
+        if after.is_none() {
+            sanitize_unreadable_pending_on(&self.db, &now_s).await?;
+        }
+        let limit = limit.max(1);
+        let rows = claim_candidates_query(resource_class, &now_s, after)
+            .limit(limit)
             .all(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
+        let next = if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
+            rows.last().map(claim_cursor_of)
+        } else {
+            None
+        };
         let mut out = Vec::with_capacity(rows.len());
         for model in rows {
             if model.cancel_requested != 0 {
@@ -138,7 +149,7 @@ impl LibraryStore {
                 Err(reason) => mark_pending_job_invalid_on(&self.db, &id, &reason, &now_s).await?,
             }
         }
-        Ok(out)
+        Ok(JobClaimPage { jobs: out, next })
     }
 
     /// Claims the pending job `job_id` for `owner` with a single CAS.
@@ -1229,29 +1240,80 @@ where
     let now = Utc::now();
     let now_s = now.to_rfc3339();
     sanitize_unreadable_pending_on(db, &now_s).await?;
-    let candidates = jobs::Entity::find()
-        .filter(jobs::Column::ResourceClass.eq(resource_class.as_str()))
-        .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-        .filter(jobs::Column::RunAfter.lte(now_s.clone()))
-        .order_by_desc(jobs::Column::Priority)
-        .order_by_asc(jobs::Column::CreatedAt)
-        .limit(8)
-        .all(db)
-        .await
-        .map_err(LibraryError::Orm)?;
     let lease_expires =
         (now + Duration::seconds(i64::try_from(lease_secs).unwrap_or(60))).to_rfc3339();
-    for model in candidates {
-        if job_has_requirements(&model) {
-            // Routed jobs are claimed only through the routed claim, which
-            // checks the node and takes the job's cluster semaphores.
-            continue;
+    // Page past routed rows instead of reading one fixed window: a queue
+    // whose best rows all carry requirements must not hide the runnable
+    // rows behind them.
+    let mut after: Option<JobClaimCursor> = None;
+    loop {
+        let candidates = claim_candidates_query(resource_class, &now_s, after.as_ref())
+            .limit(UNROUTED_CLAIM_PAGE)
+            .all(db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        let full = u64::try_from(candidates.len()).unwrap_or(u64::MAX) >= UNROUTED_CLAIM_PAGE;
+        after = candidates.last().map(claim_cursor_of);
+        for model in candidates {
+            if job_has_requirements(&model) {
+                // Routed jobs are claimed only through the routed claim, which
+                // checks the node and takes the job's cluster semaphores.
+                continue;
+            }
+            if let Some(job) = claim_candidate_on(db, model, owner, &lease_expires, &now_s).await? {
+                return Ok(Some(job));
+            }
         }
-        if let Some(job) = claim_candidate_on(db, model, owner, &lease_expires, &now_s).await? {
-            return Ok(Some(job));
+        if !full {
+            return Ok(None);
         }
     }
-    Ok(None)
+}
+
+/// Rows read per page by the unrouted claim.
+const UNROUTED_CLAIM_PAGE: u64 = 8;
+
+/// Ready pending rows of `resource_class` after `after`, in claim order
+/// (`priority DESC, created_at ASC, id ASC`).
+fn claim_candidates_query(
+    resource_class: JobResourceClass,
+    now_s: &str,
+    after: Option<&JobClaimCursor>,
+) -> sea_orm::Select<jobs::Entity> {
+    let mut query = jobs::Entity::find()
+        .filter(jobs::Column::ResourceClass.eq(resource_class.as_str()))
+        .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
+        .filter(jobs::Column::RunAfter.lte(now_s.to_string()));
+    if let Some(cursor) = after {
+        query = query.filter(
+            Condition::any()
+                .add(jobs::Column::Priority.lt(cursor.priority))
+                .add(
+                    Condition::all()
+                        .add(jobs::Column::Priority.eq(cursor.priority))
+                        .add(jobs::Column::CreatedAt.gt(cursor.created_at.clone())),
+                )
+                .add(
+                    Condition::all()
+                        .add(jobs::Column::Priority.eq(cursor.priority))
+                        .add(jobs::Column::CreatedAt.eq(cursor.created_at.clone()))
+                        .add(jobs::Column::Id.gt(cursor.id.clone())),
+                ),
+        );
+    }
+    query
+        .order_by_desc(jobs::Column::Priority)
+        .order_by_asc(jobs::Column::CreatedAt)
+        .order_by_asc(jobs::Column::Id)
+}
+
+/// The keyset cursor positioned on `model`.
+fn claim_cursor_of(model: &jobs::Model) -> JobClaimCursor {
+    JobClaimCursor {
+        priority: model.priority,
+        created_at: model.created_at.clone(),
+        id: model.id.clone(),
+    }
 }
 
 /// True when the row's payload names instances the claimer must run.

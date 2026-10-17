@@ -263,20 +263,32 @@ node that runs it needs. At admission the daemon records
 - Everything else (unpinned scans, listen sync, integration scans,
   `plugin_copy`) has no requirements and is claimable on any node.
 
+The required instances must share a node where all of them are deployed to
+run (`control_plane::common_deployment_nodes`); otherwise admission refuses
+the job with a conflict instead of leaving a row no node can ever claim.
+Required instances are never dropped to make a node fit.
+
 The daemon's worker claims through `control_plane::claim_routed_job`: it
-reads up to 16 ready pending jobs of its class, best first, and skips one
-unless every required instance has a deployment on this node whose desired
+pages through the ready pending jobs of its class, best first (16 per page,
+keyset-ordered by priority, `created_at`, id, until it claims one or the rows
+run out, so jobs this node cannot run never hide runnable ones behind them),
+and skips one unless every required instance has a deployment on this node whose desired
 state runs it (`present` or `placed`) and whose observation from this node
 says the guest is up (`running` or `healthy`) — the same placement and
 observation rows delivery routing reads. Then it takes the job's cluster
 permits (below) and claims that row with `claim_job_by_id`, one CAS on
 `state = 'pending'` and the lease generation it read, so concurrent
 claimers on any number of connections admit one. A lost CAS gives the
-permits back and tries the next candidate. Requirements are fixed at
-admission: a deployment that moves later does not re-route a pending job.
+permits back and tries the next candidate. A job whose account or instance
+semaphore is full is skipped too; a full class semaphore ends the attempt.
+Requirements are fixed at admission: a deployment that moves later does not
+re-route a pending job, so a job whose required instances no longer share a
+node waits until they do or an operator cancels it.
 
 The unrouted `claim_next_job` (and its guest atomic plan) never claims a job
-with requirements; it remains for tests and tools that run one process.
+with requirements; it remains for tests and tools that run one process. It
+pages past routed rows the same way (the atomic plan filters them out before
+its `LIMIT 1`).
 
 ## Cluster semaphores
 
@@ -302,8 +314,10 @@ is cancelled and its result ignored. When a node dies, its permits and job
 lease expire; the next claimer reclaims the row, takes the slot with a
 larger token, and the old holder can neither renew the permit nor finalize
 the job (the job's lease generation moved on too). Lowering a limit does
-not revoke slots above it; no new permit is granted until the live count
-is under the new limit. Each node reads the limits from its own
+not revoke slots above it; live permits on those slots still count, so no
+new permit is granted until the live count is under the new limit. (That
+count is read before the slot CAS, so racing claimers can briefly overshoot
+the new limit, never the old one, until the high slots drain.) Each node reads the limits from its own
 `config.toml` (`[jobs]` is not a database document yet), so nodes should
 agree on them.
 

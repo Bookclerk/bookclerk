@@ -1525,6 +1525,30 @@ pub enum EnqueueOutcome {
     QueueFull,
 }
 
+/// Where the next page of routed-claim candidates starts (keyset paging).
+///
+/// Candidates are ordered by `priority DESC, created_at ASC, id ASC`; the
+/// cursor is the last row of the previous page, so rows that leave the
+/// pending state between pages never shift the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobClaimCursor {
+    /// Priority of the last row read.
+    pub priority: i64,
+    /// `created_at` (RFC 3339 text) of the last row read.
+    pub created_at: String,
+    /// Id of the last row read.
+    pub id: String,
+}
+
+/// One page of routed-claim candidates.
+#[derive(Debug, Clone, Default)]
+pub struct JobClaimPage {
+    /// Readable, not cancel-requested pending jobs, best first.
+    pub jobs: Vec<JobRecord>,
+    /// Where the next page starts, or `None` when no row remains.
+    pub next: Option<JobClaimCursor>,
+}
+
 /// Durable job row returned to the daemon API and worker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRecord {
