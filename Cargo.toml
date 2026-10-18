@@ -17,6 +17,7 @@ members = [
     "crates/bookclerk-migrate",
     "crates/bookclerk-mp4",
     "crates/bookclerk-naming",
+    "crates/bookclerk-node-client",
     "crates/bookclerk-node-proto",
     "crates/bookclerk-plugin-abi",
     "crates/bookclerk-plugin-catalog",
@@ -89,6 +90,7 @@ bookclerk-library = { path = "crates/bookclerk-library" }
 bookclerk-source = { path = "crates/bookclerk-source" }
 bookclerk-acquire = { path = "crates/bookclerk-acquire" }
 bookclerk-naming = { path = "crates/bookclerk-naming" }
+bookclerk-node-client = { path = "crates/bookclerk-node-client" }
 bookclerk-node-proto = { path = "crates/bookclerk-node-proto" }
 bookclerk-migrate = { path = "crates/bookclerk-migrate" }
 bookclerk-search = { path = "crates/bookclerk-search" }

@@ -336,7 +336,7 @@ pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -489,14 +489,14 @@ mod tests {
     }
 
     /// A bootstrapped single-node cluster and its daemon state.
-    pub(super) async fn test_state(
+    pub(crate) async fn test_state(
         files: &tempfile::TempDir,
     ) -> (Arc<crate::api::AppState>, bookclerk_library::LibraryStore) {
         test_state_with(files, "").await
     }
 
     /// [`test_state`] with `config_toml` as the daemon's `config.toml`.
-    pub(super) async fn test_state_with(
+    pub(crate) async fn test_state_with(
         files: &tempfile::TempDir,
         config_toml: &str,
     ) -> (Arc<crate::api::AppState>, bookclerk_library::LibraryStore) {

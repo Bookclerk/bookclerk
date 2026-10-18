@@ -98,6 +98,7 @@ PostgreSQL 16+, or Cloudflare D1
 | Acquire orchestration | `bookclerk-acquire` |
 | Naming templates | `bookclerk-naming` |
 | Host-node protocol | `bookclerk-node-proto` (node socket frames, handshake signatures, key checks) |
+| Host-node client | `bookclerk-node-client` (enrollment, pinned owner socket, claimed work, write-back, wakes, resume) |
 | Library DB | `bookclerk-library` (SeaORM plugins + rusqlite store) |
 | Search | `bookclerk-search` |
 | Discovery / recommendations | `bookclerk-discover` (via registered `ContentSource` catalog APIs) |
