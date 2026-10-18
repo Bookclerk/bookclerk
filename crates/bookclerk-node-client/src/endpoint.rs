@@ -54,6 +54,9 @@ const HTTP_TIMEOUT_SECS: u64 = 30;
 /// Largest HTTP answer read (enrollment answers are tiny).
 const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// Seconds allowed for an artifact download.
+const ARTIFACT_TIMEOUT_SECS: u64 = 120;
+
 /// A byte stream to the owner, plain (loopback) or TLS.
 pub trait OwnerIo: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -301,17 +304,58 @@ impl OwnerEndpoint {
             io.write_all(head.as_bytes()).await?;
             io.write_all(body).await?;
             io.flush().await?;
-            read_http_response(&mut io).await
+            read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES).await
         };
         tokio::time::timeout(Duration::from_secs(HTTP_TIMEOUT_SECS), exchange)
             .await
             .map_err(|_| DialError::Timeout)?
     }
+
+    /// `GET path` with an `Authorization` header; answers the status and a
+    /// body of at most `max_body` bytes. The header is written straight to
+    /// the stream and never logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made, the answer is
+    /// malformed, or it is larger than `max_body`.
+    pub async fn get_authorized(
+        &self,
+        path: &str,
+        authorization: &str,
+        max_body: usize,
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let exchange = async {
+            let mut io = self.connect().await?;
+            let head = format!(
+                "GET {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
+                 Accept: application/octet-stream\r\nConnection: close\r\n\r\n",
+                self.authority(),
+            );
+            io.write_all(head.as_bytes()).await?;
+            io.flush().await?;
+            read_http_response(&mut io, max_body.saturating_add(MAX_HTTP_RESPONSE_BYTES)).await
+        };
+        let (status, body) =
+            tokio::time::timeout(Duration::from_secs(ARTIFACT_TIMEOUT_SECS), exchange)
+                .await
+                .map_err(|_| DialError::Timeout)??;
+        if body.len() > max_body {
+            return Err(DialError::Http);
+        }
+        Ok((status, body))
+    }
 }
 
-/// Reads one HTTP/1.1 answer: the status and the body (by
-/// `Content-Length`, chunked, or until close).
-async fn read_http_response(io: &mut Box<dyn OwnerIo>) -> Result<(u16, Vec<u8>), DialError> {
+/// Reads one HTTP/1.1 answer of at most `max_bytes` (head and body): the
+/// status and the body (by `Content-Length`, chunked, or until close).
+async fn read_http_response(
+    io: &mut Box<dyn OwnerIo>,
+    max_bytes: usize,
+) -> Result<(u16, Vec<u8>), DialError> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let mut eof = false;
@@ -319,7 +363,7 @@ async fn read_http_response(io: &mut Box<dyn OwnerIo>) -> Result<(u16, Vec<u8>),
         if let Some(at) = find(&buf, b"\r\n\r\n") {
             break at;
         }
-        if eof || buf.len() > MAX_HTTP_RESPONSE_BYTES {
+        if eof || buf.len() > max_bytes {
             return Err(DialError::Http);
         }
         eof = read_some(io, &mut buf, &mut chunk).await?;
@@ -357,7 +401,7 @@ async fn read_http_response(io: &mut Box<dyn OwnerIo>) -> Result<(u16, Vec<u8>),
         if done || eof {
             break;
         }
-        if buf.len() > MAX_HTTP_RESPONSE_BYTES {
+        if buf.len() > max_bytes {
             return Err(DialError::Http);
         }
         eof = read_some(io, &mut buf, &mut chunk).await?;

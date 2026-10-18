@@ -919,6 +919,18 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/plugins/{key}/versions/{version}/approve",
             post(crate::plugin_installs::approve_plugin_version),
         )
+        .route(
+            "/api/config/cluster-consents",
+            get(crate::cluster_link::api::get_cluster_consents),
+        )
+        .route(
+            "/api/config/cluster-consents/approve",
+            post(crate::cluster_link::api::post_cluster_consent_approve),
+        )
+        .route(
+            "/api/config/cluster-consents/revoke",
+            post(crate::cluster_link::api::post_cluster_consent_revoke),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",

@@ -24,6 +24,11 @@
 //! ([`super::trust`]): a Host node only claims jobs whose secrets it is
 //! trusted with, and [`super::handoff_routed_job`] repeats that check before
 //! the job's secrets would be handed over.
+//!
+//! A Host also narrows its own claims with a [`JobClaimFilter`]: the job
+//! kinds it can run and the plugin keys its operator consented to. A job
+//! whose plugins cannot be told from the job itself (a scan of every
+//! account, a listen-sync) never passes a filter.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -94,6 +99,108 @@ pub struct JobClaimRequest<'a> {
     pub lease_secs: u64,
     /// Semaphore limits.
     pub limits: JobClaimLimits,
+    /// The claimer's own narrowing; `None` claims every job it is trusted
+    /// with and can run.
+    pub filter: Option<&'a JobClaimFilter>,
+}
+
+/// What a Host is willing to claim: the job kinds it runs and the plugin
+/// keys its operator consented to. Both must admit a job.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JobClaimFilter {
+    /// Job kinds (`scan`, `acquire`, ...).
+    pub kinds: BTreeSet<String>,
+    /// Canonical plugin keys.
+    pub plugin_keys: BTreeSet<String>,
+}
+
+impl JobClaimFilter {
+    /// True when the filter admits nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty() || self.plugin_keys.is_empty()
+    }
+
+    /// True when `job` is of an admitted kind and every plugin it runs
+    /// ([`job_plugin_keys`]) is admitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    pub async fn admits(&self, store: &LibraryStore, job: &JobRecord) -> Result<bool> {
+        if !self.kinds.contains(job.kind.as_str()) {
+            return Ok(false);
+        }
+        Ok(job_plugin_keys(store, job)
+            .await?
+            .is_some_and(|keys| keys.is_subset(&self.plugin_keys)))
+    }
+}
+
+/// The plugin keys `job` runs, or `None` when the job alone does not say.
+///
+/// Only a scan or acquire says: the plugin of the instance it is pinned to
+/// and of each instance it requires, plus every plugin holding an
+/// `accounts` row with the account it names (within the pinned plugin when
+/// pinned). A scan or acquire of every account, any other kind, and a job
+/// naming an unknown instance or account answer `None`.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn job_plugin_keys(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<BTreeSet<String>>> {
+    if !matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
+        return Ok(None);
+    }
+    let mut keys = BTreeSet::new();
+    let pinned = match job.payload.plugin_instance_id.as_deref() {
+        None => None,
+        Some(raw) => {
+            let Some(key) = instance_plugin_key(store, raw).await? else {
+                return Ok(None);
+            };
+            keys.insert(key.clone());
+            Some(key)
+        }
+    };
+    for raw in &job.payload.requires {
+        let Some(key) = instance_plugin_key(store, raw).await? else {
+            return Ok(None);
+        };
+        keys.insert(key);
+    }
+    match job.payload.account.as_deref().filter(|a| !a.is_empty()) {
+        Some(account) => {
+            let mut query =
+                accounts::Entity::find().filter(accounts::Column::AccountId.eq(account));
+            if let Some(key) = pinned.as_deref() {
+                query = query.filter(accounts::Column::PluginKey.eq(key));
+            }
+            let rows = query.all(store.db()).await.map_err(LibraryError::Orm)?;
+            if rows.is_empty() {
+                return Ok(None);
+            }
+            keys.extend(rows.into_iter().map(|row| row.plugin_key));
+        }
+        // Every account of the pinned plugin stays within that plugin;
+        // every account of every plugin cannot be told.
+        None if pinned.is_none() => return Ok(None),
+        None => {}
+    }
+    Ok(Some(keys))
+}
+
+/// The plugin key of the instance `raw` names, when it exists.
+async fn instance_plugin_key(store: &LibraryStore, raw: &str) -> Result<Option<String>> {
+    let Ok(id) = PluginInstanceId::parse(raw) else {
+        return Ok(None);
+    };
+    Ok(load_plugin_instance(store, &id)
+        .await?
+        .map(|instance| instance.plugin_key))
 }
 
 /// A claimed job and the semaphore permits it holds.
@@ -289,6 +396,11 @@ pub async fn claim_routed_job(
     for job in candidates {
         if !job_trusted(store, &trust, &job).await? {
             continue;
+        }
+        if let Some(filter) = request.filter {
+            if !filter.admits(store, &job).await? {
+                continue;
+            }
         }
         if !node_can_run_job(store, request.node_id, &job.payload.requires).await? {
             continue;

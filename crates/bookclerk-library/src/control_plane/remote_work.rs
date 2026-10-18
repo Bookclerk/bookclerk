@@ -12,6 +12,9 @@
 //!   every renewal.
 //! - [`finish_remote_job`]: the fenced complete or fail, then the permits
 //!   are given back.
+//! - [`release_remote_job`]: the Host gives a job back unrun (its operator
+//!   no longer consents to the job's plugin); the job returns to `pending`
+//!   without spending the attempt, and the permits are given back.
 //! - [`write_back_job_secret`]: a refreshed store token, accepted only for
 //!   a secret the job was handed and only while the job's fence is live.
 //!
@@ -28,7 +31,8 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use zeroize::Zeroizing;
 
 use super::job_routing::{
-    claim_routed_job, job_semaphores, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
+    claim_routed_job, job_plugin_keys, job_semaphores, JobClaimFilter, JobClaimLimits,
+    JobClaimRequest, RoutedJobClaim,
 };
 use super::semaphore::{permits_held_by, release_permits, renew_permits, SemaphorePermit};
 use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
@@ -119,6 +123,9 @@ pub struct RemoteJobClaim {
     pub job: JobRecord,
     /// The account secrets the job needs, unsealed.
     pub secrets: Vec<JobSecret>,
+    /// The plugin keys the job runs ([`job_plugin_keys`]); empty when the
+    /// job alone does not say (only possible without a claim filter).
+    pub plugin_keys: Vec<String>,
 }
 
 /// Outcome of [`renew_remote_job`].
@@ -177,6 +184,9 @@ pub enum WriteBack {
 /// is failed with [`SECRETS_UNAVAILABLE`] (so it retries with backoff and
 /// any node holding the database may take it) and `None` is returned.
 ///
+/// `filter` is the Host's own narrowing ([`JobClaimFilter`]): only jobs of
+/// its kinds whose every plugin it consented to are claimed.
+///
 /// # Errors
 ///
 /// Returns an error when a read or write fails. Permits taken for a failed
@@ -186,6 +196,7 @@ pub async fn claim_remote_job(
     node_id: &str,
     resource_class: JobResourceClass,
     settings: RemoteClaimSettings,
+    filter: Option<&JobClaimFilter>,
 ) -> Result<Option<RemoteJobClaim>> {
     let owner = remote_lease_owner(node_id);
     let request = JobClaimRequest {
@@ -195,6 +206,7 @@ pub async fn claim_remote_job(
         owner: &owner,
         lease_secs: settings.lease_secs,
         limits: settings.limits,
+        filter,
     };
     let Some(claim) = claim_routed_job(store, &request).await? else {
         return Ok(None);
@@ -207,8 +219,16 @@ pub async fn claim_remote_job(
         let _ = release_permits(store, &permits).await;
         return Ok(None);
     };
+    let plugin_keys = job_plugin_keys(store, &job)
+        .await?
+        .map(|keys| keys.into_iter().collect())
+        .unwrap_or_default();
     match unseal_job_secrets(store, &job).await {
-        Ok(secrets) => Ok(Some(RemoteJobClaim { job, secrets })),
+        Ok(secrets) => Ok(Some(RemoteJobClaim {
+            job,
+            secrets,
+            plugin_keys,
+        })),
         Err(err) => {
             tracing::warn!(
                 job_id = %job.id,
@@ -434,6 +454,39 @@ pub async fn finish_remote_job(
         RemoteOutcome::Fail { kind, message } => store.fail_job(&fence, kind, message).await?,
     };
     if !finished {
+        return Ok(RemoteFinish::Lost);
+    }
+    let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
+    release_permits(store, &permits).await?;
+    Ok(RemoteFinish::Done)
+}
+
+/// Gives back the job `node_id` holds at `generation` without running it:
+/// the job returns to `pending` and its semaphore permits are released.
+///
+/// The attempt is not spent, unless the job carries a checkpoint (it may
+/// have resumed, which spent none, or saved progress under this claim), in
+/// which case it is kept as spent and the job resumes from the checkpoint.
+/// Nothing is refunded twice: a release never lowers the count below what
+/// the claim raised it by. The release is accepted from a node that is no
+/// longer trusted, since it only gives work back.
+///
+/// # Errors
+///
+/// Returns an error when a read or write fails.
+pub async fn release_remote_job(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+    limits: JobClaimLimits,
+) -> Result<RemoteFinish> {
+    let fence = remote_job_fence(node_id, job_id, generation);
+    let Some(job) = fenced_job(store, &fence).await? else {
+        return Ok(RemoteFinish::Lost);
+    };
+    let keep_spent = job.payload.checkpoint.is_some();
+    if !store.release_job_claim(&fence, keep_spent).await? {
         return Ok(RemoteFinish::Lost);
     }
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;

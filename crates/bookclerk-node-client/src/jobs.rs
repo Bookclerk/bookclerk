@@ -21,6 +21,8 @@ pub struct HostJob {
     pub fence: i64,
     /// Lease length the owner granted.
     pub lease_secs: u64,
+    /// Plugin keys the job runs (each consented when it was claimed).
+    pub plugin_keys: Vec<String>,
 }
 
 /// The job's secrets, opened with this node's box key. Values are

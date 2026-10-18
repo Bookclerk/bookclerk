@@ -1082,4 +1082,19 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         enrolled_at TEXT NOT NULL
     )",
     ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS remote_plugin_consents (
+        owner_cluster_id TEXT NOT NULL,
+        plugin_key TEXT NOT NULL,
+        requested_version TEXT NOT NULL,
+        requested_grant_json TEXT NOT NULL,
+        version TEXT,
+        approved_request_json TEXT,
+        grant_json TEXT,
+        approved_at TEXT,
+        approved_by TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_cluster_id, plugin_key)
+    )",
+    ),
 ];

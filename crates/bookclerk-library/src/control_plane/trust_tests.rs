@@ -47,6 +47,7 @@ fn request<'a>(node_id: &'a str, claimant: Claimant, owner: &'a str) -> JobClaim
             class: 8,
             plugin_instance: 8,
         },
+        filter: None,
     }
 }
 

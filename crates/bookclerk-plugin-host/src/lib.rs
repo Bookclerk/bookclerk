@@ -66,6 +66,7 @@ mod kv_binding;
 mod manifest;
 mod queue_producer;
 mod registry;
+mod remote_consent;
 mod rpc;
 mod rpc_session;
 mod spawn_plan;
@@ -100,19 +101,19 @@ pub use consent::{
     grant_covers, grant_has_binding, grant_revision, grant_within_ceiling,
     granted_consumers_from_manifest, granted_database_bindings, granted_jobs_from_manifest,
     granted_queue_consumers, host_cpu_cores_max, host_cpu_rate_max, host_overlay_config_digest,
-    inject_workerd_grant_env, jail_process_overhead, network_compatible, node_logical_cpus,
-    overlay_host_implied_network, pending_structural, percent_to_cores, queue_consumer_grant,
-    queue_producer_grant, reconcile_host_overlay_authority, require_binding, require_grant,
-    spawn_config_for_grant, spawn_grant, validate_approved_grant, validate_described_capabilities,
-    validate_described_config_options, windows_session_active_processes, GrantedEventConsumer,
-    PendingStructural, PluginGrant, PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION,
-    KNOWN_HOST_BINDINGS, PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT,
-    PLUGIN_JAIL_CPU_RATE_DEFAULT, PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT,
-    PLUGIN_JAIL_EXTRA_PROCESSES_MAX, PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX,
-    PLUGIN_STATE_BUDGET_MIB_DEFAULT, PLUGIN_STATE_BUDGET_MIB_MAX, QUEUE_CONSUMER_BINDING_PREFIX,
-    QUEUE_PRODUCER_BINDING_PREFIX, WINDOWS_SESSION_PROCESS_BASELINE, WORKERD_GRANT_CPU_MS_ENV,
-    WORKERD_GRANT_DOMAINS_ENV, WORKERD_GRANT_NETWORK_MODE_ENV, WORKERD_GRANT_POLICY_ENV,
-    WORKERD_GRANT_SUBREQUESTS_ENV,
+    inject_workerd_grant_env, is_platform_envelope, jail_process_overhead, network_compatible,
+    node_logical_cpus, overlay_host_implied_network, pending_structural, percent_to_cores,
+    queue_consumer_grant, queue_producer_grant, reconcile_host_overlay_authority, require_binding,
+    require_grant, spawn_config_for_grant, spawn_grant, validate_approved_grant,
+    validate_described_capabilities, validate_described_config_options,
+    windows_session_active_processes, GrantedEventConsumer, PendingStructural, PluginGrant,
+    PluginGrantStore, GRANTS_FILE, GRANT_SCHEMA_VERSION, KNOWN_HOST_BINDINGS,
+    PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT,
+    PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
+    PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
+    PLUGIN_STATE_BUDGET_MIB_MAX, QUEUE_CONSUMER_BINDING_PREFIX, QUEUE_PRODUCER_BINDING_PREFIX,
+    WINDOWS_SESSION_PROCESS_BASELINE, WORKERD_GRANT_CPU_MS_ENV, WORKERD_GRANT_DOMAINS_ENV,
+    WORKERD_GRANT_NETWORK_MODE_ENV, WORKERD_GRANT_POLICY_ENV, WORKERD_GRANT_SUBREQUESTS_ENV,
 };
 pub use crates_io::search_crates_io;
 pub use deployment::{
@@ -173,6 +174,10 @@ pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
     family_keyword, host_target_triple, validate_plugin_id, BookclerkPackageMetadata,
     PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, PRODUCT_KEYWORD, REGISTRY_KEYWORD,
+};
+pub use remote_consent::{
+    approve_remote_request, narrow_remote_grant, remote_consent, remote_consent_state,
+    remote_platform_auto_approval, remote_request_within, RemoteConsentState, RemoteNarrowing,
 };
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,

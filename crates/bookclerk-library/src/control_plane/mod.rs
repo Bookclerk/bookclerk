@@ -19,6 +19,8 @@ mod node_queue;
 mod node_status;
 mod ownership;
 mod placement;
+mod remote_catalog;
+mod remote_consents;
 mod remote_work;
 mod routing;
 mod schemas;
@@ -79,9 +81,9 @@ pub use instances::{
     list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
 };
 pub use job_routing::{
-    account_semaphore, claim_routed_job, class_semaphore, instance_semaphore, job_semaphores,
-    node_can_run_job, resolve_job_requirements, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
-    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    account_semaphore, claim_routed_job, class_semaphore, instance_semaphore, job_plugin_keys,
+    job_semaphores, node_can_run_job, resolve_job_requirements, JobClaimFilter, JobClaimLimits,
+    JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
@@ -104,11 +106,20 @@ pub use placement::{
     MAX_NODE_LABELS, MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE,
     SCHEDULER_LEASE_TTL, TARGET_LABEL,
 };
+pub use remote_catalog::{
+    artifact_served_to_node, record_remote_observation, remote_deployments_for_node,
+    remote_instance_for_node, RemoteDeploymentEntry, RemoteInstance, RemoteObservation,
+};
+pub use remote_consents::{
+    approve_remote_plugin, list_remote_plugin_consents, load_remote_plugin_consent,
+    record_remote_plugin_request, revoke_remote_plugin, RemoteApproval, RemotePluginConsent,
+    REMOTE_CONSENT_PLATFORM,
+};
 pub use remote_work::{
-    claim_remote_job, finish_remote_job, job_secret_refs, remote_job_fence, remote_lease_owner,
-    renew_remote_job, write_back_job_secret, JobSecret, JobSecretRef, RemoteClaimSettings,
-    RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack, MAX_WRITE_BACK_BYTES,
-    REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
+    claim_remote_job, finish_remote_job, job_secret_refs, release_remote_job, remote_job_fence,
+    remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret, JobSecretRef,
+    RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack,
+    MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
 };
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{

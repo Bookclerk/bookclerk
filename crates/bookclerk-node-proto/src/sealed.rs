@@ -50,6 +50,9 @@ pub const SECRETS_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 job-secrets";
 /// Domain tag that starts the associated data of a token write-back.
 pub const SECRET_UPDATE_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 secret-update";
 
+/// Domain tag that starts the associated data of an instance's `SECRETS`.
+pub const INSTANCE_SECRETS_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 instance-secrets";
+
 /// Bytes a sealed box adds to its plaintext (ephemeral key and tag).
 pub const SEALED_BOX_OVERHEAD: usize = PUBLIC_KEY_LEN + 16;
 
@@ -385,10 +388,102 @@ pub fn open_secret_update(
     Ok(SecretValue::new(std::mem::take(&mut *plaintext)))
 }
 
+/// Associated data of `instance_id`'s `SECRETS` handed to `node_id` at
+/// document `revision`.
+#[must_use]
+pub fn instance_secrets_aad(node_id: &str, instance_id: &str, revision: i64) -> Vec<u8> {
+    let revision = revision.to_be_bytes();
+    let fields: [&[u8]; 3] = [node_id.as_bytes(), instance_id.as_bytes(), &revision];
+    let mut out = INSTANCE_SECRETS_AAD_DOMAIN.to_vec();
+    for field in fields {
+        out.extend_from_slice(&u32::try_from(field.len()).unwrap_or(u32::MAX).to_be_bytes());
+        out.extend_from_slice(field);
+    }
+    out
+}
+
+/// Seals an instance's `SECRETS` payload (JSON bytes) for `node_id`'s box
+/// key `recipient`, bound to the instance and document revision, as
+/// base64url text for an `instance_config` frame.
+///
+/// # Errors
+///
+/// Returns [`SealError`] when the recipient key is invalid.
+pub fn seal_instance_secrets(
+    recipient: &[u8],
+    ephemeral_secret: &[u8; PUBLIC_KEY_LEN],
+    node_id: &str,
+    instance_id: &str,
+    revision: i64,
+    secrets_json: &[u8],
+) -> Result<String, SealError> {
+    let sealed = seal(
+        recipient,
+        ephemeral_secret,
+        &instance_secrets_aad(node_id, instance_id, revision),
+        secrets_json,
+    )?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sealed))
+}
+
+/// Opens a payload made by [`seal_instance_secrets`] with the node's box
+/// secret.
+///
+/// # Errors
+///
+/// Returns [`SealError::Open`] when it was not sealed to this node for this
+/// instance and revision.
+pub fn open_instance_secrets(
+    recipient_secret: &[u8; PUBLIC_KEY_LEN],
+    node_id: &str,
+    instance_id: &str,
+    revision: i64,
+    sealed: &str,
+) -> Result<SecretValue, SealError> {
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(sealed.as_bytes())
+        .map_err(|_| SealError::Open)?;
+    let mut plaintext = open(
+        recipient_secret,
+        &instance_secrets_aad(node_id, instance_id, revision),
+        &raw,
+    )?;
+    Ok(SecretValue::new(std::mem::take(&mut *plaintext)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::keys::box_public_key;
+
+    #[test]
+    fn instance_secrets_open_only_for_their_node_instance_and_revision() {
+        let node_secret = [9u8; 32];
+        let sealed = seal_instance_secrets(
+            &box_public_key(&node_secret),
+            &[8; 32],
+            "node",
+            "inst",
+            4,
+            br#"{"api_key":"k-123"}"#,
+        )
+        .unwrap();
+        assert!(!sealed.contains("k-123"));
+        let opened = open_instance_secrets(&node_secret, "node", "inst", 4, &sealed).unwrap();
+        assert_eq!(opened.expose(), br#"{"api_key":"k-123"}"#);
+        for (node, instance, revision) in [
+            ("other", "inst", 4),
+            ("node", "other", 4),
+            ("node", "inst", 5),
+        ] {
+            assert_eq!(
+                open_instance_secrets(&node_secret, node, instance, revision, &sealed),
+                Err(SealError::Open)
+            );
+        }
+        // Never opens as a job bundle with the same bytes.
+        assert!(open_secrets(&node_secret, "node", "inst", 4, &sealed).is_err());
+    }
 
     fn entry(value: &[u8]) -> SecretEntry {
         SecretEntry {

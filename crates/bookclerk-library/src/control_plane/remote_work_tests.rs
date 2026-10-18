@@ -201,7 +201,7 @@ async fn world() -> World {
 }
 
 async fn claim(store: &LibraryStore) -> Option<RemoteJobClaim> {
-    claim_remote_job(store, HOST, JobResourceClass::Network, SETTINGS)
+    claim_remote_job(store, HOST, JobResourceClass::Network, SETTINGS, None)
         .await
         .unwrap()
 }
@@ -470,4 +470,277 @@ async fn an_acquire_completes_only_through_its_upload() {
         .unwrap(),
         RemoteFinish::Refused("acquire_completes_on_upload")
     );
+}
+
+fn filter(kinds: &[&str], plugins: &[&str]) -> JobClaimFilter {
+    JobClaimFilter {
+        kinds: kinds.iter().map(|k| (*k).to_string()).collect(),
+        plugin_keys: plugins.iter().map(|p| (*p).to_string()).collect(),
+    }
+}
+
+async fn claim_filtered(store: &LibraryStore, filter: &JobClaimFilter) -> Option<RemoteJobClaim> {
+    claim_remote_job(
+        store,
+        HOST,
+        JobResourceClass::Network,
+        SETTINGS,
+        Some(filter),
+    )
+    .await
+    .unwrap()
+}
+
+/// A Host's own filter narrows its claims: a plugin it did not consent to
+/// and a kind it does not run are never claimed, and the job stays
+/// pending, unspent, for a node that can take it.
+#[tokio::test]
+async fn a_host_claims_only_consented_plugins_and_kinds() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+
+    for refused in [
+        filter(&["scan"], &[]),
+        filter(&["scan"], &["path:file:///tmp/other#other"]),
+        filter(&["acquire"], &[PLUGIN]),
+        filter(&[], &[PLUGIN]),
+    ] {
+        assert!(
+            claim_filtered(&w.store, &refused).await.is_none(),
+            "{refused:?} claimed the job"
+        );
+    }
+    let untouched = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(untouched.state, crate::models::JobState::Pending);
+    assert_eq!(untouched.attempt_count, 0);
+    assert!(
+        live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a filtered-out job takes no permit"
+    );
+
+    let claimed = claim_filtered(&w.store, &filter(&["scan"], &[PLUGIN]))
+        .await
+        .expect("a consented plugin is claimed");
+    assert_eq!(claimed.job.id, job_id);
+    assert_eq!(claimed.plugin_keys, vec![PLUGIN.to_string()]);
+}
+
+/// A scan of every account names no plugin, so no filter admits it.
+#[tokio::test]
+async fn a_job_whose_plugins_are_unknown_passes_no_filter() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job = w
+        .store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Scan,
+            payload: JobPayload::default(),
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 256,
+            run_after: None,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(job, EnqueueOutcome::Created { .. }));
+    let record = w
+        .store
+        .list_job_claim_candidates(JobResourceClass::Network, 8)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(job_plugin_keys(&w.store, &record).await.unwrap(), None);
+    assert!(!filter(&["scan"], &[PLUGIN])
+        .admits(&w.store, &record)
+        .await
+        .unwrap());
+}
+
+/// A released job goes back to pending without spending its attempt and
+/// with its permits given back; the released fence is lost.
+#[tokio::test]
+async fn a_released_job_returns_unspent() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+    assert_eq!(claimed.job.attempt_count, 1);
+
+    assert_eq!(
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+            .await
+            .unwrap(),
+        RemoteFinish::Done
+    );
+    let back = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(back.state, crate::models::JobState::Pending);
+    assert_eq!(back.attempt_count, 0);
+    assert!(
+        live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "permits are given back"
+    );
+    assert_eq!(
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+            .await
+            .unwrap(),
+        RemoteFinish::Lost
+    );
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, SETTINGS, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Lost
+    );
+    let again = claim(&w.store).await.expect("the job is claimable again");
+    assert_eq!(again.job.id, job_id);
+    assert!(again.job.lease_generation > fence);
+}
+
+/// What a Host reads about its deployments is scoped to the deployments
+/// that target it: another node's instance, observation and archive are
+/// out of reach, a Host cannot claim `healthy`, and a revoked Host reads
+/// nothing.
+#[tokio::test]
+async fn remote_reads_are_scoped_to_the_nodes_own_deployments() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let actor = ConfigActor::Operator { id: "test".into() };
+    let url = put_artifact_blob(&w.store, b"archive bytes").await.unwrap();
+    let archive = url.strip_prefix("blob:sha256:").unwrap().to_string();
+    add_plugin_version(
+        &w.store,
+        &actor,
+        PluginVersion {
+            plugin_key: PLUGIN.into(),
+            version: "1.0.0".into(),
+            manifest_id: "store".into(),
+            manifest_toml: String::new(),
+            settings: Default::default(),
+            artifacts: vec![PluginArtifact {
+                target: "any".into(),
+                url: url.clone(),
+                format: "tar.gz".into(),
+                archive_root: ".".into(),
+                archive_sha256: archive.clone(),
+                payload_root_sha256: "ab".repeat(32),
+                executable: "guest".into(),
+            }],
+            publisher_verified: false,
+            grant_json: String::new(),
+            coordinate: String::new(),
+            installed_at: String::new(),
+            installed_by: String::new(),
+        },
+    )
+    .await
+    .unwrap();
+    activate_version(&w.store, &actor, PLUGIN, "1.0.0", HOST)
+        .await
+        .unwrap();
+    let here = create_plugin_instance(&w.store, &actor, PLUGIN, "")
+        .await
+        .unwrap();
+    let elsewhere = create_plugin_instance(&w.store, &actor, PLUGIN, "")
+        .await
+        .unwrap();
+    let mine = ensure_plugin_deployment(&w.store, &actor, &here.id, HOST, DesiredState::Present)
+        .await
+        .unwrap();
+    let theirs = ensure_plugin_deployment(
+        &w.store,
+        &actor,
+        &elsewhere.id,
+        "node-other",
+        DesiredState::Present,
+    )
+    .await
+    .unwrap();
+
+    let listed = remote_deployments_for_node(&w.store, HOST).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].deployment.deployment_id, mine.deployment_id);
+    assert_eq!(listed[0].version.as_ref().unwrap().version, "1.0.0");
+    assert!(remote_instance_for_node(&w.store, HOST, here.id.as_str())
+        .await
+        .unwrap()
+        .is_some_and(|instance| instance.trust != NodeTrust::All));
+    assert!(
+        remote_instance_for_node(&w.store, HOST, elsewhere.id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(remote_instance_for_node(&w.store, HOST, "not an id")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(artifact_served_to_node(&w.store, HOST, &archive)
+        .await
+        .unwrap());
+    assert!(!artifact_served_to_node(&w.store, HOST, &"cd".repeat(32))
+        .await
+        .unwrap());
+    let observation = |deployment_id, status| RemoteObservation {
+        deployment_id,
+        status,
+        detail: "awaiting_host_consent",
+        applied_config_revision: None,
+    };
+    assert!(record_remote_observation(
+        &w.store,
+        HOST,
+        "inc",
+        &observation(&mine.deployment_id, DeploymentStatus::Error)
+    )
+    .await
+    .unwrap());
+    assert!(!record_remote_observation(
+        &w.store,
+        HOST,
+        "inc",
+        &observation(&theirs.deployment_id, DeploymentStatus::Error)
+    )
+    .await
+    .unwrap());
+    assert!(
+        !record_remote_observation(
+            &w.store,
+            HOST,
+            "inc",
+            &observation(&mine.deployment_id, DeploymentStatus::Healthy)
+        )
+        .await
+        .unwrap(),
+        "a host does not claim healthy"
+    );
+
+    node_credentials::Entity::update_many()
+        .col_expr(
+            node_credentials::Column::RevokedAt,
+            Expr::value(Some(chrono::Utc::now().to_rfc3339())),
+        )
+        .filter(node_credentials::Column::NodeId.eq(HOST))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(remote_deployments_for_node(&w.store, HOST)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(remote_instance_for_node(&w.store, HOST, here.id.as_str())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!artifact_served_to_node(&w.store, HOST, &archive)
+        .await
+        .unwrap());
 }

@@ -178,6 +178,7 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
                     class: cfg.jobs.concurrency.network.max(1),
                     plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
                 },
+                filter: None,
             };
             match claim_with_replay(&library, &claim).await {
                 Ok(Some(claimed)) => {
@@ -364,6 +365,7 @@ async fn run_fenced_job(
         checkpoint: job.payload.checkpoint.clone(),
         invocation_sequence: job.payload.invocation_sequence.unwrap_or(1).max(1),
         host: None,
+        host_bindings: None,
     };
     if job.state == JobState::Cancelled || job.cancel_requested {
         ctx.request_cancel();

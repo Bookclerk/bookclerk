@@ -1126,17 +1126,15 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   through its own `JobTransport` (`TransportRunner`), with the handoff on
   `JobExecCtx::host`; an acquire is failed as `upload_unavailable` before
   it runs, since `complete` waits for its upload (step 9).
-- **Claims stay off in the daemon** (`HOST_MAX_JOBS = 0`). Every job a
-  Host is trusted with runs an owner plugin, and a Host runs one only
-  after its own operator approves it (step 8). Until then the daemon
-  connects, heartbeats, acks wakes and resumes, but claims nothing; the
-  handoff on `JobExecCtx::host` is not yet routed to a guest's `SECRETS`
-  binding. Rejected: claiming and failing what cannot run, which would
-  spend owner attempts and starve owner nodes.
+- **Claims stay off in the daemon** until host consent (step 8, below).
+  Every job a Host is trusted with runs an owner plugin, and a Host runs
+  one only after its own operator approves it. Rejected: claiming and
+  failing what cannot run, which would spend owner attempts and starve
+  owner nodes.
 - **Not decided.** How a Host's scan returns its results (book rows) to
   the owner. The design has no frame or binding for it, and library SQL
   for owner plugins on a Host is a non-goal.
-- **Tests** (`cluster_link_tests.rs`, owner and Host in one process): a
+- **Tests** (`cluster_link/tests.rs`, owner and Host in one process): a
   member's Host enrolls over loopback, heartbeats into `node_status`,
   claims its owner's scan, runs it through the daemon's job transport
   with the opened token, writes a refreshed token back, completes under
@@ -1147,6 +1145,97 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   cancelled. A wrong SPKI pin fails the TLS handshake before the link is
   spent and the socket never opens; an unpinned self-signed owner is
   refused; the right pin enrolls and connects.
+
+### Host consent
+
+H-4 step 8. A Host runs an owner plugin only after the Host's own
+operator approves it, and only with what was approved.
+
+- **Requests.** `deployments.list` (owner, scoped to deployments that
+  target the node and should run; empty for a node trusted with nothing)
+  carries each instance's plugin key, whether it is the default instance,
+  and the plugin's active version: manifest, settings schema, artifacts,
+  and the cluster operator's approved grant. The Host records that grant
+  as the request in `remote_plugin_consents` (keyed by owner cluster and
+  plugin key). An unchanged request writes nothing; a changed one keeps
+  any stored approval, which is then re-evaluated.
+- **Approval.** `bookclerk clusters approve <plugin> [--cluster]
+  [--version] [--deny-domain]… [--deny-binding]… [--deny-network]` or
+  operator-only `POST /api/config/cluster-consents/approve` stores the
+  request as reviewed plus the consent (the request minus the denials;
+  naming something the request does not ask for is refused). The write
+  is a compare-and-swap on the recorded request, so a request that
+  changed after it was read is not approved unseen. `revoke` clears the
+  approval and keeps the request. `bookclerk clusters list|consents` and
+  `GET /api/config/cluster-consents` show the state: `consented`,
+  `awaiting_host_consent`, `awaiting_host_reapproval` (a new version asks
+  for something outside what was reviewed: a domain, TCP target, CIDR,
+  binding, flag, entrypoint, larger budget, or network at all), or
+  `invalid_grant`.
+- **Effective grant.** The current request intersected with the consent.
+  Removed network destinations are recorded as operator denials, so the
+  spawn path's re-merge of manifest domains cannot bring them back.
+- **Platform plugins** are approved without asking only when the key is a
+  Bookclerk platform key, this Host's own provenance check says its install
+  of that key is platform-bundled with the same payload digest as the
+  owner's artifact, and the request stays inside the platform envelope.
+  Recorded with `approved_by = "platform"`.
+- **Claims.** The claim frame carries `filter {kinds, plugins}`: the kinds
+  this Host runs and the plugin keys it consented to (and has fetched).
+  The owner applies it after the trust predicate and before permits and
+  the CAS (`JobClaimFilter`; a job's plugins are its pinned instance's key,
+  its required instances' keys, and its accounts' keys), so an unconsented
+  plugin's job is never claimed. With no consented plugin the Host sends
+  no claim. The Host checks again when a job arrives and gives back a
+  mismatch with `release`, which returns it to `pending` without spending
+  the attempt (unless it has a checkpoint) and frees its permits.
+- **Revoke mid-job.** The link supervisor re-reads consent rows every 5 s
+  and on approve/revoke through the API, so a CLI revoke is seen without a
+  wake. Losing consent cancels the plugin's held jobs and gives them back
+  with `release`, then reports the deployment `error:
+  awaiting_host_consent`.
+- **Fetch.** For a consented instance the Host materializes the version:
+  a `blob:` archive comes from `GET /api/node/v1/artifacts/{sha256}` with
+  `Authorization: Bookclerk-Node <node_id> <issued_at> <sig>` (Ed25519 over
+  cluster, node, owner origin, digest and time; 5 minutes of skew either
+  way; served only for archives of versions deployed to that node; every
+  refusal is the same 404), is checked against its digest before it is
+  stored in the Host's own `plugin_artifacts`, and extracted by the
+  ordinary materializer, which checks the archive and payload digests.
+  `https:` archives are fetched by the materializer; `file:` is refused.
+  Nothing is written to the Host's `plugin_versions`, so its own
+  reconciler never runs an owner plugin.
+- **Configuration.** `instance.config` answers `CONFIG` and, only for a
+  node trusted with everything (instances have no owner yet), `SECRETS`
+  sealed to the node's box key and bound to node, instance and revision
+  (`bookclerk-node.v1 instance-secrets`); otherwise `secrets_withheld`.
+  The Host re-reads it on every connection and on `deployment.changed`,
+  `install.changed`, `placement.changed` and `configuration.changed`
+  wakes, and reports `materialized` with the applied revision through the
+  `observation` frame (a Host may report only `materialized` or `error`,
+  only for its own deployments).
+- **Bindings.** A handed job's guest bindings (`JobExecCtx::host_bindings`)
+  are built from the catalog entry and the job's handed secrets: `CONFIG`,
+  `SECRETS` only under a consented `secrets` binding, and the store
+  credentials of the job's accounts. They live in memory only, redact
+  their `Debug`, and are zeroized on drop.
+- **Still nothing runs.** No job kind runs on a Host yet
+  (`HOST_RUNNABLE_KINDS` is empty): a scan's results have no way back
+  (not decided), and an acquire waits for streamed uploads (step 9). The
+  in-process job transport refuses a handed job outright, since it would
+  run against the Host's own library.
+- **Tests** (`cluster_link/tests.rs`): an Administrator's Host records the
+  request, reports `awaiting_host_consent`, fetches nothing and never
+  claims the queued scan; unsigned, malformed and forged artifact requests
+  get 404; after approval the archive comes over the endpoint and the scan
+  runs with `CONFIG`, the instance's `SECRETS` and the account credential
+  in its bindings; a configuration change wakes the Host and the next
+  observation carries the new revision; no secret appears in TRACE logs,
+  plain or base64. A Member's Host gets `CONFIG` but not the instance's
+  secrets. A CLI revoke mid-job cancels the run and gives the job back
+  unspent, and nothing is claimed again. Library tests cover the claim
+  filter, release, and read scoping; plugin-host tests cover narrowing,
+  re-approval and the platform rule.
 
 ## Consequences
 
@@ -1167,7 +1256,8 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   `domain_events` gains `queue_name`, `content_type`, and `deliver_after`
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
   `nodes` gains `target`, `labels_json`, `kind`, and `owner_user_id`.
-  H-4 adds `node_enrollment_links`, `node_credentials`, and `cluster_links`.
+  H-4 adds `node_enrollment_links`, `node_credentials`, `cluster_links`,
+  and `remote_plugin_consents`.
   Checksum of the
   unreleased pack changes. Existing development databases fail closed until
   recreated (`cargo reset --yes` or a new database). That matches the

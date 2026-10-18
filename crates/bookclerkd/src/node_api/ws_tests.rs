@@ -567,6 +567,7 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
             Body::Claim {
                 item: ITEM_JOB.into(),
                 class: None,
+                filter: None,
             },
         ),
     )

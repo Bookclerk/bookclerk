@@ -1,4 +1,4 @@
-//! This daemon as a host node of owner clusters (H-4 design, step 7).
+//! This daemon as a host node of owner clusters (H-4 design, steps 7-8).
 //!
 //! At startup, every active `cluster_links` row in this install's database
 //! gets one [`HostClient`]: it connects to the owner's node socket under
@@ -7,15 +7,31 @@
 //! fences across reconnects. A link enrolled while the daemon runs is
 //! picked up at the next start.
 //!
-//! Claimed jobs run through the daemon's own job transport
-//! ([`TransportRunner`] over [`InProcessJobTransport`]), with the owner's
-//! handed secrets and token write-back on [`JobExecCtx::host`]. Claims stay
-//! off ([`HOST_MAX_JOBS`] is zero) until host consent lands (step 8): every
-//! job a host may claim runs an owner plugin, and a host runs an owner
-//! plugin only after its own operator approves it.
+//! Each link also runs a [`consent::LinkSupervisor`]: it reads what the
+//! owner deployed here, records each plugin's request in
+//! `remote_plugin_consents`, materializes and configures only what this
+//! host's operator approved (`bookclerk clusters approve`), and tells the
+//! client which plugin keys it may claim jobs for. The client sends that
+//! set with every claim, so the owner never hands it a job for a plugin
+//! this host has not consented to; a revoke cancels and gives back held
+//! jobs of that plugin.
+//!
+//! A claimed job runs through a [`JobTransport`] ([`TransportRunner`]) with
+//! the owner's handed secrets and token write-back on [`JobExecCtx::host`]
+//! and the guest's `CONFIG`, `SECRETS` and store credentials on
+//! [`JobExecCtx::host_bindings`] ([`remote_bindings::host_job_bindings`]).
+//! No job kind runs on a host yet ([`HOST_RUNNABLE_KINDS`] is empty): scan
+//! results have no way back to the owner and acquire waits for streamed
+//! uploads (step 9), so a host claims nothing even when consented. The
+//! in-process transport refuses host jobs outright, since it would run
+//! them against this install's own library.
 //!
 //! A close with 4403 (this node revoked) marks the link `revoked`, cancels
 //! held work, and stops that client; the link is not dialed again.
+
+pub mod api;
+pub mod consent;
+pub mod remote_bindings;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,10 +49,15 @@ use tokio::sync::watch;
 use crate::api::AppState;
 use crate::job_handler::{InProcessJobTransport, JobCommand, JobExecCtx, JobTransport};
 
-/// Jobs a host client claims at once. Zero until host consent (step 8):
-/// nothing on a host may run an owner plugin before its operator approves
-/// it, and every job a host is trusted with runs one.
-pub const HOST_MAX_JOBS: usize = 0;
+use self::remote_bindings::{host_job_bindings, RemoteCatalog};
+
+/// Jobs a host client holds at once.
+pub const HOST_MAX_JOBS: usize = 2;
+
+/// Job kinds a host claims. Empty until a host's results have a way back
+/// to the owner: a scan's titles (pending a decision on returning them)
+/// and an acquire's files (streamed uploads, step 9).
+pub const HOST_RUNNABLE_KINDS: &[&str] = &[];
 
 /// Error kind for an acquire handed to a host before streamed uploads
 /// (step 9) give its result a way back to the owner.
@@ -50,12 +71,14 @@ pub const INVALID_HANDED_JOB: &str = "invalid_job";
 pub struct TransportRunner<T> {
     /// The job transport.
     transport: T,
+    /// The link's catalog of consented, fetched instances.
+    catalog: Arc<RemoteCatalog>,
 }
 
 impl<T> TransportRunner<T> {
-    /// A runner over `transport`.
-    pub fn new(transport: T) -> Self {
-        Self { transport }
+    /// A runner over `transport` for the instances in `catalog`.
+    pub fn new(transport: T, catalog: Arc<RemoteCatalog>) -> Self {
+        Self { transport, catalog }
     }
 }
 
@@ -74,6 +97,8 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
             .map_err(|_| invalid("malformed job payload"))?;
         let command =
             JobCommand::from_parts(kind, payload).map_err(|err| invalid(&err.to_string()))?;
+        // Fail closed: no consented, fetched instance, no run.
+        let bindings = Arc::new(host_job_bindings(&self.catalog, &ctx)?);
         let lease = chrono::Duration::seconds(i64::try_from(ctx.job.lease_secs).unwrap_or(60));
         let exec = JobExecCtx {
             fence: remote_job_fence(&ctx.job.node_id, &ctx.job.job.id, ctx.job.fence),
@@ -84,6 +109,7 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
             checkpoint: command.payload.checkpoint.clone(),
             invocation_sequence: command.payload.invocation_sequence.unwrap_or(1).max(1),
             host: None,
+            host_bindings: Some(bindings),
         };
         let cancel = exec.cancel.clone();
         let exec = JobExecCtx {
@@ -112,7 +138,15 @@ pub fn spawn_cluster_links(state: Arc<AppState>) {
                 return;
             }
         };
-        let files_dir = state.config.read().await.paths().files_dir.clone();
+        let (files_dir, config) = {
+            let cfg = state.config.read().await;
+            (cfg.paths().files_dir.clone(), cfg.clone())
+        };
+        // A failed discovery approves no platform plugin automatically.
+        let platform_payloads: std::collections::BTreeMap<String, String> =
+            tokio::task::spawn_blocking(move || consent::platform_payloads(&config))
+                .await
+                .unwrap_or_default();
         for link in links.into_iter().filter(|link| link.is_active()) {
             let keys = match load_cluster_link_keys(&library, &link).await {
                 Ok(keys) => keys,
@@ -133,24 +167,44 @@ pub fn spawn_cluster_links(state: Arc<AppState>) {
                 software_version: env!("CARGO_PKG_VERSION").into(),
                 incarnation: current_process_incarnation().into(),
                 max_jobs: HOST_MAX_JOBS,
+                claim_kinds: HOST_RUNNABLE_KINDS
+                    .iter()
+                    .map(|kind| (*kind).to_string())
+                    .collect(),
                 timing: ClientTiming::default(),
             };
-            let runner = TransportRunner::new(InProcessJobTransport::new(Arc::clone(&state)));
-            let client = match HostClient::new(
+            let catalog = Arc::new(RemoteCatalog::default());
+            let runner = TransportRunner::new(
+                InProcessJobTransport::new(Arc::clone(&state)),
+                Arc::clone(&catalog),
+            );
+            let (client, handle) = match HostClient::new(
                 config,
                 runner,
                 Box::new(NodeSampler::new(&files_dir)),
             ) {
-                Ok((client, _handle)) => client,
+                Ok(started) => started,
                 Err(err) => {
                     tracing::error!(%cluster_id, error = %err, "cluster link refused by the transport policy");
                     continue;
                 }
             };
+            let (stop, shutdown) = watch::channel(false);
+            tokio::spawn(
+                consent::LinkSupervisor {
+                    library: library.clone(),
+                    files_dir: files_dir.clone(),
+                    handle,
+                    catalog,
+                    platform_payloads: platform_payloads.clone(),
+                }
+                .run(shutdown.clone()),
+            );
             let library = library.clone();
             tokio::spawn(async move {
-                let (_stop, shutdown) = watch::channel(false);
-                if client.run(shutdown).await == ClientExit::Revoked {
+                let exit = client.run(shutdown).await;
+                let _ = stop.send(true);
+                if exit == ClientExit::Revoked {
                     for attempt in 0..5u32 {
                         match set_cluster_link_state(&library, &cluster_id, CLUSTER_LINK_REVOKED)
                             .await
@@ -169,5 +223,4 @@ pub fn spawn_cluster_links(state: Arc<AppState>) {
 }
 
 #[cfg(test)]
-#[path = "cluster_link_tests.rs"]
 mod tests;
