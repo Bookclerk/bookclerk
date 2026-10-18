@@ -4,7 +4,9 @@
 //! cluster with a single-use link ([`join_cluster`]) or a sign-in at the
 //! owner ([`inspect_library`], [`authorize_branch`],
 //! [`redeem_branch_code`]); it tells the owner when it leaves
-//! ([`announce_leaving`]). Its node keys are
+//! ([`announce_leaving`]). An empty install may instead join as a clerk, an
+//! owner node that shares the library's database and DEK
+//! ([`redeem_clerk_code`], [`apply_clerk_bootstrap`]). Its node keys are
 //! sealed in its own database
 //! (`bookclerk_library::control_plane::record_cluster_link`). For every
 //! active link, [`HostClient`] keeps one socket to the owner's
@@ -40,14 +42,19 @@
 //! job runs its guest are the daemon's.
 
 mod branch;
+mod clerk;
 mod client;
 mod endpoint;
 mod enroll;
 mod jobs;
 
 pub use branch::{
-    announce_leaving, authorize_branch, inspect_library, library_origin, redeem_branch_code,
-    BranchAuthorization, BranchRedeem, InspectedLibrary,
+    announce_leaving, authorize_branch, authorize_join, inspect_library, library_origin,
+    redeem_branch_code, BranchAuthorization, BranchRedeem, InspectedLibrary,
+};
+pub use clerk::{
+    apply_clerk_bootstrap, install_problem, redeem_clerk_code, AppliedClerk, ClerkJoined,
+    CLERK_POSTGRES_URL_FILE, DATABASE_ENV_OVERRIDES,
 };
 pub use client::{
     ClientExit, ClientTiming, HeartbeatSource, HostClient, HostClientConfig, HostClientHandle,

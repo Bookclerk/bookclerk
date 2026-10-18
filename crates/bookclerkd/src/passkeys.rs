@@ -582,6 +582,114 @@ async fn elevate_finish(
     issue_elevation(&state, &library, user.id, &headers).await
 }
 
+/// Starts a user-verified passkey step-up for `user_id` (its own challenge
+/// `kind`, five minutes): the clerk consent's fresh second factor. 404 when
+/// the user has no passkey.
+///
+/// # Errors
+///
+/// Returns 404 without passkeys, 400 when the origin is not a valid
+/// WebAuthn RP, and 500 on store errors.
+pub(crate) async fn begin_step_up(
+    state: &AppState,
+    headers: &HeaderMap,
+    user_id: i64,
+    kind: &str,
+) -> Result<Json<Value>, StatusCode> {
+    let library = state.library_snapshot().await;
+    let rows = library
+        .list_webauthn_credentials(user_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let passkeys: Vec<Passkey> = rows
+        .iter()
+        .filter_map(|row| serde_json::from_str(&row.passkey_json).ok())
+        .collect();
+    if passkeys.is_empty() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let webauthn = origin_webauthn(state, headers).await?;
+    let (rcr, auth_state) = webauthn
+        .start_passkey_authentication(&passkeys)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let challenge_id = Uuid::new_v4().to_string();
+    let state_json =
+        serde_json::to_string(&auth_state).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    library
+        .insert_webauthn_challenge(
+            &challenge_id,
+            Some(user_id),
+            kind,
+            &state_json,
+            Utc::now() + ChronoDuration::minutes(5),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    ceremony_json(&challenge_id, &rcr)
+}
+
+/// Completes a step-up begun with [`begin_step_up`]: the challenge is
+/// consumed once, must be `user_id`'s, and the assertion must be
+/// user-verified and from one of that user's passkeys.
+///
+/// # Errors
+///
+/// Returns 400 for an unknown or used challenge, 401 for an assertion that
+/// does not verify, 403 for another user's challenge, and 500 on store
+/// errors.
+pub(crate) async fn finish_step_up(
+    state: &AppState,
+    headers: &HeaderMap,
+    user_id: i64,
+    kind: &str,
+    challenge_id: &str,
+    credential: Value,
+) -> Result<(), StatusCode> {
+    let webauthn = origin_webauthn(state, headers).await?;
+    let library = state.library_snapshot().await;
+    let Some((Some(uid), state_json)) = library
+        .take_webauthn_challenge(challenge_id, kind)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    if uid != user_id {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let auth_state: PasskeyAuthentication =
+        serde_json::from_str(&state_json).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let cred: PublicKeyCredential =
+        serde_json::from_value(credential).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let result = webauthn
+        .finish_passkey_authentication(&cred, &auth_state)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    if !result.user_verified() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let cred_id = cred_id_b64(result.cred_id());
+    let Some((row_id, owner, json)) = library
+        .get_webauthn_credential_by_cred_id(&cred_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    if owner != uid {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let mut passkey: Passkey = serde_json::from_str(&json).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    if passkey.update_credential(&result).is_none() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let updated = serde_json::to_string(&passkey).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    library
+        .update_webauthn_credential(row_id, &updated)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
+}
+
 /// Stable WebAuthn user handle: Bookclerk ASCII in the high 64 bits, `user_id` in the low.
 fn uuid_for_user(user_id: i64) -> Uuid {
     Uuid::from_u64_pair(0x626f_6f6b_636c_6572, user_id as u64)

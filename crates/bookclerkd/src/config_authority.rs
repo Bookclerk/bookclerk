@@ -1165,6 +1165,34 @@ fn node_json(
     })
 }
 
+/// `DELETE /api/config/nodes/{node_id}`: remove an owner node (a clerk, or
+/// any node sharing this database) that is no longer running from the
+/// library's node list. The operator or an Owner may remove any; another
+/// user only one they own. A running node, this node, or a branch is
+/// refused (a branch is revoked instead).
+pub async fn delete_owner_node(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<NodeAdminCaller>,
+    axum::extract::Path(node_id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let cfg = state.config.read().await.clone();
+    let this_node = this_node_id(&cfg)?;
+    let library = state.library_snapshot().await;
+    let actor = match caller {
+        NodeAdminCaller::Operator => bookclerk_library::control_plane::EnrollmentActor::Operator {
+            id: "operator".into(),
+        },
+        NodeAdminCaller::NodeOwner { user_id } => {
+            bookclerk_library::control_plane::EnrollmentActor::User { user_id }
+        }
+    };
+    let node_id = node_id.trim().to_string();
+    bookclerk_library::control_plane::remove_owner_node(&library, &actor, &node_id, &this_node)
+        .await
+        .map_err(events_error)?;
+    Ok(Json(json!({ "node_id": node_id, "removed": true })))
+}
+
 /// `PUT /api/config/nodes/{node_id}/runtime` body: any subset of the
 /// node's runtime document.
 #[derive(Debug, Deserialize)]

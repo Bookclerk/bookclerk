@@ -27,6 +27,7 @@ mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
+mod restart;
 mod scheduler;
 mod totp;
 mod tray_companion;
@@ -214,6 +215,9 @@ async fn main() -> anyhow::Result<()> {
 
         let listeners = loop {
             if process_shutdown.load(Ordering::SeqCst) {
+                if restart::is_requested() {
+                    restart::reexec()?;
+                }
                 return Ok(());
             }
 
@@ -298,6 +302,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Best-effort stop of integration watchers on process exit.
     state.integrations.read().await.stop_all().await;
+    if restart::is_requested() {
+        // New bootstrap files (a clerk join): start again on them.
+        restart::reexec()?;
+    }
     Ok(())
 }
 
@@ -306,6 +314,9 @@ async fn serve_shutdown(listen_reload: Arc<Notify>, process_shutdown: Arc<Atomic
     let process = shutdown_signal();
     tokio::select! {
         () = process => {
+            process_shutdown.store(true, Ordering::SeqCst);
+        }
+        () = restart::requested() => {
             process_shutdown.store(true, Ordering::SeqCst);
         }
         () = listen_reload.notified() => {}

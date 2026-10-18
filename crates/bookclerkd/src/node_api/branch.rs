@@ -17,13 +17,30 @@
 //!   daemon redeems the code with its PKCE verifier and the node's public
 //!   keys. The code is consumed and checked (client, redirect URI, scope,
 //!   S256 verifier), then the redeem is the same canonical batch a minted
-//!   link takes ([`redeem_enrollment_link`]), through a link whose id and
+//!   link takes ([`redeem_enrollment_link_as`]), through a link whose id and
 //!   secret derive from the code and verifier
 //!   ([`authorized_enrollment_link`]): one node row, `node_credentials`,
 //!   a receipt, idempotent retries, and one node under concurrency.
 //! - `GET|PUT /api/config/branches` ([`get_branches`], [`put_branches`]):
 //!   the owner's Settings → Branches (operator or Owner): the fingerprint
 //!   and "Let new branches join".
+//!
+//! **Clerks.** When the joining install offers it ([`bookclerk_node_proto::CLERK_OFFER_PARAM`]:
+//! it is empty) and the signed-in user is an Owner (the stored role, read
+//! at consent and again at redeem), the consent page also offers "Join as
+//! a clerk of this library": an owner node (`kind = owner`) that shares
+//! this library's database and DEK. That needs a database more than one
+//! server can open (PostgreSQL or D1, never the SQLite file:
+//! [`shared_database`]) and a fresh second factor on the consent page
+//! (TOTP or a user-verified passkey, [`post_branch_consent_step_up`]); an
+//! Owner with neither is refused. The code is bound to the type chosen (the
+//! granted scope, [`ConnectionType::granted_scope`]), so a branch code is
+//! never redeemed as a clerk. A clerk's redeem answer carries the
+//! `[database]` bootstrap and the DEK sealed to the joining node's box key
+//! ([`seal_clerk_bootstrap`]); never the `master.key` file, never through
+//! the browser, never logged. Both the consent and the redeem run under the
+//! node API transport policy: TLS, or loopback when both ends are on this
+//! machine.
 
 use std::sync::Arc;
 
@@ -31,19 +48,23 @@ use axum::extract::{Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
+use bookclerk_config::DatabasePluginKind;
 use bookclerk_config::NodeApiMode;
 use bookclerk_library::control_plane::{
     authorized_enrollment_link, load_cluster_row, load_host_enrollment,
-    record_authorized_enrollment_link, redeem_enrollment_link, set_host_enrollment_enabled,
-    verify_cluster_owner, ConfigActor, RedeemRequest,
+    record_authorized_enrollment_link, redeem_enrollment_link_as, set_host_enrollment_enabled,
+    verify_cluster_owner, ConfigActor, EnrolledNode, NodeKind, RedeemRequest,
 };
 use bookclerk_library::{hash_token, LibraryError, UserStatus};
 use bookclerk_node_proto::{
-    canonical_origin, is_branch_name, is_branch_redirect_uri, pkce_challenge, OAuthEnrollRequest,
-    OwnerInfo, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
+    canonical_origin, is_branch_name, is_branch_redirect_uri, pkce_challenge, seal_clerk_bootstrap,
+    ClerkBootstrap, ClerkDatabase, ConnectionType, OAuthEnrollAnswer, OAuthEnrollRequest,
+    OwnerInfo, SecretValue, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
+    CLERK_BOOTSTRAP_VERSION,
 };
 use serde::Deserialize;
 use serde_json::json;
+use zeroize::Zeroizing;
 
 use super::{check_transport, decode_key, enroll_error, redeem_answer};
 use crate::api::AppState;
@@ -57,6 +78,34 @@ pub(crate) fn library_name(origin: &str) -> String {
         .map(|host| host.trim_matches(['[', ']']).to_string())
         .filter(|host| !host.is_empty())
         .unwrap_or_else(|| "Bookclerk library".into())
+}
+
+/// This library's database as a clerk would connect to it, or why it
+/// cannot be shared: only PostgreSQL and Cloudflare D1 can be opened by
+/// more than one server. The D1 API token is never included (it is
+/// environment-only bootstrap on every node).
+///
+/// # Errors
+///
+/// Returns the reason shown on the consent page.
+pub(crate) fn shared_database(cfg: &bookclerk_config::Config) -> Result<ClerkDatabase, String> {
+    match bookclerk_config::DatabasePluginKind::parse(&cfg.database.plugin) {
+        Some(DatabasePluginKind::Postgres) => bookclerk_config::resolve_postgres_url(cfg)
+            .map(|url| ClerkDatabase::Postgres {
+                url: SecretValue::new(url.into_bytes()),
+            })
+            .map_err(|_| "This library's PostgreSQL connection is not readable here.".into()),
+        Some(DatabasePluginKind::D1) => Ok(ClerkDatabase::D1 {
+            account_id: cfg.database.d1.account_id.clone(),
+            database_id: cfg.database.d1.database_id.clone(),
+            api_base: cfg.database.d1.api_base.clone(),
+        }),
+        Some(DatabasePluginKind::Sqlite) => Err("This library keeps its database in a SQLite \
+             file that only this server can open. A clerk needs a PostgreSQL or Cloudflare D1 \
+             database."
+            .into()),
+        None => Err("This library's database plugin cannot be shared with a clerk.".into()),
+    }
 }
 
 /// What `info` and Settings → Branches report.
@@ -145,28 +194,41 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
     } else {
         DEFAULT_BRANCH_LABEL
     };
+    let connection = body.connection;
     let (link_id, secret) = authorized_enrollment_link(code, verifier);
     let library = state.library_snapshot().await;
     match library.consume_oidc_auth_code(&hash_token(code)).await {
         Ok(Some((client_id, user_id, redirect_uri, challenge, method, scope))) => {
+            // The scope is the connection type chosen at consent: a code
+            // approved for a branch never redeems as a clerk.
             let matches = client_id == BRANCH_CLIENT_ID
                 && redirect_uri == body.redirect_uri
                 && method == "S256"
-                && scope == BRANCH_SCOPE
+                && scope == connection.granted_scope()
                 && constant_time_eq(pkce_challenge(verifier).as_bytes(), challenge.as_bytes());
             if !matches {
                 tracing::warn!(
                     user_id,
+                    connection = connection.as_str(),
                     "branch enrollment refused: the code does not match its exchange"
                 );
                 let _ = library
                     .insert_security_audit_event(
                         &format!("user:{user_id}"),
-                        "branch_enroll_refused",
+                        if connection == ConnectionType::Clerk {
+                            "clerk_enroll_refused"
+                        } else {
+                            "branch_enroll_refused"
+                        },
                         Some(r#"{"reason":"code_mismatch"}"#),
                     )
                     .await;
                 return enroll_error(StatusCode::FORBIDDEN, "enrollment_refused");
+            }
+            if connection == ConnectionType::Clerk {
+                if let Err(refused) = clerk_still_allowed(&state, &library, user_id).await {
+                    return refused;
+                }
             }
             match record_authorized_enrollment_link(&library, &link_id, &secret, user_id, label)
                 .await
@@ -199,7 +261,121 @@ pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Requ
         box_public_key,
         software_version: body.software_version,
     };
-    redeem_answer(redeem_enrollment_link(&library, &request).await)
+    match connection {
+        ConnectionType::Branch => {
+            redeem_answer(redeem_enrollment_link_as(&library, &request, NodeKind::Host).await)
+        }
+        ConnectionType::Clerk => {
+            match redeem_enrollment_link_as(&library, &request, NodeKind::Owner).await {
+                Ok(enrolled) => clerk_answer(&state, &library, &enrolled, &request).await,
+                Err(err) => redeem_answer(Err(err)),
+            }
+        }
+    }
+}
+
+/// Refuses a clerk redeem unless the code's user is still an active Owner
+/// and this library's database can still be shared.
+async fn clerk_still_allowed(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+    user_id: i64,
+) -> Result<ClerkDatabase, Response> {
+    if verify_cluster_owner(library, user_id).await.is_err() {
+        tracing::warn!(
+            user_id,
+            "clerk enrollment refused: the user is not an Owner"
+        );
+        let _ = library
+            .insert_security_audit_event(
+                &format!("user:{user_id}"),
+                "clerk_enroll_refused",
+                Some(r#"{"reason":"not_owner"}"#),
+            )
+            .await;
+        return Err(enroll_error(StatusCode::FORBIDDEN, "enrollment_refused"));
+    }
+    let database = shared_database(&*state.config.read().await);
+    database.map_err(|_| {
+        tracing::warn!(
+            user_id,
+            "clerk enrollment refused: this library's database cannot be shared"
+        );
+        enroll_error(StatusCode::CONFLICT, "database_not_shareable")
+    })
+}
+
+/// The answer to a clerk redeem: the `[database]` bootstrap and this
+/// process's DEK sealed to the node's enrolled box key, bound to the
+/// cluster and node ids. Re-checked on every answer (a retry too): the
+/// node's owner must still be an Owner and the database shareable.
+async fn clerk_answer(
+    state: &Arc<AppState>,
+    library: &bookclerk_library::LibraryStore,
+    enrolled: &EnrolledNode,
+    request: &RedeemRequest,
+) -> Response {
+    let database = match clerk_still_allowed(state, library, enrolled.owner_user_id).await {
+        Ok(database) => database,
+        Err(refused) => return refused,
+    };
+    let files_dir = state.config.read().await.paths().files_dir.clone();
+    let dek = match bookclerk_library::require_master_key(Some(&files_dir)) {
+        Ok(dek) => dek,
+        Err(err) => {
+            tracing::warn!(error = %err, "clerk enrollment: the data-encryption key is unavailable");
+            return enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable");
+        }
+    };
+    let bootstrap = ClerkBootstrap {
+        v: CLERK_BOOTSTRAP_VERSION,
+        cluster_id: enrolled.cluster_id.clone(),
+        node_id: enrolled.node_id.clone(),
+        database,
+        dek: SecretValue::new(dek.as_bytes().to_vec()),
+    };
+    drop(dek);
+    let ephemeral = {
+        use rand::RngCore as _;
+        let mut raw = Zeroizing::new([0u8; 32]);
+        rand::rngs::OsRng.fill_bytes(raw.as_mut_slice());
+        raw
+    };
+    let sealed = match seal_clerk_bootstrap(&request.box_public_key, &ephemeral, &bootstrap) {
+        Ok(sealed) => sealed,
+        Err(_) => return enroll_error(StatusCode::BAD_REQUEST, "invalid box_pk"),
+    };
+    drop(bootstrap);
+    if !enrolled.replayed {
+        let detail = json!({
+            "node_id": enrolled.node_id,
+            "database": shared_database(&*state.config.read().await)
+                .map(|db| db.plugin())
+                .unwrap_or("unknown"),
+        })
+        .to_string();
+        let _ = library
+            .insert_security_audit_event(
+                &format!("user:{}", enrolled.owner_user_id),
+                "clerk_enrolled",
+                Some(&detail),
+            )
+            .await;
+        tracing::info!(
+            node_id = %enrolled.node_id,
+            owner_user_id = enrolled.owner_user_id,
+            "a clerk joined the library (owner node); its bootstrap was sealed to its node key"
+        );
+    }
+    no_store(
+        Json(OAuthEnrollAnswer {
+            cluster_id: enrolled.cluster_id.clone(),
+            node_id: enrolled.node_id.clone(),
+            connection: ConnectionType::Clerk,
+            bootstrap: Some(sealed),
+        })
+        .into_response(),
+    )
 }
 
 /// The authorization request a consent is for (the query `/oidc/authorize`
@@ -226,6 +402,18 @@ pub struct BranchAuthorizeParams {
     /// The name the branch asks to join as.
     #[serde(default)]
     pub branch_name: Option<String>,
+    /// `1` when the joining install offers to join as a clerk
+    /// ([`bookclerk_node_proto::CLERK_OFFER_PARAM`]).
+    #[serde(default)]
+    pub clerk_offer: Option<String>,
+}
+
+impl BranchAuthorizeParams {
+    /// True when the joining install offered to join as a clerk.
+    #[must_use]
+    pub fn clerk_offered(&self) -> bool {
+        self.clerk_offer.as_deref() == Some("1")
+    }
 }
 
 /// Parses an authorize query string; `None` when a parameter repeats or the
@@ -282,6 +470,13 @@ pub(crate) fn branch_request_problem(params: &BranchAuthorizeParams) -> Option<&
         .is_some_and(|state| state.len() > 512 || state.chars().any(char::is_control))
     {
         return Some("malformed state");
+    }
+    if params
+        .clerk_offer
+        .as_deref()
+        .is_some_and(|offer| offer != "1")
+    {
+        return Some("malformed clerk_offer");
     }
     None
 }
@@ -355,6 +550,10 @@ pub async fn get_branch_consent(
         Err(response) => return response,
     };
     let redirect_origin = canonical_origin(&params.redirect_uri).unwrap_or_default();
+    let connection = match connection_view(&state, &user, &params).await {
+        Ok(view) => view,
+        Err(response) => return response,
+    };
     Json(json!({
         "library_name": info.library_name,
         "branch_name": params.branch_name.unwrap_or_default().trim(),
@@ -364,9 +563,104 @@ pub async fn get_branch_consent(
             "id": user.id,
             "display_name": user.display_name,
         },
+        "connection": connection,
     }))
     .into_response()
 }
+
+/// The second factors `user` can step up with right now.
+async fn step_up_methods(
+    library: &bookclerk_library::LibraryStore,
+    user: &bookclerk_library::UserRecord,
+) -> Result<Vec<&'static str>, Response> {
+    let mut methods = Vec::new();
+    if user.totp_enabled {
+        methods.push("totp");
+    }
+    let passkeys = library
+        .count_webauthn_credentials(user.id)
+        .await
+        .map_err(|_| consent_error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "try again"))?;
+    if passkeys > 0 {
+        methods.push("passkey");
+    }
+    Ok(methods)
+}
+
+/// What the consent page may offer: a choice between branch and clerk for
+/// an Owner (the stored role), branch only for everyone else. Clerk is
+/// shown disabled, with the reason, when the joining install did not offer
+/// it, the database is not shareable, or the user has no second factor.
+async fn connection_view(
+    state: &Arc<AppState>,
+    user: &bookclerk_library::UserRecord,
+    params: &BranchAuthorizeParams,
+) -> Result<serde_json::Value, Response> {
+    let library = state.library_snapshot().await;
+    let owner = verify_cluster_owner(&library, user.id).await.is_ok();
+    if !owner {
+        return Ok(json!({ "choice": false, "default": "branch" }));
+    }
+    let methods = step_up_methods(&library, user).await?;
+    let reason = if !params.clerk_offered() {
+        Some(
+            "The joining server already holds library data of its own (or did not offer it), so \
+             it can only join as a branch."
+                .to_string(),
+        )
+    } else if let Err(reason) = shared_database(&*state.config.read().await) {
+        Some(reason)
+    } else if methods.is_empty() {
+        Some(
+            "Joining as a clerk needs a fresh second factor. Set up an authenticator app or a \
+             passkey on your account first."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    Ok(json!({
+        "choice": true,
+        "default": "branch",
+        "clerk_available": reason.is_none(),
+        "clerk_reason": reason,
+        "step_up": methods,
+    }))
+}
+
+/// A fresh second factor for a clerk consent. `Debug` prints no code.
+#[derive(Deserialize)]
+#[serde(tag = "method", rename_all = "lowercase")]
+pub enum StepUp {
+    /// A current authenticator code.
+    Totp {
+        /// Six digits.
+        code: String,
+    },
+    /// A user-verified passkey assertion for a challenge from
+    /// `POST /api/auth/branch-consent/step-up`.
+    Passkey {
+        /// The challenge id.
+        challenge_id: String,
+        /// The browser's `PublicKeyCredential` JSON.
+        credential: serde_json::Value,
+    },
+}
+
+impl std::fmt::Debug for StepUp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Totp { .. } => f.write_str("StepUp::Totp"),
+            Self::Passkey { challenge_id, .. } => f
+                .debug_struct("StepUp::Passkey")
+                .field("challenge_id", challenge_id)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+/// WebAuthn challenge kind of a clerk step-up.
+pub(crate) const CLERK_STEP_UP_KIND: &str = "clerk_step_up";
 
 /// `POST /api/auth/branch-consent` body.
 #[derive(Debug, Deserialize)]
@@ -376,6 +670,12 @@ pub struct BranchConsentBody {
     pub params: BranchAuthorizeParams,
     /// True to let the branch join; false to deny.
     pub approve: bool,
+    /// `branch` (default) or `clerk`.
+    #[serde(default)]
+    pub connection: Option<String>,
+    /// The fresh second factor a clerk needs.
+    #[serde(default)]
+    pub step_up: Option<StepUp>,
 }
 
 /// `POST /api/auth/branch-consent`: approve or deny. Answers `{redirect}`,
@@ -406,6 +706,17 @@ pub async fn post_branch_consent(
     let user = match consenting_user(&state, caller).await {
         Ok(user) => user,
         Err(refused) => return refused,
+    };
+    let connection = match body.connection.as_deref().map(ConnectionType::parse) {
+        None => ConnectionType::Branch,
+        Some(Some(connection)) => connection,
+        Some(None) => {
+            return consent_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "connection must be branch or clerk",
+            )
+        }
     };
     let state_param = params.state.clone().unwrap_or_default();
     let mut pairs: Vec<(&str, &str)> = Vec::new();
@@ -439,6 +750,13 @@ pub async fn post_branch_consent(
             return consent_error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "try again");
         }
     }
+    if connection == ConnectionType::Clerk {
+        if let Err(refused) =
+            check_clerk_consent(&state, &parts.headers, &user, &params, body.step_up).await
+        {
+            return refused;
+        }
+    }
     let code = {
         use base64::Engine as _;
         use rand::RngCore as _;
@@ -457,7 +775,7 @@ pub async fn post_branch_consent(
             &params.redirect_uri,
             &params.code_challenge,
             "S256",
-            BRANCH_SCOPE,
+            connection.granted_scope(),
             expires,
         )
         .await
@@ -469,12 +787,17 @@ pub async fn post_branch_consent(
         "client_id": BRANCH_CLIENT_ID,
         "branch_name": params.branch_name.as_deref().unwrap_or("").trim(),
         "redirect_origin": canonical_origin(&params.redirect_uri),
+        "connection": connection.as_str(),
     })
     .to_string();
     let _ = library
         .insert_security_audit_event(
             &format!("user:{}", user.id),
-            "branch_authorize",
+            if connection == ConnectionType::Clerk {
+                "clerk_authorize"
+            } else {
+                "branch_authorize"
+            },
             Some(&detail),
         )
         .await;
@@ -482,9 +805,152 @@ pub async fn post_branch_consent(
     if !state_param.is_empty() {
         pairs.push(("state", &state_param));
     }
+    if connection == ConnectionType::Clerk {
+        pairs.push(("connection", ConnectionType::Clerk.as_str()));
+    }
     match redirect_with(&params.redirect_uri, &pairs) {
         Some(redirect) => no_store(Json(json!({ "redirect": redirect })).into_response()),
         None => consent_error(StatusCode::BAD_REQUEST, "invalid_request", "bad redirect"),
+    }
+}
+
+/// The checks a clerk approval adds: the joining install offered it, the
+/// signed-in user is an Owner (the stored role), the database can be
+/// shared, and a fresh second factor verifies now (TOTP, or a passkey
+/// assertion with user verification). An Owner with neither factor is
+/// refused with how to set one up.
+async fn check_clerk_consent(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    user: &bookclerk_library::UserRecord,
+    params: &BranchAuthorizeParams,
+    step_up: Option<StepUp>,
+) -> Result<(), Response> {
+    let library = state.library_snapshot().await;
+    let refuse = |status: StatusCode, error: &str, detail: &str| {
+        let audit = json!({ "reason": error }).to_string();
+        let library = library.clone();
+        let user_id = user.id;
+        let response = consent_error(status, error, detail);
+        async move {
+            let _ = library
+                .insert_security_audit_event(
+                    &format!("user:{user_id}"),
+                    "clerk_authorize_refused",
+                    Some(&audit),
+                )
+                .await;
+            response
+        }
+    };
+    if !params.clerk_offered() {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "clerk_not_offered",
+            "the joining server did not offer to join as a clerk; it can join as a branch",
+        )
+        .await);
+    }
+    if verify_cluster_owner(&library, user.id).await.is_err() {
+        return Err(refuse(
+            StatusCode::FORBIDDEN,
+            "owner_required",
+            "only an Owner of this library can let a server join as a clerk",
+        )
+        .await);
+    }
+    if let Err(reason) = shared_database(&*state.config.read().await) {
+        return Err(refuse(StatusCode::CONFLICT, "database_not_shareable", &reason).await);
+    }
+    let methods = step_up_methods(&library, user).await?;
+    if methods.is_empty() {
+        return Err(refuse(
+            StatusCode::FORBIDDEN,
+            "step_up_unavailable",
+            "joining as a clerk needs a fresh second factor: set up an authenticator app or a passkey on your account first",
+        )
+        .await);
+    }
+    let throttle_key = format!("clerk-step-up:{}", user.id);
+    let auth = state.auth_snapshot().await;
+    if auth.login_throttle_check(&throttle_key).await.is_some() {
+        return Err(consent_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "step_up_locked",
+            "too many wrong codes; wait a few minutes",
+        ));
+    }
+    let verified = match step_up {
+        None => {
+            return Err(consent_error(
+                StatusCode::FORBIDDEN,
+                "step_up_required",
+                "confirm with your authenticator app or a passkey to let a clerk join",
+            ))
+        }
+        Some(StepUp::Totp { code }) => {
+            let code = Zeroizing::new(code);
+            crate::totp::verify_user_totp(&library, user, &code)
+                .await
+                .map_err(|_| {
+                    consent_error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "try again")
+                })?
+        }
+        Some(StepUp::Passkey {
+            challenge_id,
+            credential,
+        }) => crate::passkeys::finish_step_up(
+            state,
+            headers,
+            user.id,
+            CLERK_STEP_UP_KIND,
+            &challenge_id,
+            credential,
+        )
+        .await
+        .is_ok(),
+    };
+    if !verified {
+        let _ = auth.record_login_failure(&throttle_key).await;
+        return Err(refuse(
+            StatusCode::FORBIDDEN,
+            "step_up_failed",
+            "that second factor did not verify; try again",
+        )
+        .await);
+    }
+    auth.clear_login_failures(&throttle_key).await;
+    Ok(())
+}
+
+/// `POST /api/auth/branch-consent/step-up`: starts a passkey step-up for a
+/// clerk consent (an Owner with a passkey). Answers the WebAuthn request
+/// options with a `challenge_id` to send back in the consent's `step_up`.
+pub async fn post_branch_consent_step_up(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    headers: HeaderMap,
+) -> Response {
+    let user = match consenting_user(&state, caller).await {
+        Ok(user) => user,
+        Err(refused) => return refused,
+    };
+    let library = state.library_snapshot().await;
+    if verify_cluster_owner(&library, user.id).await.is_err() {
+        return consent_error(
+            StatusCode::FORBIDDEN,
+            "owner_required",
+            "only an Owner of this library can let a server join as a clerk",
+        );
+    }
+    match crate::passkeys::begin_step_up(&state, &headers, user.id, CLERK_STEP_UP_KIND).await {
+        Ok(options) => no_store(options.into_response()),
+        Err(StatusCode::NOT_FOUND) => consent_error(
+            StatusCode::NOT_FOUND,
+            "no_passkey",
+            "this account has no passkey",
+        ),
+        Err(status) => consent_error(status, "unavailable", "could not start the passkey check"),
     }
 }
 
@@ -578,3 +1044,7 @@ pub(crate) fn is_json(headers: &HeaderMap) -> bool {
 #[cfg(test)]
 #[path = "branch_tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "clerk_tests.rs"]
+pub(crate) mod clerk_tests;

@@ -351,6 +351,48 @@ pub fn wrap_master_key(files_dir: &Path, password: &str) -> Result<MasterKey> {
     configure_master_key_with(files_dir, Some(password))
 }
 
+/// Installs `dek` as `{files_dir}/master.key`: a clerk joining a library
+/// receives the library's DEK (sealed to its node key, never the
+/// passphrase-wrapped file) and keeps it under its own `password`.
+///
+/// Writes `BCK2` (Argon2id + XChaCha20-Poly1305) when `password` is set and
+/// non-empty, `BCK1` otherwise, mode `0600`, replacing any existing file
+/// atomically. The process cache is not changed: the daemon restarts on the
+/// new bootstrap.
+///
+/// # Errors
+///
+/// Returns an error when `dek` is not 32 bytes or the file cannot be
+/// written.
+pub fn install_master_key(files_dir: &Path, dek: &[u8], password: Option<&str>) -> Result<()> {
+    let bytes: [u8; DEK_LEN] = dek
+        .try_into()
+        .map_err(|_| LibraryError::Invalid(format!("a data-encryption key is {DEK_LEN} bytes")))?;
+    let key = MasterKey::from_bytes(bytes);
+    let password = password
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .inspect(|p| bookclerk_config::register_secret(p));
+    let encoded = zeroize::Zeroizing::new(match password {
+        Some(pw) => encode_wrapped_master_key(&key, pw)?,
+        None => encode_raw_master_key(&key),
+    });
+    std::fs::create_dir_all(files_dir).map_err(|e| {
+        LibraryError::Other(anyhow::anyhow!(
+            "failed to create master key directory {}: {e}",
+            files_dir.display()
+        ))
+    })?;
+    let path = master_key_path(files_dir);
+    write_secret_file_atomic(&path, &encoded)?;
+    tracing::info!(
+        path = %path.display(),
+        wrapped = password.is_some(),
+        "installed the library's data-encryption key (mode 0600)"
+    );
+    Ok(())
+}
+
 /// Reads `BOOKCLERK_AUTH_PASSWORD` and registers it for log redaction; empty is treated as absent.
 fn read_auth_password_env() -> Option<String> {
     let v = std::env::var(AUTH_PASSWORD_ENV).ok()?;
@@ -778,6 +820,53 @@ mod tests {
             inspect_master_key(dir.path()).unwrap(),
             Some(MasterKeyFormat::Raw)
         );
+    }
+
+    #[test]
+    fn install_writes_the_given_dek_raw_or_under_a_password() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let dir = tempdir().unwrap();
+        // Replaces whatever was there.
+        let old = resolve_master_key(dir.path()).unwrap();
+        let dek = [42u8; DEK_LEN];
+        install_master_key(dir.path(), &dek, None).unwrap();
+        assert_eq!(
+            inspect_master_key(dir.path()).unwrap(),
+            Some(MasterKeyFormat::Raw)
+        );
+        let read = resolve_master_key_with(dir.path(), None).unwrap();
+        assert_eq!(read.as_bytes(), &dek);
+        assert_ne!(read.as_bytes(), old.as_bytes());
+
+        let pass = test_passphrase("install");
+        install_master_key(dir.path(), &dek, Some(&pass)).unwrap();
+        assert_eq!(
+            inspect_master_key(dir.path()).unwrap(),
+            Some(MasterKeyFormat::Wrapped)
+        );
+        let raw = std::fs::read(master_key_path(dir.path())).unwrap();
+        assert!(
+            !raw.windows(DEK_LEN).any(|w| w == dek),
+            "never in the clear"
+        );
+        assert_eq!(
+            resolve_master_key_with(dir.path(), Some(&pass))
+                .unwrap()
+                .as_bytes(),
+            &dek
+        );
+        assert!(resolve_master_key_with(dir.path(), Some("not-it")).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(master_key_path(dir.path()))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert!(install_master_key(dir.path(), &[1u8; 16], None).is_err());
     }
 
     #[test]

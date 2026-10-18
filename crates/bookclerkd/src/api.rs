@@ -979,6 +979,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     let node_admin = Router::new()
         .route("/api/config/nodes", get(crate::config_authority::get_nodes))
         .route(
+            "/api/config/nodes/{node_id}",
+            delete(crate::config_authority::delete_owner_node),
+        )
+        .route(
             "/api/config/nodes/{node_id}/runtime",
             put(crate::config_authority::put_node_runtime),
         )
@@ -1009,6 +1013,11 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/auth/branch-consent",
             get(crate::node_api::branch::get_branch_consent)
                 .post(crate::node_api::branch::post_branch_consent),
+        )
+        // A clerk consent's fresh passkey step (an Owner with a passkey).
+        .route(
+            "/api/auth/branch-consent/step-up",
+            post(crate::node_api::branch::post_branch_consent_step_up),
         )
         // Settings → Branches: the library's join settings (operator or
         // Owner; the handler checks).

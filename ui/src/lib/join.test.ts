@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ConfigNodeView } from "./api";
 import {
+  answerBranchConsent,
+  clerkNodes,
   authorizeParams,
   fingerprintGroups,
   formatCountdown,
+  isClerkJoined,
   isConsentRedirect,
   JoinApiError,
   joinErrorMessage,
@@ -32,12 +36,19 @@ describe("parseJoinCallback", () => {
       code: "c1",
       state: "s1",
       error: null,
+      connection: "branch",
     });
     expect(parseJoinCallback("?error=access_denied&state=s1")).toEqual({
       code: "",
       state: "s1",
       error: "access_denied",
+      connection: "branch",
     });
+  });
+
+  it("relays a clerk approval, and nothing else as one", () => {
+    expect(parseJoinCallback("?code=c1&state=s1&connection=clerk")?.connection).toBe("clerk");
+    expect(parseJoinCallback("?code=c1&state=s1&connection=owner")?.connection).toBe("branch");
   });
 
   it("needs a state", () => {
@@ -117,5 +128,84 @@ describe("joinErrorMessage", () => {
     const err = new JoinApiError(409, "m", "origin_mismatch", "https://library.example");
     expect(err.origin).toBe("https://library.example");
     expect(err.status).toBe(409);
+  });
+});
+
+describe("answerBranchConsent", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function stubFetch() {
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ redirect: "http://localhost:8787/join/callback" }), {
+          status: 200,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("sends a branch approval with no connection", async () => {
+    const fetchMock = stubFetch();
+    await answerBranchConsent(AUTHORIZE, true);
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.approve).toBe(true);
+    expect(body).not.toHaveProperty("connection");
+    expect(body).not.toHaveProperty("step_up");
+  });
+
+  it("sends a clerk approval with its step-up, and never on a denial", async () => {
+    const fetchMock = stubFetch();
+    const stepUp = { method: "totp" as const, code: "123456" };
+    await answerBranchConsent(AUTHORIZE, true, { step_up: stepUp });
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.connection).toBe("clerk");
+    expect(body.step_up).toEqual(stepUp);
+    await answerBranchConsent(AUTHORIZE, false, { step_up: stepUp });
+    const denied = JSON.parse(String(fetchMock.mock.calls[1][1].body));
+    expect(denied.approve).toBe(false);
+    expect(denied).not.toHaveProperty("step_up");
+  });
+});
+
+describe("isClerkJoined", () => {
+  it("tells a clerk answer from a branch's", () => {
+    expect(
+      isClerkJoined({
+        connection: "clerk",
+        cluster_id: "c",
+        node_id: "n",
+        library_name: "Home",
+        database: "postgres",
+        master_key_wrapped: true,
+        restarting: true,
+      }),
+    ).toBe(true);
+    expect(
+      isClerkJoined({
+        cluster: {
+          cluster_id: "c",
+          owner_origin: "https://library.example",
+          node_id: "n",
+          pinned: false,
+          state: "active",
+          enrolled_at: "2026-01-01T00:00:00Z",
+        },
+        library_name: "Home",
+        running: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("clerkNodes", () => {
+  it("lists owner nodes only, this server first", () => {
+    const node = (node_id: string, kind: "owner" | "host", this_node = false) =>
+      ({ node_id, kind, this_node }) as ConfigNodeView;
+    expect(
+      clerkNodes([node("b", "owner"), node("h", "host"), node("a", "owner", true)]).map(
+        (n) => n.node_id,
+      ),
+    ).toEqual(["a", "b"]);
   });
 });

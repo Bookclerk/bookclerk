@@ -237,6 +237,35 @@ pub fn bind_cluster_id(files_dir: &Path, cluster_id: &str) -> Result<NodeIdentit
     }
 }
 
+/// Writes the identity file for a node id the cluster already recorded,
+/// bound to `cluster_id`, replacing any file there atomically. A clerk
+/// joining a library takes the node id the library minted for it at
+/// redeem, so its first heartbeat lands on that `nodes` row.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for a node id that is not a UUID or an
+/// empty cluster id, and the write error.
+pub fn install_node_identity(
+    files_dir: &Path,
+    node_id: &str,
+    cluster_id: &str,
+) -> Result<NodeIdentity> {
+    if Uuid::parse_str(node_id).is_err() || cluster_id.trim().is_empty() {
+        return Err(LibraryError::Invalid(
+            "a node identity needs a UUID node id and a cluster id".into(),
+        ));
+    }
+    std::fs::create_dir_all(files_dir)?;
+    let identity = IdentityFile {
+        v: IDENTITY_FILE_VERSION,
+        node_id: node_id.to_string(),
+        cluster_id: Some(cluster_id.to_string()),
+    };
+    write_identity_atomic(&node_identity_path(files_dir), &identity)?;
+    Ok(public_identity(identity))
+}
+
 /// Preferred cluster id from the identity file, when the file already has one.
 ///
 /// # Errors

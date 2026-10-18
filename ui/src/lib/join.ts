@@ -12,9 +12,15 @@
  *   user "Let <branch> join <library> as yours?".
  * - Branch invites are minted in User management and shown once; they are
  *   never kept in any persisted state.
+ * - An Owner of the library may instead let an **empty** install join as a
+ *   **clerk** (code name: an owner node): it shares the library's database
+ *   and keys and replaces whatever the install held. The choice is made on
+ *   the consent page, needs a fresh second factor, and is bound to the
+ *   code; the keys travel daemon to daemon, sealed to the joining node,
+ *   never through this SPA.
  */
 
-import { ApiError } from "@/lib/api";
+import { ApiError, type ConfigNodeView } from "@/lib/api";
 
 /** What a library says about itself, read by this install's daemon. */
 export interface LibraryInfoView {
@@ -51,7 +57,14 @@ export interface JoinStatus {
   has_owner: boolean;
   default_branch_name: string;
   links: BranchLinkView[];
+  /** This install is empty, so it may offer to join as a clerk. */
+  clerk_eligible?: boolean;
+  /** Why it is not (what it already holds), when it is not. */
+  clerk_problem?: string | null;
 }
+
+/** How a server joins: a branch keeps its own database; a clerk shares the library's. */
+export type ConnectionType = "branch" | "clerk";
 
 /** `POST /api/config/join/start`. */
 export interface JoinStart {
@@ -59,7 +72,23 @@ export interface JoinStart {
   library: LibraryInfoView;
   branch_name: string;
   expires_in_secs: number;
+  /** Whether the sign-in offered to join as a clerk. */
+  clerk_offered?: boolean;
 }
+
+/** What the consent page may offer: only an Owner gets a choice. */
+export type ConnectionChoiceView =
+  | { choice: false; default: "branch" }
+  | {
+      choice: true;
+      default: "branch";
+      /** Clerk may be chosen (shared database, empty joiner, second factor). */
+      clerk_available: boolean;
+      /** Why not, when it may not. */
+      clerk_reason: string | null;
+      /** Second factors the user can confirm with (`totp`, `passkey`). */
+      step_up: string[];
+    };
 
 /** `GET /api/auth/branch-consent`: what the consent page shows. */
 export interface BranchConsentView {
@@ -69,6 +98,34 @@ export interface BranchConsentView {
   redirect_origin: string;
   enrollment: boolean;
   user: { id: number; display_name: string | null };
+  /** Branch or clerk (absent from an older library: branch only). */
+  connection?: ConnectionChoiceView;
+}
+
+/** A fresh second factor for a clerk consent. */
+export type ClerkStepUp =
+  | { method: "totp"; code: string }
+  | { method: "passkey"; challenge_id: string; credential: Record<string, unknown> };
+
+/** `POST /api/config/join/callback` for a clerk: this server restarts. */
+export interface ClerkJoined {
+  connection: "clerk";
+  cluster_id: string;
+  node_id: string;
+  library_name: string;
+  /** `postgres` or `d1`. */
+  database: string;
+  /** master.key was wrapped with this server's own password. */
+  master_key_wrapped: boolean;
+  restarting: boolean;
+}
+
+/** `POST /api/config/join/callback` for a branch. */
+export interface BranchJoined {
+  connection?: "branch";
+  cluster: BranchLinkView;
+  library_name: string;
+  running: boolean;
 }
 
 /** `GET /api/config/branches`: Settings → Branches on the library. */
@@ -191,6 +248,8 @@ export function startJoin(body: {
   address: string;
   fingerprint?: string | null;
   branch_name?: string;
+  /** Offer to join as a clerk (this install must be empty). */
+  clerk?: boolean;
 }): Promise<JoinStart> {
   return request("/api/config/join/start", {
     method: "POST",
@@ -198,6 +257,7 @@ export function startJoin(body: {
       address: body.address,
       fingerprint: body.fingerprint ?? undefined,
       branch_name: body.branch_name?.trim() || undefined,
+      clerk: body.clerk ? true : undefined,
     },
   });
 }
@@ -205,20 +265,29 @@ export function startJoin(body: {
 /**
  * Relays the library's answer to this install's daemon, which redeems it.
  *
- * @param callback - `code`, `state`, and `error` from the callback URL.
- * @returns The recorded link and whether its client runs.
+ * @param callback - `code`, `state`, `error`, and `connection` from the callback URL.
+ * @returns The recorded link (branch), or what was applied (clerk).
  */
-export function finishJoin(
-  callback: JoinCallback,
-): Promise<{ cluster: BranchLinkView; library_name: string; running: boolean }> {
+export function finishJoin(callback: JoinCallback): Promise<BranchJoined | ClerkJoined> {
   return request("/api/config/join/callback", {
     method: "POST",
     body: {
       code: callback.code,
       state: callback.state,
       error: callback.error ?? undefined,
+      connection: callback.connection === "clerk" ? "clerk" : undefined,
     },
   });
+}
+
+/**
+ * True when the callback answer is a clerk join.
+ *
+ * @param joined - What `finishJoin` answered.
+ * @returns Whether this server now shares the library's database.
+ */
+export function isClerkJoined(joined: BranchJoined | ClerkJoined): joined is ClerkJoined {
+  return joined.connection === "clerk";
 }
 
 /**
@@ -266,11 +335,39 @@ export function fetchBranchConsent(search: string): Promise<BranchConsentView> {
 export function answerBranchConsent(
   search: string,
   approve: boolean,
+  clerk?: { step_up: ClerkStepUp },
 ): Promise<{ redirect: string }> {
   return request("/api/auth/branch-consent", {
     method: "POST",
-    body: { ...authorizeParams(search), approve },
+    body: {
+      ...authorizeParams(search),
+      approve,
+      ...(clerk && approve ? { connection: "clerk", step_up: clerk.step_up } : {}),
+    },
   });
+}
+
+/**
+ * Begins a passkey step-up for a clerk consent (Owners only).
+ *
+ * @returns The WebAuthn request options and their `challenge_id`.
+ */
+export function beginClerkStepUp(): Promise<{
+  challenge_id: string;
+  publicKey: Record<string, unknown>;
+}> {
+  return request("/api/auth/branch-consent/step-up", { method: "POST", body: {} });
+}
+
+/**
+ * Removes an owner node (a clerk) that no longer runs; Settings → Clerks
+ * lists them from `listConfigNodes` (`kind = owner`).
+ *
+ * @param nodeId - The node to remove.
+ * @returns The removed id.
+ */
+export function removeClerk(nodeId: string): Promise<{ node_id: string; removed: boolean }> {
+  return request(`/api/config/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
 }
 
 /**
@@ -331,6 +428,8 @@ export interface JoinCallback {
   code: string;
   state: string;
   error: string | null;
+  /** `clerk` when the library approved a clerk join. */
+  connection?: ConnectionType;
 }
 
 /**
@@ -347,6 +446,7 @@ export function parseJoinCallback(search: string): JoinCallback | null {
     code: params.get("code")?.trim() ?? "",
     state,
     error: params.get("error")?.trim() || null,
+    connection: params.get("connection")?.trim() === "clerk" ? "clerk" : "branch",
   };
 }
 
@@ -458,6 +558,26 @@ export function joinErrorMessage(error: unknown, fallback: string): string {
         return "The library's user did not let this branch join.";
       case "transport_insecure":
         return "That library can only be joined over HTTPS (plain HTTP works only on this machine).";
+      case "not_empty":
+        return "This server already holds library data, so it can only join as a branch.";
+      case "owner_required":
+        return "Only an Owner of the library can let a server join as a clerk.";
+      case "database_not_shareable":
+        return "This library's database can't be shared (SQLite), so servers can only join as branches.";
+      case "step_up_required":
+        return "Confirm with your authenticator code or a passkey to let a clerk join.";
+      case "step_up_failed":
+        return "That code or passkey did not verify. Try again.";
+      case "step_up_unavailable":
+        return "Joining as a clerk needs an authenticator app or a passkey on your account.";
+      case "step_up_locked":
+        return "Too many tries. Wait a few minutes, then try again.";
+      case "clerk_not_offered":
+        return "The joining server did not offer to join as a clerk.";
+      case "database_guest_missing":
+        return "This server doesn't have the library's database plugin installed.";
+      case "d1_token_missing":
+        return "Set this server's Cloudflare D1 API token before joining as a clerk.";
       default:
         return error.message || fallback;
     }
@@ -521,4 +641,16 @@ export function dismissWelcome(): void {
   } catch {
     // private mode: the screen shows again next time
   }
+}
+
+/**
+ * Only the owner nodes (`kind = owner`): the clerks of this library.
+ *
+ * @param nodes - Every node the caller sees.
+ * @returns The ones that share this library's database, this server first.
+ */
+export function clerkNodes(nodes: ConfigNodeView[]): ConfigNodeView[] {
+  return nodes
+    .filter((node) => node.kind === "owner")
+    .sort((a, b) => Number(b.this_node) - Number(a.this_node) || a.node_id.localeCompare(b.node_id));
 }

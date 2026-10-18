@@ -1425,8 +1425,8 @@ names are unchanged.
 - **CLI.** `bookclerk clusters join --url <owner>` prints the authorize URL,
   opens a browser when it can, and takes the answer on a loopback
   listener; without `--url` the stdin path is unchanged.
-- **Not built here.** The peer ("clerk") connection type that shares the
-  library's database, and branches of branches.
+- **Not built here.** Branches of branches. The peer ("clerk") connection
+  type is the next section.
 - **Tests.** Daemon: `info` under the transport policy and in
   `self_signed` mode (the fingerprint a branch checks); consent and redeem
   with an idempotent retry and one node under concurrency; refusals for
@@ -1440,6 +1440,75 @@ names are unchanged.
   takes only its own `state` and reports a denial. UI (vitest): callback
   parsing, the consent redirect check, invite shape, countdown, and
   error copy.
+
+### Join as a clerk (an owner node over a sign-in)
+
+Decided 2026-10-18. The consent page can let a joining install become an
+**owner node** (`kind = owner`) that shares the library's database and DEK,
+instead of a host node. The UI calls it a **clerk** ("Join as a clerk of
+this library" or "Join as a branch"; Settings → **Clerks**); code keeps
+owner node and host node.
+
+- **Who may choose.** Only an Owner of the library (the stored role,
+  `verify_cluster_owner`, read at consent and again at redeem) is offered
+  the choice; everyone else gets branch only. Branch is always the default.
+  The joining install must offer it (`clerk_offer=1` on the authorize
+  request), which it does only when it is empty: no users, store accounts,
+  books or joined libraries of its own, and no `BOOKCLERK_DATABASE_*` /
+  `BOOKCLERK_D1_*` override that would outrank the new bootstrap
+  (`install_problem`, checked at start and again at the callback).
+- **Shareable database only.** Clerk is enabled only when the library's
+  `[database]` is PostgreSQL or D1. With SQLite the option is shown
+  disabled with the reason. A D1 API token is never sent; the clerk needs
+  its own `BOOKCLERK_D1_API_TOKEN`.
+- **Fresh step-up.** Approving as a clerk needs a second factor verified in
+  that request: a TOTP code, or a user-verified passkey assertion for a
+  challenge from `POST /api/auth/branch-consent/step-up` (kind
+  `clerk_step_up`). Wrong codes are throttled like sign-in. An Owner with
+  neither factor is refused (`step_up_unavailable`) with how to set one up.
+  Consent and redeem run under the node API transport policy (TLS, or
+  loopback only when both ends are on one machine).
+- **The code is bound to the type.** A clerk code is stored with scope
+  `node:enroll node:clerk`, a branch code with `node:enroll`; the redeem
+  names the type it expects (`connection`) and must match the stored
+  scope, so a branch-approved code never redeems as a clerk. The node kind
+  is also part of the redeem request hash.
+- **Redeem.** The same canonical batch records a `nodes` row with `kind =
+  owner` and no `node_credentials` row (a clerk never dials the node
+  socket). The answer adds `bootstrap`: a `ClerkBootstrap` (`[database]`
+  connection and the 32-byte DEK, never the passphrase-wrapped
+  `master.key` file) sealed with the H-4 sealed box (X25519, HKDF-SHA256,
+  XChaCha20-Poly1305) to the joining node's box key, with associated data
+  binding the cluster and node ids. It is answered `no-store`, never logged
+  (`Debug` redacts), and never passes through the browser: the joining
+  daemon redeems with the verifier only it holds.
+- **Applying it.** The joining daemon opens the box with its node key,
+  checks the library's database guest is installed here, and writes its
+  own bootstrap: `[database]` in `config.toml` (a Postgres URL into a
+  `0600` file named by `url_file`, never in the TOML), `node-identity.json`
+  with the node id the library recorded, and `master.key` (BCK2 under its
+  own `BOOKCLERK_AUTH_PASSWORD` / `[auth].password` when set, BCK1
+  otherwise). `config.toml` is written last. It then restarts cleanly: the
+  listeners drain as on SIGTERM and the binary re-execs itself with the
+  same arguments and environment (same PID on Unix). It comes back as an
+  owner node of the library. `clusters join --as clerk` writes the same
+  files and asks the operator to restart `bookclerkd`.
+- **Removing a clerk.** Settings → Clerks lists the owner nodes;
+  `DELETE /api/config/nodes/{node_id}` removes one that is not running
+  (operator or Owner; never this node or a host node). Removal does not
+  take back the database credentials or DEK it held: rotate them when it
+  is no longer trusted.
+- **Audit.** `clerk_authorize`, `clerk_authorize_refused`,
+  `clerk_enroll_refused`, `clerk_enrolled` (owner), `clerk_joined`
+  (joiner), `owner_node_removed`.
+- **Tests.** Proto: the bootstrap opens only with the node key and its ids,
+  and never prints its secrets. Daemon: clerk refused to non-Owners, with
+  SQLite, without a second factor, without the joiner's offer; step-up
+  required and a wrong code refused; a branch code refused as a clerk;
+  the sealed bootstrap opens only with the node key; a non-empty install
+  refused; an empty install joins end to end against a Postgres-configured
+  owner (the database itself is not opened: PostgreSQL does not run in
+  CI). Library: `install_master_key` raw and wrapped.
 
 ## Consequences
 

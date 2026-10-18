@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  fetchJoinStatus,
   fingerprintGroups,
   inspectLibrary,
   JoinApiError,
@@ -32,6 +33,11 @@ export interface JoinWizardProps {
  *
  * Nothing secret is kept here: the daemon holds the PKCE verifier and the
  * node keys, and an invite goes straight to it in a POST body.
+ *
+ * An empty install may also offer to join **as a clerk**: it then shares
+ * the library's database and keys, and what it holds now is replaced. The
+ * library's Owner makes the final choice on the consent page; the daemon
+ * checks again that this install is empty before it applies anything.
  */
 export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizardProps) {
   const [tab, setTab] = useState<Tab>("signin");
@@ -43,6 +49,23 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggested, setSuggested] = useState<string | null>(null);
+  const [clerkEligible, setClerkEligible] = useState(false);
+  const [asClerk, setAsClerk] = useState(false);
+  const [replaceConfirmed, setReplaceConfirmed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchJoinStatus()
+      .then((status) => {
+        if (!cancelled) setClerkEligible(status.clerk_eligible === true);
+      })
+      .catch(() => {
+        // Branch only; the daemon refuses a clerk offer anyway.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function onInspect(event: FormEvent) {
     event.preventDefault();
@@ -75,6 +98,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
         address: library.origin,
         fingerprint: library.needs_fingerprint ? library.fingerprint : null,
         branch_name: branchName,
+        clerk: clerkEligible && asClerk,
       });
       // The library signs the user in and sends the browser back to
       // this install's /join/callback.
@@ -105,7 +129,10 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
   }
 
   const canSignIn =
-    library != null && library.enrollment && (!library.needs_fingerprint || confirmed);
+    library != null &&
+    library.enrollment &&
+    (!library.needs_fingerprint || confirmed) &&
+    (!asClerk || replaceConfirmed);
 
   return (
     <div className="space-y-5">
@@ -210,6 +237,49 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
                 />
                 <p className="text-xs text-ink/50">The library's users see this name.</p>
               </div>
+              {clerkEligible ? (
+                <div className="space-y-2">
+                  <label className="flex items-start gap-2 text-sm text-ink">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={asClerk}
+                      disabled={busy}
+                      onChange={(e) => {
+                        setAsClerk(e.target.checked);
+                        setReplaceConfirmed(false);
+                      }}
+                    />
+                    <span>
+                      <span className="block font-medium">Offer to join as a clerk</span>
+                      <span className="block text-ink/55">
+                        A clerk shares the library's database and keys instead of keeping its own.
+                        Only an Owner of the library can choose it, and only when the library uses
+                        PostgreSQL or Cloudflare D1. Otherwise this server joins as a branch.
+                      </span>
+                    </span>
+                  </label>
+                  {asClerk ? (
+                    <label
+                      className="flex items-start gap-2 rounded border border-brick/30 bg-brick/5 p-3 text-sm text-ink"
+                      role="alert"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={replaceConfirmed}
+                        disabled={busy}
+                        onChange={(e) => setReplaceConfirmed(e.target.checked)}
+                      />
+                      <span>
+                        As a clerk, this server's own database settings and keys are replaced by
+                        the library's, and it restarts. I understand that whatever it holds now is
+                        replaced.
+                      </span>
+                    </label>
+                  ) : null}
+                </div>
+              ) : null}
               <Button type="button" disabled={busy || !canSignIn} onClick={() => void onSignIn()}>
                 Sign in to {library.library_name}
               </Button>

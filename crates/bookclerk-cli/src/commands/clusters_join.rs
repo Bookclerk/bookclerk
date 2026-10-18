@@ -11,15 +11,24 @@
 //!    code with the PKCE verifier only this process holds, and record the
 //!    link. A running daemon starts the link's client within a few seconds.
 //!
-//! The verifier, `state`, code and node keys never go on argv or into a
-//! log.
+//! With `--as clerk` the sign-in also offers to join as a clerk (an owner
+//! node that shares the library's database and DEK; only an empty install
+//! may). When the library's Owner chooses clerk, the sealed bootstrap is
+//! opened with the node key and written as this install's own bootstrap
+//! ([`bookclerk_node_client::apply_clerk_bootstrap`]); `bookclerkd` then
+//! starts on it as an owner node at its next start.
+//!
+//! The verifier, `state`, code, node keys and bootstrap never go on argv or
+//! into a log.
 
 use std::time::{Duration, Instant};
 
+use bookclerk_config::DatabasePluginKind;
 use bookclerk_node_client::{
-    authorize_branch, inspect_library, redeem_branch_code, BranchRedeem, InspectedLibrary,
+    apply_clerk_bootstrap, authorize_join, inspect_library, install_problem, redeem_branch_code,
+    redeem_clerk_code, AppliedClerk, BranchRedeem, InspectedLibrary,
 };
-use bookclerk_node_proto::JOIN_CALLBACK_PATH;
+use bookclerk_node_proto::{ConnectionType, JOIN_CALLBACK_PATH};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use zeroize::Zeroizing;
@@ -37,12 +46,16 @@ pub struct Callback {
     pub code: Zeroizing<String>,
     /// The library's `error`, when it denied.
     pub error: Option<String>,
+    /// The connection type the library's user chose (`clerk`), when not a
+    /// branch.
+    pub connection: Option<String>,
 }
 
 impl std::fmt::Debug for Callback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Callback")
             .field("error", &self.error)
+            .field("connection", &self.connection)
             .finish_non_exhaustive()
     }
 }
@@ -133,11 +146,13 @@ pub async fn wait_for_callback(
         let mut code = None;
         let mut came_back = None;
         let mut error = None;
+        let mut connection = None;
         for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
             match name.as_ref() {
                 "code" => code = Some(Zeroizing::new(value.into_owned())),
                 "state" => came_back = Some(value.into_owned()),
                 "error" => error = Some(value.into_owned()),
+                "connection" => connection = Some(value.into_owned()),
                 _ => {}
             }
         }
@@ -160,6 +175,7 @@ pub async fn wait_for_callback(
         return Ok(Callback {
             code: code.unwrap_or_default(),
             error,
+            connection,
         });
     }
 }
@@ -224,19 +240,63 @@ fn confirm_fingerprint(library: &InspectedLibrary, given: Option<&str>) -> anyho
     }
 }
 
-/// Runs `clusters join --url`.
+/// How `clusters join --url` ended.
+#[derive(Debug)]
+pub enum Joined {
+    /// A branch: the link is recorded and a running daemon dials it.
+    Branch(bookclerk_library::control_plane::ClusterLink),
+    /// A clerk: the library's bootstrap is written; `bookclerkd` starts on
+    /// it as an owner node at its next start.
+    Clerk {
+        /// The library's cluster id.
+        cluster_id: String,
+        /// The owner node id the library recorded.
+        node_id: String,
+        /// What was written.
+        applied: AppliedClerk,
+    },
+}
+
+/// True when the guest for `kind` is installed for `config`.
+fn database_guest_installed(config: &bookclerk_config::Config, kind: DatabasePluginKind) -> bool {
+    let Ok(plugins) = bookclerk_plugin_host::discover_plugins(config) else {
+        return false;
+    };
+    let adapters: Vec<_> = plugins
+        .into_iter()
+        .filter(|plugin| {
+            plugin
+                .manifest
+                .has_entrypoint(bookclerk_plugin_host::Entrypoint::DatabaseAdapter)
+        })
+        .collect();
+    bookclerk_plugin_host::resolve_plugin_ref(&adapters, kind.as_str()).is_ok()
+}
+
+/// Runs `clusters join --url`, as a branch, or offering a clerk when
+/// `offer_clerk` (the library's Owner then chooses).
 ///
 /// # Errors
 ///
 /// Returns an error when the library cannot be read or refuses, the
-/// fingerprint is not confirmed, the sign-in does not come back, or the
-/// link cannot be recorded.
+/// fingerprint is not confirmed, the sign-in does not come back, a clerk
+/// join is not possible here, or the link or bootstrap cannot be written.
 pub async fn join_with_sign_in(
     store: &bookclerk_library::LibraryStore,
+    config: &bookclerk_config::Config,
     address: &str,
     branch_name: Option<&str>,
     fingerprint: Option<&str>,
-) -> anyhow::Result<bookclerk_library::control_plane::ClusterLink> {
+    offer_clerk: bool,
+) -> anyhow::Result<Joined> {
+    if offer_clerk {
+        if let Some(problem) = install_problem(store)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))?
+        {
+            anyhow::bail!("cannot join as a clerk: {problem}");
+        }
+    }
     let library = inspect_library(address)
         .await
         .map_err(|err| anyhow::anyhow!("could not read the library: {err}"))?;
@@ -251,8 +311,14 @@ pub async fn join_with_sign_in(
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map_or_else(default_branch_name, str::to_string);
-    let authorization = authorize_branch(&library, &redirect_uri, &branch_name)
+    let authorization = authorize_join(&library, &redirect_uri, &branch_name, offer_clerk)
         .map_err(|err| anyhow::anyhow!("{err}"))?;
+    if offer_clerk {
+        eprintln!(
+            "Joining as a clerk replaces this install's own (empty) library with {}'s.",
+            library.info.library_name
+        );
+    }
     eprintln!(
         "Sign in to {} to let \"{branch_name}\" join it:\n\n  {}\n",
         library.info.library_name, authorization.authorize_url
@@ -272,22 +338,74 @@ pub async fn join_with_sign_in(
     if callback.code.is_empty() {
         anyhow::bail!("the sign-in came back without a code");
     }
-    redeem_branch_code(
-        store,
-        &BranchRedeem {
-            origin: &library.origin,
-            spki_pin: library.spki_pin.as_deref(),
-            cluster_id: &library.info.cluster_id,
-            code: &callback.code,
-            verifier: &authorization.verifier,
-            redirect_uri: &authorization.redirect_uri,
-            branch_name: &branch_name,
-            software_version: env!("CARGO_PKG_VERSION"),
-        },
-        &authorization.keys,
-    )
-    .await
-    .map_err(|err| anyhow::anyhow!("could not join the library: {err}"))
+    let connection = match callback.connection.as_deref() {
+        None => ConnectionType::Branch,
+        Some(raw) => ConnectionType::parse(raw)
+            .ok_or_else(|| anyhow::anyhow!("the sign-in came back with an unknown connection"))?,
+    };
+    let redeem = BranchRedeem {
+        origin: &library.origin,
+        spki_pin: library.spki_pin.as_deref(),
+        cluster_id: &library.info.cluster_id,
+        code: &callback.code,
+        verifier: &authorization.verifier,
+        redirect_uri: &authorization.redirect_uri,
+        branch_name: &branch_name,
+        software_version: env!("CARGO_PKG_VERSION"),
+    };
+    match connection {
+        ConnectionType::Branch => {
+            if offer_clerk {
+                eprintln!("The library's user chose to let this install join as a branch.");
+            }
+            redeem_branch_code(store, &redeem, &authorization.keys)
+                .await
+                .map(Joined::Branch)
+                .map_err(|err| anyhow::anyhow!("could not join the library: {err}"))
+        }
+        ConnectionType::Clerk => {
+            if !offer_clerk {
+                anyhow::bail!("the library answered for a clerk, which this join did not offer");
+            }
+            if let Some(problem) = install_problem(store)
+                .await
+                .map_err(|err| anyhow::anyhow!("{err}"))?
+            {
+                anyhow::bail!("cannot join as a clerk: {problem}");
+            }
+            let joined = redeem_clerk_code(&redeem, &authorization.keys)
+                .await
+                .map_err(|err| anyhow::anyhow!("could not join the library: {err}"))?;
+            let kind = match joined.bootstrap.database.plugin() {
+                "postgres" => DatabasePluginKind::Postgres,
+                _ => DatabasePluginKind::D1,
+            };
+            if !database_guest_installed(config, kind) {
+                anyhow::bail!(
+                    "the library's database is {}, and its database plugin is not installed here; install it (cargo stage-plugins --optional) and join again",
+                    kind.as_str()
+                );
+            }
+            if kind == DatabasePluginKind::D1 && bookclerk_config::resolve_d1_api_token().is_err() {
+                anyhow::bail!(
+                    "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN here (the token is never sent between servers) and join again"
+                );
+            }
+            let password = config.auth_password().map(Zeroizing::new);
+            let applied = apply_clerk_bootstrap(
+                &config.paths().files_dir,
+                &config.paths().config_file,
+                &joined.bootstrap,
+                password.as_ref().map(|p| p.as_str()),
+            )
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
+            Ok(Joined::Clerk {
+                cluster_id: joined.cluster_id,
+                node_id: joined.node_id,
+                applied,
+            })
+        }
+    }
 }
 
 /// This machine's name, as a default branch name.
@@ -340,6 +458,7 @@ mod tests {
         let callback = waiting.await.unwrap().unwrap();
         assert_eq!(callback.code.as_str(), "the-code");
         assert_eq!(callback.error, None);
+        assert_eq!(callback.connection, None);
         assert!(!format!("{callback:?}").contains("the-code"));
     }
 

@@ -77,9 +77,9 @@ pub use host_schema::{
 pub use in_process_atomic::InProcessSqliteAtomic;
 pub use master_key::{
     configure_master_key, configure_master_key_with, discard_minted_master_key, inspect_master_key,
-    master_key_fingerprint, master_key_path, require_master_key, resolve_master_key_detailed,
-    uncache_master_key, wrap_master_key, MasterKey, MasterKeyFormat, MasterKeyResolution,
-    AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
+    install_master_key, master_key_fingerprint, master_key_path, require_master_key,
+    resolve_master_key_detailed, uncache_master_key, wrap_master_key, MasterKey, MasterKeyFormat,
+    MasterKeyResolution, AUTH_PASSWORD_ENV as MASTER_KEY_AUTH_PASSWORD_ENV,
 };
 pub use migrations::{
     apply_plugin_migrations, binding_bootstrap_type_env, history_from_execute_reply,

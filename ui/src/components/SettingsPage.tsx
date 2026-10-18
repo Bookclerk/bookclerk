@@ -5,6 +5,7 @@ import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
 import { BranchesPanel } from "@/components/BranchesPanel";
+import { ClerksPanel } from "@/components/ClerksPanel";
 import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
@@ -72,6 +73,7 @@ export type SettingsTab =
   | "plugins"
   | "nodes"
   | "branches"
+  | "clerks"
   | "clusters";
 
 const ISOLATION_OPTIONS = [
@@ -530,7 +532,10 @@ export function SettingsPage({
     if (!showUserAdmin && activeTab === "users") {
       setActiveTab("account");
     }
-    if (!showSignInSettings && (activeTab === "signin" || activeTab === "branches")) {
+    if (
+      !showSignInSettings &&
+      (activeTab === "signin" || activeTab === "branches" || activeTab === "clerks")
+    ) {
       setActiveTab("account");
     }
     if (
@@ -1405,6 +1410,22 @@ export function SettingsPage({
                 Branches
               </button>
             ) : null}
+            {showSignInSettings ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "clerks"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "clerks"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("clerks")}
+              >
+                Clerks
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -1480,6 +1501,10 @@ export function SettingsPage({
             onSessionExpired={onSessionExpired}
             canAddOwn={role !== "operator" && Boolean(session?.user)}
           />
+        ) : null}
+
+        {activeTab === "clerks" && showSignInSettings ? (
+          <ClerksPanel onSessionExpired={onSessionExpired} />
         ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

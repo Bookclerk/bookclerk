@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 base64.workspace = true
+bookclerk-config.workspace = true
 bookclerk-library.workspace = true
 bookclerk-node-proto.workspace = true
 futures.workspace = true
@@ -31,6 +32,9 @@ tracing.workspace = true
 url.workspace = true
 webpki-roots = "1"
 zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

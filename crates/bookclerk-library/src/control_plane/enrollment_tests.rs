@@ -615,3 +615,110 @@ async fn redeem_refuses_keys_that_are_not_prime_order_points() {
         .unwrap());
     assert!(!record_node_connected(&store, "no-such-node").await.unwrap());
 }
+
+#[tokio::test]
+async fn a_clerk_redeem_records_an_owner_node_with_no_socket_credential() {
+    let _guard = master_key_test_lock_async().await;
+    let (store, dir) = cluster().await;
+    let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
+    let owner = user(&store, UserRole::Owner, "Morgan").await;
+    let member = user(&store, UserRole::Member, "Riley").await;
+    let minted = mint_enrollment_link(&store, &operator(), owner, "rack", None)
+        .await
+        .unwrap();
+    let req = redeem_request(&minted, 7);
+    let enrolled = redeem_enrollment_link_as(&store, &req, NodeKind::Owner)
+        .await
+        .unwrap();
+    let node = load_node(&store, &enrolled.node_id).await.unwrap();
+    assert_eq!(node.kind, NodeKind::Owner);
+    assert!(load_node_credential(&store, &enrolled.node_id)
+        .await
+        .unwrap()
+        .is_none());
+    // The kind is part of the request: a retry as a host is refused.
+    let again = redeem_enrollment_link_as(&store, &req, NodeKind::Owner)
+        .await
+        .unwrap();
+    assert!(again.replayed);
+    assert_forbidden(
+        &redeem_enrollment_link_as(&store, &req, NodeKind::Host)
+            .await
+            .unwrap_err(),
+    );
+
+    // Removal: a member who does not own it does not see it; this node and
+    // a running node stay; then an Owner removes it.
+    let as_member = EnrollmentActor::User { user_id: member };
+    assert!(matches!(
+        remove_owner_node(&store, &as_member, &enrolled.node_id, &this_node)
+            .await
+            .unwrap_err(),
+        LibraryError::NotFound(_)
+    ));
+    let as_owner = EnrollmentActor::User { user_id: owner };
+    assert!(matches!(
+        remove_owner_node(&store, &as_owner, &this_node, &this_node)
+            .await
+            .unwrap_err(),
+        LibraryError::Invalid(_)
+    ));
+    let beat = NodeSampler::new(dir.path()).sample();
+    record_node_heartbeat(&store, &enrolled.node_id, &beat)
+        .await
+        .unwrap();
+    assert!(matches!(
+        remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
+            .await
+            .unwrap_err(),
+        LibraryError::Conflict(_)
+    ));
+    store
+        .db()
+        .execute_unprepared(&format!(
+            "UPDATE node_status SET heartbeat_ms = 0 WHERE node_id = '{}'",
+            enrolled.node_id
+        ))
+        .await
+        .unwrap();
+    remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
+        .await
+        .unwrap();
+    assert!(matches!(
+        load_node(&store, &enrolled.node_id).await.unwrap_err(),
+        LibraryError::NotFound(_)
+    ));
+    assert!(load_node_status(&store, &enrolled.node_id)
+        .await
+        .unwrap()
+        .is_none());
+
+    // A branch (host node) is revoked, not removed.
+    let minted = mint_enrollment_link(&store, &operator(), owner, "desk", None)
+        .await
+        .unwrap();
+    let branch = redeem_enrollment_link(&store, &redeem_request(&minted, 9))
+        .await
+        .unwrap();
+    assert!(matches!(
+        remove_owner_node(&store, &operator(), &branch.node_id, &this_node)
+            .await
+            .unwrap_err(),
+        LibraryError::Invalid(_)
+    ));
+}
+
+#[tokio::test]
+async fn library_contents_counts_what_an_install_holds() {
+    let _guard = master_key_test_lock_async().await;
+    let (store, _dir) = cluster().await;
+    let empty = library_contents(&store).await.unwrap();
+    assert!(empty.is_empty(), "{empty:?}");
+    assert!(empty.reasons().is_empty());
+    user(&store, UserRole::Member, "Riley").await;
+    user(&store, UserRole::Owner, "Morgan").await;
+    let held = library_contents(&store).await.unwrap();
+    assert!(!held.is_empty());
+    assert_eq!(held.users, 2);
+    assert_eq!(held.reasons(), ["2 users"]);
+}
