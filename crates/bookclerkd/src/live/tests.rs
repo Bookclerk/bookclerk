@@ -8,7 +8,6 @@ use std::time::Duration;
 use axum::http::{HeaderMap, HeaderValue};
 use bookclerk_library::{EnqueueJobSpec, JobKind, JobPayload};
 use bookclerk_library::{LibraryStore, UserRole};
-use futures::{SinkExt as _, StreamExt as _};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::tungstenite::Message;
 
