@@ -89,7 +89,9 @@ pub enum LibraryCommand {
     },
     /// Download + decrypt + store titles: queues one acquire job per title
     /// id (or one for every pending title) for a bookclerkd node to run, and
-    /// waits for them. `--dry-run` only prints planned keys, here.
+    /// waits for them. With `--license` or `-o`, every job is pinned to this
+    /// node and only its bookclerkd runs them. `--dry-run` only prints
+    /// planned keys, here.
     Acquire {
         /// Acquire a single ASIN / product id / UUID.
         #[arg(long)]
@@ -116,11 +118,16 @@ pub enum LibraryCommand {
         /// Download companion PDF only.
         #[arg(short, long)]
         pdf: bool,
-        /// Read license JSON from file (or `-` for stdin) instead of requesting.
+        /// Use the license JSON in this file instead of requesting one. Pins
+        /// the queued jobs to this node, whose bookclerkd resolves the path
+        /// when it runs them (`-`, standard input, only with `--dry-run`).
+        /// Preloaded licenses are not supported by the acquire pipeline yet:
+        /// a job with titles to fetch fails there.
         #[arg(long, value_name = "FILE")]
         license: Option<std::path::PathBuf>,
-        /// Runtime setting override (`-o key=value`) for `--dry-run`.
-        /// Repeatable.
+        /// Runtime setting override (`-o key=value`, an `output.*` or
+        /// `library.*` setting) for this acquire. Pins the queued jobs to
+        /// this node, whose bookclerkd applies it for them. Repeatable.
         #[arg(short = 'o', long = "override", value_name = "KEY=VALUE")]
         overrides: Vec<String>,
         /// Queue the acquire jobs and print their ids without waiting for
@@ -333,18 +340,13 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
         } => {
             if !dry_run {
                 // Real acquires go through the job queue; only a dry run
-                // plans keys here.
-                if license.is_some() {
-                    anyhow::bail!(
-                        "--license is not supported: acquires run as queued jobs on a bookclerkd node"
-                    );
-                }
-                if !overrides.is_empty() {
-                    anyhow::bail!(
-                        "-o/--override applies to --dry-run only: acquires run as queued jobs \
-                         with the cluster's settings"
-                    );
-                }
+                // plans keys here. `--license` / `-o` name things on this
+                // node, so they pin every job to it.
+                let local = queued::LocalAcquire::from_args(
+                    || queued::local_node_id(config),
+                    license.as_deref(),
+                    &overrides,
+                )?;
                 let titles: Vec<String> = asin.into_iter().chain(isbn).chain(asins).collect();
                 queued::acquire(
                     &store,
@@ -355,6 +357,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                         instance: instance.as_deref(),
                         force,
                         pdf_only: pdf,
+                        local,
                         wait: !no_wait,
                     },
                 )

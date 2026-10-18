@@ -1269,6 +1269,17 @@ impl JobKind {
                 if payload.pdf_only {
                     key.push_str(":pdf=1");
                 }
+                // Work pinned to a node, or run with a license file or
+                // overrides, is not the same work as a plain acquire, so
+                // neither absorbs the other.
+                if let Some(node) = payload.pinned_node_id.as_deref() {
+                    key.push_str(":node=");
+                    key.push_str(node);
+                }
+                if payload.license_path.is_some() || !payload.setting_overrides.is_empty() {
+                    key.push_str(":opts=");
+                    key.push_str(&acquire_options_digest(payload));
+                }
                 key
             }
             Self::ListenSync => "listen_sync".into(),
@@ -1482,6 +1493,54 @@ pub struct JobPayload {
     /// handed such a job (`control_plane::node_may_claim_job`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pdf_only: bool,
+    /// Pins the job to one node: only the node with this id
+    /// (`node-identity.json`), claiming through its own worker
+    /// (`control_plane::Claimant::Local`), may claim it.
+    ///
+    /// Set when the work names something that exists only on that node,
+    /// such as the license file or `-o` overrides of a `library acquire`
+    /// queued by the CLI there. [`Self::requires`] still applies on top of
+    /// the pin, and the unrouted [`crate::LibraryStore::claim_next_job`]
+    /// never claims a pinned job. A pinned job whose node never returns
+    /// stays pending until it is cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_node_id: Option<String>,
+    /// For [`JobKind::Acquire`]: a license file path on the pinned node
+    /// (`library acquire --license`). Only the path travels; the node that
+    /// runs the job resolves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_path: Option<String>,
+    /// For [`JobKind::Acquire`]: runtime setting overrides (`-o key=value`,
+    /// in order) applied to the running node's configuration for this job
+    /// only. Admission accepts only non-secret `output.*` and `library.*`
+    /// keys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setting_overrides: Vec<(String, String)>,
+}
+
+/// Short digest of an acquire's license path and setting overrides, for
+/// its dedup key (the values themselves stay out of the key).
+fn acquire_options_digest(payload: &JobPayload) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    if let Some(path) = payload.license_path.as_deref() {
+        hasher.update(b"license\0");
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+    }
+    for (key, value) in &payload.setting_overrides {
+        hasher.update(b"o\0");
+        hasher.update(key.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(value.as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Default envelope version for missing `v` on well-formed legacy rows.
@@ -1507,6 +1566,9 @@ impl Default for JobPayload {
             invocation_sequence: None,
             resume_pending: false,
             pdf_only: false,
+            pinned_node_id: None,
+            license_path: None,
+            setting_overrides: Vec::new(),
         }
     }
 }

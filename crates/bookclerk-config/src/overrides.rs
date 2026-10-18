@@ -23,6 +23,24 @@ pub fn apply_setting_overrides(config: &mut Config, pairs: &[(&str, &str)]) {
     }
 }
 
+/// True when `key` may travel in a queued job as a per-run override.
+///
+/// Only `[output]` and `[library]` keys qualify (after resolving a classic
+/// PascalCase alias such as `UseWidevine` to `output.widevine`): none of them
+/// holds a secret, and they are the ones an acquire reads. Bootstrap,
+/// authentication, daemon and job keys (`auth.password`, a database URL)
+/// never go into a job row.
+///
+/// # Arguments
+///
+/// * `key` - Override key as typed (classic or dotted).
+#[must_use]
+pub fn is_job_setting_override(key: &str) -> bool {
+    let key = key.trim();
+    let dotted = classic_key_aliases().get(key).copied().unwrap_or(key);
+    dotted.starts_with("output.") || dotted.starts_with("library.")
+}
+
 /// Load config, apply `pairs`, and write the result back to the resolved config path.
 ///
 /// # Arguments
@@ -487,6 +505,27 @@ fn parse_bool(value: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_output_and_library_keys_travel_in_jobs() {
+        for key in [
+            "output.format",
+            "UseWidevine",
+            " library.download_episodes ",
+        ] {
+            assert!(is_job_setting_override(key), "{key}");
+        }
+        for key in [
+            "auth.password",
+            "database.postgres.url",
+            "daemon.listen",
+            "jobs.max_attempts",
+            "outputs.format",
+            "",
+        ] {
+            assert!(!is_job_setting_override(key), "{key}");
+        }
+    }
 
     #[test]
     fn dotted_override_sets_widevine() {

@@ -14,7 +14,9 @@ bookclerk config paths
 
 Classic Libation setting names are accepted as aliases where documented in
 [libation-parity.md](libation-parity.md). Runtime overrides on acquire:
-`-o key=value` (repeatable).
+`-o key=value` (repeatable; `output.*` and `library.*` keys). A queued
+acquire with overrides is pinned to the node that ran the command, whose
+daemon applies them for that job only ([jobs.md](jobs.md)).
 
 ## Top-level tables
 

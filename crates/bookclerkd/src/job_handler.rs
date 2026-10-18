@@ -159,6 +159,8 @@ impl JobTransport for InProcessJobTransport {
                     crate::jobs::AcquireMode {
                         force: cmd.payload.force,
                         pdf_only: cmd.payload.pdf_only,
+                        license_path: cmd.payload.license_path.clone(),
+                        setting_overrides: cmd.payload.setting_overrides.clone(),
                     },
                     Some(&ctx),
                 )
