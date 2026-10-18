@@ -537,7 +537,12 @@ fn parse_asc_from_esds(esds_box: &[u8]) -> Result<Vec<u8>> {
             if flags & 0x20 != 0 {
                 nest += 2; // OCR ES_ID
             }
-            if let Some(asc) = find_desc_tag(&esds_box[nest..end], 0x05)? {
+            // The optional fields above can claim more bytes than the
+            // descriptor holds; that is a malformed file, not a panic.
+            let nested = esds_box
+                .get(nest..end)
+                .ok_or_else(|| Mp4Error::container("ES_Descriptor optional fields truncated"))?;
+            if let Some(asc) = find_desc_tag(nested, 0x05)? {
                 return Ok(asc);
             }
         } else if tag == 0x04 {
@@ -640,5 +645,20 @@ mod channels_from_asc_tests {
         // AOT=2, freq_idx=3 (48 kHz), channels=2
         let asc = [0x11, 0x90];
         assert_eq!(channels_from_asc(&asc), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod esds_tests {
+    use super::parse_asc_from_esds;
+
+    #[test]
+    fn optional_fields_longer_than_the_descriptor_are_an_error() {
+        // ES_Descriptor of 3 bytes whose flags claim dependsOn + OCR ES_IDs
+        // (4 more bytes): used to slice past its end and panic (found by the
+        // `mp4_parse` fuzz target).
+        let mut esds = vec![0, 0, 0, 17, b'e', b's', b'd', b's', 0, 0, 0, 0];
+        esds.extend_from_slice(&[0x03, 0x03, 0x00, 0x01, 0xA0]);
+        assert!(parse_asc_from_esds(&esds).is_err());
     }
 }
