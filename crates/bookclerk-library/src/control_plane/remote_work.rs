@@ -35,8 +35,10 @@ use super::job_routing::{
     JobClaimRequest, RoutedJobClaim,
 };
 use super::semaphore::{permits_held_by, release_permits, renew_permits, SemaphorePermit};
-use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
-use crate::entities::{accounts, encrypted_secrets};
+use super::trust::{
+    handoff_routed_job, job_item_accounts, node_may_claim_job, node_trust, Claimant, NodeTrust,
+};
+use crate::entities::encrypted_secrets;
 use crate::error::{LibraryError, Result};
 use crate::models::{JobFence, JobKind, JobRecord, JobResourceClass, JobState};
 use crate::secrets::{
@@ -252,10 +254,12 @@ pub async fn claim_remote_job(
 
 /// The store-account secrets `job` needs on a Host.
 ///
-/// For a scan or acquire that names an account: every `integration` row of
-/// `encrypted_secrets` for that account id under any plugin key that has an
-/// `accounts` row with that id (the same rows the trust predicate checked).
-/// Every other job is handed no secrets. Sorted, without duplicates.
+/// For a scan or acquire: every `integration` row of `encrypted_secrets`
+/// of each store account the job touches ([`job_item_accounts`], the same
+/// items the trust predicate checked), under that account's plugin key. A
+/// multi-item acquire is handed the secrets of every account it touches; a
+/// scan of every account, and every other job, is handed none. Sorted,
+/// without duplicates.
 ///
 /// # Errors
 ///
@@ -276,43 +280,31 @@ async fn job_secret_records(
     if !matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
         return Ok(Vec::new());
     }
-    let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
+    let Some(items) = job_item_accounts(store, job).await? else {
         return Ok(Vec::new());
     };
-    let plugin_keys: Vec<String> = accounts::Entity::find()
-        .filter(accounts::Column::AccountId.eq(account))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|row| row.plugin_key)
-        .collect();
-    if plugin_keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    let rows = encrypted_secrets::Entity::find()
-        .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
-        .filter(encrypted_secrets::Column::AccountId.eq(account))
-        .filter(encrypted_secrets::Column::Provider.is_in(plugin_keys))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        let Some(provider) = row.provider.clone() else {
-            continue;
-        };
-        if let Some(record) = get_secret(
-            store.db(),
-            &row.kind,
-            Some(&provider),
-            secret_account_type::INTEGRATION,
-            Some(account),
-            &row.name,
-        )
-        .await?
-        {
-            records.push(record);
+    let mut records = Vec::new();
+    for (plugin_key, account_id) in items {
+        let rows = encrypted_secrets::Entity::find()
+            .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
+            .filter(encrypted_secrets::Column::AccountId.eq(account_id.as_str()))
+            .filter(encrypted_secrets::Column::Provider.eq(plugin_key.as_str()))
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        for row in rows {
+            if let Some(record) = get_secret(
+                store.db(),
+                &row.kind,
+                Some(&plugin_key),
+                secret_account_type::INTEGRATION,
+                Some(&account_id),
+                &row.name,
+            )
+            .await?
+            {
+                records.push(record);
+            }
         }
     }
     records.sort_by_key(record_ref);

@@ -7,6 +7,10 @@
 //! lets the plugin's jobs be claimed and a revoke cancels and gives back
 //! the plugin's jobs held here.
 //!
+//! `scan` is the exception: it asks this install's running daemon to send
+//! a `scan.request` to the owner over its link (H-5), and polls the jobs
+//! it queued.
+//!
 //! `join` reads the enrollment link from stdin (or a prompt), never from
 //! argv: the link carries a single-use secret. A running daemon dials a
 //! newly joined cluster at its next start, and stops a left one's client
@@ -73,6 +77,27 @@ pub enum ClustersCommand {
         /// Deny all network access.
         #[arg(long)]
         deny_network: bool,
+    },
+    /// Ask an owner cluster to scan its library for this node's owner.
+    ///
+    /// Goes through this install's running daemon, over its link to the
+    /// owner. The owner plans it as that user: an Owner or Administrator
+    /// scanning every account gets one job per account, spread over the
+    /// cluster's nodes and hosts; anyone else scans only their own
+    /// accounts. Waits for the jobs unless `--no-wait`.
+    Scan {
+        /// Owner cluster id (default: the only enrolled cluster).
+        #[arg(long)]
+        cluster: Option<String>,
+        /// Scan only this store account of the owner cluster.
+        #[arg(long)]
+        account: Option<String>,
+        /// Pin the scan to one owner plugin instance.
+        #[arg(long)]
+        instance: Option<String>,
+        /// Print the queued job ids without waiting for them.
+        #[arg(long)]
+        no_wait: bool,
     },
     /// Withdraw an approval: held jobs of the plugin are cancelled and
     /// given back, and nothing of it is claimed until approved again.
@@ -272,6 +297,49 @@ pub async fn run(
                 );
             })
         }
+        ClustersCommand::Scan {
+            cluster,
+            account,
+            instance,
+            no_wait,
+        } => {
+            let cluster = cluster_id(store, cluster).await?;
+            let base = crate::commands::daemon_cmd::daemon_base_url(config);
+            let token = crate::commands::daemon_cmd::operator_bearer(config).await?;
+            let planned = crate::commands::daemon_cmd::post_json_async(
+                &format!("{base}/api/config/clusters/{cluster}/scan"),
+                json!({ "account": account, "plugin_instance_id": instance }),
+                token.as_deref(),
+            )
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "{err} (the daemon must be running and connected to cluster {cluster})"
+                )
+            })?;
+            let ids: Vec<String> = ["created", "duplicates"]
+                .iter()
+                .flat_map(|field| planned[*field].as_array().cloned().unwrap_or_default())
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect();
+            let full = planned["queue_full"].as_u64().unwrap_or(0);
+            if no_wait || ids.is_empty() {
+                emit(format, &planned, || {
+                    for id in &ids {
+                        println!("{id}");
+                    }
+                })?;
+            } else {
+                wait_for_remote_jobs(&base, &cluster, token.as_deref(), &ids).await?;
+            }
+            if ids.is_empty() && full == 0 {
+                anyhow::bail!("nothing to scan: no store account of this node's owner to scan");
+            }
+            if full > 0 {
+                anyhow::bail!("{full} scan job(s) were not queued: the owner's queue is full");
+            }
+            Ok(())
+        }
         ClustersCommand::Revoke { plugin, cluster } => {
             let cluster = cluster_id(store, cluster).await?;
             let Some(row) = revoke_remote_plugin(store, &cluster, plugin.trim()).await? else {
@@ -284,5 +352,60 @@ pub async fn run(
                 );
             })
         }
+    }
+}
+
+/// Polls the owner (through this daemon) until every job in `ids` is
+/// finished, printing state changes; fails when any did not succeed.
+async fn wait_for_remote_jobs(
+    base: &str,
+    cluster: &str,
+    token: Option<&str>,
+    ids: &[String],
+) -> anyhow::Result<()> {
+    let mut seen: std::collections::BTreeMap<String, String> = Default::default();
+    loop {
+        let answer = crate::commands::daemon_cmd::post_json_async(
+            &format!("{base}/api/config/clusters/{cluster}/jobs"),
+            json!({ "job_ids": ids }),
+            token,
+        )
+        .await?;
+        let jobs = answer["jobs"].as_array().cloned().unwrap_or_default();
+        let mut finished = 0usize;
+        let mut failed = Vec::new();
+        for job in &jobs {
+            let id = job["id"].as_str().unwrap_or_default().to_string();
+            let state = job["state"].as_str().unwrap_or_default();
+            let progress = job["progress"].as_str().unwrap_or_default();
+            let line = format!("{state} {progress}");
+            if seen.get(&id) != Some(&line) {
+                eprintln!("{id}: {}", line.trim());
+                seen.insert(id.clone(), line);
+            }
+            match state {
+                "succeeded" => finished += 1,
+                "failed" | "cancelled" => {
+                    finished += 1;
+                    let detail = job["error_message"].as_str().unwrap_or(state);
+                    failed.push(format!("{id} ({detail})"));
+                }
+                _ => {}
+            }
+        }
+        // A job the owner no longer lets this node see counts as gone.
+        if finished == jobs.len() {
+            if !failed.is_empty() {
+                anyhow::bail!("scan did not succeed: {}", failed.join(", "));
+            }
+            if jobs.len() < ids.len() {
+                eprintln!(
+                    "{} job(s) are not visible to this node",
+                    ids.len() - jobs.len()
+                );
+            }
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }

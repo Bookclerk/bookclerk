@@ -47,7 +47,8 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::LibraryStore;
 use bookclerk_library::{JobKind, JobPayload};
 use bookclerk_node_client::{
-    ClientExit, ClientTiming, HostClient, HostClientConfig, HostJobCtx, HostJobError, HostJobRunner,
+    ClientExit, ClientTiming, HostClient, HostClientConfig, HostClientHandle, HostJobCtx,
+    HostJobError, HostJobRunner,
 };
 use tokio::sync::watch;
 
@@ -117,6 +118,35 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
             };
             HostJobError::new(kind, err.to_string())
         })
+    }
+}
+
+/// The running client of each owner cluster link, by owner cluster id, so
+/// operator requests (`POST /api/config/clusters/{id}/scan`) can reach the
+/// owner over that link's socket.
+static LINK_HANDLES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<String, HostClientHandle>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// The running client of the link to owner cluster `cluster_id`.
+pub(crate) fn link_handle(cluster_id: &str) -> Option<HostClientHandle> {
+    LINK_HANDLES
+        .lock()
+        .ok()
+        .and_then(|handles| handles.get(cluster_id).cloned())
+}
+
+/// Records (or, with `None`, forgets) the client of one link.
+pub(crate) fn set_link_handle(cluster_id: &str, handle: Option<HostClientHandle>) {
+    if let Ok(mut handles) = LINK_HANDLES.lock() {
+        match handle {
+            Some(handle) => {
+                handles.insert(cluster_id.to_string(), handle);
+            }
+            None => {
+                handles.remove(cluster_id);
+            }
+        }
     }
 }
 
@@ -216,6 +246,7 @@ pub fn spawn_cluster_links(state: Arc<AppState>) {
                     continue;
                 }
             };
+            set_link_handle(&cluster_id, Some(handle.clone()));
             let (stop, shutdown) = watch::channel(false);
             let stop = Arc::new(stop);
             tokio::spawn(stop_when_inactive(
@@ -237,6 +268,7 @@ pub fn spawn_cluster_links(state: Arc<AppState>) {
             let library = library.clone();
             tokio::spawn(async move {
                 let exit = client.run(shutdown).await;
+                set_link_handle(&cluster_id, None);
                 let _ = stop.send(true);
                 if exit == ClientExit::Revoked {
                     for attempt in 0..5u32 {

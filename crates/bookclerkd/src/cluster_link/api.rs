@@ -7,7 +7,12 @@
 //!   optionally narrowed (denied domains, bindings, or all network);
 //! - `POST /api/config/cluster-consents/revoke`: withdraw an approval.
 //!
-//! All three are operator-only: owner plugins run under this install's
+//! - `POST /api/config/clusters/{cluster_id}/scan`: ask the owner cluster
+//!   to queue a scan for this node's owner (H-5);
+//! - `POST /api/config/clusters/{cluster_id}/jobs`: the owner's state of
+//!   jobs this node may see.
+//!
+//! All of them are operator-only: owner plugins run under this install's
 //! jail with this install's network, so only its operator consents. A
 //! change wakes every link supervisor in this process
 //! ([`super::consent::notify_consent_changed`]).
@@ -168,6 +173,135 @@ pub async fn post_cluster_consent_revoke(
     );
     notify_consent_changed();
     Ok(Json(json!({ "consent": consent_json(&row) })))
+}
+
+/// `POST /api/config/clusters/{cluster_id}/scan` body.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterScanBody {
+    /// Scan only this store account of the owner cluster.
+    #[serde(default)]
+    account: Option<String>,
+    /// Pin every planned job to this owner plugin instance.
+    #[serde(default)]
+    plugin_instance_id: Option<String>,
+}
+
+/// `POST /api/config/clusters/{cluster_id}/jobs` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterJobsBody {
+    /// Job ids on the owner cluster.
+    job_ids: Vec<String>,
+}
+
+/// The live client of `cluster_id`'s link, or 503 `not_connected`.
+fn connected_link(cluster_id: &str) -> Result<bookclerk_node_client::HostClientHandle, Response> {
+    super::link_handle(cluster_id.trim()).ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "not_connected",
+                "detail": "this daemon has no running link to that owner cluster",
+            })),
+        )
+            .into_response()
+    })
+}
+
+/// Maps an owner's `error` frame (or no answer) onto an HTTP refusal.
+fn owner_refusal(answer: Option<bookclerk_node_proto::Frame>) -> Response {
+    match answer.map(|frame| frame.body) {
+        Some(bookclerk_node_proto::Body::Error { code, message }) => {
+            let status = match code.as_str() {
+                "forbidden" => StatusCode::FORBIDDEN,
+                "invalid" => StatusCode::BAD_REQUEST,
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            (status, Json(json!({ "error": code, "detail": message }))).into_response()
+        }
+        Some(_) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "unexpected_answer" })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "owner_unavailable" })),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /api/config/clusters/{cluster_id}/scan`: asks the owner cluster
+/// to queue a scan for this node's owner (H-5). The owner's planner decides
+/// what that user may scan; the answer lists the queued job ids.
+pub async fn post_cluster_scan(
+    axum::extract::Path(cluster_id): axum::extract::Path<String>,
+    body: Option<Json<ClusterScanBody>>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let body = body.map(|Json(body)| body).unwrap_or_default();
+    let handle = connected_link(&cluster_id)?;
+    let answer = handle
+        .request(bookclerk_node_proto::Body::ScanRequest {
+            account: body.account.filter(|a| !a.trim().is_empty()),
+            plugin_instance_id: body.plugin_instance_id.filter(|i| !i.trim().is_empty()),
+        })
+        .await;
+    match answer {
+        Some(bookclerk_node_proto::Frame {
+            body:
+                bookclerk_node_proto::Body::ScanPlanned {
+                    created,
+                    duplicates,
+                    queue_full,
+                },
+            ..
+        }) => {
+            tracing::info!(
+                cluster_id = %handle.cluster_id(),
+                created = created.len(),
+                duplicates = duplicates.len(),
+                queue_full,
+                "the owner cluster queued a scan for this host"
+            );
+            Ok(Json(json!({
+                "cluster_id": handle.cluster_id(),
+                "created": created,
+                "duplicates": duplicates,
+                "queue_full": queue_full,
+            })))
+        }
+        other => Err(owner_refusal(other)),
+    }
+}
+
+/// `POST /api/config/clusters/{cluster_id}/jobs`: the owner's view of jobs
+/// this node may see (those it would be trusted to claim).
+pub async fn post_cluster_jobs(
+    axum::extract::Path(cluster_id): axum::extract::Path<String>,
+    Json(body): Json<ClusterJobsBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    if body.job_ids.len() > bookclerk_node_proto::MAX_STATUS_JOBS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "too_many_jobs" })),
+        )
+            .into_response());
+    }
+    let handle = connected_link(&cluster_id)?;
+    match handle
+        .request(bookclerk_node_proto::Body::JobStatus {
+            job_ids: body.job_ids,
+        })
+        .await
+    {
+        Some(bookclerk_node_proto::Frame {
+            body: bookclerk_node_proto::Body::JobStatuses { jobs },
+            ..
+        }) => Ok(Json(json!({ "jobs": jobs }))),
+        other => Err(owner_refusal(other)),
+    }
 }
 
 #[cfg(test)]

@@ -38,7 +38,7 @@ use super::job_routing::{JobClaimRequest, RoutedJobClaim};
 use super::semaphore::release_permits;
 use crate::entities::{account_links, accounts, nodes, portal_identities, users};
 use crate::error::{LibraryError, Result};
-use crate::models::{JobKind, JobPayload, JobRecord, UserRole, UserStatus};
+use crate::models::{BookRecord, JobKind, JobPayload, JobRecord, UserRole, UserStatus};
 use crate::store::LibraryStore;
 
 /// How the claiming node reaches the job queue.
@@ -75,8 +75,8 @@ pub enum ScanRequester {
     User(i64),
 }
 
-/// A store account, keyed as in `accounts`.
-type AccountKey = (String, String);
+/// A store account, keyed as in `accounts`: `(plugin_key, account_id)`.
+pub type AccountKey = (String, String);
 
 /// Resolves what `node_id` is trusted with right now.
 ///
@@ -143,6 +143,11 @@ async fn active_role(store: &LibraryStore, user_id: i64) -> Result<Option<UserRo
 
 /// True when a node with `trust` may receive `job`.
 ///
+/// Trust is checked per item: for a node trusted only with one user's work,
+/// every store account the job touches ([`job_item_accounts`]) must be
+/// linked to that user. A job whose items are unknown (a scan of every
+/// account) or empty is refused.
+///
 /// # Errors
 ///
 /// Returns an error when a read fails.
@@ -157,10 +162,9 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
             {
                 return Ok(false);
             }
-            let Some(account) = job.payload.account.as_deref() else {
+            let Some(touched) = job_item_accounts(store, job).await? else {
                 return Ok(false);
             };
-            let touched = accounts_named(store, account, None).await?;
             if touched.is_empty() {
                 return Ok(false);
             }
@@ -168,6 +172,87 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
             Ok(touched.iter().all(|key| owned.contains(key)))
         }
     }
+}
+
+/// True when a `claimant` may run `job` at all, whatever it is trusted
+/// with: a forced or PDF-only acquire runs only on a node that holds the
+/// library database, since the host acquire path does neither.
+#[must_use]
+pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
+    claimant == Claimant::Local
+        || !(job.kind == JobKind::Acquire && (job.payload.force || job.payload.pdf_only))
+}
+
+/// The store accounts a scan or acquire touches: its items.
+///
+/// - A scan that names an account touches every `accounts` row with that
+///   id (within the pinned instance's plugin). A scan of every account is
+///   `None`: what it touches is not known until it runs.
+/// - An acquire touches the named account's rows, plus the account of every
+///   library row its filters match (title id, account, pinned plugin),
+///   whatever the row's acquire status. That is a superset of the titles it
+///   will fetch, so a node must be trusted with at least everything it
+///   fetches.
+/// - Anything else, and a job pinned to an unknown instance, is `None`.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn job_item_accounts(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<BTreeSet<AccountKey>>> {
+    let plugin_key = match job.payload.plugin_instance_id.as_deref() {
+        Some(raw) => {
+            let Ok(id) = PluginInstanceId::parse(raw) else {
+                return Ok(None);
+            };
+            match load_plugin_instance(store, &id).await? {
+                Some(instance) => Some(instance.plugin_key),
+                None => return Ok(None),
+            }
+        }
+        None => None,
+    };
+    let account = job.payload.account.as_deref().filter(|a| !a.is_empty());
+    let mut items = BTreeSet::new();
+    if let Some(account) = account {
+        items.extend(accounts_named(store, account, plugin_key.as_deref()).await?);
+    }
+    match job.kind {
+        JobKind::Scan => Ok(account.map(|_| items)),
+        JobKind::Acquire => {
+            let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
+            for book in store.list_books(account).await? {
+                if plugin_key
+                    .as_deref()
+                    .is_some_and(|key| key != book.plugin_key)
+                    || title.is_some_and(|t| !book_matches_title(&book, t))
+                {
+                    continue;
+                }
+                items.insert((book.plugin_key, book.account_id));
+            }
+            Ok(Some(items))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// True when `id` names `book` (uuid, product id, ISBN or ASIN, any case),
+/// as an acquire's title filter matches.
+#[must_use]
+pub fn book_matches_title(book: &BookRecord, id: &str) -> bool {
+    id.eq_ignore_ascii_case(&book.uuid)
+        || id.eq_ignore_ascii_case(&book.product_id)
+        || book
+            .isbn
+            .as_deref()
+            .is_some_and(|i| id.eq_ignore_ascii_case(i))
+        || book
+            .asin
+            .as_deref()
+            .is_some_and(|x| id.eq_ignore_ascii_case(x))
 }
 
 /// True when `node_id` may claim `job` right now.
@@ -181,7 +266,48 @@ pub async fn node_may_claim_job(
     claimant: Claimant,
     job: &JobRecord,
 ) -> Result<bool> {
+    if !claimant_may_run(claimant, job) {
+        return Ok(false);
+    }
     let trust = node_trust(store, node_id, claimant).await?;
+    job_trusted(store, &trust, job).await
+}
+
+/// Whom library work a remote node asks for runs as (a `scan.request` over
+/// the node API): the user who owns the node, while the node is trusted
+/// with anything. `None` for a node that is trusted with nothing (revoked,
+/// ownerless, a disabled owner) or unknown, which may ask for nothing.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn remote_node_requester(
+    store: &LibraryStore,
+    node_id: &str,
+) -> Result<Option<ScanRequester>> {
+    if node_trust(store, node_id, Claimant::Remote).await? == NodeTrust::Nothing {
+        return Ok(None);
+    }
+    Ok(nodes::Entity::find_by_id(node_id.to_string())
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?
+        .and_then(|row| row.owner_user_id)
+        .map(ScanRequester::User))
+}
+
+/// True when a remote node may read `job`'s state: it would be trusted to
+/// claim it (so its owner could have queued it).
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn remote_node_may_view_job(
+    store: &LibraryStore,
+    node_id: &str,
+    job: &JobRecord,
+) -> Result<bool> {
+    let trust = node_trust(store, node_id, Claimant::Remote).await?;
     job_trusted(store, &trust, job).await
 }
 
@@ -361,6 +487,140 @@ pub async fn plan_scan(
         }
     }
     Ok(out)
+}
+
+/// Plans the acquire jobs one request admits.
+///
+/// `titles` are title ids (uuid, ASIN, ISBN, product id); each becomes its
+/// own job, so each title can go to any node trusted with it. `account`
+/// narrows to one store account and `plugin_instance_id` pins every job.
+///
+/// - Operator authority, an Owner or an Administrator: one job per title,
+///   or one job for everything pending (it touches many accounts, and only
+///   nodes trusted with every one of them claim it; splitting it per
+///   account would repeat the storage listing for every account).
+/// - Any other active user: a named account must be theirs, and so must
+///   every library row a named title matches. With neither, the request
+///   becomes one job per account they wholly own, so each can go to a node
+///   trusted with it; the plan is empty when they own none.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Forbidden`] when the user is unknown or disabled,
+/// or names an account or title that is not theirs (unknown ones read the
+/// same), [`LibraryError::Invalid`] for a malformed instance id, and the
+/// read error when a read fails.
+pub async fn plan_acquire(
+    store: &LibraryStore,
+    requester: ScanRequester,
+    account: Option<&str>,
+    titles: &[String],
+    plugin_instance_id: Option<&str>,
+) -> Result<Vec<JobPayload>> {
+    let account = account.map(str::trim).filter(|a| !a.is_empty());
+    let pinned = plugin_instance_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let mut seen = BTreeSet::new();
+    let titles: Vec<&str> = titles
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty() && seen.insert(t.to_ascii_lowercase()))
+        .collect();
+    let owner = requester_scope(store, requester).await?;
+    let payload = |account: Option<&str>, title: Option<&str>| JobPayload {
+        account: account.map(str::to_string),
+        title: title.map(str::to_string),
+        plugin_instance_id: pinned.clone(),
+        ..Default::default()
+    };
+    let per_title = |account: Option<&str>| -> Vec<JobPayload> {
+        if titles.is_empty() {
+            vec![payload(account, None)]
+        } else {
+            titles.iter().map(|t| payload(account, Some(t))).collect()
+        }
+    };
+    let Some(user_id) = owner else {
+        return Ok(per_title(account));
+    };
+    let plugin_key = match pinned.as_deref() {
+        Some(raw) => {
+            let id = PluginInstanceId::parse(raw)
+                .map_err(|err| LibraryError::Invalid(format!("plugin instance id: {err}")))?;
+            match load_plugin_instance(store, &id).await? {
+                Some(instance) => Some(instance.plugin_key),
+                None => return Err(not_your_account()),
+            }
+        }
+        None => None,
+    };
+    let owned = accounts_owned_by(store, user_id).await?;
+    let wholly_owned = |touched: &BTreeSet<AccountKey>| {
+        !touched.is_empty() && touched.iter().all(|key| owned.contains(key))
+    };
+    if let Some(account) = account {
+        if !wholly_owned(&accounts_named(store, account, plugin_key.as_deref()).await?) {
+            return Err(not_your_account());
+        }
+    }
+    if !titles.is_empty() {
+        let books = store.list_books(account).await?;
+        for title in &titles {
+            let touched: BTreeSet<AccountKey> = books
+                .iter()
+                .filter(|book| {
+                    plugin_key
+                        .as_deref()
+                        .is_none_or(|key| key == book.plugin_key)
+                        && book_matches_title(book, title)
+                })
+                .map(|book| (book.plugin_key.clone(), book.account_id.clone()))
+                .collect();
+            if !wholly_owned(&touched) {
+                return Err(LibraryError::Forbidden(
+                    "that title is not in a store account linked to this user".into(),
+                ));
+            }
+        }
+        return Ok(per_title(account));
+    }
+    if account.is_some() {
+        return Ok(per_title(account));
+    }
+    let ids: BTreeSet<String> = owned
+        .iter()
+        .filter(|(key, _)| plugin_key.as_deref().is_none_or(|pin| pin == key))
+        .map(|(_, id)| id.clone())
+        .collect();
+    let mut out = Vec::new();
+    for id in ids {
+        if wholly_owned(&accounts_named(store, &id, plugin_key.as_deref()).await?) {
+            out.push(payload(Some(&id), None));
+        }
+    }
+    Ok(out)
+}
+
+/// `None` when `requester` may act on every account (operator authority,
+/// an Owner or an Administrator), otherwise the user whose accounts bound
+/// the request.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Forbidden`] for an unknown or disabled user.
+async fn requester_scope(store: &LibraryStore, requester: ScanRequester) -> Result<Option<i64>> {
+    match requester {
+        ScanRequester::Operator => Ok(None),
+        ScanRequester::User(user_id) => match active_role(store, user_id).await? {
+            Some(role) if role.is_privileged() => Ok(None),
+            Some(_) => Ok(Some(user_id)),
+            None => Err(LibraryError::Forbidden(
+                "this user may not queue library work".into(),
+            )),
+        },
+    }
 }
 
 /// The error for an account the requester does not own.

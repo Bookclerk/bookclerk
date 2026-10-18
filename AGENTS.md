@@ -187,7 +187,10 @@ When exercising real store credentials in this cloud environment:
   - Audible: `bookclerk library acquire --asin <ASIN>`
   - Libro.fm / others: `bookclerk library acquire --isbn <ISBN>` (or UUID / product id)
 - Drive verification with the **CLI**, not `bookclerkd` job triggers (`POST
-  /scan` / `/acquire`), so nothing can bulk-queue work.
+  /scan` / `/acquire`), so nothing can bulk-queue work. `library scan` /
+  `library acquire` queue jobs for a running `bookclerkd` and wait for them
+  (`--no-wait` only queues); `--account <id>` and `--asin <ASIN>` still
+  queue exactly one job.
 - One-shot library sync without flipping scan back on: pass an explicit
   account (`bookclerk library scan --account <id>`). Explicit account targets
   bypass `scan_enabled`; bare `library scan` / daemon scheduled scans honor

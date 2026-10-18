@@ -208,31 +208,73 @@ pub async fn enqueue_scan(
     Ok(admitted)
 }
 
-/// Admit acquire for pending titles (optional title / account filter).
+/// What one acquire request asks for.
+#[derive(Debug, Clone, Default)]
+pub struct AcquireAsk {
+    /// Title ids (uuid, ASIN, ISBN, product id); each becomes its own job.
+    /// Empty acquires every pending title in scope.
+    pub titles: Vec<String>,
+    /// Limit to one store account.
+    pub account: Option<String>,
+    /// Pin every fetch to one deployed instance of the book's plugin;
+    /// otherwise the plugin's default instance is used.
+    pub plugin_instance_id: Option<String>,
+    /// Re-download titles already acquired.
+    pub force: bool,
+    /// Fetch only each title's companion PDF.
+    pub pdf_only: bool,
+}
+
+/// Admit acquire jobs through the acquire planner.
 ///
-/// `plugin_instance_id` pins every fetch to one deployed instance of the
-/// book's plugin; otherwise the plugin's default instance is used.
+/// `control_plane::plan_acquire` decides what `requester` may acquire and
+/// splits the request: one job per title id, and for a user who is not an
+/// Owner or Administrator one job per account they own.
+///
+/// # Returns
+///
+/// One admission outcome per planned job, in plan order. Empty when the
+/// requester owns nothing to acquire.
+///
+/// # Errors
+///
+/// Fails with a wrapped [`bookclerk_library::LibraryError::Forbidden`] when
+/// the requester may not acquire what was asked, and with the read or write
+/// error otherwise. Jobs admitted before a failure stay admitted.
 pub async fn enqueue_acquire(
     state: Arc<AppState>,
-    title: Option<String>,
-    account: Option<String>,
-    plugin_instance_id: Option<String>,
+    requester: ScanRequester,
+    ask: AcquireAsk,
     trigger: JobTrigger,
-) -> anyhow::Result<AdmitJob> {
+) -> anyhow::Result<Vec<AdmitJob>> {
     let (max_pending, max_attempts) = queue_limits(&state).await;
-    admit(
-        &state,
-        enqueue_spec(
+    let plan = {
+        let library = state.library_snapshot().await;
+        bookclerk_library::control_plane::plan_acquire(
+            &library,
+            requester,
+            ask.account.as_deref(),
+            &ask.titles,
+            ask.plugin_instance_id.as_deref(),
+        )
+        .await?
+    };
+    let mut admitted = Vec::with_capacity(plan.len());
+    for payload in plan {
+        let mut spec = enqueue_spec(
             JobKind::Acquire,
-            account,
-            title,
-            plugin_instance_id,
+            payload.account,
+            payload.title,
+            payload.plugin_instance_id,
             trigger,
             max_pending,
             max_attempts,
-        ),
-    )
-    .await
+        );
+        spec.payload.force = ask.force;
+        spec.payload.pdf_only = ask.pdf_only;
+        admitted.push(admit(&state, spec).await?);
+    }
+    Ok(admitted)
 }
 
 /// Admit a listening-progress sync.
@@ -550,17 +592,28 @@ pub async fn run_scan(
     Ok(message)
 }
 
+/// The flags of one acquire job.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AcquireMode {
+    /// Re-download titles already acquired.
+    pub force: bool,
+    /// Fetch only each title's companion PDF.
+    pub pdf_only: bool,
+}
+
 /// Acquire pending titles synchronously.
 ///
 /// When `ctx` is set, progress is fenced and cancel is checked between titles.
 ///
 /// `plugin_instance_id` pins every fetch to that deployed instance of the
-/// book's plugin; otherwise the plugin's default instance is used.
+/// book's plugin; otherwise the plugin's default instance is used. `mode`
+/// carries the job's `force` and `pdf_only` flags.
 pub async fn run_acquire(
     state: &AppState,
     title: Option<&str>,
     account: Option<&str>,
     plugin_instance_id: Option<&str>,
+    mode: AcquireMode,
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
     let started = std::time::Instant::now();
@@ -611,7 +664,14 @@ pub async fn run_acquire(
             })
         })
         .filter(|b| {
-            acquire_job_includes_book(b, options.download_pdf, cfg.library.download_episodes)
+            if mode.pdf_only {
+                mode.force || b.pdf_status != AcquireStatus::Acquired
+            } else if mode.force {
+                is_downloadable(&b.content_kind)
+                    && (cfg.library.download_episodes || b.content_kind != "episode")
+            } else {
+                acquire_job_includes_book(b, options.download_pdf, cfg.library.download_episodes)
+            }
         })
         .collect();
     // A pinned instance serves its own plugin's books only; the rest are
@@ -681,7 +741,7 @@ pub async fn run_acquire(
             options: options.clone(),
             files_dir: paths.files_dir.clone(),
             cache_dir: cfg.download_cache_dir(),
-            force: false,
+            force: mode.force,
             write_destinations: None,
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
@@ -689,15 +749,25 @@ pub async fn run_acquire(
         let mut attempts = 0u32;
         loop {
             attempts += 1;
-            match acquire_book_indexed(
-                &library,
-                &destinations,
-                req.clone(),
-                Some(&mut index),
-                content_source.as_ref(),
-            )
-            .await
-            {
+            let result = if mode.pdf_only {
+                bookclerk_acquire::acquire_pdf_only(
+                    &library,
+                    &destinations,
+                    &req,
+                    content_source.as_ref(),
+                )
+                .await
+            } else {
+                acquire_book_indexed(
+                    &library,
+                    &destinations,
+                    req.clone(),
+                    Some(&mut index),
+                    content_source.as_ref(),
+                )
+                .await
+            };
+            match result {
                 Ok(result) if result.matched_existing => {
                     info!(asin = %result.asin, key = %result.storage_key, "matched existing");
                     notify_integrations(state).await;

@@ -15,4 +15,5 @@ pub mod migrate;
 pub mod nodes;
 pub mod plugin_installs;
 pub mod plugins;
+pub(crate) mod queued;
 pub mod queues;

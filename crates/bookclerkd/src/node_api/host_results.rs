@@ -19,8 +19,8 @@
 //! and upload, so it is never frame text.
 
 use bookclerk_library::control_plane::{
-    accept_scan_results, accounts_owned_by, grant_upload, job_plugin_keys, live_remote_job,
-    node_trust, Claimant, NodeTrust, ScanAccept, UploadGrant, UploadGrantRequest,
+    accept_scan_results, accounts_owned_by, book_matches_title, grant_upload, job_plugin_keys,
+    live_remote_job, node_trust, Claimant, NodeTrust, ScanAccept, UploadGrant, UploadGrantRequest,
 };
 use bookclerk_library::{JobKind, LibraryStore};
 use bookclerk_node_proto::{
@@ -138,18 +138,7 @@ pub(super) async fn acquire_plan(
         if targets.len() >= MAX_PLAN_TARGETS {
             break;
         }
-        let named = title.is_none_or(|t| {
-            t.eq_ignore_ascii_case(&book.uuid)
-                || t.eq_ignore_ascii_case(&book.product_id)
-                || book
-                    .isbn
-                    .as_deref()
-                    .is_some_and(|i| t.eq_ignore_ascii_case(i))
-                || book
-                    .asin
-                    .as_deref()
-                    .is_some_and(|x| t.eq_ignore_ascii_case(x))
-        });
+        let named = title.is_none_or(|t| book_matches_title(&book, t));
         let in_scope = keys.contains(&book.plugin_key)
             && owned.as_ref().is_none_or(|owned| {
                 owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))

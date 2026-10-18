@@ -8,11 +8,12 @@ use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Con
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_plugin_host::HostControlPlane;
 use bookclerk_search::SearchEngine;
-use bookclerk_source::{source_scope, DownloadOptions, FetchOptions, ScanOptions};
+use bookclerk_source::{source_scope, DownloadOptions, FetchOptions};
 use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
 
 use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
+use crate::commands::queued;
 use crate::format_out;
 use crate::progress::BatchProgress;
 use crate::registry::{open_host, resolve_source, sources};
@@ -54,7 +55,9 @@ pub enum LibraryCommand {
         #[arg(long)]
         source: Option<String>,
     },
-    /// Sync library into the local DB from configured content sources.
+    /// Sync the library from the content sources: queues one scan job per
+    /// account (every scan-enabled account when none is named) for a
+    /// bookclerkd node to run, and waits for them.
     Scan {
         /// Limit sync to one account (alias for positional account list).
         #[arg(long)]
@@ -79,8 +82,14 @@ pub enum LibraryCommand {
         /// configured naming-profile layout (also `library.fix_storage_layout`).
         #[arg(long)]
         fix_layout: bool,
+        /// Queue the scan jobs and print their ids without waiting for a
+        /// bookclerkd node to run them.
+        #[arg(long, conflicts_with = "match_storage")]
+        no_wait: bool,
     },
-    /// Download + decrypt + store titles.
+    /// Download + decrypt + store titles: queues one acquire job per title
+    /// id (or one for every pending title) for a bookclerkd node to run, and
+    /// waits for them. `--dry-run` only prints planned keys, here.
     Acquire {
         /// Acquire a single ASIN / product id / UUID.
         #[arg(long)]
@@ -110,9 +119,14 @@ pub enum LibraryCommand {
         /// Read license JSON from file (or `-` for stdin) instead of requesting.
         #[arg(long, value_name = "FILE")]
         license: Option<std::path::PathBuf>,
-        /// Runtime setting override (`-o key=value`). Repeatable.
+        /// Runtime setting override (`-o key=value`) for `--dry-run`.
+        /// Repeatable.
         #[arg(short = 'o', long = "override", value_name = "KEY=VALUE")]
         overrides: Vec<String>,
+        /// Queue the acquire jobs and print their ids without waiting for
+        /// a bookclerkd node to run them.
+        #[arg(long)]
+        no_wait: bool,
     },
     /// Match storage files to library rows and update acquire status.
     ///
@@ -256,48 +270,25 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             instance,
             match_storage,
             fix_layout,
+            no_wait,
         } => {
             let mut scan_accounts = accounts;
             if let Some(one) = account {
                 scan_accounts.push(one);
             }
-            let registry = sources(&host).await?;
-            let opts = ScanOptions {
-                accounts: scan_accounts.clone(),
-                page_size: 50,
-                import_episodes: config.library.import_episodes,
-                import_plus_titles: config.library.import_plus_titles,
-                cancel: None,
-            };
-            let summary = if let Some(needle) = source {
-                let src = resolve_source(&registry, &needle, instance.as_deref())?;
-                registry.scan_one(&store, src, opts).await?
-            } else if let Some(pin) = instance.as_deref() {
-                let src = resolve_source(&registry, pin, Some(pin))?;
-                registry.scan_one(&store, src, opts).await?
-            } else {
-                registry.scan_all(&store, opts).await?
-            };
-            format_out::line(format!(
-                "scan complete: {} account(s), {} book upsert(s), {} page(s), {} skipped (scan disabled)",
-                summary.accounts, summary.books_upserted, summary.pages, summary.skipped_disabled
-            ));
-            if config.library.enrich_from_audible {
-                match bookclerk_enrich::enrich_books_from_audible(
-                    &store,
-                    config.library.enrich_min_confidence,
-                )
-                .await
-                {
-                    Ok(n) if n > 0 => {
-                        format_out::line(format!(
-                            "Audible enrichment: updated {n} book(s) (min confidence {}%)",
-                            config.library.enrich_min_confidence
-                        ));
-                    }
-                    Ok(_) => {}
-                    Err(err) => tracing::warn!(error = %err, "Audible enrichment failed"),
-                }
+            let finished = queued::scan(
+                &store,
+                config,
+                queued::ScanArgs {
+                    accounts: &scan_accounts,
+                    source: source.as_deref(),
+                    instance: instance.as_deref(),
+                    wait: !no_wait,
+                },
+            )
+            .await?;
+            if !finished {
+                return Ok(());
             }
             if match_storage {
                 let (storage, download) = storage_and_options_for_host(&host, config).await?;
@@ -338,7 +329,39 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             pdf,
             license,
             overrides,
+            no_wait,
         } => {
+            if !dry_run {
+                // Real acquires go through the job queue; only a dry run
+                // plans keys here.
+                if license.is_some() {
+                    anyhow::bail!(
+                        "--license is not supported: acquires run as queued jobs on a bookclerkd node"
+                    );
+                }
+                if !overrides.is_empty() {
+                    anyhow::bail!(
+                        "-o/--override applies to --dry-run only: acquires run as queued jobs \
+                         with the cluster's settings"
+                    );
+                }
+                let titles: Vec<String> = asin.into_iter().chain(isbn).chain(asins).collect();
+                queued::acquire(
+                    &store,
+                    config,
+                    queued::AcquireArgs {
+                        titles: &titles,
+                        account: account.as_deref(),
+                        instance: instance.as_deref(),
+                        force,
+                        pdf_only: pdf,
+                        wait: !no_wait,
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
+            let _ = no_wait;
             let mut cfg = config.clone();
             let pairs: Vec<(&str, &str)> = overrides
                 .iter()

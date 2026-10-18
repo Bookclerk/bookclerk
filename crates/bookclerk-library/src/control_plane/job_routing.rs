@@ -43,7 +43,7 @@ use super::instances::{list_all_plugin_instances, load_plugin_instance, PluginIn
 use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
-use super::trust::{job_trusted, node_trust, Claimant, NodeTrust};
+use super::trust::{claimant_may_run, job_trusted, node_trust, Claimant, NodeTrust};
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
 use crate::models::{JobKind, JobPayload, JobRecord, JobResourceClass};
@@ -142,8 +142,10 @@ impl JobClaimFilter {
 /// Only a scan or acquire says: the plugin of the instance it is pinned to
 /// and of each instance it requires, plus every plugin holding an
 /// `accounts` row with the account it names (within the pinned plugin when
-/// pinned). A scan or acquire of every account, any other kind, and a job
-/// naming an unknown instance or account answer `None`.
+/// pinned). An unpinned acquire that names no account runs the plugins of
+/// the library rows it matches. An unpinned scan of every account, an
+/// acquire matching no row, any other kind, and a job naming an unknown
+/// instance or account answer `None`.
 ///
 /// # Errors
 ///
@@ -185,10 +187,21 @@ pub async fn job_plugin_keys(
             }
             keys.extend(rows.into_iter().map(|row| row.plugin_key));
         }
-        // Every account of the pinned plugin stays within that plugin;
-        // every account of every plugin cannot be told.
-        None if pinned.is_none() => return Ok(None),
-        None => {}
+        // Every account of the pinned plugin stays within that plugin.
+        None if pinned.is_some() => {}
+        // An unpinned acquire runs the plugins of the library rows it
+        // matches (its items); every account of every plugin to scan
+        // cannot be told.
+        None if job.kind == JobKind::Acquire => {
+            let items = super::trust::job_item_accounts(store, job)
+                .await?
+                .unwrap_or_default();
+            if items.is_empty() {
+                return Ok(None);
+            }
+            keys.extend(items.into_iter().map(|(plugin_key, _)| plugin_key));
+        }
+        None => return Ok(None),
     }
     Ok(Some(keys))
 }
@@ -394,7 +407,7 @@ pub async fn claim_routed_job(
         return Ok(None);
     }
     for job in candidates {
-        if !job_trusted(store, &trust, &job).await? {
+        if !claimant_may_run(request.claimant, &job) || !job_trusted(store, &trust, &job).await? {
             continue;
         }
         if let Some(filter) = request.filter {

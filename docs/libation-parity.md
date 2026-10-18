@@ -40,7 +40,7 @@ checks), or **minor headless polish** listed under
 | Verb | Status | bookclerk |
 | --- | --- | --- |
 | `scan` | ✅ | `library scan` |
-| `liberate` | ✅ | `library acquire` (Bookclerk verb) — `--pdf`, `--license`, `-o` overrides, positional ASINs |
+| `liberate` | ✅ | `library acquire` (Bookclerk verb) — `--pdf`, `--force`, positional ASINs; queued for `bookclerkd` (`--license` and `-o` overrides only with `--dry-run`) |
 | `set-status` | ✅ | `library set-status` — probe-based match; `--downloaded` / `--not-downloaded` / `--force` / `--fix-layout` + ASINs |
 | `get-license` | ✅ | `library get-license --json` (summary) / `--full` (raw API JSON) |
 | `search` | ✅ | `library search` (+ `--filter` saved quick filters) |

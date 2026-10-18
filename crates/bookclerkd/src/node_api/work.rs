@@ -17,6 +17,7 @@
 //! | `instance.config` | `instance_config {config, sealed_secrets}`, or `error {code: "not_found"}` |
 //! | `observation` | `ok`, or `error {code: "refused"}` |
 //! | `scan.results` / `acquire.plan` / `upload.grant` | see [`super::host_results`] |
+//! | `scan.request` / `job.status` | see [`super::host_requests`] |
 //!
 //! A claim's `filter` is the host's own narrowing (the kinds it runs and
 //! the plugins its operator consented to); the owner applies it before
@@ -355,6 +356,22 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 },
             )
             .await
+        }
+        Body::ScanRequest {
+            account,
+            plugin_instance_id,
+        } => {
+            super::host_requests::scan_request(
+                library,
+                host,
+                id.clone(),
+                account,
+                plugin_instance_id,
+            )
+            .await
+        }
+        Body::JobStatus { job_ids } => {
+            super::host_requests::job_status(library, host, id.clone(), job_ids).await
         }
         Body::AcquirePlan { job_id, fence } => {
             super::host_results::acquire_plan(library, host, id.clone(), job_id, fence).await

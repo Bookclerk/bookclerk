@@ -1260,7 +1260,16 @@ impl JobKind {
             Self::Scan => format!("scan:account={account}"),
             Self::Acquire => {
                 let title = payload.title.as_deref().unwrap_or("all");
-                format!("acquire:title={title}:account={account}")
+                // A forced or PDF-only acquire is different work from a plain
+                // one; the plain key keeps its historical form.
+                let mut key = format!("acquire:title={title}:account={account}");
+                if payload.force {
+                    key.push_str(":force=1");
+                }
+                if payload.pdf_only {
+                    key.push_str(":pdf=1");
+                }
+                key
             }
             Self::ListenSync => "listen_sync".into(),
             Self::IntegrationScan => {
@@ -1441,7 +1450,9 @@ pub struct JobPayload {
     /// Integration plugin id for [`JobKind::IntegrationScan`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integration_id: Option<String>,
-    /// When true, an integration scan asks the remote to rescan.
+    /// When true, an integration scan asks the remote to rescan, and an
+    /// acquire re-downloads titles already acquired (run only by nodes that
+    /// hold the library database).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
     /// Destination plugin id for [`JobKind::PluginCopy`].
@@ -1465,6 +1476,12 @@ pub struct JobPayload {
     /// retryable failure must not keep later claims in the resume path.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume_pending: bool,
+    /// For [`JobKind::Acquire`]: fetch only each title's companion PDF.
+    ///
+    /// Run only by nodes that hold the library database; a Host is never
+    /// handed such a job (`control_plane::node_may_claim_job`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pdf_only: bool,
 }
 
 /// Default envelope version for missing `v` on well-formed legacy rows.
@@ -1489,6 +1506,7 @@ impl Default for JobPayload {
             checkpoint: None,
             invocation_sequence: None,
             resume_pending: false,
+            pdf_only: false,
         }
     }
 }
