@@ -20,6 +20,8 @@ on:
 
 permissions:
   contents: read
+  # Code-change mode downloads the batch workflow's coverage and corpus artifacts.
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

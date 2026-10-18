@@ -128,7 +128,9 @@ pub fn build_samples(
                 duration,
                 chunk_index: chunk_idx as u32,
             });
-            offset += u64::from(size);
+            offset = offset
+                .checked_add(u64::from(size))
+                .ok_or_else(|| Mp4Error::container("sample offset overflows u64"))?;
             cts = cts.saturating_add(u64::from(duration));
             sample_idx += 1;
         }
@@ -201,6 +203,18 @@ mod tests {
         assert_eq!(samples[1].offset, 1100);
         assert_eq!(samples[2].offset, 2000);
         assert_eq!(samples[3].start_cts, 3 * 1024);
+    }
+
+    #[test]
+    fn a_chunk_running_past_u64_max_is_refused() {
+        let stts = vec![(2, 1024)];
+        let stsc = vec![ChunkMapEntry {
+            first_chunk: 1,
+            samples_per_chunk: 2,
+            sample_description_index: 1,
+        }];
+        let err = build_samples(&stts, &stsc, &[100, 110], &[u64::MAX]).unwrap_err();
+        assert!(err.to_string().contains("overflows"), "{err}");
     }
 
     #[test]
