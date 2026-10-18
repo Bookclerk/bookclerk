@@ -17,6 +17,24 @@ reviews:
     - path: "crates/bookclerk-{jail,sandbox,workerd,plugin-host,plugin-abi,db-exec,media-worker,mp4}/**"
       instructions: >-
         Security surface. Apply the Review guidelines in AGENTS.md as blocking.
+    - path: "docs/sql-contract/**"
+      instructions: >-
+        Security surface. Apply the Review guidelines in AGENTS.md as blocking.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Security surface. Apply the Review guidelines in AGENTS.md as blocking.
+    - path: "crates/bookclerk-library/src/{master_key,operator_token,secrets}.rs"
+      instructions: >-
+        Security surface (secrets). Apply the Review guidelines in AGENTS.md as
+        blocking.
+    - path: "crates/bookclerk-library/src/{control_plane/secret,entities/encrypted_secrets}.rs"
+      instructions: >-
+        Security surface (secrets). Apply the Review guidelines in AGENTS.md as
+        blocking.
+    - path: "crates/bookclerk-config/src/{operator_auth,redact}.rs"
+      instructions: >-
+        Security surface (secrets). Apply the Review guidelines in AGENTS.md as
+        blocking.
     - path: "fuzz/corpus/**"
       instructions: "Fuzz seed inputs; do not review their content."
   finishing_touches:

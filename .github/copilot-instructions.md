@@ -15,5 +15,6 @@ When reviewing a pull request:
   - Host SQL uses the canonical SQL-v1 contract (`docs/sql-contract/v1.md`).
   - `plugin.capnp` is append-only and changes ship with the TS SDK.
   - Plugin configuration lives in the database, not TOML tables or env vars.
+  - Prefer a plugin entrypoint or job/event over host special-casing.
 - Formatting and lints are enforced by rustfmt and Clippy; don't comment on
   them.

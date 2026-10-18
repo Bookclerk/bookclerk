@@ -39,10 +39,9 @@ Types:
   bare `String`, `u64` or `Vec<u8>`; enums instead of string or boolean flags;
   parse untrusted input into a validated type at the boundary.
 - No lossy `as` casts on sizes, offsets or durations (use `try_from`) and no
-  `unwrap` / `expect` outside tests; Clippy denies both. Where an invariant
-  truly guarantees success, use a narrow `#[allow(clippy::expect_used)]` with
-  the reason in a comment. Crate-level allows for older code are being removed,
-  so don't add new sites under them.
+  `unwrap` / `expect` outside tests. Where an invariant truly guarantees
+  success, use a narrow `#[allow(clippy::expect_used)]` with the reason in a
+  comment, and don't add new sites under a crate-level allow.
 - Exhaustive `match` on project enums (no catch-all `_` that would hide a new
   variant).
 - TypeScript is `strict` with no `any`; Python has type hints on every
