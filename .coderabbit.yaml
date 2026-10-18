@@ -1,7 +1,9 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 reviews:
   profile: assertive
-  request_changes_workflow: true
+  # Comment-only reviews: an hourly review quota means a "changes requested"
+  # state can outlive the fixes, so the review never blocks or goes stale.
+  request_changes_workflow: false
   allow_author_approval: false
   high_level_summary_in_walkthrough: true
   review_status: false
