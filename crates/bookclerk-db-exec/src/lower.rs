@@ -2257,8 +2257,9 @@ fn comment_len(s: &str) -> Option<usize> {
         let nl = s.find('\n').unwrap_or(s.len());
         return Some(nl);
     }
-    if s.starts_with("/*") {
-        return s.find("*/").map(|i| i + 2).or(Some(s.len()));
+    if let Some(rest) = s.strip_prefix("/*") {
+        // Search past the opener so `/*/` does not close itself.
+        return rest.find("*/").map(|i| i + 4).or(Some(s.len()));
     }
     None
 }
@@ -2315,6 +2316,15 @@ mod tests {
         typecheck_execute_request_proofs, DbPlanStatementKind, DbResultSelection, DbValue,
         ExecuteRequest, SqlType, SqlTypeEnv, TypedDbStatement,
     };
+
+    #[test]
+    fn a_comment_opened_by_slash_star_slash_does_not_close_itself() {
+        // `/*/` is still an open comment, so `'?'` after `*/` is a string and
+        // its `?` must not become a placeholder.
+        let sql = "/*/'*/'?'";
+        assert_eq!(lower_canonical_sql(DatabaseBackend::Postgres, sql), sql);
+        assert_eq!(comment_len("/*/ x */y"), Some(8));
+    }
 
     fn proof_of(sql: &str, env: &SqlTypeEnv) -> ResolvedStatement {
         proof_of_binds(sql, env, Vec::new())
