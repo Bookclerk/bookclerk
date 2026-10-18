@@ -22,8 +22,14 @@
 //!   ([`authorized_enrollment_link`]): one node row, `node_credentials`,
 //!   a receipt, idempotent retries, and one node under concurrency.
 //! - `GET|PUT /api/config/branches` ([`get_branches`], [`put_branches`]):
-//!   the owner's Settings → Branches (operator or Owner): the fingerprint
-//!   and "Let new branches join".
+//!   the owner's Settings → Branches (operator or Owner): the fingerprint,
+//!   "Let new branches join", and each branch with its two sharing
+//!   settings as it last reported them (read-only here; the branch's
+//!   operator sets them) and counts of the titles it shared.
+//! - `POST /api/config/branches/titles/remove` `{node_id?}`
+//!   ([`post_remove_branch_titles`]): removes, in bulk, the entries of
+//!   titles from a branch that stopped sharing or left (of one branch, or
+//!   all). Files already delivered stay in this library's outputs.
 
 use std::sync::Arc;
 
@@ -33,9 +39,10 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_config::NodeApiMode;
 use bookclerk_library::control_plane::{
-    authorized_enrollment_link, load_cluster_row, load_host_enrollment,
-    record_authorized_enrollment_link, redeem_enrollment_link, set_host_enrollment_enabled,
-    verify_cluster_owner, ConfigActor, RedeemRequest,
+    authorized_enrollment_link, branch_title_counts, library_ancestry, list_nodes,
+    load_cluster_row, load_host_enrollment, load_node_credential,
+    record_authorized_enrollment_link, redeem_enrollment_link, remove_detached_branch_titles,
+    set_host_enrollment_enabled, verify_cluster_owner, ConfigActor, NodeKind, RedeemRequest,
 };
 use bookclerk_library::{hash_token, LibraryError, UserStatus};
 use bookclerk_node_proto::{
@@ -72,6 +79,10 @@ async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Response> {
         .await
         .map(|settings| settings.body.enabled)
         .unwrap_or(false);
+    // A joining library refuses a parent whose ancestry names it.
+    let ancestry = library_ancestry(&library)
+        .await
+        .map_err(|_| enroll_error(StatusCode::SERVICE_UNAVAILABLE, "cluster_unavailable"))?;
     let cfg = state.config.read().await;
     let origin = canonical_origin(&crate::origin::effective_origin_from_config(&cfg, None))
         .ok_or_else(|| enroll_error(StatusCode::SERVICE_UNAVAILABLE, "origin_unavailable"))?;
@@ -87,6 +98,7 @@ async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Response> {
         enrollment,
         spki_fingerprint,
         software_version: env!("CARGO_PKG_VERSION").to_string(),
+        ancestry,
     })
 }
 
@@ -524,16 +536,98 @@ pub async fn get_branches(
     if let Err(refused) = require_branch_admin(&state, caller).await {
         return refused;
     }
-    match owner_info(&state).await {
-        Ok(info) => Json(json!({
-            "library_name": info.library_name,
-            "origin": info.origin,
-            "transport": info.transport,
-            "enrollment": info.enrollment,
-            "spki_fingerprint": info.spki_fingerprint,
-        }))
-        .into_response(),
-        Err(response) => response,
+    let info = match owner_info(&state).await {
+        Ok(info) => info,
+        Err(response) => return response,
+    };
+    let library = state.library_snapshot().await;
+    let branches = match branches_json(&library).await {
+        Ok(branches) => branches,
+        Err(err) => return crate::config_authority::events_error(err),
+    };
+    Json(json!({
+        "library_name": info.library_name,
+        "origin": info.origin,
+        "transport": info.transport,
+        "enrollment": info.enrollment,
+        "spki_fingerprint": info.spki_fingerprint,
+        "branches": branches,
+    }))
+    .into_response()
+}
+
+/// Every branch (host node) of this library, newest first: its owner,
+/// whether it is still joined, its two sharing settings as it last
+/// reported them (`null` until its first catalog sync), and counts of the
+/// titles it shared.
+async fn branches_json(
+    library: &bookclerk_library::LibraryStore,
+) -> bookclerk_library::Result<Vec<serde_json::Value>> {
+    let mut nodes: Vec<_> = list_nodes(library)
+        .await?
+        .into_iter()
+        .filter(|node| node.kind == NodeKind::Host)
+        .collect();
+    nodes.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let mut out = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let owner = match node.owner_user_id {
+            Some(id) => library.get_user(id).await?,
+            None => None,
+        };
+        let joined = load_node_credential(library, &node.node_id)
+            .await?
+            .is_some_and(|credential| credential.revoked_at.is_none());
+        let titles = branch_title_counts(library, &node.node_id).await?;
+        out.push(json!({
+            "node_id": node.node_id,
+            "created_at": node.created_at,
+            "owner_user_id": node.owner_user_id,
+            "owner_name": owner.and_then(|user| user.display_name.or(user.login_name)),
+            "joined": joined,
+            "share_books": node.share_books,
+            "include_branches": node.include_branches,
+            "titles": titles,
+        }));
+    }
+    Ok(out)
+}
+
+/// `POST /api/config/branches/titles/remove` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveBranchTitles {
+    /// Only this branch's entries; every branch's when absent.
+    #[serde(default)]
+    pub node_id: Option<String>,
+}
+
+/// `POST /api/config/branches/titles/remove`: removes the entries of
+/// titles from a branch that stopped sharing or left. Delivered files stay.
+pub async fn post_remove_branch_titles(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<RemoveBranchTitles>,
+) -> Response {
+    if let Err(refused) = require_branch_admin(&state, caller).await {
+        return refused;
+    }
+    let library = state.library_snapshot().await;
+    let node_id = body
+        .node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    match remove_detached_branch_titles(&library, node_id).await {
+        Ok(removed) => {
+            tracing::info!(
+                node_id = node_id.unwrap_or("*"),
+                removed,
+                "removed titles from branches that stopped sharing or left"
+            );
+            Json(json!({ "removed": removed })).into_response()
+        }
+        Err(err) => crate::config_authority::events_error(err),
     }
 }
 

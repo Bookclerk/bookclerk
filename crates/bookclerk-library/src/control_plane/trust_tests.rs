@@ -111,6 +111,7 @@ async fn add_node(store: &LibraryStore, node_id: &str, kind: &str, owner: Option
         labels_json: Set("[]".into()),
         kind: Set(kind.into()),
         owner_user_id: Set(owner),
+        ..Default::default()
     }
     .insert(store.db())
     .await

@@ -318,6 +318,38 @@ impl OwnerEndpoint {
             .map_err(|_| DialError::Timeout)?
     }
 
+    /// `GET path` of a small JSON answer (at most `max_body` bytes), over the
+    /// verified transport (the link's pin or the webpki roots). Nothing
+    /// secret is sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made, the answer is
+    /// malformed, or it is larger than `max_body`.
+    pub async fn get_json(&self, path: &str, max_body: usize) -> Result<(u16, Vec<u8>), DialError> {
+        if path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let exchange = async {
+            let mut io = self.connect().await?;
+            let head = format!(
+                "GET {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\n\
+                 Connection: close\r\n\r\n",
+                self.authority(),
+            );
+            io.write_all(head.as_bytes()).await?;
+            io.flush().await?;
+            read_http_response(&mut io, max_body.saturating_add(MAX_HTTP_RESPONSE_BYTES)).await
+        };
+        let (status, body) = tokio::time::timeout(Duration::from_secs(HTTP_TIMEOUT_SECS), exchange)
+            .await
+            .map_err(|_| DialError::Timeout)??;
+        if body.len() > max_body {
+            return Err(DialError::Http);
+        }
+        Ok((status, body))
+    }
+
     /// `GET path` with an `Authorization` header; answers the status and a
     /// body of at most `max_body` bytes. The header is written straight to
     /// the stream and never logged.

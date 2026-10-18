@@ -37,6 +37,7 @@
 //! held work, and stops that client; the link is not dialed again.
 
 pub mod api;
+pub mod catalog_sync;
 pub mod consent;
 pub mod host_jobs;
 pub mod join;
@@ -299,6 +300,17 @@ async fn start_link(
         Arc::clone(&stop),
         shutdown.clone(),
     ));
+    tokio::spawn(
+        catalog_sync::CatalogSync {
+            library: library.clone(),
+            cluster_id: cluster_id.clone(),
+            handle: handle.clone(),
+            shelf: catalog_sync::DaemonShelf {
+                state: Arc::clone(state),
+            },
+        }
+        .run(shutdown.clone()),
+    );
     tokio::spawn(
         consent::LinkSupervisor {
             library: library.clone(),

@@ -802,6 +802,8 @@ pub async fn record_node_left(store: &LibraryStore, node_id: &str) -> Result<boo
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    // Titles it shared stop being shared; their files stay here.
+    super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
     let _ = store
         .insert_security_audit_event(&format!("node:{node_id}"), "node_left", None)
         .await;
@@ -1214,6 +1216,8 @@ pub async fn revoke_node_credential(
     let credential = load_node_credential(store, node_id)
         .await?
         .ok_or_else(not_found)?;
+    // A revoked branch is one that left: its shared titles are marked.
+    super::branch_catalog::detach_branch_titles(store, node_id, super::DETACHED_LEFT).await?;
     tracing::info!(node_id, "revoked host node credential");
     notify_all_nodes(
         store,

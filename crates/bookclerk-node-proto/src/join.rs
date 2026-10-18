@@ -68,6 +68,12 @@ pub struct OwnerInfo {
     /// The library's Bookclerk version.
     #[serde(default)]
     pub software_version: String,
+    /// The library's ancestry: its own cluster id first, then the cluster
+    /// id of every library above it up to the root. A joining library
+    /// refuses a parent whose ancestry names its own cluster id, so a
+    /// tree of libraries never becomes a cycle.
+    #[serde(default)]
+    pub ancestry: Vec<String>,
 }
 
 /// `POST /api/node/v1/enroll/oauth` body. Keys are base64url without

@@ -956,6 +956,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/join/leave",
             post(crate::cluster_link::join::post_join_leave),
         )
+        .route(
+            "/api/config/join/sharing",
+            post(crate::cluster_link::join::post_join_sharing),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",
@@ -1015,6 +1019,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route(
             "/api/config/branches",
             get(crate::node_api::branch::get_branches).put(crate::node_api::branch::put_branches),
+        )
+        .route(
+            "/api/config/branches/titles/remove",
+            post(crate::node_api::branch::post_remove_branch_titles),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

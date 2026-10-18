@@ -2314,6 +2314,10 @@ export interface ClusterLinkView {
   /** `active`, `revoked` (by the owner), or `left` (by this host). */
   state: string;
   enrolled_at: string;
+  /** "Share this branch's books with <library>" (on by default). */
+  share_books?: boolean;
+  /** "Include books from my own branches" (on by default). */
+  include_branches?: boolean;
 }
 
 /** The parts of a plugin grant the consent screen shows. */

@@ -23,6 +23,7 @@
 
 mod artifacts;
 pub mod branch;
+mod host_catalog;
 mod host_results;
 pub mod tls;
 pub mod transport;

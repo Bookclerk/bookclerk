@@ -63,6 +63,8 @@ pub(crate) fn link_json(link: &ClusterLink) -> serde_json::Value {
         "pinned": link.spki_pin.is_some(),
         "state": link.state,
         "enrolled_at": link.enrolled_at,
+        "share_books": link.share_books,
+        "include_branches": link.include_branches,
     })
 }
 

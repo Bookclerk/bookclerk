@@ -383,6 +383,50 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             )
             .await
         }
+        Body::CatalogBegin {
+            share_books,
+            include_branches,
+        } => {
+            super::host_catalog::begin(library, host, id.clone(), share_books, include_branches)
+                .await
+        }
+        Body::CatalogSync {
+            fence,
+            batch,
+            cursor,
+            done,
+            titles,
+        } => {
+            super::host_catalog::sync(
+                library,
+                host,
+                id.clone(),
+                super::host_catalog::CatalogBatch {
+                    fence,
+                    batch,
+                    cursor,
+                    done,
+                    titles,
+                },
+            )
+            .await
+        }
+        Body::CatalogUpload {
+            fence,
+            store,
+            product_id,
+            files,
+        } => {
+            super::host_catalog::upload(
+                library,
+                host,
+                id.clone(),
+                fence,
+                (store, product_id),
+                files,
+            )
+            .await
+        }
         _ => {
             return error(
                 id,

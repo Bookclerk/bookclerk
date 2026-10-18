@@ -50,14 +50,15 @@ pub use branch::{
     BranchAuthorization, BranchRedeem, InspectedLibrary,
 };
 pub use client::{
-    ClientExit, ClientTiming, HeartbeatSource, HostClient, HostClientConfig, HostClientHandle,
-    AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE, MAX_ARTIFACT_BYTES, SECRETS_UNOPENABLE,
+    CatalogBatchAccepted, CatalogSession, ClientExit, ClientTiming, HeartbeatSource, HostClient,
+    HostClientConfig, HostClientHandle, AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE,
+    MAX_ARTIFACT_BYTES, SECRETS_UNOPENABLE,
 };
 pub use endpoint::{
     DialError, OwnerEndpoint, OwnerIo, OwnerSocket, TlsProbe, CONNECT_PATH, ENROLL_OAUTH_PATH,
     ENROLL_PATH, INFO_PATH,
 };
-pub use enroll::{join_cluster, JoinError};
+pub use enroll::{check_join_ancestry, join_cluster, refuse_cycle, JoinError};
 pub use jobs::{
     HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload, OwnerCallError,
     WriteBackError,

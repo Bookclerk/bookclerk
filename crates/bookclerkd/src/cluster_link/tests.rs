@@ -45,10 +45,10 @@ use super::TransportRunner;
 use crate::job_handler::{JobCommand, JobExecCtx, JobTransport};
 
 /// Plugin key of the owner's store account.
-const PLUGIN: &str = "path:file:///tmp/store";
+pub(super) const PLUGIN: &str = "path:file:///tmp/store";
 
 /// Serves `app` on a loopback port, as the daemon's listeners do.
-async fn serve(app: axum::Router) -> SocketAddr {
+pub(super) async fn serve(app: axum::Router) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local = listener.local_addr().unwrap();
     let app = app.layer(axum::Extension(crate::node_api::transport::LocalAddr(
@@ -67,7 +67,7 @@ async fn serve(app: axum::Router) -> SocketAddr {
 
 /// A host install's own database (sealed with the process DEK the test
 /// owner configured).
-async fn host_store(dir: &std::path::Path) -> LibraryStore {
+pub(super) async fn host_store(dir: &std::path::Path) -> LibraryStore {
     let db = bookclerk_plugin_database_sqlite::open(&dir.join("library.db"))
         .await
         .unwrap();
@@ -76,7 +76,7 @@ async fn host_store(dir: &std::path::Path) -> LibraryStore {
 }
 
 /// Fixed heartbeat measurements.
-struct FixedSampler;
+pub(super) struct FixedSampler;
 
 impl HeartbeatSource for FixedSampler {
     fn sample(&mut self) -> NodeHeartbeat {
@@ -94,7 +94,7 @@ impl HeartbeatSource for FixedSampler {
 }
 
 /// Fast timers for tests.
-fn timing(backoff_min: Duration) -> ClientTiming {
+pub(super) fn timing(backoff_min: Duration) -> ClientTiming {
     ClientTiming {
         heartbeat_interval: Duration::from_millis(500),
         backoff_min,
@@ -216,7 +216,7 @@ impl JobTransport for EchoTransport {
 
 /// The owner side: a member with a linked store account, its sealed token,
 /// and a queued scan of it. Answers the member id and the token's ref.
-async fn owner_account(store: &LibraryStore, token: &[u8]) -> (i64, SecretRef) {
+pub(super) async fn owner_account(store: &LibraryStore, token: &[u8]) -> (i64, SecretRef) {
     owner_account_as(store, token, UserRole::Member).await
 }
 
@@ -295,14 +295,14 @@ async fn stored(store: &LibraryStore, secret: &SecretRef) -> String {
 /// Sets the owner's public origin and answers the origin its links carry
 /// (and its handshake verifies): the effective one, loopback spelled
 /// `localhost`.
-async fn public_origin(state: &Arc<crate::api::AppState>, origin: &str) -> String {
+pub(super) async fn public_origin(state: &Arc<crate::api::AppState>, origin: &str) -> String {
     let mut cfg = state.config.write().await;
     cfg.integrations.public_origin = Some(origin.to_string());
     crate::origin::effective_origin_from_config(&cfg, None)
 }
 
 /// Mints a link for `member` at `origin` and joins it from the host.
-async fn join(
+pub(super) async fn join(
     owner: &LibraryStore,
     host: &LibraryStore,
     member: i64,
@@ -602,7 +602,7 @@ async fn observed(
 }
 
 /// Polls `check` until it holds, for up to 20 s.
-async fn eventually<F, Fut>(what: &str, mut check: F)
+pub(super) async fn eventually<F, Fut>(what: &str, mut check: F)
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -615,7 +615,7 @@ where
 }
 
 /// Waits until the client has been welcomed `count` times.
-async fn connected(handle: &HostClientHandle, count: u64) {
+pub(super) async fn connected(handle: &HostClientHandle, count: u64) {
     let mut connections = handle.connections();
     tokio::time::timeout(
         Duration::from_secs(20),
@@ -634,7 +634,7 @@ async fn job(store: &LibraryStore, id: &str) -> bookclerk_library::JobRecord {
 /// Log output captured in memory (tracing events and bridged `log`
 /// records, the way the daemon's subscriber sees them).
 #[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<u8>>>);
+pub(super) struct Captured(pub(super) Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for Captured {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

@@ -300,6 +300,53 @@ it to the scheduler (`--replicas`), is refused. Uploads reach every
 destination deployed on the owner node that granted them, node-local ones
 included.
 
+## Branches of branches
+
+A branch is a full library of its own, so its users can join their own
+branches to it. The result is a tree: A ← B ← C (B is A's branch, C is
+B's).
+
+- **One hop at a time.** A knows B as a branch owned by one of A's users. A
+  has no record of C and never learns it exists. A's work runs on B itself
+  and is never passed on to C. No store account, store token or user of B
+  or C is ever sent to A.
+- **Books flow up.** B shares the books in its library with A: those
+  acquired on B, and (when "Include books from my own branches" is on)
+  those C shared with B. Each title carries its store, product id,
+  metadata and file list, nothing else. A records them as belonging to the
+  A user who owns B; C's books are simply B's books there. A title B got
+  from A is not sent back.
+- **Files** stream to A's outputs through the same upload endpoint a
+  branch's acquire uses (nothing staged on A), under the keys they have on
+  B; a title whose files would land on a key another book in A already
+  uses is recorded but its files are not sent. If A has no output
+  deployed, it records the titles without files.
+- **Sync** runs when the branch connects, every 5 minutes, and at once
+  when a setting changes. It is incremental and resumes after a
+  reconnect; a full pass (after a setting changes, and once a day) also
+  withdraws titles B no longer has.
+
+**Settings → Library** (on B), for each library joined, has two
+settings, both on by default:
+
+- **Share this branch's books with <library>.** Off: nothing new is sent,
+  and A marks what it already got from B. Files already delivered stay in
+  A's outputs.
+- **Include books from my own branches.** Off: B shares only books acquired
+  on B itself; C's titles are withdrawn from A on the next pass.
+
+**Settings → Branches** (on A) lists each branch with its owner, what it
+shares (read-only: B's operator sets it), and counts of its titles. Titles
+from a branch that stopped sharing or left are kept, marked, until the
+owner removes the entries (**Remove**, or `POST
+/api/config/branches/titles/remove {node_id?}`); the files stay.
+
+**No loops.** `GET /api/node/v1/info` reports the library's ancestry (its
+own cluster id and every library above it). Joining refuses a library
+whose ancestry contains the joining install's own cluster id (`409
+join_cycle`), so neither A ← B ← A nor A ← B ← C ← A can be made. A clerk
+shares its library's database, so it is the same point in the tree.
+
 ## Leaving
 
 **Settings → Library → Leave library** (or `bookclerk clusters leave
@@ -311,7 +358,8 @@ deleted, so this install can never sign as that node again, and the link's
 client stops. If the library cannot be reached within 10 seconds the branch
 leaves anyway and says the library was not told; revoke the node there
 (Settings → Nodes or `bookclerk nodes revoke <node_id>`). Joining again
-needs a new sign-in or invite.
+needs a new sign-in or invite. Books the branch shared stay in the
+library, marked as from a branch that left (see above).
 
 ## The node API
 
@@ -320,7 +368,7 @@ operator-auth layers, and every request first passes the transport policy.
 
 | Route | Purpose |
 | --- | --- |
-| `GET info` | The library: `{cluster_id, library_name, origin, transport, enrollment, spki_fingerprint?, software_version}` |
+| `GET info` | The library: `{cluster_id, library_name, origin, transport, enrollment, spki_fingerprint?, software_version, ancestry}` |
 | `POST enroll` | Redeem an invite: `{link_id, secret, sign_pk, box_pk, software_version}` → `{cluster_id, node_id}` |
 | `POST enroll/oauth` | Redeem an approved sign-in: `{code, code_verifier, redirect_uri, sign_pk, box_pk, branch_name, software_version}` → `{cluster_id, node_id}` |
 | `GET connect` | The node socket (WebSocket, subprotocol `bookclerk-node.v1`) |
@@ -352,6 +400,9 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `acquire.plan` | `acquire.targets {targets, destinations}` |
 | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
+| `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted}` |
+| `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
+| `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
 | `node.leaving` | `accepted`, then close 4403 (the node is revoked) |
 
 The owner also sends `wake` frames (deployment, install, placement,
@@ -393,8 +444,10 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
 
 ## Not built yet
 
-- A branch is a branch only: the "clerk" (a peer sharing the library's
-  database) connection type and branches of branches are later work.
+- The "clerk" connection type (a peer sharing the library's database) is
+  later work.
+- The sharing settings are the operator's (Settings → Library); there is
+  no CLI command for them yet.
 - The library's name is the host of its public origin; there is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

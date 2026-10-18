@@ -66,6 +66,7 @@ fn host_routes(state: &Arc<AppState>) -> axum::Router {
         .route("/api/config/join/callback", post(super::post_join_callback))
         .route("/api/config/join/invite", post(super::post_join_invite))
         .route("/api/config/join/leave", post(super::post_join_leave))
+        .route("/api/config/join/sharing", post(super::post_join_sharing))
         .with_state(Arc::clone(state))
 }
 
@@ -214,6 +215,35 @@ async fn a_sign_in_joins_starts_the_client_and_leave_tells_the_owner() {
     let (_, _, status_now) = call(&host, "GET", "/api/config/join", None).await;
     assert_eq!(status_now["fresh"], false);
     assert_eq!(status_now["links"][0]["running"], true);
+    assert_eq!(status_now["links"][0]["share_books"], true);
+    assert_eq!(status_now["links"][0]["include_branches"], true);
+    eventually("the branch to report its sharing settings", || async {
+        load_node(&owner_store, &node_id).await.unwrap().share_books == Some(true)
+    })
+    .await;
+
+    // Settings → Library: the settings reach the library at once.
+    let (status, _, shared) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "cluster_id": cluster_id, "share_books": false, "include_branches": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shared}");
+    assert_eq!(shared["cluster"]["share_books"], false);
+    eventually("the library to see sharing off", || async {
+        load_node(&owner_store, &node_id).await.unwrap().share_books == Some(false)
+    })
+    .await;
+    let (status, _, _) = call(
+        &host,
+        "POST",
+        "/api/config/join/sharing",
+        Some(json!({ "cluster_id": "no-such-cluster", "share_books": true, "include_branches": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Leave library: the owner hears node.leaving and revokes the node.
     let (status, _, left) = call(

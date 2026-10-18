@@ -65,6 +65,9 @@ struct Manifest {
     /// Storage key of the title's companion PDF, when one is uploaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pdf_key: Option<String>,
+    /// For a branch's catalog upload: the title's manifest digest at grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    catalog_digest: Option<String>,
 }
 
 /// What a Host asks to upload for one title.
@@ -154,9 +157,19 @@ pub struct UploadSession {
     pub received: BTreeSet<usize>,
     /// `open`, `committed` or `aborted`.
     pub state: String,
+    /// For a branch's catalog upload ([`Self::is_catalog`]): the title's
+    /// manifest digest at grant.
+    pub catalog_digest: Option<String>,
 }
 
 impl UploadSession {
+    /// True for a branch's catalog upload, bound to the node's catalog
+    /// fence instead of a job's.
+    #[must_use]
+    pub fn is_catalog(&self) -> bool {
+        self.job_id == bookclerk_node_proto::CATALOG_ITEM
+    }
+
     /// True once every declared file was received.
     #[must_use]
     pub fn complete(&self) -> bool {
@@ -208,7 +221,7 @@ fn names_book(title: &str, book: &crate::models::BookRecord) -> bool {
 /// receiving node's destinations, unique keys per destination, every
 /// destination written, and the primary (and PDF) among the primary
 /// destination's copies. A closing upload (no title) declares none.
-fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
+pub(super) fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     if req.book_uuid.is_empty() {
         return (!req.files.is_empty() || req.pdf_key.is_some()).then_some("invalid_manifest");
     }
@@ -313,6 +326,38 @@ pub async fn grant_upload(
             NodeTrust::Nothing => return Ok(UploadGrant::Lost),
         }
     }
+    open_upload_session(
+        store,
+        node_id,
+        job_id,
+        generation,
+        receiving_node_id,
+        req,
+        None,
+    )
+    .await
+}
+
+/// Inserts an open upload (its token hashed) after an earlier open upload
+/// of the same title under the same job (or catalog) is aborted, and
+/// answers the grant. The caller checked the fence and the title; the
+/// manifest is checked here.
+///
+/// # Errors
+///
+/// Returns an error when a write fails.
+pub(super) async fn open_upload_session(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+    receiving_node_id: &str,
+    req: &UploadGrantRequest<'_>,
+    catalog_digest: Option<&str>,
+) -> Result<UploadGrant> {
+    if let Some(reason) = manifest_problem(req) {
+        return Ok(UploadGrant::Refused(reason));
+    }
     let manifest = serde_json::to_string(&Manifest {
         destinations: if req.book_uuid.is_empty() {
             Vec::new()
@@ -321,6 +366,7 @@ pub async fn grant_upload(
         },
         files: req.files.to_vec(),
         pdf_key: req.pdf_key.map(str::to_string),
+        catalog_digest: catalog_digest.map(str::to_string),
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload manifest encode: {err}")))?;
     node_upload_sessions::Entity::update_many()
@@ -328,6 +374,7 @@ pub async fn grant_upload(
             node_upload_sessions::Column::State,
             sea_orm::sea_query::Expr::value(STATE_ABORTED),
         )
+        .filter(node_upload_sessions::Column::NodeId.eq(node_id))
         .filter(node_upload_sessions::Column::JobId.eq(job_id))
         .filter(node_upload_sessions::Column::BookUuid.eq(req.book_uuid))
         .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
@@ -393,6 +440,7 @@ fn session_from_model(row: node_upload_sessions::Model) -> Result<UploadSession>
         files: manifest.files,
         received,
         state: row.state,
+        catalog_digest: manifest.catalog_digest,
     })
 }
 
@@ -452,6 +500,14 @@ pub async fn authorize_upload(
 ///
 /// Returns an error when a read fails.
 pub async fn upload_fence_live(store: &LibraryStore, session: &UploadSession) -> Result<bool> {
+    if session.is_catalog() {
+        return super::branch_catalog::catalog_fence_live(
+            store,
+            &session.node_id,
+            session.generation,
+        )
+        .await;
+    }
     let fence = remote_job_fence(&session.node_id, &session.job_id, session.generation);
     let Some(job) = fenced_job(store, &fence).await? else {
         return Ok(false);
@@ -560,7 +616,7 @@ pub async fn commit_upload(
     };
     if session.state == STATE_COMMITTED {
         return Ok(UploadCommit::Committed {
-            job_completed: job_done(store, &session.job_id).await?,
+            job_completed: !session.is_catalog() && job_done(store, &session.job_id).await?,
         });
     }
     if session.state != STATE_OPEN {
@@ -568,6 +624,9 @@ pub async fn commit_upload(
     }
     if !session.complete() {
         return Ok(UploadCommit::Refused("files_missing"));
+    }
+    if session.is_catalog() {
+        return super::branch_catalog::commit_catalog_upload(store, &session).await;
     }
     let fence = remote_job_fence(&session.node_id, &session.job_id, session.generation);
     let Some(job) = fenced_job(store, &fence).await? else {

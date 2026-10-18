@@ -40,6 +40,11 @@
 //! owner streams them on to its output destinations without staging them,
 //! and the job completes when the last title's upload commits.
 //!
+//! A branch shares the titles of its own library with the library it
+//! joined ([`Body::CatalogBegin`], [`Body::CatalogSync`],
+//! [`Body::CatalogUpload`]; see [`CatalogTitle`]): titles carry no account
+//! or user field, and files reuse the upload endpoint.
+//!
 //! A host that leaves sends [`Body::NodeLeaving`]; the owner revokes the
 //! node at once. Joining with a sign-in instead of a link is the OAuth
 //! code + PKCE flow of the built-in client [`BRANCH_CLIENT_ID`] ([`OwnerInfo`],
@@ -49,12 +54,18 @@
 //! and the host client share it so both sides sign and check the same
 //! bytes.
 
+mod catalog;
 mod frames;
 mod join;
 mod keys;
 mod sealed;
 mod signature;
 
+pub use catalog::{
+    is_ancestry, is_cluster_id, is_product_id, is_store_id, CatalogFile, CatalogMetadata,
+    CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY, MAX_CATALOG_BATCH_TITLES,
+    MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES, MAX_CATALOG_WANTED,
+};
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
     is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, FileCopy, Frame,

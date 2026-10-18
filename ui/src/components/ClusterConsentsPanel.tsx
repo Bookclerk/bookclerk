@@ -12,7 +12,7 @@ import {
   type RemoteGrantView,
 } from "@/lib/api";
 import { JoinWizard } from "@/components/JoinWizard";
-import { fetchJoinStatus, joinErrorMessage, leaveLibrary } from "@/lib/join";
+import { fetchJoinStatus, joinErrorMessage, leaveLibrary, setBranchSharing } from "@/lib/join";
 import { useLiveRefresh } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
@@ -40,6 +40,84 @@ function StateBadge({ state }: { state: RemoteConsentState }) {
     >
       {STATE_LABEL[state] ?? state}
     </Badge>
+  );
+}
+
+/** A library's name for the sharing settings: the host of its address. */
+function libraryLabel(origin: string): string {
+  try {
+    return new URL(origin).host || origin;
+  } catch {
+    return origin;
+  }
+}
+
+/**
+ * The two sharing settings of one library this server is a branch of
+ * (branches of branches). Both are on by default.
+ */
+function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const share = link.share_books ?? true;
+  const include = link.include_branches ?? true;
+
+  async function save(nextShare: boolean, nextInclude: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      await setBranchSharing(link.cluster_id, nextShare, nextInclude);
+      onSaved();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not save."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="w-full space-y-2 pt-1">
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={share}
+          disabled={busy}
+          onChange={(e) => void save(e.target.checked, include)}
+        />
+        <span>
+          <span className="block font-medium">
+            Share this branch&apos;s books with {libraryLabel(link.owner_origin)}
+          </span>
+          <span className="block text-xs text-ink/55">
+            The library gets each book&apos;s details and files, as its owner&apos;s. No store
+            account or user of this server is sent. When off, nothing new is sent; books the
+            library already has stay there.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={include}
+          disabled={busy || !share}
+          onChange={(e) => void save(share, e.target.checked)}
+        />
+        <span>
+          <span className="block font-medium">Include books from my own branches</span>
+          <span className="block text-xs text-ink/55">
+            Books this server&apos;s own branches shared with it are passed on as this
+            branch&apos;s. The library never learns about those branches.
+          </span>
+        </span>
+      </label>
+      {error ? (
+        <p className="text-xs font-medium text-brick" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -102,6 +180,7 @@ function LinkRow({ link, onLeft }: { link: ClusterLinkView; onLeft: () => void }
           Leave library
         </Button>
       ) : null}
+      {link.state === "active" ? <SharingSettings link={link} onSaved={onLeft} /> : null}
       {note ? (
         <p className="w-full text-xs font-medium text-brick" role="status">
           {note}

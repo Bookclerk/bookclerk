@@ -20,6 +20,14 @@
 //! - `POST /api/config/join/invite` `{link}`: joins with a pasted branch
 //!   invite; the link is used once and not kept.
 //! - `POST /api/config/join/leave` `{cluster_id}`: Leave library.
+//! - `POST /api/config/join/sharing` `{cluster_id, share_books,
+//!   include_branches}`: Settings → Library's "Share this branch's books
+//!   with *library*" and "Include books from my own branches"; the
+//!   catalog sync reports them to the library at once.
+//!
+//! Inspect and start refuse a library whose ancestry names this library's
+//! own cluster id (409 `join_cycle`), so a tree of libraries never loops;
+//! the redeem checks it again before the code is spent.
 //!
 //! All of them are operator-only. Answers carrying a URL with `state` are
 //! `Cache-Control: no-store`; nothing secret is logged.
@@ -34,8 +42,8 @@ use bookclerk_library::control_plane::{
     create_pending_join, list_cluster_links, take_pending_join, NewPendingJoin,
 };
 use bookclerk_node_client::{
-    authorize_branch, inspect_library, join_cluster, redeem_branch_code, BranchRedeem,
-    InspectedLibrary, JoinError,
+    authorize_branch, inspect_library, join_cluster, redeem_branch_code, refuse_cycle,
+    BranchRedeem, InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{is_branch_name, JOIN_CALLBACK_PATH};
 use serde::Deserialize;
@@ -83,6 +91,11 @@ fn join_failed(err: &JoinError) -> Response {
         JoinError::Record(detail) => {
             join_error(StatusCode::BAD_GATEWAY, "join_failed", detail)
         }
+        JoinError::Cycle => join_error(
+            StatusCode::CONFLICT,
+            "join_cycle",
+            "that library is this library or one of its own branches; joining it would make a loop",
+        ),
     }
 }
 
@@ -146,11 +159,19 @@ pub struct InspectBody {
 }
 
 /// `POST /api/config/join/inspect`.
-pub async fn post_join_inspect(Json(body): Json<InspectBody>) -> Response {
-    match inspect_library(&body.address).await {
-        Ok(library) => Json(json!({ "library": library_json(&library) })).into_response(),
-        Err(err) => join_failed(&err),
+pub async fn post_join_inspect(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<InspectBody>,
+) -> Response {
+    let library = match inspect_library(&body.address).await {
+        Ok(library) => library,
+        Err(err) => return join_failed(&err),
+    };
+    let store = state.library_snapshot().await;
+    if let Err(err) = refuse_cycle(&store, &library.info.ancestry).await {
+        return join_failed(&err);
     }
+    Json(json!({ "library": library_json(&library) })).into_response()
 }
 
 /// `POST /api/config/join/start` body.
@@ -179,6 +200,9 @@ pub async fn post_join_start(
         Ok(library) => library,
         Err(err) => return join_failed(&err),
     };
+    if let Err(err) = refuse_cycle(&state.library_snapshot().await, &library.info.ancestry).await {
+        return join_failed(&err);
+    }
     if !library.info.enrollment {
         return join_error(
             StatusCode::FORBIDDEN,
@@ -382,6 +406,58 @@ pub async fn post_join_leave(
             "not_found",
             "this install is not a branch of that library",
         ),
+        Err(err) => crate::config_authority::events_error(err),
+    }
+}
+
+/// `POST /api/config/join/sharing` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharingBody {
+    /// The library (owner cluster id).
+    cluster_id: String,
+    /// "Share this branch's books with *library*".
+    share_books: bool,
+    /// "Include books from my own branches".
+    include_branches: bool,
+}
+
+/// `POST /api/config/join/sharing`: Settings → Library's two sharing
+/// settings for one library this install is a branch of.
+pub async fn post_join_sharing(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SharingBody>,
+) -> Response {
+    let store = state.library_snapshot().await;
+    let cluster_id = body.cluster_id.trim();
+    match bookclerk_library::control_plane::set_cluster_link_sharing(
+        &store,
+        cluster_id,
+        body.share_books,
+        body.include_branches,
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return join_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "this install is not a branch of that library",
+            )
+        }
+        Err(err) => return crate::config_authority::events_error(err),
+    }
+    tracing::info!(
+        %cluster_id,
+        share_books = body.share_books,
+        include_branches = body.include_branches,
+        "branch sharing settings changed"
+    );
+    super::catalog_sync::notify_sharing_changed();
+    match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
+        Ok(Some(link)) => Json(json!({ "cluster": link_json(&link) })).into_response(),
+        Ok(None) => join_error(StatusCode::NOT_FOUND, "not_found", "no such library"),
         Err(err) => crate::config_authority::events_error(err),
     }
 }

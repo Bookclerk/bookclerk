@@ -88,6 +88,7 @@ async fn add_host(store: &LibraryStore, owner: i64) {
         labels_json: Set("[]".into()),
         kind: Set("host".into()),
         owner_user_id: Set(Some(owner)),
+        ..Default::default()
     }
     .insert(store.db())
     .await

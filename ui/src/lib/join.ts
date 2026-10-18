@@ -12,6 +12,10 @@
  *   user "Let <branch> join <library> as yours?".
  * - Branch invites are minted in User management and shown once; they are
  *   never kept in any persisted state.
+ * - Branches of branches: a branch shares its books with its library (two
+ *   settings per library in Settings → Library); the library shows them
+ *   read-only per branch in Settings → Branches, with a bulk remove for
+ *   titles from a branch that stopped sharing or left.
  */
 
 import { ApiError } from "@/lib/api";
@@ -42,6 +46,10 @@ export interface BranchLinkView {
   enrolled_at: string;
   /** Whether this daemon's client for it is running. */
   running?: boolean;
+  /** "Share this branch's books with <library>" (on by default). */
+  share_books?: boolean;
+  /** "Include books from my own branches" (on by default). */
+  include_branches?: boolean;
 }
 
 /** `GET /api/config/join`. */
@@ -71,6 +79,31 @@ export interface BranchConsentView {
   user: { id: number; display_name: string | null };
 }
 
+/** Counts of the titles one branch shared with this library. */
+export interface BranchTitleCounts {
+  /** Titles it shares now. */
+  shared: number;
+  /** Of those, titles whose files arrived. */
+  delivered: number;
+  /** Titles from it that it stopped sharing, withdrew, or left behind. */
+  detached: number;
+}
+
+/** One branch of this library, as Settings → Branches lists it. */
+export interface BranchRowView {
+  node_id: string;
+  created_at: string;
+  owner_user_id: number | null;
+  owner_name: string | null;
+  /** False once it left or was removed. */
+  joined: boolean;
+  /** As the branch last reported it; `null` before its first sync. */
+  share_books: boolean | null;
+  /** As the branch last reported it; `null` before its first sync. */
+  include_branches: boolean | null;
+  titles: BranchTitleCounts;
+}
+
 /** `GET /api/config/branches`: Settings → Branches on the library. */
 export interface BranchSettingsView {
   library_name: string;
@@ -78,6 +111,7 @@ export interface BranchSettingsView {
   transport: string;
   enrollment: boolean;
   spki_fingerprint: string | null;
+  branches?: BranchRowView[];
 }
 
 /** A branch invite as listed (never its secret). */
@@ -243,6 +277,74 @@ export function leaveLibrary(
   clusterId: string,
 ): Promise<{ cluster: BranchLinkView; owner_notified: boolean }> {
   return request("/api/config/join/leave", { method: "POST", body: { cluster_id: clusterId } });
+}
+
+/**
+ * Settings → Library: the two sharing settings for one library this server
+ * is a branch of. The library hears them at once.
+ *
+ * @param clusterId - The library.
+ * @param shareBooks - "Share this branch's books with <library>".
+ * @param includeBranches - "Include books from my own branches".
+ * @returns The link with the stored settings.
+ */
+export function setBranchSharing(
+  clusterId: string,
+  shareBooks: boolean,
+  includeBranches: boolean,
+): Promise<{ cluster: BranchLinkView }> {
+  return request("/api/config/join/sharing", {
+    method: "POST",
+    body: { cluster_id: clusterId, share_books: shareBooks, include_branches: includeBranches },
+  });
+}
+
+/**
+ * Removes the entries of titles from branches that stopped sharing or left
+ * (one branch, or all). Files already delivered stay in the outputs.
+ *
+ * @param nodeId - Only this branch; every branch when omitted.
+ * @returns How many entries were removed.
+ */
+export function removeBranchTitles(nodeId?: string): Promise<{ removed: number }> {
+  return request("/api/config/branches/titles/remove", {
+    method: "POST",
+    body: nodeId ? { node_id: nodeId } : {},
+  });
+}
+
+/**
+ * One line on what a branch shares with this library (read-only).
+ *
+ * @param row - The branch.
+ * @returns For example "Shares its books and its own branches' books".
+ */
+export function branchSharingSummary(row: BranchRowView): string {
+  if (!row.joined) return "Left this library";
+  if (row.share_books === null) return "Has not shared books yet";
+  if (!row.share_books) return "Does not share its books";
+  return row.include_branches
+    ? "Shares its books and its own branches' books"
+    : "Shares its own books only";
+}
+
+/**
+ * A short note on a branch's titles, or `null` when it shared none.
+ *
+ * @param counts - The branch's title counts.
+ * @param joined - Whether the branch is still joined.
+ * @returns For example "3 books shared, 2 arrived · 1 book from a branch that left".
+ */
+export function branchTitlesNote(counts: BranchTitleCounts, joined: boolean): string | null {
+  const parts: string[] = [];
+  const books = (n: number) => `${n} ${n === 1 ? "book" : "books"}`;
+  if (counts.shared > 0) parts.push(`${books(counts.shared)} shared, ${counts.delivered} arrived`);
+  if (counts.detached > 0) {
+    parts.push(
+      `${books(counts.detached)} ${joined ? "no longer shared" : "from a branch that left"}`,
+    );
+  }
+  return parts.length ? parts.join(" · ") : null;
 }
 
 /**

@@ -1162,6 +1162,9 @@ fn node_json(
         "this_node": node.node_id == this_node,
         "kind": node.kind.as_str(),
         "owner_user_id": node.owner_user_id,
+        // A branch's two sharing settings, as it last reported them.
+        "share_books": node.share_books,
+        "include_branches": node.include_branches,
     })
 }
 

@@ -1426,7 +1426,7 @@ names are unchanged.
   opens a browser when it can, and takes the answer on a loopback
   listener; without `--url` the stdin path is unchanged.
 - **Not built here.** The peer ("clerk") connection type that shares the
-  library's database, and branches of branches.
+  library's database. Branches of branches came next (below).
 - **Tests.** Daemon: `info` under the transport policy and in
   `self_signed` mode (the fingerprint a branch checks); consent and redeem
   with an idempotent retry and one node under concurrency; refusals for
@@ -1440,6 +1440,89 @@ names are unchanged.
   takes only its own `state` and reports a denial. UI (vitest): callback
   parsing, the consent redirect check, invite shape, countdown, and
   error copy.
+
+### Branches of branches
+
+Decided 2026-10-18 with the owner, built after Join a library. A branch is
+a full library of its own, so its users can join their own branches to
+it: a tree, A ← B ← C.
+
+- **One hop at a time.** Each link knows only its direct neighbour. A knows
+  B as a node owned by one of A's users and has no node, user or account
+  row for C. A's work runs on B and is never re-routed to C. No store
+  account id, store token or downstream user crosses a link.
+- **`catalog.*` frames (branch → library).** `catalog.begin
+  {share_books, include_branches}` reports the link's two settings and
+  opens a session under a new per-node **catalog fence**
+  (`nodes.catalog_fence`); the answer `catalog.session {fence, cursor,
+  ancestry, destinations, wanted}` says where to resume, the library's
+  ancestry, its destination ids, and titles whose files it still wants.
+  `catalog.sync {fence, batch, cursor, done, titles}` sends at most 100
+  titles; each `CatalogTitle` is `{store, product_id, metadata,
+  primary_key, pdf_key, files}` (`deny_unknown_fields`, no account or user
+  field). The library validates a batch the way it does `scan.results`
+  (shape, sizes, keys, no repeats) and answers `catalog.accepted {batch,
+  upserted, skipped, wanted}`, `lost` under a stale fence, or `refused`.
+  Only a `host` node with a live credential and an active owner may share.
+- **`branch_titles` (SQL-v1 + SeaORM).** One row per (provenance, store,
+  product id): provenance `node:<B>`, the owner user (B's owner), the
+  metadata and manifest (with its SHA-256), the delivered manifest's
+  digest, `state` (`shared` or `detached`) and the reason (`stopped_sharing`,
+  `left`, `withdrawn`). A title A already holds in its own `books` for that
+  user (same store and product id under an account the user owns) is
+  skipped, so nothing B got from A comes back as B's.
+- **Files reuse the upload endpoint.** `catalog.upload {fence, store,
+  product_id, files}` opens a `node_upload_sessions` row bound to the
+  catalog fence (job id `catalog`) and answers `upload.granted` with the
+  token sealed to B's box key; B then `PUT`s each file and commits as a
+  host acquire does, the library tees each body straight to its
+  destinations (no staging), and the commit records the delivered digest
+  in one batch gated on the live catalog fence. Files keep the branch's
+  own keys on every destination (A's naming templates are not applied
+  again), so a grant is refused (`key_in_use`) when a key is one of A's
+  own books' (its audio, PDF, or a file beside the audio with the same
+  stem) or another branch title's: a branch never overwrites what is in
+  A's outputs. With no destination on A, the catalog is shared without
+  files.
+- **Incremental, resumable.** B sends titles in a stable order (last
+  change, kind, id) after the cursor the library keeps; a reconnect resumes
+  after the last accepted batch and re-offers undelivered files. A change
+  of either setting, and a session a day after the last full pass,
+  restart from the start; a full pass (`done`) withdraws the titles it no
+  longer named, which is how "Include books from my own branches" off, a
+  removed book or a sub-branch that left reaches A.
+- **Two settings on `cluster_links`** (`share_books`, `include_branches`,
+  both on by default), set in Settings → Library on the branch
+  (`POST /api/config/join/sharing`, operator) and reported to the
+  library at once; the library keeps what was reported on the node row
+  (`nodes.share_books`, `nodes.include_branches`) and shows it read-only in
+  Settings → Branches (`GET /api/config/branches` → `branches`).
+- **Cycles.** `GET /api/node/v1/info` returns `ancestry`: the library's own
+  cluster id, then each active link's owner and the ancestry it reported
+  (`cluster_links.ancestry_json`, refreshed on every catalog session), at
+  most 64 ids. Inspect, start and both redeems refuse a parent whose
+  ancestry contains the joining install's own cluster id (`409
+  join_cycle`), so A ← B ← A and A ← B ← C ← A are refused. A clerk shares
+  its library's database and so reports the same ancestry: the same tree
+  node.
+- **Stop sharing or leave.** New titles stop; delivered files stay in A's
+  outputs; the rows are marked detached (`stopped_sharing` at the next
+  `catalog.begin`, `left` when the node leaves or is revoked) and shown as
+  "from a branch that left"; the owner removes them in bulk
+  (`POST /api/config/branches/titles/remove {node_id?}`, operator or Owner).
+- **Tests.** Library: attribution, dedup and resume under a stale fence,
+  trust refusal, no echo back, stop/leave/remove, a full pass withdrawing,
+  the daily full pass, catalog uploads committing only under the live
+  fence and never onto a key in use, ancestry and the cycle check.
+  Daemon: a tree A ← B ← C end to end in one process (C's book reaches B, B's own and C's reach A as Riley's
+  under `node:<B>`; the frame fields carry no account, user or node of
+  C; the echo is skipped; a second pass sends nothing; files went through
+  the upload endpoint under the catalog item and nothing was staged; the
+  cycle refused; include-sub-branches off withdraws C's title; sharing
+  off marks B's titles and the bulk remove clears them; C leaving marks
+  its title on B), `info` ancestry, Settings → Branches and the remove, and
+  the sharing endpoint reaching the library on a running link. UI
+  (vitest): the read-only summaries.
 
 ## Consequences
 
@@ -1461,7 +1544,10 @@ names are unchanged.
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
   `nodes` gains `target`, `labels_json`, `kind`, and `owner_user_id`.
   H-4 adds `node_enrollment_links`, `node_credentials`, `cluster_links`,
-  and `remote_plugin_consents`.
+  `remote_plugin_consents`, and (branches of branches) `branch_titles`;
+  `cluster_links` gains `share_books`, `include_branches` and
+  `ancestry_json`, and `nodes` the reported settings and the catalog
+  fence, cursor and pass times.
   Checksum of the
   unreleased pack changes. Existing development databases fail closed until
   recreated (`cargo reset --yes` or a new database). That matches the
@@ -1522,8 +1608,11 @@ Not in this phase, and not claimed as production HA:
   `SECRETS` reach only a node trusted with every job). Uploaded objects
   carry content type, length and digest but not the title metadata (ASIN,
   title, timestamps) a local acquire records with its files. The peer
-  ("clerk") connection type and branches of branches are not built.
-  Everything else in H-4 steps 1-11 and Join a library is built (see the
+  ("clerk") connection type is not built. Branches of branches withdraw a
+  title a branch no longer has only on a full pass (a settings change, or
+  a day after the last one).
+  Everything else in H-4 steps 1-11, Join a library and branches of
+  branches is built (see the
   sections above and [Libraries and branches](../cluster-hosts.md)).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).

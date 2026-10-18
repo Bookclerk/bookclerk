@@ -101,6 +101,11 @@ pub struct NodeRecord {
     pub kind: NodeKind,
     /// User who owns this node and may administer it, when one is assigned.
     pub owner_user_id: Option<i64>,
+    /// For a branch: "Share this branch's books" as it last reported it;
+    /// empty until it does.
+    pub share_books: Option<bool>,
+    /// For a branch: "Include books from my own branches", as reported.
+    pub include_branches: Option<bool>,
 }
 
 /// How a node joined the cluster.
@@ -549,6 +554,8 @@ fn record_from_model(row: nodes::Model) -> NodeRecord {
         labels: parse_labels(&row.labels_json),
         kind: NodeKind::parse(&row.kind),
         owner_user_id: row.owner_user_id,
+        share_books: row.share_books.map(|on| on != 0),
+        include_branches: row.include_branches.map(|on| on != 0),
     }
 }
 

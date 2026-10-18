@@ -260,6 +260,9 @@ pub async fn redeem_branch_code(
     keys: &ClusterLinkKeys,
 ) -> Result<ClusterLink, JoinError> {
     let endpoint = OwnerEndpoint::new(redeem.origin, redeem.spki_pin)?;
+    // Checked again before the code is spent: the library's ancestry may
+    // have changed since the operator started.
+    let ancestry = crate::enroll::check_join_ancestry(store, &endpoint).await?;
     let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
     let body = Zeroizing::new(
         serde_json::to_vec(&OAuthEnrollRequest {
@@ -285,7 +288,7 @@ pub async fn redeem_branch_code(
             "the library answered for another cluster".into(),
         ));
     }
-    let recorded = record_cluster_link(
+    let mut recorded = record_cluster_link(
         store,
         &NewClusterLink {
             owner_cluster_id: enrolled.cluster_id,
@@ -297,6 +300,7 @@ pub async fn redeem_branch_code(
     )
     .await
     .map_err(|err| JoinError::Record(err.to_string()))?;
+    crate::enroll::record_ancestry(store, &mut recorded, &ancestry).await;
     tracing::info!(
         cluster_id = %recorded.owner_cluster_id,
         node_id = %recorded.remote_node_id,
@@ -404,6 +408,7 @@ mod tests {
                 enrollment: true,
                 spki_fingerprint: None,
                 software_version: String::new(),
+                ancestry: vec!["c".into()],
             },
             origin: "https://owner.example".into(),
             spki_pin: None,

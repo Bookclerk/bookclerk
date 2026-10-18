@@ -3,10 +3,14 @@ import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { Button } from "@/components/ui/button";
 import { isApiError } from "@/lib/api";
 import {
+  branchSharingSummary,
+  branchTitlesNote,
   fetchBranchSettings,
   fingerprintGroups,
   joinErrorMessage,
   putBranchSettings,
+  removeBranchTitles,
+  type BranchRowView,
   type BranchSettingsView,
 } from "@/lib/join";
 
@@ -19,9 +23,47 @@ export interface BranchesPanelProps {
 }
 
 /**
+ * One branch: its owner, what it shares (read-only; the branch's operator
+ * sets it in Settings → Library there), and a Remove for the entries of
+ * titles it no longer shares or left behind.
+ */
+function BranchRow({
+  row,
+  busy,
+  onRemove,
+}: {
+  row: BranchRowView;
+  busy: boolean;
+  onRemove: (nodeId: string) => void;
+}) {
+  const note = branchTitlesNote(row.titles, row.joined);
+  return (
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
+      <span className="font-semibold text-ink">
+        {row.owner_name ? `${row.owner_name}'s branch` : "Branch"}
+      </span>
+      <span className="break-all font-mono text-[11px] text-ink/45">{row.node_id}</span>
+      <span className="w-full text-xs text-ink/60">{branchSharingSummary(row)}</span>
+      {note ? <span className="w-full text-xs text-ink/50">{note}</span> : null}
+      {row.titles.detached > 0 ? (
+        <Button
+          type="button"
+          variant="secondary"
+          className="h-8"
+          disabled={busy}
+          onClick={() => onRemove(row.node_id)}
+        >
+          Remove {row.titles.detached} {row.titles.detached === 1 ? "entry" : "entries"}
+        </Button>
+      ) : null}
+    </li>
+  );
+}
+
+/**
  * Settings → Branches on the library (operator or Owner): "Let new branches
- * join", the address branches use, and in self-signed mode the fingerprint a
- * joining server's operator confirms.
+ * join", the address branches use, in self-signed mode the fingerprint a
+ * joining server's operator confirms, and each branch with what it shares.
  */
 export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProps) {
   const [view, setView] = useState<BranchSettingsView | null>(null);
@@ -45,6 +87,25 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  async function onRemove(nodeId?: string) {
+    if (
+      !window.confirm(
+        "Remove these entries from the library? Files that already arrived stay in your outputs.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await removeBranchTitles(nodeId);
+      await refresh();
+    } catch (err) {
+      setError(joinErrorMessage(err, "Could not remove the entries."));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function onToggle(next: boolean) {
     setBusy(true);
@@ -108,6 +169,36 @@ export function BranchesPanel({ onSessionExpired, canAddOwn }: BranchesPanelProp
                 This library uses its own certificate. A joining server shows this fingerprint;
                 check that it matches before you continue there.
               </p>
+            </div>
+          ) : null}
+          {view.branches && view.branches.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-ink">Branches and their books</p>
+              <p className="text-xs text-ink/50">
+                A branch can share its books with this library; they arrive as its owner&apos;s.
+                Each branch&apos;s operator chooses that there. When a branch stops sharing or
+                leaves, its books stay here, marked, until you remove the entries.
+              </p>
+              <ul className="divide-y divide-ink/10 rounded border border-ink/10">
+                {view.branches.map((row) => (
+                  <BranchRow
+                    key={row.node_id}
+                    row={row}
+                    busy={busy}
+                    onRemove={(nodeId) => void onRemove(nodeId)}
+                  />
+                ))}
+              </ul>
+              {view.branches.filter((row) => row.titles.detached > 0).length > 1 ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={() => void onRemove()}
+                >
+                  Remove all entries no longer shared
+                </Button>
+              ) : null}
             </div>
           ) : null}
           {canAddOwn ? (

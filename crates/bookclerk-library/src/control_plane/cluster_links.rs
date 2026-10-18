@@ -136,6 +136,14 @@ pub struct ClusterLink {
     pub state: String,
     /// RFC 3339 enrollment time.
     pub enrolled_at: String,
+    /// "Share this branch's books with *library*" (on by default).
+    pub share_books: bool,
+    /// "Include books from my own branches" (on by default; off shares
+    /// only books acquired on this install itself).
+    pub include_branches: bool,
+    /// The owner library's ancestry as it last reported it: its own
+    /// cluster id first, then each library above it.
+    pub ancestry: Vec<String>,
 }
 
 impl ClusterLink {
@@ -155,6 +163,13 @@ impl From<cluster_links::Model> for ClusterLink {
             spki_pin: row.spki_pin,
             state: row.state,
             enrolled_at: row.enrolled_at,
+            share_books: row.share_books != 0,
+            include_branches: row.include_branches != 0,
+            ancestry: serde_json::from_str::<Vec<String>>(&row.ancestry_json)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|id| bookclerk_node_proto::is_cluster_id(id))
+                .collect(),
         }
     }
 }
@@ -239,6 +254,11 @@ pub async fn record_cluster_link(
         spki_pin: Set(link.spki_pin.clone()),
         state: Set(CLUSTER_LINK_ACTIVE.into()),
         enrolled_at: Set(Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true)),
+        // A re-enrollment keeps the link's settings and ancestry (the
+        // conflict update below leaves them as they are).
+        share_books: Set(1),
+        include_branches: Set(1),
+        ancestry_json: Set("[]".into()),
     };
     cluster_links::Entity::insert(row)
         .on_conflict(
@@ -364,6 +384,119 @@ pub async fn set_cluster_link_state(
         .await
         .map_err(LibraryError::Orm)?;
     Ok(updated.rows_affected == 1)
+}
+
+/// Sets a link's two sharing settings: "Share this branch's books with
+/// *library*" and "Include books from my own branches". Answers false when
+/// no such link exists. The running catalog sync reports them to the owner
+/// on its next pass.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn set_cluster_link_sharing(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    share_books: bool,
+    include_branches: bool,
+) -> Result<bool> {
+    let updated = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::ShareBooks,
+            Expr::value(i64::from(share_books)),
+        )
+        .col_expr(
+            cluster_links::Column::IncludeBranches,
+            Expr::value(i64::from(include_branches)),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(updated.rows_affected == 1)
+}
+
+/// Records the owner library's ancestry as it reported it (`info` at join,
+/// `catalog.session` on every sync). Ids that are not plain cluster ids are
+/// refused; at most [`bookclerk_node_proto::MAX_ANCESTRY`] are kept.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for a malformed ancestry, and the
+/// write error.
+pub async fn set_cluster_link_ancestry(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+    ancestry: &[String],
+) -> Result<bool> {
+    if !bookclerk_node_proto::is_ancestry(ancestry) {
+        return Err(LibraryError::Invalid("malformed library ancestry".into()));
+    }
+    let json = serde_json::to_string(ancestry)
+        .map_err(|err| LibraryError::Other(anyhow::anyhow!("ancestry encode: {err}")))?;
+    let updated = cluster_links::Entity::update_many()
+        .col_expr(cluster_links::Column::AncestryJson, Expr::value(json))
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(updated.rows_affected == 1)
+}
+
+/// This library's ancestry (what `GET /api/node/v1/info` reports): its own
+/// cluster id, then for each active link the owner's cluster id and the
+/// ancestry that owner reported, without repeats, at most
+/// [`bookclerk_node_proto::MAX_ANCESTRY`] ids. Empty when this install has
+/// no cluster identity yet.
+///
+/// A clerk shares its library's database, so it reports the same ancestry:
+/// it is the same node of the tree.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn library_ancestry(store: &LibraryStore) -> Result<Vec<String>> {
+    fn push(id: &str, out: &mut Vec<String>) {
+        if out.len() < bookclerk_node_proto::MAX_ANCESTRY
+            && bookclerk_node_proto::is_cluster_id(id)
+            && !out.iter().any(|seen| seen == id)
+        {
+            out.push(id.to_string());
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    if let Some(row) = super::load_cluster_row(store).await? {
+        push(&row.cluster_id, &mut out);
+    }
+    for link in list_cluster_links(store).await? {
+        if !link.is_active() {
+            continue;
+        }
+        push(&link.owner_cluster_id, &mut out);
+        for id in &link.ancestry {
+            push(id, &mut out);
+        }
+    }
+    Ok(out)
+}
+
+/// This library's own cluster id when `parent_ancestry` names it: joining
+/// that library would make a cycle (A ← B ← A, A ← B ← C ← A). `None` when
+/// it does not, or this install has no cluster identity yet.
+///
+/// # Errors
+///
+/// Returns the read error.
+pub async fn join_cycle(
+    store: &LibraryStore,
+    parent_ancestry: &[String],
+) -> Result<Option<String>> {
+    let Some(own) = super::load_cluster_row(store).await? else {
+        return Ok(None);
+    };
+    Ok(parent_ancestry
+        .contains(&own.cluster_id)
+        .then_some(own.cluster_id))
 }
 
 /// Marks an **active** link [`CLUSTER_LINK_REVOKED`] (the owner closed with

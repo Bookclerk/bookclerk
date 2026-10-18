@@ -51,10 +51,11 @@ use bookclerk_library::control_plane::{
 use bookclerk_node_proto::{
     decode_nonce, open_instance_secrets, open_secrets, open_upload_token, seal_secret_update,
     sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget, ArtifactRequest,
-    AuthContext, Body, ClaimFilter, Frame, HeldFence, PlanDestination, SealError, SecretRef,
-    SecretValue, SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, ARTIFACTS_PATH,
-    CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB,
-    PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    AuthContext, Body, CatalogRef, CatalogTitle, ClaimFilter, Frame, HeldFence, PlanDestination,
+    SealError, SecretRef, SecretValue, SigningKey, UploadAnswer, UploadCommitRequest, UploadFile,
+    ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS,
+    IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH,
+    UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -783,6 +784,232 @@ impl HostClientHandle {
             return Err(DialError::Http);
         }
         Ok(body)
+    }
+}
+
+/// An opened catalog session ([`HostClientHandle::catalog_begin`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSession {
+    /// The catalog fence every later call names.
+    pub fence: i64,
+    /// Resume after this cursor (empty: from the start).
+    pub cursor: String,
+    /// The library's ancestry, its own cluster id first.
+    pub ancestry: Vec<String>,
+    /// The library node's destination ids, the primary first.
+    pub destinations: Vec<String>,
+    /// Titles whose files the library still wants.
+    pub wanted: Vec<CatalogRef>,
+}
+
+/// A recorded catalog batch ([`HostClientHandle::catalog_sync`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogBatchAccepted {
+    /// Titles recorded.
+    pub upserted: u64,
+    /// Titles the library already holds (not echoed back).
+    pub skipped: u64,
+    /// Titles whose files the library wants.
+    pub wanted: Vec<CatalogRef>,
+}
+
+impl HostClientHandle {
+    /// Sends one `catalog.*` request on the live connection; `lost` and
+    /// `refused` map onto [`OwnerCallError`].
+    async fn catalog_call(&self, body: Body) -> Result<Body, OwnerCallError> {
+        let shared = &self.shared;
+        let conn = shared
+            .wait_conn(Instant::now() + shared.timing.request_timeout)
+            .await
+            .ok_or(OwnerCallError::Unavailable)?;
+        let answer = conn
+            .request(body)
+            .await
+            .map_err(|Unavailable| OwnerCallError::Unavailable)?;
+        match answer.body {
+            Body::Lost { .. } => Err(OwnerCallError::Lost),
+            Body::Error { code, message } if code == "refused" => {
+                Err(OwnerCallError::Refused(message))
+            }
+            Body::Error { .. } => Err(OwnerCallError::Unavailable),
+            other => Ok(other),
+        }
+    }
+
+    /// `catalog.begin`: opens this branch's catalog sync with the link's
+    /// two settings and answers the session (a new fence each time).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`].
+    pub async fn catalog_begin(
+        &self,
+        share_books: bool,
+        include_branches: bool,
+    ) -> Result<CatalogSession, OwnerCallError> {
+        match self
+            .catalog_call(Body::CatalogBegin {
+                share_books,
+                include_branches,
+            })
+            .await?
+        {
+            Body::CatalogSession {
+                fence,
+                cursor,
+                ancestry,
+                destinations,
+                wanted,
+            } => Ok(CatalogSession {
+                fence,
+                cursor,
+                ancestry,
+                destinations,
+                wanted,
+            }),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// `catalog.sync`: one batch of shared titles under `fence`, naming
+    /// the cursor after it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`]; `Lost` when the fence moved on.
+    pub async fn catalog_sync(
+        &self,
+        fence: i64,
+        batch: u64,
+        cursor: &str,
+        done: bool,
+        titles: Vec<CatalogTitle>,
+    ) -> Result<CatalogBatchAccepted, OwnerCallError> {
+        match self
+            .catalog_call(Body::CatalogSync {
+                fence,
+                batch,
+                cursor: cursor.to_string(),
+                done,
+                titles,
+            })
+            .await?
+        {
+            Body::CatalogAccepted {
+                upserted,
+                skipped,
+                wanted,
+                ..
+            } => Ok(CatalogBatchAccepted {
+                upserted,
+                skipped,
+                wanted,
+            }),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// `catalog.upload`: opens an upload of one shared title's `files` and
+    /// opens its sealed token (bound to this node, [`CATALOG_ITEM`], the
+    /// fence and the upload).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`].
+    pub async fn catalog_upload(
+        &self,
+        fence: i64,
+        title: &CatalogRef,
+        files: Vec<UploadFile>,
+    ) -> Result<HostUpload, OwnerCallError> {
+        let Body::UploadGranted {
+            upload_id,
+            sealed_token,
+            ..
+        } = self
+            .catalog_call(Body::CatalogUpload {
+                fence,
+                store: title.store.clone(),
+                product_id: title.product_id.clone(),
+                files,
+            })
+            .await?
+        else {
+            return Err(OwnerCallError::Unavailable);
+        };
+        let shared = &self.shared;
+        let token = open_upload_token(
+            &shared.box_secret,
+            &shared.node_id,
+            CATALOG_ITEM,
+            fence,
+            &upload_id,
+            &sealed_token,
+        )
+        .map_err(|_| {
+            tracing::warn!(fence, %upload_id, "the catalog upload token does not open with this node's box key");
+            OwnerCallError::Unavailable
+        })?;
+        Ok(HostUpload::new(upload_id, token))
+    }
+
+    /// Maps a catalog upload answer (409 is a lost catalog fence).
+    fn catalog_upload_answer(status: u16, body: &[u8]) -> Result<UploadAnswer, OwnerCallError> {
+        let answer: UploadAnswer = serde_json::from_slice(body).unwrap_or_default();
+        match status {
+            200 => Ok(answer),
+            409 => Err(OwnerCallError::Lost),
+            401 | 422 => Err(OwnerCallError::Refused(
+                answer.reason.unwrap_or_else(|| answer.status.clone()),
+            )),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// Streams declared file `index` of a catalog `upload` (`length` bytes
+    /// of `body`) to the library's upload endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`].
+    pub async fn upload_catalog_file<R: tokio::io::AsyncRead + Unpin + Send>(
+        &self,
+        upload: &HostUpload,
+        index: usize,
+        length: u64,
+        body: R,
+    ) -> Result<(), OwnerCallError> {
+        let authorization = Shared::upload_authorization(upload)?;
+        let path = format!("{UPLOADS_PATH}{}/files/{index}", upload.upload_id);
+        let (status, answer) = self
+            .shared
+            .endpoint
+            .put_stream(&path, &authorization, length, body)
+            .await
+            .map_err(|err| {
+                tracing::warn!(upload_id = %upload.upload_id, index, error = %err, "a catalog upload request failed");
+                OwnerCallError::Unavailable
+            })?;
+        Self::catalog_upload_answer(status, &answer).map(|_| ())
+    }
+
+    /// Commits a catalog `upload`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnerCallError`].
+    pub async fn commit_catalog_upload(&self, upload: &HostUpload) -> Result<(), OwnerCallError> {
+        let authorization = Shared::upload_authorization(upload)?;
+        let body = serde_json::to_vec(&UploadCommitRequest::default())
+            .map_err(|_| OwnerCallError::Unavailable)?;
+        let path = format!("{UPLOADS_PATH}{}/commit", upload.upload_id);
+        let (status, answer) = self
+            .shared
+            .endpoint
+            .post_json_authorized(&path, &authorization, &body)
+            .await
+            .map_err(|_| OwnerCallError::Unavailable)?;
+        Self::catalog_upload_answer(status, &answer).map(|_| ())
     }
 }
 
