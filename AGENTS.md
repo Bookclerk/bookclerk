@@ -52,24 +52,26 @@ Types:
 
 - `cargo fmt --all -- --check` and
   `cargo clippy --workspace --all-targets -- -D warnings`.
-- Tests for what changed: `python3 scripts/ci-plan.py --base origin/main --head
-  HEAD --format summary` shows the plan; `python3 scripts/ci-exec.py resolve
-  --selective 1 --base origin/main --head HEAD --run-id local` writes it, then
+- Tests for what changed (`<base>` is the pull request's target branch,
+  usually `origin/main`): `python3 scripts/ci-plan.py --base <base> --head HEAD
+  --format summary` shows the plan; `python3 scripts/ci-exec.py resolve
+  --selective 1 --base <base> --head HEAD --run-id local` writes it, then
   `python3 scripts/ci-exec.py run <check> --run-id local` runs each planned
   check. Run `cargo test --workspace` when the plan says full suite.
 - Where available: the cross-platform CI emulation for platform-specific
   changes, a dependency vulnerability scan when a lockfile changed, and static
   analysis for security-surface changes. Where they are not available, CI runs
   them.
-- Review your own diff against `origin/main`, including a security pass for
+- Review your own diff against `<base>`, including a security pass for
   security-surface changes, and fix what you confirm.
 
 ### Pull requests
 
 - Open pull requests as drafts. Mark ready only when the `CI Gate` check is
   green and no review thread is unresolved.
-- Every push is reviewed again by automated reviewers. Let a round of reviews
-  land, then address it in one push.
+- Automated reviewers re-review new pushes, though some skip drafts, run on a
+  quota, or pause after many commits; request a review when one you need does
+  not start. Let a round of reviews land, then address it in one push.
 - Answer every review thread with the fixing commit, the follow-up issue, or
   why it stays, then resolve it.
 - Never skip or disable a test, push an empty commit, or close and reopen a
