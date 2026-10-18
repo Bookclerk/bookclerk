@@ -111,8 +111,9 @@ description rather than widening the change silently.
   helpers fail closed (`media.isolation` / `plugins.isolation = "required"`).
 - Secrets never on argv, in env vars forwarded to guests, or in logs; new
   secret paths register with redaction.
-- Guests get only their declared capabilities; network access only to approved
-  `[capabilities.network]` domains.
+- Guests get only their declared capabilities; network access only through
+  approved `[capabilities.network]` grants (`domains` for workerd fetch, `tcp`
+  for native sockets, operator-added hosts or CIDRs).
 - Host SQL goes through the canonical SQL-v1 contract
   ([`docs/sql-contract/v1.md`](docs/sql-contract/v1.md)), never engine-specific
   SQL.
