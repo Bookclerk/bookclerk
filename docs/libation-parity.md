@@ -40,7 +40,7 @@ checks), or **minor headless polish** listed under
 | Verb | Status | bookclerk |
 | --- | --- | --- |
 | `scan` | ✅ | `library scan` |
-| `liberate` | ✅ | `library acquire` (Bookclerk verb) — `--pdf`, `--force`, positional ASINs; queued for `bookclerkd`; `-o` overrides (`output.*` / `library.*`) and `--license` pin the jobs to the node that ran the command (preloaded licenses not supported yet) |
+| `liberate` | ✅ | `library acquire` (Bookclerk verb) — `--pdf`, `--force`, positional ASINs; queued for `bookclerkd`. Libation's preloaded-license (`--license`) and per-run setting-override (`-o key=value`) flags were removed (never implemented; use `config set` for settings) |
 | `set-status` | ✅ | `library set-status` — probe-based match; `--downloaded` / `--not-downloaded` / `--force` / `--fix-layout` + ASINs |
 | `get-license` | ✅ | `library get-license --json` (summary) / `--full` (raw API JSON) |
 | `search` | ✅ | `library search` (+ `--filter` saved quick filters) |

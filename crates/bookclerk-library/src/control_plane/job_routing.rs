@@ -9,11 +9,6 @@
 //! is up (`running` or `healthy`), the same test delivery routing uses. A job
 //! with no requirements stays claimable anywhere.
 //!
-//! A job may also be pinned to one node ([`crate::JobPayload::pinned_node_id`]):
-//! then only that node's own worker claims it ([`super::node_pin_admits`]),
-//! requirements still apply, and nothing re-resolves the pin. It waits for
-//! that node; a cancel ends it like any pending job.
-//!
 //! Before the claim's compare-and-swap, the claimer takes one permit of
 //! every cluster semaphore the job counts against
 //! ([`super::semaphore`]): its resource class (`jobs:network`), each
@@ -48,9 +43,7 @@ use super::instances::{list_all_plugin_instances, load_plugin_instance, PluginIn
 use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
-use super::trust::{
-    claimant_may_run, job_trusted, node_pin_admits, node_trust, Claimant, NodeTrust,
-};
+use super::trust::{claimant_may_run, job_trusted, node_trust, Claimant, NodeTrust};
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
 use crate::models::{JobKind, JobPayload, JobRecord, JobResourceClass};
@@ -414,10 +407,7 @@ pub async fn claim_routed_job(
         return Ok(None);
     }
     for job in candidates {
-        if !claimant_may_run(request.claimant, &job)
-            || !node_pin_admits(request.claimant, request.node_id, &job)
-            || !job_trusted(store, &trust, &job).await?
-        {
+        if !claimant_may_run(request.claimant, &job) || !job_trusted(store, &trust, &job).await? {
             continue;
         }
         if let Some(filter) = request.filter {

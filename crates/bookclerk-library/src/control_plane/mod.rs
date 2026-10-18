@@ -142,9 +142,8 @@ pub use semaphore::{
 };
 pub use trust::{
     accounts_owned_by, book_matches_title, claimant_may_run, handoff_routed_job, job_item_accounts,
-    job_trusted, node_may_claim_job, node_pin_admits, node_trust, plan_acquire, plan_scan,
-    remote_node_may_view_job, remote_node_requester, AccountKey, Claimant, NodeTrust,
-    ScanRequester,
+    job_trusted, node_may_claim_job, node_trust, plan_acquire, plan_scan, remote_node_may_view_job,
+    remote_node_requester, AccountKey, Claimant, NodeTrust, ScanRequester,
 };
 pub use uploads::{
     abort_upload, authorize_upload, commit_upload, grant_upload, load_upload, record_upload_file,

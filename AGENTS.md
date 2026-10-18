@@ -190,8 +190,7 @@ When exercising real store credentials in this cloud environment:
   /scan` / `/acquire`), so nothing can bulk-queue work. `library scan` /
   `library acquire` queue jobs for a running `bookclerkd` and wait for them
   (`--no-wait` only queues); `--account <id>` and `--asin <ASIN>` still
-  queue exactly one job. `acquire --license` / `-o` pin the jobs to this
-  node, so only this machine's `bookclerkd` runs them.
+  queue exactly one job.
 - One-shot library sync without flipping scan back on: pass an explicit
   account (`bookclerk library scan --account <id>`). Explicit account targets
   bypass `scan_enabled`; bare `library scan` / daemon scheduled scans honor

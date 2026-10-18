@@ -79,7 +79,6 @@ pub use output::{
 };
 pub use overrides::{
     apply_config_updates, apply_config_updates_from_path, apply_setting_overrides,
-    is_job_setting_override,
 };
 pub use path_limits::{
     enforce_storage_key_limits, path_len, truncate_filename_stem, truncate_path_component,

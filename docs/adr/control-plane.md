@@ -1382,31 +1382,14 @@ Built 2026-10-18. Library work no longer runs where it is asked for.
   for either; `--dry-run` still plans locally. Rejected: a CLI fallback
   that runs the guests itself when no daemon is up, which would be an
   in-process path beside the routed one.
-- **Pin to node** (product decision). `library acquire --license <file>` and
-  `-o key=value` name things on the node that runs the command, so the
-  acquire is planned and admitted as any other (same fences, trust checks,
-  `job_item_accounts`, `claimant_may_run`, requirements), but every job it
-  plans carries `JobPayload::pinned_node_id` (this node's
-  `node-identity.json` id) with the absolute license path and the
-  overrides. The routed claim and the handoff re-check admit a pinned job
-  only for that node's own worker (`node_pin_admits`: `Claimant::Local`
-  with the same node id); the unrouted claim skips it like a job with
-  requirements, a scoped host's trust refuses it, and `claimant_may_run`
-  keeps any acquire carrying a license path or overrides off hosts. The
-  pin is its own field, so re-resolving `requires` cannot drop it, and it
-  is part of the dedup key (with a digest of the path and overrides). At
-  run time the node applies the overrides to a copy of its configuration
-  for that job and resolves the license path; only the path travels, the
-  file is never read into the job, and since the acquire pipeline has no
-  preloaded-license path yet such a job fails there once it has titles to
-  fetch (as the in-process CLI did). Overrides are limited to non-secret
-  `output.*` / `library.*` keys (`is_job_setting_override`), refused
-  before queueing otherwise and refused again by the executor. Waiting
-  needs this node's daemon live; a job pinned to a node that never returns
-  stays pending until cancelled, and a waiting CLI interrupted with Ctrl-C
-  also reclaims expired leases so a cancelled job of a dead node is
-  finalized. Rejected: embedding the license file in the job (a secret in
-  a job row), and refusing the flags outright.
+- **No license file or per-run overrides** (product decision). The
+  never-implemented `library acquire --license <file>` (or `-` for standard
+  input) and `-o key=value` flags were removed, with and without
+  `--dry-run`. A job carries no license file, setting overrides or node
+  pin: an acquire runs with the settings of the node that claims it.
+  Rejected: pinning such an acquire to the node that ran the command (it
+  added a node pin to the queue for a feature that does not exist), and
+  embedding the license file in the job (a secret in a job row).
 - **Acquire planner** (`plan_acquire`). Each named title becomes its own
   job. Operator authority, an Owner or an Administrator acquiring
   everything gets one unsplit job (splitting it per account would repeat
@@ -1440,15 +1423,7 @@ Built 2026-10-18. Library work no longer runs where it is asked for.
   account, and `job.status` hides other users' jobs; the acquire route
   splits titles and scopes a Member. CLI: `--account` queues one job, a
   bare scan one per enabled account, an acquire one per title, waiting
-  without a live node queues nothing. Pinning: a pinned acquire is not
-  claimed by another owner node, a fully trusted host, an empty node id
-  or the unrouted claim, is claimed by its node, keeps its pin when
-  released, is cancellable while pending, and dedups apart from a plain
-  acquire (SQLite with PostgreSQL twin); the CLI pins every job of a
-  multi-title plan, refuses `--license -` and secret or malformed `-o`
-  without echoing them, and waiting needs the pinned node live; the
-  daemon applies overrides to a copy of its config and resolves the
-  license path.
+  without a live node queues nothing.
 
 ## Consequences
 

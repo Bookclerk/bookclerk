@@ -14,13 +14,6 @@
 //! Live-store rules still hold: `library scan --account <id>` queues exactly
 //! one job for that account (an explicit account bypasses `scan_enabled`),
 //! and `library acquire --asin <ASIN>` exactly one job for that title.
-//!
-//! `library acquire --license <file>` and `-o key=value` name things on the
-//! node that runs the command, so the acquire is still planned and admitted
-//! the same way, but every job it plans is pinned to this node
-//! (`JobPayload::pinned_node_id`, from `node-identity.json`) and carries the
-//! license path and overrides. Only this node's `bookclerkd` claims it;
-//! waiting needs that daemon live, and Ctrl-C cancels as for any job.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -133,27 +126,6 @@ pub(crate) async fn require_live_node(store: &LibraryStore) -> anyhow::Result<()
         anyhow::bail!(
             "no bookclerkd node of this cluster is running to execute queued jobs; \
              start bookclerkd (`cargo dev` in development), or pass --no-wait to only queue"
-        );
-    }
-    Ok(())
-}
-
-/// Fails closed when the node a pinned job waits for is not live: no other
-/// node may run it.
-///
-/// # Errors
-///
-/// Returns an error naming what to do when `node_id` did not heartbeat
-/// recently.
-pub(crate) async fn require_live_node_id(
-    store: &LibraryStore,
-    node_id: &str,
-) -> anyhow::Result<()> {
-    if !live_node_ids(store).await?.contains(node_id) {
-        anyhow::bail!(
-            "--license / -o pin the acquire to this node ({node_id}), but its bookclerkd is not \
-             running; start bookclerkd here (`cargo dev` in development), or pass --no-wait to \
-             only queue"
         );
     }
     Ok(())
@@ -289,115 +261,8 @@ pub(crate) struct AcquireArgs<'a> {
     pub force: bool,
     /// `--pdf`.
     pub pdf_only: bool,
-    /// `--license` / `-o`: pins every job to this node.
-    pub local: Option<LocalAcquire>,
     /// Wait for the jobs.
     pub wait: bool,
-}
-
-/// What a `library acquire` names on the node that runs the command: a
-/// license file and setting overrides. Every job the acquire plans carries
-/// them and is pinned to `node_id`, so only this node's daemon runs it and
-/// resolves them there.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LocalAcquire {
-    /// This node's id (`node-identity.json`).
-    pub node_id: String,
-    /// Absolute license file path on this node.
-    pub license_path: Option<String>,
-    /// `-o` overrides, in order.
-    pub setting_overrides: Vec<(String, String)>,
-}
-
-impl LocalAcquire {
-    /// Builds the local part of an acquire from `--license` and `-o`, or
-    /// `None` when neither was passed.
-    ///
-    /// The license path is made absolute (the daemon does not share the
-    /// CLI's working directory) but not read: only the path travels in
-    /// the job. Standard input (`-`) cannot be queued. Each override must
-    /// be `key=value` with a non-secret `output.*` / `library.*` key
-    /// ([`bookclerk_config::is_job_setting_override`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for `--license -`, a path that is not UTF-8 or
-    /// cannot be made absolute, a malformed override, or a key that may
-    /// not travel in a job.
-    pub(crate) fn from_args(
-        node_id: impl FnOnce() -> anyhow::Result<String>,
-        license: Option<&std::path::Path>,
-        overrides: &[String],
-    ) -> anyhow::Result<Option<Self>> {
-        if license.is_none() && overrides.is_empty() {
-            return Ok(None);
-        }
-        let license_path = match license {
-            None => None,
-            Some(path) if path.as_os_str() == "-" => anyhow::bail!(
-                "--license - (standard input) cannot be queued: pass a license file path"
-            ),
-            Some(path) => {
-                let absolute = std::path::absolute(path)
-                    .map_err(|err| anyhow::anyhow!("--license {}: {err}", path.display()))?;
-                Some(
-                    absolute
-                        .to_str()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("--license {}: path is not UTF-8", path.display())
-                        })?
-                        .to_string(),
-                )
-            }
-        };
-        let mut setting_overrides = Vec::with_capacity(overrides.len());
-        for raw in overrides {
-            // Malformed input is not echoed either: it may be a pasted value.
-            let Some((key, value)) = raw.split_once('=') else {
-                anyhow::bail!("-o: expected KEY=VALUE");
-            };
-            let (key, value) = (key.trim(), value.trim());
-            if key.is_empty() {
-                anyhow::bail!("-o: expected KEY=VALUE");
-            }
-            if !bookclerk_config::is_job_setting_override(key) {
-                // The value is not echoed: a refused key may name a secret.
-                anyhow::bail!(
-                    "-o {key}: only output.* and library.* settings can be passed to a queued acquire"
-                );
-            }
-            setting_overrides.push((key.to_string(), value.to_string()));
-        }
-        Ok(Some(Self {
-            node_id: node_id()?,
-            license_path,
-            setting_overrides,
-        }))
-    }
-
-    /// Writes the pin and the local values onto `payload`.
-    fn apply(&self, payload: &mut JobPayload) {
-        payload.pinned_node_id = Some(self.node_id.clone());
-        payload.license_path.clone_from(&self.license_path);
-        payload
-            .setting_overrides
-            .clone_from(&self.setting_overrides);
-    }
-}
-
-/// This node's id, from `node-identity.json` under the files directory
-/// (created when missing, as the daemon would).
-///
-/// # Errors
-///
-/// Returns an error when the config has no paths or the file cannot be
-/// read or created.
-pub(crate) fn local_node_id(config: &Config) -> anyhow::Result<String> {
-    let paths = config
-        .paths
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no files directory to read this node's identity from"))?;
-    Ok(bookclerk_library::control_plane::load_or_create_node_identity(&paths.files_dir)?.node_id)
 }
 
 /// Queues `library scan`'s jobs and, with `wait`, waits for them.
@@ -458,10 +323,7 @@ pub(crate) async fn acquire(
 ) -> anyhow::Result<bool> {
     let pin = resolve_pin(store, None, args.instance).await?;
     if args.wait {
-        match &args.local {
-            Some(local) => require_live_node_id(store, &local.node_id).await?,
-            None => require_live_node(store).await?,
-        }
+        require_live_node(store).await?;
     }
     let account = match args.account {
         Some(needle) => Some(resolve_account(store, needle).await?),
@@ -478,10 +340,6 @@ pub(crate) async fn acquire(
     for payload in &mut plan {
         payload.force = args.force;
         payload.pdf_only = args.pdf_only;
-        // Every job of the plan is pinned, however the planner split it.
-        if let Some(local) = &args.local {
-            local.apply(payload);
-        }
     }
     let node_bound = node_bound_output_keys(config)?;
     let queued = admit(store, config, JobKind::Acquire, plan, &node_bound).await?;
@@ -539,8 +397,7 @@ fn terminal(state: JobState) -> bool {
 
 /// Waits until every job in `ids` is terminal, printing progress changes
 /// to stderr. Ctrl-C asks each unfinished job to cancel and keeps waiting
-/// until they stop (reclaiming expired leases meanwhile, so a job whose node
-/// died is finalized); a second Ctrl-C stops waiting.
+/// until they stop; a second Ctrl-C stops waiting.
 ///
 /// # Returns
 ///
@@ -574,12 +431,7 @@ pub(crate) async fn wait_for_jobs(
             if last.get(id) != Some(&seen) {
                 match (&job.state, job.progress.as_deref()) {
                     (JobState::Pending, _) if job.attempt_count == 0 => {
-                        match job.payload.pinned_node_id.as_deref() {
-                            Some(node) => {
-                                eprintln!("{id}: waiting for node {node} (pinned) to claim it");
-                            }
-                            None => eprintln!("{id}: waiting for a node to claim it"),
-                        }
+                        eprintln!("{id}: waiting for a node to claim it");
                     }
                     (JobState::Running, Some(progress)) => eprintln!("{id}: {progress}"),
                     (JobState::Running, None) => eprintln!("{id}: running"),
@@ -601,12 +453,6 @@ pub(crate) async fn wait_for_jobs(
                 .iter()
                 .filter_map(|id| done.remove(id).flatten())
                 .collect());
-        }
-        if interrupted {
-            // A cancelled job whose node died mid-run is finalized once its
-            // lease expires; do that here too, since (for a job pinned to
-            // that node) no other node may be running to do it.
-            let _ = store.reclaim_expired_leases().await;
         }
         tokio::select! {
             () = tokio::time::sleep(POLL) => {}
@@ -664,7 +510,7 @@ mod tests {
     use bookclerk_config::Config;
     use bookclerk_library::{JobKind, LibraryStore};
 
-    use super::{acquire, resolve_account, resolve_pin, scan, AcquireArgs, LocalAcquire, ScanArgs};
+    use super::{acquire, resolve_account, resolve_pin, scan, AcquireArgs, ScanArgs};
 
     async fn store() -> LibraryStore {
         let store = LibraryStore::from_connection(
@@ -782,7 +628,6 @@ mod tests {
                 instance: None,
                 force: true,
                 pdf_only: false,
-                local: None,
                 wait: false,
             },
         )
@@ -795,111 +640,6 @@ mod tests {
                 (Some("a1".into()), Some("B0TWO".into()), true),
             ]
         );
-    }
-
-    #[test]
-    fn license_and_overrides_become_a_node_pin() {
-        let none = LocalAcquire::from_args(|| panic!("no identity needed"), None, &[]).unwrap();
-        assert_eq!(none, None);
-        let local = LocalAcquire::from_args(
-            || Ok("node-here".into()),
-            Some(std::path::Path::new("licenses/one.json")),
-            &["UseWidevine = true".into(), "output.format=mp3".into()],
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(local.node_id, "node-here");
-        let path = local.license_path.as_deref().unwrap();
-        assert!(std::path::Path::new(path).is_absolute(), "{path}");
-        assert!(path.ends_with("one.json"), "{path}");
-        assert_eq!(
-            local.setting_overrides,
-            vec![
-                ("UseWidevine".to_string(), "true".to_string()),
-                ("output.format".to_string(), "mp3".to_string()),
-            ]
-        );
-        let ok = || Ok::<_, anyhow::Error>("node-here".to_string());
-        let err = LocalAcquire::from_args(ok, Some(std::path::Path::new("-")), &[])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("standard input"), "{err}");
-        // A secret-bearing key is refused, and its value is not echoed.
-        let err = LocalAcquire::from_args(ok, None, &["auth.password=hunter2".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("auth.password"), "{err}");
-        assert!(!err.contains("hunter2"), "{err}");
-        let err = LocalAcquire::from_args(ok, None, &["database.postgres.url=pg://x".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(!err.contains("pg://x"), "{err}");
-        let err = LocalAcquire::from_args(ok, None, &["no-equals-sign".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(!err.contains("no-equals-sign"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn a_pinned_acquire_pins_every_job_it_plans() {
-        let store = store().await;
-        let local = LocalAcquire {
-            node_id: "node-here".into(),
-            license_path: Some("/srv/one.json".into()),
-            setting_overrides: vec![("output.format".into(), "mp3".into())],
-        };
-        let titles = ["B0ONE".to_string(), "B0TWO".to_string()];
-        // Waiting needs this node live; nothing is queued without it.
-        let err = acquire(
-            &store,
-            &Config::default(),
-            AcquireArgs {
-                titles: &titles,
-                account: Some("a1"),
-                instance: None,
-                force: false,
-                pdf_only: false,
-                local: Some(local.clone()),
-                wait: true,
-            },
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("node-here"), "{err}");
-        assert!(pending(&store, JobKind::Acquire).await.is_empty());
-
-        acquire(
-            &store,
-            &Config::default(),
-            AcquireArgs {
-                titles: &titles,
-                account: Some("a1"),
-                instance: None,
-                force: false,
-                pdf_only: false,
-                local: Some(local),
-                wait: false,
-            },
-        )
-        .await
-        .unwrap();
-        let jobs: Vec<_> = store
-            .list_jobs(50)
-            .await
-            .unwrap()
-            .into_iter()
-            .filter(|job| job.kind == JobKind::Acquire)
-            .collect();
-        assert_eq!(jobs.len(), 2, "one job per title");
-        for job in jobs {
-            assert_eq!(job.payload.pinned_node_id.as_deref(), Some("node-here"));
-            assert_eq!(job.payload.license_path.as_deref(), Some("/srv/one.json"));
-            assert_eq!(
-                job.payload.setting_overrides,
-                vec![("output.format".to_string(), "mp3".to_string())]
-            );
-        }
     }
 
     #[tokio::test]

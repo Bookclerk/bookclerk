@@ -12,13 +12,9 @@
 //!   plugin) is linked to the user through `account_links`;
 //! - everything else is ineligible: a scan-all or acquire with no account,
 //!   a job pinned to or requiring a plugin instance (instances carry no
-//!   owner yet, so their settings belong to the operator), a job pinned to
-//!   a node, listen-sync, integration scans and plugin copies, a Host
-//!   without an owner, a disabled or unknown owner, and a revoked or
-//!   missing node credential.
-//!
-//! Apart from trust, a job pinned to one node ([`node_pin_admits`]) is
-//! claimed only by that node's own worker.
+//!   owner yet, so their settings belong to the operator), listen-sync,
+//!   integration scans and plugin copies, a Host without an owner, a
+//!   disabled or unknown owner, and a revoked or missing node credential.
 //!
 //! The predicate runs inside the routed claim before the compare-and-swap
 //! ([`super::claim_routed_job`]) and again at handoff, just before a job's
@@ -163,7 +159,6 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
             if !matches!(job.kind, JobKind::Scan | JobKind::Acquire)
                 || job.payload.plugin_instance_id.is_some()
                 || !job.payload.requires.is_empty()
-                || job.payload.pinned_node_id.is_some()
             {
                 return Ok(false);
             }
@@ -180,36 +175,12 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
 }
 
 /// True when a `claimant` may run `job` at all, whatever it is trusted
-/// with: a forced or PDF-only acquire, or one carrying a license path or
-/// setting overrides, runs only on a node that holds the library database,
-/// since the host acquire path does none of those.
+/// with: a forced or PDF-only acquire runs only on a node that holds the
+/// library database, since the host acquire path does neither.
 #[must_use]
 pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
-    let payload = &job.payload;
     claimant == Claimant::Local
-        || !(job.kind == JobKind::Acquire
-            && (payload.force
-                || payload.pdf_only
-                || payload.license_path.is_some()
-                || !payload.setting_overrides.is_empty()))
-}
-
-/// True when `job`'s node pin ([`JobPayload::pinned_node_id`]) admits
-/// `node_id` claiming as `claimant`.
-///
-/// An unpinned job admits every node. A pinned one admits only its own
-/// node, and only through that node's local worker: what it names (a
-/// license file, setting overrides) is on that node's disk and in its
-/// configuration, so no node reaching the queue over the node API runs it.
-/// An empty node id is never the pinned node.
-#[must_use]
-pub fn node_pin_admits(claimant: Claimant, node_id: &str, job: &JobRecord) -> bool {
-    match job.payload.pinned_node_id.as_deref() {
-        None => true,
-        Some(pin) => {
-            claimant == Claimant::Local && !node_id.trim().is_empty() && node_id.trim() == pin
-        }
-    }
+        || !(job.kind == JobKind::Acquire && (job.payload.force || job.payload.pdf_only))
 }
 
 /// The store accounts a scan or acquire touches: its items.
@@ -295,7 +266,7 @@ pub async fn node_may_claim_job(
     claimant: Claimant,
     job: &JobRecord,
 ) -> Result<bool> {
-    if !claimant_may_run(claimant, job) || !node_pin_admits(claimant, node_id, job) {
+    if !claimant_may_run(claimant, job) {
         return Ok(false);
     }
     let trust = node_trust(store, node_id, claimant).await?;

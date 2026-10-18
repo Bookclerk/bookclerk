@@ -593,62 +593,12 @@ pub async fn run_scan(
 }
 
 /// The flags of one acquire job.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AcquireMode {
     /// Re-download titles already acquired.
     pub force: bool,
     /// Fetch only each title's companion PDF.
     pub pdf_only: bool,
-    /// License file on this node (`library acquire --license`; the job is
-    /// pinned here).
-    pub license_path: Option<String>,
-    /// `-o key=value` overrides applied to this job's configuration.
-    pub setting_overrides: Vec<(String, String)>,
-}
-
-impl AcquireMode {
-    /// The daemon configuration with this job's setting overrides applied.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when an override key may not travel in a job
-    /// (admission refuses those; a row written otherwise fails here).
-    fn configure(
-        &self,
-        base: &bookclerk_config::Config,
-    ) -> anyhow::Result<bookclerk_config::Config> {
-        let mut cfg = base.clone();
-        if self.setting_overrides.is_empty() {
-            return Ok(cfg);
-        }
-        if let Some((key, _)) = self
-            .setting_overrides
-            .iter()
-            .find(|(key, _)| !bookclerk_config::is_job_setting_override(key))
-        {
-            anyhow::bail!("setting override `{key}` is not allowed in an acquire job");
-        }
-        let pairs: Vec<(&str, &str)> = self
-            .setting_overrides
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-            .collect();
-        bookclerk_config::apply_setting_overrides(&mut cfg, &pairs);
-        Ok(cfg)
-    }
-
-    /// Fails when this job names a license file: the acquire pipeline has
-    /// no preloaded-license path yet (the in-process CLI refused the same).
-    /// The path is resolved on this node first so a wrong one says so.
-    fn refuse_license(&self) -> anyhow::Result<()> {
-        let Some(path) = self.license_path.as_deref() else {
-            return Ok(());
-        };
-        if !std::path::Path::new(path).is_file() {
-            anyhow::bail!("--license {path}: no such file on this node");
-        }
-        anyhow::bail!("preloaded license vouchers (--license) are not supported yet");
-    }
 }
 
 /// Acquire pending titles synchronously.
@@ -668,7 +618,7 @@ pub async fn run_acquire(
 ) -> anyhow::Result<String> {
     let started = std::time::Instant::now();
     let _guard = state.work_lock.lock().await;
-    let cfg = mode.configure(&*state.config.read().await)?;
+    let cfg = state.config.read().await.clone();
     let paths = cfg.paths();
     paths.ensure_dirs()?;
     let library = state.library.read().await.clone();
@@ -748,12 +698,6 @@ pub async fn run_acquire(
             let _ = library.storage_scan_delete(scan_id).await;
         }
         return Ok("nothing to acquire".into());
-    }
-    if let Err(err) = mode.refuse_license() {
-        if let Some(scan_id) = index.scan_id() {
-            let _ = library.storage_scan_delete(scan_id).await;
-        }
-        return Err(err);
     }
 
     let mut ok = 0u32;
@@ -1128,59 +1072,6 @@ mod tests {
         )
         .await;
         assert!(!acquire_job_includes_book(&book, true, true));
-    }
-
-    #[test]
-    fn a_pinned_acquire_applies_its_overrides_and_resolves_its_license_here() {
-        let base = bookclerk_config::Config::default();
-        let plain = AcquireMode::default();
-        assert_eq!(
-            plain.configure(&base).unwrap().output.format,
-            base.output.format
-        );
-        assert!(plain.refuse_license().is_ok());
-
-        let mode = AcquireMode {
-            setting_overrides: vec![
-                ("output.format".into(), "mp3".into()),
-                ("library.download_episodes".into(), "false".into()),
-            ],
-            ..Default::default()
-        };
-        assert!(base.library.download_episodes);
-        let cfg = mode.configure(&base).unwrap();
-        assert_eq!(cfg.output.format, bookclerk_config::OutputFormat::SingleMp3);
-        assert!(!cfg.library.download_episodes);
-        // The daemon's own configuration is untouched.
-        assert_eq!(
-            base.output.format,
-            bookclerk_config::Config::default().output.format
-        );
-
-        // A key admission would refuse fails the job without echoing it.
-        let secret = AcquireMode {
-            setting_overrides: vec![("auth.password".into(), "hunter2".into())],
-            ..Default::default()
-        };
-        let err = secret.configure(&base).unwrap_err().to_string();
-        assert!(!err.contains("hunter2"), "{err}");
-
-        let dir = tempfile::tempdir().unwrap();
-        let missing = AcquireMode {
-            license_path: Some(dir.path().join("none.json").display().to_string()),
-            ..Default::default()
-        };
-        let err = missing.refuse_license().unwrap_err().to_string();
-        assert!(err.contains("no such file on this node"), "{err}");
-        let file = dir.path().join("license.json");
-        std::fs::write(&file, "{\"key\":\"s3cr3t-license-blob\"}").unwrap();
-        let present = AcquireMode {
-            license_path: Some(file.display().to_string()),
-            ..Default::default()
-        };
-        let err = present.refuse_license().unwrap_err().to_string();
-        assert!(err.contains("not supported yet"), "{err}");
-        assert!(!err.contains("s3cr3t-license-blob"), "{err}");
     }
 
     #[test]

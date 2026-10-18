@@ -4,7 +4,7 @@ use bookclerk_acquire::{
     acquire_book_indexed, acquire_pdf_only, convert_book, match_storage_to_library, AcquireRequest,
     ConvertRequest, MatchStorageOptions,
 };
-use bookclerk_config::{apply_setting_overrides, AudioQuality, BadBookAction, Config};
+use bookclerk_config::{AudioQuality, BadBookAction, Config};
 use bookclerk_library::{AcquireStatus, LibraryStore};
 use bookclerk_plugin_host::HostControlPlane;
 use bookclerk_search::SearchEngine;
@@ -89,9 +89,7 @@ pub enum LibraryCommand {
     },
     /// Download + decrypt + store titles: queues one acquire job per title
     /// id (or one for every pending title) for a bookclerkd node to run, and
-    /// waits for them. With `--license` or `-o`, every job is pinned to this
-    /// node and only its bookclerkd runs them. `--dry-run` only prints
-    /// planned keys, here.
+    /// waits for them. `--dry-run` only prints planned keys, here.
     Acquire {
         /// Acquire a single ASIN / product id / UUID.
         #[arg(long)]
@@ -118,18 +116,6 @@ pub enum LibraryCommand {
         /// Download companion PDF only.
         #[arg(short, long)]
         pdf: bool,
-        /// Use the license JSON in this file instead of requesting one. Pins
-        /// the queued jobs to this node, whose bookclerkd resolves the path
-        /// when it runs them (`-`, standard input, only with `--dry-run`).
-        /// Preloaded licenses are not supported by the acquire pipeline yet:
-        /// a job with titles to fetch fails there.
-        #[arg(long, value_name = "FILE")]
-        license: Option<std::path::PathBuf>,
-        /// Runtime setting override (`-o key=value`, an `output.*` or
-        /// `library.*` setting) for this acquire. Pins the queued jobs to
-        /// this node, whose bookclerkd applies it for them. Repeatable.
-        #[arg(short = 'o', long = "override", value_name = "KEY=VALUE")]
-        overrides: Vec<String>,
         /// Queue the acquire jobs and print their ids without waiting for
         /// a bookclerkd node to run them.
         #[arg(long)]
@@ -334,19 +320,11 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             dry_run,
             force,
             pdf,
-            license,
-            overrides,
             no_wait,
         } => {
             if !dry_run {
                 // Real acquires go through the job queue; only a dry run
-                // plans keys here. `--license` / `-o` name things on this
-                // node, so they pin every job to it.
-                let local = queued::LocalAcquire::from_args(
-                    || queued::local_node_id(config),
-                    license.as_deref(),
-                    &overrides,
-                )?;
+                // plans keys here.
                 let titles: Vec<String> = asin.into_iter().chain(isbn).chain(asins).collect();
                 queued::acquire(
                     &store,
@@ -357,7 +335,6 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                         instance: instance.as_deref(),
                         force,
                         pdf_only: pdf,
-                        local,
                         wait: !no_wait,
                     },
                 )
@@ -365,16 +342,10 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 return Ok(());
             }
             let _ = no_wait;
-            let mut cfg = config.clone();
-            let pairs: Vec<(&str, &str)> = overrides
-                .iter()
-                .filter_map(|s| s.split_once('='))
-                .map(|(k, v)| (k.trim(), v.trim()))
-                .collect();
-            apply_setting_overrides(&mut cfg, &pairs);
+            let cfg = config;
             let destinations = crate::registry::destinations(&host).await?;
             let destinations =
-                bookclerk_plugin_host::build_acquire_destinations(&cfg, &destinations)?;
+                bookclerk_plugin_host::build_acquire_destinations(cfg, &destinations)?;
             let storage = destinations.listing_backend()?;
             // The primary destination's options carry its naming overrides
             // and prefix, so match, layout, and acquire agree on keys.
@@ -431,12 +402,6 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
             if targets.is_empty() {
                 eprintln!("nothing to acquire");
                 return Ok(());
-            }
-
-            if license.is_some() {
-                anyhow::bail!(
-                    "preloaded license vouchers (--license) are not supported on the host path yet"
-                );
             }
 
             paths.ensure_dirs()?;

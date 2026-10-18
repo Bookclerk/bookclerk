@@ -245,25 +245,9 @@ exactly one job for that account (bypassing `scan_enabled`), and
 `library acquire --asin <ASIN>` exactly one job for that title.
 `--match-storage` and the search index rebuild still run in the CLI after
 the scans succeed. `library acquire --dry-run` plans keys locally without
-queueing.
-
-`library acquire --license <file>` and `-o key=value` name things on the
-node that runs the command, so they **pin** the acquire to it. The acquire
-is planned and admitted as usual (same fences, trust checks and
-requirements), but every job the planner makes carries `pinned_node_id`
-(this node's `node-identity.json` id), the absolute license path and the
-overrides, and only that node's own `bookclerkd` worker claims it: no
-other node, no host, and not the unrouted claim. The license path is
-resolved on that node when the job runs; its contents never enter the job
-(preloaded licenses are not supported by the acquire pipeline yet, so a
-pinned job with titles to fetch fails there with that error). Overrides
-are applied to that node's configuration for the job only and are limited
-to non-secret `output.*` and `library.*` keys; others (`auth.password`, a
-database URL) are refused before queueing. Pinned work is its own dedup
-key (node, plus a digest of the path and overrides). Waiting needs this
-node's daemon live; a pinned job whose node never returns stays pending
-until it is cancelled (Ctrl-C while waiting, or `POST /api/jobs/{id}/cancel`).
-`--license -` (standard input) works only with `--dry-run`.
+queueing. `library acquire` has no `--license` or `-o key=value` flags
+(both were removed, never implemented); a queued acquire runs with the
+settings of the node that claims it.
 A host node's operator asks its owner cluster for a scan with `bookclerk
 clusters scan` ([Clusters and host nodes](cluster-hosts.md)).
 

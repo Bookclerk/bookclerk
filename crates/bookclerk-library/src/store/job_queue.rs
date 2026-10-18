@@ -1331,11 +1331,10 @@ where
     Ok(None)
 }
 
-/// True when the row's payload names instances the claimer must run, or
-/// pins the job to one node.
+/// True when the row's payload names instances the claimer must run.
 fn job_has_requirements(model: &jobs::Model) -> bool {
     serde_json::from_str::<JobPayload>(&model.payload)
-        .map(|payload| !payload.requires.is_empty() || payload.pinned_node_id.is_some())
+        .map(|payload| !payload.requires.is_empty())
         .unwrap_or(false)
 }
 
