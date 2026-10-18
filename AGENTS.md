@@ -53,9 +53,10 @@ Types:
 - `cargo fmt --all -- --check` and
   `cargo clippy --workspace --all-targets -- -D warnings`.
 - Tests for what changed: `python3 scripts/ci-plan.py --base origin/main --head
-  HEAD --format summary`, then `python3 scripts/ci-exec.py run <check> --run-id
-  local` for each planned check. Run `cargo test --workspace` when the plan
-  says full suite.
+  HEAD --format summary` shows the plan; `python3 scripts/ci-exec.py resolve
+  --selective 1 --base origin/main --head HEAD --run-id local` writes it, then
+  `python3 scripts/ci-exec.py run <check> --run-id local` runs each planned
+  check. Run `cargo test --workspace` when the plan says full suite.
 - Where available: the cross-platform CI emulation for platform-specific
   changes, a dependency vulnerability scan when a lockfile changed, and static
   analysis for security-surface changes. Where they are not available, CI runs
