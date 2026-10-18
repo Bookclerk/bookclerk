@@ -1,5 +1,12 @@
 //! `bookclerk` CLI — Bookclerk-native headless library manager.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::expect_used
+)]
+
 mod cli_plugin;
 /// Subcommand implementations (`library`, `discover`, `daemon`, …).
 mod commands;

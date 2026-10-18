@@ -1,5 +1,8 @@
 //! Claim redeem must fail closed when the sqlite proxy cannot begin or commit.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::unwrap_used)]
+
 use bookclerk_library::{LibraryStore, UserRole};
 use chrono::Utc;
 

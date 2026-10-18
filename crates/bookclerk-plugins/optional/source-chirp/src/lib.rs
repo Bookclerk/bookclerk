@@ -3,6 +3,9 @@
 //! Uses the reverse-engineered Android Mockingjay GraphQL API
 //! (`https://api.chirpbooks.com/api/graphql`).
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+
 mod auth;
 mod client;
 pub mod db;

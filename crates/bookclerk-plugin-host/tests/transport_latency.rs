@@ -14,6 +14,15 @@
 //!
 //! [`PluginSession::db_execute_request`]: bookclerk_plugin_host::PluginSession::db_execute_request
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 

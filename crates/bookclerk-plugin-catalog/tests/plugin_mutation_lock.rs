@@ -4,6 +4,9 @@
 //! with child processes rather than threads. Distinct `$FILES_DIR` values must
 //! not block each other; the same `$FILES_DIR` serializes install/remove.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

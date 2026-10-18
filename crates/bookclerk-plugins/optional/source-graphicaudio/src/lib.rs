@@ -6,6 +6,9 @@
 //! 2. Magento ZIP (`My Downloadable Products`) — opt-in (`access = "zip"`)
 //! 3. Access App Retrofit API (`/access`) — opt-in device activation (`access = "device"`)
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(clippy::cast_possible_truncation)]
+
 mod auth;
 mod catalog;
 mod client;

@@ -57,6 +57,13 @@
 //! | [`sql_desugar`] | Host-only semantic desugars (`NULLS`, `NULLIF`) |
 //! | [`plugin_capnp`] | Generated Cap'n Proto RPC interfaces |
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::unwrap_used
+)]
+
 pub mod backup_ops;
 pub mod db;
 pub mod db_execute;
@@ -99,6 +106,7 @@ pub mod sql_types;
     unused_parens,
     clippy::all,
     clippy::pedantic,
+    clippy::restriction,
     rustdoc::all,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
@@ -117,6 +125,7 @@ pub mod plugin_capnp {
     unused_parens,
     clippy::all,
     clippy::pedantic,
+    clippy::restriction,
     rustdoc::all,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,

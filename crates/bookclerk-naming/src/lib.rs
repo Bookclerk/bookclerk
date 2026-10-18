@@ -32,6 +32,14 @@
 //! assert_eq!(out, "Arthur Conan Doyle - A Study in Scarlet [B00X]");
 //! ```
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::unwrap_used
+)]
+
 mod compare;
 mod context;
 mod dotnet_format;

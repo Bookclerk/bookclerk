@@ -205,7 +205,9 @@ pub fn expand_host_schema_batch_grouped_with(
     if batch.len() < 2 {
         return Ok(None);
     }
-    let version = batch.last().expect("batch length checked");
+    let Some(version) = batch.last() else {
+        return Ok(None);
+    };
     if !is_host_schema_version_marker(version) {
         return Ok(None);
     }

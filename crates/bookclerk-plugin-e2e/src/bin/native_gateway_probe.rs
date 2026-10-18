@@ -6,6 +6,8 @@
 //! deny-network jail must refuse. Results are one JSON object on stdout.
 
 #![allow(clippy::missing_docs_in_private_items)]
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::cast_sign_loss)]
 
 use std::sync::OnceLock;
 use std::time::Duration;

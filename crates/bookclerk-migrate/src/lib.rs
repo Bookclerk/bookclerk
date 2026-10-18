@@ -5,6 +5,13 @@
 //! CLI migration commands and host tooling. Converts classic Libation directories
 //! into Bookclerk `files` layouts, and round-trips native `.tar.zst` backups.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+
 mod accounts;
 mod classic_storefront;
 mod discover;

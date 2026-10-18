@@ -2,6 +2,9 @@
 //! intent; a placed instance refuses hand-written enable/disable until
 //! `--manual` hands it back.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use std::path::{Path, PathBuf};

@@ -8,6 +8,13 @@
 //!
 //! See `docs/` Discover / library product docs for operator-facing behavior.
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::expect_used
+)]
+
 mod candidates;
 mod catalog_search;
 mod embed;

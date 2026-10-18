@@ -6,6 +6,13 @@
 //! `bookclerk-audible` or `bookclerk-enrich`. Public explore catalog helpers
 //! live in [`catalog`] (SDK HTTP, no enrich).
 
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+
 mod auth;
 pub mod catalog;
 mod client;

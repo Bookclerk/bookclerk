@@ -6,6 +6,15 @@
 //! cover the promise that goes with it: the media stays byte-for-byte where it
 //! was, and the file does not grow by the size of its own audio.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 use std::path::Path;
 
 use bookclerk_media::{fixup_audiobook, FixupRequest};

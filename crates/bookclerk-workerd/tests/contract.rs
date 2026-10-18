@@ -3,6 +3,15 @@
 //! CI must ship `target/debug/workerd`. Local native-only profiles may skip
 //! with `BOOKCLERK_SKIP_WORKERD=1`.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;

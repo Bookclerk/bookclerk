@@ -5,6 +5,13 @@
 //! trim keeps the right window, and per-sample state a caller holds can be
 //! lined up with the samples that survived the trim.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::expect_used
+)]
+
 use std::path::Path;
 
 use bookclerk_mp4::fixture::ProgressiveFixture;

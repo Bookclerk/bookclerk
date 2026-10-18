@@ -1,5 +1,8 @@
 //! Native-behind-workerd spawn and teardown fail closed.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used)]
+
 #[path = "native_gateway/harness.rs"]
 mod ng_harness;
 

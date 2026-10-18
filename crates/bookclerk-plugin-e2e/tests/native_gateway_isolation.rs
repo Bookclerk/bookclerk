@@ -21,6 +21,9 @@
 //! from a numeric collision, and both fail the test. Unix reports
 //! `unsupported` and that result is not a denial.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(clippy::expect_used)]
+
 #[path = "native_gateway/channel.rs"]
 mod channel;
 #[path = "native_gateway/harness.rs"]

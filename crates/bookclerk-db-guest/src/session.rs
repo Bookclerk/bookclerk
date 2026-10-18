@@ -1197,7 +1197,9 @@ async fn pop_finish(
         }
         None => return Err(format!("unknown txn {txn_id}")),
     }
-    let (_, txn) = stack.pop().expect("checked last");
+    let Some((_, txn)) = stack.pop() else {
+        return Err(format!("unknown txn {txn_id}"));
+    };
     if commit {
         if bookclerk_db_exec::is_txn_broken() {
             let fault = bookclerk_db_exec::take_txn_fault()

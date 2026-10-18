@@ -4,3 +4,7 @@
 # Public API only by default. Publish-crate CI sets CLIPPY_CONF_DIR to
 # `clippy-publish/` so `# Errors` / `# Panics` also cover private items there.
 # check-private-items = false
+
+# Tests may unwrap/expect; production code states its invariant or propagates.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

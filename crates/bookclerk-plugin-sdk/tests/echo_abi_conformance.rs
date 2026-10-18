@@ -4,6 +4,14 @@
 //! workerd binary. Runtime Echo guests (native + workerd `modules/index.js`)
 //! must implement the same capability names and `describe()` shape.
 #![allow(clippy::missing_panics_doc)]
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
 
 use bookclerk_plugin_abi::{
     methods, Entrypoint, EventConsumerSpec, PluginCapabilities, PluginDescribe, METHOD_NAMES,

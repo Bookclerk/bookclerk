@@ -149,7 +149,10 @@ pub fn package_plugins(root: &Path, out_dir: &Path, version: &str) -> Result<()>
         let digest = sha256_file(&archive)?;
         checksums.push_str(&format!(
             "{digest}  {}\n",
-            archive.file_name().unwrap().to_string_lossy()
+            archive
+                .file_name()
+                .unwrap_or(archive.as_os_str())
+                .to_string_lossy()
         ));
         eprintln!("packaged {} -> {}", crate_name, archive.display());
     }
@@ -210,7 +213,10 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
         &sums_path,
         format!(
             "{digest}  {}\n",
-            archive.file_name().unwrap().to_string_lossy()
+            archive
+                .file_name()
+                .unwrap_or(archive.as_os_str())
+                .to_string_lossy()
         ),
     )
     .with_context(|| format!("write {}", sums_path.display()))?;
@@ -304,7 +310,10 @@ pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()
         &sums_path,
         format!(
             "{digest}  {}\n",
-            archive.file_name().unwrap().to_string_lossy()
+            archive
+                .file_name()
+                .unwrap_or(archive.as_os_str())
+                .to_string_lossy()
         ),
     )
     .with_context(|| format!("write {}", sums_path.display()))?;

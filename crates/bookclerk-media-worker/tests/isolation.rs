@@ -7,6 +7,15 @@
 //! important — that it is wide enough for LAME, FDK-AAC, and the MP4 muxer to
 //! finish the job.
 
+// Test code: unwrap/expect and plain casts are fine here.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 

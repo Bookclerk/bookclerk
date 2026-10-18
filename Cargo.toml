@@ -229,3 +229,11 @@ pedantic = { level = "allow", priority = -1 }
 # Google-style private-item docs (binaries + libs). CI promotes warnings to
 # errors via RUSTFLAGS="-D warnings". See docs/code-documentation.md.
 missing_docs_in_private_items = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"

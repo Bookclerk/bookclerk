@@ -4,6 +4,14 @@
 //! two independent processes can race the DACL RMW path.
 
 #![cfg_attr(windows, allow(unsafe_code))]
+// Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
 
 use std::process::ExitCode;
 
