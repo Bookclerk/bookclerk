@@ -109,7 +109,7 @@ function outputValues(settings: SettingsResponse): Record<string, string> {
 export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: () => void }) {
   const [baseline, setBaseline] = useState<Record<string, string> | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
-  const [revision, setRevision] = useState<string | null>(null);
+  const [revision, setRevision] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -118,7 +118,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
     const loaded = outputValues(next);
     setBaseline(loaded);
     setValues(loaded);
-    setRevision(next.effective?.["output.revision"] ?? null);
+    setRevision(next.output_revision ?? null);
   }, []);
 
   /** Reloads the panel; resolves `true` when the settings were applied. */
@@ -153,10 +153,9 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
     setError(null);
     setNotice(null);
     try {
-      const expected = revision === null ? Number.NaN : Number(revision);
       const next = await patchSettings({
         settings: changed.map((field) => ({ key: field.key, value: values[field.key] ?? "" })),
-        ...(Number.isInteger(expected) ? { expected_output_revision: expected } : {}),
+        ...(revision === null ? {} : { expected_output_revision: revision }),
       });
       apply(next);
       setNotice("Saved. Every host applies the new revision on its next wakeup.");
@@ -199,7 +198,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
           <p className="text-sm text-ink/55">
             How acquired audio is packaged and named on every host. Stored in the library
             database
-            {revision ? ` (revision ${revision})` : ""}; destination roots and prefixes are
+            {revision === null ? "" : ` (revision ${revision})`}; destination roots and prefixes are
             plugin settings.
           </p>
         </div>

@@ -138,10 +138,17 @@ pub async fn run(
         ConfigCommand::Get { key, bare } => {
             if bare {
                 // `output.*` reads the database document, like `config get`.
-                let output = load_output_for_show(config).await.ok();
+                let output =
+                    match bare_output_body(load_output_for_show(config).await, &config.output) {
+                        Ok(body) => Some(body),
+                        Err(err) => {
+                            eprintln!("output.* omitted: {}", safe_events_load_error(&err));
+                            None
+                        }
+                    };
                 for (classic, dotted) in classic_key_aliases() {
                     let value = if is_output_setting_key(dotted) {
-                        output.as_ref().and_then(|doc| doc.body.get(dotted))
+                        output.as_ref().and_then(|body| body.get(dotted))
                     } else {
                         lookup(config, dotted)
                     };
@@ -802,6 +809,35 @@ async fn load_output_for_show(
     Ok(load_output(&store).await?)
 }
 
+/// Resolves the `core.output` body that `config get --bare` lists.
+///
+/// A missing document falls back to the seed the first bootstrap would import,
+/// which is what `config get <output key>` reports on the same install.
+///
+/// # Errors
+///
+/// Returns an error when the document could not be loaded for any other
+/// reason, or when it is missing and the seed is invalid.
+fn bare_output_body(
+    loaded: anyhow::Result<
+        bookclerk_library::control_plane::ConfigurationDocument<OutputSettingsV1>,
+    >,
+    seed: &bookclerk_config::OutputConfig,
+) -> anyhow::Result<OutputSettingsV1> {
+    match loaded {
+        Ok(doc) => Ok(doc.body),
+        Err(err)
+            if matches!(
+                err.downcast_ref::<bookclerk_library::LibraryError>(),
+                Some(bookclerk_library::LibraryError::NotFound(_))
+            ) =>
+        {
+            Ok(OutputSettingsV1::from_config(seed)?)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// Prints the shared `[output]` settings from `core.output`.
 async fn print_output_authority(config: &Config) {
     match load_output_for_show(config).await {
@@ -982,4 +1018,31 @@ fn helper_bin(path: &Option<std::path::PathBuf>) -> String {
     path.as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "-".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_output_body_falls_back_to_seed_when_document_missing() {
+        let seed = bookclerk_config::OutputConfig {
+            widevine: true,
+            ..bookclerk_config::OutputConfig::default()
+        };
+        let missing = Err(anyhow::Error::new(
+            bookclerk_library::LibraryError::NotFound(
+                "configuration core.output is not initialized".into(),
+            ),
+        ));
+        let body = bare_output_body(missing, &seed).expect("seed fallback");
+        assert_eq!(body.get("output.widevine").as_deref(), Some("true"));
+        assert_eq!(body, OutputSettingsV1::from_config(&seed).unwrap());
+    }
+
+    #[test]
+    fn bare_output_body_propagates_other_load_errors() {
+        let failed = Err(anyhow::anyhow!("database unreachable"));
+        assert!(bare_output_body(failed, &bookclerk_config::OutputConfig::default()).is_err());
+    }
 }

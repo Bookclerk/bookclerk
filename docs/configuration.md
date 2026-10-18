@@ -314,13 +314,15 @@ bookclerk config set output.replacement_characters '[{"find":":","replace":"-"}]
 The daemon operator API is `GET` / `PUT /api/config/domains/core.output`
 (`{"expected_revision": n, "document": {…}}` with every field of the
 schema-1 document). `PATCH /api/settings` accepts `output.*` keys through
-the same compare-and-swap path, one revision per request. Send the
-revision you read as `expected_output_revision`; a stale value returns 409
-and writes nothing (the web UI always sends it). A request that
-mixes `output.*` with `events.*` or file-backed keys is rejected before
-anything is written. `GET /api/settings` lists the `output.*` values and
-`output.revision` in `effective`. The web UI edits it under **Settings →
-Output**.
+the same compare-and-swap path, one revision per request. `GET
+/api/settings` lists the `output.*` values and the document revision they
+were read from as top-level `output_revision`; send that back as
+`expected_output_revision`. A stale value returns 409 and writes nothing
+(the web UI always sends it). `output.revision` in `effective` is the
+revision this host has applied, which can lag the document until the host's
+next wakeup. A request that mixes `output.*` with `events.*` or file-backed
+keys is rejected before anything is written. The web UI edits it under
+**Settings → Output**.
 
 `in_progress` (the acquire scratch directory) is not part of the document.
 It names a path on one host, is needed before the database opens, and stays

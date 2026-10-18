@@ -1730,6 +1730,12 @@ export interface SettingsResponse {
   host_cpu_cores_max?: number;
   /** Optional global per-jail CPU ceiling in cores. */
   jail_cpu_cores?: number | null;
+  /**
+   * `core.output` document revision the `output.*` values were read from; send it
+   * as `expected_output_revision`. `effective["output.revision"]` is the revision
+   * this host has applied, which can lag the document.
+   */
+  output_revision?: number;
 }
 
 /**

@@ -374,8 +374,9 @@ struct SettingsUpdate {
 struct PatchSettingsRequest {
     /// Key/value pairs to validate, persist, and reload.
     settings: Vec<SettingsUpdate>,
-    /// `core.output` revision the client read (`effective["output.revision"]`).
-    /// When set and stale, an `output.*` update is rejected with 409.
+    /// `core.output` document revision the client read (`output_revision` in
+    /// `GET /api/settings`). When set and stale, an `output.*` update is
+    /// rejected with 409.
     #[serde(default)]
     expected_output_revision: Option<i64>,
 }
@@ -468,6 +469,12 @@ struct SettingsResponse {
     /// Optional global per-jail CPU ceiling in cores (from `[plugins.jail]`).
     #[serde(skip_serializing_if = "Option::is_none")]
     jail_cpu_cores: Option<f64>,
+    /// Revision of the `core.output` document the `output.*` values in
+    /// `settings` were read from; send it back as `expected_output_revision`.
+    /// `effective["output.revision"]` is the revision this host has applied,
+    /// which lags the document until the host's next wakeup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_revision: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2998,10 +3005,16 @@ async fn get_settings(
     let mut settings = current_settings_snapshot(&cfg);
     // `output.*` comes from the `core.output` document itself, so a relative
     // `widevine_cdm` reads back as stored rather than resolved for this host.
-    match bookclerk_library::control_plane::load_output(&library).await {
-        Ok(doc) => insert_output_settings(&mut settings, &doc.body),
-        Err(err) => tracing::warn!(error = %err, "core.output unavailable for settings"),
-    }
+    let output_revision = match bookclerk_library::control_plane::load_output(&library).await {
+        Ok(doc) => {
+            insert_output_settings(&mut settings, &doc.body);
+            Some(doc.revision)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "core.output unavailable for settings");
+            None
+        }
+    };
     let mut effective = settings.clone();
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
@@ -3039,6 +3052,7 @@ async fn get_settings(
             .jail
             .cpu_rate_percent
             .map(|n| effective_cpu_cores(Some(percent_to_cores(n)))),
+        output_revision,
     }))
 }
 
@@ -6588,6 +6602,88 @@ mode = "deny"
         assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
         assert_eq!(load_output(&store).await.unwrap(), loaded);
         assert_eq!(audit_count(&store, OUTPUT_NAMESPACE).await.unwrap(), audits);
+    }
+
+    #[tokio::test]
+    async fn output_settings_revision_tracks_the_document_not_the_applied_runtime() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use axum::Json;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, load_output, overlay_core_documents, replace_output,
+            ConfigActor, OutputReplace,
+        };
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n\n[daemon.auth]\nenabled = true\n",
+        )
+        .unwrap();
+        let mut cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let scratch = dir.path().join("cache");
+        let session = bootstrap_control_plane(&store, dir.path(), &scratch, None, &cfg)
+            .await
+            .unwrap();
+        overlay_core_documents(&mut cfg, &session);
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+
+        // Another host commits a new revision; this host has not applied it.
+        let mut body = session.output.body.clone();
+        body.set("output.create_cue", "true").unwrap();
+        let written = match replace_output(
+            &store,
+            &ConfigActor::Operator { id: "peer".into() },
+            session.output.revision,
+            &body,
+            "peer-write",
+        )
+        .await
+        .unwrap()
+        {
+            OutputReplace::Applied(doc) => doc,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+
+        let shown = super::get_settings(State(state.clone())).await.unwrap().0;
+        assert_eq!(
+            shown.settings.get("output.create_cue").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(shown.output_revision, Some(written.revision));
+        assert_eq!(
+            shown.effective.get("output.revision").map(String::as_str),
+            Some(session.output.revision.to_string()).as_deref()
+        );
+
+        // The document revision the panel echoes back is accepted.
+        let saved = super::patch_settings(
+            State(state.clone()),
+            Json(super::PatchSettingsRequest {
+                settings: vec![super::SettingsUpdate {
+                    key: "output.download_pdf".into(),
+                    value: (!written.body.download_pdf).to_string(),
+                }],
+                expected_output_revision: shown.output_revision,
+            }),
+        )
+        .await
+        .expect("document revision is current")
+        .0;
+        let loaded = load_output(&store).await.unwrap();
+        assert_eq!(loaded.revision, written.revision + 1);
+        assert_eq!(saved.output_revision, Some(loaded.revision));
+        assert_ne!(loaded.body.download_pdf, written.body.download_pdf);
+        assert!(loaded.body.create_cue);
     }
 
     #[tokio::test]

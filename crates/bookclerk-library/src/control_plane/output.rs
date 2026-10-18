@@ -410,7 +410,8 @@ impl OutputSettingsV1 {
     /// Formats one `output.*` key for display.
     ///
     /// Enums print their stored (snake_case) name; an unset optional value
-    /// prints as an empty string.
+    /// prints as an empty string. A disabled `widevine_cdm_provider` (stored
+    /// empty) prints as `off`, which [`Self::set`] reads back as disabled.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<String> {
         Some(match key {
@@ -422,9 +423,14 @@ impl OutputSettingsV1 {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
-            "output.widevine_cdm_provider" => {
-                self.widevine_cdm_provider.clone().unwrap_or_default()
-            }
+            // `None` (the AudibleCdm default) prints empty; a disabled
+            // provider prints `off`, so `set` of the printed value keeps it
+            // disabled instead of clearing it back to the default.
+            "output.widevine_cdm_provider" => match self.widevine_cdm_provider.as_deref() {
+                None => String::new(),
+                Some(provider) if provider.trim().is_empty() => "off".into(),
+                Some(provider) => provider.to_string(),
+            },
             "output.naming_profile" => self.naming_profile.as_str().to_string(),
             "output.folder_template" => self.folder_template.clone().unwrap_or_default(),
             "output.file_template" => self.file_template.clone().unwrap_or_default(),
@@ -969,6 +975,29 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{key}: {err}"));
             assert_eq!(copy, body, "{key} round trip");
         }
+    }
+
+    #[test]
+    fn disabled_cdm_provider_survives_get_set_round_trip() {
+        const KEY: &str = "output.widevine_cdm_provider";
+        // A TOML `widevine_cdm_provider = ""` seed disables the remote CDM.
+        let disabled = OutputSettingsV1::from_config(&OutputConfig {
+            widevine_cdm_provider: Some(String::new()),
+            ..OutputConfig::default()
+        })
+        .unwrap();
+        let shown = disabled.get(KEY).unwrap();
+        assert_eq!(shown, "off");
+        let mut copy = disabled.clone();
+        copy.set(KEY, &shown).unwrap();
+        assert_eq!(copy.widevine_cdm_provider.as_deref(), Some("off"));
+
+        // The default (AudibleCdm) still prints empty and stays the default.
+        let default = OutputSettingsV1::default();
+        assert_eq!(default.widevine_cdm_provider, None);
+        let mut copy = default.clone();
+        copy.set(KEY, &default.get(KEY).unwrap()).unwrap();
+        assert_eq!(copy.widevine_cdm_provider, None);
     }
 
     #[test]
