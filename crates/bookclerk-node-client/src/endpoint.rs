@@ -368,7 +368,7 @@ impl OwnerEndpoint {
     ///
     /// Returns [`DialError`] when the request cannot be made, `body` ends
     /// early, or the answer is malformed or does not come within
-    /// [`UPLOAD_ANSWER_TIMEOUT_SECS`] of the last byte.
+    /// `UPLOAD_ANSWER_TIMEOUT_SECS` of the last byte.
     pub async fn put_stream<R: AsyncRead + Unpin + Send>(
         &self,
         path: &str,

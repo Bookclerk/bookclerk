@@ -378,6 +378,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                     primary_key: &primary_key,
                     pdf_key: pdf_key.as_deref(),
                     files: &files,
+                    destinations: &[],
                 },
             )
             .await

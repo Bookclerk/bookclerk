@@ -56,6 +56,10 @@ const STATE_ABORTED: &str = "aborted";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Manifest {
+    /// The receiving owner node's destination ids when the upload was
+    /// granted, the primary first.
+    #[serde(default)]
+    destinations: Vec<String>,
     /// Every file, in upload order.
     files: Vec<UploadFile>,
     /// Storage key of the title's companion PDF, when one is uploaded.
@@ -69,12 +73,19 @@ pub struct UploadGrantRequest<'a> {
     /// Library id of the title. Empty for the job's closing upload, which
     /// carries no files and only completes the job.
     pub book_uuid: &'a str,
-    /// Storage key of the title's primary audio file (one of `files`).
+    /// Storage key of the title's primary audio file on the primary
+    /// destination (one of `files`' copies there).
     pub primary_key: &'a str,
-    /// Storage key of the companion PDF (one of `files`), when uploaded.
+    /// Storage key of the companion PDF on the primary destination (one of
+    /// `files`' copies there), when uploaded.
     pub pdf_key: Option<&'a str>,
     /// Every file, in upload order.
     pub files: &'a [UploadFile],
+    /// The receiving owner node's output destination ids, the primary
+    /// first. Each must receive at least one file and every copy must name
+    /// one of them, so each destination is written under the keys its own
+    /// naming options give (a closing upload passes none).
+    pub destinations: &'a [String],
 }
 
 /// Outcome of [`grant_upload`].
@@ -134,6 +145,9 @@ pub struct UploadSession {
     pub primary_key: String,
     /// Storage key of the companion PDF, when uploaded.
     pub pdf_key: Option<String>,
+    /// The receiving node's destination ids at grant, the primary first;
+    /// the files are written only while the node still has exactly these.
+    pub destinations: Vec<String>,
     /// The declared files.
     pub files: Vec<UploadFile>,
     /// Indexes of the files every destination has.
@@ -190,8 +204,10 @@ fn names_book(title: &str, book: &crate::models::BookRecord) -> bool {
             .is_some_and(|asin| title.eq_ignore_ascii_case(asin))
 }
 
-/// Checks the declared files: well formed, unique keys, the primary (and
-/// PDF) among them. A closing upload (no title) declares none.
+/// Checks the declared files: well formed, every copy on one of the
+/// receiving node's destinations, unique keys per destination, every
+/// destination written, and the primary (and PDF) among the primary
+/// destination's copies. A closing upload (no title) declares none.
 fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     if req.book_uuid.is_empty() {
         return (!req.files.is_empty() || req.pdf_key.is_some()).then_some("invalid_manifest");
@@ -199,13 +215,33 @@ fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     if req.files.is_empty() || req.files.len() > MAX_UPLOAD_FILES {
         return Some("invalid_manifest");
     }
+    let Some(primary) = req.destinations.first() else {
+        return Some("no_destination");
+    };
+    let known: BTreeSet<&str> = req.destinations.iter().map(String::as_str).collect();
+    if known.len() != req.destinations.len() {
+        return Some("invalid_manifest");
+    }
     let mut keys = BTreeSet::new();
     for file in req.files {
-        if !file.is_well_formed() || !keys.insert(file.key.as_str()) {
+        if !file.is_well_formed() {
             return Some("invalid_manifest");
         }
+        for copy in &file.copies {
+            if !known.contains(copy.destination.as_str()) {
+                return Some("destinations_changed");
+            }
+            if !keys.insert((copy.destination.as_str(), copy.key.as_str())) {
+                return Some("invalid_manifest");
+            }
+        }
     }
-    if !keys.contains(req.primary_key) || req.pdf_key.is_some_and(|key| !keys.contains(key)) {
+    let written: BTreeSet<&str> = keys.iter().map(|(destination, _)| *destination).collect();
+    if written != known {
+        return Some("destinations_changed");
+    }
+    let on_primary = |key: &str| keys.contains(&(primary.as_str(), key));
+    if !on_primary(req.primary_key) || req.pdf_key.is_some_and(|key| !on_primary(key)) {
         return Some("invalid_manifest");
     }
     None
@@ -278,6 +314,11 @@ pub async fn grant_upload(
         }
     }
     let manifest = serde_json::to_string(&Manifest {
+        destinations: if req.book_uuid.is_empty() {
+            Vec::new()
+        } else {
+            req.destinations.to_vec()
+        },
         files: req.files.to_vec(),
         pdf_key: req.pdf_key.map(str::to_string),
     })
@@ -348,6 +389,7 @@ fn session_from_model(row: node_upload_sessions::Model) -> Result<UploadSession>
         book_uuid: row.book_uuid,
         primary_key: row.primary_key,
         pdf_key: manifest.pdf_key,
+        destinations: manifest.destinations,
         files: manifest.files,
         received,
         state: row.state,

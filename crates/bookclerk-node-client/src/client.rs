@@ -51,10 +51,10 @@ use bookclerk_library::control_plane::{
 use bookclerk_node_proto::{
     decode_nonce, open_instance_secrets, open_secrets, open_upload_token, seal_secret_update,
     sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget, ArtifactRequest,
-    AuthContext, Body, ClaimFilter, Frame, HeldFence, SealError, SecretRef, SecretValue,
-    SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, ARTIFACTS_PATH, CLOSE_PROTOCOL,
-    CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS,
-    SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
+    AuthContext, Body, ClaimFilter, Frame, HeldFence, PlanDestination, SealError, SecretRef,
+    SecretValue, SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, ARTIFACTS_PATH,
+    CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB,
+    PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -503,18 +503,22 @@ impl Shared {
         }
     }
 
-    /// `acquire.plan`: the titles still to acquire and the owner's options.
+    /// `acquire.plan`: the titles still to acquire and the owner node's
+    /// destinations, the primary first.
     pub(crate) async fn acquire_plan(
         &self,
         job_id: &str,
         fence: i64,
-    ) -> Result<(Vec<AcquireTarget>, serde_json::Value), OwnerCallError> {
+    ) -> Result<(Vec<AcquireTarget>, Vec<PlanDestination>), OwnerCallError> {
         let body = Body::AcquirePlan {
             job_id: job_id.to_string(),
             fence,
         };
         match self.job_call(job_id, fence, body).await? {
-            Body::AcquireTargets { targets, options } => Ok((targets, options)),
+            Body::AcquireTargets {
+                targets,
+                destinations,
+            } => Ok((targets, destinations)),
             _ => Err(OwnerCallError::Unavailable),
         }
     }

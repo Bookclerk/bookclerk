@@ -924,6 +924,7 @@ async fn a_stale_fence_cannot_write_scan_rows_or_open_uploads() {
                 primary_key: "",
                 pdf_key: None,
                 files: &[],
+                destinations: &[],
             }
         )
         .await
@@ -943,7 +944,10 @@ async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto:
         .await
         .unwrap();
     let files = vec![bookclerk_node_proto::UploadFile {
-        key: "Author/Title/Title.m4b".into(),
+        copies: vec![bookclerk_node_proto::FileCopy {
+            destination: "local".into(),
+            key: "Author/Title/Title.m4b".into(),
+        }],
         size: 3,
         sha256: "ab".repeat(32),
         content_type: Some("audio/mp4".into()),
@@ -971,11 +975,13 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         })
         .await
         .unwrap();
+    let destinations = vec!["local".to_string()];
     let sams = UploadGrantRequest {
         book_uuid: &sam_book.uuid,
         primary_key: "Author/Title/Title.m4b",
         pdf_key: None,
         files: &files,
+        destinations: &destinations,
     };
     assert!(matches!(
         grant_upload(&w.store, HOST, &job_id, fence, "owner", &sams)
@@ -997,6 +1003,61 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
             .unwrap(),
         UploadGrant::Refused("invalid_manifest")
     ));
+    let two = vec!["local".to_string(), "s3".to_string()];
+    let unwritten = UploadGrantRequest {
+        destinations: &two,
+        ..riley
+    };
+    assert!(
+        matches!(
+            grant_upload(&w.store, HOST, &job_id, fence, "owner", &unwritten)
+                .await
+                .unwrap(),
+            UploadGrant::Refused("destinations_changed")
+        ),
+        "every destination of the receiving node must be written"
+    );
+    let s3_first = vec!["s3".to_string(), "local".to_string()];
+    let elsewhere = vec![bookclerk_node_proto::UploadFile {
+        copies: vec![bookclerk_node_proto::FileCopy {
+            destination: "s3".into(),
+            key: "Title/Title.m4b".into(),
+        }],
+        ..files[0].clone()
+    }];
+    let off_primary = UploadGrantRequest {
+        files: &elsewhere,
+        destinations: &destinations,
+        ..riley
+    };
+    assert!(
+        matches!(
+            grant_upload(&w.store, HOST, &job_id, fence, "owner", &off_primary)
+                .await
+                .unwrap(),
+            UploadGrant::Refused("destinations_changed")
+        ),
+        "a copy on a destination the node lacks is refused"
+    );
+    let mut both = files.clone();
+    both[0].copies.push(bookclerk_node_proto::FileCopy {
+        destination: "s3".into(),
+        key: "Title/Title.m4b".into(),
+    });
+    let wrong_primary = UploadGrantRequest {
+        files: &both,
+        destinations: &s3_first,
+        ..riley
+    };
+    assert!(
+        matches!(
+            grant_upload(&w.store, HOST, &job_id, fence, "owner", &wrong_primary)
+                .await
+                .unwrap(),
+            UploadGrant::Refused("invalid_manifest")
+        ),
+        "the primary key is the primary destination's"
+    );
     let UploadGrant::Granted {
         upload_id, token, ..
     } = grant_upload(&w.store, HOST, &job_id, fence, "owner", &riley)
@@ -1014,6 +1075,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         .unwrap()
         .expect("the token opens its upload");
     assert_eq!(session.receiving_node_id, "owner");
+    assert_eq!(session.destinations, destinations);
     assert!(upload_fence_live(&w.store, &session).await.unwrap());
     assert_eq!(
         commit_upload(&w.store, &upload_id, Some("1 title"), SETTINGS.limits)
@@ -1088,6 +1150,7 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
             primary_key: "Author/Title/Title.m4b",
             pdf_key: None,
             files: &files,
+            destinations: &["local".to_string()],
         },
     )
     .await

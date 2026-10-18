@@ -19,7 +19,13 @@
 //! A file is never staged on the owner. Its body is read once and teed,
 //! chunk by chunk through bounded channels, into
 //! [`StorageBackend::put_stream`] of every output destination deployed on
-//! this node, while its size and SHA-256 are checked against the manifest
+//! this node, each under that destination's own key from the manifest (the
+//! host named the files with each destination's options from
+//! `acquire.targets`, as a local acquire would). Files are accepted only
+//! while this node has exactly the destinations it had at grant (otherwise
+//! 422 `destinations_changed`, the upload is aborted, and the title fails
+//! on the host). While a file streams, its size and SHA-256 are checked
+//! against the manifest
 //! and the job's fence is re-checked about once a second. Each destination
 //! sees the end of the stream only after the whole body matched and the
 //! fence was still live; a size or digest mismatch, a lost fence, or a
@@ -72,40 +78,80 @@ const MAX_DETAIL_BYTES: usize = 4 * 1024;
 
 /// One output destination deployed on this owner node.
 pub(crate) struct OwnerDestination {
+    /// Its id in plans and manifests ([`destination_id`]).
+    pub id: String,
     /// Its storage backend (a guest's session, or a test stand-in).
     pub backend: Box<dyn StorageBackend>,
     /// Its naming and packaging options.
     pub options: DownloadOptions,
 }
 
+/// The id of the destination of `kind`: its lowercase kind name (a node
+/// deploys at most one destination per kind).
+pub(crate) fn destination_id(kind: bookclerk_config::OutputBackendKind) -> String {
+    match kind {
+        bookclerk_config::OutputBackendKind::Local => "local",
+        bookclerk_config::OutputBackendKind::S3 => "s3",
+    }
+    .to_string()
+}
+
 #[cfg(test)]
 mod test_destinations {
-    //! Local stand-ins for the `local` destination guest, by owner files
-    //! dir, for tests that cannot spawn guests.
+    //! Local-filesystem stand-ins for the destination guests, by owner
+    //! files dir, for tests that cannot spawn guests.
 
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex};
 
-    /// Roots by files dir.
-    static ROOTS: LazyLock<Mutex<HashMap<PathBuf, PathBuf>>> = LazyLock::new(Default::default);
+    use bookclerk_config::{DestinationNaming, OutputBackendKind};
+
+    /// One stand-in destination: its kind, root and naming overrides.
+    #[derive(Clone)]
+    pub(crate) struct TestDestination {
+        /// The kind it stands in for.
+        pub kind: OutputBackendKind,
+        /// Where its files go.
+        pub root: PathBuf,
+        /// Its naming overrides.
+        pub naming: DestinationNaming,
+    }
+
+    /// Destinations by files dir, the primary first.
+    static ROOTS: LazyLock<Mutex<HashMap<PathBuf, Vec<TestDestination>>>> =
+        LazyLock::new(Default::default);
 
     /// Makes `root` the one local destination of the owner at `files_dir`.
     pub(crate) fn set(files_dir: &Path, root: &Path) {
+        set_many(
+            files_dir,
+            vec![TestDestination {
+                kind: OutputBackendKind::Local,
+                root: root.to_path_buf(),
+                naming: DestinationNaming::default(),
+            }],
+        );
+    }
+
+    /// Makes `destinations` (the primary first) the owner's at `files_dir`.
+    pub(crate) fn set_many(files_dir: &Path, destinations: Vec<TestDestination>) {
         ROOTS
             .lock()
             .unwrap()
-            .insert(files_dir.to_path_buf(), root.to_path_buf());
+            .insert(files_dir.to_path_buf(), destinations);
     }
 
-    /// The stand-in root of the owner at `files_dir`.
-    pub(super) fn get(files_dir: &Path) -> Option<PathBuf> {
+    /// The stand-ins of the owner at `files_dir`.
+    pub(super) fn get(files_dir: &Path) -> Option<Vec<TestDestination>> {
         ROOTS.lock().unwrap().get(files_dir).cloned()
     }
 }
 
 #[cfg(test)]
-pub(crate) use test_destinations::set as set_test_destination;
+pub(crate) use test_destinations::{
+    set as set_test_destination, set_many as set_test_destinations, TestDestination,
+};
 
 /// Every output destination deployed on this node, the primary first.
 ///
@@ -115,17 +161,21 @@ pub(crate) use test_destinations::set as set_test_destination;
 pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<OwnerDestination>> {
     let cfg = state.config.read().await.clone();
     #[cfg(test)]
-    if let Some(root) = test_destinations::get(&cfg.paths().files_dir) {
-        let options = DownloadOptions::for_destination(
-            &cfg,
-            bookclerk_config::OutputBackendKind::Local,
-            &Default::default(),
-            "",
-        );
-        return Ok(vec![OwnerDestination {
-            backend: Box::new(bookclerk_storage::LocalFsBackend::new(root)?),
-            options,
-        }]);
+    if let Some(stand_ins) = test_destinations::get(&cfg.paths().files_dir) {
+        let mut out = Vec::with_capacity(stand_ins.len());
+        for stand_in in stand_ins {
+            out.push(OwnerDestination {
+                id: destination_id(stand_in.kind),
+                backend: Box::new(bookclerk_storage::LocalFsBackend::new(stand_in.root)?),
+                options: DownloadOptions::for_destination(
+                    &cfg,
+                    stand_in.kind,
+                    &stand_in.naming,
+                    "",
+                ),
+            });
+        }
+        return Ok(out);
     }
     let destinations =
         bookclerk_plugin_host::build_acquire_destinations(&cfg, &*state.destinations.read().await)
@@ -134,10 +184,16 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         .items
         .into_iter()
         .map(|item| OwnerDestination {
+            id: destination_id(item.kind),
             backend: item.backend,
             options: item.options,
         })
         .collect())
+}
+
+/// The ids of `destinations`, in order (the primary first).
+pub(crate) fn destination_ids(destinations: &[OwnerDestination]) -> Vec<String> {
+    destinations.iter().map(|d| d.id.clone()).collect()
 }
 
 /// An answer with `status`.
@@ -285,8 +341,9 @@ async fn watch_fence(library: LibraryStore, session: UploadSession, lost: watch:
     }
 }
 
-/// Streams `body` into every destination under `key`; answers once every
-/// destination has the whole, verified file, or every one discarded it.
+/// Streams `body` into each destination the file is written to, under
+/// that destination's key; answers once every one has the whole, verified
+/// file, or every one discarded it.
 async fn tee(
     library: &LibraryStore,
     session: &UploadSession,
@@ -295,12 +352,28 @@ async fn tee(
     destinations: Vec<OwnerDestination>,
 ) -> Result<(), StreamFailure> {
     let file = &session.files[index];
-    let mut senders = Vec::with_capacity(destinations.len());
-    let mut writes = Vec::with_capacity(destinations.len());
-    for destination in destinations {
+    let mut by_id: std::collections::HashMap<String, OwnerDestination> = destinations
+        .into_iter()
+        .map(|destination| (destination.id.clone(), destination))
+        .collect();
+    // The caller checked the destination set against the grant's; a copy
+    // naming one this node lacks fails closed before anything is opened.
+    if file
+        .copies
+        .iter()
+        .any(|copy| !by_id.contains_key(&copy.destination))
+    {
+        return Err(StreamFailure::Mismatch);
+    }
+    let mut senders = Vec::with_capacity(file.copies.len());
+    let mut writes = Vec::with_capacity(file.copies.len());
+    for copy in &file.copies {
+        let Some(destination) = by_id.remove(&copy.destination) else {
+            continue;
+        };
         let (tx, rx) = mpsc::channel(CHANNEL_CHUNKS);
         senders.push(tx);
-        let key = file.key.clone();
+        let key = copy.key.clone();
         let meta = ObjectMeta {
             content_type: file.content_type.clone(),
             content_length: Some(file.size),
@@ -316,7 +389,7 @@ async fn tee(
                 .backend
                 .put_stream(&key, Box::pin(reader), meta)
                 .await;
-            (destination, result)
+            (destination, key, result)
         }));
     }
     let (lost_tx, mut lost_rx) = watch::channel(false);
@@ -380,8 +453,8 @@ async fn tee(
     let mut written = Vec::new();
     for write in writes {
         match write.await {
-            Ok((destination, Ok(_))) => written.push(destination),
-            Ok((_, Err(err))) => {
+            Ok((destination, key, Ok(_))) => written.push((destination, key)),
+            Ok((_, _, Err(err))) => {
                 if failure.is_none() {
                     tracing::warn!(upload_id = %session.upload_id, index, error = %err, "a destination refused an uploaded file");
                     failure = Some(StreamFailure::Broken);
@@ -394,8 +467,8 @@ async fn tee(
         None => Ok(()),
         Some(failure) => {
             // A destination that already finished keeps no partial title.
-            for destination in written {
-                let _ = destination.backend.delete(&file.key).await;
+            for (destination, key) in written {
+                let _ = destination.backend.delete(&key).await;
             }
             Err(failure)
         }
@@ -455,6 +528,13 @@ pub async fn put_file(
             return unavailable();
         }
     };
+    if destination_ids(&destinations) != session.destinations {
+        // The host named the files for the destinations it was planned
+        // with; writing them to a changed set would mis-name or skip one.
+        tracing::warn!(upload_id = %session.upload_id, "this owner node's destinations changed since the upload was granted; aborted");
+        let _ = abort_upload(&library, &session.upload_id).await;
+        return refused("destinations_changed");
+    }
     let count = destinations.len();
     match tee(&library, &session, index, body, destinations).await {
         Ok(()) => match record_upload_file(&library, &session.upload_id, index).await {

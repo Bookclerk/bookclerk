@@ -17,12 +17,16 @@
 //!   writes them (decision 6); the scan completes with `complete`.
 //! - **Acquire.** The host asks the owner for the job's titles
 //!   (`acquire.plan`, again until no new title comes back), acquires each
-//!   with the owner's naming options into a per-title outbox under this
-//!   host's files dir (the acquire pipeline runs against a scratch library
+//!   into a per-title outbox under this host's files dir with one outbox
+//!   destination per owner destination, each with that destination's own
+//!   naming options, so every destination's keys come out as a local
+//!   acquire on the owner would name them (the acquire pipeline runs
+//!   against a scratch library
 //!   opened through this host's database guest, seeded with the owner's
 //!   row; media work stays in `bookclerk-media-worker`), copies the files
 //!   to this host's own deployed destinations (H-2), and streams them to
-//!   the owner (`upload.grant`, one `PUT` per file, `commit`), which writes
+//!   the owner (`upload.grant`, one `PUT` per distinct file content, each
+//!   listing its key on every destination, then `commit`), which writes
 //!   them straight to its destinations. The job completes with its closing
 //!   upload's commit, never with `complete`. A host may stage; the owner
 //!   never does.
@@ -40,7 +44,8 @@ use anyhow::Context as _;
 use bookclerk_library::{BookRecord, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, OwnerCallError};
 use bookclerk_node_proto::{
-    AcquireTarget, UploadFile, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
+    AcquireTarget, FileCopy, PlanDestination, UploadFile, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES,
+    MAX_UPLOAD_FILES,
 };
 use bookclerk_plugin_abi::ScanBook;
 use bookclerk_source::DownloadOptions;
@@ -65,24 +70,64 @@ pub struct HostScan {
     pub accounts: Vec<String>,
 }
 
+/// One output destination of the owner node an acquire was planned with.
+#[derive(Debug, Clone)]
+pub struct HostDestination {
+    /// Its id on the owner node (`local`, `s3`).
+    pub id: String,
+    /// Its kind (one destination per kind).
+    pub kind: bookclerk_config::OutputBackendKind,
+    /// Its naming and packaging options.
+    pub options: DownloadOptions,
+}
+
+impl HostDestination {
+    /// Parses a plan's destination; refuses an unknown kind or options
+    /// this host cannot read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the destination id.
+    pub fn from_plan(plan: PlanDestination) -> anyhow::Result<Self> {
+        let kind: bookclerk_config::OutputBackendKind =
+            serde_json::from_value(serde_json::Value::String(plan.id.clone()))
+                .with_context(|| format!("the owner's destination {:?}", plan.id))?;
+        let options: DownloadOptions = serde_json::from_value(plan.options)
+            .with_context(|| format!("the owner's options for destination {:?}", plan.id))?;
+        Ok(Self {
+            id: plan.id,
+            kind,
+            options,
+        })
+    }
+}
+
 /// One title an acquire fetches here.
 #[derive(Debug, Clone)]
 pub struct HostTitle {
     /// The owner's library row.
     pub book: BookRecord,
-    /// The owner's naming and packaging options.
-    pub options: DownloadOptions,
+    /// The owner node's destinations, the primary first; never empty.
+    pub destinations: Vec<HostDestination>,
+}
+
+/// Where destination `index`'s files go inside a title's outbox.
+#[must_use]
+pub fn destination_outbox(outbox: &Path, index: usize) -> PathBuf {
+    outbox.join(format!("d{index}"))
 }
 
 /// What acquiring one title left in its outbox.
 #[derive(Debug, Clone)]
 pub struct AcquiredTitle {
-    /// Storage key of the primary audio file.
+    /// Storage key of the primary audio file on the primary destination.
     pub primary_key: String,
-    /// Storage key of the companion PDF, when one was acquired.
+    /// Storage key of the companion PDF on the primary destination, when
+    /// one was acquired.
     pub pdf_key: Option<String>,
-    /// Every file, as storage keys relative to the outbox.
-    pub keys: Vec<String>,
+    /// Every file per destination (in [`HostTitle::destinations`] order),
+    /// as storage keys relative to [`destination_outbox`].
+    pub keys: Vec<Vec<String>>,
 }
 
 /// The guest work a host job does; the daemon's is [`GuestHost`].
@@ -95,7 +140,9 @@ pub trait HostGuests: Send + Sync + 'static {
         scan: HostScan,
     ) -> impl Future<Output = anyhow::Result<Vec<ScanBook>>> + Send;
 
-    /// Acquires `title` with the job's guest into `outbox`.
+    /// Acquires `title` with the job's guest into `outbox`: destination
+    /// `i`'s files, named with its options, under
+    /// [`destination_outbox`]`(outbox, i)`.
     fn acquire(
         &self,
         bindings: &HostJobBindings,
@@ -278,16 +325,24 @@ async fn acquire_into(
         .ensure_account(&book.account_id, &book.marketplace, None)
         .await?;
     scratch.upsert_book(&new_book_from(book)).await?;
-    tokio::fs::create_dir_all(outbox).await?;
+    let Some(primary) = title.destinations.first() else {
+        anyhow::bail!("the owner planned no destination");
+    };
+    let mut items = Vec::with_capacity(title.destinations.len());
+    for (index, destination) in title.destinations.iter().enumerate() {
+        let dir = destination_outbox(outbox, index);
+        tokio::fs::create_dir_all(&dir).await?;
+        items.push(bookclerk_acquire::AcquireDestination {
+            kind: destination.kind,
+            backend: Box::new(bookclerk_storage::LocalFsBackend::new(dir)?),
+            options: destination.options.clone(),
+        });
+    }
+    // The pipeline packages once and writes each destination under the
+    // keys its own options give, exactly as a local acquire does.
     let destinations = bookclerk_acquire::AcquireDestinations {
-        items: vec![bookclerk_acquire::AcquireDestination {
-            kind: bookclerk_config::OutputBackendKind::Local,
-            backend: Box::new(bookclerk_storage::LocalFsBackend::new(
-                outbox.to_path_buf(),
-            )?),
-            options: title.options.clone(),
-        }],
-        primary: bookclerk_config::OutputBackendKind::Local,
+        items,
+        primary: primary.kind,
         multi_destination: cfg.output.multi_destination,
     };
     let paths = cfg.paths();
@@ -301,7 +356,7 @@ async fn acquire_into(
         narrators: book.narrators.clone(),
         series: book.series.clone(),
         series_index: book.series_index.clone(),
-        options: title.options.clone(),
+        options: primary.options.clone(),
         files_dir: paths.files_dir.clone(),
         cache_dir: cfg.download_cache_dir(),
         force: false,
@@ -317,15 +372,64 @@ async fn acquire_into(
         .await?
         .filter(|row| row.pdf_status == bookclerk_library::AcquireStatus::Acquired)
         .and_then(|row| row.pdf_storage_key);
-    let mut keys = result.written_keys;
-    if keys.is_empty() {
-        keys.push(result.storage_key.clone());
+    let mut keys = Vec::with_capacity(title.destinations.len());
+    for index in 0..title.destinations.len() {
+        keys.push(outbox_keys(&destination_outbox(outbox, index)).await?);
     }
     Ok(AcquiredTitle {
         primary_key: result.storage_key,
         pdf_key,
         keys,
     })
+}
+
+/// Every finished file under `dir`, as storage keys relative to it
+/// (sorted; in-flight temp files are skipped).
+///
+/// # Errors
+///
+/// Returns an error when the directory cannot be read.
+pub async fn outbox_keys(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut keys = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let mut entries = match tokio::fs::read_dir(&next).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let kind = entry.file_type().await?;
+            if kind.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !kind.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // In-flight temps, and the outbox backend's own metadata
+            // sidecars (each destination writes its own on receipt).
+            if (name.starts_with('.') && name.contains(".bookclerk-tmp-"))
+                || name.ends_with(".bookclerk-meta.json")
+            {
+                continue;
+            }
+            let Ok(relative) = path.strip_prefix(dir) else {
+                continue;
+            };
+            let key = relative
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            keys.push(key);
+        }
+    }
+    keys.sort();
+    Ok(keys)
 }
 
 /// The [`JobTransport`] for jobs an owner cluster handed this host.
@@ -486,11 +590,16 @@ async fn acquire_titles<G: HostGuests>(
     let mut acquired = 0u32;
     let mut failed = 0u32;
     loop {
-        let (targets, options) = with_retries(|| host.acquire_plan())
+        let (targets, planned) = with_retries(|| host.acquire_plan())
             .await
             .map_err(|err| owner_error("the acquire plan", &err))?;
-        let options: DownloadOptions =
-            serde_json::from_value(options).context("the owner's acquire options")?;
+        if planned.is_empty() {
+            anyhow::bail!("the owner planned no destination");
+        }
+        let destinations = planned
+            .into_iter()
+            .map(HostDestination::from_plan)
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let fresh: Vec<AcquireTarget> = targets
             .into_iter()
             .filter(|target| !attempted.contains(&target.book_uuid))
@@ -512,11 +621,11 @@ async fn acquire_titles<G: HostGuests>(
             let outbox = job_dir.join(&target.book_uuid);
             let title = HostTitle {
                 book,
-                options: options.clone(),
+                destinations: destinations.clone(),
             };
             let outcome = guests.acquire(bindings, &title, &outbox).await;
             let uploaded = match outcome {
-                Ok(done) => upload_title(guests, host, &title.book.uuid, &outbox, &done).await,
+                Ok(done) => upload_title(guests, host, &title, &outbox, &done).await,
                 Err(err) => Err(err),
             };
             let _ = tokio::fs::remove_dir_all(&outbox).await;
@@ -574,60 +683,119 @@ fn content_type(key: &str) -> Option<String> {
     )
 }
 
+/// The upload manifest of an acquired title: one entry per distinct file
+/// content (size and SHA-256), listing its key on every destination that
+/// has it, with the local path its bytes are read from.
+///
+/// # Errors
+///
+/// Returns an error when a file cannot be read, a key is unusable, a
+/// destination has no files, or there are too many files.
+pub async fn upload_manifest(
+    destinations: &[HostDestination],
+    outbox: &Path,
+    acquired: &AcquiredTitle,
+) -> anyhow::Result<Vec<(UploadFile, PathBuf)>> {
+    if acquired.keys.len() != destinations.len() {
+        anyhow::bail!("the acquire did not write every destination");
+    }
+    let mut files: Vec<(UploadFile, PathBuf)> = Vec::new();
+    let mut by_content = std::collections::HashMap::new();
+    for (index, (destination, keys)) in destinations.iter().zip(&acquired.keys).enumerate() {
+        if keys.is_empty() {
+            anyhow::bail!("destination {:?} received no file", destination.id);
+        }
+        let dir = destination_outbox(outbox, index);
+        for key in keys {
+            let path = dir.join(key);
+            let (size, sha256) = digest_file(&path).await?;
+            let copy = FileCopy {
+                destination: destination.id.clone(),
+                key: key.clone(),
+            };
+            match by_content.get(&(size, sha256.clone())) {
+                Some(&at) => {
+                    let (file, _): &mut (UploadFile, PathBuf) = &mut files[at];
+                    if file.key_on(&destination.id).is_some() {
+                        // The same bytes twice on one destination: a
+                        // separate entry, since a file has one copy per
+                        // destination.
+                        by_content.insert((size, sha256.clone()), files.len());
+                        files.push((
+                            UploadFile {
+                                copies: vec![copy],
+                                size,
+                                sha256,
+                                content_type: content_type(key),
+                            },
+                            path,
+                        ));
+                    } else {
+                        file.copies.push(copy);
+                    }
+                }
+                None => {
+                    by_content.insert((size, sha256.clone()), files.len());
+                    files.push((
+                        UploadFile {
+                            copies: vec![copy],
+                            size,
+                            sha256,
+                            content_type: content_type(key),
+                        },
+                        path,
+                    ));
+                }
+            }
+        }
+    }
+    if files.is_empty() || files.len() > MAX_UPLOAD_FILES {
+        anyhow::bail!("the title has {} files to upload", files.len());
+    }
+    if files.iter().any(|(file, _)| !file.is_well_formed()) {
+        anyhow::bail!("an acquired file has an unusable storage key");
+    }
+    Ok(files)
+}
+
 /// Copies one title's files to this host's own destinations (H-2), then
 /// streams them to the owner and commits the title.
 async fn upload_title<G: HostGuests>(
     guests: &G,
     host: &HostJobCtx,
-    book_uuid: &str,
+    title: &HostTitle,
     outbox: &Path,
-    title: &AcquiredTitle,
+    acquired: &AcquiredTitle,
 ) -> anyhow::Result<()> {
-    if title.keys.is_empty() || title.keys.len() > MAX_UPLOAD_FILES {
-        anyhow::bail!("the title has {} files to upload", title.keys.len());
-    }
-    let mut files = Vec::with_capacity(title.keys.len());
-    for key in &title.keys {
-        let (size, sha256) = digest_file(&outbox.join(key)).await?;
-        let file = UploadFile {
-            key: key.clone(),
-            size,
-            sha256,
-            content_type: content_type(key),
-        };
-        if !file.is_well_formed() {
-            anyhow::bail!("an acquired file has an unusable storage key");
-        }
-        files.push(file);
-    }
-    for destination in guests.local_destinations().await {
-        for file in &files {
+    let book_uuid = title.book.uuid.as_str();
+    let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
+    // This host's own copy follows the owner's primary destination naming.
+    let primary = destination_outbox(outbox, 0);
+    let local = guests.local_destinations().await;
+    for key in acquired.keys.first().into_iter().flatten() {
+        for destination in &local {
+            let path = primary.join(key);
             let meta = ObjectMeta {
-                content_type: file.content_type.clone(),
-                content_length: Some(file.size),
-                sha256_hex: Some(file.sha256.clone()),
+                content_type: content_type(key),
                 ..ObjectMeta::default()
             };
-            if let Err(err) = destination
-                .put_file(&file.key, &outbox.join(&file.key), meta)
-                .await
-            {
-                tracing::warn!(book_uuid, key = %file.key, error = %err, "could not copy a title to this host's own destination");
+            if let Err(err) = destination.put_file(key, &path, meta).await {
+                tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
             }
         }
     }
+    let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
     let upload = with_retries(|| {
         host.grant_upload(
             book_uuid,
-            &title.primary_key,
-            title.pdf_key.as_deref(),
+            &acquired.primary_key,
+            acquired.pdf_key.as_deref(),
             files.clone(),
         )
     })
     .await
     .map_err(|err| owner_error("the upload", &err))?;
-    for (index, file) in files.iter().enumerate() {
-        let path = outbox.join(&file.key);
+    for (index, (file, path)) in files.iter().zip(&paths).enumerate() {
         with_retries(|| async {
             let body = tokio::fs::File::open(&path)
                 .await

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use bookclerk_node_proto::{
-    AcquireTarget, SecretEntry, SecretRef, SecretValue, UploadFile, WorkJob,
+    AcquireTarget, PlanDestination, SecretEntry, SecretRef, SecretValue, UploadFile, WorkJob,
 };
 
 use crate::client::Shared;
@@ -269,14 +269,15 @@ impl HostJobCtx {
     }
 
     /// Asks the owner which titles this acquire should fetch, and with
-    /// which options (its primary destination's `DownloadOptions`).
+    /// which destinations (the owner node's, the primary first, each with
+    /// its own `DownloadOptions`).
     ///
     /// # Errors
     ///
     /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
     pub async fn acquire_plan(
         &self,
-    ) -> Result<(Vec<AcquireTarget>, serde_json::Value), OwnerCallError> {
+    ) -> Result<(Vec<AcquireTarget>, Vec<PlanDestination>), OwnerCallError> {
         self.shared
             .acquire_plan(&self.job.job.id, self.job.fence)
             .await

@@ -51,10 +51,11 @@ mod signature;
 
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
-    AcquireTarget, Body, ClaimFilter, Frame, FrameError, HeldFence, RemoteArtifact,
-    RemoteDeployment, RemoteVersion, UploadAnswer, UploadCommitRequest, UploadFile, WorkJob,
-    ITEM_JOB, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES,
-    MAX_UPLOAD_KEY_BYTES,
+    is_destination_id, is_storage_key, AcquireTarget, Body, ClaimFilter, FileCopy, Frame,
+    FrameError, HeldFence, PlanDestination, RemoteArtifact, RemoteDeployment, RemoteVersion,
+    UploadAnswer, UploadCommitRequest, UploadFile, WorkJob, ITEM_JOB, MAX_DESTINATION_ID_BYTES,
+    MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_COPIES, MAX_UPLOAD_FILES,
+    MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_KEY_BYTES,
 };
 pub use keys::{
     box_public_key, sign_public_key, validate_box_public_key, validate_sign_public_key, KeyError,

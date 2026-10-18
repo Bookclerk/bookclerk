@@ -1234,14 +1234,15 @@ mod results_and_uploads {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::super::host_jobs::{
-        AcquiredTitle, HostGuests, HostJobTransport, HostScan, HostTitle,
+        destination_outbox, AcquiredTitle, HostGuests, HostJobTransport, HostScan, HostTitle,
     };
     use super::super::remote_bindings::HostJobBindings;
     use super::*;
 
     /// A stand-in for the owner's store guest behind the host transport:
-    /// a scan answers `rows`; an acquire writes `payload` to the title's
-    /// outbox under `Author/<product>/<product>.m4b`.
+    /// a scan answers `rows`; an acquire writes `payload` to each planned
+    /// destination's outbox, named with that destination's templates
+    /// (`Author/<product>/<product>.m4b` when it has none).
     #[derive(Clone, Default)]
     struct StubGuests {
         /// Rows a scan returns.
@@ -1286,14 +1287,33 @@ mod results_and_uploads {
         ) -> anyhow::Result<AcquiredTitle> {
             self.note(bindings);
             let product = &title.book.product_id;
-            let key = format!("Author/{product}/{product}.m4b");
-            let path = outbox.join(&key);
-            tokio::fs::create_dir_all(path.parent().unwrap()).await?;
-            tokio::fs::write(&path, self.payload.as_slice()).await?;
+            let mut keys = Vec::new();
+            for (index, destination) in title.destinations.iter().enumerate() {
+                let options = &destination.options;
+                let key = if options.folder_template.is_none() && options.file_template.is_none() {
+                    format!("Author/{product}/{product}.m4b")
+                } else {
+                    bookclerk_acquire::storage_key(
+                        &bookclerk_acquire::NamingContext {
+                            asin: product.clone(),
+                            title: title.book.title.clone(),
+                            authors: title.book.authors.clone(),
+                            ..Default::default()
+                        },
+                        options.folder_template.as_deref(),
+                        options.file_template.as_deref(),
+                        "m4b",
+                    )
+                };
+                let path = destination_outbox(outbox, index).join(&key);
+                tokio::fs::create_dir_all(path.parent().unwrap()).await?;
+                tokio::fs::write(&path, self.payload.as_slice()).await?;
+                keys.push(vec![key]);
+            }
             Ok(AcquiredTitle {
-                primary_key: key.clone(),
+                primary_key: keys[0][0].clone(),
                 pdf_key: None,
-                keys: vec![key],
+                keys,
             })
         }
 
@@ -1678,6 +1698,291 @@ mod results_and_uploads {
         }
     }
 
+    /// An owner node with two destinations whose naming templates differ
+    /// gets each destination written under its own key, as a local
+    /// acquire would: the plan carries both destinations' options, the
+    /// file crosses the network once, the title is recorded under the
+    /// primary destination's key, and neither destination receives the
+    /// other's key.
+    #[tokio::test]
+    async fn each_owner_destination_gets_its_own_key() {
+        use crate::node_api::uploads::{set_test_destinations, TestDestination};
+        use bookclerk_config::{DestinationNaming, OutputBackendKind};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        let s3_out = tempfile::tempdir().unwrap();
+        set_test_destinations(
+            world.owner_files.path(),
+            vec![
+                TestDestination {
+                    kind: OutputBackendKind::Local,
+                    root: local_out.path().to_path_buf(),
+                    naming: DestinationNaming {
+                        folder_template: Some("<author>/<title>".into()),
+                        file_template: Some("<title>".into()),
+                        ..DestinationNaming::default()
+                    },
+                },
+                TestDestination {
+                    kind: OutputBackendKind::S3,
+                    root: s3_out.path().to_path_buf(),
+                    naming: DestinationNaming {
+                        folder_template: Some("library/<asin>".into()),
+                        file_template: Some("<asin>".into()),
+                        ..DestinationNaming::default()
+                    },
+                },
+            ],
+        );
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let payload: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
+        let guests = StubGuests {
+            payload: Arc::new(payload.clone()),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the host acquire to complete", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        // Each destination writes its own metadata sidecar; count objects.
+        let objects = |dir: &Path| {
+            files_under(dir)
+                .into_iter()
+                .filter(|path| !path.to_string_lossy().ends_with(".bookclerk-meta.json"))
+                .collect::<Vec<_>>()
+        };
+        let local_files = objects(local_out.path());
+        let s3_files = objects(s3_out.path());
+        assert_eq!(local_files.len(), 1, "{local_files:?}");
+        assert_eq!(s3_files.len(), 1, "{s3_files:?}");
+        let local_key = local_files[0]
+            .strip_prefix(local_out.path())
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let s3_key = s3_files[0]
+            .strip_prefix(s3_out.path())
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert_eq!(local_key, "Author/Title t1/Title t1.m4b");
+        assert_eq!(s3_key, "library/t1/t1.m4b");
+        assert_eq!(std::fs::read(&local_files[0]).unwrap(), payload);
+        assert_eq!(std::fs::read(&s3_files[0]).unwrap(), payload);
+        let acquired = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            acquired.storage_key.as_deref(),
+            Some(local_key.as_str()),
+            "the title is recorded under the primary destination's key"
+        );
+    }
+
+    /// The manifest of a title acquired into two destinations: identical
+    /// bytes cross once with a key per destination, a file only one
+    /// destination has gets one copy, and the outbox backend's metadata
+    /// sidecars and temp files are not uploaded.
+    #[tokio::test]
+    async fn the_upload_manifest_sends_each_content_once_with_a_key_per_destination() {
+        use super::super::host_jobs::{outbox_keys, upload_manifest, HostDestination};
+
+        let outbox = tempfile::tempdir().unwrap();
+        let write = |index: usize, key: &str, body: &[u8]| {
+            let path = destination_outbox(outbox.path(), index).join(key);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+        write(0, "A/T/T.m4b", b"audio");
+        write(0, "A/T/T.m4b.bookclerk-meta.json", b"{}");
+        write(0, "A/T/.T.jpg.bookclerk-tmp-1", b"partial");
+        write(0, "A/T/cover.jpg", b"cover-local");
+        write(1, "lib/t1/t1.m4b", b"audio");
+        let keys = vec![
+            outbox_keys(&destination_outbox(outbox.path(), 0))
+                .await
+                .unwrap(),
+            outbox_keys(&destination_outbox(outbox.path(), 1))
+                .await
+                .unwrap(),
+        ];
+        assert_eq!(
+            keys,
+            vec![
+                vec!["A/T/T.m4b".to_string(), "A/T/cover.jpg".to_string()],
+                vec!["lib/t1/t1.m4b".to_string()],
+            ]
+        );
+        let destination = |id: &str| HostDestination {
+            id: id.into(),
+            kind: serde_json::from_value(serde_json::json!(id)).unwrap(),
+            options: Default::default(),
+        };
+        let destinations = vec![destination("local"), destination("s3")];
+        let acquired = AcquiredTitle {
+            primary_key: "A/T/T.m4b".into(),
+            pdf_key: None,
+            keys,
+        };
+        let manifest = upload_manifest(&destinations, outbox.path(), &acquired)
+            .await
+            .unwrap();
+        assert_eq!(manifest.len(), 2, "{manifest:?}");
+        let audio = &manifest[0].0;
+        assert_eq!(audio.key_on("local"), Some("A/T/T.m4b"));
+        assert_eq!(audio.key_on("s3"), Some("lib/t1/t1.m4b"));
+        assert_eq!(audio.size, 5);
+        let cover = &manifest[1].0;
+        assert_eq!(cover.copies.len(), 1);
+        assert_eq!(cover.key_on("local"), Some("A/T/cover.jpg"));
+
+        let missing = AcquiredTitle {
+            keys: vec![acquired.keys[0].clone(), Vec::new()],
+            ..acquired.clone()
+        };
+        assert!(
+            upload_manifest(&destinations, outbox.path(), &missing)
+                .await
+                .is_err(),
+            "a destination with no file fails the title"
+        );
+    }
+
+    /// An upload granted for one destination set is refused, and writes
+    /// nothing, once the receiving node's set changed: the host named the
+    /// files for the destinations it was planned with.
+    #[tokio::test]
+    async fn an_upload_is_refused_after_the_destinations_change() {
+        use crate::node_api::uploads::{set_test_destinations, TestDestination};
+        use bookclerk_config::{DestinationNaming, OutputBackendKind};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let local_out = tempfile::tempdir().unwrap();
+        let s3_out = tempfile::tempdir().unwrap();
+        set_test_destinations(
+            world.owner_files.path(),
+            vec![
+                TestDestination {
+                    kind: OutputBackendKind::Local,
+                    root: local_out.path().to_path_buf(),
+                    naming: DestinationNaming::default(),
+                },
+                TestDestination {
+                    kind: OutputBackendKind::S3,
+                    root: s3_out.path().to_path_buf(),
+                    naming: DestinationNaming::default(),
+                },
+            ],
+        );
+        let second = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t2"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let node_id = world.link.remote_node_id.clone();
+        let claim = claim_remote_job(
+            &world.owner,
+            &node_id,
+            JobResourceClass::Network,
+            RemoteClaimSettings {
+                lease_secs: 30,
+                limits: JobClaimLimits {
+                    class: 8,
+                    plugin_instance: 8,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("the member's host may claim the acquire");
+        assert_eq!(claim.job.id, job_id);
+        let owner_node = bookclerk_library::control_plane::load_or_create_node_identity(
+            world.owner_files.path(),
+        )
+        .unwrap()
+        .node_id;
+        let file = UploadFile {
+            copies: vec![
+                bookclerk_node_proto::FileCopy {
+                    destination: "local".into(),
+                    key: "Author/Title t2/Title t2.m4b".into(),
+                },
+                bookclerk_node_proto::FileCopy {
+                    destination: "s3".into(),
+                    key: "library/t2/t2.m4b".into(),
+                },
+            ],
+            size: 3,
+            sha256: sha2::Sha256::digest(b"abc")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            content_type: None,
+        };
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &node_id,
+            &job_id,
+            claim.job.lease_generation,
+            &owner_node,
+            &UploadGrantRequest {
+                book_uuid: &second.uuid,
+                primary_key: "Author/Title t2/Title t2.m4b",
+                pdf_key: None,
+                files: std::slice::from_ref(&file),
+                destinations: &["local".to_string(), "s3".to_string()],
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        // The node drops its s3 destination before the file arrives.
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), local_out.path());
+        let mut tcp = tokio::net::TcpStream::connect(world.addr).await.unwrap();
+        let head = format!(
+            "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
+             Host: localhost:{}\r\nAuthorization: Bookclerk-Upload {}\r\n\
+             Content-Length: 3\r\nConnection: close\r\n\r\nabc",
+            world.addr.port(),
+            token.as_str(),
+        );
+        tcp.write_all(head.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
+        assert!(answer.contains("destinations_changed"), "{answer}");
+        assert!(
+            !local_out.path().join("Author/Title t2").exists(),
+            "nothing is written to a changed destination set"
+        );
+    }
+
     /// A fence lost while a file streams aborts the upload: the owner
     /// answers `lost` before the body ends, its destination keeps nothing
     /// (not even a temp file), and the upload's token no longer opens it.
@@ -1714,7 +2019,10 @@ mod results_and_uploads {
         assert_eq!(claim.job.id, job_id);
         let payload = vec![7u8; 4 << 20];
         let file = UploadFile {
-            key: "Author/t1/t1.m4b".into(),
+            copies: vec![bookclerk_node_proto::FileCopy {
+                destination: "local".into(),
+                key: "Author/t1/t1.m4b".into(),
+            }],
             size: payload.len() as u64,
             sha256: sha2::Sha256::digest(&payload)
                 .iter()
@@ -1737,9 +2045,10 @@ mod results_and_uploads {
             &owner_node,
             &UploadGrantRequest {
                 book_uuid: &book.uuid,
-                primary_key: &file.key,
+                primary_key: "Author/t1/t1.m4b",
                 pdf_key: None,
                 files: std::slice::from_ref(&file),
+                destinations: &["local".to_string()],
             },
         )
         .await

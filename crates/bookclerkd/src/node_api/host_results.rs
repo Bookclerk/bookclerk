@@ -4,17 +4,19 @@
 //! | Frame | Answer |
 //! |---|---|
 //! | `scan.results` | `scan.accepted {batch, upserted}`, `lost`, or `error {code: "refused"}` |
-//! | `acquire.plan` | `acquire.targets {targets, options}`, `lost`, or `error` |
+//! | `acquire.plan` | `acquire.targets {targets, destinations}`, `lost`, or `error` |
 //! | `upload.grant` | `upload.granted {upload_id, sealed_token, expires_in_secs}`, `lost`, or `error` |
 //!
 //! A scan's rows are parsed as the guest's `ScanBook` and handed to
 //! [`accept_scan_results`], which checks the fence, the node's trust and
 //! every row's account on each batch before it writes any row; the host
 //! never writes library SQL. An acquire asks for its titles (the owner's
-//! pending rows the job covers, with this node's primary destination's
-//! options so the host names files as the owner would), then for each
-//! title asks for an upload; the token is sealed to the host's box key and
-//! bound to the node, job, fence and upload, so it is never frame text.
+//! pending rows the job covers, with every destination deployed on this
+//! node and that destination's own options, so the host names each
+//! destination's files as a local acquire would), then for each title asks
+//! for an upload whose manifest gives each file's key per destination; the
+//! token is sealed to the host's box key and bound to the node, job, fence
+//! and upload, so it is never frame text.
 
 use bookclerk_library::control_plane::{
     accept_scan_results, accounts_owned_by, grant_upload, job_plugin_keys, live_remote_job,
@@ -22,8 +24,8 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{JobKind, LibraryStore};
 use bookclerk_node_proto::{
-    seal_upload_token, AcquireTarget, Body, Frame, MAX_FRAME_BYTES, MAX_SCAN_BATCH_ROWS,
-    MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
+    seal_upload_token, AcquireTarget, Body, Frame, PlanDestination, MAX_FRAME_BYTES,
+    MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
 use rand::RngCore as _;
 use zeroize::Zeroize as _;
@@ -119,6 +121,8 @@ pub(super) async fn acquire_plan(
         Ok(destinations) if !destinations.is_empty() => destinations,
         _ => return Ok(error(id, "unavailable", "no_destination")),
     };
+    // Which titles are included follows the primary destination, as a
+    // local acquire's does.
     let options = &destinations[0].options;
     let download_episodes = host.state.config.read().await.library.download_episodes;
     let keys = job_plugin_keys(library, &job).await?.unwrap_or_default();
@@ -167,8 +171,20 @@ pub(super) async fn acquire_plan(
             book: serde_json::to_value(&book).unwrap_or_default(),
         });
     }
-    let options = serde_json::to_value(options).unwrap_or_default();
-    let mut frame = Frame::new(id.clone(), Body::AcquireTargets { targets, options });
+    let destinations = destinations
+        .iter()
+        .map(|destination| PlanDestination {
+            id: destination.id.clone(),
+            options: serde_json::to_value(&destination.options).unwrap_or_default(),
+        })
+        .collect();
+    let mut frame = Frame::new(
+        id.clone(),
+        Body::AcquireTargets {
+            targets,
+            destinations,
+        },
+    );
     // Cut the list until it fits a frame; the host asks again for the rest.
     while frame.to_text().len() > MAX_FRAME_BYTES {
         let Body::AcquireTargets { targets, .. } = &mut frame.body else {
@@ -195,6 +211,22 @@ pub(super) async fn upload_grant(
     if request.files.len() > MAX_UPLOAD_FILES {
         return Ok(error(id, "refused", "invalid_manifest"));
     }
+    // The manifest must cover exactly the destinations deployed here now;
+    // the upload endpoint re-checks them for every file.
+    let ids = if request.book_uuid.is_empty() {
+        Vec::new()
+    } else {
+        match super::uploads::owner_destinations(&host.state).await {
+            Ok(destinations) if !destinations.is_empty() => {
+                super::uploads::destination_ids(&destinations)
+            }
+            _ => return Ok(error(id, "unavailable", "no_destination")),
+        }
+    };
+    let request = UploadGrantRequest {
+        destinations: &ids,
+        ..request
+    };
     let granted = grant_upload(
         library,
         &host.node_id,

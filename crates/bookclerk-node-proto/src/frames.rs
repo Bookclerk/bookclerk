@@ -320,9 +320,11 @@ pub enum Body {
     AcquireTargets {
         /// Titles still to acquire, each one of the job's accounts.
         targets: Vec<AcquireTarget>,
-        /// The owner's packaging and naming options (its primary output
-        /// destination's `DownloadOptions`, JSON).
-        options: serde_json::Value,
+        /// Every output destination deployed on the answering owner node,
+        /// the primary first, each with its own packaging and naming
+        /// options, so the host names each destination's files as a local
+        /// acquire would.
+        destinations: Vec<PlanDestination>,
     },
     /// Host → owner: ask to upload one title's files. Answered with
     /// [`Body::UploadGranted`], [`Body::Lost`], or `error`.
@@ -335,10 +337,12 @@ pub enum Body {
         /// Library id of the title the files are for (one of the job's
         /// targets).
         book_uuid: String,
-        /// Storage key of the title's primary audio file (one of `files`).
+        /// Storage key of the title's primary audio file on the primary
+        /// destination (one of `files`' copies there).
         primary_key: String,
-        /// Storage key of the title's companion PDF (one of `files`), when
-        /// one is uploaded.
+        /// Storage key of the title's companion PDF on the primary
+        /// destination (one of `files`' copies there), when one is
+        /// uploaded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pdf_key: Option<String>,
         /// Every file, in upload order. Empty, with an empty `book_uuid`,
@@ -480,6 +484,12 @@ pub const MAX_UPLOAD_FILE_BYTES: u64 = 8 << 30;
 /// Longest storage key an upload may declare.
 pub const MAX_UPLOAD_KEY_BYTES: usize = 1024;
 
+/// Most destinations one uploaded file may be written to.
+pub const MAX_UPLOAD_COPIES: usize = 16;
+
+/// Longest destination id.
+pub const MAX_DESTINATION_ID_BYTES: usize = 64;
+
 /// One title an acquire job should fetch on a host
 /// ([`Body::AcquireTargets`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -494,12 +504,61 @@ pub struct AcquireTarget {
     pub book: serde_json::Value,
 }
 
-/// One file of an upload ([`Body::UploadGrant`]).
+/// One output destination of the owner node that answered an acquire plan
+/// ([`Body::AcquireTargets`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanDestination {
+    /// Destination id on that owner node (its output kind, such as `local`
+    /// or `s3`; one destination per kind).
+    pub id: String,
+    /// That destination's `DownloadOptions` (JSON): its naming templates,
+    /// replacement characters and path limits.
+    pub options: serde_json::Value,
+}
+
+/// True when `id` is a destination id: a short lowercase token.
+#[must_use]
+pub fn is_destination_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_DESTINATION_ID_BYTES
+        && id
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+}
+
+/// True when `key` is a relative storage key: no empty, `.` or `..`
+/// segment, no backslash or control character, not absolute, at most
+/// [`MAX_UPLOAD_KEY_BYTES`].
+#[must_use]
+pub fn is_storage_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= MAX_UPLOAD_KEY_BYTES
+        && !key.starts_with('/')
+        && !key.contains('\\')
+        && !key.chars().any(char::is_control)
+        && key
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// Where one uploaded file is written: a destination and its key there.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileCopy {
+    /// A [`PlanDestination::id`].
+    pub destination: String,
+    /// Storage key on that destination.
+    pub key: String,
+}
+
+/// One file of an upload ([`Body::UploadGrant`]). Its content crosses the
+/// network once and is written to every copy, each destination under the
+/// key that destination's own naming options give it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UploadFile {
-    /// Storage key the file is written under on every output destination.
-    pub key: String,
+    /// Where the file is written; at most one copy per destination.
+    pub copies: Vec<FileCopy>,
     /// Exact size in bytes.
     pub size: u64,
     /// Lowercase hex SHA-256 of the content.
@@ -510,21 +569,21 @@ pub struct UploadFile {
 }
 
 impl UploadFile {
-    /// True when the key is a relative storage key (no empty, `.` or `..`
-    /// segment, no backslash or control character, not absolute), the
-    /// size is within [`MAX_UPLOAD_FILE_BYTES`], and the digest is
+    /// True when the file has between one and [`MAX_UPLOAD_COPIES`]
+    /// copies, each naming a different destination id
+    /// ([`is_destination_id`]) and a storage key ([`is_storage_key`]); the
+    /// size is within [`MAX_UPLOAD_FILE_BYTES`]; and the digest is
     /// lowercase hex SHA-256.
     #[must_use]
     pub fn is_well_formed(&self) -> bool {
-        let key_ok = !self.key.is_empty()
-            && self.key.len() <= MAX_UPLOAD_KEY_BYTES
-            && !self.key.starts_with('/')
-            && !self.key.contains('\\')
-            && !self.key.chars().any(char::is_control)
-            && self
-                .key
-                .split('/')
-                .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+        let mut destinations = std::collections::BTreeSet::new();
+        let copies_ok = !self.copies.is_empty()
+            && self.copies.len() <= MAX_UPLOAD_COPIES
+            && self.copies.iter().all(|copy| {
+                is_destination_id(&copy.destination)
+                    && is_storage_key(&copy.key)
+                    && destinations.insert(copy.destination.as_str())
+            });
         let digest_ok = self.sha256.len() == 64
             && self
                 .sha256
@@ -534,7 +593,16 @@ impl UploadFile {
             .content_type
             .as_deref()
             .is_none_or(|t| t.len() <= 128 && !t.chars().any(char::is_control));
-        key_ok && digest_ok && type_ok && self.size <= MAX_UPLOAD_FILE_BYTES
+        copies_ok && digest_ok && type_ok && self.size <= MAX_UPLOAD_FILE_BYTES
+    }
+
+    /// This file's key on `destination`, if it is written there.
+    #[must_use]
+    pub fn key_on(&self, destination: &str) -> Option<&str> {
+        self.copies
+            .iter()
+            .find(|copy| copy.destination == destination)
+            .map(|copy| copy.key.as_str())
     }
 }
 
@@ -632,8 +700,12 @@ mod tests {
 
     #[test]
     fn upload_files_must_be_relative_keys_with_hex_digests() {
-        let file = |key: &str| UploadFile {
+        let copy = |destination: &str, key: &str| FileCopy {
+            destination: destination.into(),
             key: key.into(),
+        };
+        let file = |key: &str| UploadFile {
+            copies: vec![copy("local", key)],
             size: 1,
             sha256: "0f".repeat(32),
             content_type: Some("audio/mp4".into()),
@@ -648,6 +720,26 @@ mod tests {
         let mut huge = file("a.m4b");
         huge.size = MAX_UPLOAD_FILE_BYTES + 1;
         assert!(!huge.is_well_formed());
+
+        let mut two = file("Author/Title/Title.m4b");
+        two.copies.push(copy("s3", "Title/Title.m4b"));
+        assert!(two.is_well_formed(), "each destination has its own key");
+        assert_eq!(two.key_on("s3"), Some("Title/Title.m4b"));
+        assert_eq!(two.key_on("local"), Some("Author/Title/Title.m4b"));
+        assert_eq!(two.key_on("other"), None);
+        let mut twice = file("a.m4b");
+        twice.copies.push(copy("local", "b.m4b"));
+        assert!(!twice.is_well_formed(), "one copy per destination");
+        let mut none = file("a.m4b");
+        none.copies.clear();
+        assert!(!none.is_well_formed(), "a file goes somewhere");
+        for bad in ["", "Local", "s3/x", "a b"] {
+            assert!(!UploadFile {
+                copies: vec![copy(bad, "a.m4b")],
+                ..file("a.m4b")
+            }
+            .is_well_formed());
+        }
     }
 
     #[test]
@@ -848,7 +940,10 @@ mod tests {
                         account_id: "a".into(),
                         book: serde_json::json!({}),
                     }],
-                    options: serde_json::json!({}),
+                    destinations: vec![PlanDestination {
+                        id: "local".into(),
+                        options: serde_json::json!({}),
+                    }],
                 },
                 "acquire.targets",
             ),
@@ -860,7 +955,10 @@ mod tests {
                     primary_key: "A/B.m4b".into(),
                     pdf_key: None,
                     files: vec![UploadFile {
-                        key: "A/B.m4b".into(),
+                        copies: vec![FileCopy {
+                            destination: "local".into(),
+                            key: "A/B.m4b".into(),
+                        }],
                         size: 3,
                         sha256: "ab".repeat(32),
                         content_type: None,
