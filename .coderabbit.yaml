@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  allow_author_approval: false
+  high_level_summary_in_walkthrough: true
+  review_status: false
+  review_info: false
+  auto_apply_labels: true
+  auto_review:
+    base_branches:
+      - .*
+    drafts: false
+  path_instructions:
+    - path: "crates/bookclerk-{jail,sandbox,workerd,plugin-host,plugin-abi,db-exec,media-worker,mp4}/**"
+      instructions: >-
+        Security surface. Apply the Review guidelines in AGENTS.md as blocking.
+    - path: "fuzz/corpus/**"
+      instructions: "Fuzz seed inputs; do not review their content."
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+
+chat:
+  allow_non_org_members: false
+
+issue_enrichment:
+  auto_enrich:
+    enabled: true
+  labeling:
+    auto_apply_labels: true
