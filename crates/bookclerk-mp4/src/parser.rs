@@ -96,7 +96,7 @@ pub fn parse_mp4(path: &Path) -> Result<Mp4File> {
     let mut moov = None;
     let mut mdat = None;
     let mut pos = 0u64;
-    while pos + 8 <= file_size {
+    while pos.saturating_add(8) <= file_size {
         file.seek(SeekFrom::Start(pos))?;
         let header = read_box_header(&mut file)?;
         match header.kind {

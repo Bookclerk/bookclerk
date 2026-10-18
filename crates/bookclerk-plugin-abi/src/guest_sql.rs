@@ -1716,7 +1716,13 @@ fn deny_binding_v1_operators(index: usize, sql: &str) -> Result<()> {
             continue;
         }
         if b == b'"' || b == b'`' || b == b'[' {
+            // An unterminated quote leaves `scan.i` in place; stop instead of
+            // spinning on it.
+            let start = scan.i;
             let _ = scan.read_ident();
+            if scan.i == start {
+                return Err(v1_grammar_err(index, "unterminated quoted identifier"));
+            }
             continue;
         }
         for kw in ["GLOB", "COLLATE", "MATCH", "REGEXP"] {
@@ -3751,6 +3757,13 @@ mod tests {
     use super::*;
     use crate::sql_types::apply_schema_sql_to_env;
     use crate::{DbValue, ExecuteRequest};
+
+    #[test]
+    fn an_unterminated_quoted_identifier_is_rejected_not_spun_on() {
+        for sql in ["t (T ETx XN[/LEO", "SELECT \"a FROM t", "SELECT `a FROM t"] {
+            assert!(validate_sql_v1_grammar(sql, true).is_err(), "{sql}");
+        }
+    }
 
     fn req(
         sql: &str,
