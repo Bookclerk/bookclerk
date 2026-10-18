@@ -784,10 +784,10 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
 - **Host nodes** are independent Bookclerk installs with their own database
   and their own operator, who enroll in an owner cluster to contribute
   work. They reach an owner node over HTTPS and never hold the cluster's
-  database credentials or DEK. Enrollment, the transport policy, and the
-  node socket handshake are built (see *Host-node enrollment and
-  transport* below); the work frames and the host client are not (see
-  *Remaining work*). A redeemed
+  database credentials or DEK. Enrollment, the transport policy, the
+  node socket, the work frames, the host client, host consent, and
+  results and uploads are built (sections below; operator guide in
+  [Clusters and host nodes](../cluster-hosts.md)). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -819,7 +819,7 @@ administrator. Only an Owner or the operator assigns the Host role.
   step 5, *Per-item trust and the scan planner* below); deliveries and
   instance ownership are not yet.
 
-Decided, not yet built:
+Decided then, built since in H-4 steps 3 and 8-10 (sections below):
 
 - A node may configure its own `local` output, an instance owned by that
   node and deployed only there. It adds to the cluster's outputs rather
@@ -1131,9 +1131,10 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   one only after its own operator approves it. Rejected: claiming and
   failing what cannot run, which would spend owner attempts and starve
   owner nodes.
-- **Not decided.** How a Host's scan returns its results (book rows) to
-  the owner. The design has no frame or binding for it, and library SQL
-  for owner plugins on a Host is a non-goal.
+- **Not decided at step 7.** How a Host's scan returns its results (book
+  rows) to the owner; library SQL for owner plugins on a Host is a
+  non-goal. Decided in step 9: fenced `scan.results` batches (*Host
+  results and uploads*, below).
 - **Tests** (`cluster_link/tests.rs`, owner and Host in one process): a
   member's Host enrolls over loopback, heartbeats into `node_status`,
   claims its owner's scan, runs it through the daemon's job transport
@@ -1219,11 +1220,10 @@ operator approves it, and only with what was approved.
   `SECRETS` only under a consented `secrets` binding, and the store
   credentials of the job's accounts. They live in memory only, redact
   their `Debug`, and are zeroized on drop.
-- **Still nothing runs.** No job kind runs on a Host yet
-  (`HOST_RUNNABLE_KINDS` is empty): a scan's results have no way back
-  (not decided), and an acquire waits for streamed uploads (step 9). The
-  in-process job transport refuses a handed job outright, since it would
-  run against the Host's own library.
+- **Still nothing ran at step 8.** `HOST_RUNNABLE_KINDS` was empty until
+  step 9 (below) gave scans and acquires a way back. The in-process job
+  transport refuses a handed job outright, since it would run against the
+  Host's own library.
 - **Tests** (`cluster_link/tests.rs`): an Administrator's Host records the
   request, reports `awaiting_host_consent`, fetches nothing and never
   claims the queued scan; unsigned, malformed and forged artifact requests
@@ -1236,6 +1236,135 @@ operator approves it, and only with what was approved.
   unspent, and nothing is claimed again. Library tests cover the claim
   filter, release, and read scoping; plugin-host tests cover narrowing,
   re-approval and the platform rule.
+
+### Host results and uploads
+
+H-4 step 9 (decisions 4 and 6). A Host runs scans and acquires
+(`HOST_RUNNABLE_KINDS = ["scan", "acquire"]`) through
+`HostJobTransport`: the owner's plugin version materialized on the Host,
+spawned jailed under the consented grant through `bookclerk-workerd`, with
+the handed credentials only. There is no in-process fallback.
+
+- **Scan results** (decision 6). The guest's rows come back unwritten and
+  go to the owner in `scan.results` batches (at most 200 rows and 768 KiB;
+  a row over 32 KiB is skipped). `accept_scan_results` re-checks the fence
+  and `node_may_claim_job` on every batch, requires each row's account to
+  exist under the job's plugin, be the job's account when it names one,
+  and, for a Host trusted only with its owner's accounts, be that user's;
+  one bad row refuses the batch. Rows are written through the store API,
+  as a local scan writes them. A Host never writes library SQL.
+- **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
+  destinations}`: the owner's pending titles the job covers and every
+  output destination deployed on the answering owner node, each with an
+  id and its own naming options. The Host acquires each title into an
+  outbox with one sub-directory per destination, so each destination's
+  keys come out as a local acquire on the owner would name them (a fix
+  after review: the first cut sent only the first destination's options,
+  so every destination got that one's keys).
+- **Uploads** (decision 4). `upload.grant` carries a manifest: each
+  distinct content once (`size`, `sha256`, `content_type`) with one
+  `FileCopy {destination, key}` per destination; it is refused unless
+  every copy names a known destination, every destination is written, the
+  (destination, key) pairs are unique, and the title's primary key is on
+  the primary destination. The owner answers `upload.granted` with a
+  32-byte bearer token sealed to the Host's box key (only its hash is in
+  `node_upload_sessions`; it lives an hour). Each file is `PUT
+  /api/node/v1/uploads/{id}/files/{n}` with `Authorization:
+  Bookclerk-Upload <token>`, then `POST …/commit`. The owner tees the body
+  through bounded channels into `put_stream` of every deployed
+  destination under that destination's key, checking size and digest as
+  it streams and the fence about once a second; nothing is staged on the
+  owner. Any mismatch, lost fence, or broken stream ends every
+  destination's stream with an error so each discards its write. A PUT
+  while the node's destinations differ from the grant's is `422
+  destinations_changed` and aborts the upload. The commit is one
+  canonical batch gated on the live fence and credential: it marks the
+  title acquired, publishes `book_acquired`, and completes the job with
+  the closing upload (an acquire never completes with `complete`).
+  Refusals: 401 (token), 421 (another owner node granted it), 409 (lost
+  fence), 422. Limits: 512 files, 8 GiB per file, 16 copies, 1 KiB keys.
+- **Node-local instances (H-2).** `plugin_instances.owner_node_id` marks
+  an instance local to one node: deploying it elsewhere and placing it
+  are refused. `bookclerk plugins instances create … --node <id>` and
+  `node_id` on `POST /api/config/plugin-instances` create one. The Host
+  also keeps a best-effort copy of each title in its own deployed
+  destinations, so both sides end up with a local copy.
+- **Tests.** Library: an acquire completes only through its upload; a
+  stale fence cannot write scan rows or open uploads; a commit acquires
+  the title and completes the job; manifests that skip or invent a
+  destination, repeat a key, or put the primary elsewhere are refused; a
+  node-local instance runs only on its node. Daemon
+  (`cluster_link/tests.rs`): a Host's scan rows land in the owner's
+  library; a Member's Host cannot write rows for an account it does not
+  own; a streamed acquire reaches the owner's destination without
+  staging; a fence lost mid-upload aborts it; two destinations with
+  different templates each get their own key; an upload is refused after
+  the destinations change; the manifest sends each content once.
+
+### Live socket and the host consent screen
+
+H-4 step 10 ("Host nodes and the SPA use WebSockets rather than
+polling"). `GET /api/live` (subprotocol `bookclerk-live.v1`) tells the SPA
+which topics changed; the SPA then re-reads its ordinary routes.
+
+- **Only topic names travel**: `library`, `jobs`, `deliveries`, `nodes`,
+  `config`, `consents`, `users`, in `{"v":1,"type":"hello"|"changed",
+  "topics":[…]}`. No rows, ids or secrets, so the socket needs no
+  authorization model of its own beyond who may hear which topic: the
+  operator hears all; an Owner or Administrator hears `library`, `jobs`,
+  `deliveries`, `nodes` and `users`; anyone else `library` and `nodes`.
+- **Origin first.** The `Origin` header must be exactly the configured
+  `public_origin`, or, without one, `http://<Host>` for a loopback `Host`
+  with no forwarding headers; anything else is 403 `origin_mismatch`
+  before the session is looked at, `auth.enabled = false` included. This
+  is what keeps another site's page from opening the socket with the
+  user's cookie (cross-site WebSocket hijacking).
+- **Session.** Admission runs the same caller resolution as
+  `require_operator_or_user_auth` (`resolve_user_caller`); the session is
+  re-checked every 30 s and a signed-out caller is closed with 4401 or
+  loses topics.
+- **Change detection.** Every 2 s the session reads a revision per topic
+  (`live_revisions`: row count plus newest `updated_at` of `books`,
+  `jobs`, `event_deliveries`, `remote_plugin_consents` and `users`, the
+  newest `node_status.heartbeat_at`, and the newest
+  `configuration_changes` id), so a change made on any owner node is
+  seen; in-process pokes (consent approve/revoke) are immediate. Rejected:
+  a table of change events or database triggers, which the SQL-v1
+  contract would have to carry on every backend.
+- **SPA.** One shared client (`ui/src/lib/live.ts`) per page;
+  `useLiveRefresh(topics, refresh, {pollMs, openPollMs})` replaces the
+  polling timers of Status, Library, Settings → Nodes and User Management.
+  While the socket is down, panels poll on their old timers; while it is
+  up, Status and Nodes still re-read every 60 s (a node that stops
+  heartbeating changes no row) and User Management every 30 s (presence
+  ages with time). Reconnects back off from 1 s to 30 s with jitter, and
+  a reconnect refreshes every subscribed topic once.
+- **Consent screen.** Settings → Clusters (operator only) lists the links
+  and each owner plugin's request with its state, a deny checkbox per
+  requested domain and binding, a deny-network switch, Approve (sending
+  the version shown, so a changed request is refused rather than approved
+  unseen) and Revoke, over the existing
+  `/api/config/cluster-consents` routes; a 409 shows the daemon's reason.
+  There is deliberately no invite or join screen: an enrollment link is a
+  secret, and secrets do not pass through the SPA.
+- **CLI.** `bookclerk clusters join` (link from stdin or a prompt, never
+  argv) and `bookclerk clusters leave [--cluster]` (marks the link `left`,
+  deletes its node keys; a running daemon stops the link's client within
+  5 s). The owner is not told of a leave.
+- **Tests.** Daemon: Origin matching for both modes; a foreign origin or
+  no session is refused before the upgrade; the operator hears job and
+  consent changes; a member hears only their topics and is closed with
+  4401 when signed out; a binary frame closes with 1003; the consent
+  routes are operator-only, approve narrowed for the reviewed version,
+  refuse another version or an unasked domain, deny the network, and
+  revoke; leaving stops a running client. CLI (real binary): list,
+  consents, approve with narrowing and refusals, revoke, leave, and join
+  refusing a link on argv, an empty stdin and a non-link without echoing
+  it; a node-local instance names its node. UI (vitest): socket URL
+  scheme, backoff and reset, topic dispatch, replay after reconnect, the
+  sign-out delay, and polling only while the socket is down.
+
+Step 11 is the operator guide, [Clusters and host nodes](../cluster-hosts.md).
 
 ## Consequences
 
@@ -1313,16 +1442,16 @@ Not in this phase, and not claimed as production HA:
 - Database-adapter plugins as instances and multiple database targets
   (Phase 4).
 - Host nodes: Pebble in CI, delivery claims and the KV, queue and EVENTS
-  binding frames over the node socket, `bookclerk clusters join` and the
-  rest of the host-node client, per-item trust for deliveries and
-  instance ownership (`plugin_instances.owner_user_id`), host consent, the
-  upload path, and node-local outputs (see *Node kinds, ownership, and the
-  Host role* and *Host-node enrollment and transport*). Enrollment links,
-  redeem, revocation, the transport policy, the socket handshake, the
-  ACME and self-signed TLS listeners, per-item job trust with the scan
-  planner, and the job work frames, sealed secrets, wakes and resume are
-  built. Settings has no
-  enrollment switch or invite screen yet (CLI and HTTP only).
+  binding frames over the node socket, per-item trust for deliveries and
+  instance ownership (`plugin_instances.owner_user_id`; instance
+  `SECRETS` reach only a node trusted with every job). A link joined
+  while the daemon runs is dialed only after a restart, and a leave does
+  not tell the owner. Uploaded objects carry content type, length and
+  digest but not the title metadata (ASIN, title, timestamps) a local
+  acquire records with its files. Settings has no enrollment switch, and
+  by design no invite or join screen (CLI and HTTP only). Everything else
+  in H-4 steps 1-11 is built (see the sections above and
+  [Clusters and host nodes](../cluster-hosts.md)).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
   Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).
 - Schema pinning compares package versions, not schema contents: a newer

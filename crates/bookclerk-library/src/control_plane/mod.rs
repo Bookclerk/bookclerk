@@ -15,6 +15,7 @@ mod identity;
 mod instance_config;
 mod instances;
 mod job_routing;
+mod live;
 mod node_queue;
 mod node_status;
 mod ownership;
@@ -36,9 +37,10 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 pub use cluster_links::{
-    decode_spki_pin, list_cluster_links, load_cluster_link, load_cluster_link_keys,
-    record_cluster_link, set_cluster_link_state, ClusterLink, ClusterLinkKeys, NewClusterLink,
-    CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+    decode_spki_pin, leave_cluster_link, list_cluster_links, load_cluster_link,
+    load_cluster_link_keys, record_cluster_link, set_cluster_link_state, ClusterLink,
+    ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE, CLUSTER_LINK_KEYS_NAME,
+    CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
 };
 pub use deployments::{
     bounded_observation_detail, delete_plugin_deployment, ensure_plugin_deployment,
@@ -88,6 +90,7 @@ pub use job_routing::{
     job_semaphores, node_can_run_job, resolve_job_requirements, JobClaimFilter, JobClaimLimits,
     JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
+pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
     publish_to_all_nodes, NodeMessage, NODE_CONSUMER_PREFIX,

@@ -26,6 +26,7 @@ bookclerk-acquire.workspace = true
 bookclerk-library.workspace = true
 bookclerk-media.workspace = true
 bookclerk-migrate.workspace = true
+bookclerk-node-client.workspace = true
 bookclerk-naming.workspace = true
 bookclerk-search.workspace = true
 bookclerk-source.workspace = true
@@ -48,6 +49,7 @@ tokio.workspace = true
 tracing.workspace = true
 ureq.workspace = true
 secrecy.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }

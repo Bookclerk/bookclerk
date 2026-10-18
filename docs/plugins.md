@@ -1195,6 +1195,7 @@ bookclerk plugins deploy echo --node <node-id>          # … on another cluster
 bookclerk plugins undeploy echo
 bookclerk plugins instances list --plugin s3
 bookclerk plugins instances create s3 --name "Backup bucket"
+bookclerk plugins instances create local --name "NAS disk" --node <node-id>   # node-local
 bookclerk plugins config get s3                         # defaults under the document
 bookclerk plugins config set s3 bucket my-audiobooks
 bookclerk plugins config set s3 secret_access_key --secret   # value read from stdin
@@ -1205,7 +1206,7 @@ The daemon exposes the same operations (operator session):
 
 | Method | Path |
 | --- | --- |
-| `GET` / `POST` | `/api/config/plugin-instances` (list; create `{plugin_key, display_name}`) |
+| `GET` / `POST` | `/api/config/plugin-instances` (list; create `{plugin_key, display_name, node_id?}`) |
 | `DELETE` | `/api/config/plugin-instances/{id}` (no deployments left) |
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/config` (`{expected_revision, settings, secret_refs, secrets}`; `secrets` are sealed server-side) |
 | `PUT` | `/api/config/plugin-instances/{id}/deployments/{node_id}` (`{desired, expected_revision}`) |
@@ -1503,6 +1504,30 @@ replica and label fields plus **Manage by hand**. **Settings → Nodes** shows
 each node's heartbeat, reservations and measured use against its budget,
 and availability, with fields for the budgets and labels and a Drain
 switch.
+
+### Node-local instances
+
+`plugins instances create <plugin> --node <node-id>` (or `node_id` on
+`POST /api/config/plugin-instances`) creates an instance owned by that
+node, typically a node's own `local` output. It deploys only on that node:
+a deployment to any other node and any placement are refused. It adds to
+the cluster's outputs on that node rather than replacing them; acquires a
+host node uploads reach every destination deployed on the owner node that
+received them, node-local ones included.
+
+### Running on host nodes
+
+A host node (a separate install that joined the cluster, see
+[Clusters and host nodes](cluster-hosts.md)) runs an owner's plugin only
+after **its own** operator approves it, with the same narrowing as above:
+`bookclerk clusters approve <plugin_key> [--deny-domain …] [--deny-binding
+…] [--deny-network]` or **Settings → Clusters** on the host. The owner's
+grant is the request; the host's approval may only remove from it, a later
+version that asks for more waits for approval again, and a revoke cancels
+the plugin's jobs there and hands them back. The guest runs in the host's
+jail through `bookclerk-workerd`, as the host's own plugins do. Platform
+plugins whose bundled payload matches the owner's are approved
+automatically.
 
 ## ABI (api_version = 3, object-capability Workers RPC)
 

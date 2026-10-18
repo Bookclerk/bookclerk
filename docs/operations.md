@@ -109,9 +109,18 @@ for players, the WebAuthn relying
 party for passkeys, and the base for invite magic links.
 Cookie-authenticated `POST` / `PATCH` / `DELETE` under `/api/*` require
 a matching `Origin` (or `Referer`) host; login / redeem / password paths are
-exempt. Example nginx:
+exempt. The web UI's live socket (`GET /api/live`) and, in `proxy` mode,
+the host-node socket (`GET /api/node/v1/connect`) are WebSockets, so the
+proxy must forward the upgrade. The live socket also requires `Origin` to
+equal `public_origin` exactly; without a working socket the UI falls back
+to polling. Example nginx:
 
 ```nginx
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+
 server {
   listen 443 ssl http2;
   server_name bookclerk.example.com;
@@ -123,6 +132,9 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 120s;   # sockets ping every 20 s
   }
 }
 ```
@@ -167,6 +179,28 @@ bookclerk daemon jobs
 bookclerk daemon scan [--account <id>]
 bookclerk daemon acquire [--asin <id>] [--account <id>]
 ```
+
+### Host nodes
+
+A Bookclerk install can join another cluster as a host node and run its
+scans and acquires (full guide: [Clusters and host nodes](cluster-hosts.md)).
+On the host:
+
+```bash
+bookclerk clusters join            # paste the link at the prompt, or pipe it on stdin
+sudo systemctl restart bookclerkd  # a running daemon dials new links only at start
+bookclerk clusters consents        # what the owner asks to run here
+bookclerk clusters approve <plugin_key> --version <v> [--deny-domain …] [--deny-binding …]
+bookclerk clusters revoke <plugin_key>
+bookclerk clusters leave           # deletes the node keys; revoke the node on the owner too
+```
+
+The host's daemon needs `bookclerk-workerd` and the pinned `workerd` beside
+it like any plugin host, and outbound HTTPS to the owner's
+`public_origin`. It keeps its own database and `master.key`; it never sees
+the owner's. On the owner, `bookclerk nodes list` shows the host
+(`kind = host`) with its heartbeats, and `bookclerk nodes revoke <node_id>`
+disconnects it for good.
 
 ## systemd
 

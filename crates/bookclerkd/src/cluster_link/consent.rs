@@ -62,6 +62,7 @@ static CONSENT_CHANGED: LazyLock<Notify> = LazyLock::new(Notify::new);
 /// Tells every link supervisor in this process to re-read consent now.
 pub fn notify_consent_changed() {
     CONSENT_CHANGED.notify_waiters();
+    crate::live::poke(bookclerk_library::control_plane::LiveTopic::Consents);
 }
 
 /// Keeps one link's catalog and consented plugin set current.

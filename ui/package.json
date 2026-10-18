@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "docs": "typedoc --options typedoc.json",
+    "test": "vitest run",
     "test:safe-html": "node scripts/check-safe-html.mjs"
   },
   "dependencies": {
@@ -29,6 +30,7 @@
     "tailwindcss": "^4.3.3",
     "typedoc": "^0.28.20",
     "typescript": "~6.0.2",
-    "vite": "^8.1.1"
+    "vite": "^8.1.1",
+    "vitest": "4.1.11"
   }
 }

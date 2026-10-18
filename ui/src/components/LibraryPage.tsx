@@ -34,6 +34,7 @@ import {
   type FilterKind,
   type SortKey,
 } from "@/lib/libraryFilters";
+import { useLiveRefresh } from "@/lib/live";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 const PAGE_SIZE = 40;
@@ -133,11 +134,12 @@ export function LibraryPage({
     void refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    if (!canAcquire) return;
-    const id = window.setInterval(() => void refreshMeta(), 4000);
-    return () => window.clearInterval(id);
-  }, [canAcquire, refreshMeta]);
+  // Job and delivery strips follow the live socket; while it is down they
+  // poll as before.
+  useLiveRefresh(["jobs", "deliveries", "library"], refreshMeta, {
+    pollMs: 4000,
+    enabled: canAcquire,
+  });
 
   useEffect(() => {
     const el = sentinelRef.current;

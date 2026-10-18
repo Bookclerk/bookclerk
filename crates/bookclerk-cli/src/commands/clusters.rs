@@ -6,12 +6,18 @@
 //! running daemon re-reads consent within a few seconds, so an approval
 //! lets the plugin's jobs be claimed and a revoke cancels and gives back
 //! the plugin's jobs held here.
+//!
+//! `join` reads the enrollment link from stdin (or a prompt), never from
+//! argv: the link carries a single-use secret. A running daemon dials a
+//! newly joined cluster at its next start, and stops a left one's client
+//! within a few seconds.
 
 use std::collections::BTreeSet;
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin, RemotePluginConsent,
+    leave_cluster_link, list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin,
+    ClusterLink, RemotePluginConsent,
 };
 use bookclerk_plugin_host::{approve_remote_request, remote_consent_state, RemoteNarrowing};
 use clap::Subcommand;
@@ -27,6 +33,17 @@ const CLI_APPROVER: &str = "cli";
 pub enum ClustersCommand {
     /// The owner clusters this install is enrolled in as a host.
     List,
+    /// Enroll this install as a host of an owner cluster. Reads the
+    /// enrollment link (`https://<owner>/enroll#bcn1...`) from stdin, or
+    /// prompts for it; it is never taken from the command line.
+    Join,
+    /// Leave an owner cluster: the link stops being dialed and its node
+    /// keys are deleted. The owner is not told; revoke the node there.
+    Leave {
+        /// Owner cluster id (default: the only enrolled cluster).
+        #[arg(long)]
+        cluster: Option<String>,
+    },
     /// What each owner cluster asks to run here, and whether it may.
     Consents {
         /// Only this owner cluster.
@@ -87,6 +104,41 @@ fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
     })
 }
 
+/// JSON for one cluster link (no key material).
+fn link_json(link: &ClusterLink) -> serde_json::Value {
+    json!({
+        "cluster_id": link.owner_cluster_id,
+        "owner_origin": link.owner_origin,
+        "node_id": link.remote_node_id,
+        "pinned": link.spki_pin.is_some(),
+        "state": link.state,
+        "enrolled_at": link.enrolled_at,
+    })
+}
+
+/// Reads the enrollment link: the first line of stdin, or a prompt on a
+/// terminal.
+fn read_link_from_stdin() -> anyhow::Result<secrecy::SecretString> {
+    use std::io::{IsTerminal, Read};
+    // Zeroed on drop; the link lives on only as a secret.
+    let mut text = zeroize::Zeroizing::new(String::new());
+    if std::io::stdin().is_terminal() {
+        eprint!("enrollment link: ");
+        std::io::stdin().read_line(&mut text)?;
+    } else {
+        std::io::stdin().read_to_string(&mut text)?;
+    }
+    let link = text
+        .split_once('\n')
+        .map_or(text.as_str(), |(first, _)| first)
+        .trim()
+        .to_string();
+    if link.is_empty() {
+        anyhow::bail!("no enrollment link on stdin");
+    }
+    Ok(secrecy::SecretString::from(link))
+}
+
 /// A row's consent state.
 fn state(row: &RemotePluginConsent) -> &'static str {
     remote_consent_state(
@@ -130,18 +182,7 @@ pub async fn run(
     match command {
         ClustersCommand::List => {
             let links = list_cluster_links(store).await?;
-            let rows: Vec<_> = links
-                .iter()
-                .map(|link| {
-                    json!({
-                        "cluster_id": link.owner_cluster_id,
-                        "owner_origin": link.owner_origin,
-                        "node_id": link.remote_node_id,
-                        "state": link.state,
-                        "enrolled_at": link.enrolled_at,
-                    })
-                })
-                .collect();
+            let rows: Vec<_> = links.iter().map(link_json).collect();
             emit(format, &json!({ "clusters": rows }), || {
                 for link in &links {
                     println!(
@@ -149,6 +190,36 @@ pub async fn run(
                         link.owner_cluster_id, link.owner_origin, link.remote_node_id, link.state
                     );
                 }
+            })
+        }
+        ClustersCommand::Join => {
+            use secrecy::ExposeSecret as _;
+            let link = read_link_from_stdin()?;
+            let joined = bookclerk_node_client::join_cluster(
+                store,
+                link.expose_secret(),
+                env!("CARGO_PKG_VERSION"),
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!("could not join the cluster: {err}"))?;
+            drop(link);
+            emit(format, &json!({ "cluster": link_json(&joined) }), || {
+                println!(
+                    "joined cluster {} at {} as node {}; restart the daemon to connect",
+                    joined.owner_cluster_id, joined.owner_origin, joined.remote_node_id
+                );
+            })
+        }
+        ClustersCommand::Leave { cluster } => {
+            let cluster = cluster_id(store, cluster).await?;
+            let Some(left) = leave_cluster_link(store, &cluster).await? else {
+                anyhow::bail!("this install is not enrolled in cluster {cluster}");
+            };
+            emit(format, &json!({ "cluster": link_json(&left) }), || {
+                println!(
+                    "left cluster {}; its node keys are deleted. Revoke node {} on the owner",
+                    left.owner_cluster_id, left.remote_node_id
+                );
             })
         }
         ClustersCommand::Consents { cluster } => {

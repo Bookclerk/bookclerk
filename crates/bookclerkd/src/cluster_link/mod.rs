@@ -5,7 +5,9 @@
 //! the transport policy and the link's SPKI pin, authenticates with the
 //! node keys sealed at enrollment, heartbeats, acks wakes, and resumes held
 //! fences across reconnects. A link enrolled while the daemon runs is
-//! picked up at the next start.
+//! picked up at the next start. A link that stops being active while its
+//! client runs (`bookclerk clusters leave`, which also deletes its keys)
+//! stops the client within [`consent::CONSENT_POLL`].
 //!
 //! Each link also runs a [`consent::LinkSupervisor`]: it reads what the
 //! owner deployed here, records each plugin's request in
@@ -39,9 +41,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    current_process_incarnation, list_cluster_links, load_cluster_link_keys, remote_job_fence,
-    set_cluster_link_state, NodeSampler, CLUSTER_LINK_REVOKED,
+    current_process_incarnation, list_cluster_links, load_cluster_link, load_cluster_link_keys,
+    remote_job_fence, set_cluster_link_state, NodeSampler, CLUSTER_LINK_REVOKED,
 };
+use bookclerk_library::LibraryStore;
 use bookclerk_library::{JobKind, JobPayload};
 use bookclerk_node_client::{
     ClientExit, ClientTiming, HostClient, HostClientConfig, HostJobCtx, HostJobError, HostJobRunner,
@@ -117,6 +120,37 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
     }
 }
 
+/// Stops a link's client (through `stop`) once its row is gone or no
+/// longer active; returns when `shutdown` turns true.
+async fn stop_when_inactive(
+    library: LibraryStore,
+    cluster_id: String,
+    stop: Arc<watch::Sender<bool>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut poll = tokio::time::interval(consent::CONSENT_POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+            _ = poll.tick() => match load_cluster_link(&library, &cluster_id).await {
+                Ok(Some(link)) if link.is_active() => {}
+                Ok(_) => {
+                    tracing::info!(%cluster_id, "the cluster link is no longer active; stopping its client");
+                    let _ = stop.send(true);
+                    return;
+                }
+                // A failed read is not a departure; the next poll retries.
+                Err(err) => tracing::warn!(%cluster_id, error = %err, "could not re-read the cluster link"),
+            },
+        }
+    }
+}
+
 /// Starts one host client per active cluster link.
 pub fn spawn_cluster_links(state: Arc<AppState>) {
     tokio::spawn(async move {
@@ -183,6 +217,13 @@ pub fn spawn_cluster_links(state: Arc<AppState>) {
                 }
             };
             let (stop, shutdown) = watch::channel(false);
+            let stop = Arc::new(stop);
+            tokio::spawn(stop_when_inactive(
+                library.clone(),
+                cluster_id.clone(),
+                Arc::clone(&stop),
+                shutdown.clone(),
+            ));
             tokio::spawn(
                 consent::LinkSupervisor {
                     library: library.clone(),

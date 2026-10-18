@@ -1042,6 +1042,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .route("/api/auth/tray-handoff", get(auth::tray_handoff))
         .route("/api/auth/me", get(auth::me))
+        // The SPA's live socket checks Origin and the caller itself.
+        .route(crate::live::LIVE_PATH, get(crate::live::get_live))
         .route("/api/auth/elevate", post(auth::elevate))
         .route("/api/auth/bootstrap", post(auth::bootstrap))
         .route(

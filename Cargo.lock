@@ -1459,6 +1459,7 @@ dependencies = [
  "bookclerk-media",
  "bookclerk-migrate",
  "bookclerk-naming",
+ "bookclerk-node-client",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
@@ -1482,6 +1483,7 @@ dependencies = [
  "toml",
  "tracing",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]

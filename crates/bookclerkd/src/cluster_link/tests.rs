@@ -2091,3 +2091,70 @@ mod results_and_uploads {
         let _ = &world.state;
     }
 }
+
+/// `bookclerk clusters leave` against a running daemon: the watcher stops
+/// the link's client once the link is no longer active, and returns on
+/// shutdown without stopping anything.
+#[tokio::test]
+async fn leaving_stops_the_running_client() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    // The owner's test state configures the process DEK the link seals with.
+    let owner_files = tempfile::tempdir().unwrap();
+    let _owner = crate::node_api::tests::test_state(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let host = host_store(host_files.path()).await;
+    bookclerk_library::control_plane::record_cluster_link(
+        &host,
+        &bookclerk_library::control_plane::NewClusterLink {
+            owner_cluster_id: "cluster-leave".into(),
+            owner_origin: "https://owner.example".into(),
+            remote_node_id: "node-leave".into(),
+            spki_pin: None,
+        },
+        &bookclerk_library::control_plane::ClusterLinkKeys::generate(),
+    )
+    .await
+    .unwrap();
+
+    // Shutdown first: the watcher returns and stops nothing.
+    let (stop, mut stopped) = watch::channel(false);
+    let stop = Arc::new(stop);
+    let (shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "cluster-leave".into(),
+        Arc::clone(&stop),
+        shutdown,
+    ));
+    shut.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), watcher)
+        .await
+        .expect("the watcher returns on shutdown")
+        .unwrap();
+    assert!(!*stopped.borrow_and_update());
+
+    // While active, nothing stops; after leaving, the client is stopped.
+    let (_shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "cluster-leave".into(),
+        Arc::clone(&stop),
+        shutdown,
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), stopped.changed())
+            .await
+            .is_err(),
+        "an active link keeps its client"
+    );
+    bookclerk_library::control_plane::leave_cluster_link(&host, "cluster-leave")
+        .await
+        .unwrap()
+        .expect("the link");
+    tokio::time::timeout(super::consent::CONSENT_POLL * 3, stopped.changed())
+        .await
+        .expect("the client is stopped after leaving")
+        .unwrap();
+    assert!(*stopped.borrow());
+    watcher.await.unwrap();
+}

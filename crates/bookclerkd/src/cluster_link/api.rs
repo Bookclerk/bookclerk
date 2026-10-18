@@ -1,7 +1,8 @@
 //! Operator API for host consent (H-4 design, step 8):
 //!
-//! - `GET /api/config/cluster-consents`: what each owner cluster asks to
-//!   run here and how this host stands on it;
+//! - `GET /api/config/cluster-consents`: the owner clusters this install
+//!   is enrolled in, what each asks to run here, and how this host stands
+//!   on it (no key material: links carry ids, origin and state only);
 //! - `POST /api/config/cluster-consents/approve`: approve one request,
 //!   optionally narrowed (denied domains, bindings, or all network);
 //! - `POST /api/config/cluster-consents/revoke`: withdraw an approval.
@@ -19,7 +20,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
-    list_remote_plugin_consents, revoke_remote_plugin, RemotePluginConsent,
+    list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin, ClusterLink,
+    RemotePluginConsent,
 };
 use bookclerk_plugin_host::{approve_remote_request, RemoteNarrowing};
 use serde::Deserialize;
@@ -52,15 +54,29 @@ pub(crate) fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
     })
 }
 
+/// JSON for one cluster link: ids, origin and state, never key material.
+pub(crate) fn link_json(link: &ClusterLink) -> serde_json::Value {
+    json!({
+        "cluster_id": link.owner_cluster_id,
+        "owner_origin": link.owner_origin,
+        "node_id": link.remote_node_id,
+        "pinned": link.spki_pin.is_some(),
+        "state": link.state,
+        "enrolled_at": link.enrolled_at,
+    })
+}
+
 /// `GET /api/config/cluster-consents`.
 pub async fn get_cluster_consents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let library = state.library_snapshot().await;
+    let links = list_cluster_links(&library).await.map_err(events_error)?;
     let rows = list_remote_plugin_consents(&library, None)
         .await
         .map_err(events_error)?;
     Ok(Json(json!({
+        "clusters": links.iter().map(link_json).collect::<Vec<_>>(),
         "consents": rows.iter().map(consent_json).collect::<Vec<_>>(),
     })))
 }
@@ -153,3 +169,7 @@ pub async fn post_cluster_consent_revoke(
     notify_consent_changed();
     Ok(Json(json!({ "consent": consent_json(&row) })))
 }
+
+#[cfg(test)]
+#[path = "api_tests.rs"]
+mod tests;

@@ -2303,6 +2303,149 @@ export async function putNodeLabels(nodeId: string, labels: string[]): Promise<u
   return parseJson(res);
 }
 
+/** An owner cluster this install is enrolled in as a host (no key material). */
+export interface ClusterLinkView {
+  cluster_id: string;
+  owner_origin: string;
+  /** Node id the owner minted for this install. */
+  node_id: string;
+  /** True when the link pins the owner's self-signed certificate. */
+  pinned: boolean;
+  /** `active`, `revoked` (by the owner), or `left` (by this host). */
+  state: string;
+  enrolled_at: string;
+}
+
+/** The parts of a plugin grant the consent screen shows. */
+export interface RemoteGrantView {
+  pluginId?: string;
+  /** `deny`, `outbound`, … */
+  networkMode?: string;
+  domains?: string[];
+  tcp?: { host: string; ports: number[] }[];
+  addressCidrs?: string[];
+  /** Host bindings (`config`, `secrets`, `kv`, …). */
+  bindings?: string[];
+  jobs?: string[];
+  memoryMib?: number | null;
+  cpuRatePercent?: number | null;
+  diskMib?: number | null;
+}
+
+/** Where an owner plugin's request to run here stands. */
+export type RemoteConsentState =
+  | "consented"
+  | "awaiting_host_consent"
+  | "awaiting_host_reapproval"
+  | "invalid_grant";
+
+/** One owner plugin's request to run on this host, and this host's answer. */
+export interface RemoteConsentView {
+  cluster_id: string;
+  plugin_key: string;
+  /** Version the owner now asks to run. */
+  requested_version: string;
+  /** What that version asks for. */
+  requested_grant: RemoteGrantView | null;
+  /** Version this host approved, if any. */
+  approved_version: string | null;
+  /** What this host granted (the request, narrowed), if approved. */
+  grant: RemoteGrantView | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  updated_at?: string;
+  state: RemoteConsentState;
+}
+
+/** `GET /api/config/cluster-consents`. */
+export interface ClusterConsentsResponse {
+  clusters: ClusterLinkView[];
+  consents: RemoteConsentView[];
+}
+
+/** Narrowing an approval: what of the request to leave out. */
+export interface RemoteApprovalBody {
+  cluster_id: string;
+  plugin_key: string;
+  /** The requested version reviewed; refused when the cluster now asks for another. */
+  version: string;
+  deny_domains?: string[];
+  deny_bindings?: string[];
+  deny_network?: boolean;
+}
+
+/**
+ * Like `parseJson`, but a refusal's `detail` becomes the error message.
+ *
+ * @param res - Response from a consent route.
+ * @returns The parsed body.
+ */
+async function parseConsentJson<T>(res: Response): Promise<T> {
+  if (res.ok) return res.json() as Promise<T>;
+  const text = await res.text().catch(() => "");
+  let message = text || `${res.status} ${res.statusText}`;
+  let code: string | undefined;
+  try {
+    const body = JSON.parse(text) as { error?: string; detail?: string; message?: string };
+    code = typeof body.error === "string" ? body.error : undefined;
+    message = body.detail?.trim() || body.message?.trim() || body.error?.trim() || message;
+  } catch {
+    // keep raw text
+  }
+  throw new ApiError(res.status, message, { code });
+}
+
+/**
+ * Lists the owner clusters this host is enrolled in and what each asks to
+ * run here. Operator only.
+ *
+ * @returns Links and consent rows.
+ */
+export async function listClusterConsents(): Promise<ClusterConsentsResponse> {
+  const res = await fetch("/api/config/cluster-consents", { credentials: "include" });
+  return parseConsentJson(res);
+}
+
+/**
+ * Approves an owner plugin's request, optionally narrowed. Only what the
+ * request asks for can be approved.
+ *
+ * @param body - The request reviewed and what to leave out.
+ * @returns The consent row after approval.
+ */
+export async function approveClusterConsent(
+  body: RemoteApprovalBody,
+): Promise<{ consent: RemoteConsentView }> {
+  const res = await fetch("/api/config/cluster-consents/approve", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseConsentJson(res);
+}
+
+/**
+ * Withdraws an approval: held jobs of the plugin are cancelled and given
+ * back, and nothing of it is claimed until approved again.
+ *
+ * @param clusterId - Owner cluster.
+ * @param pluginKey - Canonical plugin key.
+ * @returns The consent row after revoking.
+ */
+export async function revokeClusterConsent(
+  clusterId: string,
+  pluginKey: string,
+): Promise<{ consent: RemoteConsentView }> {
+  const res = await fetch("/api/config/cluster-consents/revoke", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cluster_id: clusterId, plugin_key: pluginKey }),
+  });
+  return parseConsentJson(res);
+}
+
 /**
  * Writes bootstrap settings (`daemon`, `jail`, `[database]` keys) through
  * `PATCH /api/settings`. Plugin settings are not accepted here: they are
