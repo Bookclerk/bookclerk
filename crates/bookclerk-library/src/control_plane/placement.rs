@@ -417,9 +417,15 @@ pub async fn put_plugin_placement(
 ) -> Result<PlacementWrite> {
     authorize(actor)?;
     let spec = spec.normalized()?;
-    if load_plugin_instance(store, instance_id).await?.is_none() {
+    let Some(instance) = load_plugin_instance(store, instance_id).await? else {
         return Err(LibraryError::NotFound(format!(
             "plugin instance {instance_id}"
+        )));
+    };
+    // H-2: a node-local instance is never scheduled across the cluster.
+    if let Some(owner) = instance.owner_node_id.as_deref() {
+        return Err(invalid(&format!(
+            "plugin instance {instance_id} is local to node {owner}; it cannot be placed"
         )));
     }
     let constraints_json = serde_json::to_string(&spec.constraints)

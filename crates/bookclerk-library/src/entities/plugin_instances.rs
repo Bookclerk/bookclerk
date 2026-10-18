@@ -20,6 +20,9 @@ pub struct Model {
     pub created_at: String,
     /// Audit identity of the creator.
     pub created_by: String,
+    /// The node that owns this instance (a node-local output, H-2): it is
+    /// deployed only there. `None` for cluster instances.
+    pub owner_node_id: Option<String>,
 }
 
 /// Declared SeaORM relations (instances are addressed by id).

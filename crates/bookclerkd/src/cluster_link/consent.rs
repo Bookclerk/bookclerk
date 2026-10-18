@@ -214,6 +214,7 @@ impl LinkSupervisor {
             default_instance: item.default_instance,
             consent: RemoteConsentState::Pending,
             root: None,
+            version: None,
             config: None,
             problem: None,
         };
@@ -255,7 +256,18 @@ impl LinkSupervisor {
             return entry;
         };
         match self.materialize(&version, grant).await {
-            Ok(root) => entry.root = Some(root),
+            Ok(root) => {
+                let mut local = version.clone();
+                match serde_json::to_string(&**grant) {
+                    Ok(grant_json) => local.grant_json = grant_json,
+                    Err(err) => {
+                        entry.problem = Some(format!("the consented grant does not encode: {err}"));
+                        return entry;
+                    }
+                }
+                entry.root = Some(root);
+                entry.version = Some(local);
+            }
             Err(problem) => {
                 entry.problem = Some(problem);
                 return entry;

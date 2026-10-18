@@ -344,7 +344,10 @@ async fn unseal_job_secrets(store: &LibraryStore, job: &JobRecord) -> Result<Vec
 }
 
 /// The job `fence` owns right now, if it still owns one.
-async fn fenced_job(store: &LibraryStore, fence: &JobFence) -> Result<Option<JobRecord>> {
+pub(super) async fn fenced_job(
+    store: &LibraryStore,
+    fence: &JobFence,
+) -> Result<Option<JobRecord>> {
     Ok(store.get_job(&fence.job_id).await?.filter(|job| {
         job.state == JobState::Running
             && job.lease_owner.as_deref() == Some(fence.owner.as_str())
@@ -354,7 +357,7 @@ async fn fenced_job(store: &LibraryStore, fence: &JobFence) -> Result<Option<Job
 
 /// The semaphore permits `node_id` holds for `job`, and whether every
 /// semaphore the job counts against is among them.
-async fn held_job_permits(
+pub(super) async fn held_job_permits(
     store: &LibraryStore,
     node_id: &str,
     job: &JobRecord,
@@ -540,4 +543,27 @@ pub async fn write_back_job_secret(
     )?;
     upsert_secret(store.db(), &record).await?;
     Ok(WriteBack::Written)
+}
+
+/// The job `node_id` holds at `generation`, while that fence is the job's
+/// live lease and the node is still trusted with the job; `None` when it
+/// is lost.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn live_remote_job(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+) -> Result<Option<JobRecord>> {
+    let fence = remote_job_fence(node_id, job_id, generation);
+    let Some(job) = fenced_job(store, &fence).await? else {
+        return Ok(None);
+    };
+    if !node_may_claim_job(store, node_id, Claimant::Remote, &job).await? {
+        return Ok(None);
+    }
+    Ok(Some(job))
 }

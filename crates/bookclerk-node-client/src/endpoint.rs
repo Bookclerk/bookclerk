@@ -1,5 +1,6 @@
 //! Reaching the owner: the transport policy, TLS with the SPKI pin, the
-//! socket upgrade, and the one HTTP request enrollment makes.
+//! socket upgrade, and the HTTP requests a host makes (enrollment,
+//! artifacts, and streamed uploads).
 //!
 //! Decision 1 of the H-4 design: TLS everywhere except loopback.
 //!
@@ -56,6 +57,10 @@ const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// Seconds allowed for an artifact download.
 const ARTIFACT_TIMEOUT_SECS: u64 = 120;
+
+/// Seconds an upload's answer may take after its last byte (the owner's
+/// destinations finish their writes first).
+pub const UPLOAD_ANSWER_TIMEOUT_SECS: u64 = 300;
 
 /// A byte stream to the owner, plain (loopback) or TLS.
 pub trait OwnerIo: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -347,6 +352,98 @@ impl OwnerEndpoint {
             return Err(DialError::Http);
         }
         Ok((status, body))
+    }
+}
+
+impl OwnerEndpoint {
+    /// `PUT path` streaming exactly `length` bytes from `body`, with an
+    /// `Authorization` header; answers the status and the (small) body.
+    /// The header and the bytes are written straight to the stream and
+    /// never logged. Nothing is buffered beyond one copy chunk.
+    ///
+    /// An owner may answer before it has read the whole body (a lost
+    /// fence); the answer is still read after a failed write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made, `body` ends
+    /// early, or the answer is malformed or does not come within
+    /// [`UPLOAD_ANSWER_TIMEOUT_SECS`] of the last byte.
+    pub async fn put_stream<R: AsyncRead + Unpin + Send>(
+        &self,
+        path: &str,
+        authorization: &str,
+        length: u64,
+        body: R,
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let mut io = self.connect().await?;
+        let head = format!(
+            "PUT {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
+             Content-Type: application/octet-stream\r\nAccept: application/json\r\n\
+             Content-Length: {length}\r\nConnection: close\r\n\r\n",
+            self.authority(),
+        );
+        let sent = async {
+            io.write_all(head.as_bytes()).await?;
+            let copied = tokio::io::copy(&mut body.take(length), &mut io).await?;
+            if copied != length {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "the upload body ended early",
+                ));
+            }
+            io.flush().await
+        }
+        .await;
+        let answer = tokio::time::timeout(
+            Duration::from_secs(UPLOAD_ANSWER_TIMEOUT_SECS),
+            read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES),
+        )
+        .await;
+        match (sent, answer) {
+            (_, Ok(Ok(answer))) => Ok(answer),
+            (Err(err), _) => Err(DialError::Io(err)),
+            (Ok(()), Ok(Err(err))) => Err(err),
+            (Ok(()), Err(_)) => Err(DialError::Timeout),
+        }
+    }
+
+    /// `POST path` with a JSON body and an `Authorization` header; answers
+    /// the status and body. Neither is logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made or the answer
+    /// is malformed.
+    pub async fn post_json_authorized(
+        &self,
+        path: &str,
+        authorization: &str,
+        body: &[u8],
+    ) -> Result<(u16, Vec<u8>), DialError> {
+        if authorization.contains(['\r', '\n']) || path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let exchange = async {
+            let mut io = self.connect().await?;
+            let head = format!(
+                "POST {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: {authorization}\r\n\
+                 Content-Type: application/json\r\nAccept: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                self.authority(),
+                body.len()
+            );
+            io.write_all(head.as_bytes()).await?;
+            io.write_all(body).await?;
+            io.flush().await?;
+            read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES).await
+        };
+        tokio::time::timeout(Duration::from_secs(HTTP_TIMEOUT_SECS), exchange)
+            .await
+            .map_err(|_| DialError::Timeout)?
     }
 }
 

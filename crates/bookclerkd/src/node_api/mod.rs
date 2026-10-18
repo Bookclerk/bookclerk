@@ -14,10 +14,15 @@
 //! sits outside those layers and authenticates with the node's enrolled
 //! Ed25519 key. `GET /api/node/v1/artifacts/{sha256}` ([`artifacts`])
 //! serves owner plugin archives to nodes on a node-signed request.
+//! `PUT /api/node/v1/uploads/{id}/files/{n}` and `POST .../commit`
+//! ([`uploads`]) receive a host's acquired files as streams under a sealed
+//! upload token and write them straight to this node's destinations.
 
 mod artifacts;
+mod host_results;
 pub mod tls;
 pub mod transport;
+pub(crate) mod uploads;
 mod wakes;
 mod work;
 pub mod ws;
@@ -202,6 +207,16 @@ where
         .route(
             "/api/node/v1/artifacts/{sha256}",
             axum::routing::get(artifacts::get_artifact),
+        )
+        // Streamed uploads from hosts: the sealed upload token is the
+        // credential.
+        .route(
+            "/api/node/v1/uploads/{upload_id}/files/{index}",
+            axum::routing::put(uploads::put_file),
+        )
+        .route(
+            "/api/node/v1/uploads/{upload_id}/commit",
+            axum::routing::post(uploads::post_commit),
         )
         .with_state(state)
 }

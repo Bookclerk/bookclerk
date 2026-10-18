@@ -21,12 +21,14 @@ mod ownership;
 mod placement;
 mod remote_catalog;
 mod remote_consents;
+mod remote_results;
 mod remote_work;
 mod routing;
 mod schemas;
 mod secret;
 mod semaphore;
 mod trust;
+mod uploads;
 mod versions;
 
 use std::path::Path;
@@ -76,9 +78,10 @@ pub use instance_config::{
     MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
-    create_plugin_instance, default_instance_for_key, delete_plugin_instance,
-    ensure_plugin_instance, find_plugin_instance_by_key, list_all_plugin_instances,
-    list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
+    create_node_local_instance, create_plugin_instance, default_instance_for_key,
+    delete_plugin_instance, ensure_plugin_instance, find_plugin_instance_by_key,
+    list_all_plugin_instances, list_plugin_instances_for_key, load_plugin_instance, PluginInstance,
+    PluginInstanceId,
 };
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, instance_semaphore, job_plugin_keys,
@@ -115,11 +118,12 @@ pub use remote_consents::{
     record_remote_plugin_request, revoke_remote_plugin, RemoteApproval, RemotePluginConsent,
     REMOTE_CONSENT_PLATFORM,
 };
+pub use remote_results::{accept_scan_results, ScanAccept, MAX_SCAN_RESULT_ROWS};
 pub use remote_work::{
-    claim_remote_job, finish_remote_job, job_secret_refs, release_remote_job, remote_job_fence,
-    remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret, JobSecretRef,
-    RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack,
-    MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
+    claim_remote_job, finish_remote_job, job_secret_refs, live_remote_job, release_remote_job,
+    remote_job_fence, remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret,
+    JobSecretRef, RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew,
+    WriteBack, MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
 };
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{
@@ -136,6 +140,11 @@ pub use semaphore::{
 pub use trust::{
     accounts_owned_by, handoff_routed_job, job_trusted, node_may_claim_job, node_trust, plan_scan,
     Claimant, NodeTrust, ScanRequester,
+};
+pub use uploads::{
+    abort_upload, authorize_upload, commit_upload, grant_upload, load_upload, record_upload_file,
+    upload_fence_live, UploadCommit, UploadGrant, UploadGrantRequest, UploadSession,
+    UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,

@@ -881,7 +881,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         plugin_key TEXT NOT NULL,
         display_name TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
-        created_by TEXT NOT NULL
+        created_by TEXT NOT NULL,
+        owner_node_id TEXT
     )",
     ),
     // Settings schema a host pinned from the installed manifest. Writes from
@@ -1096,5 +1097,28 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         updated_at TEXT NOT NULL,
         PRIMARY KEY (owner_cluster_id, plugin_key)
     )",
+    ),
+    // H-4 step 9: one title's streamed upload from a host node. Only the
+    // token's hash is stored; nothing of the files is.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS node_upload_sessions (
+        upload_id TEXT PRIMARY KEY NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+        job_id TEXT NOT NULL,
+        lease_generation INTEGER NOT NULL,
+        receiving_node_id TEXT NOT NULL,
+        book_uuid TEXT NOT NULL,
+        primary_key TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        received_json TEXT NOT NULL DEFAULT '[]',
+        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        committed_at TEXT
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
     ),
 ];

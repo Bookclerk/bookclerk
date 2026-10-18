@@ -49,11 +49,12 @@ use bookclerk_library::control_plane::{
     ClusterLink, ClusterLinkKeys, NodeHeartbeat, NodeSampler, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_node_proto::{
-    decode_nonce, open_instance_secrets, open_secrets, seal_secret_update, sign_artifact_request,
-    sign_auth, validate_box_public_key, ArtifactRequest, AuthContext, Body, ClaimFilter, Frame,
-    HeldFence, SealError, SecretRef, SecretValue, SigningKey, ARTIFACTS_PATH, CLOSE_PROTOCOL,
+    decode_nonce, open_instance_secrets, open_secrets, open_upload_token, seal_secret_update,
+    sign_artifact_request, sign_auth, validate_box_public_key, AcquireTarget, ArtifactRequest,
+    AuthContext, Body, ClaimFilter, Frame, HeldFence, SealError, SecretRef, SecretValue,
+    SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, ARTIFACTS_PATH, CLOSE_PROTOCOL,
     CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS,
-    SEND_QUEUE_FRAMES,
+    SEND_QUEUE_FRAMES, UPLOADS_PATH, UPLOAD_AUTH_SCHEME,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -67,7 +68,8 @@ use zeroize::Zeroizing;
 
 use crate::endpoint::{DialError, OwnerEndpoint, OwnerSocket};
 use crate::jobs::{
-    HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, WriteBackError,
+    HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload, OwnerCallError,
+    WriteBackError,
 };
 
 /// Error kind reported when a job's secrets do not open with this node's
@@ -437,6 +439,209 @@ impl Shared {
             }
             _ => Err(WriteBackError::Unavailable),
         }
+    }
+}
+
+impl Shared {
+    /// Sends one fenced request for `job_id` and answers its body; `lost`
+    /// marks the fence lost (cancelling the job), `refused` and anything
+    /// unexpected map onto [`OwnerCallError`].
+    async fn job_call(&self, job_id: &str, fence: i64, body: Body) -> Result<Body, OwnerCallError> {
+        if !self.holds(job_id, fence) {
+            return Err(OwnerCallError::Lost);
+        }
+        let conn = self
+            .wait_conn(Instant::now() + self.timing.request_timeout)
+            .await
+            .ok_or(OwnerCallError::Unavailable)?;
+        let answer = conn
+            .request(body)
+            .await
+            .map_err(|Unavailable| OwnerCallError::Unavailable)?;
+        match answer.body {
+            Body::Lost { .. } => {
+                self.mark_job_lost(job_id, fence);
+                Err(OwnerCallError::Lost)
+            }
+            Body::Error { code, message } if code == "refused" => {
+                Err(OwnerCallError::Refused(message))
+            }
+            Body::Error { .. } => Err(OwnerCallError::Unavailable),
+            other => Ok(other),
+        }
+    }
+
+    /// Marks one job fence lost.
+    fn mark_job_lost(&self, job_id: &str, fence: i64) {
+        self.mark_lost(&[HeldFence {
+            kind: ITEM_JOB.into(),
+            id: job_id.to_string(),
+            fence,
+        }]);
+    }
+
+    /// `scan.results`: one batch of a scan's rows; answers the rows the
+    /// owner wrote.
+    pub(crate) async fn scan_results(
+        &self,
+        job_id: &str,
+        fence: i64,
+        plugin_key: &str,
+        batch: u64,
+        books: Vec<serde_json::Value>,
+    ) -> Result<u64, OwnerCallError> {
+        let body = Body::ScanResults {
+            job_id: job_id.to_string(),
+            fence,
+            plugin_key: plugin_key.to_string(),
+            batch,
+            books,
+        };
+        match self.job_call(job_id, fence, body).await? {
+            Body::ScanAccepted { upserted, .. } => Ok(upserted),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// `acquire.plan`: the titles still to acquire and the owner's options.
+    pub(crate) async fn acquire_plan(
+        &self,
+        job_id: &str,
+        fence: i64,
+    ) -> Result<(Vec<AcquireTarget>, serde_json::Value), OwnerCallError> {
+        let body = Body::AcquirePlan {
+            job_id: job_id.to_string(),
+            fence,
+        };
+        match self.job_call(job_id, fence, body).await? {
+            Body::AcquireTargets { targets, options } => Ok((targets, options)),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// `upload.grant`: opens an upload and its sealed token.
+    pub(crate) async fn upload_grant(
+        &self,
+        job_id: &str,
+        fence: i64,
+        book_uuid: &str,
+        primary_key: &str,
+        pdf_key: Option<&str>,
+        files: Vec<UploadFile>,
+    ) -> Result<HostUpload, OwnerCallError> {
+        let body = Body::UploadGrant {
+            job_id: job_id.to_string(),
+            fence,
+            book_uuid: book_uuid.to_string(),
+            primary_key: primary_key.to_string(),
+            pdf_key: pdf_key.map(str::to_string),
+            files,
+        };
+        let Body::UploadGranted {
+            upload_id,
+            sealed_token,
+            ..
+        } = self.job_call(job_id, fence, body).await?
+        else {
+            return Err(OwnerCallError::Unavailable);
+        };
+        let token = open_upload_token(
+            &self.box_secret,
+            &self.node_id,
+            job_id,
+            fence,
+            &upload_id,
+            &sealed_token,
+        )
+        .map_err(|_| {
+            tracing::warn!(job_id, fence, %upload_id, "the upload token does not open with this node's box key");
+            OwnerCallError::Unavailable
+        })?;
+        Ok(HostUpload::new(upload_id, token))
+    }
+
+    /// The `Authorization` value of `upload`'s requests.
+    fn upload_authorization(upload: &HostUpload) -> Result<Zeroizing<String>, OwnerCallError> {
+        let token = std::str::from_utf8(upload.token().expose())
+            .map_err(|_| OwnerCallError::Unavailable)?;
+        Ok(Zeroizing::new(format!("{UPLOAD_AUTH_SCHEME} {token}")))
+    }
+
+    /// Maps an upload endpoint answer.
+    fn upload_answer(
+        &self,
+        job_id: &str,
+        fence: i64,
+        status: u16,
+        body: &[u8],
+    ) -> Result<UploadAnswer, OwnerCallError> {
+        let answer: UploadAnswer = serde_json::from_slice(body).unwrap_or_default();
+        match status {
+            200 => Ok(answer),
+            409 => {
+                self.mark_job_lost(job_id, fence);
+                Err(OwnerCallError::Lost)
+            }
+            401 | 422 => Err(OwnerCallError::Refused(
+                answer.reason.unwrap_or_else(|| answer.status.clone()),
+            )),
+            _ => Err(OwnerCallError::Unavailable),
+        }
+    }
+
+    /// Streams one declared file of `upload` from `body`.
+    pub(crate) async fn upload_file<R: tokio::io::AsyncRead + Unpin + Send>(
+        &self,
+        job_id: &str,
+        fence: i64,
+        upload: &HostUpload,
+        index: usize,
+        length: u64,
+        body: R,
+    ) -> Result<(), OwnerCallError> {
+        if !self.holds(job_id, fence) {
+            return Err(OwnerCallError::Lost);
+        }
+        let authorization = Self::upload_authorization(upload)?;
+        let path = format!("{UPLOADS_PATH}{}/files/{index}", upload.upload_id);
+        let (status, answer) = self
+            .endpoint
+            .put_stream(&path, &authorization, length, body)
+            .await
+            .map_err(|err| {
+                tracing::warn!(job_id, fence, upload_id = %upload.upload_id, index, error = %err, "an upload request failed");
+                OwnerCallError::Unavailable
+            })?;
+        self.upload_answer(job_id, fence, status, &answer)
+            .map(|_| ())
+    }
+
+    /// Commits `upload`; with `finish`, the job completes with it. Answers
+    /// whether the job is finished.
+    pub(crate) async fn commit_upload(
+        &self,
+        job_id: &str,
+        fence: i64,
+        upload: &HostUpload,
+        finish: Option<&str>,
+    ) -> Result<bool, OwnerCallError> {
+        if !self.holds(job_id, fence) {
+            return Err(OwnerCallError::Lost);
+        }
+        let authorization = Self::upload_authorization(upload)?;
+        let body = serde_json::to_vec(&UploadCommitRequest {
+            finish: finish.is_some(),
+            detail: finish.map(str::to_string),
+        })
+        .map_err(|_| OwnerCallError::Unavailable)?;
+        let path = format!("{UPLOADS_PATH}{}/commit", upload.upload_id);
+        let (status, answer) = self
+            .endpoint
+            .post_json_authorized(&path, &authorization, &body)
+            .await
+            .map_err(|_| OwnerCallError::Unavailable)?;
+        self.upload_answer(job_id, fence, status, &answer)
+            .map(|answer| answer.job_completed)
     }
 }
 
@@ -1144,6 +1349,7 @@ async fn run_job<R: HostJobRunner>(
     let lease_secs = host_job.lease_secs;
     let cancel = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
     let release = Arc::new(Mutex::new(None));
     lock(&shared.held).insert(
         job_id.clone(),
@@ -1187,6 +1393,7 @@ async fn run_job<R: HostJobRunner>(
                 host_job,
                 HandedSecrets::new(entries),
                 Arc::clone(&cancel),
+                Arc::clone(&finished),
                 Arc::clone(&shared),
             );
             let _renewer = AbortOnDrop(vec![tokio::spawn(renew_loop(
@@ -1206,6 +1413,9 @@ async fn run_job<R: HostJobRunner>(
     } else if let Some(reason) = given_back {
         tracing::warn!(%job_id, fence, reason, "discarding the result of a job given back");
         give_back(&shared, &job_id, fence, reason, &lost).await;
+    } else if finished.load(Ordering::SeqCst) && result.is_ok() {
+        // The owner completed the job with its last upload's commit.
+        tracing::info!(%job_id, fence, "the job completed with its last upload");
     } else {
         report(&shared, &job_id, fence, result, &lost).await;
     }

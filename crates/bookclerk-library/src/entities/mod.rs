@@ -32,6 +32,7 @@ pub mod listening_progress;
 pub mod node_credentials;
 pub mod node_enrollment_links;
 pub mod node_status;
+pub mod node_upload_sessions;
 pub mod nodes;
 pub mod oidc_auth_codes;
 pub mod oidc_clients;

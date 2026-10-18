@@ -227,14 +227,22 @@ async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAdd
     };
     let (serial, close) = register(&authed.node_id);
     tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
+    let owner_node_id = crate::node_queue::node_id(&files_dir).unwrap_or_default();
+    // Uploads are received by this node; its own identity file names it
+    // (the queue's process-wide id is the consumer's, not necessarily it).
+    let receiving_node_id =
+        bookclerk_library::control_plane::load_or_create_node_identity(&files_dir)
+            .map(|identity| identity.node_id)
+            .unwrap_or_default();
     let host = HostContext {
         node_id: authed.node_id.clone(),
         incarnation: authed.incarnation,
         box_public_key: authed.box_public_key,
         owner_box_secret: authed.owner_box_secret,
         settings,
+        owner_node_id: receiving_node_id,
+        state: Arc::clone(&state),
     };
-    let owner_node_id = crate::node_queue::node_id(&files_dir).unwrap_or_default();
     let wakes = WakeForwarder::new(&owner_node_id, &host.node_id, serial);
     session(&library, socket, &host, authed.resume, wakes, close).await;
     unregister(&authed.node_id, serial);

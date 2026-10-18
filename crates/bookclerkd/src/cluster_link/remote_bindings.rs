@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use bookclerk_library::control_plane::PluginVersion;
 use bookclerk_library::secrets::secret_kind;
 use bookclerk_node_client::{HostJobCtx, HostJobError, AWAITING_HOST_CONSENT};
 use bookclerk_node_proto::SecretValue;
@@ -63,6 +64,9 @@ pub struct RemoteInstanceEntry {
     pub consent: RemoteConsentState,
     /// Materialized plugin tree, once consented and fetched.
     pub root: Option<PathBuf>,
+    /// The owner's version as materialized here, its grant the consented
+    /// one; set with `root`.
+    pub version: Option<PluginVersion>,
     /// The instance's bindings, once consented and fetched.
     pub config: Option<RemoteInstanceConfig>,
     /// Why it cannot run, when it cannot (observation detail).
@@ -76,6 +80,7 @@ impl RemoteInstanceEntry {
     pub fn is_ready(&self) -> bool {
         matches!(self.consent, RemoteConsentState::Consented(_))
             && self.root.is_some()
+            && self.version.is_some()
             && self.config.is_some()
             && self.problem.is_none()
     }
@@ -170,17 +175,13 @@ pub struct HostJobBindings {
     pub instance_id: String,
     /// The instance's plugin key.
     pub plugin_key: String,
-    /// The consented grant (the owner's grant narrowed by this host).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the guest spawn reads it once a job kind runs on a host"
-        )
-    )]
+    /// The consented grant (the owner's grant narrowed by this host); the
+    /// guest is spawned under exactly this grant.
     pub grant: PluginGrant,
     /// Materialized plugin tree.
     pub root: PathBuf,
+    /// The version materialized at `root`.
+    pub version: PluginVersion,
     /// `CONFIG` and `SECRETS` for `PluginWorker.open`.
     pub open: PreparedOpen,
     /// Store credentials for the job's accounts, from the owner's handed
@@ -257,7 +258,11 @@ pub fn host_job_bindings(
     if !entry.is_ready() {
         return Err(unavailable("the plugin instance is not ready on this host"));
     }
-    let (Some(root), Some(config)) = (entry.root.clone(), entry.config.as_ref()) else {
+    let (Some(root), Some(version), Some(config)) = (
+        entry.root.clone(),
+        entry.version.clone(),
+        entry.config.as_ref(),
+    ) else {
         return Err(unavailable("the plugin instance is not ready on this host"));
     };
     let flags = binding_grant_flags(grant);
@@ -295,6 +300,7 @@ pub fn host_job_bindings(
         plugin_key: entry.plugin_key.clone(),
         grant: (**grant).clone(),
         root,
+        version,
         open: prepared_open_from_resolved(config_payload, secrets_payload, config.revision),
         credentials,
     })

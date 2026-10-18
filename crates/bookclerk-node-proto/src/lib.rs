@@ -32,6 +32,14 @@
 //! [`Body::Observation`]s, and fetches stored archives over HTTP at
 //! [`ARTIFACTS_PATH`] with a request signed by [`sign_artifact_request`].
 //!
+//! A scan run on a host returns its rows in fenced [`Body::ScanResults`]
+//! batches; the owner validates and writes them. An acquire asks
+//! [`Body::AcquirePlan`] for its titles, then for each title asks
+//! [`Body::UploadGrant`] and streams the files over HTTP at
+//! [`UPLOADS_PATH`] with the token sealed in [`Body::UploadGranted`]; the
+//! owner streams them on to its output destinations without staging them,
+//! and the job completes when the last title's upload commits.
+//!
 //! This crate is pure: no I/O, no clock, no randomness. The daemon (owner)
 //! and the host client share it so both sides sign and check the same
 //! bytes.
@@ -43,18 +51,21 @@ mod signature;
 
 pub use ed25519_dalek::SigningKey;
 pub use frames::{
-    Body, ClaimFilter, Frame, FrameError, HeldFence, RemoteArtifact, RemoteDeployment,
-    RemoteVersion, WorkJob, ITEM_JOB,
+    AcquireTarget, Body, ClaimFilter, Frame, FrameError, HeldFence, RemoteArtifact,
+    RemoteDeployment, RemoteVersion, UploadAnswer, UploadCommitRequest, UploadFile, WorkJob,
+    ITEM_JOB, MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES, MAX_UPLOAD_FILE_BYTES,
+    MAX_UPLOAD_KEY_BYTES,
 };
 pub use keys::{
     box_public_key, sign_public_key, validate_box_public_key, validate_sign_public_key, KeyError,
     PUBLIC_KEY_LEN,
 };
 pub use sealed::{
-    instance_secrets_aad, open, open_instance_secrets, open_secret_update, open_secrets, seal,
-    seal_instance_secrets, seal_secret_update, seal_secrets, secret_update_aad, secrets_aad,
-    SealError, SecretEntry, SecretRef, SecretValue, INSTANCE_SECRETS_AAD_DOMAIN, SEALED_BOX_INFO,
-    SEALED_BOX_OVERHEAD, SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN,
+    instance_secrets_aad, open, open_instance_secrets, open_secret_update, open_secrets,
+    open_upload_token, seal, seal_instance_secrets, seal_secret_update, seal_secrets,
+    seal_upload_token, secret_update_aad, secrets_aad, upload_token_aad, SealError, SecretEntry,
+    SecretRef, SecretValue, INSTANCE_SECRETS_AAD_DOMAIN, SEALED_BOX_INFO, SEALED_BOX_OVERHEAD,
+    SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN, UPLOAD_TOKEN_AAD_DOMAIN,
 };
 pub use signature::{
     artifact_transcript, auth_transcript, canonical_origin, decode_nonce, encode_nonce,
@@ -68,6 +79,15 @@ pub use signature::{
 /// ([`sign_artifact_request`]) streams one stored archive to a host that
 /// runs it.
 pub const ARTIFACTS_PATH: &str = "/api/node/v1/artifacts/";
+
+/// Path prefix of the owner's upload endpoint (H-4 design, section 6):
+/// `PUT|HEAD <prefix><upload_id>/files/<n>` streams one declared file and
+/// `POST <prefix><upload_id>/commit` commits the title, each with
+/// `Authorization: Bookclerk-Upload <token>` ([`UPLOAD_AUTH_SCHEME`]).
+pub const UPLOADS_PATH: &str = "/api/node/v1/uploads/";
+
+/// `Authorization` scheme of the upload endpoint.
+pub const UPLOAD_AUTH_SCHEME: &str = "Bookclerk-Upload";
 
 /// WebSocket subprotocol a host must offer.
 pub const SUBPROTOCOL: &str = "bookclerk-node.v1";

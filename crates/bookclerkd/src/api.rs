@@ -1236,6 +1236,11 @@ async fn api_timeout_middleware(req: Request, next: Next) -> Response {
     if path == "/health" || !path.starts_with("/api/") {
         return next.run(req).await;
     }
+    // A host's streamed upload runs as long as its file takes; the handler
+    // watches the job's fence instead.
+    if path.starts_with(bookclerk_node_proto::UPLOADS_PATH) {
+        return next.run(req).await;
+    }
     // Multi-store purchase / Audnexus detail work is intentionally slower than
     // the default control-plane budget; shelf cards batch these in the viewport.
     let budget = api_timeout_for_path(&path);

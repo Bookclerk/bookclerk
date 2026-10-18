@@ -279,6 +279,85 @@ pub enum Body {
         /// (`crate::seal_secret_update`).
         sealed_value: String,
     },
+    /// Host → owner: one batch of a scan's book rows (decision 6). The
+    /// owner checks the fence, the node's trust with the job, and every
+    /// row's account before it writes any row to its library, on every
+    /// batch. Answered with [`Body::ScanAccepted`], [`Body::Lost`], or
+    /// `error {code: "refused"}`.
+    #[serde(rename = "scan.results")]
+    ScanResults {
+        /// Job the rows belong to.
+        job_id: String,
+        /// Lease generation the host holds.
+        fence: i64,
+        /// Plugin key whose guest produced the rows (one of the job's).
+        plugin_key: String,
+        /// Batch number, from 1, for the logs.
+        batch: u64,
+        /// Book rows as the guest's `ScanBook` (camelCase JSON objects);
+        /// at most [`MAX_SCAN_BATCH_ROWS`].
+        books: Vec<serde_json::Value>,
+    },
+    /// Owner → host: a results batch was written.
+    #[serde(rename = "scan.accepted")]
+    ScanAccepted {
+        /// The batch number.
+        batch: u64,
+        /// Rows written.
+        upserted: u64,
+    },
+    /// Host → owner: what an acquire job should fetch here. Answered with
+    /// [`Body::AcquireTargets`], [`Body::Lost`], or `error`.
+    #[serde(rename = "acquire.plan")]
+    AcquirePlan {
+        /// The acquire job.
+        job_id: String,
+        /// Lease generation the host holds.
+        fence: i64,
+    },
+    /// Owner → host: the titles to acquire and how to package them.
+    #[serde(rename = "acquire.targets")]
+    AcquireTargets {
+        /// Titles still to acquire, each one of the job's accounts.
+        targets: Vec<AcquireTarget>,
+        /// The owner's packaging and naming options (its primary output
+        /// destination's `DownloadOptions`, JSON).
+        options: serde_json::Value,
+    },
+    /// Host → owner: ask to upload one title's files. Answered with
+    /// [`Body::UploadGranted`], [`Body::Lost`], or `error`.
+    #[serde(rename = "upload.grant")]
+    UploadGrant {
+        /// The acquire job.
+        job_id: String,
+        /// Lease generation the host holds.
+        fence: i64,
+        /// Library id of the title the files are for (one of the job's
+        /// targets).
+        book_uuid: String,
+        /// Storage key of the title's primary audio file (one of `files`).
+        primary_key: String,
+        /// Storage key of the title's companion PDF (one of `files`), when
+        /// one is uploaded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdf_key: Option<String>,
+        /// Every file, in upload order. Empty, with an empty `book_uuid`,
+        /// for the job's closing upload, whose commit only completes the
+        /// job.
+        files: Vec<UploadFile>,
+    },
+    /// Owner → host: the upload is open.
+    #[serde(rename = "upload.granted")]
+    UploadGranted {
+        /// Upload id; the files go to `UPLOADS_PATH<upload_id>/files/<n>`.
+        upload_id: String,
+        /// The bearer token for the upload endpoint, sealed to the node's
+        /// box key and bound to the node, job, fence and upload
+        /// (`crate::seal_upload_token`).
+        sealed_token: String,
+        /// Seconds the grant stays valid.
+        expires_in_secs: u64,
+    },
     /// Owner → host: a message from the host's `node.<id>` queue. The host
     /// answers [`Body::Ack`] with the same frame id once it has acted.
     Wake {
@@ -386,6 +465,105 @@ pub struct WorkJob {
     pub attempt: i64,
 }
 
+/// Most rows one [`Body::ScanResults`] batch may carry.
+pub const MAX_SCAN_BATCH_ROWS: usize = 200;
+
+/// Largest serialized row in a [`Body::ScanResults`] batch.
+pub const MAX_SCAN_ROW_BYTES: usize = 32 * 1024;
+
+/// Most files one upload may declare.
+pub const MAX_UPLOAD_FILES: usize = 512;
+
+/// Largest file one upload may declare (8 GiB).
+pub const MAX_UPLOAD_FILE_BYTES: u64 = 8 << 30;
+
+/// Longest storage key an upload may declare.
+pub const MAX_UPLOAD_KEY_BYTES: usize = 1024;
+
+/// One title an acquire job should fetch on a host
+/// ([`Body::AcquireTargets`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquireTarget {
+    /// Library id of the title.
+    pub book_uuid: String,
+    /// Plugin key of the store that sells it.
+    pub plugin_key: String,
+    /// Store account that owns it.
+    pub account_id: String,
+    /// The owner's library row (JSON), for naming and metadata.
+    pub book: serde_json::Value,
+}
+
+/// One file of an upload ([`Body::UploadGrant`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadFile {
+    /// Storage key the file is written under on every output destination.
+    pub key: String,
+    /// Exact size in bytes.
+    pub size: u64,
+    /// Lowercase hex SHA-256 of the content.
+    pub sha256: String,
+    /// MIME type to store with it.
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
+impl UploadFile {
+    /// True when the key is a relative storage key (no empty, `.` or `..`
+    /// segment, no backslash or control character, not absolute), the
+    /// size is within [`MAX_UPLOAD_FILE_BYTES`], and the digest is
+    /// lowercase hex SHA-256.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        let key_ok = !self.key.is_empty()
+            && self.key.len() <= MAX_UPLOAD_KEY_BYTES
+            && !self.key.starts_with('/')
+            && !self.key.contains('\\')
+            && !self.key.chars().any(char::is_control)
+            && self
+                .key
+                .split('/')
+                .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+        let digest_ok = self.sha256.len() == 64
+            && self
+                .sha256
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        let type_ok = self
+            .content_type
+            .as_deref()
+            .is_none_or(|t| t.len() <= 128 && !t.chars().any(char::is_control));
+        key_ok && digest_ok && type_ok && self.size <= MAX_UPLOAD_FILE_BYTES
+    }
+}
+
+/// Body of `POST <UPLOADS_PATH><upload_id>/commit`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadCommitRequest {
+    /// Complete the job with this commit (the job's closing upload).
+    #[serde(default)]
+    pub finish: bool,
+    /// Outcome text recorded as the job's progress when `finish` is set.
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// Answer of the upload endpoint (every status carries one).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadAnswer {
+    /// Stable outcome: `received`, `committed`, `lost`, `refused`,
+    /// `misdirected`, `unauthorized`, `unavailable`.
+    pub status: String,
+    /// Why, for `refused`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// For `committed`: the job is finished.
+    #[serde(default)]
+    pub job_completed: bool,
+}
+
 /// One frame: the envelope and its body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Frame {
@@ -451,6 +629,26 @@ impl Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_files_must_be_relative_keys_with_hex_digests() {
+        let file = |key: &str| UploadFile {
+            key: key.into(),
+            size: 1,
+            sha256: "0f".repeat(32),
+            content_type: Some("audio/mp4".into()),
+        };
+        assert!(file("Author/Title/Title.m4b").is_well_formed());
+        for bad in ["", "/abs.m4b", "a/../b.m4b", "a//b", "./a", "a\\b", "a\nb"] {
+            assert!(!file(bad).is_well_formed(), "{bad:?}");
+        }
+        let mut upper = file("a.m4b");
+        upper.sha256 = "0F".repeat(32);
+        assert!(!upper.is_well_formed());
+        let mut huge = file("a.m4b");
+        huge.size = MAX_UPLOAD_FILE_BYTES + 1;
+        assert!(!huge.is_well_formed());
+    }
 
     #[test]
     fn frames_round_trip_and_unknown_types_parse() {
@@ -614,6 +812,72 @@ mod tests {
             ),
         ] {
             let text = Frame::new("3", body.clone()).to_text();
+            assert!(text.contains(&format!(r#""type":"{tag}""#)), "{text}");
+            assert_eq!(Frame::parse(&text).unwrap().body, body);
+        }
+        for (body, tag) in [
+            (
+                Body::ScanResults {
+                    job_id: job_id(),
+                    fence: 2,
+                    plugin_key: "store".into(),
+                    batch: 1,
+                    books: vec![serde_json::json!({"productId": "p"})],
+                },
+                "scan.results",
+            ),
+            (
+                Body::ScanAccepted {
+                    batch: 1,
+                    upserted: 1,
+                },
+                "scan.accepted",
+            ),
+            (
+                Body::AcquirePlan {
+                    job_id: job_id(),
+                    fence: 2,
+                },
+                "acquire.plan",
+            ),
+            (
+                Body::AcquireTargets {
+                    targets: vec![AcquireTarget {
+                        book_uuid: "b".into(),
+                        plugin_key: "store".into(),
+                        account_id: "a".into(),
+                        book: serde_json::json!({}),
+                    }],
+                    options: serde_json::json!({}),
+                },
+                "acquire.targets",
+            ),
+            (
+                Body::UploadGrant {
+                    job_id: job_id(),
+                    fence: 2,
+                    book_uuid: "b".into(),
+                    primary_key: "A/B.m4b".into(),
+                    pdf_key: None,
+                    files: vec![UploadFile {
+                        key: "A/B.m4b".into(),
+                        size: 3,
+                        sha256: "ab".repeat(32),
+                        content_type: None,
+                    }],
+                },
+                "upload.grant",
+            ),
+            (
+                Body::UploadGranted {
+                    upload_id: "u".into(),
+                    sealed_token: "x".into(),
+                    expires_in_secs: 3600,
+                },
+                "upload.granted",
+            ),
+        ] {
+            let text = Frame::new("4", body.clone()).to_text();
             assert!(text.contains(&format!(r#""type":"{tag}""#)), "{text}");
             assert_eq!(Frame::parse(&text).unwrap().body, body);
         }

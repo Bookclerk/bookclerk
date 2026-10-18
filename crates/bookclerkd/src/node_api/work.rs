@@ -16,6 +16,7 @@
 //! | `deployments.list` | `deployments {items}` |
 //! | `instance.config` | `instance_config {config, sealed_secrets}`, or `error {code: "not_found"}` |
 //! | `observation` | `ok`, or `error {code: "refused"}` |
+//! | `scan.results` / `acquire.plan` / `upload.grant` | see [`super::host_results`] |
 //!
 //! A claim's `filter` is the host's own narrowing (the kinds it runs and
 //! the plugins its operator consented to); the owner applies it before
@@ -81,10 +82,15 @@ pub(crate) struct HostContext {
     pub owner_box_secret: Zeroizing<[u8; 32]>,
     /// Lease and semaphore settings of this owner node.
     pub settings: RemoteClaimSettings,
+    /// This owner node's id: uploads granted on this connection are
+    /// received here.
+    pub owner_node_id: String,
+    /// The daemon, for this node's output destinations and settings.
+    pub state: std::sync::Arc<crate::api::AppState>,
 }
 
 /// An `error` answer.
-fn error(id: String, code: &str, message: &str) -> Frame {
+pub(super) fn error(id: String, code: &str, message: &str) -> Frame {
     Frame::new(
         id,
         Body::Error {
@@ -95,7 +101,7 @@ fn error(id: String, code: &str, message: &str) -> Frame {
 }
 
 /// A `lost` answer for a job fence.
-fn lost(id: String, job_id: String, fence: i64) -> Frame {
+pub(super) fn lost(id: String, job_id: String, fence: i64) -> Frame {
     Frame::new(
         id,
         Body::Lost {
@@ -328,6 +334,53 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 }
                 Err(err) => Err(err),
             }
+        }
+        Body::ScanResults {
+            job_id,
+            fence,
+            plugin_key,
+            batch,
+            books,
+        } => {
+            super::host_results::scan_results(
+                library,
+                host,
+                id.clone(),
+                job_id,
+                fence,
+                super::host_results::ScanBatch {
+                    plugin_key: &plugin_key,
+                    batch,
+                    rows: books,
+                },
+            )
+            .await
+        }
+        Body::AcquirePlan { job_id, fence } => {
+            super::host_results::acquire_plan(library, host, id.clone(), job_id, fence).await
+        }
+        Body::UploadGrant {
+            job_id,
+            fence,
+            book_uuid,
+            primary_key,
+            pdf_key,
+            files,
+        } => {
+            super::host_results::upload_grant(
+                library,
+                host,
+                id.clone(),
+                job_id,
+                fence,
+                bookclerk_library::control_plane::UploadGrantRequest {
+                    book_uuid: &book_uuid,
+                    primary_key: &primary_key,
+                    pdf_key: pdf_key.as_deref(),
+                    files: &files,
+                },
+            )
+            .await
         }
         _ => {
             return error(
