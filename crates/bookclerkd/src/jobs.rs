@@ -106,7 +106,7 @@ async fn admit(state: &AppState, mut spec: EnqueueJobSpec) -> anyhow::Result<Adm
 /// writes to every deployed one, so it is routed to a node running them
 /// (see `control_plane::resolve_job_requirements`). A discovery failure
 /// leaves the set empty, which routes nothing.
-async fn node_bound_output_keys(state: &AppState) -> std::collections::BTreeSet<String> {
+pub(crate) async fn node_bound_output_keys(state: &AppState) -> std::collections::BTreeSet<String> {
     let config = state.config.read().await.clone();
     if config.paths.is_none() {
         // A config that was not loaded from disk has no plugin directories.

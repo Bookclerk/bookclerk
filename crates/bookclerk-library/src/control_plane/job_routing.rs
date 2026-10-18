@@ -123,6 +123,23 @@ pub async fn resolve_job_requirements(
     payload: &JobPayload,
     node_bound_plugin_keys: &BTreeSet<String>,
 ) -> Result<Vec<String>> {
+    let requires = desired_requirements(store, kind, payload, node_bound_plugin_keys).await?;
+    if !requirements_routable(store, &requires).await? {
+        return Err(LibraryError::Conflict(no_common_node_message(
+            kind, &requires,
+        )));
+    }
+    Ok(requires)
+}
+
+/// The requirement set [`resolve_job_requirements`] would record now,
+/// without the common-node check.
+pub(super) async fn desired_requirements(
+    store: &LibraryStore,
+    kind: JobKind,
+    payload: &JobPayload,
+    node_bound_plugin_keys: &BTreeSet<String>,
+) -> Result<Vec<String>> {
     let mut requires = BTreeSet::new();
     if let Some(pinned) = payload
         .plugin_instance_id
@@ -142,16 +159,27 @@ pub async fn resolve_job_requirements(
             }
         }
     }
-    let requires: Vec<String> = requires.into_iter().collect();
-    if requires.len() > 1 && common_deployment_nodes(store, &requires).await?.is_empty() {
-        return Err(LibraryError::Conflict(format!(
-            "no node runs all of the plugin instances this {} job requires ({}); \
-             deploy them to a common node",
-            kind.as_str(),
-            requires.join(", ")
-        )));
-    }
-    Ok(requires)
+    Ok(requires.into_iter().collect())
+}
+
+/// True when some node is deployed to run every instance in `requires`
+/// (always true for zero or one instance: [`desired_requirements`] keeps
+/// only deployed instances).
+pub(super) async fn requirements_routable(
+    store: &LibraryStore,
+    requires: &[String],
+) -> Result<bool> {
+    Ok(requires.len() <= 1 || !common_deployment_nodes(store, requires).await?.is_empty())
+}
+
+/// Operator-facing reason for requirements no node can meet.
+pub(super) fn no_common_node_message(kind: JobKind, requires: &[String]) -> String {
+    format!(
+        "no node runs all of the plugin instances this {} job requires ({}); \
+         deploy them to a common node",
+        kind.as_str(),
+        requires.join(", ")
+    )
 }
 
 /// Nodes where every instance in `requires` has a deployment that should run.
