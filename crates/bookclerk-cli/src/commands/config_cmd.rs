@@ -869,10 +869,18 @@ async fn print_output_authority(config: &Config) {
         Err(err) => {
             println!("output.authority = transitional");
             let detail = safe_events_load_error(&err);
-            println!(
-                "output.format = {:?} (config.toml / environment; {detail})",
-                config.output.format
-            );
+            println!("output.source = config.toml / environment ({detail})");
+            match OutputSettingsV1::from_config(&config.output) {
+                Ok(seed) => {
+                    for key in OUTPUT_SETTING_KEYS {
+                        println!("{key} = {}", seed.get(key).unwrap_or_default());
+                    }
+                }
+                Err(invalid) => println!(
+                    "output.format = {:?} (other output.* omitted: {invalid})",
+                    config.output.format
+                ),
+            }
         }
     }
 }

@@ -172,9 +172,14 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                 }
                 match bookclerk_plugin_host::enroll_node(&cfg, &dest_store.store).await {
                     Ok(enrolled) => {
+                        // Bootstrap seeds the portable form (CDM path relative
+                        // to the files directory); compare against the same.
                         let seeded =
                             bookclerk_library::control_plane::OutputSettingsV1::from_config(
-                                &cfg.output,
+                                &bookclerk_library::control_plane::portable_output_seed(
+                                    &cfg.output,
+                                    &opts.dest_files_dir,
+                                ),
                             )
                             .ok();
                         if summary.settings_imported

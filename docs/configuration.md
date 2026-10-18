@@ -327,7 +327,9 @@ keys is rejected before anything is written. The web UI edits it under
 `in_progress` (the acquire scratch directory) is not part of the document.
 It names a path on one host, is needed before the database opens, and stays
 host-local bootstrap in `config.toml`. A relative `widevine_cdm` in the
-document resolves under each host's `BOOKCLERK_FILES_DIR`.
+document resolves under each host's `BOOKCLERK_FILES_DIR`. When the first
+host seeds the document, a `config.toml` CDM path inside its files directory
+is stored relative, so other hosts rebase it under their own.
 
 Per-destination roots, prefixes, naming overrides, and credentials are the
 `local` / `s3` plugin settings.

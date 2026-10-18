@@ -69,9 +69,10 @@ pub use node_status::{
     DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
 };
 pub use output::{
-    import_output_if_absent, is_output_setting_key, load_output, overlay_output, replace_output,
-    OutputReplace, OutputSettingsV1, MAX_OUTPUT_REPLACEMENT_RULES, MAX_OUTPUT_TEMPLATE_BYTES,
-    OUTPUT_NAMESPACE, OUTPUT_SCHEMA_VERSION, OUTPUT_SETTING_ALIASES, OUTPUT_SETTING_KEYS,
+    import_output_if_absent, is_output_setting_key, load_output, overlay_output,
+    portable_output_seed, replace_output, OutputReplace, OutputSettingsV1,
+    MAX_OUTPUT_REPLACEMENT_RULES, MAX_OUTPUT_TEMPLATE_BYTES, OUTPUT_NAMESPACE,
+    OUTPUT_SCHEMA_VERSION, OUTPUT_SETTING_ALIASES, OUTPUT_SETTING_KEYS,
 };
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use placement::undeploy_instance;
@@ -362,7 +363,7 @@ pub async fn bootstrap_control_plane(
     let output = import_output_if_absent(
         store,
         &ConfigActor::Bootstrap,
-        &seed.output,
+        &output::portable_output_seed(&seed.output, files_dir),
         "bootstrap-core-output",
     )
     .await?;

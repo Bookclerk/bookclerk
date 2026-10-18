@@ -672,6 +672,30 @@ pub async fn load_output(store: &LibraryStore) -> Result<ConfigurationDocument<O
     parse_output(stored)
 }
 
+/// Copies `[output]` with a `widevine_cdm` under `files_dir` made relative again.
+///
+/// `Config::load` resolves a relative CDM path under the loading host's files
+/// directory. The shared document keeps it relative, so every host rebases it
+/// under its own `BOOKCLERK_FILES_DIR` in [`OutputSettingsV1::apply_to`]. A
+/// path outside `files_dir` (or equal to it) is kept as written.
+///
+/// # Arguments
+///
+/// * `seed` - The loaded `[output]` table.
+/// * `files_dir` - The loading host's files directory.
+#[must_use]
+pub fn portable_output_seed(seed: &OutputConfig, files_dir: &Path) -> OutputConfig {
+    let mut portable = seed.clone();
+    if let Some(cdm) = &seed.widevine_cdm {
+        if let Ok(relative) = cdm.strip_prefix(files_dir) {
+            if !relative.as_os_str().is_empty() {
+                portable.widevine_cdm = Some(relative.to_path_buf());
+            }
+        }
+    }
+    portable
+}
+
 /// Inserts `[output]` when the cluster document is absent.
 ///
 /// An existing document is parsed and returned without reading the seed, so
@@ -909,6 +933,33 @@ mod tests {
         assert_eq!(applied.in_progress, Some(PathBuf::from("/host-local")));
         assert_eq!(applied.save_chapter_json, None);
         assert_eq!(applied.chapter_json, ChapterJsonMode::Flat);
+    }
+
+    #[test]
+    fn portable_seed_keeps_files_dir_cdm_paths_relative() {
+        let files_dir = Path::new("/srv/host-a");
+        let mut seed = OutputConfig {
+            widevine_cdm: Some(files_dir.join("cdm/widevine.wvd")),
+            ..OutputConfig::default()
+        };
+        let portable = portable_output_seed(&seed, files_dir);
+        assert_eq!(
+            portable.widevine_cdm.as_deref(),
+            Some(Path::new("cdm/widevine.wvd"))
+        );
+        let body = OutputSettingsV1::from_config(&portable).unwrap();
+        let mut host_b = OutputConfig::default();
+        body.apply_to(&mut host_b, Some(Path::new("/srv/host-b")));
+        assert_eq!(
+            host_b.widevine_cdm.as_deref(),
+            Some(Path::new("/srv/host-b/cdm/widevine.wvd"))
+        );
+        // A path outside the files directory, or the directory itself, stays.
+        for kept in ["/opt/cdm/widevine.wvd", "/srv/host-a"] {
+            seed.widevine_cdm = Some(PathBuf::from(kept));
+            let portable = portable_output_seed(&seed, files_dir);
+            assert_eq!(portable.widevine_cdm.as_deref(), Some(Path::new(kept)));
+        }
     }
 
     #[test]
