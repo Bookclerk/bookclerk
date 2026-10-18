@@ -12,7 +12,13 @@ import {
   type RemoteGrantView,
 } from "@/lib/api";
 import { JoinWizard } from "@/components/JoinWizard";
-import { fetchJoinStatus, joinErrorMessage, leaveLibrary, setBranchSharing } from "@/lib/join";
+import {
+  fetchBranchSharing,
+  fetchJoinStatus,
+  joinErrorMessage,
+  leaveLibrary,
+  setBranchSharing,
+} from "@/lib/join";
 import { useLiveRefresh } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
@@ -121,7 +127,16 @@ function SharingSettings({ link, onSaved }: { link: ClusterLinkView; onSaved: ()
   );
 }
 
-function LinkRow({ link, onLeft }: { link: ClusterLinkView; onLeft: () => void }) {
+function LinkRow({
+  link,
+  onLeft,
+  canLeave,
+}: {
+  link: ClusterLinkView;
+  onLeft: () => void;
+  /** Leave library is the operator's; an Owner sees only the sharing settings. */
+  canLeave: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
@@ -169,7 +184,7 @@ function LinkRow({ link, onLeft }: { link: ClusterLinkView; onLeft: () => void }
         node <span className="font-mono">{link.node_id}</span> · joined{" "}
         {new Date(link.enrolled_at).toLocaleString()}
       </span>
-      {link.state === "active" ? (
+      {link.state === "active" && canLeave ? (
         <Button
           type="button"
           variant="danger"
@@ -392,6 +407,12 @@ function ConsentRow({
 export interface ClusterConsentsPanelProps {
   /** Called on a 401 so the page can sign out. */
   onSessionExpired: () => void;
+  /**
+   * An Owner (not the operator): only the libraries joined and their two
+   * sharing settings; joining, leaving and plugin requests stay the
+   * operator's.
+   */
+  sharingOnly?: boolean;
 }
 
 /**
@@ -400,9 +421,15 @@ export interface ClusterConsentsPanelProps {
  * Join a library (the sign-in wizard, or a pasted branch invite), and shows
  * each library plugin's request to run here. The operator approves a
  * request (optionally without some domains, bindings, or the network) or
- * revokes it.
+ * revokes it. An Owner sees only the libraries and their sharing settings.
+ *
+ * @param props - See {@link ClusterConsentsPanelProps}.
+ * @returns The panel.
  */
-export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelProps) {
+export function ClusterConsentsPanel({
+  onSessionExpired,
+  sharingOnly = false,
+}: ClusterConsentsPanelProps) {
   const [clusters, setClusters] = useState<ClusterLinkView[] | null>(null);
   const [consents, setConsents] = useState<RemoteConsentView[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -425,9 +452,15 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
 
   const refresh = useCallback(async () => {
     try {
-      const body = await listClusterConsents();
-      setClusters(body.clusters);
-      setConsents(body.consents);
+      if (sharingOnly) {
+        const body = await fetchBranchSharing();
+        setClusters(body.clusters);
+        setConsents([]);
+      } else {
+        const body = await listClusterConsents();
+        setClusters(body.clusters);
+        setConsents(body.consents);
+      }
       setLoadError(null);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
@@ -436,7 +469,7 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
       }
       setLoadError(err instanceof Error ? err.message : "Failed to load libraries");
     }
-  }, []);
+  }, [sharingOnly]);
 
   useEffect(() => {
     void refresh();
@@ -450,19 +483,26 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
     <section className="space-y-6">
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-ink">Library</h2>
-        <p className="text-sm text-ink/55">
-          Libraries this server is a branch of. A library's plugin runs here only after you approve
-          what it asks for; you can leave out domains, bindings, or the network, and a later version
-          that asks for more waits for approval again. Revoking stops its jobs here and hands them
-          back to the library.
-        </p>
+        {sharingOnly ? (
+          <p className="text-sm text-ink/55">
+            Libraries this server is a branch of, and what it shares with each. Joining, leaving
+            and approving a library's plugins are done by the server's operator.
+          </p>
+        ) : (
+          <p className="text-sm text-ink/55">
+            Libraries this server is a branch of. A library's plugin runs here only after you
+            approve what it asks for; you can leave out domains, bindings, or the network, and a
+            later version that asks for more waits for approval again. Revoking stops its jobs here
+            and hands them back to the library.
+          </p>
+        )}
       </div>
-      {joinedTo ? (
+      {sharingOnly ? null : joinedTo ? (
         <p className="text-sm font-medium text-ink" role="status">
           Connected to {joinedTo}. Its plugin requests appear below.
         </p>
       ) : null}
-      {joining ? (
+      {sharingOnly ? null : joining ? (
         <div className="space-y-3 rounded-md border border-ink/10 bg-card p-4">
           <h3 className="text-sm font-semibold text-ink">Join a library</h3>
           <JoinWizard
@@ -494,10 +534,16 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
           ) : (
             <ul className="divide-y divide-ink/10 bg-card">
               {clusters.map((link) => (
-                <LinkRow key={link.cluster_id} link={link} onLeft={() => void refresh()} />
+                <LinkRow
+                  key={link.cluster_id}
+                  link={link}
+                  onLeft={() => void refresh()}
+                  canLeave={!sharingOnly}
+                />
               ))}
             </ul>
           )}
+          {sharingOnly ? null : (
           <div className="space-y-2">
             <h3 className="text-sm font-semibold text-ink">
               Waiting for you{pending.length ? ` (${pending.length})` : ""}
@@ -517,6 +563,7 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
               </ul>
             )}
           </div>
+          )}
           {approved.length ? (
             <div className="space-y-2">
               <h3 className="text-sm font-semibold text-ink">Approved</h3>

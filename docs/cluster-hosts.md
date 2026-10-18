@@ -190,7 +190,8 @@ bookclerk clusters approve <plugin_key> --version 1.2.0 \
 bookclerk clusters revoke <plugin_key>
 ```
 
-The same is in the web UI under **Settings → Library** (operator only):
+The same is in the web UI under **Settings → Library** (operator only;
+an Owner sees only the [sharing settings](#branches-of-branches)):
 pending requests with their domains and bindings, a deny checkbox on each,
 a deny-network switch, and Approve / Revoke. The HTTP routes behind it are
 operator-only:
@@ -327,7 +328,12 @@ B's).
   withdraws titles B no longer has.
 
 **Settings → Library** (on B), for each library joined, has two
-settings, both on by default:
+settings, both on by default. B's operator or an Owner of B may change
+them (an Owner sees only the libraries and these two settings; joining,
+leaving and plugin approvals stay the operator's); anyone else is refused
+(403). The routes are `GET /api/config/join/sharing` (→ `{clusters}`) and
+`POST /api/config/join/sharing` `{cluster_id, share_books,
+include_branches}`:
 
 - **Share this branch's books with <library>.** Off: nothing new is sent,
   and A marks what it already got from B. Files already delivered stay in
@@ -336,7 +342,7 @@ settings, both on by default:
   on B itself; C's titles are withdrawn from A on the next pass.
 
 **Settings → Branches** (on A) lists each branch with its owner, what it
-shares (read-only: B's operator sets it), and counts of its titles. Titles
+shares (read-only: B's operator or an Owner of B sets it), and counts of its titles. Titles
 from a branch that stopped sharing or left are kept, marked, until the
 owner removes the entries (**Remove**, or `POST
 /api/config/branches/titles/remove {node_id?}`); the files stay.
@@ -446,8 +452,8 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
 
 - The "clerk" connection type (a peer sharing the library's database) is
   later work.
-- The sharing settings are the operator's (Settings → Library); there is
-  no CLI command for them yet.
+- The sharing settings are set in Settings → Library (the operator or an
+  Owner); there is no CLI command for them yet.
 - The library's name is the host of its public origin; there is no
   separate name setting.
 - Uploaded objects carry content type, length and digest, but not the

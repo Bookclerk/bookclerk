@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   authorizeParams,
   branchSharingSummary,
+  canChangeBranchSharing,
   branchTitlesNote,
   fingerprintGroups,
   formatCountdown,
@@ -152,5 +153,22 @@ describe("branch sharing (branches of branches)", () => {
     expect(branchTitlesNote({ shared: 0, delivered: 0, detached: 2 }, false)).toBe(
       "2 books from a branch that left",
     );
+  });
+});
+
+describe("canChangeBranchSharing", () => {
+  it("is the operator or an Owner", () => {
+    expect(canChangeBranchSharing("operator")).toBe(true);
+    expect(canChangeBranchSharing("owner")).toBe(true);
+    // The operator acting as an Owner acts as that Owner.
+    expect(canChangeBranchSharing("owner", true)).toBe(true);
+  });
+
+  it("is nobody else", () => {
+    expect(canChangeBranchSharing("operator", true)).toBe(false);
+    expect(canChangeBranchSharing("administrator")).toBe(false);
+    expect(canChangeBranchSharing("member")).toBe(false);
+    expect(canChangeBranchSharing("host")).toBe(false);
+    expect(canChangeBranchSharing("")).toBe(false);
   });
 });

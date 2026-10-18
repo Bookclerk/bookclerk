@@ -1493,8 +1493,11 @@ it: a tree, A ← B ← C.
   removed book or a sub-branch that left reaches A.
 - **Two settings on `cluster_links`** (`share_books`, `include_branches`,
   both on by default), set in Settings → Library on the branch
-  (`POST /api/config/join/sharing`, operator) and reported to the
-  library at once; the library keeps what was reported on the node row
+  (`GET` / `POST /api/config/join/sharing`, the operator or an Owner of
+  the branch: a signed-in user's stored role and status are read on every
+  call, as for `core.host_enrollment` (`verify_cluster_owner`), and anyone
+  else gets 403; an Owner's change is recorded in the security audit) and
+  reported to the library at once; the library keeps what was reported on the node row
   (`nodes.share_books`, `nodes.include_branches`) and shows it read-only in
   Settings → Branches (`GET /api/config/branches` → `branches`).
 - **Cycles.** `GET /api/node/v1/info` returns `ancestry`: the library's own
@@ -1521,8 +1524,9 @@ it: a tree, A ← B ← C.
   cycle refused; include-sub-branches off withdraws C's title; sharing
   off marks B's titles and the bulk remove clears them; C leaving marks
   its title on B), `info` ancestry, Settings → Branches and the remove, and
-  the sharing endpoint reaching the library on a running link. UI
-  (vitest): the read-only summaries.
+  the sharing endpoint reaching the library on a running link, for the
+  operator and for an Owner, refused to an Administrator and a Member. UI
+  (vitest): the read-only summaries and who sees the sharing settings.
 
 ## Consequences
 

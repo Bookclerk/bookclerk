@@ -508,8 +508,10 @@ pub(crate) fn no_store(mut response: Response) -> Response {
     response
 }
 
-/// Settings → Branches, for the operator or an Owner.
-async fn require_branch_admin(
+/// Settings → Branches (and Settings → Library's sharing settings), for the
+/// operator or an Owner: a signed-in user's stored role and status are read
+/// ([`verify_cluster_owner`]); anyone else gets 403.
+pub(crate) async fn require_branch_admin(
     state: &Arc<AppState>,
     caller: UserCaller,
 ) -> Result<ConfigActor, Response> {

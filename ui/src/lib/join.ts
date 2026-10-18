@@ -13,7 +13,8 @@
  * - Branch invites are minted in User management and shown once; they are
  *   never kept in any persisted state.
  * - Branches of branches: a branch shares its books with its library (two
- *   settings per library in Settings → Library); the library shows them
+ *   settings per library in Settings → Library, which the operator or an
+ *   Owner of the branch may change); the library shows them
  *   read-only per branch in Settings → Branches, with a bulk remove for
  *   titles from a branch that stopped sharing or left.
  */
@@ -280,8 +281,31 @@ export function leaveLibrary(
 }
 
 /**
+ * True when `role` may change Settings → Library's two sharing settings:
+ * the operator (not while impersonating) or an Owner. The daemon checks the
+ * stored role again; anyone else is refused.
+ *
+ * @param role - The session's role (`operator`, `owner`, ...), if known.
+ * @param impersonating - True while the operator acts as another user.
+ * @returns Whether to show the sharing settings.
+ */
+export function canChangeBranchSharing(role: string | undefined, impersonating = false): boolean {
+  return (role === "operator" && !impersonating) || role === "owner";
+}
+
+/**
+ * Settings → Library for the operator or an Owner: the libraries this
+ * server is a branch of, with their two sharing settings.
+ *
+ * @returns The libraries.
+ */
+export function fetchBranchSharing(): Promise<{ clusters: BranchLinkView[] }> {
+  return request("/api/config/join/sharing");
+}
+
+/**
  * Settings → Library: the two sharing settings for one library this server
- * is a branch of. The library hears them at once.
+ * is a branch of (the operator or an Owner). The library hears them at once.
  *
  * @param clusterId - The library.
  * @param shareBooks - "Share this branch's books with <library>".

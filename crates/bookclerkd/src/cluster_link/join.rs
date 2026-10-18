@@ -20,6 +20,8 @@
 //! - `POST /api/config/join/invite` `{link}`: joins with a pasted branch
 //!   invite; the link is used once and not kept.
 //! - `POST /api/config/join/leave` `{cluster_id}`: Leave library.
+//! - `GET /api/config/join/sharing`: the libraries this install is a
+//!   branch of, with their two sharing settings.
 //! - `POST /api/config/join/sharing` `{cluster_id, share_books,
 //!   include_branches}`: Settings → Library's "Share this branch's books
 //!   with *library*" and "Include books from my own branches"; the
@@ -29,7 +31,9 @@
 //! own cluster id (409 `join_cycle`), so a tree of libraries never loops;
 //! the redeem checks it again before the code is spent.
 //!
-//! All of them are operator-only. Answers carrying a URL with `state` are
+//! The sharing routes are for the operator or an Owner (the stored role is
+//! read on every call; anyone else gets 403); all the others are
+//! operator-only. Answers carrying a URL with `state` are
 //! `Cache-Control: no-store`; nothing secret is logged.
 
 use std::sync::Arc;
@@ -37,6 +41,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use axum::Json;
 use bookclerk_library::control_plane::{
     create_pending_join, list_cluster_links, take_pending_join, NewPendingJoin,
@@ -52,7 +57,9 @@ use zeroize::Zeroizing;
 
 use super::api::link_json;
 use crate::api::AppState;
+use crate::auth::UserCaller;
 use crate::node_api::branch::no_store;
+use crate::node_api::branch::require_branch_admin;
 
 /// A JSON error answer.
 fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
@@ -422,12 +429,42 @@ pub struct SharingBody {
     include_branches: bool,
 }
 
+/// `GET /api/config/join/sharing`: Settings → Library for the operator or
+/// an Owner: every library this install is a branch of, with its two
+/// sharing settings (`{clusters: [...]}`).
+pub async fn get_join_sharing(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+) -> Response {
+    if let Err(refused) = require_branch_admin(&state, caller).await {
+        return refused;
+    }
+    let store = state.library_snapshot().await;
+    match list_cluster_links(&store).await {
+        Ok(links) => Json(json!({ "clusters": links.iter().map(link_json).collect::<Vec<_>>() }))
+            .into_response(),
+        Err(err) => crate::config_authority::events_error(err),
+    }
+}
+
 /// `POST /api/config/join/sharing`: Settings → Library's two sharing
-/// settings for one library this install is a branch of.
+/// settings for one library this install is a branch of. The operator or
+/// an Owner (verified from the stored role); anyone else gets 403.
 pub async fn post_join_sharing(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
     Json(body): Json<SharingBody>,
 ) -> Response {
+    let actor = match require_branch_admin(&state, caller).await {
+        Ok(actor) => actor,
+        Err(refused) => return refused,
+    };
+    let actor = match &actor {
+        bookclerk_library::control_plane::ConfigActor::ClusterOwner(owner) => {
+            format!("user:{}", owner.user_id())
+        }
+        _ => "operator".to_string(),
+    };
     let store = state.library_snapshot().await;
     let cluster_id = body.cluster_id.trim();
     match bookclerk_library::control_plane::set_cluster_link_sharing(
@@ -450,10 +487,20 @@ pub async fn post_join_sharing(
     }
     tracing::info!(
         %cluster_id,
+        %actor,
         share_books = body.share_books,
         include_branches = body.include_branches,
         "branch sharing settings changed"
     );
+    let detail = json!({
+        "cluster_id": cluster_id,
+        "share_books": body.share_books,
+        "include_branches": body.include_branches,
+    })
+    .to_string();
+    let _ = store
+        .insert_security_audit_event(&actor, "branch_sharing_changed", Some(&detail))
+        .await;
     super::catalog_sync::notify_sharing_changed();
     match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
         Ok(Some(link)) => Json(json!({ "cluster": link_json(&link) })).into_response(),

@@ -956,10 +956,6 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/join/leave",
             post(crate::cluster_link::join::post_join_leave),
         )
-        .route(
-            "/api/config/join/sharing",
-            post(crate::cluster_link::join::post_join_sharing),
-        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",
@@ -1023,6 +1019,13 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route(
             "/api/config/branches/titles/remove",
             post(crate::node_api::branch::post_remove_branch_titles),
+        )
+        // Settings → Library's two sharing settings on a branch (operator
+        // or Owner; the handler checks).
+        .route(
+            "/api/config/join/sharing",
+            get(crate::cluster_link::join::get_join_sharing)
+                .post(crate::cluster_link::join::post_join_sharing),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
