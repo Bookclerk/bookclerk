@@ -330,6 +330,7 @@ export function fetchBranchConsent(search: string): Promise<BranchConsentView> {
  *
  * @param search - The authorize request (query string).
  * @param approve - True to let the branch join.
+ * @param clerk - Set to join as a clerk instead, with the Owner's step-up proof.
  * @returns Where to send the browser.
  */
 export function answerBranchConsent(
