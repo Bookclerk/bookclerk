@@ -420,8 +420,10 @@ pub enum Body {
         /// The cursor after this batch's last title; the library resumes
         /// after it.
         cursor: String,
-        /// True for the last batch of a pass that started from an empty
-        /// cursor: titles the pass did not name are withdrawn.
+        /// True for the last batch of a pass. When the library's pass
+        /// from an empty cursor is under way (a resumed pass included),
+        /// titles it did not name are withdrawn; otherwise it changes
+        /// nothing more.
         #[serde(default)]
         done: bool,
         /// The titles; at most [`crate::MAX_CATALOG_BATCH_TITLES`].

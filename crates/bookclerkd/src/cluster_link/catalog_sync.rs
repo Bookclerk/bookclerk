@@ -181,8 +181,18 @@ fn own_metadata(book: &BookRecord) -> CatalogMetadata {
     }
 }
 
+/// True when `rest` (a name in the primary's directory) is a file beside
+/// the primary with its stem: `stem.<anything>`, so `b10.m4b` is not a
+/// sibling of `b1.m4b`.
+fn is_sibling(rest: &str, stem: &str) -> bool {
+    !rest.contains('/')
+        && rest
+            .strip_prefix(stem)
+            .is_some_and(|after| after.starts_with('.'))
+}
+
 /// The files of an own book on `shelf`: the primary file, the PDF, and
-/// every file beside the primary whose name starts with its stem (cover,
+/// every file beside the primary named `<its stem>.*` (cover,
 /// cue, chapter sidecars). Temp files and metadata sidecars are skipped.
 async fn own_files(
     shelf: &dyn StorageBackend,
@@ -205,9 +215,8 @@ async fn own_files(
         let Some(rest) = object.key.strip_prefix(&prefix) else {
             continue;
         };
-        let wanted = object.key == primary
-            || Some(object.key.as_str()) == pdf
-            || (!rest.contains('/') && rest.starts_with(stem));
+        let wanted =
+            object.key == primary || Some(object.key.as_str()) == pdf || is_sibling(rest, stem);
         let skipped = rest.ends_with(".bookclerk-meta.json") || rest.contains(".bookclerk-tmp-");
         if wanted && !skipped && is_storage_key(&object.key) {
             files.insert(
@@ -448,19 +457,21 @@ impl<S: BranchShelf> CatalogSync<S> {
             }
             cursor.clone_from(&entry.order);
         }
-        if !batch.is_empty() || from_start {
-            batch_no += 1;
-            let sent = std::mem::take(&mut batch);
-            report.sent += sent.len() as u64;
-            let accepted = self
-                .handle
-                .catalog_sync(session.fence, batch_no, &cursor, from_start, sent)
-                .await
-                .map_err(|err| call_error("catalog.sync", &err))?;
-            report.upserted += accepted.upserted;
-            report.skipped += accepted.skipped;
-            wanted.extend(accepted.wanted);
-        }
+        // Every pass ends with a last batch (even an empty one) marked
+        // done, carrying the advanced cursor: a pass from the start that
+        // was cut off and resumed then still ends, and the library
+        // withdraws what it did not name. On a pass that is not one from
+        // the start, `done` changes nothing more on the library.
+        batch_no += 1;
+        report.sent += batch.len() as u64;
+        let accepted = self
+            .handle
+            .catalog_sync(session.fence, batch_no, &cursor, true, batch)
+            .await
+            .map_err(|err| call_error("catalog.sync", &err))?;
+        report.upserted += accepted.upserted;
+        report.skipped += accepted.skipped;
+        wanted.extend(accepted.wanted);
         let mut delivered = BTreeSet::new();
         for reference in wanted {
             if !delivered.insert(reference.clone()) {
@@ -469,7 +480,20 @@ impl<S: BranchShelf> CatalogSync<S> {
             let Some(entry) = by_ref.get(&reference) else {
                 continue;
             };
-            let title = self.title(shelf.as_ref(), entry).await?;
+            // One title that cannot be read (its files gone, its row
+            // malformed) does not hold up the others.
+            let title = match self.title(shelf.as_ref(), entry).await {
+                Ok(title) => title,
+                Err(err) => {
+                    tracing::warn!(
+                        cluster_id = %self.cluster_id,
+                        product_id = %reference.product_id,
+                        error = %err,
+                        "a shared title's files could not be read; not delivered"
+                    );
+                    continue;
+                }
+            };
             match self.deliver(shelf.as_ref(), &session, &title).await {
                 Ok(()) => report.delivered += 1,
                 // The fence moved on or the link dropped: the next pass

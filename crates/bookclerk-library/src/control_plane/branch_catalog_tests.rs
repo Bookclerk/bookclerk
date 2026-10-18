@@ -398,6 +398,83 @@ async fn a_full_pass_withdraws_what_it_no_longer_names() {
     );
 }
 
+/// A batch of `p1` and `p2`, read and checked under `fence` but not yet
+/// written.
+async fn prepared_batch(store: &LibraryStore, fence: i64) -> PreparedCatalogBatch {
+    match prepare_catalog_batch(
+        store,
+        BRANCH,
+        fence,
+        "b",
+        true,
+        &[title("p1", 1), title("p2", 1)],
+    )
+    .await
+    .unwrap()
+    {
+        Ok(prepared) => prepared,
+        Err(other) => panic!("expected a prepared batch: {other:?}"),
+    }
+}
+
+/// Only `p1`, detached with `reason`.
+fn only_p1_detached(rows: &[BranchTitle], reason: &str) {
+    assert_eq!(rows.len(), 1, "no new title: {rows:?}");
+    assert_eq!(rows[0].product_id, "p1");
+    assert_eq!(rows[0].state, BRANCH_TITLE_DETACHED);
+    assert_eq!(rows[0].detached_reason.as_deref(), Some(reason));
+}
+
+/// A batch read under a live fence whose branch stops sharing or leaves
+/// before it is written records nothing: titles marked detached stay
+/// detached, no new title appears, and the cursor does not move.
+#[tokio::test]
+async fn a_batch_overtaken_by_a_detach_records_nothing() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(&store, session.fence, "a", false, &[title("p1", 1)]).await;
+
+    // Sharing turned off between the read and the write.
+    let prepared = prepared_batch(&store, session.fence).await;
+    open(&store, false, true).await;
+    assert_eq!(
+        apply_catalog_batch(&store, BRANCH, prepared).await.unwrap(),
+        CatalogAccept::Lost
+    );
+    only_p1_detached(
+        &list_branch_titles(&store, None, 10).await.unwrap(),
+        DETACHED_STOPPED_SHARING,
+    );
+
+    // The branch left between the read and the write.
+    let resumed = open(&store, true, true).await;
+    accepted(&store, resumed.fence, "a", false, &[title("p1", 1)]).await;
+    let prepared = prepared_batch(&store, resumed.fence).await;
+    assert!(super::super::record_node_left(&store, BRANCH)
+        .await
+        .unwrap());
+    assert_eq!(
+        apply_catalog_batch(&store, BRANCH, prepared).await.unwrap(),
+        CatalogAccept::Lost
+    );
+    only_p1_detached(
+        &list_branch_titles(&store, None, 10).await.unwrap(),
+        DETACHED_LEFT,
+    );
+    let node = nodes::Entity::find_by_id(BRANCH.to_string())
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(node.catalog_cursor, "a", "the cursor did not move");
+    assert!(
+        node.catalog_pass_started_at.is_some(),
+        "the pass did not end"
+    );
+}
+
 /// Sessions resume after a completed pass, but a day after it the library
 /// asks for a full pass again, so titles a branch no longer has are
 /// withdrawn; a pass still under way is never restarted.

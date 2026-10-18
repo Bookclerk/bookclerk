@@ -33,15 +33,15 @@ use bookclerk_node_proto::{
     CatalogRef, CatalogTitle, UploadFile, CATALOG_ITEM, MAX_CATALOG_BATCH_TITLES,
     MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES, MAX_CATALOG_WANTED,
 };
+use bookclerk_plugin_abi::{DbValue, TypedDbStatement};
 use chrono::Utc;
 use sea_orm::sea_query::{Expr, LikeExpr};
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect,
+    ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
 };
 use serde::Serialize;
 
-use super::batch::{self, exec, request, text};
+use super::batch::{self, exec, request, text, text_opt};
 use super::enrollment::load_node_credential;
 use super::trust::accounts_owned_by;
 use super::uploads::{open_upload_session, UploadGrant, UploadGrantRequest, UploadSession};
@@ -326,11 +326,48 @@ async fn held_here(
         .any(|row| owned.contains(&(row.plugin_key.clone(), row.account_id.clone()))))
 }
 
+/// The gate every statement of a catalog batch carries: `node_id`'s
+/// catalog fence is still the batch's, the branch still shares, and its
+/// credential is live. Binds: [`live_catalog_binds`].
+const LIVE_CATALOG_GATE: &str = "EXISTS (SELECT 1 FROM nodes WHERE node_id = ? \
+       AND catalog_fence = ? AND share_books = 1) \
+     AND EXISTS (SELECT 1 FROM node_credentials \
+       WHERE node_id = ? AND revoked_at IS NULL)";
+
+/// The binds of [`LIVE_CATALOG_GATE`].
+fn live_catalog_binds(node_id: &str, fence: i64) -> Vec<DbValue> {
+    vec![text(node_id), batch::int(fence), text(node_id)]
+}
+
+/// One catalog batch read and checked, ready to write in one gated
+/// transaction ([`apply_catalog_batch`]).
+struct PreparedCatalogBatch {
+    /// The batch's operation id.
+    operation_id: String,
+    /// The cursor move first, then one statement per recorded title, then
+    /// (on the last batch of a pass) the withdrawal and the pass's end.
+    statements: Vec<TypedDbStatement>,
+    /// Title statements in `statements` (after the cursor move).
+    titles: usize,
+    /// Index of the withdrawal statement, if any.
+    withdraw: Option<usize>,
+    /// Titles skipped because this library already holds them.
+    skipped: u64,
+    /// Titles whose files this library wants.
+    wanted: Vec<CatalogRef>,
+}
+
 /// Records one batch of `node_id`'s shared titles under `fence`, then the
 /// cursor after it. Every title is checked before any is written; a title
 /// this library already holds for the branch's owner is skipped. With
-/// `done` (the last batch of a pass from the start), titles the pass did
-/// not name are withdrawn (detached).
+/// `done` (the last batch of a pass) while a pass from the start is under
+/// way, titles the pass did not name are withdrawn (detached); `done` on
+/// a resumed incremental pass changes nothing more.
+///
+/// Every write runs in one transaction, each statement gated on the fence
+/// still being live, the branch still sharing and its credential live: a
+/// concurrent revoke, leave or stop-sharing either lands after the whole
+/// batch (and detaches what it recorded) or the batch records nothing.
 ///
 /// # Errors
 ///
@@ -343,16 +380,40 @@ pub async fn accept_catalog_batch(
     done: bool,
     titles: &[CatalogTitle],
 ) -> Result<CatalogAccept> {
+    match prepare_catalog_batch(store, node_id, fence, cursor, done, titles).await? {
+        Ok(prepared) => apply_catalog_batch(store, node_id, prepared).await,
+        Err(outcome) => Ok(outcome),
+    }
+}
+
+/// Reads and checks one batch ([`accept_catalog_batch`]): the batch's
+/// statements, or the outcome when nothing is to be written.
+async fn prepare_catalog_batch(
+    store: &LibraryStore,
+    node_id: &str,
+    fence: i64,
+    cursor: &str,
+    done: bool,
+    titles: &[CatalogTitle],
+) -> Result<std::result::Result<PreparedCatalogBatch, CatalogAccept>> {
     if let Some(problem) = batch_problem(cursor, titles) {
-        return Ok(CatalogAccept::Refused(problem));
+        return Ok(Err(CatalogAccept::Refused(problem)));
     }
     let Some((row, owner)) = live_catalog(store, node_id, fence).await? else {
-        return Ok(CatalogAccept::Lost);
+        return Ok(Err(CatalogAccept::Lost));
     };
     let owned = accounts_owned_by(store, owner).await?;
     let provenance = branch_provenance(node_id);
     let now = stamp();
-    let mut upserted = 0u64;
+    let gated = |sql: &str, mut binds: Vec<DbValue>| {
+        binds.extend(live_catalog_binds(node_id, fence));
+        exec(&format!("{sql} AND {LIVE_CATALOG_GATE}"), binds)
+    };
+    // The cursor moves only under the live fence.
+    let mut statements = vec![gated(
+        "UPDATE nodes SET catalog_cursor = ?, catalog_synced_at = ? WHERE node_id = ?",
+        vec![text(cursor), text(&now), text(node_id)],
+    )];
     let mut skipped = 0u64;
     let mut wanted = Vec::new();
     for title in titles {
@@ -374,144 +435,128 @@ pub async fn accept_catalog_batch(
             .map_err(LibraryError::Orm)?;
         let delivered = match existing {
             Some(existing) => {
-                branch_titles::Entity::update_many()
-                    .col_expr(branch_titles::Column::OwnerUserId, Expr::value(owner))
-                    .col_expr(
-                        branch_titles::Column::Title,
-                        Expr::value(title.metadata.title.clone()),
-                    )
-                    .col_expr(
-                        branch_titles::Column::Authors,
-                        Expr::value(title.metadata.authors.clone()),
-                    )
-                    .col_expr(branch_titles::Column::MetadataJson, Expr::value(metadata))
-                    .col_expr(
-                        branch_titles::Column::PrimaryKey,
-                        Expr::value(title.primary_key.clone()),
-                    )
-                    .col_expr(
-                        branch_titles::Column::PdfKey,
-                        Expr::value(title.pdf_key.clone()),
-                    )
-                    .col_expr(branch_titles::Column::ManifestJson, Expr::value(manifest))
-                    .col_expr(
-                        branch_titles::Column::ManifestSha256,
-                        Expr::value(digest.clone()),
-                    )
-                    .col_expr(
-                        branch_titles::Column::State,
-                        Expr::value(BRANCH_TITLE_SHARED),
-                    )
-                    .col_expr(
-                        branch_titles::Column::DetachedReason,
-                        Expr::value(Option::<String>::None),
-                    )
-                    .col_expr(
-                        branch_titles::Column::DetachedAt,
-                        Expr::value(Option::<String>::None),
-                    )
-                    .col_expr(branch_titles::Column::UpdatedAt, Expr::value(now.clone()))
-                    .col_expr(branch_titles::Column::SeenAt, Expr::value(now.clone()))
-                    .filter(branch_titles::Column::Id.eq(existing.id))
-                    .exec(store.db())
-                    .await
-                    .map_err(LibraryError::Orm)?;
+                statements.push(gated(
+                    "UPDATE branch_titles SET owner_user_id = ?, title = ?, authors = ?, \
+                       metadata_json = ?, primary_key = ?, pdf_key = ?, manifest_json = ?, \
+                       manifest_sha256 = ?, state = 'shared', detached_reason = NULL, \
+                       detached_at = NULL, updated_at = ?, seen_at = ? \
+                      WHERE id = ?",
+                    vec![
+                        batch::int(owner),
+                        text(&title.metadata.title),
+                        text_opt(title.metadata.authors.as_deref()),
+                        text(&metadata),
+                        text(&title.primary_key),
+                        text_opt(title.pdf_key.as_deref()),
+                        text(&manifest),
+                        text(&digest),
+                        text(&now),
+                        text(&now),
+                        batch::int(existing.id),
+                    ],
+                ));
                 existing.delivered_sha256
             }
             None => {
-                let model = branch_titles::ActiveModel {
-                    uuid: Set(uuid::Uuid::new_v4().hyphenated().to_string()),
-                    provenance: Set(provenance.clone()),
-                    node_id: Set(node_id.to_string()),
-                    owner_user_id: Set(Some(owner)),
-                    store: Set(title.store.clone()),
-                    product_id: Set(title.product_id.clone()),
-                    title: Set(title.metadata.title.clone()),
-                    authors: Set(title.metadata.authors.clone()),
-                    metadata_json: Set(metadata),
-                    primary_key: Set(title.primary_key.clone()),
-                    pdf_key: Set(title.pdf_key.clone()),
-                    manifest_json: Set(manifest),
-                    manifest_sha256: Set(digest.clone()),
-                    delivered_sha256: Set(None),
-                    state: Set(BRANCH_TITLE_SHARED.into()),
-                    detached_reason: Set(None),
-                    created_at: Set(now.clone()),
-                    updated_at: Set(now.clone()),
-                    seen_at: Set(now.clone()),
-                    delivered_at: Set(None),
-                    detached_at: Set(None),
-                    ..Default::default()
-                };
-                branch_titles::Entity::insert(model)
-                    .exec_without_returning(store.db())
-                    .await
-                    .map_err(LibraryError::Orm)?;
+                statements.push(gated(
+                    "INSERT INTO branch_titles (\
+                        uuid, provenance, node_id, owner_user_id, store, product_id, title, \
+                        authors, metadata_json, primary_key, pdf_key, manifest_json, \
+                        manifest_sha256, delivered_sha256, state, detached_reason, \
+                        created_at, updated_at, seen_at, delivered_at, detached_at\
+                     ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'shared', NULL, \
+                        ?, ?, ?, NULL, NULL \
+                     WHERE 1 = 1",
+                    vec![
+                        text(&uuid::Uuid::new_v4().hyphenated().to_string()),
+                        text(&provenance),
+                        text(node_id),
+                        batch::int(owner),
+                        text(&title.store),
+                        text(&title.product_id),
+                        text(&title.metadata.title),
+                        text_opt(title.metadata.authors.as_deref()),
+                        text(&metadata),
+                        text(&title.primary_key),
+                        text_opt(title.pdf_key.as_deref()),
+                        text(&manifest),
+                        text(&digest),
+                        text(&now),
+                        text(&now),
+                        text(&now),
+                    ],
+                ));
                 None
             }
         };
-        upserted += 1;
         if delivered.as_deref() != Some(digest.as_str()) && wanted.len() < MAX_CATALOG_WANTED {
             wanted.push(title.reference());
         }
     }
-    // The cursor moves only under the live fence.
-    let moved = nodes::Entity::update_many()
-        .col_expr(
-            nodes::Column::CatalogCursor,
-            Expr::value(cursor.to_string()),
-        )
-        .col_expr(nodes::Column::CatalogSyncedAt, Expr::value(now.clone()))
-        .filter(nodes::Column::NodeId.eq(node_id))
-        .filter(nodes::Column::CatalogFence.eq(fence))
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    if moved.rows_affected != 1 {
+    let titles = statements.len() - 1;
+    let withdraw = match row.catalog_pass_started_at.as_deref().filter(|_| done) {
+        Some(started) => {
+            statements.push(gated(
+                "UPDATE branch_titles SET state = 'detached', detached_reason = ?, \
+                   detached_at = ? \
+                  WHERE node_id = ? AND state = 'shared' AND seen_at < ?",
+                vec![
+                    text(DETACHED_WITHDRAWN),
+                    text(&now),
+                    text(node_id),
+                    text(started),
+                ],
+            ));
+            let index = statements.len() - 1;
+            statements.push(gated(
+                "UPDATE nodes SET catalog_pass_started_at = NULL, catalog_full_pass_at = ? \
+                  WHERE node_id = ?",
+                vec![text(&now), text(node_id)],
+            ));
+            Some(index)
+        }
+        None => None,
+    };
+    Ok(Ok(PreparedCatalogBatch {
+        operation_id: format!("catalog-batch:{node_id}:{fence}:{now}"),
+        statements,
+        titles,
+        withdraw,
+        skipped,
+        wanted,
+    }))
+}
+
+/// Writes a prepared batch in one transaction; [`CatalogAccept::Lost`]
+/// (nothing recorded) when its gate no longer holds.
+async fn apply_catalog_batch(
+    store: &LibraryStore,
+    node_id: &str,
+    prepared: PreparedCatalogBatch,
+) -> Result<CatalogAccept> {
+    let reply =
+        batch::execute_host_batch(store, request(&prepared.operation_id, prepared.statements))
+            .await?;
+    if batch::rows_affected(&reply, 0) != 1 {
         return Ok(CatalogAccept::Lost);
     }
-    if done {
-        if let Some(started) = row.catalog_pass_started_at.as_deref() {
-            let withdrawn = branch_titles::Entity::update_many()
-                .col_expr(
-                    branch_titles::Column::State,
-                    Expr::value(BRANCH_TITLE_DETACHED),
-                )
-                .col_expr(
-                    branch_titles::Column::DetachedReason,
-                    Expr::value(DETACHED_WITHDRAWN),
-                )
-                .col_expr(branch_titles::Column::DetachedAt, Expr::value(now.clone()))
-                .filter(branch_titles::Column::NodeId.eq(node_id))
-                .filter(branch_titles::Column::State.eq(BRANCH_TITLE_SHARED))
-                .filter(branch_titles::Column::SeenAt.lt(started))
-                .exec(store.db())
-                .await
-                .map_err(LibraryError::Orm)?;
-            nodes::Entity::update_many()
-                .col_expr(
-                    nodes::Column::CatalogPassStartedAt,
-                    Expr::value(Option::<String>::None),
-                )
-                .col_expr(nodes::Column::CatalogFullPassAt, Expr::value(now.clone()))
-                .filter(nodes::Column::NodeId.eq(node_id))
-                .filter(nodes::Column::CatalogFence.eq(fence))
-                .exec(store.db())
-                .await
-                .map_err(LibraryError::Orm)?;
-            if withdrawn.rows_affected > 0 {
-                tracing::info!(
-                    node_id,
-                    withdrawn = withdrawn.rows_affected,
-                    "a branch's full catalog pass withdrew titles"
-                );
-            }
+    let upserted = (1..=prepared.titles)
+        .map(|index| batch::rows_affected(&reply, index))
+        .sum();
+    if let Some(index) = prepared.withdraw {
+        let withdrawn = batch::rows_affected(&reply, index);
+        if withdrawn > 0 {
+            tracing::info!(
+                node_id,
+                withdrawn,
+                "a branch's full catalog pass withdrew titles"
+            );
         }
     }
     Ok(CatalogAccept::Accepted {
         upserted,
-        skipped,
-        wanted,
+        skipped: prepared.skipped,
+        wanted: prepared.wanted,
     })
 }
 

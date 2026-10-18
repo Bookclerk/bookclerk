@@ -498,9 +498,17 @@ pub async fn post_join_sharing(
         "include_branches": body.include_branches,
     })
     .to_string();
-    let _ = store
+    if let Err(err) = store
         .insert_security_audit_event(&actor, "branch_sharing_changed", Some(&detail))
-        .await;
+        .await
+    {
+        tracing::warn!(
+            %cluster_id,
+            %actor,
+            error = %err,
+            "could not record the branch sharing change in the security audit log"
+        );
+    }
     super::catalog_sync::notify_sharing_changed();
     match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
         Ok(Some(link)) => Json(json!({ "cluster": link_json(&link) })).into_response(),

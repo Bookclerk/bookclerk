@@ -87,7 +87,7 @@ pub(super) struct CatalogBatch {
     pub batch: u64,
     /// Cursor after the batch.
     pub cursor: String,
-    /// Last batch of a pass from the start.
+    /// Last batch of the pass.
     pub done: bool,
     /// The titles.
     pub titles: Vec<CatalogTitle>,

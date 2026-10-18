@@ -16,8 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    join_cycle, library_ancestry, list_branch_titles, load_cluster_link_keys, load_cluster_row,
-    load_node, record_node_left, remove_detached_branch_titles, set_cluster_link_sharing,
+    accept_catalog_batch, begin_catalog, join_cycle, library_ancestry, list_branch_titles,
+    load_cluster_link_keys, load_cluster_row, load_node, record_node_left,
+    remove_detached_branch_titles, set_cluster_link_sharing, CatalogAccept, CatalogBegin,
     ClusterLink, BRANCH_TITLE_DETACHED, BRANCH_TITLE_SHARED, DETACHED_LEFT,
     DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
 };
@@ -197,6 +198,16 @@ fn tree(dir: &Path) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+#[test]
+fn a_sibling_shares_the_primarys_stem_up_to_a_dot() {
+    for sibling in ["b1.m4b", "b1.jpg", "b1.chapters.json", "b1.cue"] {
+        assert!(is_sibling(sibling, "b1"), "{sibling}");
+    }
+    for other in ["b10.m4b", "b1-cover.jpg", "b1", "sub/b1.jpg", "notes.txt"] {
+        assert!(!is_sibling(other, "b1"), "{other}");
+    }
 }
 
 #[tokio::test]
@@ -409,12 +420,31 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     .is_ok());
 
     // "Include books from my own branches" off: C's title is withdrawn
-    // from A; B's own stays; the files stay.
+    // from A; B's own stays; the files stay. The pass from the start this
+    // opens is cut off after its first title (the link dropped): the next
+    // session resumes after it, and its last batch still ends the pass.
     set_cluster_link_sharing(&b, &b_link.owner_cluster_id, true, false)
         .await
         .unwrap();
+    let b_node = b_link.remote_node_id.as_str();
+    let CatalogBegin::Opened(cut) = begin_catalog(&a, b_node, true, false).await.unwrap() else {
+        panic!("expected a session");
+    };
+    assert_eq!(cut.cursor, "", "the new settings restart the pass");
+    let first = b_sync.entries(false).await.unwrap().remove(0);
+    let shelf = b_sync.shelf.primary().await.unwrap();
+    let first_title = b_sync.title(shelf.as_ref(), &first).await.unwrap();
+    assert!(matches!(
+        accept_catalog_batch(&a, b_node, cut.fence, &first.order, false, &[first_title])
+            .await
+            .unwrap(),
+        CatalogAccept::Accepted { .. }
+    ));
     let report = b_sync.sync_once().await.unwrap();
-    assert_eq!(report.sent, 2, "b1 and echo1 only");
+    assert_eq!(
+        report.sent, 1,
+        "the pass resumed after the first of b1 and echo1"
+    );
     assert_eq!(
         title_state(&a, "c1").await,
         (
