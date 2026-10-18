@@ -183,6 +183,7 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 | Created | 200 | New row; worker is notified |
 | Duplicate | 409 | Same dedup key already `pending` or `running`; `job_id` is the existing row |
 | QueueFull | 429 | `pending + running >= jobs.max_pending` |
+| Unroutable | 409 | `error: "unroutable"`: the job's required instances share no node (see job routing below); no row is written |
 
 Admission, claim, and handler execution share an `RwLock` (`job_runtime`).
 A database plugin swap takes the write permit so it cannot observe an idle
@@ -259,13 +260,17 @@ node that runs it needs. At admission the daemon records
 - An acquire requires every deployed instance of a node-bound output (today
   the verified first-party `local` destination), because it writes to every
   deployed destination and a `local` output is the disk of the nodes it is
-  deployed to.
+  deployed to. If plugin discovery fails on the admitting node (say an
+  unrelated plugin has a duplicate alias), every instance whose plugin key
+  names the first-party `local` package is required instead, unverified, so
+  the acquire is never left claimable by a node without those outputs.
 - Everything else (unpinned scans, listen sync, integration scans,
   `plugin_copy`) has no requirements and is claimable on any node.
 
 The required instances must share a node where all of them are deployed to
 run (`control_plane::common_deployment_nodes`); otherwise admission refuses
-the job with a conflict instead of leaving a row no node can ever claim.
+the job with a conflict (HTTP 409 `unroutable`) instead of leaving a row no
+node can ever claim.
 Required instances are never dropped to make a node fit.
 
 The daemon's worker claims through `control_plane::claim_routed_job`: it
