@@ -366,14 +366,40 @@ pub async fn set_cluster_link_state(
     Ok(updated.rows_affected == 1)
 }
 
+/// Marks an **active** link [`CLUSTER_LINK_REVOKED`] (the owner closed with
+/// 4403). A link this install already left stays `left`. Answers whether a
+/// row changed.
+///
+/// # Errors
+///
+/// Returns the write error.
+pub async fn mark_cluster_link_revoked(
+    store: &LibraryStore,
+    owner_cluster_id: &str,
+) -> Result<bool> {
+    let updated = cluster_links::Entity::update_many()
+        .col_expr(
+            cluster_links::Column::State,
+            Expr::value(CLUSTER_LINK_REVOKED),
+        )
+        .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .filter(cluster_links::Column::State.eq(CLUSTER_LINK_ACTIVE))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(updated.rows_affected == 1)
+}
+
 /// Leaves an owner cluster on this side: marks the link
 /// [`CLUSTER_LINK_LEFT`] and deletes its sealed node keys, so this install
 /// can never sign as that node again. Answers the link as it now stands,
 /// or `None` when there is no such link.
 ///
-/// The owner is not told; its operator revokes the node there (`bookclerk
-/// nodes revoke`). A running daemon stops the link's client when it next
-/// re-reads the link. Joining again needs a new enrollment link.
+/// This only records the departure. Telling the owner (`node.leaving`,
+/// which revokes the node there) is the caller's, before the keys go:
+/// `bookclerk_node_client::announce_leaving` or the running client. A
+/// running daemon stops the link's client when it next re-reads the link.
+/// Joining again needs a new sign-in or invite.
 ///
 /// # Errors
 ///

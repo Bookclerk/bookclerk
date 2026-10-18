@@ -44,8 +44,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine as _;
 use bookclerk_library::control_plane::{
-    load_cluster_row, load_node_credential, record_node_connected, JobClaimLimits,
-    RemoteClaimSettings,
+    load_cluster_row, load_node_credential, record_node_connected, record_node_left,
+    JobClaimLimits, RemoteClaimSettings,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
@@ -589,6 +589,28 @@ async fn session_loop(
                             Body::Ack {} => {
                                 if let Some(wakes) = wakes.as_mut() {
                                     wakes.ack(library, &frame.id).await;
+                                }
+                                continue;
+                            }
+                            // The host's operator chose Leave library: the
+                            // node is gone now, not after missed heartbeats.
+                            Body::NodeLeaving {} => {
+                                let answer = match record_node_left(library, node_id).await {
+                                    Ok(_) => Body::Accepted {},
+                                    Err(err) => {
+                                        tracing::warn!(node_id, error = %err, "could not record a leaving host node");
+                                        Body::Error {
+                                            code: "unavailable".into(),
+                                            message: "the leave could not be recorded; retry".into(),
+                                        }
+                                    }
+                                };
+                                let left = matches!(answer, Body::Accepted {});
+                                if !enqueue(outbox, text(&Frame::new(frame.id, answer))).await {
+                                    return None;
+                                }
+                                if left {
+                                    return Some((CLOSE_REVOKED, "left"));
                                 }
                                 continue;
                             }

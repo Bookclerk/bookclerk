@@ -18,7 +18,7 @@ Start here if you are new:
 10. [Bounded storage](storage-bounds.md) — scalar caps, streams, paged scans, checkpoints
 11. [Media worker pool](media.md) — confined codecs, concurrency, isolation modes
 12. [Operations](operations.md) — `bookclerkd`, Docker, systemd
-    - [Clusters and host nodes](cluster-hosts.md) — joining a cluster, host consent, uploads, node API, `/api/live`
+    - [Libraries and branches](cluster-hosts.md) — Join a library, branch invites, host consent, uploads, node API, `/api/live`
 13. [Dev Container](devcontainer.md) — consistent Rust/OpenSSL/Node build env (Cursor / VS Code)
 14. [GUI](gui.md) — web UI, operator auth, tray companion
 15. [Desktop path](gui-desktop-path.md) — tray vs deferred Tauri / OSV constraints

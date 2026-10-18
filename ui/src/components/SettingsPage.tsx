@@ -4,6 +4,7 @@ import { AccountSettingsPanel } from "@/components/AccountSettingsPanel";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ErrorStatePage } from "@/components/ErrorStatePage";
+import { BranchesPanel } from "@/components/BranchesPanel";
 import { ClusterConsentsPanel } from "@/components/ClusterConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
@@ -62,13 +63,15 @@ const DEFAULT_DAEMON_PORT = "8787";
 
 type ListenExposure = "localhost" | "all" | "custom";
 type ListenRow = { host: string; port: string };
-type SettingsTab =
+/** A Settings section. `clusters` is shown as "Library" (this server as a branch). */
+export type SettingsTab =
   | "account"
   | "users"
   | "signin"
   | "server"
   | "plugins"
   | "nodes"
+  | "branches"
   | "clusters";
 
 const ISOLATION_OPTIONS = [
@@ -401,6 +404,7 @@ export function SettingsPage({
   nav,
   role,
   session,
+  initialTab,
 }: {
   onLogout: () => void;
   onSessionExpired: () => void;
@@ -408,6 +412,8 @@ export function SettingsPage({
   nav: AppNavProps;
   role?: AuthRole;
   session?: AuthSession | null;
+  /** Section to open first (default: Account). */
+  initialTab?: SettingsTab;
 }) {
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -507,7 +513,7 @@ export function SettingsPage({
   const currentUserId = session?.user?.id;
 
   function resolveDefaultTab(): SettingsTab {
-    return "account";
+    return initialTab ?? "account";
   }
 
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
@@ -524,7 +530,7 @@ export function SettingsPage({
     if (!showUserAdmin && activeTab === "users") {
       setActiveTab("account");
     }
-    if (!showSignInSettings && activeTab === "signin") {
+    if (!showSignInSettings && (activeTab === "signin" || activeTab === "branches")) {
       setActiveTab("account");
     }
     if (
@@ -1380,7 +1386,23 @@ export function SettingsPage({
                 )}
                 onClick={() => setActiveTab("clusters")}
               >
-                Clusters
+                Library
+              </button>
+            ) : null}
+            {showSignInSettings ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "branches"}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                  activeTab === "branches"
+                    ? "bg-ink text-paper shadow-sm"
+                    : "text-ink/60 hover:text-ink",
+                )}
+                onClick={() => setActiveTab("branches")}
+              >
+                Branches
               </button>
             ) : null}
           </div>
@@ -1451,6 +1473,13 @@ export function SettingsPage({
 
         {activeTab === "clusters" && showOperatorChrome ? (
           <ClusterConsentsPanel onSessionExpired={onSessionExpired} />
+        ) : null}
+
+        {activeTab === "branches" && showSignInSettings ? (
+          <BranchesPanel
+            onSessionExpired={onSessionExpired}
+            canAddOwn={role !== "operator" && Boolean(session?.user)}
+          />
         ) : null}
 
         {(activeTab === "server" || activeTab === "plugins") && showOperatorChrome ? (

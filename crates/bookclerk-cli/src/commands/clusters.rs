@@ -7,17 +7,20 @@
 //! lets the plugin's jobs be claimed and a revoke cancels and gives back
 //! the plugin's jobs held here.
 //!
-//! `join` reads the enrollment link from stdin (or a prompt), never from
-//! argv: the link carries a single-use secret. A running daemon dials a
-//! newly joined cluster at its next start, and stops a left one's client
-//! within a few seconds.
+//! `join --url <owner>` joins by signing in to the owner library in a
+//! browser (an OAuth code with PKCE, sent back to a loopback listener this
+//! command opens). Without `--url`, `join` reads an enrollment link (a
+//! branch invite) from stdin or a prompt, never from argv: the link carries
+//! a single-use secret. A running daemon dials a newly joined cluster
+//! within a few seconds, and stops a left one's client as quickly. `leave`
+//! tells the owner first (`node.leaving`), which revokes the node there.
 
 use std::collections::BTreeSet;
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    leave_cluster_link, list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin,
-    ClusterLink, RemotePluginConsent,
+    leave_cluster_link, list_cluster_links, list_remote_plugin_consents, load_cluster_link,
+    load_cluster_link_keys, revoke_remote_plugin, ClusterLink, NodeSampler, RemotePluginConsent,
 };
 use bookclerk_plugin_host::{approve_remote_request, remote_consent_state, RemoteNarrowing};
 use clap::Subcommand;
@@ -33,12 +36,28 @@ const CLI_APPROVER: &str = "cli";
 pub enum ClustersCommand {
     /// The owner clusters this install is enrolled in as a host.
     List,
-    /// Enroll this install as a host of an owner cluster. Reads the
-    /// enrollment link (`https://<owner>/enroll#bcn1...`) from stdin, or
-    /// prompts for it; it is never taken from the command line.
-    Join,
-    /// Leave an owner cluster: the link stops being dialed and its node
-    /// keys are deleted. The owner is not told; revoke the node there.
+    /// Enroll this install as a host (a branch) of an owner library.
+    ///
+    /// With `--url`, prints a sign-in link (and opens a browser when it
+    /// can): a user of that library signs in and approves, and the answer
+    /// comes back to a loopback listener this command opens. Without it,
+    /// reads a branch invite (`https://<owner>/enroll#bcn1...`) from stdin,
+    /// or prompts for it; an invite is never taken from the command line.
+    Join {
+        /// The owner library's address (`https://library.example`).
+        #[arg(long)]
+        url: Option<String>,
+        /// The name the owner sees for this branch (default: host name).
+        #[arg(long, requires = "url")]
+        name: Option<String>,
+        /// The owner's certificate fingerprint (`sha256:...`), confirming
+        /// a self-signed library without a prompt.
+        #[arg(long, requires = "url")]
+        fingerprint: Option<String>,
+    },
+    /// Leave an owner cluster: the owner is told (and revokes this node
+    /// when it hears), the link stops being dialed and its node keys are
+    /// deleted.
     Leave {
         /// Owner cluster id (default: the only enrolled cluster).
         #[arg(long)]
@@ -116,6 +135,36 @@ fn link_json(link: &ClusterLink) -> serde_json::Value {
     })
 }
 
+/// Tells an active cluster's owner this node is leaving
+/// ([`bookclerk_node_client::announce_leaving`]); `false` when the link is
+/// not active or the owner could not be told.
+async fn announce_leaving(
+    store: &bookclerk_library::LibraryStore,
+    config: &Config,
+    cluster: &str,
+) -> bool {
+    let Ok(Some(link)) = load_cluster_link(store, cluster).await else {
+        return false;
+    };
+    if !link.is_active() {
+        return false;
+    }
+    let Ok(keys) = load_cluster_link_keys(store, &link).await else {
+        return false;
+    };
+    bookclerk_node_client::announce_leaving(
+        link,
+        keys,
+        env!("CARGO_PKG_VERSION"),
+        Box::new(NodeSampler::new(&config.paths().files_dir)),
+        LEAVE_NOTICE_TIMEOUT,
+    )
+    .await
+}
+
+/// How long `leave` waits for the owner to hear `node.leaving`.
+const LEAVE_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Reads the enrollment link: the first line of stdin, or a prompt on a
 /// terminal.
 fn read_link_from_stdin() -> anyhow::Result<secrecy::SecretString> {
@@ -192,7 +241,26 @@ pub async fn run(
                 }
             })
         }
-        ClustersCommand::Join => {
+        ClustersCommand::Join {
+            url: Some(url),
+            name,
+            fingerprint,
+        } => {
+            let joined = super::clusters_join::join_with_sign_in(
+                store,
+                &url,
+                name.as_deref(),
+                fingerprint.as_deref(),
+            )
+            .await?;
+            emit(format, &json!({ "cluster": link_json(&joined) }), || {
+                println!(
+                    "joined library {} at {} as node {}; a running daemon connects within a few seconds",
+                    joined.owner_cluster_id, joined.owner_origin, joined.remote_node_id
+                );
+            })
+        }
+        ClustersCommand::Join { url: None, .. } => {
             use secrecy::ExposeSecret as _;
             let link = read_link_from_stdin()?;
             let joined = bookclerk_node_client::join_cluster(
@@ -205,22 +273,34 @@ pub async fn run(
             drop(link);
             emit(format, &json!({ "cluster": link_json(&joined) }), || {
                 println!(
-                    "joined cluster {} at {} as node {}; restart the daemon to connect",
+                    "joined cluster {} at {} as node {}; a running daemon connects within a few seconds",
                     joined.owner_cluster_id, joined.owner_origin, joined.remote_node_id
                 );
             })
         }
         ClustersCommand::Leave { cluster } => {
             let cluster = cluster_id(store, cluster).await?;
+            let notified = announce_leaving(store, config, &cluster).await;
             let Some(left) = leave_cluster_link(store, &cluster).await? else {
                 anyhow::bail!("this install is not enrolled in cluster {cluster}");
             };
-            emit(format, &json!({ "cluster": link_json(&left) }), || {
-                println!(
-                    "left cluster {}; its node keys are deleted. Revoke node {} on the owner",
-                    left.owner_cluster_id, left.remote_node_id
-                );
-            })
+            emit(
+                format,
+                &json!({ "cluster": link_json(&left), "owner_notified": notified }),
+                || {
+                    if notified {
+                        println!(
+                            "left cluster {}; the owner revoked node {} and its node keys are deleted",
+                            left.owner_cluster_id, left.remote_node_id
+                        );
+                    } else {
+                        println!(
+                            "left cluster {}; its node keys are deleted. The owner could not be told: revoke node {} there",
+                            left.owner_cluster_id, left.remote_node_id
+                        );
+                    }
+                },
+            )
         }
         ClustersCommand::Consents { cluster } => {
             let rows = list_remote_plugin_consents(store, cluster.as_deref()).await?;

@@ -1121,4 +1121,21 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
     ),
+    // Join a library: on a joining host, one sign-in in progress. The PKCE
+    // verifier and node keys are sealed in `encrypted_secrets` (`kind =
+    // cluster_join`); only the hash of `state` is stored here. Rows live
+    // ten minutes.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS pending_joins (
+        state_hash TEXT PRIMARY KEY NOT NULL,
+        owner_origin TEXT NOT NULL,
+        spki_pin TEXT,
+        owner_cluster_id TEXT NOT NULL,
+        library_name TEXT NOT NULL,
+        branch_name TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )",
+    ),
 ];

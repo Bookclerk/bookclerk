@@ -5,6 +5,9 @@
 //! link's secret appears once, in the `url` fragment of the mint response;
 //! it is never logged.
 //!
+//! The invite list is the SPA's "Add a branch" dialog too; a mint answer is
+//! `Cache-Control: no-store`.
+//!
 //! `POST /api/node/v1/enroll` redeems a link. It sits outside the cookie and
 //! operator auth layers (the link secret is the credential) and is never
 //! disabled by `auth.enabled = false`; [`transport::classify_transport`]
@@ -19,6 +22,7 @@
 //! upload token and write them straight to this node's destinations.
 
 mod artifacts;
+pub mod branch;
 mod host_results;
 pub mod tls;
 pub mod transport;
@@ -35,7 +39,7 @@ use std::sync::Arc;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Path, Request, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
@@ -105,7 +109,7 @@ pub async fn post_node_invite(
     Extension(caller): Extension<UserCaller>,
     headers: HeaderMap,
     Json(body): Json<PostNodeInvite>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Response, Response> {
     let for_user_id = match (body.user_id, caller) {
         (Some(user_id), _) | (None, UserCaller::User { user_id }) => user_id,
         (None, UserCaller::Operator) => {
@@ -136,10 +140,14 @@ pub async fn post_node_invite(
         )
     };
     let url = minted.url(&origin, spki_pin.as_deref());
-    Ok(Json(json!({
-        "link": link_json(&minted.link),
-        "url": url.as_str(),
-    })))
+    // Shown once: no cache may keep it.
+    Ok(branch::no_store(
+        Json(json!({
+            "link": link_json(&minted.link),
+            "url": url.as_str(),
+        }))
+        .into_response(),
+    ))
 }
 
 /// `GET /api/config/node-invites`: every link for the operator or an
@@ -201,6 +209,13 @@ where
     axum::Router::new()
         // The link secret is the credential; the transport policy runs first.
         .route("/api/node/v1/enroll", axum::routing::post(post_enroll))
+        // Joining with a sign-in: what the library says about itself, and
+        // the redeem of an approved code (code + PKCE verifier).
+        .route("/api/node/v1/info", axum::routing::get(branch::get_info))
+        .route(
+            "/api/node/v1/enroll/oauth",
+            axum::routing::post(branch::post_enroll_oauth),
+        )
         // Host-node socket: the node's Ed25519 key is the credential.
         .route("/api/node/v1/connect", axum::routing::get(ws::get_connect))
         // Owner plugin archives: a node-signed request is the credential.
@@ -301,25 +316,9 @@ pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -
     if let Err(refused) = check_transport(&state, &mut parts, "enroll").await {
         return refused;
     }
-    let headers = std::mem::take(&mut parts.headers);
-    let json_body = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
-        });
-    if !json_body {
-        return enroll_error(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "expected application/json",
-        );
-    }
-    // Enroll bodies are small; refuse anything larger without buffering it.
-    let Ok(body) = axum::body::to_bytes(body, MAX_ENROLL_BODY_BYTES).await else {
-        return enroll_error(StatusCode::PAYLOAD_TOO_LARGE, "enroll request too large");
+    let body = match read_json_body(&parts.headers, body, MAX_ENROLL_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(refused) => return refused,
     };
     let Ok(body) = serde_json::from_slice::<EnrollBody>(&body) else {
         return enroll_error(StatusCode::BAD_REQUEST, "invalid enroll request");
@@ -340,7 +339,16 @@ pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -
         software_version: body.software_version,
     };
     let library = state.library_snapshot().await;
-    match redeem_enrollment_link(&library, &request).await {
+    redeem_answer(redeem_enrollment_link(&library, &request).await)
+}
+
+/// The answer to a redeem, for links and branch sign-ins alike: `{cluster_id,
+/// node_id}`, one generic 403 `enrollment_refused` for anything that does
+/// not redeem, 400 for malformed keys.
+fn redeem_answer(
+    result: bookclerk_library::Result<bookclerk_library::control_plane::EnrolledNode>,
+) -> Response {
+    match result {
         Ok(enrolled) => Json(json!({
             "cluster_id": enrolled.cluster_id,
             "node_id": enrolled.node_id,
@@ -355,6 +363,24 @@ pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -
             enroll_error(StatusCode::SERVICE_UNAVAILABLE, "enrollment_unavailable")
         }
     }
+}
+
+/// Reads a small JSON request body: 415 without `Content-Type:
+/// application/json`, 413 past `limit` (without buffering more).
+async fn read_json_body(
+    headers: &HeaderMap,
+    body: axum::body::Body,
+    limit: usize,
+) -> Result<axum::body::Bytes, Response> {
+    if !branch::is_json(headers) {
+        return Err(enroll_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "expected application/json",
+        ));
+    }
+    axum::body::to_bytes(body, limit)
+        .await
+        .map_err(|_| enroll_error(StatusCode::PAYLOAD_TOO_LARGE, "request too large"))
 }
 
 #[cfg(test)]

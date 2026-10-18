@@ -46,6 +46,8 @@ pub const CONNECT_PATH: &str = "/api/node/v1/connect";
 /// Path of the enroll endpoint.
 pub const ENROLL_PATH: &str = "/api/node/v1/enroll";
 
+pub use bookclerk_node_proto::{ENROLL_OAUTH_PATH, INFO_PATH};
+
 /// Seconds allowed for the TCP connect and for the TLS handshake.
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 
@@ -444,6 +446,187 @@ impl OwnerEndpoint {
         tokio::time::timeout(Duration::from_secs(HTTP_TIMEOUT_SECS), exchange)
             .await
             .map_err(|_| DialError::Timeout)?
+    }
+}
+
+/// What a first TLS handshake showed of an owner's certificate, before any
+/// pin is known ([`OwnerEndpoint::probe_json`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsProbe {
+    /// base64url SHA-256 of the presented certificate's SubjectPublicKeyInfo.
+    pub spki_pin: String,
+    /// True when the certificate chains to the webpki roots and names the
+    /// host (what an unpinned connection requires).
+    pub webpki_trusted: bool,
+}
+
+impl OwnerEndpoint {
+    /// `GET path` on an owner whose certificate is not known yet: the TLS
+    /// handshake accepts any certificate whose key signs the handshake,
+    /// records its SPKI pin and whether it would pass the webpki roots, and
+    /// answers both with the status and body. Plain-HTTP (loopback) origins
+    /// answer no probe.
+    ///
+    /// Only for reading what a library says about itself before its
+    /// operator confirms the pin (trust on first use); nothing secret is
+    /// sent. A pinned endpoint is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DialError`] when the request cannot be made or the answer
+    /// is malformed.
+    pub async fn probe_json(
+        &self,
+        path: &str,
+    ) -> Result<(u16, Vec<u8>, Option<TlsProbe>), DialError> {
+        if self.pin.is_some() {
+            return Err(DialError::Invalid("a pinned endpoint is not probed".into()));
+        }
+        if path.contains(['\r', '\n', ' ']) {
+            return Err(DialError::Http);
+        }
+        let exchange = async {
+            let probe = Arc::new(std::sync::Mutex::new(None));
+            let mut io = if self.tls {
+                let tcp = self.connect_tcp().await?;
+                let name = ServerName::try_from(self.host.clone())
+                    .map_err(|_| DialError::Invalid("owner host is not a valid TLS name".into()))?;
+                let config = probe_config(Arc::clone(&probe))?;
+                let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+                let tls = tokio::time::timeout(
+                    Duration::from_secs(CONNECT_TIMEOUT_SECS),
+                    connector.connect(name, tcp),
+                )
+                .await
+                .map_err(|_| DialError::Timeout)?
+                .map_err(|err| DialError::Tls(err.to_string()))?;
+                Box::new(tls) as Box<dyn OwnerIo>
+            } else {
+                self.connect().await?
+            };
+            let head = format!(
+                "GET {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\n\
+                 Connection: close\r\n\r\n",
+                self.authority(),
+            );
+            io.write_all(head.as_bytes()).await?;
+            io.flush().await?;
+            let (status, body) = read_http_response(&mut io, MAX_HTTP_RESPONSE_BYTES).await?;
+            let seen = probe
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Ok((status, body, seen))
+        };
+        tokio::time::timeout(Duration::from_secs(HTTP_TIMEOUT_SECS), exchange)
+            .await
+            .map_err(|_| DialError::Timeout)?
+    }
+
+    /// A TCP stream to the first address that answers.
+    async fn connect_tcp(&self) -> Result<TcpStream, DialError> {
+        let timeout = Duration::from_secs(CONNECT_TIMEOUT_SECS);
+        let mut last = None;
+        for addr in self.addresses().await? {
+            match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
+                Ok(Ok(stream)) => {
+                    let _ = stream.set_nodelay(true);
+                    return Ok(stream);
+                }
+                Ok(Err(err)) => last = Some(DialError::Io(err)),
+                Err(_) => last = Some(DialError::Timeout),
+            }
+        }
+        Err(last.unwrap_or(DialError::Timeout))
+    }
+}
+
+/// TLS settings that record the presented certificate ([`ProbeVerifier`]).
+fn probe_config(seen: Arc<std::sync::Mutex<Option<TlsProbe>>>) -> Result<ClientConfig, DialError> {
+    let provider = provider();
+    let algorithms = provider.signature_verification_algorithms;
+    let webpki = tokio_rustls::rustls::client::WebPkiServerVerifier::builder_with_provider(
+        Arc::new(RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        }),
+        Arc::clone(&provider),
+    )
+    .build()
+    .map_err(|err| DialError::Tls(err.to_string()))?;
+    let mut config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|err| DialError::Tls(err.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(ProbeVerifier {
+            webpki,
+            algorithms,
+            seen,
+        }))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
+}
+
+/// Accepts any certificate whose key signs the handshake and records its
+/// pin and whether the webpki roots would have accepted it. Used only for
+/// [`OwnerEndpoint::probe_json`]; the caller decides from the record.
+#[derive(Debug)]
+struct ProbeVerifier {
+    /// The verifier an unpinned connection uses.
+    webpki: Arc<tokio_rustls::rustls::client::WebPkiServerVerifier>,
+    /// Signature algorithms of the crypto provider.
+    algorithms: WebPkiSupportedAlgorithms,
+    /// What the handshake showed.
+    seen: Arc<std::sync::Mutex<Option<TlsProbe>>>,
+}
+
+impl ServerCertVerifier for ProbeVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, tokio_rustls::rustls::Error> {
+        use base64::Engine as _;
+        let pin = certificate_pin(end_entity).ok_or(
+            tokio_rustls::rustls::Error::InvalidCertificate(CertificateError::BadEncoding),
+        )?;
+        let webpki_trusted = self
+            .webpki
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+            .is_ok();
+        *self
+            .seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TlsProbe {
+            spki_pin: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pin),
+            webpki_trusted,
+        });
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        verify_tls12_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
     }
 }
 

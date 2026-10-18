@@ -19,9 +19,16 @@ pub enum JoinError {
     /// The owner could not be reached under the transport policy.
     #[error(transparent)]
     Dial(#[from] DialError),
-    /// The owner refused the link (spent, expired, revoked, or unknown).
-    #[error("the owner refused the enrollment link")]
+    /// The owner refused the link (spent, expired, revoked, or unknown), or
+    /// the sign-in's code.
+    #[error("the owner refused the enrollment")]
     Refused,
+    /// The library names another origin as its own; join at that one.
+    #[error("this library's address is {origin}; join with that address")]
+    OriginMismatch {
+        /// The origin the library names.
+        origin: String,
+    },
     /// The owner answered with another status.
     #[error("enrollment failed with HTTP {status}: {error}")]
     Http {

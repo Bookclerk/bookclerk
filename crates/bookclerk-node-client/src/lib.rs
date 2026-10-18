@@ -1,7 +1,10 @@
 //! The host side of the node API (H-4 design, sections 2 to 4; step 7).
 //!
 //! A host node is a separate Bookclerk install that enrolled into an owner
-//! cluster with a single-use link ([`join_cluster`]). Its node keys are
+//! cluster with a single-use link ([`join_cluster`]) or a sign-in at the
+//! owner ([`inspect_library`], [`authorize_branch`],
+//! [`redeem_branch_code`]); it tells the owner when it leaves
+//! ([`announce_leaving`]). Its node keys are
 //! sealed in its own database
 //! (`bookclerk_library::control_plane::record_cluster_link`). For every
 //! active link, [`HostClient`] keeps one socket to the owner's
@@ -36,16 +39,24 @@
 //! The consent decisions themselves (which plugins, which grant) and how a
 //! job runs its guest are the daemon's.
 
+mod branch;
 mod client;
 mod endpoint;
 mod enroll;
 mod jobs;
 
+pub use branch::{
+    announce_leaving, authorize_branch, inspect_library, library_origin, redeem_branch_code,
+    BranchAuthorization, BranchRedeem, InspectedLibrary,
+};
 pub use client::{
     ClientExit, ClientTiming, HeartbeatSource, HostClient, HostClientConfig, HostClientHandle,
     AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE, MAX_ARTIFACT_BYTES, SECRETS_UNOPENABLE,
 };
-pub use endpoint::{DialError, OwnerEndpoint, OwnerIo, OwnerSocket, CONNECT_PATH, ENROLL_PATH};
+pub use endpoint::{
+    DialError, OwnerEndpoint, OwnerIo, OwnerSocket, TlsProbe, CONNECT_PATH, ENROLL_OAUTH_PATH,
+    ENROLL_PATH, INFO_PATH,
+};
 pub use enroll::{join_cluster, JoinError};
 pub use jobs::{
     HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload, OwnerCallError,

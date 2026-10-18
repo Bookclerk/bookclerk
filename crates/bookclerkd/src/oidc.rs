@@ -2,10 +2,17 @@
 //!
 //! Tokens are always bound to a first-party User — never minted from the
 //! operator token alone. Discovery lives at `/.well-known/openid-configuration`.
+//!
+//! One client is built in and never stored: `bookclerk-branch`, the public
+//! client a joining branch signs in through (scope `node:enroll`, loopback
+//! or https redirect URIs). Its authorize requests go to the SPA consent
+//! page `/join/approve`, and its codes are redeemed only at
+//! `POST /api/node/v1/enroll/oauth` (`crate::node_api::branch`), never at
+//! the token endpoint.
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -138,8 +145,12 @@ pub struct AuthorizeQuery {
 async fn authorize(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    RawQuery(raw): RawQuery,
     Query(q): Query<AuthorizeQuery>,
 ) -> Result<Response, StatusCode> {
+    if q.client_id == bookclerk_node_proto::BRANCH_CLIENT_ID {
+        return branch_authorize(raw.as_deref().unwrap_or(""));
+    }
     validate_authorize_request(&state, &q).await?;
     let Some(user_id) = require_user_session(&state, &headers).await? else {
         // Operator token alone is not enough — send to SPA login.
@@ -152,6 +163,17 @@ async fn authorize(
         );
     };
     issue_code_redirect(&state, user_id, &q).await
+}
+
+/// A `bookclerk-branch` authorize request: checked here (a malformed one is
+/// 400 and never redirects), then sent to the SPA consent page, which signs
+/// the user in and asks before any code is issued.
+fn branch_authorize(raw: &str) -> Result<Response, StatusCode> {
+    let params = crate::node_api::branch::parse_branch_query(raw).ok_or(StatusCode::BAD_REQUEST)?;
+    if crate::node_api::branch::branch_request_problem(&params).is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Redirect::to(&format!("/join/approve?{raw}")).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,6 +403,10 @@ async fn token_authorization_code(
         .as_deref()
         .ok_or(StatusCode::BAD_REQUEST)?;
     let client_id = form.client_id.as_deref().ok_or(StatusCode::BAD_REQUEST)?;
+    // A branch's code is redeemed only at the node API's enroll/oauth.
+    if client_id.trim() == bookclerk_node_proto::BRANCH_CLIENT_ID {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let verifier = form
         .code_verifier
         .as_deref()
@@ -892,6 +918,13 @@ async fn sync_plugin_oidc_clients_with(
     }
     let library = state.library_snapshot().await;
     for tmpl in templates {
+        if tmpl.client_id.trim() == bookclerk_node_proto::BRANCH_CLIENT_ID {
+            tracing::warn!(
+                plugin = %tmpl.plugin_id,
+                "skipping a plugin OIDC client that claims the built-in branch client id"
+            );
+            continue;
+        }
         let base_url = origin_from_instance_document(&library, &tmpl.origin_config_key).await;
         let redirects = redirect_uris_from_plugin_base(&base_url, &tmpl.callback_path);
         library
@@ -1062,8 +1095,11 @@ fn oidc_client_error(status: StatusCode, message: impl Into<String>) -> Response
 }
 
 /// Reject empty, oversized, or punctuation-heavy client ids.
-fn validate_client_id(id: &str) -> Result<(), String> {
+pub(crate) fn validate_client_id(id: &str) -> Result<(), String> {
     let trimmed = id.trim();
+    if trimmed == bookclerk_node_proto::BRANCH_CLIENT_ID {
+        return Err(format!("client id {trimmed} is built in"));
+    }
     if trimmed.len() < 2 || trimmed.len() > 128 {
         return Err("client id must be 2–128 characters".into());
     }

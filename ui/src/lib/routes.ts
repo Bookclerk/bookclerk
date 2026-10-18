@@ -1,5 +1,11 @@
 import type { AppView } from "@/lib/api";
 
+/** The library's consent page for a branch's sign-in. */
+export const JOIN_APPROVE_PATH = "/join/approve";
+
+/** Where a library sends the joining install's browser back. */
+export const JOIN_CALLBACK_PATH = "/join/callback";
+
 /** Document paths the React app owns (served as `index.html` by bookclerkd). */
 const APP_PATHS = new Set([
   "/",
@@ -10,7 +16,30 @@ const APP_PATHS = new Set([
   "/cluster",
   "/settings",
   "/invite",
+  // Join a library: the library's consent page, and the joining install's
+  // callback.
+  JOIN_APPROVE_PATH,
+  JOIN_CALLBACK_PATH,
 ]);
+
+/**
+ * Which Join a library page this document is, if any.
+ *
+ * @param pathname - Document pathname.
+ * @returns `approve`, `callback`, or `null`.
+ */
+export function joinPage(
+  pathname: string = window.location.pathname,
+): "approve" | "callback" | null {
+  switch (normalizePathname(pathname)) {
+    case JOIN_APPROVE_PATH:
+      return "approve";
+    case JOIN_CALLBACK_PATH:
+      return "callback";
+    default:
+      return null;
+  }
+}
 
 /**
  * Returns whether `pathname` is a known GUI route (not an API/static/unknown URL).

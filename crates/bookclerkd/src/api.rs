@@ -931,6 +931,31 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/cluster-consents/revoke",
             post(crate::cluster_link::api::post_cluster_consent_revoke),
         )
+        // Join a library / Leave library (the welcome screen and wizard).
+        .route(
+            "/api/config/join",
+            get(crate::cluster_link::join::get_join_status),
+        )
+        .route(
+            "/api/config/join/inspect",
+            post(crate::cluster_link::join::post_join_inspect),
+        )
+        .route(
+            "/api/config/join/start",
+            post(crate::cluster_link::join::post_join_start),
+        )
+        .route(
+            "/api/config/join/callback",
+            post(crate::cluster_link::join::post_join_callback),
+        )
+        .route(
+            "/api/config/join/invite",
+            post(crate::cluster_link::join::post_join_invite),
+        )
+        .route(
+            "/api/config/join/leave",
+            post(crate::cluster_link::join::post_join_leave),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route(
             "/api/plugins/{id}/consent",
@@ -977,6 +1002,19 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .route(
             "/api/config/node-invites/{id}",
             delete(crate::node_api::delete_node_invite),
+        )
+        // A branch's sign-in consent ("Let <branch> join <library> as
+        // yours?"): a signed-in user, never the operator alone.
+        .route(
+            "/api/auth/branch-consent",
+            get(crate::node_api::branch::get_branch_consent)
+                .post(crate::node_api::branch::post_branch_consent),
+        )
+        // Settings → Branches: the library's join settings (operator or
+        // Owner; the handler checks).
+        .route(
+            "/api/config/branches",
+            get(crate::node_api::branch::get_branches).put(crate::node_api::branch::put_branches),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1118,6 +1156,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 // The Status page. `/status` stays the legacy JSON route.
                 "/cluster",
                 "/settings",
+                // Join a library: the owner's consent page and the
+                // joining install's callback.
+                "/join/approve",
+                "/join/callback",
             ];
             for path in SPA_DOC_PATHS {
                 app = app.route_service(path, ServeFile::new(index.clone()));

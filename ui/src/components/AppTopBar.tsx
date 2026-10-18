@@ -1,6 +1,7 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { LogOut, Menu, Settings2, X } from "lucide-react";
+import { GitBranchPlus, LogOut, Menu, Settings2, X } from "lucide-react";
+import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AppNav, type AppNavProps } from "@/components/AppNav";
 import { BookclerkLogo } from "@/components/BookclerkLogo";
 import { usePreferences } from "@/components/usePreferences";
@@ -28,6 +29,10 @@ export function AppTopBar({
   const menuId = useId();
   const { openPreferences, preferencesOpen } = usePreferences();
   const links = navLinksForRole(nav.role);
+  // Each signed-in user can add a branch of their own; the operator has no
+  // user account and adds one for a user in User management.
+  const canAddBranch = nav.role != null && nav.role !== "operator";
+  const [addingBranch, setAddingBranch] = useState(false);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -88,6 +93,17 @@ export function AppTopBar({
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           {actions}
           <div className="hidden items-center gap-2 lg:flex">
+            {canAddBranch ? (
+              <Button
+                variant="ghost"
+                onClick={() => setAddingBranch(true)}
+                aria-label="Add a branch"
+                title="Add a branch"
+                aria-haspopup="dialog"
+              >
+                <GitBranchPlus className="h-4 w-4" />
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               onClick={openPreferences}
@@ -189,6 +205,19 @@ export function AppTopBar({
                     <Settings2 className="h-4 w-4 shrink-0" />
                     Preferences
                   </button>
+                  {canAddBranch ? (
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm text-ink/70 transition-colors hover:bg-ink/5 hover:text-ink"
+                      onClick={() => {
+                        closeMenu();
+                        setAddingBranch(true);
+                      }}
+                    >
+                      <GitBranchPlus className="h-4 w-4 shrink-0" />
+                      Add a branch
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm text-ink/70 transition-colors hover:bg-ink/5 hover:text-ink"
@@ -206,6 +235,9 @@ export function AppTopBar({
             document.body,
           )
         : null}
+      {canAddBranch ? (
+        <AddBranchDialog open={addingBranch} onClose={() => setAddingBranch(false)} />
+      ) : null}
     </>
   );
 }
