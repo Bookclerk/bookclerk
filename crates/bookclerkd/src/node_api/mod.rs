@@ -5,6 +5,10 @@
 //! link's secret appears once, in the `url` fragment of the mint response;
 //! it is never logged.
 //!
+//! `/api/config/host-enrollment` reads and toggles the cluster's
+//! host-enrollment switch (`core.host_enrollment`). Any signed-in user may
+//! read it; only the operator or an active Owner may change it.
+//!
 //! `POST /api/node/v1/enroll` redeems a link. It sits outside the cookie and
 //! operator auth layers (the link secret is the credential) and is never
 //! disabled by `auth.enabled = false`; [`transport::classify_transport`]
@@ -21,7 +25,8 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
-    list_enrollment_links, mint_enrollment_link, redeem_enrollment_link, revoke_enrollment_link,
+    list_enrollment_links, load_host_enrollment, mint_enrollment_link, redeem_enrollment_link,
+    revoke_enrollment_link, set_host_enrollment_enabled, verify_cluster_owner, ConfigActor,
     EnrollmentActor, EnrollmentLink, EnrollmentSecret, RedeemRequest,
 };
 use bookclerk_library::LibraryError;
@@ -143,6 +148,75 @@ pub async fn delete_node_invite(
         .await
         .map_err(events_error)?;
     Ok(Json(json!({ "link": link_json(&link) })))
+}
+
+/// `PUT /api/config/host-enrollment` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PutHostEnrollment {
+    /// Whether host nodes may enroll into this cluster.
+    enabled: bool,
+}
+
+/// `GET /api/config/host-enrollment`: whether host nodes may enroll.
+///
+/// # Returns
+///
+/// `{enabled, revision}`; `revision` is `null` while the default (enabled)
+/// applies.
+///
+/// # Errors
+///
+/// Returns an error response when the switch cannot be read.
+pub async fn get_host_enrollment(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let settings = load_host_enrollment(&library).await.map_err(events_error)?;
+    Ok(Json(json!({
+        "enabled": settings.body.enabled,
+        "revision": settings.revision,
+    })))
+}
+
+/// `PUT /api/config/host-enrollment`: turn host enrollment on or off. The
+/// operator may always; a user only while the stored role is an active
+/// Owner.
+///
+/// # Arguments
+///
+/// * `caller` - Who is asking; a user's role is read from the database.
+/// * `body` - The new switch value.
+///
+/// # Returns
+///
+/// `{enabled, revision}` as stored.
+///
+/// # Errors
+///
+/// Returns 403 when the caller is neither the operator nor an active Owner,
+/// and an error response when the switch cannot be written.
+pub async fn put_host_enrollment(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Json(body): Json<PutHostEnrollment>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let config_actor = match caller {
+        UserCaller::Operator => ConfigActor::Operator {
+            id: "operator".into(),
+        },
+        UserCaller::User { user_id } => verify_cluster_owner(&library, user_id)
+            .await
+            .map_err(events_error)?,
+    };
+    let doc = set_host_enrollment_enabled(&library, &config_actor, body.enabled)
+        .await
+        .map_err(events_error)?;
+    Ok(Json(json!({
+        "enabled": doc.body.enabled,
+        "revision": doc.revision,
+    })))
 }
 
 /// Largest enroll request body.
@@ -516,5 +590,55 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{revoked}");
         assert_eq!(revoked["link"]["state"], "revoked");
+    }
+
+    #[tokio::test]
+    async fn only_the_operator_or_an_owner_toggles_host_enrollment() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = test_state(&files).await;
+        let owner = store
+            .create_user(bookclerk_library::UserRole::Owner, Some("Avery"), None)
+            .await
+            .unwrap();
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let routes = |caller| {
+            axum::Router::new()
+                .route(
+                    "/api/config/host-enrollment",
+                    get(super::get_host_enrollment).put(super::put_host_enrollment),
+                )
+                .layer(axum::Extension(caller))
+                .with_state(Arc::clone(&state))
+        };
+        let as_owner = routes(UserCaller::User { user_id: owner.id });
+        let as_member = routes(UserCaller::User { user_id: member.id });
+        let operator = routes(UserCaller::Operator);
+        let uri = "/api/config/host-enrollment";
+
+        let (status, read) = send(&as_member, "GET", uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{read}");
+        assert_eq!(read, json!({ "enabled": true, "revision": null }));
+
+        let (status, refused) = send(&as_member, "PUT", uri, json!({ "enabled": false })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+
+        let (status, off) = send(&as_owner, "PUT", uri, json!({ "enabled": false })).await;
+        assert_eq!(status, StatusCode::OK, "{off}");
+        assert_eq!(off["enabled"], false);
+        let (_, read) = send(&as_member, "GET", uri, Value::Null).await;
+        assert_eq!(read["enabled"], false);
+
+        // The switch now refuses new links.
+        let invites = invite_routes(&state, UserCaller::User { user_id: member.id });
+        let (status, _) = send(&invites, "POST", "/api/config/node-invites", json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, on) = send(&operator, "PUT", uri, json!({ "enabled": true })).await;
+        assert_eq!(status, StatusCode::OK, "{on}");
+        assert_eq!(on["enabled"], true);
     }
 }

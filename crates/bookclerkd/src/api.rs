@@ -964,6 +964,12 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/node-invites/{id}",
             delete(crate::node_api::delete_node_invite),
         )
+        // Any user reads the switch; the handler lets only the operator or
+        // an active Owner change it.
+        .route(
+            "/api/config/host-enrollment",
+            get(crate::node_api::get_host_enrollment).put(crate::node_api::put_host_enrollment),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_operator_or_user_auth,
