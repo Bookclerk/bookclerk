@@ -748,21 +748,17 @@ async fn enqueue(outbox: &mpsc::Sender<Message>, message: Message) -> bool {
 ///
 /// The queue stays locked while the writer runs. When it ends, or is
 /// aborted, the lock is released and the session takes back what is still
-/// queued.
-///
-/// # Returns
-///
-/// The message whose write failed, if one did.
+/// queued. A message whose write failed is not given back: part of it may
+/// have reached the host, which then resumes its job on reconnect, so its
+/// lease is left to run.
 async fn writer(
     mut sink: SplitSink<WebSocket, Message>,
     queue: Arc<AsyncMutex<mpsc::Receiver<Message>>>,
-) -> Option<Message> {
+) {
     let mut queue = queue.lock().await;
-    let mut failed = None;
     while let Some(message) = queue.recv().await {
         let closing = matches!(message, Message::Close(_));
-        if sink.send(message.clone()).await.is_err() {
-            failed = Some(message);
+        if sink.send(message).await.is_err() {
             break;
         }
         if closing {
@@ -773,7 +769,6 @@ async fn writer(
     queue.close();
     drop(queue);
     let _ = sink.close().await;
-    failed
 }
 
 /// The authenticated session: a writer task behind the bounded send queue,
@@ -802,15 +797,15 @@ async fn session(
     }
     drop(outbox);
     let mut unsent = Vec::new();
-    match tokio::time::timeout(Duration::from_secs(CLOSE_FLUSH_SECS), &mut writer).await {
-        Ok(Ok(failed)) => unsent.extend(failed),
-        Ok(Err(_)) => {}
-        Err(_) => {
-            // The socket stopped taking writes. Aborting drops the
-            // writer's lock on the queue; the frame it was writing is lost.
-            writer.abort();
-            let _ = writer.await;
-        }
+    if tokio::time::timeout(Duration::from_secs(CLOSE_FLUSH_SECS), &mut writer)
+        .await
+        .is_err()
+    {
+        // The socket stopped taking writes. Aborting drops the writer's
+        // lock on the queue; the frame it was writing stays leased, as a
+        // failed write does.
+        writer.abort();
+        let _ = writer.await;
     }
     {
         let mut queue = queue.lock().await;
