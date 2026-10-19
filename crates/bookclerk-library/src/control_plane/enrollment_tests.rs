@@ -260,6 +260,52 @@ async fn an_expired_or_revoked_link_does_not_redeem() {
 }
 
 #[tokio::test]
+async fn a_disable_after_the_switch_read_mints_nothing() {
+    let _guard = master_key_test_lock_async().await;
+    let (store, _dir) = cluster().await;
+    let riley = user(&store, UserRole::Member, "Riley").await;
+    // The mint read the switch as enabled, then a disable committed.
+    let seen = load_host_enrollment(&store).await.unwrap();
+    assert!(seen.body.enabled);
+    set_host_enrollment_enabled(&store, &config_operator(), false)
+        .await
+        .unwrap();
+    let row = super::enrollment::NewLink {
+        link_id: "stale-switch",
+        token_hash: "00",
+        for_user_id: riley,
+        label: "",
+        created_by: "operator:cli",
+        created_at: "2026-01-01T00:00:00Z",
+        expires_at: "2099-01-01T00:00:00Z",
+    };
+    let inserted = super::enrollment::insert_link_while_switch_holds(&store, &seen, &row)
+        .await
+        .unwrap();
+    assert!(!inserted);
+    assert!(node_enrollment_links::Entity::find_by_id("stale-switch")
+        .one(store.db())
+        .await
+        .unwrap()
+        .is_none());
+
+    // Re-enabling bumps the revision, so the stale read still mints nothing.
+    set_host_enrollment_enabled(&store, &config_operator(), true)
+        .await
+        .unwrap();
+    let inserted = super::enrollment::insert_link_while_switch_holds(&store, &seen, &row)
+        .await
+        .unwrap();
+    assert!(!inserted);
+    let current = load_host_enrollment(&store).await.unwrap();
+    assert!(
+        super::enrollment::insert_link_while_switch_holds(&store, &current, &row)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn disabling_enrollment_refuses_mint_and_redeem() {
     let _guard = master_key_test_lock_async().await;
     let (store, _dir) = cluster().await;

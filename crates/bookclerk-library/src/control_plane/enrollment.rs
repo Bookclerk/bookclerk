@@ -23,7 +23,7 @@
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rand::RngCore;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -527,9 +527,89 @@ fn is_base64url(raw: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// SQL predicate, and its binds after scope and namespace, that holds
+/// while `core.host_enrollment` is still the revision `seen` was read at.
+fn switch_unchanged_predicate(
+    seen: &HostEnrollmentSettings,
+) -> (&'static str, Vec<bookclerk_plugin_abi::DbValue>) {
+    match seen.revision {
+        None => (
+            "NOT EXISTS (SELECT 1 FROM configuration_documents \
+              WHERE scope_type = ? AND scope_id = ? AND namespace = ?)",
+            Vec::new(),
+        ),
+        Some(revision) => (
+            "EXISTS (SELECT 1 FROM configuration_documents \
+              WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND revision = ?)",
+            vec![int(revision)],
+        ),
+    }
+}
+
+/// Columns of a new `node_enrollment_links` row.
+pub(super) struct NewLink<'a> {
+    /// Link id.
+    pub(super) link_id: &'a str,
+    /// Hash of the link secret.
+    pub(super) token_hash: &'a str,
+    /// User the link enrolls a host for.
+    pub(super) for_user_id: i64,
+    /// Operator-facing label.
+    pub(super) label: &'a str,
+    /// Audit id of the minting actor.
+    pub(super) created_by: &'a str,
+    /// RFC 3339 mint time.
+    pub(super) created_at: &'a str,
+    /// RFC 3339 expiry.
+    pub(super) expires_at: &'a str,
+}
+
+/// Inserts `row` only while `core.host_enrollment` is still the enabled
+/// revision `seen`, in one statement, so a disable that commits after the
+/// switch was read mints nothing.
+///
+/// # Returns
+///
+/// `true` when the row was inserted, `false` when the switch changed.
+///
+/// # Errors
+///
+/// Returns the write error when the statement fails.
+pub(super) async fn insert_link_while_switch_holds(
+    store: &LibraryStore,
+    seen: &HostEnrollmentSettings,
+    row: &NewLink<'_>,
+) -> Result<bool> {
+    let (switch_sql, mut switch_binds) = switch_unchanged_predicate(seen);
+    let mut binds = vec![
+        text(row.link_id),
+        text(row.token_hash),
+        int(row.for_user_id),
+        text(row.label),
+        text(row.created_by),
+        text(row.created_at),
+        text(row.expires_at),
+        text(CLUSTER_SCOPE_TYPE),
+        text(CLUSTER_SCOPE_ID),
+        text(HOST_ENROLLMENT_NAMESPACE),
+    ];
+    binds.append(&mut switch_binds);
+    let sql = format!(
+        "INSERT INTO node_enrollment_links (
+            link_id, token_hash, for_user_id, label, created_by, created_at, expires_at
+         ) SELECT ?, ?, ?, ?, ?, ?, ? WHERE {switch_sql}"
+    );
+    let operation_id = format!("enrollment.mint:{}", row.link_id);
+    let reply =
+        batch::execute_host_batch(store, request(&operation_id, vec![exec(&sql, binds)])).await?;
+    Ok(batch::rows_affected(&reply, 0) == 1)
+}
+
 /// Mints a link that enrolls one host node for `for_user_id`.
 ///
-/// `ttl` defaults to 24 hours and must be 5 minutes to 7 days.
+/// `ttl` defaults to 24 hours and must be 5 minutes to 7 days. The insert
+/// is predicated on the enrollment switch revision read as enabled, so a
+/// disable that commits while the link is minted wins.
 ///
 /// # Errors
 ///
@@ -552,7 +632,8 @@ pub async fn mint_enrollment_link(
             "only the operator or an Owner may mint an enrollment link for another user".into(),
         ));
     }
-    if !load_host_enrollment(store).await?.body.enabled {
+    let enrollment = load_host_enrollment(store).await?;
+    if !enrollment.body.enabled {
         return Err(enrollment_disabled());
     }
     let ttl = ttl.unwrap_or(DEFAULT_LINK_TTL);
@@ -576,22 +657,18 @@ pub async fn mint_enrollment_link(
     let now = Utc::now();
     let ttl = Duration::from_std(ttl)
         .map_err(|_| LibraryError::Invalid("enrollment link ttl is out of range".into()))?;
-    let model = node_enrollment_links::ActiveModel {
-        link_id: Set(link_id.clone()),
-        token_hash: Set(hash_token(secret.expose())),
-        for_user_id: Set(for_user_id),
-        label: Set(label.to_string()),
-        created_by: Set(resolved.audit()),
-        created_at: Set(stamp(now)),
-        expires_at: Set(stamp(now + ttl)),
-        redeemed_at: Set(None),
-        redeemed_node_id: Set(None),
-        revoked_at: Set(None),
+    let row = NewLink {
+        link_id: &link_id,
+        token_hash: &hash_token(secret.expose()),
+        for_user_id,
+        label,
+        created_by: &resolved.audit(),
+        created_at: &stamp(now),
+        expires_at: &stamp(now + ttl),
     };
-    node_enrollment_links::Entity::insert(model)
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    if !insert_link_while_switch_holds(store, &enrollment, &row).await? {
+        return Err(enrollment_disabled());
+    }
     let link = load_link(store, &link_id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("enrollment link {link_id}")))?;
@@ -812,18 +889,7 @@ pub async fn redeem_enrollment_link(
         owner_user_id: link.for_user_id,
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("redeem receipt encode: {err}")))?;
-    let (switch_sql, mut switch_binds) = match enrollment.revision {
-        None => (
-            "NOT EXISTS (SELECT 1 FROM configuration_documents \
-              WHERE scope_type = ? AND scope_id = ? AND namespace = ?)",
-            Vec::new(),
-        ),
-        Some(revision) => (
-            "EXISTS (SELECT 1 FROM configuration_documents \
-              WHERE scope_type = ? AND scope_id = ? AND namespace = ? AND revision = ?)",
-            vec![int(revision)],
-        ),
-    };
+    let (switch_sql, mut switch_binds) = switch_unchanged_predicate(&enrollment);
     let mut claim_binds = vec![
         text(&now_text),
         text(&node_id),

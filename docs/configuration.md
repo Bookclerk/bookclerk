@@ -238,7 +238,7 @@ mode = "loopback"                # loopback | proxy | acme | self_signed
 | Mode | Allowed |
 | --- | --- |
 | `loopback` (default) | Only connections where both ends are loopback and no forwarding header is present. Loopback is allowed in every mode, including on a wildcard `daemon.listen` (`0.0.0.0` / `[::]`): the check reads each connection's own local address, not the bind address. |
-| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. |
+| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. Every connection from a trusted proxy is checked this way, even one with no forwarding headers, so with a same-host proxy (`127.0.0.1` trusted) loopback enrollment goes through the proxy too. |
 | `acme` | The built-in TLS listener with a Let's Encrypt certificate. The listener is not built yet, so only loopback connections are allowed today. |
 | `self_signed` | The built-in TLS listener with a self-signed certificate pinned in the link. Not built yet; only loopback connections are allowed today. |
 
