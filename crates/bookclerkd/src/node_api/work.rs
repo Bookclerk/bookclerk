@@ -546,6 +546,15 @@ async fn finish(
     fence: i64,
     outcome: RemoteOutcome<'_>,
 ) -> bookclerk_library::Result<Frame> {
+    // A failed run commits none of its open uploads, so they are aborted
+    // and what they received is deleted before the job ends: until then
+    // its permits are held, so no other acquire of the account can be
+    // writing the same titles while the files go.
+    let discarded = matches!(outcome, RemoteOutcome::Fail { .. });
+    if discarded {
+        super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence)
+            .await;
+    }
     let finished = finish_remote_job(
         library,
         &host.node_id,
@@ -559,14 +568,16 @@ async fn finish(
         RemoteFinish::Done | RemoteFinish::Lost => {
             // The job ended (or the fence is gone) without these
             // uploads committing; what they received is deleted.
-            super::uploads::discard_job_uploads(
-                &host.state,
-                library,
-                &host.node_id,
-                &job_id,
-                fence,
-            )
-            .await;
+            if !discarded {
+                super::uploads::discard_job_uploads(
+                    &host.state,
+                    library,
+                    &host.node_id,
+                    &job_id,
+                    fence,
+                )
+                .await;
+            }
             if finished == RemoteFinish::Done {
                 Frame::new(id, Body::Accepted {})
             } else {
@@ -581,7 +592,9 @@ async fn finish(
 ///
 /// A released run (a consent revoke, a host shutting down) commits none of
 /// its open uploads, so they are aborted and what they had received is
-/// deleted, as for `complete` / `fail`.
+/// deleted, as for `fail`: before the job goes back and its permits are
+/// given back, so a replacement run cannot be writing the same titles
+/// while the files go.
 async fn finish_release(
     library: &LibraryStore,
     host: &HostContext,
@@ -589,12 +602,9 @@ async fn finish_release(
     job_id: String,
     fence: i64,
 ) -> bookclerk_library::Result<Frame> {
+    super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence).await;
     let released =
         release_remote_job(library, &host.node_id, &job_id, fence, host.settings.limits).await?;
-    if matches!(released, RemoteFinish::Done | RemoteFinish::Lost) {
-        super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence)
-            .await;
-    }
     Ok(match released {
         RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
         RemoteFinish::Lost => lost(id, job_id, fence),
