@@ -2694,6 +2694,7 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 reason: "awaiting_host_consent".into(),
+                resumed: false,
             })
             .await
             .expect("the owner answers");

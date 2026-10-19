@@ -614,6 +614,7 @@ async fn renewals_continue_while_an_unopenable_fail_waits() {
                     lease_secs,
                     resumed,
                     plugin_keys,
+                    source_plugin_key,
                     ..
                 } = work("job-1", 3, 1)
                 else {
@@ -627,6 +628,7 @@ async fn renewals_continue_while_an_unopenable_fail_waits() {
                     sealed_secrets: Some("not-a-sealed-box".into()),
                     resumed,
                     plugin_keys,
+                    source_plugin_key,
                 })
             }
             Body::Claim { .. } => Some(Body::NoWork {
