@@ -1,8 +1,8 @@
 //! `bookclerk clusters` through the real binary: the enrolled links (no
 //! key material), the consent list, approve with narrowing and the
-//! reviewed-request check, revoke, leave, and `join` refusing a link that
-//! is not one, or one on the command line, and reading it from a terminal
-//! without echo.
+//! reviewed-request check, revoke, leave (by default the only active
+//! link), and `join` refusing a link that is not one, or one on the
+//! command line, and reading it from a terminal without echo.
 
 mod common;
 
@@ -247,6 +247,84 @@ async fn list_approve_revoke_and_leave() {
     assert!(
         load_cluster_link_keys(&store, &link).await.is_err(),
         "the node keys are gone"
+    );
+}
+
+/// Records an active link to `cluster` as node `node`.
+async fn link_to(store: &LibraryStore, cluster: &str, node: &str) {
+    record_cluster_link(
+        store,
+        &NewClusterLink {
+            owner_cluster_id: cluster.into(),
+            owner_origin: "https://owner.example".into(),
+            remote_node_id: node.into(),
+            spki_pin: None,
+        },
+        &ClusterLinkKeys::generate(),
+    )
+    .await
+    .expect("cluster link");
+}
+
+/// Without `--cluster`, `leave` acts on the only active link: a cluster
+/// left earlier does not count, none active is "not enrolled", and several
+/// active ask for `--cluster`.
+#[tokio::test]
+async fn leave_defaults_to_the_only_active_link() {
+    let files_dir = enrolled();
+    let files = files_dir.path();
+    let store = open_store(files).await;
+    link_to(&store, CLUSTER, "node-7").await;
+    let left = json_out(&run_bookclerk(
+        files,
+        &["--format", "json", "clusters", "leave"],
+        &[],
+    ));
+    assert_eq!(left["cluster"]["cluster_id"], CLUSTER);
+
+    link_to(&store, "cluster-b", "node-8").await;
+    let left = json_out(&run_bookclerk(
+        files,
+        &["--format", "json", "clusters", "leave"],
+        &[],
+    ));
+    assert_eq!(
+        left["cluster"]["cluster_id"], "cluster-b",
+        "the left cluster is not a candidate"
+    );
+
+    let none = run_bookclerk(files, &["clusters", "leave"], &[]);
+    assert!(!none.status.success());
+    assert!(
+        stderr(&none).contains("not enrolled in any cluster"),
+        "{}",
+        stderr(&none)
+    );
+
+    link_to(&store, "cluster-c", "node-9").await;
+    link_to(&store, "cluster-d", "node-10").await;
+    let several = run_bookclerk(files, &["clusters", "leave"], &[]);
+    assert!(!several.status.success());
+    assert!(
+        stderr(&several).contains("pass --cluster"),
+        "{}",
+        stderr(&several)
+    );
+    let named = json_out(&run_bookclerk(
+        files,
+        &[
+            "--format",
+            "json",
+            "clusters",
+            "leave",
+            "--cluster",
+            CLUSTER,
+        ],
+        &[],
+    ));
+    assert_eq!(
+        named["cluster"]["state"], "left",
+        "a named cluster is taken whatever its state"
     );
 }
 

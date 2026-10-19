@@ -131,7 +131,17 @@ fn state(row: &RemotePluginConsent) -> &'static str {
     remote_row_consent_state(row).as_str()
 }
 
-/// The cluster a command acts on: the named one, or the only enrolled one.
+/// The cluster a command acts on: the named one, or the only one this
+/// install is still enrolled in.
+///
+/// A left or revoked link is kept as a record but no longer counts as an
+/// enrollment, so after leaving one cluster and joining another the new one
+/// is the default. A named cluster is taken as given, whatever its state.
+///
+/// # Errors
+///
+/// Returns an error when the links cannot be read, or when no cluster is
+/// named and there is not exactly one active link.
 async fn cluster_id(
     store: &bookclerk_library::LibraryStore,
     named: Option<String>,
@@ -139,7 +149,11 @@ async fn cluster_id(
     if let Some(named) = named {
         return Ok(named.trim().to_string());
     }
-    let links = list_cluster_links(store).await?;
+    let links: Vec<_> = list_cluster_links(store)
+        .await?
+        .into_iter()
+        .filter(ClusterLink::is_active)
+        .collect();
     match links.as_slice() {
         [link] => Ok(link.owner_cluster_id.clone()),
         [] => anyhow::bail!("this install is not enrolled in any cluster"),
