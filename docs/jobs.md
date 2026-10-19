@@ -58,8 +58,9 @@ reconciles at least every 60s as a backstop.
 `GET /api/status` includes event queue counts plus durable retry/suspend totals
 and average dispatch/handler latency. Retention is independent of jobs
 (`[events].retention_days` for acked/rejected + empty parent events after that
-cutoff, `dead_letter_retention_days` for dead letters). Prune runs on startup
-and a coarse hourly cadence, not every dispatcher tick. Operator APIs: `GET /api/events`,
+cutoff, `dead_letter_retention_days` for dead letters). Prune is a
+cluster singleton, not a dispatcher tick: see *Cluster maintenance* below.
+Operator APIs: `GET /api/events`,
 `GET /api/events/deliveries?state=dead_letter`,
 `POST /api/events/deliveries/{id}/retry`,
 `POST /api/events/deliveries/{id}/acknowledge`,
@@ -266,3 +267,28 @@ and the shared `StorageIndex` stay single-writer. Codec work stays in the
 
 See [configuration.md](configuration.md) (`[jobs]` / `BOOKCLERK_JOBS_*` and
 `[events]` / `BOOKCLERK_EVENTS_*`).
+
+## Cluster maintenance
+
+Cluster-wide cleanup runs on one daemon at a time. Each duty holds its own
+`cluster_leases` row; every daemon polls them every 60 s, the holder renews
+its leases on each poll and runs a duty when it takes the lease and then
+hourly. A daemon that stops polling loses its leases after 180 s and the
+next daemon to poll takes them over with a larger fencing token. Before
+each delete the holder renews the lease with a compare-and-swap on its
+holder and token (the fence), so a daemon that stalled past its expiry is
+refused before it deletes anything.
+
+| Lease | Duty |
+| --- | --- |
+| `maintenance.jobs` | Terminal jobs older than `jobs.retention_days` |
+| `maintenance.events` | Terminal deliveries, empty parent events, stale subscriber catalog rows (`[events]` retention) |
+| `maintenance.kv` | Expired plugin KV rows (already read as missing) |
+| `maintenance.sessions` | Expired operator sessions, OIDC RP states, WebAuthn challenges |
+
+The prunes are idempotent, so the fence bounds wasted work rather than
+guarding correctness: the window between a fence check and its delete is
+one statement. Node-local cleanup (scratch directories, expired job and
+delivery leases) still runs on every node. `GET /api/cluster/status`
+lists every lease with its holder, token, and whether it is held.
+

@@ -13,6 +13,7 @@ mod http_error;
 mod job_handler;
 mod job_worker;
 mod jobs;
+mod maintenance;
 mod node_queue;
 mod oidc;
 mod oidc_rp;
@@ -185,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
     config_authority::spawn_deployment_reconciler(state.clone());
     heartbeat::spawn_heartbeat(state.clone());
     placement::spawn_placement_scheduler(state.clone());
+    maintenance::spawn_maintenance(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 

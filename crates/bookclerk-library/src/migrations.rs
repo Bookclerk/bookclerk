@@ -66,6 +66,21 @@ pub const SCHEMA_MIGRATIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS bookclerk_sc
         PRIMARY KEY (namespace, state, version)
     )";
 
+/// `cluster_leases`: named singleton leases (scheduler, maintenance duties,
+/// schema migration).
+///
+/// Part of the unreleased pack, and also created on its own before a
+/// schema migration, because the migration lease must exist before the pack
+/// that defines it is applied. Both paths run the same `IF NOT EXISTS`
+/// statement, so whichever runs second is a no-op.
+pub const CLUSTER_LEASES_DDL: &str = r"CREATE TABLE IF NOT EXISTS cluster_leases (
+        name TEXT PRIMARY KEY NOT NULL,
+        holder TEXT NOT NULL,
+        token INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        renewed_at TEXT NOT NULL
+    )";
+
 /// One admitted BookclerkSQL statement in a host migration apply unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrationOp {
