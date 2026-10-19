@@ -271,7 +271,11 @@ be a distinct host.
 ### Schema compatibility
 
 Library schema behavior is unchanged: unreleased checksum, fail closed on
-mismatch, `SCHEMA_VERSION = 0`. A host heartbeats only when
+mismatch, `SCHEMA_VERSION = 0`. A database newer than the binary (a frozen
+version past its plan, or an unreleased pack with another checksum) is
+refused, never migrated. A start that has DDL to apply does it under the
+`schema.migrate` cluster lease (see *Singleton maintenance and the
+migration lease* below), so concurrent starters produce one migrator. A host heartbeats only when
 `current_schema_state` is the unreleased pack this binary applies. Document
 schema versions are per namespace and start at 1. A document this binary does
 not understand is not applied and is not rewritten.
@@ -688,6 +692,49 @@ section is the record.
   the token; takeover after expiry bumps it. Deployment writes stay
   compare-and-swap, so a holder whose lease lapsed mid-pass can at worst
   add one replica that the next pass removes.
+- **Singleton maintenance and the migration lease (#192).** The lease
+  code moved out of the scheduler into `control_plane::leases`: acquire
+  and renew (compare-and-swap on holder and token), a fencing renew that
+  also requires the lease to be unexpired, release, a list for status, a
+  `LeaseFence` that destructive work checks before each step, and
+  `SingletonDuty` ("one live node runs this every interval"). Cluster
+  cleanup that every daemon used to run on its own now runs under one lease
+  per duty: `maintenance.jobs` (terminal jobs; previously pruned on every
+  job-claim loop), `maintenance.events` (delivery and event retention,
+  stale catalog rows), `maintenance.kv` (expired KV rows), and
+  `maintenance.sessions` (expired operator sessions, OIDC RP states,
+  WebAuthn challenges). Every daemon polls every 60 s; the holder renews on
+  each poll and runs a duty when it takes the lease and hourly after. The
+  lease TTL is 180 s, so a dead holder is replaced within three minutes.
+  Fencing is check-then-act, not transactional (D1 has no interactive
+  transactions); the residual window is one idempotent delete. Expiry uses
+  each node's wall clock. Login, OIDC, and receipt paths still prune
+  opportunistically inline; that is bounded and idempotent.
+  Schema migration runs under `schema.migrate`. A start whose database
+  already matches only reads the state and takes no lease. One that needs
+  DDL (uninitialized, or a frozen step pending) first creates
+  `cluster_leases` (the same `IF NOT EXISTS` statement as in the pack),
+  then takes the lease with a per-attempt holder (`pid<pid>-<nonce>`; the
+  node id does not exist yet at that point), re-reads the state, renews the
+  lease every 40 s, and checks it before every DDL batch. Other starters
+  poll until the schema matches, take over when the migrator's 120 s lease
+  expires, and fail closed after 300 s. The released row keeps the last
+  migrator's holder and token. `GET /api/cluster/status` reports every
+  lease (`cluster.leases`) and the database schema state with whether this
+  binary matches it (`cluster.schema`). There is no drain-then-migrate
+  flow: a starter does not stop other nodes before it migrates, which is
+  safe today only because unreleased schema changes require a new
+  database.
+- **Backups have no periodic duty.** Recovery points are taken by `bookclerk
+  db backup` and automatically before a schema migration, which already
+  runs under the migration lease. No daemon schedules backups, so there is
+  no backup lease; a scheduled backup would be a `SingletonDuty`.
+- **PostgreSQL reconnect.** An ignored test
+  (`postgres_connection_killed_mid_commit_replays_once_after_reconnect`)
+  stalls a configuration write inside `COMMIT` with a deferred constraint
+  trigger, terminates its backend from a second pool, and retries the same
+  operation id on the reconnected pool: the killed commit left nothing, the
+  retry applies once, and a further retry replays the receipt.
 - **Hand-managed versus placed (step 5).** A placed instance refuses
   per-node `deploy`/`undeploy` and the deployment API (409), enrollment
   writes a new node's row `unplaced` for it, and `plugins deploy --manual`
@@ -863,8 +910,8 @@ Not in this phase, and not claimed as production HA:
   sources and destinations, so a host that cannot reach a store or
   destination may take the job. Deliveries are routed (above); jobs are
   not. Do not run two daemons against one database and expect safe
-  active/active acquire. `cluster_leases` exists now (the scheduler uses
-  it) and is the place for further singleton maintenance work.
+  active/active acquire. Singleton maintenance and schema migration run
+  under `cluster_leases` (see the implementation notes).
 - Synchronous calls (HTTP API, portal, CLI) run on the host that receives
   them; only queued deliveries reach the best host.
 - Per-guest measured usage is not sampled. Reservations are jail ceilings,
@@ -888,7 +935,13 @@ Not in this phase, and not claimed as production HA:
   trust, and node-local outputs (see *Node kinds, ownership, and the Host
   role*).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
-  Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).
+  Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`), but there
+  is no drain-then-migrate flow: the migration lease serializes migrators,
+  it does not stop older binaries on other nodes from using the database
+  while a frozen step applies. That matters from the first release cut.
+- Scheduled backups. Backups are operator commands plus the automatic
+  pre-migrate recovery point; a scheduled backup would run as a
+  `SingletonDuty` under its own lease.
 - Schema pinning compares package versions, not schema contents: a newer
   package that only renames a key still drops the operator's value for the
   old name. A declared per-key migration in `[[settings]]` is a possible

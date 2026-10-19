@@ -2076,7 +2076,9 @@ impl LibraryStore {
     /// Acked/rejected rows use `retention_days`. Dead letters use
     /// `dead_letter_retention_days`. Dispatched parent events with no remaining
     /// deliveries are removed only after the same `retention_days` cutoff.
-    /// Expired per-node catalog heartbeats are swept here too.
+    /// Expired per-node catalog heartbeats are swept here too. Runs every
+    /// [`EventPruneStep`] in order; a caller that must recheck a lease between
+    /// deletes runs [`Self::prune_event_step`] itself.
     ///
     /// # Errors
     ///
@@ -2086,43 +2088,112 @@ impl LibraryStore {
         retention_days: u64,
         dead_letter_retention_days: u64,
     ) -> Result<u64> {
-        let terminal_cutoff = (Utc::now()
-            - chrono::Duration::days(i64::try_from(retention_days).unwrap_or(7)))
-        .to_rfc3339();
-        let dead_letter_cutoff = (Utc::now()
-            - chrono::Duration::days(i64::try_from(dead_letter_retention_days).unwrap_or(30)))
-        .to_rfc3339();
-        let heartbeat_cutoff =
-            (Utc::now() - Duration::seconds(EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS)).to_rfc3339();
-        let acked = event_deliveries::Entity::delete_many()
-            .filter(event_deliveries::Column::State.is_in([STATE_ACKED, STATE_REJECTED]))
-            .filter(event_deliveries::Column::UpdatedAt.lte(terminal_cutoff.clone()))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        let dead = event_deliveries::Entity::delete_many()
-            .filter(event_deliveries::Column::State.eq(STATE_DEAD_LETTER))
-            .filter(event_deliveries::Column::UpdatedAt.lte(dead_letter_cutoff))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        let stale_nodes = event_subscriber_nodes::Entity::delete_many()
-            .filter(event_subscriber_nodes::Column::HeartbeatAt.lt(heartbeat_cutoff))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        let events = exec_host_sql(
-            &self.db,
-            self.leftover_in_process(),
-            "DELETE FROM domain_events WHERE dispatch_state = 'dispatched' \
-             AND created_at <= ? AND NOT EXISTS ( \
-                SELECT 1 FROM event_deliveries d WHERE d.event_id = domain_events.id \
-             )",
-            [terminal_cutoff.into()],
-        )
-        .await?;
-        Ok(acked.rows_affected + dead.rows_affected + stale_nodes.rows_affected + events)
+        let mut removed = 0;
+        for step in EventPruneStep::ALL {
+            removed += self
+                .prune_event_step(step, retention_days, dead_letter_retention_days)
+                .await?;
+        }
+        Ok(removed)
     }
+
+    /// Runs one delete of [`Self::prune_event_deliveries`].
+    ///
+    /// # Arguments
+    ///
+    /// * `step` - Which rows to delete.
+    /// * `retention_days` - Window for acked/rejected deliveries and empty
+    ///   dispatched events.
+    /// * `dead_letter_retention_days` - Window for dead letters.
+    ///
+    /// # Returns
+    ///
+    /// The number of rows removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the delete fails.
+    pub async fn prune_event_step(
+        &self,
+        step: EventPruneStep,
+        retention_days: u64,
+        dead_letter_retention_days: u64,
+    ) -> Result<u64> {
+        let terminal_cutoff = || {
+            (Utc::now() - chrono::Duration::days(i64::try_from(retention_days).unwrap_or(7)))
+                .to_rfc3339()
+        };
+        match step {
+            EventPruneStep::TerminalDeliveries => Ok(event_deliveries::Entity::delete_many()
+                .filter(event_deliveries::Column::State.is_in([STATE_ACKED, STATE_REJECTED]))
+                .filter(event_deliveries::Column::UpdatedAt.lte(terminal_cutoff()))
+                .exec(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?
+                .rows_affected),
+            EventPruneStep::DeadLetters => {
+                let dead_letter_cutoff = (Utc::now()
+                    - chrono::Duration::days(
+                        i64::try_from(dead_letter_retention_days).unwrap_or(30),
+                    ))
+                .to_rfc3339();
+                Ok(event_deliveries::Entity::delete_many()
+                    .filter(event_deliveries::Column::State.eq(STATE_DEAD_LETTER))
+                    .filter(event_deliveries::Column::UpdatedAt.lte(dead_letter_cutoff))
+                    .exec(&self.db)
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .rows_affected)
+            }
+            EventPruneStep::StaleSubscriberNodes => {
+                let heartbeat_cutoff = (Utc::now()
+                    - Duration::seconds(EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS))
+                .to_rfc3339();
+                Ok(event_subscriber_nodes::Entity::delete_many()
+                    .filter(event_subscriber_nodes::Column::HeartbeatAt.lt(heartbeat_cutoff))
+                    .exec(&self.db)
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .rows_affected)
+            }
+            EventPruneStep::EmptyEvents => {
+                exec_host_sql(
+                    &self.db,
+                    self.leftover_in_process(),
+                    "DELETE FROM domain_events WHERE dispatch_state = 'dispatched' \
+                     AND created_at <= ? AND NOT EXISTS ( \
+                        SELECT 1 FROM event_deliveries d WHERE d.event_id = domain_events.id \
+                     )",
+                    [terminal_cutoff().into()],
+                )
+                .await
+            }
+        }
+    }
+}
+
+/// One delete of [`LibraryStore::prune_event_deliveries`], in run order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventPruneStep {
+    /// Acked and rejected deliveries past `retention_days`.
+    TerminalDeliveries,
+    /// Dead letters past `dead_letter_retention_days`.
+    DeadLetters,
+    /// Per-node subscriber heartbeats past their TTL.
+    StaleSubscriberNodes,
+    /// Dispatched events past `retention_days` with no deliveries left.
+    EmptyEvents,
+}
+
+impl EventPruneStep {
+    /// Every step, in the order the deletes must run (deliveries before the
+    /// events they belong to).
+    pub const ALL: [Self; 4] = [
+        Self::TerminalDeliveries,
+        Self::DeadLetters,
+        Self::StaleSubscriberNodes,
+        Self::EmptyEvents,
+    ];
 }
 
 /// Mint an event id when empty and reject oversized or blank publish fields.

@@ -81,7 +81,9 @@ fn operand_already_nullif(atom: &str) -> bool {
         return false;
     }
     let close = skip_balanced(s, after_name);
-    if close < after_name.saturating_add(2) {
+    // `skip_balanced` returns the end of input when the call never closes, and
+    // the last byte may then sit inside a multi-byte character.
+    if close < after_name.saturating_add(2) || s.as_bytes().get(close - 1) != Some(&b')') {
         return false;
     }
     if skip_trivia_idx(s, close) != s.len() {
@@ -456,8 +458,9 @@ fn comment_len(s: &str) -> Option<usize> {
         let nl = s.find('\n').unwrap_or(s.len());
         return Some(nl);
     }
-    if s.starts_with("/*") {
-        return s.find("*/").map(|i| i + 2).or(Some(s.len()));
+    if let Some(rest) = s.strip_prefix("/*") {
+        // Search past the opener so `/*/` does not close itself.
+        return rest.find("*/").map(|i| i + 4).or(Some(s.len()));
     }
     None
 }
@@ -507,6 +510,16 @@ fn dollar_quote_len(s: &str) -> Option<usize> {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_comment_opened_by_slash_star_slash_does_not_close_itself() {
+        assert_eq!(comment_len("/*/ x */y"), Some(8));
+    }
+
+    #[test]
+    fn an_unclosed_call_ending_in_a_multibyte_char_does_not_panic() {
+        let _ = desugar_canonical_sql("SELECT a / NULLIF(b, 0\u{5b5}");
+    }
 
     #[test]
     fn unspecified_order_by_gets_sqlite_nulls() {

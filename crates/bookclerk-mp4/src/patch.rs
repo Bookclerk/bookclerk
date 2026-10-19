@@ -117,7 +117,7 @@ pub fn top_level_boxes(file: &mut File) -> Result<Vec<BoxHeader>> {
     let file_len = file.seek(SeekFrom::End(0))?;
     let mut out = Vec::new();
     let mut pos = 0u64;
-    while pos + 8 <= file_len {
+    while pos.saturating_add(8) <= file_len {
         file.seek(SeekFrom::Start(pos))?;
         let header = read_box_header(file)?;
         if header.end() <= pos {
