@@ -227,6 +227,13 @@ where
         .route("/api/node/v1/enroll", axum::routing::post(post_enroll))
         // Host-node socket: the node's Ed25519 key is the credential.
         .route("/api/node/v1/connect", axum::routing::get(ws::get_connect))
+        // The API deadline travels with the routes, so the TLS-only listener
+        // (which has no other layers) also drops a client that stalls its
+        // request body. An upgraded socket outlives it: only the upgrade
+        // response is timed.
+        .layer(axum::middleware::from_fn(
+            crate::api::api_timeout_middleware,
+        ))
         .with_state(state)
 }
 

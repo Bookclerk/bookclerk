@@ -876,7 +876,8 @@ Built in the first H-4 slice:
   a revoke mid-handshake still closes it. The session
   pings every 20 s, closes after 60 s idle, re-reads `revoked_at` on every
   ping tick, closes on a `node.revoked` wake with 4403, lets a newer
-  connection for the same node supersede the old one (4409), and closes on
+  connection for the same node supersede the old one (4409) once the newer
+  one is welcomed (a reconnect refused earlier leaves it up), and closes on
   a binary or malformed frame (4400). Work frames are later steps; until
   then each request frame is answered `error {code: "unsupported"}`.
 - The built-in TLS listener (`node_api/tls.rs`) on `tls_listen`, serving

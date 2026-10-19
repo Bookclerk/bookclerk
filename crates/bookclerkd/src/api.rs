@@ -1221,7 +1221,7 @@ async fn html_document_no_cache(req: Request, next: Next) -> Response {
 }
 
 /// Enforces per-path API deadlines and returns 504 when a `/api/` handler overruns its budget.
-async fn api_timeout_middleware(req: Request, next: Next) -> Response {
+pub(crate) async fn api_timeout_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let method = req.method().to_string();
     // Keep `/health` free of the API timeout so liveness probes stay cheap.

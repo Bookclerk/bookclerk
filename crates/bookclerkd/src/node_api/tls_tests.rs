@@ -339,3 +339,33 @@ acme_directory_ca = "{ca}"
     }
     assert!(cached, "the certificate is cached for restarts");
 }
+
+#[tokio::test]
+async fn the_node_router_times_out_a_stalled_enroll_body() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, _store) = super::super::tests::test_state_with(&files, "").await;
+    // The routes exactly as the TLS-only listener serves them.
+    let app = super::super::node_router::<()>(Arc::clone(&state))
+        .layer(axum::Extension(super::super::transport::LocalAddr(
+            "127.0.0.1:8787".parse().unwrap(),
+        )))
+        .layer(axum::extract::connect_info::MockConnectInfo(
+            "127.0.0.1:5000".parse::<SocketAddr>().unwrap(),
+        ));
+    // A body that never finishes.
+    let body = Body::from_stream(futures::stream::pending::<
+        Result<axum::body::Bytes, std::io::Error>,
+    >());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/node/v1/enroll")
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(30), app.oneshot(request))
+        .await
+        .expect("the API deadline ends the request")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+}
