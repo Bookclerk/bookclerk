@@ -299,6 +299,278 @@ async fn a_remote_claim_hands_only_the_owners_secrets() {
     );
 }
 
+/// A job that names its account by label, or by its id in another case,
+/// is handed that account's secrets: the same accounts the executor and
+/// the trust check resolve.
+#[tokio::test]
+async fn a_job_naming_its_account_by_label_gets_its_secrets() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("Riley Main"))
+        .filter(accounts::Column::AccountId.eq("riley-acct"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    for needle in ["riley main", "RILEY-ACCT"] {
+        let job = enqueue(&w.store, JobKind::Scan, needle).await;
+        let claimed = claim(&w.store).await.expect("Riley's job is claimed");
+        assert_eq!(claimed.job.id, job, "{needle}");
+        let refs: Vec<&JobSecretRef> = claimed.secrets.iter().map(|s| &s.secret_ref).collect();
+        assert_eq!(refs, vec![&w.riley_token], "{needle}");
+        assert_eq!(
+            finish_remote_job(
+                &w.store,
+                HOST,
+                &job,
+                claimed.job.lease_generation,
+                SETTINGS.limits,
+                RemoteOutcome::Complete(None)
+            )
+            .await
+            .unwrap(),
+            RemoteFinish::Done,
+            "{needle}"
+        );
+    }
+}
+
+/// A handoff whose lease ran out while the secrets were read records
+/// nothing, so the secrets are not handed out.
+#[tokio::test]
+async fn a_handoff_after_the_lease_ran_out_records_nothing() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.fence().unwrap();
+    assert!(remote_work::record_handoff(&w.store, HOST, &fence, &[])
+        .await
+        .unwrap());
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::LeaseExpiresAt, Expr::value(Some(past)))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(!remote_work::record_handoff(&w.store, HOST, &fence, &[])
+        .await
+        .unwrap());
+}
+
+/// A job pinned to an instance is handed only that plugin's secrets, even
+/// when another plugin holds an account with the same id.
+#[tokio::test]
+async fn a_pinned_job_gets_only_its_plugins_secrets() {
+    const OTHER: &str = "path:file:///tmp/other#other";
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let now = chrono::Utc::now().to_rfc3339();
+    accounts::ActiveModel {
+        plugin_key: Set(OTHER.into()),
+        account_id: Set("riley-acct".into()),
+        marketplace: Set("us".into()),
+        label: Set(None),
+        scan_enabled: Set(1),
+        source: Set("test".into()),
+        connection_status: Set("active".into()),
+        created_at: Set(now.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(w.store.db())
+    .await
+    .unwrap();
+    let other = build_sealed_record(
+        b"other-token",
+        secret_kind::SOURCE_AUTH,
+        OTHER,
+        secret_account_type::INTEGRATION,
+        "riley-acct",
+        "riley-acct.auth",
+    )
+    .unwrap();
+    upsert_secret(w.store.db(), &other).await.unwrap();
+    let operator = ConfigActor::Operator {
+        id: "operator".into(),
+    };
+    let instance = super::instances::create_plugin_instance(&w.store, &operator, PLUGIN, "")
+        .await
+        .unwrap();
+
+    let job_for = |instance_id: Option<String>| {
+        let store = w.store.clone();
+        async move {
+            let outcome = store
+                .enqueue_job(EnqueueJobSpec {
+                    kind: JobKind::Scan,
+                    payload: JobPayload {
+                        account: Some("riley-acct".into()),
+                        plugin_instance_id: instance_id,
+                        ..Default::default()
+                    },
+                    priority: 0,
+                    max_attempts: 3,
+                    max_pending: 256,
+                    run_after: None,
+                })
+                .await
+                .unwrap();
+            let EnqueueOutcome::Created { id } = outcome else {
+                panic!("expected a new job: {outcome:?}");
+            };
+            store.get_job(&id).await.unwrap().unwrap()
+        }
+    };
+    let unpinned = job_for(None).await;
+    assert_eq!(job_secret_refs(&w.store, &unpinned).await.unwrap().len(), 2);
+    let pinned = job_for(Some(instance.id.to_string())).await;
+    assert_eq!(
+        job_secret_refs(&w.store, &pinned).await.unwrap(),
+        vec![w.riley_token.clone()]
+    );
+    let dangling = job_for(Some("pi_missing".into())).await;
+    assert!(job_secret_refs(&w.store, &dangling)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// A Host renews the permits its claim took even after the account is
+/// relabelled so the job's name no longer reaches it.
+#[tokio::test]
+async fn a_relabelled_account_keeps_the_claims_permit_renewed() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    // An Administrator's Host is trusted with every job, so the relabel
+    // does not cost it the job's trust.
+    crate::entities::users::Entity::update_many()
+        .col_expr(
+            crate::entities::users::Column::Role,
+            Expr::value(UserRole::Administrator.as_str()),
+        )
+        .filter(crate::entities::users::Column::Id.eq(w.riley))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    let label = |value: &'static str| {
+        let store = w.store.clone();
+        async move {
+            accounts::Entity::update_many()
+                .col_expr(accounts::Column::Label, Expr::value(value))
+                .filter(accounts::Column::AccountId.eq("riley-acct"))
+                .exec(store.db())
+                .await
+                .unwrap();
+        }
+    };
+    label("Riley Main").await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley main").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let account = account_semaphore(PLUGIN, "riley-acct");
+    let before = live_permits(&w.store, &account, 1).await.unwrap();
+    assert_eq!(before.len(), 1);
+
+    label("Something Else").await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert_eq!(
+        renew_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            claimed.job.lease_generation,
+            SETTINGS,
+            None
+        )
+        .await
+        .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    let after = live_permits(&w.store, &account, 1).await.unwrap();
+    assert_eq!(after.len(), 1);
+    assert!(
+        after[0].lease.expires_at_ms > before[0].lease.expires_at_ms,
+        "the account permit the claim took is still renewed"
+    );
+}
+
+/// Jobs naming one account by id and by label share its permit: the
+/// second is not claimed while the first runs.
+#[tokio::test]
+async fn jobs_naming_one_account_two_ways_share_its_permit() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("Riley Main"))
+        .filter(accounts::Column::AccountId.eq("riley-acct"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    enqueue(&w.store, JobKind::Scan, "riley main").await;
+    let first = claim(&w.store).await.expect("one job is claimed");
+    assert!(
+        claim(&w.store).await.is_none(),
+        "the other waits for the account's permit"
+    );
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &first.job.id,
+            first.job.lease_generation,
+            SETTINGS.limits,
+            RemoteOutcome::Complete(None)
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    assert!(claim(&w.store).await.is_some(), "then the other runs");
+}
+
+/// Giving back a claim that resumed a suspended job keeps it a resume:
+/// the flag is set again and no attempt is taken back.
+#[tokio::test]
+async fn a_released_resume_stays_a_resume() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let payload = serde_json::to_string(&JobPayload {
+        account: Some("riley-acct".into()),
+        resume_pending: true,
+        ..Default::default()
+    })
+    .unwrap();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::Payload, Expr::value(payload))
+        .col_expr(jobs::Column::AttemptCount, Expr::value(1i64))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    let claimed = claim(&w.store).await.unwrap();
+    assert!(claimed.resumed);
+    assert_eq!(
+        release_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            claimed.job.lease_generation,
+            claimed.resumed,
+            SETTINGS.limits
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert!(job.payload.resume_pending, "the resume flag is back");
+    assert_eq!(job.attempt_count, 1, "the earlier attempt is kept");
+    assert!(claim(&w.store).await.unwrap().resumed);
+}
+
 /// A fence reclaimed while the Host was away, presented by another node,
 /// or whose account was unlinked, is lost.
 #[tokio::test]
@@ -571,9 +843,10 @@ async fn a_job_whose_plugins_are_unknown_passes_no_filter() {
     assert!(matches!(job, EnqueueOutcome::Created { .. }));
     let record = w
         .store
-        .list_job_claim_candidates(JobResourceClass::Network, 8)
+        .list_job_claim_candidates(JobResourceClass::Network, None, 8)
         .await
         .unwrap()
+        .jobs
         .pop()
         .unwrap();
     assert_eq!(job_plugin_keys(&w.store, &record).await.unwrap(), None);
@@ -595,7 +868,7 @@ async fn a_released_job_returns_unspent() {
     assert_eq!(claimed.job.attempt_count, 1);
 
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Done
@@ -611,7 +884,7 @@ async fn a_released_job_returns_unspent() {
         "permits are given back"
     );
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Lost
@@ -864,7 +1137,7 @@ async fn a_released_claim_is_given_back_unspent() {
     let fence = claimed.job.lease_generation;
 
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Done
@@ -886,7 +1159,7 @@ async fn a_released_claim_is_given_back_unspent() {
         WriteBack::Refused("fence_not_live")
     );
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Lost,
@@ -1020,6 +1293,36 @@ async fn a_claim_whose_plugin_keys_cannot_be_read_is_given_back() {
     let again = claim(&w.store).await.expect("claimable again at once");
     assert_eq!(again.job.id, job_id);
     assert_eq!(again.plugin_keys, vec![PLUGIN.to_string()]);
+}
+
+/// Forgetting an earlier lease's handoffs keeps a successor claim's: a
+/// release that runs after the job was claimed again does not cost the new
+/// Host its write-back.
+#[tokio::test]
+async fn forgetting_an_earlier_lease_keeps_the_successors_handoffs() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let first = claim(&w.store).await.unwrap().job.lease_generation;
+    assert_eq!(
+        release_remote_job(&w.store, HOST, &job_id, first, false, SETTINGS.limits)
+            .await
+            .unwrap(),
+        RemoteFinish::Done
+    );
+    let second = claim(&w.store).await.unwrap().job.lease_generation;
+    assert!(second > first);
+
+    // The first release's cleanup lands after the successor's handoff.
+    remote_work::forget_handoffs(&w.store, &job_id, first)
+        .await
+        .unwrap();
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, second, &w.riley_token, b"riley-v2")
+            .await
+            .unwrap(),
+        WriteBack::Written
+    );
 }
 
 /// Runs host batches on an open connection, as a guest that has no

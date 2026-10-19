@@ -23,6 +23,14 @@ pub struct HostJob {
     pub lease_secs: u64,
     /// Plugin keys the job runs (each consented when it was claimed).
     pub plugin_keys: Vec<String>,
+    /// When the granted lease runs out, counted as the client counts it:
+    /// from before the claim was sent, capped at [`crate::MAX_LEASE`]. Work
+    /// handed a deadline should stop by then, since the fence may be lost
+    /// once it passes without a renewal.
+    pub lease_deadline: std::time::SystemTime,
+    /// The claim resumed a suspended job: no attempt was spent, and the
+    /// job's checkpoint applies.
+    pub resumed: bool,
 }
 
 /// The job's secrets, opened with this node's box key. Values are

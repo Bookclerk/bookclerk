@@ -1389,15 +1389,23 @@ reports:
   records each guest's ceiling on its deployment observation when it
   spawns it.
 - **Measured use**: CPU busy since the previous heartbeat and memory
-  available, from `/proc` and the cgroup.
+  available, for the whole machine (or the daemon's CPU-limited cgroup on
+  Linux).
 - **Availability**: how much of the recent past the node was up, as a
   decaying average over about a day. A desktop that is off every night
   ends up around 60%; an always-on VPS stays near 100%.
 
-Memory and measured use are read on Linux only for now. On macOS and
-Windows a heartbeat reports the CPU count (and free disk on macOS); with no
-memory figure the scheduler cannot hold such a node to a memory budget and
-ranks it by CPU headroom alone.
+Every desktop platform reports memory, measured use, and free disk:
+
+| Platform | Memory (total / available) | CPU busy | Free disk |
+| --- | --- | --- | --- |
+| Linux | `/proc/meminfo` `MemTotal` / `MemAvailable`, capped by cgroup `memory.max` | `/proc/stat`, or cgroup `cpu.stat` under a CPU quota | `statvfs` |
+| macOS | `hw.memsize` / free + inactive pages (`HOST_VM_INFO64`) | `HOST_CPU_LOAD_INFO` ticks | `statvfs` |
+| Windows | `GlobalMemoryStatusEx` `ullTotalPhys` / `ullAvailPhys` | `GetSystemTimes` | `GetDiskFreeSpaceExW` |
+
+Only Linux reads a container ceiling (cgroup v2). A daemon confined by a
+Windows Job Object or a macOS resource limit is measured against the whole
+machine.
 
 A node is **live** while its last heartbeat is younger than three
 intervals (45 s). A node where only the CLI ran has no heartbeat and is

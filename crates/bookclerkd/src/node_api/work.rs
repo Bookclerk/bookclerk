@@ -174,6 +174,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             job_id,
             fence,
             reason,
+            resumed,
         } => {
             tracing::info!(
                 node_id = %host.node_id,
@@ -182,7 +183,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 reason = bounded(&reason),
                 "host node gives a job back"
             );
-            finish_release(library, host, id.clone(), job_id, fence).await
+            finish_release(library, host, id.clone(), job_id, fence, resumed).await
         }
         Body::DeploymentsList {} => deployments(library, host, id.clone()).await,
         Body::InstanceConfigGet { instance_id } => {
@@ -379,6 +380,7 @@ async fn claim(
         job,
         secrets,
         plugin_keys,
+        resumed,
     }) = claim_remote_job(library, &host.node_id, class, host.settings, filter).await?
     else {
         return Ok(none());
@@ -428,6 +430,7 @@ async fn claim(
                 lease_secs: host.settings.lease_secs,
                 sealed_secrets,
                 plugin_keys: plugin_keys.clone(),
+                resumed,
             },
         )
     });
@@ -496,17 +499,26 @@ async fn finish(
     )
 }
 
-/// `release`: the job goes back to pending unspent.
+/// `release`: the job goes back to pending unspent; a resumed claim
+/// (`resumed`, as its `work` frame said) is resumable again.
 async fn finish_release(
     library: &LibraryStore,
     host: &HostContext,
     id: String,
     job_id: String,
     fence: i64,
+    resumed: bool,
 ) -> bookclerk_library::Result<Frame> {
     Ok(
-        match release_remote_job(library, &host.node_id, &job_id, fence, host.settings.limits)
-            .await?
+        match release_remote_job(
+            library,
+            &host.node_id,
+            &job_id,
+            fence,
+            resumed,
+            host.settings.limits,
+        )
+        .await?
         {
             RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
             RemoteFinish::Lost => lost(id, job_id, fence),
@@ -691,7 +703,13 @@ async fn instance_config(
 /// claimable again at once instead of after its lease expires. Does
 /// nothing for any other answer.
 pub(crate) async fn release_unsent(library: &LibraryStore, host: &HostContext, answer: &Frame) {
-    let Body::Work { job, fence, .. } = &answer.body else {
+    let Body::Work {
+        job,
+        fence,
+        resumed,
+        ..
+    } = &answer.body
+    else {
         return;
     };
     match release_remote_job(
@@ -699,6 +717,7 @@ pub(crate) async fn release_unsent(library: &LibraryStore, host: &HostContext, a
         &host.node_id,
         &job.id,
         *fence,
+        *resumed,
         host.settings.limits,
     )
     .await

@@ -201,11 +201,30 @@ dependency graph. Each ignore must record reachability evidence and an
 The scheduled **SQL-v1 property** job (`.github/workflows/sql-v1-proptest.yml`)
 runs a longer `proptest` suite (`PROPTEST_CASES=256`) on `bookclerk-plugin-abi`
 and `bookclerk-db-exec`, grammar-aware sqlite admission plus a PostgreSQL 16
-differential (normalized `DbValue` / `DbErrorClass`), and coverage-guided
-`cargo-fuzz` targets (`sql_parse`, `sql_lower`) with checked-in corpora under
-`fuzz/corpus/`. It is `workflow_dispatch` + weekly; PR CI keeps the modest
-in-crate case counts, deterministic corpus replay, and the postgres
-matrix (binding UTF8 readiness + sqlite/postgres differential).
+differential (normalized `DbValue` / `DbErrorClass`). It is
+`workflow_dispatch` + weekly; PR CI keeps the modest in-crate case counts,
+deterministic corpus replay, and the postgres matrix (binding UTF8 readiness +
+sqlite/postgres differential).
+
+### Fuzzing
+
+Coverage-guided fuzzing runs on [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/)
+over the `cargo-fuzz` targets in `fuzz/` (`sql_parse`, `sql_lower`,
+`mp4_parse`). Seed corpora are checked in under `fuzz/corpus/<target>/` and
+replayed by ordinary tests in PR CI (`bookclerk-db-exec/tests/fuzz_corpus.rs`,
+`bookclerk-mp4/tests/fuzz_corpus.rs`), so a fixed crash stays fixed without a
+nightly toolchain.
+
+| Workflow | When | What |
+| --- | --- | --- |
+| `cflite-pr.yml` | PRs touching `fuzz/`, the fuzzed crates, or the ClusterFuzzLite config | 10 min, AddressSanitizer, code-change mode; fails on a new crash |
+| `cflite-batch.yml` | weekly + `workflow_dispatch` | 30 min batch fuzzing, then corpus pruning and a coverage report (kept as Actions artifacts) |
+
+Build config lives in `.clusterfuzzlite/` (`Dockerfile`, `build.sh`,
+`project.yaml`). To add a target, add a `[[bin]]` to `fuzz/Cargo.toml` and a
+seed directory under `fuzz/corpus/`; `build.sh` packages every target that
+`cargo fuzz list` reports. Reproduce locally with
+`cargo +nightly fuzz run <target>` from `fuzz/`.
 
 The scheduled **workerd pin bump** job (`.github/workflows/workerd-pin-bump.yml`)
 also compiles `bookclerk-workerd` / `bookclerk-plugin-abi`, so it installs

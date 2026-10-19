@@ -108,6 +108,13 @@ async fn dial(
 
 /// The next frame, or the close code once the owner closes.
 async fn next(client: &mut Client) -> Result<Frame, Option<u16>> {
+    next_or_close(client)
+        .await
+        .map_err(|close| close.map(|(code, _)| code))
+}
+
+/// The next frame, or the close code and reason once the owner closes.
+async fn next_or_close(client: &mut Client) -> Result<Frame, Option<(u16, String)>> {
     loop {
         let message = tokio::time::timeout(std::time::Duration::from_secs(10), client.next())
             .await
@@ -115,7 +122,7 @@ async fn next(client: &mut Client) -> Result<Frame, Option<u16>> {
         match message {
             Some(Ok(WsMessage::Text(text))) => return Ok(Frame::parse(text.as_str()).unwrap()),
             Some(Ok(WsMessage::Close(frame))) => {
-                return Err(frame.map(|frame| u16::from(frame.code)))
+                return Err(frame.map(|frame| (u16::from(frame.code), frame.reason.to_string())))
             }
             Some(Ok(_)) => {}
             Some(Err(_)) | None => return Err(None),
@@ -142,6 +149,30 @@ async fn handshake_resuming(
     origin: &str,
     resume: Vec<HeldFence>,
 ) -> Result<Frame, Option<u16>> {
+    handshake_exchange(client, node_id, key, origin, resume)
+        .await
+        .map_err(|close| close.map(|(code, _)| code))
+}
+
+/// [`handshake`], answering the close reason too.
+async fn handshake_or_close(
+    client: &mut Client,
+    node_id: &str,
+    key: &SigningKey,
+    origin: &str,
+) -> Result<Frame, Option<(u16, String)>> {
+    handshake_exchange(client, node_id, key, origin, Vec::new()).await
+}
+
+/// The host side of the handshake, with a hello listing `resume`; answers
+/// what the owner sent after `auth`, or the close code and reason.
+async fn handshake_exchange(
+    client: &mut Client,
+    node_id: &str,
+    key: &SigningKey,
+    origin: &str,
+    resume: Vec<HeldFence>,
+) -> Result<Frame, Option<(u16, String)>> {
     let hello = Frame::new(
         "1",
         Body::Hello {
@@ -155,7 +186,7 @@ async fn handshake_resuming(
         .send(WsMessage::Text(hello.to_text().into()))
         .await
         .unwrap();
-    let challenge = next(client).await?;
+    let challenge = next_or_close(client).await?;
     assert_eq!(challenge.id, "1", "the challenge answers the hello");
     let Body::Challenge { nonce, cluster_id } = challenge.body else {
         panic!("expected a challenge: {challenge:?}");
@@ -176,7 +207,7 @@ async fn handshake_resuming(
         .send(WsMessage::Text(auth.to_text().into()))
         .await
         .unwrap();
-    next(client).await
+    next_or_close(client).await
 }
 
 /// The owner origin a host signs, as the test daemon derives it.
@@ -242,17 +273,24 @@ async fn node_auth_applies_with_operator_auth_disabled() {
             .unwrap_err(),
         Some(CLOSE_AUTH_FAILED)
     );
-    // An unknown node looks the same from outside.
+    // An unknown node looks the same from outside: same code, same reason.
     let mut client = dial(addr, Some(SUBPROTOCOL)).await.unwrap();
+    let unknown = handshake_or_close(&mut client, "no-such-node", &key, &origin)
+        .await
+        .unwrap_err();
+    let mut client = dial(addr, Some(SUBPROTOCOL)).await.unwrap();
+    let bad_signature = handshake_or_close(&mut client, &node_id, &wrong, &origin)
+        .await
+        .unwrap_err();
     assert_eq!(
-        handshake(&mut client, "no-such-node", &key, &origin)
-            .await
-            .unwrap_err(),
-        Some(CLOSE_AUTH_FAILED)
+        unknown,
+        Some((CLOSE_AUTH_FAILED, super::ws::AUTH_FAILED_REASON.to_string()))
     );
+    assert_eq!(unknown, bad_signature);
     assert_eq!(
         audit_actions(&store, &node_id).await,
         vec![
+            ("node_auth_failed".to_string(), "bad_signature".to_string()),
             ("node_auth_failed".to_string(), "bad_signature".to_string()),
             ("node_auth_failed".to_string(), "bad_signature".to_string()),
         ]
@@ -980,9 +1018,15 @@ async fn a_superseded_session_leaves_the_wake_catalog_enabled() {
             .any(|row| row.enabled && row.plugin_id == consumer)
     };
 
-    let old = super::ws::start_session(&store, "owner-node", &node_id).await;
+    let start = |store: LibraryStore, node_id: String| async move {
+        let (serial, close) = super::ws::register_pending(&node_id);
+        super::ws::start_session(&store, "owner-node", &node_id, serial, close)
+            .await
+            .expect("a welcomed connection is promoted")
+    };
+    let old = start(store.clone(), node_id.clone()).await;
     assert!(enabled(store.clone(), consumer.clone()).await);
-    let new = super::ws::start_session(&store, "owner-node", &node_id).await;
+    let new = start(store.clone(), node_id.clone()).await;
     assert_eq!(
         *old.close.borrow(),
         Some(CLOSE_SUPERSEDED),

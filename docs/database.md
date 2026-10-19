@@ -374,8 +374,18 @@ a database is “at schema zero.”
 - **`Frozen`** — verify checksums, apply remaining frozen steps, then the current unreleased bucket if any
 - **Frozen newer than this binary** — fail closed (never auto-downgrade). Restore a backup.
 
+Only one starter migrates a shared database. A start that finds the schema
+already matching just checks it. One with DDL to apply creates
+`cluster_leases` and takes the `schema.migrate` lease (120 s, renewed while
+it works, checked before every DDL batch). Other starters wait for the
+schema to match, take the lease over if the migrator dies, and fail closed
+after 300 s. The lease row keeps the last migrator's holder and token, and
+`GET /api/cluster/status` shows it with the schema state (`cluster.schema`).
+
 `bookclerk db version|backup|restore|migrate` inspects
-state and walks frozen revisions without applying on connect. Version display
+state and walks frozen revisions without applying on connect. A `migrate`
+walk that writes (backup or DDL) takes the same `schema.migrate` lease, with
+the same wait, renewal, and per-batch check. Version display
 is `uninitialized` / `unreleased@base<n>+<checksum>` / `frozen@<version>+<checksum>`.
 With an empty frozen plan, `migrate --to` is a no-op; restore is time travel.
 

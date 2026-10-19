@@ -982,6 +982,18 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/node-invites/{id}",
             delete(crate::node_api::delete_node_invite),
         )
+        // The library lets the operator or an Owner revoke any host and
+        // anyone else only the hosts they own.
+        .route(
+            "/api/config/node-credentials/{node_id}",
+            delete(crate::node_api::delete_node_credential),
+        )
+        // Any user reads the switch; the handler lets only the operator or
+        // an active Owner change it.
+        .route(
+            "/api/config/host-enrollment",
+            get(crate::node_api::get_host_enrollment).put(crate::node_api::put_host_enrollment),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_operator_or_user_auth,
@@ -1233,7 +1245,7 @@ async fn html_document_no_cache(req: Request, next: Next) -> Response {
 }
 
 /// Enforces per-path API deadlines and returns 504 when a `/api/` handler overruns its budget.
-async fn api_timeout_middleware(req: Request, next: Next) -> Response {
+pub(crate) async fn api_timeout_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let method = req.method().to_string();
     // Keep `/health` free of the API timeout so liveness probes stay cheap.
@@ -3520,25 +3532,67 @@ struct ScanPlanResponse {
 
 /// Folds the per-account admissions of one scan into one response.
 ///
-/// A single planned job answers exactly like any other admission. Several
-/// answer 200 when any was accepted, otherwise 409 when all were already
-/// queued and 429 when the queue was full.
+/// The body is always a [`ScanPlanResponse`], so `job_ids` is present
+/// whatever the account count. A single planned job keeps the status and
+/// message of any other admission. Several answer 200 when any was
+/// accepted, otherwise 409 when all were already queued and 429 when the
+/// queue was full.
 fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
-    if admits.len() == 1 {
-        return admit_response("scan", admits.into_iter().next().expect("one admit"));
+    if let [admit] = admits.as_slice() {
+        let (status, message, job_id, error) = match admit {
+            AdmitJob::Created(id) => (
+                StatusCode::OK,
+                format!("scan job {id} accepted"),
+                id.clone(),
+                None,
+            ),
+            AdmitJob::Duplicate(id) => (
+                StatusCode::CONFLICT,
+                "scan already pending or running".to_string(),
+                id.clone(),
+                Some("conflict"),
+            ),
+            AdmitJob::QueueFull => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "job queue is full".to_string(),
+                String::new(),
+                Some("queue_full"),
+            ),
+        };
+        let job_ids = if job_id.is_empty() {
+            Vec::new()
+        } else {
+            vec![job_id.clone()]
+        };
+        return (
+            status,
+            Json(ScanPlanResponse {
+                ok: status == StatusCode::OK,
+                message,
+                job_id,
+                job_ids,
+                error: error.map(str::to_string),
+            }),
+        )
+            .into_response();
     }
-    let mut created = Vec::new();
-    let mut duplicates = Vec::new();
-    let mut full = 0usize;
+    // Ids stay in plan order, whatever each admission's outcome.
+    let mut job_ids = Vec::new();
+    let (mut created, mut duplicates, mut full) = (0usize, 0usize, 0usize);
     for admit in admits {
         match admit {
-            AdmitJob::Created(id) => created.push(id),
-            AdmitJob::Duplicate(id) => duplicates.push(id),
+            AdmitJob::Created(id) => {
+                created += 1;
+                job_ids.push(id);
+            }
+            AdmitJob::Duplicate(id) => {
+                duplicates += 1;
+                job_ids.push(id);
+            }
             AdmitJob::QueueFull => full += 1,
         }
     }
-    let job_ids: Vec<String> = created.iter().chain(&duplicates).cloned().collect();
-    let (status, error) = if !created.is_empty() {
+    let (status, error) = if created > 0 {
         (StatusCode::OK, None)
     } else if job_ids.is_empty() && full == 0 {
         (StatusCode::UNPROCESSABLE_ENTITY, Some("nothing_to_scan"))
@@ -3552,15 +3606,13 @@ fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
     } else {
         format!(
             "scan planned per account: {} accepted, {} already pending or running, {} not admitted (queue full)",
-            created.len(),
-            duplicates.len(),
-            full
+            created, duplicates, full
         )
     };
     (
         status,
         Json(ScanPlanResponse {
-            ok: !created.is_empty(),
+            ok: created > 0,
             message,
             job_id: job_ids.first().cloned().unwrap_or_default(),
             job_ids,
@@ -3644,19 +3696,21 @@ fn admit_response(kind: &str, admit: AdmitJob) -> Response {
     }
 }
 
-/// Returns HTTP 503 when admission is paused, otherwise 500.
+/// Maps an admission error onto an HTTP response with `ActionResponse`.
+///
+/// A job no node could claim ([`crate::jobs::JobUnroutable`]) is HTTP 409
+/// `unroutable` and logged as a warning; paused admission is HTTP 503
+/// `admission_paused`; anything else is HTTP 500 `internal_error`.
 fn enqueue_error_response(err: anyhow::Error) -> Response {
-    tracing::error!(error = %err, "job enqueue failed");
-    let paused = err.to_string().contains("admission paused");
-    let status = if paused {
-        StatusCode::SERVICE_UNAVAILABLE
+    let (status, error) = if err.downcast_ref::<crate::jobs::JobUnroutable>().is_some() {
+        tracing::warn!(error = %err, "job refused: no node can run it");
+        (StatusCode::CONFLICT, "unroutable")
+    } else if err.to_string().contains("admission paused") {
+        tracing::warn!(error = %err, "job enqueue paused");
+        (StatusCode::SERVICE_UNAVAILABLE, "admission_paused")
     } else {
-        StatusCode::INTERNAL_SERVER_ERROR
-    };
-    let error = if paused {
-        "admission_paused"
-    } else {
-        "internal_error"
+        tracing::error!(error = %err, "job enqueue failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     };
     (
         status,
@@ -5309,6 +5363,61 @@ mod tests {
         InviteLinkError, PluginGrantOverride,
     };
     use bookclerk_config::{Config, ListenAddrs};
+
+    /// An acquire whose `local` outputs share no node is a 409 `unroutable`
+    /// refusal, not a 500; other admission failures keep their codes.
+    #[tokio::test]
+    async fn unroutable_acquire_is_conflict_not_internal_error() {
+        use axum::http::StatusCode;
+        use bookclerk_library::control_plane::{
+            create_plugin_instance, ensure_plugin_deployment, resolve_job_requirements,
+            ConfigActor, DesiredState,
+        };
+        use bookclerk_library::{JobKind, JobPayload, LibraryStore};
+
+        const LOCAL: &str = "platform:bookclerk/bookclerk-plugin-destination-local";
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let operator = ConfigActor::Operator {
+            id: "operator".into(),
+        };
+        for (name, node) in [("", "node-a"), ("second", "node-b")] {
+            let instance = create_plugin_instance(&store, &operator, LOCAL, name)
+                .await
+                .unwrap();
+            ensure_plugin_deployment(
+                &store,
+                &ConfigActor::Bootstrap,
+                &instance.id,
+                node,
+                DesiredState::Present,
+            )
+            .await
+            .unwrap();
+        }
+        let bound = std::collections::BTreeSet::from([LOCAL.to_string()]);
+        let err =
+            resolve_job_requirements(&store, JobKind::Acquire, &JobPayload::default(), &bound)
+                .await
+                .expect_err("no node runs both outputs");
+
+        let response = super::enqueue_error_response(crate::jobs::requirements_error(err));
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "unroutable", "{body}");
+        assert_eq!(body["ok"], false, "{body}");
+
+        let other = super::enqueue_error_response(crate::jobs::requirements_error(
+            bookclerk_library::LibraryError::Invalid("bad row".into()),
+        ));
+        assert_eq!(other.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
 
     #[test]
     fn invite_link_error_classifies_missing_invalid_expired_redeemed() {

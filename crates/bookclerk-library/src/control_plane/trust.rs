@@ -19,7 +19,9 @@
 //! The predicate runs inside the routed claim before the compare-and-swap
 //! ([`super::claim_routed_job`]) and again at handoff, just before a job's
 //! secrets would be unsealed for the node ([`handoff_routed_job`]), so a
-//! demotion that lands between claim and handoff still denies. Every input
+//! demotion that lands between claim and handoff still denies. Handoff also
+//! requires the claim to still own the job's running lease, so a late
+//! handoff after a reclaim, completion or expiry hands nothing over. Every input
 //! is read from the database on each call; nothing is cached.
 //!
 //! The scan planner ([`plan_scan`]) applies the matching rule on the
@@ -30,15 +32,16 @@
 
 use std::collections::BTreeSet;
 
+use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::enrollment::load_node_credential;
-use super::instances::{load_plugin_instance, PluginInstanceId};
+use super::instances::{default_instance_for_key, load_plugin_instance, PluginInstanceId};
 use super::job_routing::{JobClaimRequest, RoutedJobClaim};
 use super::semaphore::release_permits;
 use crate::entities::{account_links, accounts, nodes, portal_identities, users};
 use crate::error::{LibraryError, Result};
-use crate::models::{JobKind, JobPayload, JobRecord, UserRole, UserStatus};
+use crate::models::{JobKind, JobPayload, JobRecord, JobState, UserRole, UserStatus};
 use crate::store::LibraryStore;
 
 /// How the claiming node reaches the job queue.
@@ -150,24 +153,44 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
     match trust {
         NodeTrust::All => Ok(true),
         NodeTrust::Nothing => Ok(false),
-        NodeTrust::OwnedBy(user_id) => {
-            if !matches!(job.kind, JobKind::Scan | JobKind::Acquire)
-                || job.payload.plugin_instance_id.is_some()
-                || !job.payload.requires.is_empty()
-            {
-                return Ok(false);
-            }
-            let Some(account) = job.payload.account.as_deref() else {
-                return Ok(false);
-            };
-            let touched = accounts_named(store, account, None).await?;
-            if touched.is_empty() {
-                return Ok(false);
-            }
-            let owned = accounts_owned_by(store, *user_id).await?;
-            Ok(touched.iter().all(|key| owned.contains(key)))
-        }
+        NodeTrust::OwnedBy(user_id) => match owned_job_account(job) {
+            Some(account) => account_owned(store, *user_id, account).await,
+            None => Ok(false),
+        },
     }
+}
+
+/// The account a [`NodeTrust::OwnedBy`] node must own to receive `job`.
+///
+/// `None` when the job's shape alone refuses it: a kind other than scan or
+/// acquire, an instance pin, requirements, or no named account.
+pub(super) fn owned_job_account(job: &JobRecord) -> Option<&str> {
+    if !matches!(job.kind, JobKind::Scan | JobKind::Acquire)
+        || job.payload.plugin_instance_id.is_some()
+        || !job.payload.requires.is_empty()
+    {
+        return None;
+    }
+    job.payload.account.as_deref()
+}
+
+/// True when `account` names at least one store account and every account
+/// it names (by id or label) is linked to `user_id`.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub(super) async fn account_owned(
+    store: &LibraryStore,
+    user_id: i64,
+    account: &str,
+) -> Result<bool> {
+    let touched = accounts_named(store, account, None).await?;
+    if touched.is_empty() {
+        return Ok(false);
+    }
+    let owned = accounts_owned_by(store, user_id).await?;
+    Ok(touched.iter().all(|key| owned.contains(key)))
 }
 
 /// True when `node_id` may claim `job` right now.
@@ -185,14 +208,26 @@ pub async fn node_may_claim_job(
     job_trusted(store, &trust, job).await
 }
 
-/// Re-checks trust for a claimed job just before its secrets are handed to
-/// the claiming node.
+/// Re-checks a claimed job just before its secrets are handed to the
+/// claiming node.
 ///
-/// When the node is still trusted the claim is returned unchanged. When it
-/// is not (the owner was demoted or disabled, the account was unlinked, or
-/// the node was revoked since the claim), the job goes back to `pending`
-/// without spending an attempt, its permits are released, and `None` is
-/// returned, so nothing is unsealed.
+/// The claim is returned unchanged only when both hold:
+///
+/// - the claim still owns the job: the row is `running` under the claim's
+///   fence (same lease owner and generation), that owner is
+///   `request.owner`, and the lease has not expired. A claim that was
+///   reclaimed, finished, released, or left to expire is not handed over;
+/// - the node is still trusted with the job ([`node_may_claim_job`]).
+///
+/// Ownership is checked again after the trust reads, so a lease lost while
+/// they ran is refused too.
+///
+/// Otherwise `None` is returned, so nothing is unsealed. When the claim was
+/// taken by `request.owner`, the job goes back to `pending` without spending
+/// an attempt if the claim's fence still owns the row (a row another fence
+/// owns is left alone), and the claim's permits are released (a permit taken
+/// over since holds a new token and is left alone too). A claim with another
+/// lease owner is refused without touching the row or its permits.
 ///
 /// # Errors
 ///
@@ -205,26 +240,69 @@ pub async fn handoff_routed_job(
 ) -> Result<Option<RoutedJobClaim>> {
     let current = store.get_job(&claim.job.id).await?;
     let trusted = match &current {
-        Some(job) => node_may_claim_job(store, request.node_id, request.claimant, job).await?,
-        None => false,
+        Some(job) if claim_owns_job(&claim.job, job, request.owner, Utc::now()) => {
+            node_may_claim_job(store, request.node_id, request.claimant, job).await?
+        }
+        _ => false,
     };
     if trusted {
-        return Ok(Some(claim));
+        // The trust reads take time; a claim that lost its lease meanwhile
+        // must not be handed over on the earlier snapshot. Secrets are
+        // unsealed after this returns, so the fence on every later write
+        // still covers a loss after this point.
+        let still = store.get_job(&claim.job.id).await?;
+        if still
+            .as_ref()
+            .is_some_and(|job| claim_owns_job(&claim.job, job, request.owner, Utc::now()))
+        {
+            return Ok(Some(claim));
+        }
     }
-    if let Some(fence) = claim.job.fence() {
-        store.release_job_claim(&fence, claim.resumed).await?;
-    }
+    // A claim taken under another worker's lease owner is not this
+    // request's to release.
+    let Some(fence) = claim.job.fence().filter(|f| f.owner == request.owner) else {
+        return Ok(None);
+    };
+    store.release_job_claim(&fence, claim.resumed).await?;
     release_permits(store, &claim.permits).await?;
     Ok(None)
 }
 
-/// `accounts` rows with `account_id`, limited to `plugin_key` when given.
-async fn accounts_named(
+/// True when `claimed` (the record its claim returned) still owns `current`
+/// (the row read now) for `owner` at `now`.
+///
+/// Compares the full fence, not only the generation: a claim record without
+/// a lease owner owns nothing.
+fn claim_owns_job(
+    claimed: &JobRecord,
+    current: &JobRecord,
+    owner: &str,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(fence) = claimed.fence() else {
+        return false;
+    };
+    current.state == JobState::Running
+        && fence.owner == owner
+        && current.fence().as_ref() == Some(&fence)
+        && current
+            .lease_expires_at
+            .is_some_and(|expires| expires > now)
+}
+
+/// `accounts` rows a job naming `needle` would touch, limited to
+/// `plugin_key` when given.
+///
+/// Matches the way the scan executor resolves an account needle
+/// (`SourceRegistry::account_needle_matches`): the account id or the label,
+/// ignoring ASCII case. A narrower match here would let a Host approve a
+/// job that the executor then runs against another user's account.
+pub(super) async fn accounts_named(
     store: &LibraryStore,
-    account_id: &str,
+    needle: &str,
     plugin_key: Option<&str>,
 ) -> Result<BTreeSet<AccountKey>> {
-    let mut query = accounts::Entity::find().filter(accounts::Column::AccountId.eq(account_id));
+    let mut query = accounts::Entity::find();
     if let Some(key) = plugin_key {
         query = query.filter(accounts::Column::PluginKey.eq(key));
     }
@@ -233,6 +311,13 @@ async fn accounts_named(
         .await
         .map_err(LibraryError::Orm)?
         .into_iter()
+        .filter(|row| {
+            row.account_id.eq_ignore_ascii_case(needle)
+                || row
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.eq_ignore_ascii_case(needle))
+        })
         .map(|row| (row.plugin_key, row.account_id))
         .collect())
 }
@@ -272,7 +357,10 @@ pub async fn accounts_owned_by(store: &LibraryStore, user_id: i64) -> Result<BTr
 /// - Operator authority, an Owner or an Administrator: a named account is
 ///   one job as asked. A scan of every account becomes one job per distinct
 ///   scan-enabled account id (within the pinned plugin), so the planner can
-///   route each to any node trusted with that account. With no scan-enabled
+///   route each to any node trusted with that account. When the id also
+///   names a scan-disabled account on another plugin, its job is pinned to
+///   the default instance of each plugin where it is scan-enabled, so the
+///   disabled account is never touched. With no scan-enabled
 ///   account the request stays one unsplit job, which only fully trusted
 ///   nodes may claim and which reports that nothing was scanned.
 /// - Any other active user: a named account must be theirs, and a scan of
@@ -333,11 +421,16 @@ pub async fn plan_scan(
             // An unknown pinned instance fails at run time, as before.
             return Ok(vec![payload(None)]);
         }
-        let ids = scan_enabled_account_ids(store, plugin_key.as_deref()).await?;
-        if ids.is_empty() {
+        let mut out = Vec::new();
+        for target in scan_all_targets(store, plugin_key.as_deref(), |_| true).await? {
+            if let Some(job) = target_payload(store, &target, &payload).await? {
+                out.push(job);
+            }
+        }
+        if out.is_empty() {
             return Ok(vec![payload(None)]);
         }
-        return Ok(ids.iter().map(|id| payload(Some(id))).collect());
+        return Ok(out);
     };
     if pinned.is_some() && plugin_key.is_none() {
         return Err(not_your_account());
@@ -354,13 +447,46 @@ pub async fn plan_scan(
         return Ok(vec![payload(Some(account))]);
     }
     let mut out = Vec::new();
-    for id in scan_enabled_account_ids(store, plugin_key.as_deref()).await? {
-        let touched = accounts_named(store, &id, plugin_key.as_deref()).await?;
-        if wholly_owned(&touched) {
-            out.push(payload(Some(&id)));
+    for target in scan_all_targets(store, plugin_key.as_deref(), wholly_owned).await? {
+        if let Some(job) = target_payload(store, &target, &payload).await? {
+            out.push(job);
         }
     }
     Ok(out)
+}
+
+/// One job a scan of every account plans.
+struct ScanTarget {
+    /// The account id the job names.
+    account_id: String,
+    /// The plugin the job must stay on, when the id also names an account
+    /// with scanning turned off on another plugin.
+    plugin_key: Option<String>,
+    /// The accounts the job touches.
+    touched: BTreeSet<AccountKey>,
+}
+
+/// Builds the payload for `target`, pinning it to its plugin's default
+/// instance when it must stay on one plugin and the request pins none.
+///
+/// Returns `None` when that plugin has no instance to pin to.
+///
+/// # Errors
+///
+/// Returns the read error when the instance lookup fails.
+async fn target_payload(
+    store: &LibraryStore,
+    target: &ScanTarget,
+    payload: &impl Fn(Option<&str>) -> JobPayload,
+) -> Result<Option<JobPayload>> {
+    let mut job = payload(Some(&target.account_id));
+    if let (Some(key), None) = (&target.plugin_key, &job.plugin_instance_id) {
+        let Some(instance) = default_instance_for_key(store, key).await? else {
+            return Ok(None);
+        };
+        job.plugin_instance_id = Some(instance.id.to_string());
+    }
+    Ok(Some(job))
 }
 
 /// The error for an account the requester does not own.
@@ -368,20 +494,111 @@ fn not_your_account() -> LibraryError {
     LibraryError::Forbidden("that store account is not linked to this user".into())
 }
 
-/// Distinct scan-enabled account ids, sorted, within `plugin_key` if given.
-async fn scan_enabled_account_ids(
+/// The jobs a scan of every account plans, within `plugin_key` if given.
+///
+/// A job names an account id, and a job's account filter matches that id or
+/// label on every plugin it runs on, whatever their scan flags. So each
+/// scan-enabled id is one unpinned job when every account it would touch is
+/// scan-enabled, and otherwise one job per plugin where every account it
+/// would touch is scan-enabled, pinned to that plugin. An account that only
+/// shares its plugin with a scan-disabled account matching the same id is
+/// left out, since no job can reach it alone.
+///
+/// Targets `allowed` refuses are dropped, and a target whose accounts the
+/// kept targets already cover (an id differing only in case, or another
+/// account's label) is skipped so no account is scanned twice. Targets that
+/// reach more accounts are kept first, so a needle that only reaches part
+/// of another's accounts is the one skipped. A chain of labels that each
+/// name another account's id can still scan its middle account twice.
+///
+/// # Errors
+///
+/// Returns the read error when the account read fails.
+async fn scan_all_targets(
     store: &LibraryStore,
     plugin_key: Option<&str>,
-) -> Result<BTreeSet<String>> {
-    let mut query = accounts::Entity::find().filter(accounts::Column::ScanEnabled.ne(0));
+    allowed: impl Fn(&BTreeSet<AccountKey>) -> bool,
+) -> Result<Vec<ScanTarget>> {
+    let mut query = accounts::Entity::find();
     if let Some(key) = plugin_key {
         query = query.filter(accounts::Column::PluginKey.eq(key));
     }
-    Ok(query
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
+    let rows = query.all(store.db()).await.map_err(LibraryError::Orm)?;
+    let ids: BTreeSet<&str> = rows
+        .iter()
+        .filter(|row| row.scan_enabled != 0)
+        .map(|row| row.account_id.as_str())
+        .collect();
+    let mut candidates: Vec<ScanTarget> = Vec::new();
+    for id in ids {
+        let matching: Vec<&accounts::Model> = rows
+            .iter()
+            .filter(|row| {
+                row.account_id.eq_ignore_ascii_case(id)
+                    || row
+                        .label
+                        .as_deref()
+                        .is_some_and(|label| label.eq_ignore_ascii_case(id))
+            })
+            .collect();
+        let keys = |rows: &[&accounts::Model]| -> BTreeSet<AccountKey> {
+            rows.iter()
+                .map(|row| (row.plugin_key.clone(), row.account_id.clone()))
+                .collect()
+        };
+        if matching.iter().all(|row| row.scan_enabled != 0) {
+            candidates.push(ScanTarget {
+                account_id: id.to_string(),
+                plugin_key: None,
+                touched: keys(&matching),
+            });
+            continue;
+        }
+        let plugins: BTreeSet<&str> = matching
+            .iter()
+            .filter(|row| row.scan_enabled != 0 && row.account_id == id)
+            .map(|row| row.plugin_key.as_str())
+            .collect();
+        for key in plugins {
+            let on_plugin: Vec<&accounts::Model> = matching
+                .iter()
+                .copied()
+                .filter(|row| row.plugin_key == key)
+                .collect();
+            if on_plugin.iter().all(|row| row.scan_enabled != 0) {
+                candidates.push(ScanTarget {
+                    account_id: id.to_string(),
+                    plugin_key: Some(key.to_string()),
+                    touched: keys(&on_plugin),
+                });
+            }
+        }
+    }
+    // Wider targets are decided first: when another account's label equals
+    // an id, the needle that reaches both is kept and the one that reaches
+    // only one is then covered. Kept targets still come out in id order.
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    order.sort_by_key(|&index| std::cmp::Reverse(candidates[index].touched.len()));
+    // Accounts some kept target already touches. A target whose accounts
+    // are all among them (an id that differs only in case, or another
+    // account's label) would scan them twice, possibly at once on two
+    // nodes.
+    let mut covered: BTreeSet<AccountKey> = BTreeSet::new();
+    let mut keep = vec![false; candidates.len()];
+    for index in order {
+        let touched = &candidates[index].touched;
+        // Refused targets are dropped before coalescing, so they never
+        // hide a later target the requester may run.
+        if !allowed(touched) || touched.is_subset(&covered) {
+            continue;
+        }
+        covered.extend(touched.iter().cloned());
+        keep[index] = true;
+    }
+    let out: Vec<ScanTarget> = candidates
         .into_iter()
-        .map(|row| row.account_id)
-        .collect())
+        .zip(keep)
+        .filter_map(|(target, kept)| kept.then_some(target))
+        .collect();
+    Ok(out)
 }
