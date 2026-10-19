@@ -526,6 +526,34 @@ async fn scoped_trust_refuses_unowned_secrets(owner_db: LibraryStore, host_db: L
     }
 }
 
+/// More untrusted jobs than one claim page queued ahead of a trusted one do
+/// not hide it: untrusted rows are skipped and paging continues.
+async fn untrusted_window_does_not_hide_trusted_jobs(
+    owner_db: LibraryStore,
+    host_db: LibraryStore,
+) {
+    let riley = user(&owner_db, UserRole::Member, "Riley").await;
+    let sam = user(&owner_db, UserRole::Member, "Sam").await;
+    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    let ahead = ROUTED_CLAIM_CANDIDATES + 1;
+    for n in 0..ahead {
+        let account = format!("sam-{n}");
+        add_account(&owner_db, PLUGIN, &account, true).await;
+        link(&owner_db, sam, PLUGIN, &account).await;
+        scan(&owner_db, Some(&account)).await;
+    }
+    add_account(&owner_db, PLUGIN, "riley-1", true).await;
+    link(&owner_db, riley, PLUGIN, "riley-1").await;
+    let riley_job = scan(&owner_db, Some("riley-1")).await;
+
+    let claimed = claim(&host_db, HOST, Claimant::Remote)
+        .await
+        .expect("the trusted job past the first page is claimed");
+    assert_eq!(claimed.job.id, riley_job);
+    finish(&host_db, &claimed).await;
+    assert!(claim(&host_db, HOST, Claimant::Remote).await.is_none());
+}
+
 /// Scan-all is split per scan-enabled account for operators, Owners and
 /// Administrators; anyone else scans only what they own.
 async fn scan_planner_splits_and_scopes(owner_db: LibraryStore, host_db: LibraryStore) {
@@ -670,6 +698,12 @@ async fn sqlite_scoped_trust_refuses_unowned_secrets() {
 }
 
 #[tokio::test]
+async fn sqlite_untrusted_window_does_not_hide_trusted_jobs() {
+    let (_dir, a, b) = sqlite_stores().await;
+    untrusted_window_does_not_hide_trusted_jobs(a, b).await;
+}
+
+#[tokio::test]
 async fn sqlite_scan_planner_splits_and_scopes() {
     let (_dir, a, b) = sqlite_stores().await;
     scan_planner_splits_and_scopes(a, b).await;
@@ -733,4 +767,14 @@ async fn postgres_scan_planner_splits_and_scopes() {
     }
     let (a, b) = postgres_stores().await;
     scan_planner_splits_and_scopes(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_untrusted_window_does_not_hide_trusted_jobs() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    untrusted_window_does_not_hide_trusted_jobs(a, b).await;
 }
