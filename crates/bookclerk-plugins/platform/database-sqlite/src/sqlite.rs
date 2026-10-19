@@ -270,20 +270,56 @@ impl SqliteProxy {
         StatementPermit::Transient(self.txn_gate.clone().lock_owned().await)
     }
 
-    /// True when a failed autocommit statement may run again.
+    /// Decides whether a failed autocommit statement may run again.
     ///
     /// Only file-lock contention outside this task's transaction qualifies.
     /// SQLite rolls the implicit transaction back on `SQLITE_BUSY`, so nothing
     /// took effect. A statement inside an open transaction is never repeated.
-    fn autocommit_may_retry(
+    /// A raised session cancel flag or an elapsed request deadline stops the
+    /// retries with the same errors the atomic session reports, so callers
+    /// see a cancel or deadline rather than a raw busy error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error to hand back when the statement must not run again:
+    /// `err` itself, or a cancelled / deadline-exceeded error.
+    fn autocommit_retry(
         &self,
         permit: &StatementPermit,
-        err: &DbErr,
+        err: DbErr,
         started: Instant,
-    ) -> bool {
-        matches!(permit, StatementPermit::Transient(_))
-            && is_lock_contention_db_err(err)
-            && self.begin_may_retry(started)
+    ) -> std::result::Result<(), DbErr> {
+        if !matches!(permit, StatementPermit::Transient(_)) || !is_lock_contention_db_err(&err) {
+            return Err(err);
+        }
+        if let Some(stop) = self.autocommit_interrupt() {
+            tracing::debug!(error = %err, stop = %stop, "sqlite autocommit retry stopped");
+            return Err(stop);
+        }
+        if started.elapsed() >= BEGIN_CONTENTION_BUDGET {
+            return Err(err);
+        }
+        tracing::debug!(error = %err, "sqlite autocommit statement waiting for the file lock");
+        Ok(())
+    }
+
+    /// The error that stops an autocommit retry now, if the session was
+    /// cancelled or its request deadline has passed.
+    ///
+    /// Checked after a failed attempt and again after the pause before the
+    /// next one, so a cancel or deadline that arrives while waiting never lets
+    /// the statement run.
+    fn autocommit_interrupt(&self) -> Option<DbErr> {
+        let budget = self.connection_budget();
+        if budget.cancelled() {
+            return Some(DbErr::Custom("cancelled: atomic session cancelled".into()));
+        }
+        if budget.deadline_expired() {
+            return Some(DbErr::Custom(
+                "deadline_exceeded: atomic deadline elapsed".into(),
+            ));
+        }
+        None
     }
 
     /// Runs one query attempt on the blocking pool.
@@ -624,9 +660,12 @@ impl ProxyDatabaseTrait for SqliteProxy {
         let started = Instant::now();
         loop {
             match self.query_attempt(statement.clone()).await {
-                Err(err) if self.autocommit_may_retry(&permit, &err, started) => {
-                    tracing::debug!(error = %err, "sqlite query waiting for the file lock");
+                Err(err) => {
+                    self.autocommit_retry(&permit, err, started)?;
                     tokio::time::sleep(self.begin_retry_pause()).await;
+                    if let Some(stop) = self.autocommit_interrupt() {
+                        return Err(stop);
+                    }
                 }
                 result => return result,
             }
@@ -642,9 +681,12 @@ impl ProxyDatabaseTrait for SqliteProxy {
         let started = Instant::now();
         loop {
             match self.execute_attempt(statement.clone()).await {
-                Err(err) if self.autocommit_may_retry(&permit, &err, started) => {
-                    tracing::debug!(error = %err, "sqlite execute waiting for the file lock");
+                Err(err) => {
+                    self.autocommit_retry(&permit, err, started)?;
                     tokio::time::sleep(self.begin_retry_pause()).await;
+                    if let Some(stop) = self.autocommit_interrupt() {
+                        return Err(stop);
+                    }
                 }
                 result => return result,
             }
@@ -1548,6 +1590,72 @@ mod tests {
             .expect("count")
             .expect("row");
         assert_eq!(row.try_get::<i64>("", "n").expect("n"), 1);
+    }
+
+    /// A contended autocommit statement stops retrying once its session is
+    /// cancelled or its request deadline passes, and reports that rather than
+    /// the raw busy error.
+    #[tokio::test]
+    async fn autocommit_retries_stop_at_cancel_and_deadline() {
+        use sea_orm::ConnectionTrait;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("autocommit_stop.db");
+        let db = super::open(&path).await.expect("open");
+        db.execute_unprepared("CREATE TABLE seen (id INTEGER PRIMARY KEY)")
+            .await
+            .expect("table");
+        let writer = rusqlite::Connection::open(&path).expect("writer");
+        writer
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("peer takes the lock");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let budget = bookclerk_db_exec::ExecBudget::with_cancel(None, 0, Some(Arc::clone(&cancel)));
+        let raise = Arc::clone(&cancel);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            raise.store(true, Ordering::SeqCst);
+        });
+        let started = std::time::Instant::now();
+        let err = bookclerk_db_exec::with_exec_budget(budget, || async {
+            db.execute_unprepared("INSERT INTO seen (id) VALUES (1)")
+                .await
+        })
+        .await
+        .expect_err("cancel must stop the retries");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancel waited {:?}",
+            started.elapsed()
+        );
+        assert!(err.to_string().contains("cancelled"), "{err}");
+
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as u64;
+        let budget = bookclerk_db_exec::ExecBudget::new(Some(now_ms.saturating_add(150)), 0);
+        let started = std::time::Instant::now();
+        let err = bookclerk_db_exec::with_exec_budget(budget, || async {
+            db.execute_unprepared("INSERT INTO seen (id) VALUES (2)")
+                .await
+        })
+        .await
+        .expect_err("deadline must stop the retries");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "deadline waited {:?}",
+            started.elapsed()
+        );
+        assert!(err.to_string().contains("deadline_exceeded"), "{err}");
+
+        writer.execute_batch("COMMIT").expect("peer releases");
+        db.execute_unprepared("INSERT INTO seen (id) VALUES (3)")
+            .await
+            .expect("write after release");
     }
 
     #[test]
