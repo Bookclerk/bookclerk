@@ -3553,18 +3553,23 @@ fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
         )
             .into_response();
     }
-    let mut created = Vec::new();
-    let mut duplicates = Vec::new();
-    let mut full = 0usize;
+    // Ids stay in plan order, whatever each admission's outcome.
+    let mut job_ids = Vec::new();
+    let (mut created, mut duplicates, mut full) = (0usize, 0usize, 0usize);
     for admit in admits {
         match admit {
-            AdmitJob::Created(id) => created.push(id),
-            AdmitJob::Duplicate(id) => duplicates.push(id),
+            AdmitJob::Created(id) => {
+                created += 1;
+                job_ids.push(id);
+            }
+            AdmitJob::Duplicate(id) => {
+                duplicates += 1;
+                job_ids.push(id);
+            }
             AdmitJob::QueueFull => full += 1,
         }
     }
-    let job_ids: Vec<String> = created.iter().chain(&duplicates).cloned().collect();
-    let (status, error) = if !created.is_empty() {
+    let (status, error) = if created > 0 {
         (StatusCode::OK, None)
     } else if job_ids.is_empty() && full == 0 {
         (StatusCode::UNPROCESSABLE_ENTITY, Some("nothing_to_scan"))
@@ -3578,15 +3583,13 @@ fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
     } else {
         format!(
             "scan planned per account: {} accepted, {} already pending or running, {} not admitted (queue full)",
-            created.len(),
-            duplicates.len(),
-            full
+            created, duplicates, full
         )
     };
     (
         status,
         Json(ScanPlanResponse {
-            ok: !created.is_empty(),
+            ok: created > 0,
             message,
             job_id: job_ids.first().cloned().unwrap_or_default(),
             job_ids,

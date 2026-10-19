@@ -706,6 +706,8 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
     add_account(&owner_db, PLUGIN, "mixed", true).await;
     add_account(&owner_db, OTHER_PLUGIN, "mixed", false).await;
     add_account(&owner_db, PLUGIN, "plain", true).await;
+    // Same account under another case on another plugin: one job covers both.
+    add_account(&owner_db, OTHER_PLUGIN, "Plain", true).await;
 
     let plan = plan_scan(&host_db, ScanRequester::Operator, None, None)
         .await
@@ -717,8 +719,8 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
     assert_eq!(
         jobs,
         vec![
+            (Some("Plain".into()), None),
             (Some("mixed".into()), Some(instance.id.to_string())),
-            (Some("plain".into()), None),
         ]
     );
 

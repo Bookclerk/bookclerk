@@ -491,7 +491,18 @@ async fn scan_all_targets(
         .filter(|row| row.scan_enabled != 0)
         .map(|row| row.account_id.as_str())
         .collect();
-    let mut out = Vec::new();
+    let mut out: Vec<ScanTarget> = Vec::new();
+    // Accounts some earlier job already touches. A later id whose accounts
+    // are all among them (an id that differs only in case, or another
+    // account's label) would scan them twice, possibly at once on two nodes.
+    let mut covered: BTreeSet<AccountKey> = BTreeSet::new();
+    let mut push = |target: ScanTarget, out: &mut Vec<ScanTarget>| {
+        if target.touched.is_subset(&covered) {
+            return;
+        }
+        covered.extend(target.touched.iter().cloned());
+        out.push(target);
+    };
     for id in ids {
         let matching: Vec<&accounts::Model> = rows
             .iter()
@@ -509,11 +520,14 @@ async fn scan_all_targets(
                 .collect()
         };
         if matching.iter().all(|row| row.scan_enabled != 0) {
-            out.push(ScanTarget {
-                account_id: id.to_string(),
-                plugin_key: None,
-                touched: keys(&matching),
-            });
+            push(
+                ScanTarget {
+                    account_id: id.to_string(),
+                    plugin_key: None,
+                    touched: keys(&matching),
+                },
+                &mut out,
+            );
             continue;
         }
         let plugins: BTreeSet<&str> = matching
@@ -528,11 +542,14 @@ async fn scan_all_targets(
                 .filter(|row| row.plugin_key == key)
                 .collect();
             if on_plugin.iter().all(|row| row.scan_enabled != 0) {
-                out.push(ScanTarget {
-                    account_id: id.to_string(),
-                    plugin_key: Some(key.to_string()),
-                    touched: keys(&on_plugin),
-                });
+                push(
+                    ScanTarget {
+                        account_id: id.to_string(),
+                        plugin_key: Some(key.to_string()),
+                        touched: keys(&on_plugin),
+                    },
+                    &mut out,
+                );
             }
         }
     }
