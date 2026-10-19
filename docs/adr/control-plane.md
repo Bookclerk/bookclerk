@@ -1381,8 +1381,11 @@ staging on the owner).
   node's trust (with its owner's accounts) are confirmed again before each
   row is written, so a lease lost or trust withdrawn mid-batch stops the
   rows not yet written.
-- **Key scope.** The owner binds every key of an upload to the granted
-  title. For each destination it computes the title's folder from its own
+- **Key scope.** A grant names only a title `acquire.plan` would hand
+  out now: one whose audio is already acquired (or that the plan leaves
+  out otherwise) is refused (`book_not_planned`), so a host cannot
+  re-upload over a title the owner already has. The owner binds every key
+  of an upload to the granted title. For each destination it computes the title's folder from its own
   row and that destination's naming options, the way a local acquire
   would (with podcast episodes saved to the parent's folder, the
   episode's own folder is also accepted). Each copy must lie below that

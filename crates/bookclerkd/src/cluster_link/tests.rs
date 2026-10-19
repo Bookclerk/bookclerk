@@ -2797,6 +2797,21 @@ mod results_and_uploads {
         ])
         .await;
         assert!(matches!(body, Body::UploadGranted { .. }), "{body:?}");
+        // A title the plan would not hand out (its audio is acquired) is
+        // refused even under its own keys, so it is never overwritten.
+        let body = handle
+            .request(Body::UploadGrant {
+                job_id: job_id.clone(),
+                fence,
+                book_uuid: other.uuid.clone(),
+                primary_key: "Author/Title t2/Title t2.m4b".into(),
+                pdf_key: None,
+                files: vec![local_file("Author/Title t2/Title t2.m4b", b"other")],
+            })
+            .await
+            .expect("the owner answers")
+            .body;
+        assert_eq!(refusal(&body), "book_not_planned");
         assert!(files_under(owner_out.path()).is_empty());
     }
 
