@@ -272,6 +272,95 @@ async fn demotion_before_handoff_denies(owner_db: LibraryStore, host_db: Library
     assert_eq!(local.job.attempt_count, 1);
 }
 
+/// Handoff requires the claim to still own the job's running lease: a claim
+/// presented under another worker's owner, a claim whose lease expired, a
+/// claim reclaimed by another node, and a finished claim hand nothing over,
+/// and only the expired claim's own row and permits are released.
+async fn stale_claim_handoff_denies(owner_db: LibraryStore, host_db: LibraryStore) {
+    let riley = user(&owner_db, UserRole::Administrator, "Riley").await;
+    add_node(&owner_db, HOST, "host", Some(riley)).await;
+    let job = scan(&owner_db, Some("acct")).await;
+    let host_request = request(HOST, Claimant::Remote, HOST);
+
+    let claimed = claim(&host_db, HOST, Claimant::Remote)
+        .await
+        .expect("an Administrator's host claims any job");
+    // Another worker's request may not take, or release, this claim.
+    let other = request(HOST, Claimant::Remote, "other-worker");
+    assert!(handoff_routed_job(&host_db, &other, claimed.clone())
+        .await
+        .unwrap()
+        .is_none());
+    let row = owner_db.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(row.state, JobState::Running);
+    assert_eq!(row.fence(), claimed.job.fence(), "the row is left alone");
+    for permit in &claimed.permits {
+        assert_eq!(
+            live_permits(&owner_db, &permit.semaphore, 8)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "{} is still held",
+            permit.semaphore
+        );
+    }
+
+    // An expired lease hands nothing over; its own fence releases the row.
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::LeaseExpiresAt,
+            Expr::value(Some(
+                (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339(),
+            )),
+        )
+        .filter(jobs::Column::Id.eq(job.as_str()))
+        .exec(owner_db.db())
+        .await
+        .unwrap();
+    assert!(handoff_routed_job(&host_db, &host_request, claimed.clone())
+        .await
+        .unwrap()
+        .is_none());
+    let row = owner_db.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(row.state, JobState::Pending);
+    assert_eq!(row.attempt_count, 0);
+
+    // Once another node holds the job, the old claim hands nothing over and
+    // does not disturb the new holder.
+    let local = claim(&owner_db, "node-owner", Claimant::Local)
+        .await
+        .expect("the owner node's worker claims it");
+    assert!(handoff_routed_job(&host_db, &host_request, claimed.clone())
+        .await
+        .unwrap()
+        .is_none());
+    let row = owner_db.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(row.state, JobState::Running);
+    assert_eq!(row.fence(), local.job.fence());
+    for permit in &local.permits {
+        assert_eq!(
+            live_permits(&owner_db, &permit.semaphore, 8)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "{} is still held by the new claim",
+            permit.semaphore
+        );
+    }
+
+    // A finished claim hands nothing over either.
+    finish(&owner_db, &local).await;
+    let request_local = request("node-owner", Claimant::Local, "node-owner");
+    assert!(handoff_routed_job(&owner_db, &request_local, local)
+        .await
+        .unwrap()
+        .is_none());
+    let row = owner_db.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(row.state, JobState::Succeeded);
+}
+
 /// Nodes that are trusted with nothing: an unknown remote node, a Host with
 /// no owner, a disabled owner, and a revoked credential. An owner node is
 /// trusted with everything.
@@ -563,6 +652,12 @@ async fn sqlite_demotion_before_handoff_denies() {
 }
 
 #[tokio::test]
+async fn sqlite_stale_claim_handoff_denies() {
+    let (_dir, a, b) = sqlite_stores().await;
+    stale_claim_handoff_denies(a, b).await;
+}
+
+#[tokio::test]
 async fn sqlite_untrusted_nodes_claim_nothing() {
     let (_dir, a, b) = sqlite_stores().await;
     untrusted_nodes_claim_nothing(a, b).await;
@@ -598,6 +693,16 @@ async fn postgres_demotion_before_handoff_denies() {
     }
     let (a, b) = postgres_stores().await;
     demotion_before_handoff_denies(a, b).await;
+}
+
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_stale_claim_handoff_denies() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let (a, b) = postgres_stores().await;
+    stale_claim_handoff_denies(a, b).await;
 }
 
 #[tokio::test]

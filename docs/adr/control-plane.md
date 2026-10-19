@@ -969,8 +969,13 @@ Built 2026-10-15 (H-4 step 5), on the routed claim above.
   CAS, so an untrusted job is skipped rather than claimed and refused. A
   node trusted with nothing reads no further. `handoff_routed_job` re-reads
   the job and the trust inputs just before secrets would be unsealed for
-  the node; if the node is no longer trusted (demoted, disabled, unlinked,
-  revoked), `release_job_claim` returns the row to `pending` under the
+  the node. It hands over only while the claim still owns the row: state
+  `running`, the claim's lease owner (which must be the requesting
+  worker) and generation, and an unexpired lease; a reclaimed, finished
+  or expired claim gets nothing, and a claim under another worker's owner
+  is refused without touching the row. If the node is no longer trusted
+  (demoted, disabled, unlinked, revoked), or its own lease expired,
+  `release_job_claim` returns the row to `pending` under the
   claim's fence without spending an attempt (a resumed claim gets its
   one-shot resume flag back), the permits are released, and nothing is
   handed over. The lease generation stays bumped, so the refused fence

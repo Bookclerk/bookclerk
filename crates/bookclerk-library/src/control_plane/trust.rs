@@ -19,7 +19,9 @@
 //! The predicate runs inside the routed claim before the compare-and-swap
 //! ([`super::claim_routed_job`]) and again at handoff, just before a job's
 //! secrets would be unsealed for the node ([`handoff_routed_job`]), so a
-//! demotion that lands between claim and handoff still denies. Every input
+//! demotion that lands between claim and handoff still denies. Handoff also
+//! requires the claim to still own the job's running lease, so a late
+//! handoff after a reclaim, completion or expiry hands nothing over. Every input
 //! is read from the database on each call; nothing is cached.
 //!
 //! The scan planner ([`plan_scan`]) applies the matching rule on the
@@ -30,6 +32,7 @@
 
 use std::collections::BTreeSet;
 
+use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::enrollment::load_node_credential;
@@ -38,7 +41,7 @@ use super::job_routing::{JobClaimRequest, RoutedJobClaim};
 use super::semaphore::release_permits;
 use crate::entities::{account_links, accounts, nodes, portal_identities, users};
 use crate::error::{LibraryError, Result};
-use crate::models::{JobKind, JobPayload, JobRecord, UserRole, UserStatus};
+use crate::models::{JobKind, JobPayload, JobRecord, JobState, UserRole, UserStatus};
 use crate::store::LibraryStore;
 
 /// How the claiming node reaches the job queue.
@@ -185,14 +188,23 @@ pub async fn node_may_claim_job(
     job_trusted(store, &trust, job).await
 }
 
-/// Re-checks trust for a claimed job just before its secrets are handed to
-/// the claiming node.
+/// Re-checks a claimed job just before its secrets are handed to the
+/// claiming node.
 ///
-/// When the node is still trusted the claim is returned unchanged. When it
-/// is not (the owner was demoted or disabled, the account was unlinked, or
-/// the node was revoked since the claim), the job goes back to `pending`
-/// without spending an attempt, its permits are released, and `None` is
-/// returned, so nothing is unsealed.
+/// The claim is returned unchanged only when both hold:
+///
+/// - the claim still owns the job: the row is `running` under the claim's
+///   fence (same lease owner and generation), that owner is
+///   `request.owner`, and the lease has not expired. A claim that was
+///   reclaimed, finished, released, or left to expire is not handed over;
+/// - the node is still trusted with the job ([`node_may_claim_job`]).
+///
+/// Otherwise `None` is returned, so nothing is unsealed. When the claim was
+/// taken by `request.owner`, the job goes back to `pending` without spending
+/// an attempt if the claim's fence still owns the row (a row another fence
+/// owns is left alone), and the claim's permits are released (a permit taken
+/// over since holds a new token and is left alone too). A claim with another
+/// lease owner is refused without touching the row or its permits.
 ///
 /// # Errors
 ///
@@ -205,17 +217,44 @@ pub async fn handoff_routed_job(
 ) -> Result<Option<RoutedJobClaim>> {
     let current = store.get_job(&claim.job.id).await?;
     let trusted = match &current {
-        Some(job) => node_may_claim_job(store, request.node_id, request.claimant, job).await?,
-        None => false,
+        Some(job) if claim_owns_job(&claim.job, job, request.owner, Utc::now()) => {
+            node_may_claim_job(store, request.node_id, request.claimant, job).await?
+        }
+        _ => false,
     };
     if trusted {
         return Ok(Some(claim));
     }
-    if let Some(fence) = claim.job.fence() {
-        store.release_job_claim(&fence, claim.resumed).await?;
-    }
+    // A claim taken under another worker's lease owner is not this
+    // request's to release.
+    let Some(fence) = claim.job.fence().filter(|f| f.owner == request.owner) else {
+        return Ok(None);
+    };
+    store.release_job_claim(&fence, claim.resumed).await?;
     release_permits(store, &claim.permits).await?;
     Ok(None)
+}
+
+/// True when `claimed` (the record its claim returned) still owns `current`
+/// (the row read now) for `owner` at `now`.
+///
+/// Compares the full fence, not only the generation: a claim record without
+/// a lease owner owns nothing.
+fn claim_owns_job(
+    claimed: &JobRecord,
+    current: &JobRecord,
+    owner: &str,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(fence) = claimed.fence() else {
+        return false;
+    };
+    current.state == JobState::Running
+        && fence.owner == owner
+        && current.fence().as_ref() == Some(&fence)
+        && current
+            .lease_expires_at
+            .is_some_and(|expires| expires > now)
 }
 
 /// `accounts` rows with `account_id`, limited to `plugin_key` when given.

@@ -292,7 +292,10 @@ a scan or acquire of a named account linked to that user; a scan-all, any
 pinned or instance-bound job, listen sync, integration scans, and plugin
 copies are refused to it. `control_plane::handoff_routed_job` repeats the
 check before a job's secrets would be handed over and, if the node lost
-that trust, returns the job to `pending` without spending an attempt. See
+that trust, returns the job to `pending` without spending an attempt. It
+also hands nothing over unless the claim still owns the job's running,
+unexpired lease (same lease owner and generation), so a late handoff
+after a reclaim, completion or expiry unseals nothing. See
 *Per-item trust and the scan planner* in `docs/adr/control-plane.md`.
 
 The unrouted `claim_next_job` (and its guest atomic plan) never claims a job
