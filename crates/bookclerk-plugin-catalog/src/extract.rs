@@ -321,13 +321,11 @@ pub fn require_under(root: &Path, path: &Path) -> Result<PathBuf> {
                         lexical.display()
                     )));
                 }
-                Ok(_) => {
-                    return Err(CatalogError::message(format!(
-                        "could not canonicalize existing path {} under {}: {err}",
-                        lexical.display(),
-                        root.display()
-                    )));
-                }
+                // Another process may have created the path between the
+                // canonicalize and the stat (for example a lock file both
+                // sides open with `create`); the walk below resolves it once
+                // more and reports a path that still cannot be resolved.
+                Ok(_) => {}
                 Err(meta_err) if meta_err.kind() != std::io::ErrorKind::NotFound => {
                     return Err(CatalogError::message(format!(
                         "could not stat path {} under {}: {meta_err}",
@@ -339,6 +337,9 @@ pub fn require_under(root: &Path, path: &Path) -> Result<PathBuf> {
             }
             let mut suffix = Vec::new();
             let mut cursor = lexical.clone();
+            // Set once a component that failed to canonicalize turned out to
+            // exist: it was created concurrently, so it is resolved again.
+            let mut retried = false;
             loop {
                 #[cfg(not(windows))]
                 if !cursor.starts_with(&root_norm) && !cursor.starts_with(root) {
@@ -364,6 +365,10 @@ pub fn require_under(root: &Path, path: &Path) -> Result<PathBuf> {
                                     cursor.display(),
                                     root.display()
                                 )));
+                            }
+                            Ok(_) if !retried => {
+                                retried = true;
+                                continue;
                             }
                             Ok(_) => {
                                 return Err(CatalogError::message(format!(
