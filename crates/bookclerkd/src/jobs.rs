@@ -110,7 +110,10 @@ async fn admit(state: &AppState, mut spec: EnqueueJobSpec) -> anyhow::Result<Adm
     let library = state.library_snapshot().await;
     if spec.payload.requires.is_empty() {
         let bound = if spec.kind == JobKind::Acquire {
-            node_bound_output_keys(state, &library).await?
+            // Discovered keys plus instance keys, like the sweep: a node
+            // without the `local` plugin installed must not admit an
+            // acquire as claimable everywhere.
+            sweep_node_bound_output_keys(state, &library).await?
         } else {
             std::collections::BTreeSet::new()
         };
@@ -177,19 +180,58 @@ async fn node_bound_output_keys_from(
                 error = %err,
                 "plugin discovery failed; routing acquire by the instances' `local` plugin keys"
             );
-            let instances =
-                bookclerk_library::control_plane::list_all_plugin_instances(library).await?;
-            Ok(instances
-                .into_iter()
-                .filter(|instance| {
-                    bookclerk_plugin_catalog::PluginKey::parse(&instance.plugin_key).is_ok_and(
-                        |key| bookclerk_plugin_host::is_first_party_local_output_key(&key),
-                    )
-                })
-                .map(|instance| instance.plugin_key)
-                .collect())
+            local_output_keys_from_instances(library).await
         }
     }
+}
+
+/// Plugin keys of the instances whose key names the first-party `local`
+/// destination, read from the cluster's instance list.
+///
+/// This does not depend on what is installed on this node, so it is the
+/// fallback when discovery fails and the floor of what the requirements
+/// sweep treats as node-bound.
+///
+/// # Errors
+///
+/// Returns an error when the instance list cannot be read.
+async fn local_output_keys_from_instances(
+    library: &bookclerk_library::LibraryStore,
+) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    let instances = bookclerk_library::control_plane::list_all_plugin_instances(library).await?;
+    Ok(instances
+        .into_iter()
+        .filter(|instance| {
+            bookclerk_plugin_catalog::PluginKey::parse(&instance.plugin_key)
+                .is_ok_and(|key| bookclerk_plugin_host::is_first_party_local_output_key(&key))
+        })
+        .map(|instance| instance.plugin_key)
+        .collect())
+}
+
+/// Node-bound output keys for acquire admission and the cluster-wide
+/// requirements sweep.
+///
+/// Admission and the sweep must agree, or an acquire admitted on a node
+/// without the `local` plugin would be claimable by any node until the next
+/// sweep. The sweep runs on whichever node holds its lease, and it drops recorded
+/// requirements that its keys no longer cover, so a sweeping node that
+/// lacks the `local` plugin, or whose discovery failed, must not read as
+/// "no node-bound outputs". The result is this node's discovered keys
+/// ([`node_bound_output_keys`]) plus every instance key that names the
+/// first-party `local` destination, whatever is installed here.
+///
+/// # Errors
+///
+/// Returns an error when the instance list cannot be read; the caller skips
+/// the sweep pass rather than sweeping with a partial set.
+pub(crate) async fn sweep_node_bound_output_keys(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    let mut keys = node_bound_output_keys(state, library).await?;
+    keys.extend(local_output_keys_from_instances(library).await?);
+    Ok(keys)
 }
 
 /// True when the fence asked to stop or the row is flagged cancelled.
