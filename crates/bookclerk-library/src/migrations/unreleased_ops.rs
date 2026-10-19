@@ -626,6 +626,20 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_job_temp_paths_job ON job_temp_paths(job_id)",
     ),
     MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS job_secret_handoffs (
+        job_id TEXT NOT NULL,
+        lease_generation INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        handed_at TEXT NOT NULL,
+        PRIMARY KEY (job_id, lease_generation, kind, provider, account_id, name),
+        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+    )",
+    ),
+    MigrationOp::Schema(
         r"CREATE UNIQUE INDEX IF NOT EXISTS idx_job_temp_paths_job_path
         ON job_temp_paths(job_id, path)",
     ),

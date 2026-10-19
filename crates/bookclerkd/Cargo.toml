@@ -90,6 +90,8 @@ bytes.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 http-body-util = "0.1"
+# Raw SQL in tests (a briefly missing table stands in for a database fault).
+sea-orm.workspace = true
 tempfile.workspace = true
 # Same version axum's `ws` feature uses: a host-side client for socket tests.
 tokio-tungstenite = "0.29"

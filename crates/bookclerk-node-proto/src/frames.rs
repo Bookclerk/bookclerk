@@ -61,8 +61,9 @@ pub enum Body {
         box_key: String,
     },
     /// Owner → host, right after [`Body::Welcome`] when the hello listed
-    /// fences: which leases the owner renewed and which are lost. The host
-    /// aborts lost work; every later frame under a lost fence is refused.
+    /// fences: which leases the owner renewed, which are lost, and which it
+    /// could not check now. The host aborts lost work; every later frame
+    /// under a lost fence is refused.
     Resumed {
         /// Leases renewed for this connection.
         #[serde(default)]
@@ -70,6 +71,11 @@ pub enum Body {
         /// Leases that expired, were taken over, or are no longer trusted.
         #[serde(default)]
         lost: Vec<HeldFence>,
+        /// Leases the owner could not check (a transient read or write
+        /// failure). They are neither renewed nor lost: the host keeps the
+        /// work and renews them as usual, and that `renew` decides.
+        #[serde(default)]
+        unchecked: Vec<HeldFence>,
     },
     /// Either side: a request was not served. The connection stays open.
     Error {
@@ -399,6 +405,7 @@ mod tests {
                         id: job_id(),
                         fence: 1,
                     }],
+                    unchecked: Vec::new(),
                 },
                 "resumed",
             ),

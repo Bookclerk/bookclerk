@@ -12,19 +12,25 @@
 //!   every renewal.
 //! - [`finish_remote_job`]: the fenced complete or fail, then the permits
 //!   are given back.
+//! - [`release_remote_job`]: gives a claim back unspent when its `work`
+//!   answer cannot reach the Host.
 //! - [`write_back_job_secret`]: a refreshed store token, accepted only for
-//!   a secret the job was handed and only while the job's fence is live.
+//!   a secret handed with the job under the presented fence, and only while
+//!   that fence is live.
 //!
 //! The lease owner written on a Host's job is [`remote_lease_owner`], so a
 //! fence the Host presents is the job id plus the lease generation, and no
 //! other node can present it. Nothing here keeps per-connection state: a
 //! Host that reconnects (to this or another owner node) presents its fences
 //! again and each one is checked against the database, so a fence that
-//! expired and was reclaimed while the Host was away is lost.
+//! expired and was reclaimed while the Host was away is lost. The secrets
+//! handed under each fence are recorded in `job_secret_handoffs` for the
+//! same reason.
 
 use std::time::Duration;
 
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use chrono::Utc;
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use zeroize::Zeroizing;
 
 use super::job_routing::{
@@ -32,7 +38,7 @@ use super::job_routing::{
 };
 use super::semaphore::{permits_held_by, release_permits, renew_permits, SemaphorePermit};
 use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
-use crate::entities::{accounts, encrypted_secrets};
+use crate::entities::{accounts, encrypted_secrets, job_secret_handoffs};
 use crate::error::{LibraryError, Result};
 use crate::models::{JobFence, JobKind, JobRecord, JobResourceClass, JobState};
 use crate::secrets::{
@@ -173,14 +179,18 @@ pub enum WriteBack {
 /// The claim is [`claim_routed_job`] as a [`Claimant::Remote`] with the
 /// lease owner [`remote_lease_owner`]; [`handoff_routed_job`] then re-checks
 /// trust, and only then are the job's account secrets
-/// ([`job_secret_refs`]) unsealed. A job whose secrets cannot be unsealed
-/// is failed with [`SECRETS_UNAVAILABLE`] (so it retries with backoff and
-/// any node holding the database may take it) and `None` is returned.
+/// ([`job_secret_refs`]) unsealed. The refs handed are recorded under the
+/// claim's lease generation before the secrets are returned, and are the
+/// only ones [`write_back_job_secret`] accepts under that fence. A job whose
+/// secrets cannot be unsealed is failed with [`SECRETS_UNAVAILABLE`] (so it
+/// retries with backoff and any node holding the database may take it) and
+/// `None` is returned.
 ///
 /// # Errors
 ///
 /// Returns an error when a read or write fails. Permits taken for a failed
-/// attempt are released on a best-effort basis.
+/// attempt are released, and a claim whose handoff could not be recorded
+/// is given back unspent, on a best-effort basis.
 pub async fn claim_remote_job(
     store: &LibraryStore,
     node_id: &str,
@@ -208,7 +218,15 @@ pub async fn claim_remote_job(
         return Ok(None);
     };
     match unseal_job_secrets(store, &job).await {
-        Ok(secrets) => Ok(Some(RemoteJobClaim { job, secrets })),
+        Ok(secrets) => {
+            if let Err(err) = record_handoff(store, node_id, &fence, &secrets).await {
+                // Nothing went out; give the claim back unspent.
+                let _ = store.release_job_claim(&fence, false).await;
+                let _ = release_permits(store, &permits).await;
+                return Err(err);
+            }
+            Ok(Some(RemoteJobClaim { job, secrets }))
+        }
         Err(err) => {
             tracing::warn!(
                 job_id = %job.id,
@@ -323,6 +341,67 @@ async fn unseal_job_secrets(store: &LibraryStore, job: &JobRecord) -> Result<Vec
     Ok(secrets)
 }
 
+/// Records the refs of `secrets` as handed to `node_id` under `fence`, and
+/// drops the rows of the job's earlier generations.
+async fn record_handoff(
+    store: &LibraryStore,
+    node_id: &str,
+    fence: &JobFence,
+    secrets: &[JobSecret],
+) -> Result<()> {
+    forget_handoffs(store, &fence.job_id).await?;
+    if secrets.is_empty() {
+        return Ok(());
+    }
+    let handed_at = Utc::now().to_rfc3339();
+    let rows = secrets
+        .iter()
+        .map(|secret| job_secret_handoffs::ActiveModel {
+            job_id: Set(fence.job_id.clone()),
+            lease_generation: Set(fence.generation),
+            kind: Set(secret.secret_ref.kind.clone()),
+            provider: Set(secret.secret_ref.provider.clone()),
+            account_id: Set(secret.secret_ref.account_id.clone()),
+            name: Set(secret.secret_ref.name.clone()),
+            node_id: Set(node_id.to_string()),
+            handed_at: Set(handed_at.clone()),
+        });
+    job_secret_handoffs::Entity::insert_many(rows)
+        .exec_without_returning(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(())
+}
+
+/// Drops every handoff row of `job_id`.
+async fn forget_handoffs(store: &LibraryStore, job_id: &str) -> Result<()> {
+    job_secret_handoffs::Entity::delete_many()
+        .filter(job_secret_handoffs::Column::JobId.eq(job_id))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(())
+}
+
+/// True when `secret_ref` was handed with the job under `fence`.
+async fn was_handed(
+    store: &LibraryStore,
+    fence: &JobFence,
+    secret_ref: &JobSecretRef,
+) -> Result<bool> {
+    let rows = job_secret_handoffs::Entity::find()
+        .filter(job_secret_handoffs::Column::JobId.eq(fence.job_id.as_str()))
+        .filter(job_secret_handoffs::Column::LeaseGeneration.eq(fence.generation))
+        .filter(job_secret_handoffs::Column::Kind.eq(secret_ref.kind.as_str()))
+        .filter(job_secret_handoffs::Column::Provider.eq(secret_ref.provider.as_str()))
+        .filter(job_secret_handoffs::Column::AccountId.eq(secret_ref.account_id.as_str()))
+        .filter(job_secret_handoffs::Column::Name.eq(secret_ref.name.as_str()))
+        .count(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(rows > 0)
+}
+
 /// The job `fence` owns right now, if it still owns one.
 async fn fenced_job(store: &LibraryStore, fence: &JobFence) -> Result<Option<JobRecord>> {
     Ok(store.get_job(&fence.job_id).await?.filter(|job| {
@@ -362,7 +441,10 @@ async fn held_job_permits(
 /// longer trusted with the job (revoked, owner demoted, account unlinked)
 /// gets [`RemoteRenew::Lost`], and the lease then expires as for a crashed
 /// worker. A fence that expired and was reclaimed is lost as well, as is a
-/// job whose permit another holder took over.
+/// job whose permit another holder took over. Permits are checked before
+/// the job lease is extended, so a renewal that answers `Lost` never pushes
+/// the reclaim out; should a permit be taken over between that check and
+/// its renewal, the just-extended lease is cut back to expire at once.
 ///
 /// # Errors
 ///
@@ -382,15 +464,21 @@ pub async fn renew_remote_job(
     if !node_may_claim_job(store, node_id, Claimant::Remote, &job).await? {
         return Ok(RemoteRenew::Lost);
     }
+    let (permits, complete) = held_job_permits(store, node_id, &job, settings.limits).await?;
+    if !complete {
+        return Ok(RemoteRenew::Lost);
+    }
     if !store
         .heartbeat_job(&fence, settings.lease_secs, progress)
         .await?
     {
         return Ok(RemoteRenew::Lost);
     }
-    let (permits, complete) = held_job_permits(store, node_id, &job, settings.limits).await?;
     let ttl = Duration::from_secs(settings.lease_secs);
-    if !complete || !renew_permits(store, &permits, ttl).await? {
+    if !renew_permits(store, &permits, ttl).await? {
+        // A permit was taken over after the check above: hand the lease
+        // straight back to the reclaimer instead of holding it a full term.
+        store.heartbeat_job(&fence, 0, None).await?;
         return Ok(RemoteRenew::Lost);
     }
     Ok(RemoteRenew::Renewed {
@@ -438,7 +526,43 @@ pub async fn finish_remote_job(
     }
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
     release_permits(store, &permits).await?;
+    forget_handoffs(store, job_id).await?;
     Ok(RemoteFinish::Done)
+}
+
+/// Gives back the claim `node_id` holds on `job_id` at `generation` without
+/// spending an attempt, with its semaphore permits and handoff rows.
+///
+/// For a `work` answer that cannot reach the Host (its connection was
+/// superseded or is closing), so the job is claimable again at once instead
+/// of only after its lease expires.
+///
+/// # Returns
+///
+/// `true` when the claim was given back; `false` when the fence no longer
+/// owns the job.
+///
+/// # Errors
+///
+/// Returns an error when a read or write fails.
+pub async fn release_remote_job(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    generation: i64,
+    limits: JobClaimLimits,
+) -> Result<bool> {
+    let fence = remote_job_fence(node_id, job_id, generation);
+    let Some(job) = fenced_job(store, &fence).await? else {
+        return Ok(false);
+    };
+    let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
+    if !store.release_job_claim(&fence, false).await? {
+        return Ok(false);
+    }
+    release_permits(store, &permits).await?;
+    forget_handoffs(store, job_id).await?;
+    Ok(true)
 }
 
 /// Stores a refreshed store token a Host writes back.
@@ -446,9 +570,11 @@ pub async fn finish_remote_job(
 /// Accepted only when all of these hold, checked immediately before the
 /// write: the node still has a live credential and is still trusted with
 /// the job; `generation` is the job's live lease generation for this node;
-/// and `secret_ref` is one of the job's secrets ([`job_secret_refs`]), so it
-/// was handed out with the job under that fence and still exists. The value
-/// is re-sealed with this node's DEK under the same identity.
+/// `secret_ref` was recorded as handed with the job under that generation
+/// (a secret created for the account after the handoff is refused); and it
+/// is still one of the job's secrets ([`job_secret_refs`]), so it still
+/// exists and its account is still linked. The value is re-sealed with this
+/// node's DEK under the same identity.
 ///
 /// # Errors
 ///
@@ -474,7 +600,9 @@ pub async fn write_back_job_secret(
     if !node_may_claim_job(store, node_id, Claimant::Remote, &job).await? {
         return Ok(WriteBack::Refused("node_untrusted"));
     }
-    if !job_secret_refs(store, &job).await?.contains(secret_ref) {
+    if !was_handed(store, &fence, secret_ref).await?
+        || !job_secret_refs(store, &job).await?.contains(secret_ref)
+    {
         return Ok(WriteBack::Refused("secret_not_handed"));
     }
     let record = build_sealed_record(
