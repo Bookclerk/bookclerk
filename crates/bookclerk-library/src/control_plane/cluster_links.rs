@@ -259,8 +259,12 @@ pub async fn record_cluster_link(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    // The new link is committed by now, so failing to drop the previous
+    // node's keys must not report the enrollment failed: the one-use link
+    // is spent and a retry would be refused. The stale row is only left
+    // behind; nothing reads keys under a node id the link no longer names.
     if let Some(previous) = previous.filter(|prev| prev.remote_node_id != link.remote_node_id) {
-        delete_secret(
+        if let Err(err) = delete_secret(
             store.db(),
             secret_kind::CLUSTER_LINK,
             Some(&link.owner_cluster_id),
@@ -268,7 +272,15 @@ pub async fn record_cluster_link(
             Some(&previous.remote_node_id),
             CLUSTER_LINK_KEYS_NAME,
         )
-        .await?;
+        .await
+        {
+            tracing::warn!(
+                cluster_id = %link.owner_cluster_id,
+                previous_node_id = %previous.remote_node_id,
+                error = %err,
+                "could not delete the previous node's cluster link keys"
+            );
+        }
     }
     load_cluster_link(store, &link.owner_cluster_id)
         .await?
