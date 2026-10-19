@@ -153,24 +153,44 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
     match trust {
         NodeTrust::All => Ok(true),
         NodeTrust::Nothing => Ok(false),
-        NodeTrust::OwnedBy(user_id) => {
-            if !matches!(job.kind, JobKind::Scan | JobKind::Acquire)
-                || job.payload.plugin_instance_id.is_some()
-                || !job.payload.requires.is_empty()
-            {
-                return Ok(false);
-            }
-            let Some(account) = job.payload.account.as_deref() else {
-                return Ok(false);
-            };
-            let touched = accounts_named(store, account, None).await?;
-            if touched.is_empty() {
-                return Ok(false);
-            }
-            let owned = accounts_owned_by(store, *user_id).await?;
-            Ok(touched.iter().all(|key| owned.contains(key)))
-        }
+        NodeTrust::OwnedBy(user_id) => match owned_job_account(job) {
+            Some(account) => account_owned(store, *user_id, account).await,
+            None => Ok(false),
+        },
     }
+}
+
+/// The account a [`NodeTrust::OwnedBy`] node must own to receive `job`.
+///
+/// `None` when the job's shape alone refuses it: a kind other than scan or
+/// acquire, an instance pin, requirements, or no named account.
+pub(super) fn owned_job_account(job: &JobRecord) -> Option<&str> {
+    if !matches!(job.kind, JobKind::Scan | JobKind::Acquire)
+        || job.payload.plugin_instance_id.is_some()
+        || !job.payload.requires.is_empty()
+    {
+        return None;
+    }
+    job.payload.account.as_deref()
+}
+
+/// True when `account` names at least one store account and every account
+/// it names (by id or label) is linked to `user_id`.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub(super) async fn account_owned(
+    store: &LibraryStore,
+    user_id: i64,
+    account: &str,
+) -> Result<bool> {
+    let touched = accounts_named(store, account, None).await?;
+    if touched.is_empty() {
+        return Ok(false);
+    }
+    let owned = accounts_owned_by(store, user_id).await?;
+    Ok(touched.iter().all(|key| owned.contains(key)))
 }
 
 /// True when `node_id` may claim `job` right now.
@@ -199,6 +219,9 @@ pub async fn node_may_claim_job(
 ///   reclaimed, finished, released, or left to expire is not handed over;
 /// - the node is still trusted with the job ([`node_may_claim_job`]).
 ///
+/// Ownership is checked again after the trust reads, so a lease lost while
+/// they ran is refused too.
+///
 /// Otherwise `None` is returned, so nothing is unsealed. When the claim was
 /// taken by `request.owner`, the job goes back to `pending` without spending
 /// an attempt if the claim's fence still owns the row (a row another fence
@@ -223,7 +246,17 @@ pub async fn handoff_routed_job(
         _ => false,
     };
     if trusted {
-        return Ok(Some(claim));
+        // The trust reads take time; a claim that lost its lease meanwhile
+        // must not be handed over on the earlier snapshot. Secrets are
+        // unsealed after this returns, so the fence on every later write
+        // still covers a loss after this point.
+        let still = store.get_job(&claim.job.id).await?;
+        if still
+            .as_ref()
+            .is_some_and(|job| claim_owns_job(&claim.job, job, request.owner, Utc::now()))
+        {
+            return Ok(Some(claim));
+        }
     }
     // A claim taken under another worker's lease owner is not this
     // request's to release.

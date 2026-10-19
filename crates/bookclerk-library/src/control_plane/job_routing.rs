@@ -38,7 +38,9 @@ use super::instances::{list_all_plugin_instances, load_plugin_instance, PluginIn
 use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
-use super::trust::{job_trusted, node_trust, Claimant, NodeTrust};
+use super::trust::{
+    account_owned, job_trusted, node_trust, owned_job_account, Claimant, NodeTrust,
+};
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
 use crate::models::{JobClaimCursor, JobKind, JobPayload, JobRecord, JobResourceClass};
@@ -368,6 +370,9 @@ pub async fn claim_routed_job(
     // Many queued jobs share one requirement set (every acquire bound to the
     // same outputs), so each set is checked against this node once per call.
     let mut runnable: BTreeMap<Vec<String>, bool> = BTreeMap::new();
+    // A user's Host is checked against each named account once per call
+    // too, rather than reading the accounts and links per candidate.
+    let mut owned_accounts: BTreeMap<String, bool> = BTreeMap::new();
     let mut after: Option<JobClaimCursor> = None;
     loop {
         let page = store
@@ -378,7 +383,19 @@ pub async fn claim_routed_job(
             )
             .await?;
         for job in page.jobs {
-            if !job_trusted(store, &trust, &job).await? {
+            let trusted = match (&trust, owned_job_account(&job)) {
+                (NodeTrust::OwnedBy(_), None) => false,
+                (NodeTrust::OwnedBy(user_id), Some(account)) => match owned_accounts.get(account) {
+                    Some(known) => *known,
+                    None => {
+                        let known = account_owned(store, *user_id, account).await?;
+                        owned_accounts.insert(account.to_owned(), known);
+                        known
+                    }
+                },
+                _ => job_trusted(store, &trust, &job).await?,
+            };
+            if !trusted {
                 continue;
             }
             let can_run = match runnable.get(&job.payload.requires) {
