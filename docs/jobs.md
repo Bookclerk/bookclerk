@@ -316,7 +316,11 @@ one permit of:
 | `account:<plugin_key>:<account_id>` | 1 | Scans and acquires touching that store account: the payload's account, else every account (of the pinned plugin, when pinned) |
 
 Permits last as long as the job lease, are renewed with each heartbeat, and
-are released after the row is finalized. A heartbeat whose permit renewal
+are released after the row is finalized. A routed claim's holder is
+`<lease owner>/<job id>/g<generation>/<random>`, with the lease generation
+the claim runs at (the CAS only succeeds one past the generation it read),
+so a node that finds its permits again by holder prefix never mistakes a
+leftover permit of an earlier claim of the same job for the current one. A heartbeat whose permit renewal
 matches no row (another holder took the slot) is a lost fence: the handler
 is cancelled and its result ignored. When a node dies, its permits and job
 lease expire; the next claimer reclaims the row, takes the slot with a

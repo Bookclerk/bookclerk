@@ -1021,7 +1021,15 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   again by holder prefix (`permits_held_by`, below the serving node's
   limit and then up to `MAX_SEMAPHORE_LIMIT`, since the claim may have
   been made under a higher limit; an expired slot nobody took over still
-  counts). A lost lease, a taken-over permit, or lost trust
+  counts). A routed claim's permit holder is
+  `<lease owner>/<job id>/g<generation>/<random>`
+  (`job_permit_holder_prefix`), with the generation the claim runs at:
+  `claim_job_by_id` succeeds only at the generation read with the
+  candidate, so the claim's is known before the permits are taken. The
+  prefix searched is the presented fence's, so a still-live permit left
+  over from an earlier claim of the same job by the same node is never
+  renewed or released in place of the current one; it expires with its
+  own lease. A lost lease, a taken-over permit, or lost trust
   answers `lost`. The permits are checked before the job lease is
   extended, so a lost renewal never pushes the reclaim out; a permit taken
   over between that check and its renewal cuts the just-extended lease

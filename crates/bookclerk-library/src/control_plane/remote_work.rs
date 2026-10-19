@@ -38,7 +38,8 @@ use zeroize::Zeroizing;
 
 use super::batch::{self, int, text};
 use super::job_routing::{
-    claim_routed_job, job_semaphores, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
+    claim_routed_job, job_permit_holder_prefix, job_semaphores, JobClaimLimits, JobClaimRequest,
+    RoutedJobClaim,
 };
 use super::semaphore::{
     permits_held_by, release_permits, renew_permits, SemaphorePermit, MAX_SEMAPHORE_LIMIT,
@@ -410,7 +411,10 @@ async fn fenced_job(store: &LibraryStore, fence: &JobFence) -> Result<Option<Job
 /// The semaphore permits `node_id` holds for `job`, and whether every
 /// semaphore the job counts against is among them.
 ///
-/// The holder prefix names the job's permits, so the slots below this
+/// The holder prefix ([`job_permit_holder_prefix`]) names the permits of
+/// the job's current claim, generation included: a permit left over from an
+/// earlier claim of the same job by this node never matches, and expires
+/// with its own lease. The slots below this
 /// node's configured limit are searched first and, when nothing is found
 /// there, every slot up to [`MAX_SEMAPHORE_LIMIT`]: the Host may have
 /// claimed through an owner node with a higher limit, or the limit may have
@@ -421,7 +425,8 @@ async fn held_job_permits(
     job: &JobRecord,
     limits: JobClaimLimits,
 ) -> Result<(Vec<SemaphorePermit>, bool)> {
-    let prefix = format!("{}/{}/", remote_lease_owner(node_id), job.id);
+    let prefix =
+        job_permit_holder_prefix(&remote_lease_owner(node_id), &job.id, job.lease_generation);
     let mut held = Vec::new();
     let mut complete = true;
     let mut seen = std::collections::BTreeSet::new();

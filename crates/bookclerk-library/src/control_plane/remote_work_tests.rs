@@ -779,3 +779,104 @@ async fn permits_above_a_lowered_limit_are_still_held() {
     assert_eq!(live.len(), 3, "only the other holder's permits remain");
     assert!(live.iter().all(|p| p.lease.holder == "someone-else"));
 }
+
+/// The current row of the semaphore slot lease `name`.
+async fn slot_lease(store: &LibraryStore, name: &str) -> ClusterLease {
+    load_lease(store, name).await.unwrap().expect("slot row")
+}
+
+/// A still-live permit left over from an earlier claim of the same job by
+/// the same Host (an older lease generation, in a low slot) is not taken for
+/// the current claim's permit (in a slot above a lowered limit): renewing
+/// extends the current permit and finishing frees its slot, while the
+/// leftover is left to expire with its own lease.
+#[tokio::test]
+async fn a_leftover_permit_of_an_earlier_generation_is_not_the_claims() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let semaphore = class_semaphore(JobResourceClass::Network);
+    let far = chrono::Utc::now().timestamp_millis() + 3_600_000;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let leftover_holder = format!(
+        "{}stale",
+        job_permit_holder_prefix(&remote_lease_owner(HOST), &job_id, 0)
+    );
+    for (slot, holder) in [(0, leftover_holder.as_str()), (1, "someone-else")] {
+        cluster_leases::ActiveModel {
+            name: Set(semaphore_slot_lease_name(&semaphore, slot)),
+            holder: Set(holder.into()),
+            token: Set(1),
+            expires_at_ms: Set(far),
+            renewed_at: Set(chrono::Utc::now().to_rfc3339()),
+        }
+        .insert(w.store.db())
+        .await
+        .unwrap();
+    }
+    let claimed = claim(&w.store).await.expect("a free slot above the others");
+    let fence = claimed.job.lease_generation;
+    assert_eq!(fence, 1, "the claim runs one generation after the leftover");
+    let current = semaphore_slot_lease_name(&semaphore, 2);
+    let row = slot_lease(&w.store, &current).await;
+    assert!(
+        row.holder.starts_with(&job_permit_holder_prefix(
+            &remote_lease_owner(HOST),
+            &job_id,
+            fence
+        )),
+        "the claim's permit is in the first free slot, bound to its generation"
+    );
+    // Bring the current permit close to expiry so a renewal is visible.
+    let soon = chrono::Utc::now().timestamp_millis() + 1_000;
+    cluster_leases::Entity::update_many()
+        .col_expr(cluster_leases::Column::ExpiresAtMs, Expr::value(soon))
+        .filter(cluster_leases::Column::Name.eq(current.as_str()))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+
+    let lowered = RemoteClaimSettings {
+        limits: JobClaimLimits {
+            class: 1,
+            ..SETTINGS.limits
+        },
+        ..SETTINGS
+    };
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, lowered, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    assert!(
+        slot_lease(&w.store, &current).await.expires_at_ms > soon + 30_000,
+        "the renewal extends the current claim's permit"
+    );
+    let leftover = slot_lease(&w.store, &semaphore_slot_lease_name(&semaphore, 0)).await;
+    assert_eq!(leftover.holder, leftover_holder);
+    assert_eq!(leftover.expires_at_ms, far, "the leftover is not renewed");
+
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            lowered.limits,
+            RemoteOutcome::Complete(None)
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    let live = live_permits(&w.store, &semaphore, MAX_SEMAPHORE_LIMIT)
+        .await
+        .unwrap();
+    let mut slots: Vec<u32> = live.iter().map(|p| p.slot).collect();
+    slots.sort_unstable();
+    assert_eq!(
+        slots,
+        vec![0, 1],
+        "finishing frees the current slot; the leftover expires on its own"
+    );
+}
