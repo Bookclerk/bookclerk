@@ -290,8 +290,11 @@ async fn claim(
             },
         )
     };
-    let Some(RemoteJobClaim { job, secrets }) =
-        claim_remote_job(library, &host.node_id, class, host.settings).await?
+    let Some(RemoteJobClaim {
+        job,
+        secrets,
+        resumed,
+    }) = claim_remote_job(library, &host.node_id, class, host.settings).await?
     else {
         return Ok(none());
     };
@@ -339,6 +342,7 @@ async fn claim(
                 fence,
                 lease_secs: host.settings.lease_secs,
                 sealed_secrets,
+                resumed,
             },
         )
     });
@@ -412,7 +416,13 @@ async fn finish(
 /// claimable again at once instead of after its lease expires. Does
 /// nothing for any other answer.
 pub(crate) async fn release_unsent(library: &LibraryStore, host: &HostContext, answer: &Frame) {
-    let Body::Work { job, fence, .. } = &answer.body else {
+    let Body::Work {
+        job,
+        fence,
+        resumed,
+        ..
+    } = &answer.body
+    else {
         return;
     };
     match release_remote_job(
@@ -420,6 +430,7 @@ pub(crate) async fn release_unsent(library: &LibraryStore, host: &HostContext, a
         &host.node_id,
         &job.id,
         *fence,
+        *resumed,
         host.settings.limits,
     )
     .await

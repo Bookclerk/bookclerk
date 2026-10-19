@@ -335,6 +335,79 @@ async fn a_job_naming_its_account_by_label_gets_its_secrets() {
     }
 }
 
+/// Jobs naming one account by id and by label share its permit: the
+/// second is not claimed while the first runs.
+#[tokio::test]
+async fn jobs_naming_one_account_two_ways_share_its_permit() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("Riley Main"))
+        .filter(accounts::Column::AccountId.eq("riley-acct"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    enqueue(&w.store, JobKind::Scan, "riley main").await;
+    let first = claim(&w.store).await.expect("one job is claimed");
+    assert!(
+        claim(&w.store).await.is_none(),
+        "the other waits for the account's permit"
+    );
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &first.job.id,
+            first.job.lease_generation,
+            SETTINGS.limits,
+            RemoteOutcome::Complete(None)
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    assert!(claim(&w.store).await.is_some(), "then the other runs");
+}
+
+/// Giving back a claim that resumed a suspended job keeps it a resume:
+/// the flag is set again and no attempt is taken back.
+#[tokio::test]
+async fn a_released_resume_stays_a_resume() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let payload = serde_json::to_string(&JobPayload {
+        account: Some("riley-acct".into()),
+        resume_pending: true,
+        ..Default::default()
+    })
+    .unwrap();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::Payload, Expr::value(payload))
+        .col_expr(jobs::Column::AttemptCount, Expr::value(1i64))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    let claimed = claim(&w.store).await.unwrap();
+    assert!(claimed.resumed);
+    assert!(release_remote_job(
+        &w.store,
+        HOST,
+        &job_id,
+        claimed.job.lease_generation,
+        claimed.resumed,
+        SETTINGS.limits
+    )
+    .await
+    .unwrap());
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert!(job.payload.resume_pending, "the resume flag is back");
+    assert_eq!(job.attempt_count, 1, "the earlier attempt is kept");
+    assert!(claim(&w.store).await.unwrap().resumed);
+}
+
 /// A fence reclaimed while the Host was away, presented by another node,
 /// or whose account was unlinked, is lost.
 #[tokio::test]
@@ -627,7 +700,7 @@ async fn a_released_claim_is_given_back_unspent() {
     let fence = claimed.job.lease_generation;
 
     assert!(
-        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
             .await
             .unwrap()
     );
@@ -648,7 +721,7 @@ async fn a_released_claim_is_given_back_unspent() {
         WriteBack::Refused("fence_not_live")
     );
     assert!(
-        !release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+        !release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
             .await
             .unwrap(),
         "a released fence is not live"
@@ -667,7 +740,7 @@ async fn forgetting_an_earlier_lease_keeps_the_successors_handoffs() {
     let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
     let first = claim(&w.store).await.unwrap().job.lease_generation;
     assert!(
-        release_remote_job(&w.store, HOST, &job_id, first, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, first, false, SETTINGS.limits)
             .await
             .unwrap()
     );

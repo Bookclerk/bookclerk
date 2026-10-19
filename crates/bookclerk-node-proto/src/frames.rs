@@ -133,6 +133,10 @@ pub enum Body {
         /// needs none.
         #[serde(default)]
         sealed_secrets: Option<String>,
+        /// The claim resumed a suspended job: no attempt was spent, and the
+        /// job's checkpoint applies.
+        #[serde(default)]
+        resumed: bool,
     },
     /// Owner → host: nothing to claim now.
     #[serde(rename = "none")]
@@ -394,6 +398,7 @@ mod tests {
                     fence: 2,
                     lease_secs: 60,
                     sealed_secrets: Some("x".into()),
+                    resumed: false,
                 },
                 "work",
             ),

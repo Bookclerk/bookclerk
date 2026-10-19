@@ -318,16 +318,31 @@ pub async fn job_semaphores(
                 .map(|instance| instance.plugin_key),
             None => None,
         };
-        let mut query = accounts::Entity::find();
-        if let Some(account) = job.payload.account.as_deref() {
-            query = query.filter(accounts::Column::AccountId.eq(account));
-        }
-        if let Some(key) = pinned_key.as_deref() {
-            query = query.filter(accounts::Column::PluginKey.eq(key));
-        }
-        for row in query.all(store.db()).await.map_err(LibraryError::Orm)? {
+        // The accounts the job touches, by id or label as trust and the
+        // secret handoff resolve them, so two jobs naming one account
+        // differently still share its permit.
+        let touched: Vec<(String, String)> = match job.payload.account.as_deref() {
+            Some(account) => super::trust::accounts_named(store, account, pinned_key.as_deref())
+                .await?
+                .into_iter()
+                .collect(),
+            None => {
+                let mut query = accounts::Entity::find();
+                if let Some(key) = pinned_key.as_deref() {
+                    query = query.filter(accounts::Column::PluginKey.eq(key));
+                }
+                query
+                    .all(store.db())
+                    .await
+                    .map_err(LibraryError::Orm)?
+                    .into_iter()
+                    .map(|row| (row.plugin_key, row.account_id))
+                    .collect()
+            }
+        };
+        for (plugin_key, account_id) in touched {
             requests.push(SemaphoreRequest::new(
-                account_semaphore(&row.plugin_key, &row.account_id),
+                account_semaphore(&plugin_key, &account_id),
                 ACCOUNT_SEMAPHORE_LIMIT,
             ));
         }
