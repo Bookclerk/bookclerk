@@ -306,7 +306,7 @@ impl OutputSettingsV1 {
             fixup_metadata: config.fixup_metadata,
             chapter_json: config.effective_chapter_json(),
             save_metadata_json: config.save_metadata_json,
-            cover_size: config.cover_size.trim().to_string(),
+            cover_size: config.cover_size.trim().to_ascii_lowercase(),
             chapter_layout: config.chapter_layout.trim().to_ascii_lowercase(),
             overwrite_existing: config.overwrite_existing,
             multi_destination: config.multi_destination,

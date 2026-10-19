@@ -73,6 +73,16 @@ async fn output_is_imported_once_and_later_seeds_are_ignored() {
     );
 }
 
+#[test]
+fn output_seed_cover_size_is_case_insensitive() {
+    let seed = OutputConfig {
+        cover_size: " Native ".into(),
+        ..OutputConfig::default()
+    };
+    let settings = OutputSettingsV1::from_config(&seed).expect("`Native` is a valid cover size");
+    assert_eq!(settings.cover_size, "native");
+}
+
 #[tokio::test]
 async fn output_first_import_rejects_an_invalid_seed() {
     let _guard = master_key_test_lock_async().await;
