@@ -59,6 +59,10 @@ pub async fn run_placement_pass(state: &AppState) -> Option<ScheduleReport> {
     }
     match schedule_placements(&library).await {
         Ok(report) => {
+            if report.added + report.removed > 0 {
+                // The scheduler moved replicas: queued jobs may need re-routing.
+                crate::node_queue::wake_requirements_sweep();
+            }
             if report.added + report.removed + report.conflicts > 0 {
                 info!(
                     placements = report.placements,

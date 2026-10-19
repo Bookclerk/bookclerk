@@ -25,6 +25,7 @@ mod plugin_installs;
 mod profile;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
+mod requirements_sweep;
 mod scheduler;
 mod totp;
 mod tray_companion;
@@ -188,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
     heartbeat::spawn_heartbeat(state.clone());
     placement::spawn_placement_scheduler(state.clone());
     maintenance::spawn_maintenance(state.clone());
+    requirements_sweep::spawn_requirements_sweep(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());
 
