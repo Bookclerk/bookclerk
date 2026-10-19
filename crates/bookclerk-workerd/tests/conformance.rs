@@ -979,7 +979,7 @@ fn spawn_sibling_gateway(
     proxy: &bookclerk_sandbox::DuplexLink,
 ) -> tokio::process::Child {
     use bookclerk_sandbox::{
-        inherit_fd_at, GATEWAY_GUEST_RPC_ENV, GATEWAY_PROXY_ENV, GATEWAY_PROXY_FD, GATEWAY_RPC_FD,
+        GATEWAY_GUEST_RPC_ENV, GATEWAY_PROXY_ENV, GATEWAY_PROXY_FD, GATEWAY_RPC_FD,
         WORKERD_STATE_DIR_ENV,
     };
 
@@ -999,12 +999,43 @@ fn spawn_sibling_gateway(
         .kill_on_drop(true);
     unsafe {
         cmd.pre_exec(move || {
-            inherit_fd_at(rpc_src, GATEWAY_RPC_FD)?;
-            inherit_fd_at(proxy_src, GATEWAY_PROXY_FD)?;
-            Ok(())
+            inherit_fds_at([(rpc_src, GATEWAY_RPC_FD), (proxy_src, GATEWAY_PROXY_FD)])
         });
     }
     cmd.spawn().expect("spawn native-behind-workerd gateway")
+}
+
+/// Install each `(src, dest)` pair in the child without one `dup2` clobbering
+/// a later source.
+///
+/// Parallel tests in this binary close and reopen descriptors, so a link can
+/// land on another pair's destination slot (the proxy end on fd 3 is enough).
+/// Moving every source above the highest slot first keeps the installs
+/// independent, like the host's own `inherit_mapped_fds`.
+///
+/// # Errors
+///
+/// Returns the OS error from `fcntl(F_DUPFD_CLOEXEC)` or `dup2`.
+/// Call it only in the child after `fork` and before `exec`, with every `src`
+/// open.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn inherit_fds_at<const N: usize>(
+    pairs: [(std::os::fd::RawFd, std::os::fd::RawFd); N],
+) -> std::io::Result<()> {
+    let floor = pairs.iter().map(|&(_, dest)| dest).max().unwrap_or(2) + 1;
+    let mut moved = pairs;
+    for (src, _) in &mut moved {
+        let copy = unsafe { libc::fcntl(*src, libc::F_DUPFD_CLOEXEC, floor) };
+        if copy < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        *src = copy;
+    }
+    for (copy, dest) in moved {
+        bookclerk_sandbox::inherit_fd_at(copy, dest)?;
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

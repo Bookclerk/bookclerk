@@ -956,7 +956,7 @@ async fn single_node_sqlite_bootstrap_is_one_node_and_one_events_document() {
     assert!(node_identity_path(files.path()).is_file());
 }
 
-fn postgres_tests_enabled() -> bool {
+pub(super) fn postgres_tests_enabled() -> bool {
     let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL")
         .ok()
         .filter(|value| !value.trim().is_empty());
@@ -989,7 +989,7 @@ fn postgres_url_with_db(url: &str, db_name: &str) -> String {
     }
 }
 
-async fn postgres_stores() -> (LibraryStore, LibraryStore) {
+pub(super) async fn postgres_stores() -> (LibraryStore, LibraryStore) {
     let url = std::env::var("BOOKCLERK_TEST_POSTGRES_URL").expect("postgres url");
     let db_name = format!("cp_{}", Uuid::new_v4().as_simple());
     let admin = sea_orm::Database::connect(url.as_str())
@@ -1218,11 +1218,11 @@ async fn heartbeat_persists_fake_cgroup_observations() {
     assert_eq!(node.memory_current_bytes, Some(4096));
     assert_eq!(node.memory_anon_bytes, Some(2048));
     assert_eq!(node.scratch_bytes, Some(32));
-    // `filesystem_free_bytes` is implemented on Linux and macOS. Windows has no
-    // populated value, so the heartbeat stores None there.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    // `filesystem_free_bytes` is implemented on Linux, macOS, and Windows.
+    // Other platforms store None.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     assert!(node.files_dir_free_bytes.is_some());
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     assert!(node.files_dir_free_bytes.is_none());
     assert!(node.logical_cpus.is_some());
     assert_eq!(node.created_at, session.node.created_at);

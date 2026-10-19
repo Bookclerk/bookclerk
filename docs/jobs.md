@@ -184,6 +184,7 @@ Reserved classes (no worker in this release): `media`, `transcription`,
 | Created | 200 | New row; worker is notified |
 | Duplicate | 409 | Same dedup key already `pending` or `running`; `job_id` is the existing row |
 | QueueFull | 429 | `pending + running >= jobs.max_pending` |
+| Unroutable | 409 | `error: "unroutable"`: the job's required instances share no node (see job routing below); no row is written |
 
 Admission, claim, and handler execution share an `RwLock` (`job_runtime`).
 A database plugin swap takes the write permit so it cannot observe an idle
@@ -246,12 +247,94 @@ A companion PDF that exceeds the remaining scratch budget is soft-failed
 path always unregisters its `acquire-pdf` scratch reservation, including
 on fetch/quota errors.
 
+## Routing to a compatible node
+
+Every daemon sharing the database runs workers, so a job must say what the
+node that runs it needs. At admission the daemon records
+`JobPayload.requires`: the plugin instance ids the claiming node must run
+(`control_plane::resolve_job_requirements`).
+
+- A job pinned to an instance (`plugin_instance_id`) requires it, when some
+  node has a deployment of it that should run. A pin to an instance deployed
+  nowhere is not recorded, so the job is claimed anywhere and fails there as
+  before instead of waiting forever.
+- An acquire requires every deployed instance of a node-bound output (today
+  the verified first-party `local` destination), because it writes to every
+  deployed destination and a `local` output is the disk of the nodes it is
+  deployed to. If plugin discovery fails on the admitting node (say an
+  unrelated plugin has a duplicate alias), every instance whose plugin key
+  names the first-party `local` package is required instead, unverified, so
+  the acquire is never left claimable by a node without those outputs.
+- Everything else (unpinned scans, listen sync, integration scans,
+  `plugin_copy`) has no requirements and is claimable on any node.
+
+The required instances must share a node where all of them are deployed to
+run (`control_plane::common_deployment_nodes`); otherwise admission refuses
+the job with a conflict (HTTP 409 `unroutable`) instead of leaving a row no
+node can ever claim.
+Required instances are never dropped to make a node fit.
+
+The daemon's worker claims through `control_plane::claim_routed_job`: it
+pages through the ready pending jobs of its class, best first (16 per page,
+keyset-ordered by priority, `created_at`, id, until it claims one or the rows
+run out, so jobs this node cannot run never hide runnable ones behind them),
+and skips one unless every required instance has a deployment on this node whose desired
+state runs it (`present` or `placed`) and whose observation from this node
+says the guest is up (`running` or `healthy`) — the same placement and
+observation rows delivery routing reads. Then it takes the job's cluster
+permits (below) and claims that row with `claim_job_by_id`, one CAS on
+`state = 'pending'` and the lease generation it read, so concurrent
+claimers on any number of connections admit one. A lost CAS gives the
+permits back and tries the next candidate. A job whose account or instance
+semaphore is full is skipped too; a full class semaphore ends the attempt.
+Requirements are fixed at admission: a deployment that moves later does not
+re-route a pending job, so a job whose required instances no longer share a
+node waits until they do or an operator cancels it.
+
+The unrouted `claim_next_job` (and its guest atomic plan) never claims a job
+with requirements; it remains for tests and tools that run one process. It
+pages past routed rows the same way (the atomic plan filters them out before
+its `LIMIT 1`).
+
+## Cluster semaphores
+
+Process-local limits add up across nodes, so the limits that protect shared
+things are counted cluster-wide. A semaphore `name` with limit `N` is the
+`cluster_leases` rows `sem:<name>#0` … `sem:<name>#<N-1>`; a permit is one
+of those slot leases (holder, fencing token, expiry), taken with the same
+fenced compare-and-swap as the scheduler lease
+(`control_plane::semaphore`). Only slots below the limit are taken, so no
+more than `N` permits are live at once. A routed claim takes, all or none,
+one permit of:
+
+| Semaphore | Limit | Counts |
+| --- | --- | --- |
+| `jobs:<class>` | `[jobs.concurrency].network` | Running jobs of the class, cluster-wide |
+| `plugin-instance:<id>` | `[jobs.concurrency].plugin_instance` (default 1) | Running jobs that require that instance |
+| `account:<plugin_key>:<account_id>` | 1 | Scans and acquires touching that store account: the payload's account, else every account (of the pinned plugin, when pinned) |
+
+Permits last as long as the job lease, are renewed with each heartbeat, and
+are released after the row is finalized. A heartbeat whose permit renewal
+matches no row (another holder took the slot) is a lost fence: the handler
+is cancelled and its result ignored. When a node dies, its permits and job
+lease expire; the next claimer reclaims the row, takes the slot with a
+larger token, and the old holder can neither renew the permit nor finalize
+the job (the job's lease generation moved on too). Lowering a limit does
+not revoke slots above it; live permits on those slots still count, so no
+new permit is granted until the live count is under the new limit. (That
+count is read before the slot CAS, so racing claimers can briefly overshoot
+the new limit, never the old one, until the high slots drain.) Each node reads the limits from its own
+`config.toml` (`[jobs]` is not a database document yet), so nodes should
+agree on them.
+
 ## Resource-class concurrency
 
-`[jobs.concurrency].network` is the number of leased network workers (default
-**1**). The historical `work_lock` still wraps `run_*` so store rate limits
-and the shared `StorageIndex` stay single-writer. Codec work stays in the
-`[media].workers` pool.
+`[jobs.concurrency].network` is the number of leased network workers on each
+node (default **1**) and also the cluster-wide `jobs:network` permit count
+above, so adding nodes does not multiply concurrent store traffic. The
+historical `work_lock` still wraps `run_*` so the shared `StorageIndex` stays
+single-writer within one process. Codec work stays in the `[media].workers`
+pool.
 
 ## Adding a job kind
 

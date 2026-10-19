@@ -240,6 +240,20 @@ pub fn set_dispatch_chunk_for_test(chunk: Option<usize>) {
     DISPATCH_CHUNK_OVERRIDE.with(|c| c.set(chunk));
 }
 
+/// Serializes tests that install [`SNAPSHOT_CLAIM_BARRIER`].
+///
+/// The slot is process-global. A parallel test that swaps or clears it while
+/// two participants are still on their way would leave one of them waiting on
+/// a barrier the other never reaches, or let both skip the rendezvous.
+#[cfg(test)]
+static SNAPSHOT_CLAIM_BARRIER_OWNER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Holds [`SNAPSHOT_CLAIM_BARRIER`] for one test until the guard drops.
+#[cfg(test)]
+pub(crate) async fn own_snapshot_claim_barrier() -> tokio::sync::MutexGuard<'static, ()> {
+    SNAPSHOT_CLAIM_BARRIER_OWNER.lock().await
+}
+
 /// Two-store tests wait here after observing an empty snapshot, before CAS.
 #[cfg(test)]
 pub(crate) fn set_snapshot_claim_barrier(barrier: Option<std::sync::Arc<tokio::sync::Barrier>>) {
