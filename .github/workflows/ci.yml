@@ -713,14 +713,17 @@ jobs:
               sleep 30
               continue
             fi
-            failed=$(grep -E '^completed\|(failure|timed_out)\|' <<<"$jobs" || true)
-            if [ -n "$failed" ]; then
-              echo "::error::cancelling the merge-group run: $(cut -d'|' -f3 <<<"$failed" | paste -sd, -)"
-              gh run cancel "$RUN_ID"
+            # CI Gate starts only after every other job has finished; from
+            # then on it reports the result, and a cancel would stop it.
+            if grep -qE '^(in_progress|completed)\|[^|]*\|CI Gate$' <<<"$jobs"; then
               exit 0
             fi
-            # CI Gate starts only after every other job has finished.
-            if grep -qE '^(in_progress|completed)\|[^|]*\|CI Gate$' <<<"$jobs"; then
+            failed=$(grep -E '^completed\|(failure|timed_out)\|' <<<"$jobs" || true)
+            # Cancel only while another job is still running or waiting.
+            pending=$(grep -vE '^completed\|' <<<"$jobs" | grep -v '|CI Gate$' || true)
+            if [ -n "$failed" ] && [ -n "$pending" ]; then
+              echo "::error::cancelling the merge-group run: $(cut -d'|' -f3 <<<"$failed" | paste -sd, -)"
+              gh run cancel "$RUN_ID"
               exit 0
             fi
             sleep 30
