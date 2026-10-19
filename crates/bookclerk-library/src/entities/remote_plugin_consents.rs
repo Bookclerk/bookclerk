@@ -31,6 +31,10 @@ pub struct Model {
     /// Audit identity of the approver (`platform` for an automatic
     /// approval of a bundled platform plugin).
     pub approved_by: Option<String>,
+    /// RFC 3339 time this install's operator revoked the approval; while
+    /// set, no automatic approval is given (only an operator approval
+    /// clears it).
+    pub revoked_at: Option<String>,
     /// RFC 3339 time of the last write.
     pub updated_at: String,
 }

@@ -1159,15 +1159,21 @@ operator approves it, and only with what was approved.
   as the request in `remote_plugin_consents` (keyed by owner cluster and
   plugin key). An unchanged request writes nothing; a changed one keeps
   any stored approval, which is then re-evaluated.
-- **Approval.** `bookclerk clusters approve <plugin> [--cluster]
-  [--version] [--deny-domain]… [--deny-binding]… [--deny-network]` or
-  operator-only `POST /api/config/cluster-consents/approve` stores the
-  request as reviewed plus the consent (the request minus the denials;
-  naming something the request does not ask for is refused). The write
-  is a compare-and-swap on the recorded request, so a request that
-  changed after it was read is not approved unseen. `revoke` clears the
-  approval and keeps the request. `bookclerk clusters list|consents` and
-  `GET /api/config/cluster-consents` show the state: `consented`,
+- **Approval.** `bookclerk clusters approve <plugin> --request <DIGEST>
+  [--cluster] [--deny-domain]… [--deny-binding]… [--deny-network]` or
+  operator-only `POST /api/config/cluster-consents/approve` (body
+  `request_digest`, required) stores the request as reviewed plus the
+  consent (the request minus the denials; naming something the request
+  does not ask for is refused). The digest is the `request_digest` the
+  listing shows: SHA-256 over the requested version and the owner's grant
+  exactly as recorded. An approval whose digest is not the recorded
+  request's is refused (`409 approval_refused` from the API), so a grant
+  the owner changed after the operator looked, even under the same
+  version, is never approved unseen; the write is also a compare-and-swap
+  on the recorded request. `revoke` clears the approval, keeps the
+  request, and records `revoked_at`. `bookclerk clusters list|consents`
+  and `GET /api/config/cluster-consents` show the digest, `revoked_at`,
+  and the state: `consented`,
   `awaiting_host_consent`, `awaiting_host_reapproval` (a new version asks
   for something outside what was reviewed: a domain, TCP target, CIDR,
   binding, flag, entrypoint, larger budget, or network at all), or
@@ -1179,7 +1185,9 @@ operator approves it, and only with what was approved.
   Bookclerk platform key, this Host's own provenance check says its install
   of that key is platform-bundled with the same payload digest as the
   owner's artifact, and the request stays inside the platform envelope.
-  Recorded with `approved_by = "platform"`.
+  Recorded with `approved_by = "platform"`. An operator's revoke holds: a
+  row with `revoked_at` set is never approved automatically (the store
+  refuses it too), and only the operator approving again clears it.
 - **Claims.** The claim frame carries `filter {kinds, plugins}`: the kinds
   this Host runs and the plugin keys it consented to (and has fetched).
   The owner applies it after the trust predicate and before permits and
@@ -1191,7 +1199,11 @@ operator approves it, and only with what was approved.
   the attempt (unless it has a checkpoint) and frees its permits.
 - **Revoke mid-job.** The link supervisor re-reads consent rows every 5 s
   and on approve/revoke through the API, so a CLI revoke is seen without a
-  wake. Losing consent cancels the plugin's held jobs and gives them back
+  wake. A refresh that could not finish (the owner unreachable, or a
+  consented instance whose archive fetch or `instance.config` failed) is
+  retried with backoff (5 s doubling to 5 minutes; a new connection or a
+  refresh wake retries at once), so a transient failure does not leave a
+  consented plugin unclaimable. Losing consent cancels the plugin's held jobs and gives them back
   with `release`, then reports the deployment `error:
   awaiting_host_consent`.
 - **Fetch.** For a consented instance the Host materializes the version:

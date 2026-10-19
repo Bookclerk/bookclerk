@@ -11,7 +11,8 @@ use std::collections::BTreeSet;
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin, RemotePluginConsent,
+    list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin, RemoteApprover,
+    RemotePluginConsent,
 };
 use bookclerk_plugin_host::{approve_remote_request, remote_consent_state, RemoteNarrowing};
 use clap::Subcommand;
@@ -34,6 +35,8 @@ pub enum ClustersCommand {
         cluster: Option<String>,
     },
     /// Approve an owner plugin's request to run here, optionally narrowed.
+    /// Name the request you reviewed by the digest `clusters consents`
+    /// shows; it is refused when the cluster has changed the request since.
     /// Only what the request asks for can be approved; a later version that
     /// asks for more needs approval again.
     Approve {
@@ -42,10 +45,11 @@ pub enum ClustersCommand {
         /// Owner cluster id (default: the only enrolled cluster).
         #[arg(long)]
         cluster: Option<String>,
-        /// The requested version you reviewed (refused when the cluster
-        /// now asks for another).
-        #[arg(long)]
-        version: Option<String>,
+        /// The `request_digest` of the request you reviewed, from
+        /// `clusters consents` (refused when the cluster now asks for
+        /// anything else).
+        #[arg(long = "request", value_name = "DIGEST")]
+        request_digest: String,
         /// Take a domain out of the request. Repeatable.
         #[arg(long = "deny-domain", value_name = "DOMAIN")]
         deny_domains: Vec<String>,
@@ -58,7 +62,8 @@ pub enum ClustersCommand {
         deny_network: bool,
     },
     /// Withdraw an approval: held jobs of the plugin are cancelled and
-    /// given back, and nothing of it is claimed until approved again.
+    /// given back, and nothing of it is claimed until this host's operator
+    /// approves it again (a platform plugin is not approved automatically).
     Revoke {
         /// Canonical plugin key.
         plugin: String,
@@ -79,10 +84,12 @@ fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
         "plugin_key": row.plugin_key,
         "requested_version": row.requested_version,
         "requested_grant": parse(Some(&row.requested_grant_json)),
+        "request_digest": row.request_digest(),
         "approved_version": row.version,
         "grant": parse(row.grant_json.as_deref()),
         "approved_at": row.approved_at,
         "approved_by": row.approved_by,
+        "revoked_at": row.revoked_at,
         "state": state(row),
     })
 }
@@ -159,11 +166,12 @@ pub async fn run(
                 || {
                     for row in &rows {
                         println!(
-                            "{} {} {} {}",
+                            "{} {} {} {} request={}",
                             row.owner_cluster_id,
                             row.plugin_key,
                             row.requested_version,
-                            state(row)
+                            state(row),
+                            row.request_digest()
                         );
                     }
                 },
@@ -172,7 +180,7 @@ pub async fn run(
         ClustersCommand::Approve {
             plugin,
             cluster,
-            version,
+            request_digest,
             deny_domains,
             deny_bindings,
             deny_network,
@@ -182,13 +190,13 @@ pub async fn run(
                 store,
                 &cluster,
                 plugin.trim(),
-                version.as_deref().map(str::trim),
+                &request_digest,
                 &RemoteNarrowing {
                     deny_domains: deny_domains.into_iter().collect::<BTreeSet<_>>(),
                     deny_bindings: deny_bindings.into_iter().collect::<BTreeSet<_>>(),
                     deny_network,
                 },
-                CLI_APPROVER,
+                RemoteApprover::Operator(CLI_APPROVER),
             )
             .await?;
             emit(format, &json!({ "consent": consent_json(&row) }), || {

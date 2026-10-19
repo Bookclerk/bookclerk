@@ -16,8 +16,14 @@
 //!
 //! Grants are stored as JSON text; the grant algebra (coverage and
 //! intersection) lives with the plugin host, which owns the grant type.
+//! An operator approves a request by its digest
+//! ([`RemotePluginConsent::request_digest`], shown with the request), so
+//! what is approved is exactly what was reviewed.
+//!
 //! [`revoke_remote_plugin`] clears the approval and keeps the request, so
-//! the plugin shows as pending again.
+//! the plugin shows as pending again. A revoke is recorded (`revoked_at`):
+//! an automatic approval ([`RemoteApprover::Platform`]) never overrides it,
+//! only the operator approving again does.
 
 use chrono::{SecondsFormat, Utc};
 use sea_orm::sea_query::OnConflict;
@@ -37,6 +43,33 @@ const MAX_TEXT_BYTES: usize = 512;
 
 /// Largest grant document stored.
 const MAX_GRANT_BYTES: usize = 256 * 1024;
+
+/// Domain separator of [`remote_request_digest`].
+const REQUEST_DIGEST_DOMAIN: &[u8] = b"bookclerk.remote-plugin-request.v1\0";
+
+/// The digest an operator approves a request by: SHA-256 (lowercase hex)
+/// over the requested version and the owner's grant exactly as recorded,
+/// each length-prefixed, so any change to either gives another digest.
+///
+/// # Arguments
+///
+/// * `version` - The requested version.
+/// * `requested_grant_json` - The owner's grant as recorded.
+///
+/// # Returns
+///
+/// 64 lowercase hex characters.
+#[must_use]
+pub fn remote_request_digest(version: &str, requested_grant_json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(REQUEST_DIGEST_DOMAIN);
+    for part in [version, requested_grant_json] {
+        hasher.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_be_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
 
 /// One owner plugin of one owner cluster, as this install sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -59,6 +92,9 @@ pub struct RemotePluginConsent {
     pub approved_at: Option<String>,
     /// Who approved ([`REMOTE_CONSENT_PLATFORM`] for an automatic approval).
     pub approved_by: Option<String>,
+    /// RFC 3339 time the operator revoked the approval; cleared only by an
+    /// operator approval.
+    pub revoked_at: Option<String>,
     /// RFC 3339 time of the last write.
     pub updated_at: String,
 }
@@ -71,6 +107,20 @@ impl RemotePluginConsent {
         self.approved_at.is_some()
             && self.approved_request_json.is_some()
             && self.grant_json.is_some()
+    }
+
+    /// True when the operator revoked the approval and has not approved
+    /// again: no automatic approval is given.
+    #[must_use]
+    pub fn is_revoked(&self) -> bool {
+        self.revoked_at.is_some()
+    }
+
+    /// The digest of the current request ([`remote_request_digest`]); an
+    /// approval must name it.
+    #[must_use]
+    pub fn request_digest(&self) -> String {
+        remote_request_digest(&self.requested_version, &self.requested_grant_json)
     }
 }
 
@@ -86,6 +136,7 @@ impl From<remote_plugin_consents::Model> for RemotePluginConsent {
             grant_json: row.grant_json,
             approved_at: row.approved_at,
             approved_by: row.approved_by,
+            revoked_at: row.revoked_at,
             updated_at: row.updated_at,
         }
     }
@@ -201,6 +252,7 @@ pub async fn record_remote_plugin_request(
         grant_json: Set(None),
         approved_at: Set(None),
         approved_by: Set(None),
+        revoked_at: Set(None),
         updated_at: Set(now()),
     };
     remote_plugin_consents::Entity::insert(row)
@@ -224,6 +276,28 @@ pub async fn record_remote_plugin_request(
         .ok_or_else(|| LibraryError::NotFound(format!("remote plugin consent {plugin_key}")))
 }
 
+/// Who gives an approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteApprover<'a> {
+    /// This install's operator, by audit identity (never
+    /// [`REMOTE_CONSENT_PLATFORM`]). Clears a recorded revoke.
+    Operator(&'a str),
+    /// The automatic approval of a bundled platform plugin. Refused while
+    /// a revoke is recorded.
+    Platform,
+}
+
+impl RemoteApprover<'_> {
+    /// The audit identity stored as `approved_by`.
+    #[must_use]
+    pub fn audit_identity(&self) -> &str {
+        match self {
+            Self::Operator(id) => id,
+            Self::Platform => REMOTE_CONSENT_PLATFORM,
+        }
+    }
+}
+
 /// What an operator approves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteApproval<'a> {
@@ -238,37 +312,53 @@ pub struct RemoteApproval<'a> {
     /// The grant consented to (already checked to be no wider than the
     /// reviewed request).
     pub grant_json: &'a str,
-    /// Audit identity of the approver.
-    pub approved_by: &'a str,
+    /// Who approves.
+    pub approver: RemoteApprover<'a>,
 }
 
 /// Stores an approval, but only when the recorded request is still the
 /// one the operator reviewed: a request that changed in between (a new
 /// version, a wider grant) answers [`LibraryError::Conflict`] and nothing
-/// is written.
+/// is written. An automatic approval ([`RemoteApprover::Platform`]) is
+/// likewise refused while a revoke is recorded; an operator approval
+/// clears it.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::NotFound`] when no request is recorded,
-/// [`LibraryError::Conflict`] when it changed, [`LibraryError::Invalid`] for
-/// a malformed field, and the write error.
+/// [`LibraryError::Conflict`] when it changed or an automatic approval
+/// meets a revoke, [`LibraryError::Invalid`] for a malformed field (an
+/// operator identity of [`REMOTE_CONSENT_PLATFORM`] among them), and the
+/// write error.
 pub async fn approve_remote_plugin(
     store: &LibraryStore,
     approval: &RemoteApproval<'_>,
 ) -> Result<RemotePluginConsent> {
-    bounded("approver", approval.approved_by, MAX_TEXT_BYTES)?;
+    let approved_by = approval.approver.audit_identity();
+    bounded("approver", approved_by, MAX_TEXT_BYTES)?;
+    if matches!(approval.approver, RemoteApprover::Operator(id) if id == REMOTE_CONSENT_PLATFORM) {
+        return Err(LibraryError::Invalid(format!(
+            "{REMOTE_CONSENT_PLATFORM} is reserved for automatic approvals"
+        )));
+    }
     grant_document("consented grant", approval.grant_json)?;
-    if load_remote_plugin_consent(store, approval.cluster_id, approval.plugin_key)
-        .await?
-        .is_none()
-    {
+    let Some(existing) =
+        load_remote_plugin_consent(store, approval.cluster_id, approval.plugin_key).await?
+    else {
         return Err(LibraryError::NotFound(format!(
             "no request from cluster {} for plugin {}",
             approval.cluster_id, approval.plugin_key
         )));
+    };
+    let automatic = matches!(approval.approver, RemoteApprover::Platform);
+    if automatic && existing.is_revoked() {
+        return Err(LibraryError::Conflict(format!(
+            "this host's operator revoked {}; only the operator can approve it again",
+            approval.plugin_key
+        )));
     }
     let stamp = now();
-    let updated = remote_plugin_consents::Entity::update_many()
+    let mut update = remote_plugin_consents::Entity::update_many()
         .col_expr(
             remote_plugin_consents::Column::Version,
             sea_orm::sea_query::Expr::value(Some(approval.version.to_string())),
@@ -287,7 +377,11 @@ pub async fn approve_remote_plugin(
         )
         .col_expr(
             remote_plugin_consents::Column::ApprovedBy,
-            sea_orm::sea_query::Expr::value(Some(approval.approved_by.to_string())),
+            sea_orm::sea_query::Expr::value(Some(approved_by.to_string())),
+        )
+        .col_expr(
+            remote_plugin_consents::Column::RevokedAt,
+            sea_orm::sea_query::Expr::value(Option::<String>::None),
         )
         .col_expr(
             remote_plugin_consents::Column::UpdatedAt,
@@ -298,13 +392,15 @@ pub async fn approve_remote_plugin(
         .filter(remote_plugin_consents::Column::RequestedVersion.eq(approval.version))
         .filter(
             remote_plugin_consents::Column::RequestedGrantJson.eq(approval.reviewed_request_json),
-        )
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+        );
+    if automatic {
+        // A revoke that lands after the read above still wins.
+        update = update.filter(remote_plugin_consents::Column::RevokedAt.is_null());
+    }
+    let updated = update.exec(store.db()).await.map_err(LibraryError::Orm)?;
     if updated.rows_affected != 1 {
         return Err(LibraryError::Conflict(format!(
-            "the request for {} changed since it was reviewed; review it again",
+            "the request for {} changed since it was reviewed (or was revoked); review it again",
             approval.plugin_key
         )));
     }
@@ -316,7 +412,8 @@ pub async fn approve_remote_plugin(
 }
 
 /// Clears the approval of `plugin_key` of `cluster_id`, keeping its
-/// request. Answers the row, or `None` when nothing is recorded.
+/// request, and records the revoke so no automatic approval brings it
+/// back. Answers the row, or `None` when nothing is recorded.
 ///
 /// # Errors
 ///
@@ -326,6 +423,7 @@ pub async fn revoke_remote_plugin(
     cluster_id: &str,
     plugin_key: &str,
 ) -> Result<Option<RemotePluginConsent>> {
+    let stamp = now();
     remote_plugin_consents::Entity::update_many()
         .col_expr(
             remote_plugin_consents::Column::Version,
@@ -348,8 +446,12 @@ pub async fn revoke_remote_plugin(
             sea_orm::sea_query::Expr::value(Option::<String>::None),
         )
         .col_expr(
+            remote_plugin_consents::Column::RevokedAt,
+            sea_orm::sea_query::Expr::value(Some(stamp.clone())),
+        )
+        .col_expr(
             remote_plugin_consents::Column::UpdatedAt,
-            sea_orm::sea_query::Expr::value(now()),
+            sea_orm::sea_query::Expr::value(stamp),
         )
         .filter(remote_plugin_consents::Column::OwnerClusterId.eq(cluster_id))
         .filter(remote_plugin_consents::Column::PluginKey.eq(plugin_key))
@@ -378,7 +480,7 @@ mod tests {
             version,
             reviewed_request_json: reviewed,
             grant_json: grant,
-            approved_by: "operator",
+            approver: RemoteApprover::Operator("operator"),
         }
     }
 
@@ -453,5 +555,90 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn the_request_digest_covers_version_and_grant() {
+        let base = remote_request_digest("1.0.0", r#"{"domains":["a.example"]}"#);
+        assert_eq!(base.len(), 64);
+        assert_eq!(
+            base,
+            remote_request_digest("1.0.0", r#"{"domains":["a.example"]}"#)
+        );
+        assert_ne!(
+            base,
+            remote_request_digest("1.0.0", r#"{"domains":["b.example"]}"#)
+        );
+        assert_ne!(
+            base,
+            remote_request_digest("1.0.1", r#"{"domains":["a.example"]}"#)
+        );
+        // Length prefixes keep the split between the two unambiguous.
+        assert_ne!(
+            remote_request_digest("1.0.0{", "}"),
+            remote_request_digest("1.0.0", "{}")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_operator_revoke_holds_against_automatic_approval() {
+        let store = store().await;
+        let requested = r"{}";
+        record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested)
+            .await
+            .unwrap();
+        let platform = RemoteApproval {
+            approver: RemoteApprover::Platform,
+            ..approval("1.0.0", requested, "{}")
+        };
+        let approved = approve_remote_plugin(&store, &platform).await.unwrap();
+        assert_eq!(
+            approved.approved_by.as_deref(),
+            Some(REMOTE_CONSENT_PLATFORM)
+        );
+        assert!(!approved.is_revoked());
+
+        let revoked = revoke_remote_plugin(&store, "cluster-a", "store")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(revoked.is_revoked() && !revoked.is_approved());
+        assert!(matches!(
+            approve_remote_plugin(&store, &platform).await,
+            Err(LibraryError::Conflict(_))
+        ));
+        // The revoke survives a new request from the owner.
+        let moved = record_remote_plugin_request(&store, "cluster-a", "store", "1.1.0", requested)
+            .await
+            .unwrap();
+        assert!(moved.is_revoked());
+        assert!(matches!(
+            approve_remote_plugin(
+                &store,
+                &RemoteApproval {
+                    approver: RemoteApprover::Platform,
+                    ..approval("1.1.0", requested, "{}")
+                }
+            )
+            .await,
+            Err(LibraryError::Conflict(_))
+        ));
+        // An operator cannot pose as the automatic approver.
+        assert!(matches!(
+            approve_remote_plugin(
+                &store,
+                &RemoteApproval {
+                    approver: RemoteApprover::Operator(REMOTE_CONSENT_PLATFORM),
+                    ..approval("1.1.0", requested, "{}")
+                }
+            )
+            .await,
+            Err(LibraryError::Invalid(_))
+        ));
+        // Only the operator approving again clears it.
+        let again = approve_remote_plugin(&store, &approval("1.1.0", requested, "{}"))
+            .await
+            .unwrap();
+        assert!(again.is_approved() && !again.is_revoked());
     }
 }

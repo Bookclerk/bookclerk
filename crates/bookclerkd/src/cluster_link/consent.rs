@@ -22,7 +22,13 @@
 //! - every [`CONSENT_POLL`] and whenever [`notify_consent_changed`] is
 //!   called (the API's approve and revoke) it re-reads the consent rows, so
 //!   an approval or a revoke from the CLI takes effect without a wake.
-//!   Losing consent cancels the plugin's held jobs and gives them back.
+//!   Losing consent cancels the plugin's held jobs and gives them back;
+//! - a refresh that could not finish (the owner unreachable, or a consented
+//!   instance whose archive or `instance.config` failed) is retried with
+//!   backoff ([`RETRY_MIN`] doubling to [`RETRY_MAX`]) until it does, so a
+//!   transient failure never leaves a consented plugin unclaimable;
+//! - an operator's revoke is recorded and holds: a platform plugin is not
+//!   approved automatically again until the operator approves it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -31,8 +37,8 @@ use std::time::Duration;
 
 use bookclerk_library::control_plane::{
     list_remote_plugin_consents, load_artifact_blob, put_artifact_blob,
-    record_remote_plugin_request, PluginArtifact, PluginVersion, RemotePluginConsent,
-    ARTIFACT_BLOB_SCHEME, REMOTE_CONSENT_PLATFORM,
+    record_remote_plugin_request, PluginArtifact, PluginVersion, RemoteApprover,
+    RemotePluginConsent, ARTIFACT_BLOB_SCHEME,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_client::{HostClientHandle, AWAITING_HOST_CONSENT};
@@ -42,11 +48,18 @@ use bookclerk_plugin_host::{
     remote_platform_auto_approval, PluginGrant, RemoteConsentState, RemoteNarrowing,
 };
 use tokio::sync::{watch, Notify};
+use tokio::time::Instant;
 
 use super::remote_bindings::{RemoteCatalog, RemoteInstanceConfig, RemoteInstanceEntry};
 
 /// How often consent rows are re-read without a notification.
 pub const CONSENT_POLL: Duration = Duration::from_secs(5);
+
+/// First delay before an unfinished refresh is retried.
+pub const RETRY_MIN: Duration = CONSENT_POLL;
+
+/// Longest delay between retries of an unfinished refresh.
+pub const RETRY_MAX: Duration = Duration::from_secs(300);
 
 /// Wakes that make a host re-read what its owner deployed to it.
 const REFRESH_WAKES: &[&str] = &[
@@ -62,6 +75,66 @@ static CONSENT_CHANGED: LazyLock<Notify> = LazyLock::new(Notify::new);
 /// Tells every link supervisor in this process to re-read consent now.
 pub fn notify_consent_changed() {
     CONSENT_CHANGED.notify_waiters();
+}
+
+/// How a refresh ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refreshed {
+    /// Every deployment was evaluated to a settled state.
+    Settled,
+    /// The owner did not answer, or an entry hit a failure that may pass
+    /// (an archive or `instance.config` that could not be read, a request
+    /// that could not be recorded): try again.
+    Unfinished,
+}
+
+/// When an unfinished refresh is tried again: [`RETRY_MIN`] after the
+/// first failure, doubling to [`RETRY_MAX`]; a settled refresh, a new
+/// connection or a refresh wake resets it.
+#[derive(Debug, Default)]
+struct RetryBackoff {
+    /// Unfinished refreshes in a row.
+    failures: u32,
+    /// Earliest time of the next try (`None`: now).
+    next: Option<Instant>,
+}
+
+impl RetryBackoff {
+    /// True when a retry may run at `now`.
+    fn due(&self, now: Instant) -> bool {
+        self.next.is_none_or(|at| now >= at)
+    }
+
+    /// The delay after `failures` unfinished refreshes in a row.
+    fn delay(failures: u32) -> Duration {
+        let factor = 1_u32 << failures.saturating_sub(1).min(16);
+        RETRY_MIN.saturating_mul(factor).min(RETRY_MAX)
+    }
+
+    /// Records an unfinished refresh at `now`.
+    fn failed(&mut self, now: Instant) {
+        self.failures = self.failures.saturating_add(1);
+        self.next = Some(now + Self::delay(self.failures));
+    }
+
+    /// Clears the backoff (settled, or something changed).
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Applies a refresh outcome; answers whether a refresh is still owed.
+    fn record(&mut self, outcome: Refreshed, now: Instant) -> bool {
+        match outcome {
+            Refreshed::Settled => {
+                self.reset();
+                false
+            }
+            Refreshed::Unfinished => {
+                self.failed(now);
+                true
+            }
+        }
+    }
 }
 
 /// Keeps one link's catalog and consented plugin set current.
@@ -87,9 +160,11 @@ impl LinkSupervisor {
         let mut poll = tokio::time::interval(CONSENT_POLL);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut stale = true;
+        let mut backoff = RetryBackoff::default();
         loop {
-            if stale && self.handle.is_connected() {
-                stale = self.refresh().await.is_err();
+            if stale && self.handle.is_connected() && backoff.due(Instant::now()) {
+                let outcome = self.refresh().await;
+                stale = backoff.record(outcome, Instant::now());
             }
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -102,22 +177,34 @@ impl LinkSupervisor {
                         return;
                     }
                     stale = true;
+                    backoff.reset();
                 }
                 wake = wakes.recv() => match wake {
                     Ok(wake) => {
                         let kind = wake.get("type").and_then(serde_json::Value::as_str);
                         if kind.is_some_and(|kind| REFRESH_WAKES.contains(&kind)) {
                             stale = true;
+                            backoff.reset();
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => stale = true,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        stale = true;
+                        backoff.reset();
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
-                () = CONSENT_CHANGED.notified() => self.reevaluate().await,
+                () = CONSENT_CHANGED.notified() => {
+                    if let Some(outcome) = self.reevaluate().await {
+                        stale = backoff.record(outcome, Instant::now());
+                    }
+                }
                 _ = poll.tick() => {
-                    self.reevaluate().await;
-                    // A refresh that failed (owner unreachable mid-way) is
-                    // retried on the poll.
+                    if let Some(outcome) = self.reevaluate().await {
+                        stale = backoff.record(outcome, Instant::now());
+                    }
+                    // An unfinished refresh is retried at the top of the
+                    // loop once its backoff is due; the poll's tick is what
+                    // brings the loop round.
                 }
             }
         }
@@ -135,15 +222,16 @@ impl LinkSupervisor {
     }
 
     /// Re-reads the consent rows and applies them; an instance that gains
-    /// consent is fetched, one that loses it is dropped.
-    async fn reevaluate(&self) {
+    /// consent is fetched, one that loses it is dropped. Answers the
+    /// outcome of the refresh a change ran, if one did.
+    async fn reevaluate(&self) -> Option<Refreshed> {
         let rows = match list_remote_plugin_consents(&self.library, Some(self.cluster_id())).await {
             Ok(rows) => rows,
             Err(err) => {
                 // Fail closed: nothing stays claimable on an unreadable row.
                 tracing::warn!(cluster_id = self.cluster_id(), error = %err, "consent rows unreadable");
                 self.handle.set_consented_plugins(BTreeSet::new());
-                return;
+                return None;
             }
         };
         let by_key: BTreeMap<&str, &RemotePluginConsent> = rows
@@ -178,36 +266,66 @@ impl LinkSupervisor {
         // the refresh then fetches what gained consent and reports both.
         self.publish();
         if changed {
-            let _ = self.refresh().await;
+            Some(self.refresh().await)
+        } else {
+            None
         }
     }
 
     /// Re-reads what the owner deployed here and rebuilds the catalog.
-    async fn refresh(&self) -> Result<(), ()> {
+    /// Answers [`Refreshed::Unfinished`] when the owner did not answer or
+    /// any entry hit a failure that may pass, so the caller retries.
+    async fn refresh(&self) -> Refreshed {
         let Some(frame) = self.handle.request(Body::DeploymentsList {}).await else {
-            return Err(());
+            return Refreshed::Unfinished;
         };
         let Body::Deployments { items } = frame.body else {
             tracing::warn!(
                 cluster_id = self.cluster_id(),
                 "owner refused deployments.list"
             );
-            return Err(());
+            return Refreshed::Unfinished;
         };
         let mut entries = BTreeMap::new();
+        let mut outcome = Refreshed::Settled;
         for item in items {
-            let entry = self.evaluate(&item).await;
+            let (entry, evaluated) = self.evaluate(&item).await;
+            if evaluated == Refreshed::Unfinished {
+                tracing::debug!(
+                    cluster_id = self.cluster_id(),
+                    instance_id = %entry.instance_id,
+                    "owner plugin not ready yet; retrying"
+                );
+                outcome = Refreshed::Unfinished;
+            }
             self.observe(&item, &entry).await;
             entries.insert(entry.instance_id.clone(), entry);
         }
         self.catalog.replace(entries);
         self.publish();
-        Ok(())
+        outcome
     }
 
     /// One deployment's catalog entry: its consent, and when consented its
-    /// materialized tree and bindings.
-    async fn evaluate(&self, item: &RemoteDeployment) -> RemoteInstanceEntry {
+    /// materialized tree and bindings. The outcome is
+    /// [`Refreshed::Unfinished`] when the entry failed on something that may
+    /// pass (recording the request, or a consented instance's archive or
+    /// configuration), so it is evaluated again.
+    async fn evaluate(&self, item: &RemoteDeployment) -> (RemoteInstanceEntry, Refreshed) {
+        let (entry, transient) = self.evaluate_entry(item).await;
+        let outcome = if transient
+            || (matches!(entry.consent, RemoteConsentState::Consented(_)) && !entry.is_ready())
+        {
+            Refreshed::Unfinished
+        } else {
+            Refreshed::Settled
+        };
+        (entry, outcome)
+    }
+
+    /// [`Self::evaluate`] without the outcome; the flag marks a failure to
+    /// record the request (a database write that may pass).
+    async fn evaluate_entry(&self, item: &RemoteDeployment) -> (RemoteInstanceEntry, bool) {
         let mut entry = RemoteInstanceEntry {
             instance_id: item.instance_id.clone(),
             plugin_key: item.plugin_key.clone(),
@@ -219,11 +337,11 @@ impl LinkSupervisor {
         };
         let Some(remote) = item.version.as_ref() else {
             entry.problem = Some("the owner has no active version of this plugin".into());
-            return entry;
+            return (entry, false);
         };
         if remote.grant_json.trim().is_empty() {
             entry.problem = Some("the owner's operator has not approved this version".into());
-            return entry;
+            return (entry, false);
         }
         let row = match record_remote_plugin_request(
             &self.library,
@@ -238,7 +356,7 @@ impl LinkSupervisor {
             Err(err) => {
                 entry.consent = RemoteConsentState::Invalid;
                 entry.problem = Some(format!("the owner's request was not recorded: {err}"));
-                return entry;
+                return (entry, true);
             }
         };
         let version = match plugin_version(&item.plugin_key, remote) {
@@ -246,36 +364,37 @@ impl LinkSupervisor {
             Err(problem) => {
                 entry.consent = RemoteConsentState::Invalid;
                 entry.problem = Some(problem);
-                return entry;
+                return (entry, false);
             }
         };
         let row = self.auto_approve_platform(row, &version).await;
         entry.consent = consent_state(&row);
         let RemoteConsentState::Consented(grant) = &entry.consent else {
-            return entry;
+            return (entry, false);
         };
         match self.materialize(&version, grant).await {
             Ok(root) => entry.root = Some(root),
             Err(problem) => {
                 entry.problem = Some(problem);
-                return entry;
+                return (entry, false);
             }
         }
         match self.instance_config(&item.instance_id).await {
             Ok(config) => entry.config = Some(config),
             Err(problem) => entry.problem = Some(problem),
         }
-        entry
+        (entry, false)
     }
 
     /// Approves an unapproved platform plugin when this host bundles the
-    /// owner's artifact; answers the row as it stands afterwards.
+    /// owner's artifact and its operator has not revoked it; answers the
+    /// row as it stands afterwards.
     async fn auto_approve_platform(
         &self,
         row: RemotePluginConsent,
         version: &PluginVersion,
     ) -> RemotePluginConsent {
-        if row.is_approved() {
+        if !platform_auto_approval_allowed(&row) {
             return row;
         }
         let Ok(requested) = serde_json::from_str::<PluginGrant>(&row.requested_grant_json) else {
@@ -297,9 +416,9 @@ impl LinkSupervisor {
             &self.library,
             &row.owner_cluster_id,
             &row.plugin_key,
-            Some(&row.requested_version),
+            &row.request_digest(),
             &RemoteNarrowing::default(),
-            REMOTE_CONSENT_PLATFORM,
+            RemoteApprover::Platform,
         )
         .await
         {
@@ -421,6 +540,13 @@ impl LinkSupervisor {
     }
 }
 
+/// True when a row may be approved automatically at all: not approved yet
+/// and not revoked by this host's operator (a revoke holds until the
+/// operator approves again; the store refuses it too).
+pub(crate) fn platform_auto_approval_allowed(row: &RemotePluginConsent) -> bool {
+    !row.is_approved() && !row.is_revoked()
+}
+
 /// A consent row's state.
 pub(crate) fn consent_state(row: &RemotePluginConsent) -> RemoteConsentState {
     remote_consent_state(
@@ -481,4 +607,64 @@ pub fn platform_payloads(config: &bookclerk_config::Config) -> BTreeMap<String, 
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unfinished_refresh_backs_off_and_a_settled_one_resets() {
+        let start = Instant::now();
+        let mut backoff = RetryBackoff::default();
+        assert!(backoff.due(start));
+        assert!(backoff.record(Refreshed::Unfinished, start));
+        assert!(!backoff.due(start));
+        assert!(backoff.due(start + RETRY_MIN));
+        assert!(backoff.record(Refreshed::Unfinished, start));
+        assert!(!backoff.due(start + RETRY_MIN));
+        assert!(backoff.due(start + RETRY_MIN * 2));
+        for _ in 0..40 {
+            backoff.failed(start);
+        }
+        assert!(backoff.due(start + RETRY_MAX));
+        assert!(!backoff.due(start + RETRY_MAX - Duration::from_secs(1)));
+        assert!(!backoff.record(Refreshed::Settled, start));
+        assert!(backoff.due(start));
+    }
+
+    fn row() -> RemotePluginConsent {
+        RemotePluginConsent {
+            owner_cluster_id: "cluster-a".into(),
+            plugin_key: "platform:bookclerk/bookclerk-plugin-database-sqlite".into(),
+            requested_version: "1.0.0".into(),
+            requested_grant_json: "{}".into(),
+            version: None,
+            approved_request_json: None,
+            grant_json: None,
+            approved_at: None,
+            approved_by: None,
+            revoked_at: None,
+            updated_at: "2026-10-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn a_revoked_platform_plugin_is_not_approved_automatically() {
+        assert!(platform_auto_approval_allowed(&row()));
+        let revoked = RemotePluginConsent {
+            revoked_at: Some("2026-10-02T00:00:00Z".into()),
+            ..row()
+        };
+        assert!(!platform_auto_approval_allowed(&revoked));
+        let approved = RemotePluginConsent {
+            version: Some("1.0.0".into()),
+            approved_request_json: Some("{}".into()),
+            grant_json: Some("{}".into()),
+            approved_at: Some("2026-10-02T00:00:00Z".into()),
+            approved_by: Some("platform".into()),
+            ..row()
+        };
+        assert!(!platform_auto_approval_allowed(&approved));
+    }
 }

@@ -49,26 +49,36 @@ fn outbound(mode: &str) -> bool {
     mode.eq_ignore_ascii_case("outbound")
 }
 
+/// A workerd isolate limit (`cpu_ms`, `subrequests`) as compared here.
+///
+/// Unset leaves the limit to the version's manifest, which may ask for up
+/// to the hard cap, so it reads as the largest value; `0` resolves to the
+/// default as the manifest's limits do; any other value reads as itself
+/// (never lowered by the cap, so a value above it still reads as wider).
+fn workerd_limit(value: Option<u32>, default: u32) -> u32 {
+    match value {
+        None => u32::MAX,
+        Some(0) => default,
+        Some(value) => value,
+    }
+}
+
 /// True when `wider` asks for a larger budget than `ceiling`, comparing
-/// the effective (defaulted, clamped) values.
+/// the effective values: an unset jail budget is its host default (an
+/// unset `cpu_rate_percent` is the default rate, not "less than any"), and
+/// an unset workerd limit reads as the largest ([`workerd_limit`]).
 fn budget_wider(ceiling: &PluginGrant, wider: &PluginGrant) -> bool {
-    let unset_or = |value: Option<u32>| value.unwrap_or(u32::MAX);
+    use bookclerk_plugin_manifest::WorkerdLimits;
     effective_memory_mib(wider.memory_mib) > effective_memory_mib(ceiling.memory_mib)
         || effective_disk_mib(wider.disk_mib) > effective_disk_mib(ceiling.disk_mib)
-        || unset_or(wider.cpu_ms) > unset_or(ceiling.cpu_ms)
-        || unset_or(wider.subrequests) > unset_or(ceiling.subrequests)
-        || wider
-            .cpu_rate_percent
-            .map(|v| effective_cpu_rate_percent(Some(v)))
-            > ceiling
-                .cpu_rate_percent
-                .map(|v| effective_cpu_rate_percent(Some(v)))
-        || wider
-            .extra_processes
-            .map(|v| effective_extra_processes(Some(v)))
-            > ceiling
-                .extra_processes
-                .map(|v| effective_extra_processes(Some(v)))
+        || effective_cpu_rate_percent(wider.cpu_rate_percent)
+            > effective_cpu_rate_percent(ceiling.cpu_rate_percent)
+        || effective_extra_processes(wider.extra_processes)
+            > effective_extra_processes(ceiling.extra_processes)
+        || workerd_limit(wider.cpu_ms, WorkerdLimits::DEFAULT_CPU_MS)
+            > workerd_limit(ceiling.cpu_ms, WorkerdLimits::DEFAULT_CPU_MS)
+        || workerd_limit(wider.subrequests, WorkerdLimits::DEFAULT_SUBREQUESTS)
+            > workerd_limit(ceiling.subrequests, WorkerdLimits::DEFAULT_SUBREQUESTS)
 }
 
 /// True when `requested` asks for nothing outside `reviewed`: the same
@@ -156,13 +166,12 @@ fn min_budget(a: Option<u32>, b: Option<u32>, effective: fn(Option<u32>) -> u32)
     }
 }
 
-/// The smaller of two optional limits where unset means the host default
-/// (kept unset only when both are).
-fn min_limit(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+/// The smaller of two optional workerd limits, each resolved by
+/// [`workerd_limit`] (kept unset only when both are).
+fn min_workerd_limit(a: Option<u32>, b: Option<u32>, default: u32) -> Option<u32> {
     match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (Some(v), None) | (None, Some(v)) => Some(v),
         (None, None) => None,
+        _ => Some(workerd_limit(a, default).min(workerd_limit(b, default))),
     }
 }
 
@@ -255,16 +264,32 @@ pub fn narrow_remote_grant(requested: &PluginGrant, consent: &PluginGrant) -> Pl
         operator_allow_undeclared_public_redirects: Some(redirects),
         bindings: both(&requested.bindings, &consent.bindings),
         compatibility_flags: both(&requested.compatibility_flags, &consent.compatibility_flags),
-        cpu_ms: min_limit(requested.cpu_ms, consent.cpu_ms),
-        subrequests: min_limit(requested.subrequests, consent.subrequests),
+        cpu_ms: min_workerd_limit(
+            requested.cpu_ms,
+            consent.cpu_ms,
+            bookclerk_plugin_manifest::WorkerdLimits::DEFAULT_CPU_MS,
+        ),
+        subrequests: min_workerd_limit(
+            requested.subrequests,
+            consent.subrequests,
+            bookclerk_plugin_manifest::WorkerdLimits::DEFAULT_SUBREQUESTS,
+        ),
         disk_mib: min_budget(requested.disk_mib, consent.disk_mib, effective_disk_mib),
         memory_mib: min_budget(
             requested.memory_mib,
             consent.memory_mib,
             effective_memory_mib,
         ),
-        cpu_rate_percent: min_limit(requested.cpu_rate_percent, consent.cpu_rate_percent),
-        extra_processes: min_limit(requested.extra_processes, consent.extra_processes),
+        cpu_rate_percent: min_budget(
+            requested.cpu_rate_percent,
+            consent.cpu_rate_percent,
+            effective_cpu_rate_percent,
+        ),
+        extra_processes: min_budget(
+            requested.extra_processes,
+            consent.extra_processes,
+            effective_extra_processes,
+        ),
         approved_at: consent.approved_at.clone(),
     }
 }
@@ -366,26 +391,39 @@ pub fn remote_platform_auto_approval(
         && crate::consent::is_platform_envelope(requested)
 }
 
-/// Approves the request recorded from `cluster_id` for `plugin_key`, as
-/// the host's operator reviewed it: `expected_version`, when given, must be
-/// the recorded version, and the consent is the recorded request minus
+/// Approves the request recorded from `cluster_id` for `plugin_key`,
+/// exactly as it was reviewed: `reviewed_digest` must be the recorded
+/// request's digest
+/// ([`bookclerk_library::control_plane::RemotePluginConsent::request_digest`],
+/// shown with the request), and the consent is that request minus
 /// `narrowing` ([`remote_consent`]). The write is a compare-and-swap on the
 /// recorded request, so a request that changed after it was read is
 /// refused rather than approved unseen.
 ///
+/// # Arguments
+///
+/// * `store` - This host's library.
+/// * `cluster_id` - Owner cluster id.
+/// * `plugin_key` - Canonical plugin key.
+/// * `reviewed_digest` - Digest of the request as the approver reviewed it.
+/// * `narrowing` - What the approver takes out of the request.
+/// * `approver` - Who approves (an automatic approval never overrides an
+///   operator's revoke).
+///
 /// # Errors
 ///
-/// Returns an error when nothing is recorded, the version differs, the
-/// recorded request does not parse or the narrowing names something it
-/// does not ask for, or the store refuses the write (including a request
-/// that changed in between).
+/// Returns an error when nothing is recorded, the recorded request is not
+/// the reviewed one (its digest differs), it does not parse or the
+/// narrowing names something it does not ask for, or the store refuses the
+/// write (a request that changed in between, or an automatic approval of a
+/// revoked one).
 pub async fn approve_remote_request(
     store: &bookclerk_library::LibraryStore,
     cluster_id: &str,
     plugin_key: &str,
-    expected_version: Option<&str>,
+    reviewed_digest: &str,
     narrowing: &RemoteNarrowing,
-    approved_by: &str,
+    approver: bookclerk_library::control_plane::RemoteApprover<'_>,
 ) -> Result<bookclerk_library::control_plane::RemotePluginConsent> {
     use bookclerk_library::control_plane::{
         approve_remote_plugin, load_remote_plugin_consent, RemoteApproval,
@@ -399,13 +437,13 @@ pub async fn approve_remote_request(
                 "cluster {cluster_id} has not asked to run {plugin_key} here"
             ))
         })?;
-    if let Some(expected) = expected_version {
-        if expected != row.requested_version {
-            return Err(crate::PluginError::message(format!(
-                "the cluster asks for version {}, not {expected}",
-                row.requested_version
-            )));
-        }
+    let current = row.request_digest();
+    if !reviewed_digest.trim().eq_ignore_ascii_case(&current) {
+        return Err(crate::PluginError::message(format!(
+            "the request for {plugin_key} changed since it was reviewed (now version {}, \
+             request {current}); review it again",
+            row.requested_version
+        )));
     }
     let requested = serde_json::from_str::<PluginGrant>(&row.requested_grant_json)
         .ok()
@@ -422,7 +460,7 @@ pub async fn approve_remote_request(
             version: &row.requested_version,
             reviewed_request_json: &row.requested_grant_json,
             grant_json: &grant_json,
-            approved_by,
+            approver,
         },
     )
     .await
@@ -593,6 +631,175 @@ mod tests {
         outbound_from_deny.domains.clear();
         outbound_from_deny.tcp.clear();
         assert!(!remote_request_within(&deny_reviewed, &outbound_from_deny));
+    }
+
+    #[test]
+    fn an_unset_budget_reads_as_its_default_not_as_the_smallest() {
+        use bookclerk_plugin_manifest::WorkerdLimits;
+        let mut reviewed = requested();
+        reviewed.cpu_rate_percent = Some(10);
+        reviewed.extra_processes = Some(0);
+        reviewed.cpu_ms = Some(1_000);
+        reviewed.subrequests = Some(5);
+        let consent = remote_consent(&reviewed, &RemoteNarrowing::default()).unwrap();
+        let state = |request: &PluginGrant| {
+            remote_consent_state(
+                &reviewed.plugin_key,
+                &json(request),
+                Some(&json(&reviewed)),
+                Some(&json(&consent)),
+            )
+        };
+        assert!(state(&reviewed).grant().is_some());
+
+        // Dropping a field leaves the default (80% CPU, 2 extra
+        // processes) or the manifest's limit, wider than what was reviewed.
+        let mut no_rate = reviewed.clone();
+        no_rate.cpu_rate_percent = None;
+        let mut no_processes = reviewed.clone();
+        no_processes.extra_processes = None;
+        let mut no_cpu_ms = reviewed.clone();
+        no_cpu_ms.cpu_ms = None;
+        let mut zero_cpu_ms = reviewed.clone();
+        zero_cpu_ms.cpu_ms = Some(0);
+        let mut no_subrequests = reviewed.clone();
+        no_subrequests.subrequests = None;
+        for wider in [
+            no_rate,
+            no_processes,
+            no_cpu_ms,
+            zero_cpu_ms,
+            no_subrequests,
+        ] {
+            assert_eq!(
+                state(&wider),
+                RemoteConsentState::NeedsReapproval,
+                "{wider:?}"
+            );
+        }
+
+        // A field set to its default where the review left it unset is
+        // no wider.
+        let mut unset = requested();
+        unset.cpu_rate_percent = None;
+        unset.extra_processes = None;
+        let mut at_default = unset.clone();
+        at_default.cpu_rate_percent = Some(effective_cpu_rate_percent(None));
+        at_default.extra_processes = Some(effective_extra_processes(None));
+        assert!(remote_request_within(&unset, &at_default));
+        at_default.extra_processes = Some(effective_extra_processes(None) + 1);
+        assert!(!remote_request_within(&unset, &at_default));
+
+        // The run grant takes the smaller effective value: an unset side
+        // counts as its default, and `cpu_ms = 0` as the workerd default.
+        let mut asks = requested();
+        asks.cpu_rate_percent = Some(effective_cpu_rate_percent(None) + 1);
+        asks.cpu_ms = Some(0);
+        let mut allows = asks.clone();
+        allows.cpu_rate_percent = None;
+        allows.cpu_ms = Some(10);
+        let narrowed = narrow_remote_grant(&asks, &allows);
+        assert_eq!(
+            narrowed.cpu_rate_percent,
+            Some(effective_cpu_rate_percent(None))
+        );
+        assert_eq!(narrowed.cpu_ms, Some(10));
+        const { assert!(WorkerdLimits::DEFAULT_CPU_MS > 10) };
+    }
+
+    #[tokio::test]
+    async fn an_approval_names_the_exact_request_it_reviewed() {
+        use bookclerk_library::control_plane::{
+            load_remote_plugin_consent, record_remote_plugin_request, revoke_remote_plugin,
+            RemoteApprover,
+        };
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let reviewed = requested();
+        let key = reviewed.plugin_key.clone();
+        let seen =
+            record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &json(&reviewed))
+                .await
+                .unwrap()
+                .request_digest();
+
+        // The owner widens the grant under the same version after the
+        // operator looked: the reviewed digest no longer matches.
+        let mut changed = reviewed.clone();
+        changed.domains.insert("tracker.example".into());
+        let now = record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &json(&changed))
+            .await
+            .unwrap();
+        assert_ne!(now.request_digest(), seen);
+        let operator = RemoteApprover::Operator("operator");
+        let refused = approve_remote_request(
+            &store,
+            "cluster-a",
+            &key,
+            &seen,
+            &RemoteNarrowing::default(),
+            operator,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("changed since it was reviewed"),
+            "{refused}"
+        );
+        assert!(!load_remote_plugin_consent(&store, "cluster-a", &key)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_approved());
+        for blank in ["", "  "] {
+            assert!(approve_remote_request(
+                &store,
+                "cluster-a",
+                &key,
+                blank,
+                &RemoteNarrowing::default(),
+                operator,
+            )
+            .await
+            .is_err());
+        }
+
+        // Approving what is recorded now stores exactly that request.
+        let approved = approve_remote_request(
+            &store,
+            "cluster-a",
+            &key,
+            &now.request_digest().to_ascii_uppercase(),
+            &RemoteNarrowing::default(),
+            operator,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            approved.approved_request_json.as_deref(),
+            Some(json(&changed).as_str())
+        );
+
+        // After a revoke only the operator approves again.
+        revoke_remote_plugin(&store, "cluster-a", &key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(approve_remote_request(
+            &store,
+            "cluster-a",
+            &key,
+            &approved.request_digest(),
+            &RemoteNarrowing::default(),
+            RemoteApprover::Platform,
+        )
+        .await
+        .is_err());
     }
 
     #[test]

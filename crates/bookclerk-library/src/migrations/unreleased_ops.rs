@@ -1093,6 +1093,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         grant_json TEXT,
         approved_at TEXT,
         approved_by TEXT,
+        revoked_at TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (owner_cluster_id, plugin_key)
     )",
