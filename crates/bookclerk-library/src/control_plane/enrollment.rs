@@ -653,6 +653,9 @@ pub async fn mint_enrollment_link(
     let mut raw = Zeroizing::new([0u8; SECRET_BYTES]);
     rand::rngs::OsRng.fill_bytes(raw.as_mut());
     let secret = EnrollmentSecret(Zeroizing::new(base64_url(raw.as_ref())));
+    // Known to the log and diagnostics scrubber before anything can print
+    // the returned token or the enrollment URL that carries it.
+    bookclerk_config::register_secret(secret.expose());
     let link_id = uuid::Uuid::new_v4().simple().to_string();
     let now = Utc::now();
     let ttl = Duration::from_std(ttl)
