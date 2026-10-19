@@ -23,6 +23,7 @@
 //! A close with 4403 (this node revoked) marks the link `revoked`, cancels
 //! held work, and stops that client; the link is not dialed again.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -124,9 +125,20 @@ pub fn spawn_cluster_links(state: Arc<AppState>) {
     tokio::spawn(supervise_cluster_links(state));
 }
 
+/// First delay before the active links are read again after a failed read.
+const LINK_RETRY_MIN: Duration = Duration::from_secs(5);
+
+/// Longest delay between attempts to read the active links again.
+const LINK_RETRY_MAX: Duration = Duration::from_secs(300);
+
 /// Runs the clients of the live library's active links until the library
 /// is swapped, then stops them (waiting for each to exit, so the same
 /// node never dials twice) and starts the new store's set.
+///
+/// When the links or a link's keys could not be read, the read is retried
+/// with a growing delay ([`LINK_RETRY_MIN`] to [`LINK_RETRY_MAX`]) and only
+/// the links not yet running are started, so a transient database error at
+/// startup does not leave an enrolled node undialed until the next swap.
 async fn supervise_cluster_links(state: Arc<AppState>) {
     let mut swaps = state.library_swaps.subscribe();
     loop {
@@ -135,8 +147,22 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
         swaps.borrow_and_update();
         let library = state.library_snapshot().await;
         let (stop, shutdown) = watch::channel(false);
-        let clients = start_clients(&state, &library, &shutdown).await;
-        let swapped = swaps.changed().await.is_ok();
+        let mut running = BTreeSet::new();
+        let mut clients = Vec::new();
+        let mut retry = LINK_RETRY_MIN;
+        let swapped = loop {
+            let complete =
+                start_clients(&state, &library, &shutdown, &mut running, &mut clients).await;
+            if complete {
+                break swaps.changed().await.is_ok();
+            }
+            tokio::select! {
+                changed = swaps.changed() => break changed.is_ok(),
+                () = tokio::time::sleep(retry) => {
+                    retry = (retry * 2).min(LINK_RETRY_MAX);
+                }
+            }
+        };
         let _ = stop.send(true);
         for mut client in clients {
             if tokio::time::timeout(CLIENT_STOP_TIMEOUT, &mut client)
@@ -153,23 +179,36 @@ async fn supervise_cluster_links(state: Arc<AppState>) {
     }
 }
 
-/// Starts one host client per active link in `library`, each stopping
-/// when `shutdown` turns true.
+/// Starts one host client per active link in `library` that is not yet in
+/// `running`, each stopping when `shutdown` turns true, and adds it to
+/// `running` and `clients`.
+///
+/// # Returns
+///
+/// `false` when the links or a link's keys could not be read, so the
+/// caller should try again; `true` when every active link was handled
+/// (started, or refused for a reason a retry would not change).
 async fn start_clients(
     state: &Arc<AppState>,
     library: &LibraryStore,
     shutdown: &watch::Receiver<bool>,
-) -> Vec<JoinHandle<()>> {
+    running: &mut BTreeSet<String>,
+    clients: &mut Vec<JoinHandle<()>>,
+) -> bool {
     let links = match list_cluster_links(library).await {
         Ok(links) => links,
         Err(err) => {
-            tracing::warn!(error = %err, "could not read cluster links");
-            return Vec::new();
+            tracing::warn!(error = %err, "could not read cluster links; retrying");
+            return false;
         }
     };
+    let mut complete = true;
     let files_dir = state.config.read().await.paths().files_dir.clone();
-    let mut clients = Vec::new();
-    for link in links.into_iter().filter(|link| link.is_active()) {
+    let pending: Vec<_> = links
+        .into_iter()
+        .filter(|link| link.is_active() && !running.contains(&link.owner_cluster_id))
+        .collect();
+    for link in pending {
         let keys = match load_cluster_link_keys(library, &link).await {
             Ok(keys) => keys,
             Err(err) => {
@@ -177,8 +216,9 @@ async fn start_clients(
                 tracing::error!(
                     cluster_id = %link.owner_cluster_id,
                     error = %err,
-                    "cluster link keys unavailable; not connecting"
+                    "cluster link keys unavailable; not connecting yet"
                 );
+                complete = false;
                 continue;
             }
         };
@@ -199,6 +239,7 @@ async fn start_clients(
                 continue;
             }
         };
+        running.insert(cluster_id.clone());
         let library = library.clone();
         let shutdown = shutdown.clone();
         clients.push(tokio::spawn(async move {
@@ -217,7 +258,7 @@ async fn start_clients(
             }
         }));
     }
-    clients
+    complete
 }
 
 #[cfg(test)]
