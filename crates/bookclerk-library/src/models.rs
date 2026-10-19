@@ -1463,6 +1463,16 @@ pub struct JobPayload {
     /// retryable failure must not keep later claims in the resume path.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume_pending: bool,
+    /// Unix milliseconds when the requirements sweep first found this pending
+    /// job's [`Self::requires`] unsettled: no node runs all of them, or one of
+    /// them is no longer deployed anywhere.
+    ///
+    /// Cleared when they settle again. The sweep fails the job (or, when only
+    /// a dropped instance is involved, rewrites it) once it has been unsettled
+    /// for its grace period, so a placement move that briefly leaves no common
+    /// node does not fail queued work (`control_plane::sweep_job_requirements`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_unsettled_since_ms: Option<i64>,
 }
 
 /// Default envelope version for missing `v` on well-formed legacy rows.
@@ -1487,6 +1497,7 @@ impl Default for JobPayload {
             checkpoint: None,
             invocation_sequence: None,
             resume_pending: false,
+            requires_unsettled_since_ms: None,
         }
     }
 }

@@ -123,6 +123,23 @@ pub async fn resolve_job_requirements(
     payload: &JobPayload,
     node_bound_plugin_keys: &BTreeSet<String>,
 ) -> Result<Vec<String>> {
+    let requires = desired_requirements(store, kind, payload, node_bound_plugin_keys).await?;
+    if !requirements_routable(store, &requires).await? {
+        return Err(LibraryError::Conflict(no_common_node_message(
+            kind, &requires,
+        )));
+    }
+    Ok(requires)
+}
+
+/// The requirement set [`resolve_job_requirements`] would record now,
+/// without the common-node check.
+pub(super) async fn desired_requirements(
+    store: &LibraryStore,
+    kind: JobKind,
+    payload: &JobPayload,
+    node_bound_plugin_keys: &BTreeSet<String>,
+) -> Result<Vec<String>> {
     let mut requires = BTreeSet::new();
     if let Some(pinned) = payload
         .plugin_instance_id
@@ -142,16 +159,27 @@ pub async fn resolve_job_requirements(
             }
         }
     }
-    let requires: Vec<String> = requires.into_iter().collect();
-    if requires.len() > 1 && common_deployment_nodes(store, &requires).await?.is_empty() {
-        return Err(LibraryError::Conflict(format!(
-            "no node runs all of the plugin instances this {} job requires ({}); \
-             deploy them to a common node",
-            kind.as_str(),
-            requires.join(", ")
-        )));
-    }
-    Ok(requires)
+    Ok(requires.into_iter().collect())
+}
+
+/// True when some node is deployed to run every instance in `requires`
+/// (always true for zero or one instance: [`desired_requirements`] keeps
+/// only deployed instances).
+pub(super) async fn requirements_routable(
+    store: &LibraryStore,
+    requires: &[String],
+) -> Result<bool> {
+    Ok(requires.len() <= 1 || !common_deployment_nodes(store, requires).await?.is_empty())
+}
+
+/// Operator-facing reason for requirements no node can meet.
+pub(super) fn no_common_node_message(kind: JobKind, requires: &[String]) -> String {
+    format!(
+        "no node runs all of the plugin instances this {} job requires ({}); \
+         deploy them to a common node",
+        kind.as_str(),
+        requires.join(", ")
+    )
 }
 
 /// Nodes where every instance in `requires` has a deployment that should run.
@@ -299,9 +327,12 @@ pub async fn job_semaphores(
 /// ([`ROUTED_CLAIM_CANDIDATES`] per page); skips those whose requirements
 /// this node does not meet or whose account or instance semaphore is full;
 /// takes the permits of the first one left and claims it with
-/// [`LibraryStore::claim_job_by_id`]. A lost claim gives the permits back
-/// and moves on. It stops at the first claim, when the rows run out, or when
-/// the class semaphore itself is full (no further candidate could run).
+/// [`LibraryStore::claim_job_by_id`] at the lease generation of the record
+/// it evaluated, so a job whose requirements were rewritten after this node
+/// checked them is not claimed on the stale check. A lost claim gives the
+/// permits back and moves on. It stops at the first claim, when the rows
+/// run out, or when the class semaphore itself is full (no further
+/// candidate could run).
 ///
 /// # Returns
 ///
@@ -350,7 +381,12 @@ pub async fn claim_routed_job(
                 PermitAcquire::Blocked(_) => continue,
             };
             match store
-                .claim_job_by_id(&job.id, request.owner, request.lease_secs)
+                .claim_job_by_id(
+                    &job.id,
+                    job.lease_generation,
+                    request.owner,
+                    request.lease_secs,
+                )
                 .await
             {
                 Ok(Some(job)) => return Ok(Some(RoutedJobClaim { job, permits })),
