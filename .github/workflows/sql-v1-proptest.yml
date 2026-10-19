@@ -1,5 +1,6 @@
-# Longer SQL-v1 property tests and coverage-guided fuzz. PR CI keeps modest
-# in-crate case counts plus deterministic corpus replay.
+# Longer SQL-v1 property tests and the sqlite/postgres differential. PR CI keeps
+# modest in-crate case counts plus deterministic corpus replay; coverage-guided
+# fuzzing runs in the ClusterFuzzLite workflows (cflite-pr.yml, cflite-batch.yml).
 name: SQL-v1 property tests
 
 on:
@@ -91,37 +92,3 @@ jobs:
           BOOKCLERK_REQUIRE_POSTGRES_TESTS: "1"
         run: cargo test -p bookclerk-library --lib postgres_differential_grammar_aware_matches_sqlite -- --ignored --test-threads=1 --nocapture
 
-  fuzz:
-    name: cargo-fuzz (45s / target)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install nightly + llvm-tools
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: nightly
-          components: llvm-tools-preview
-
-      - name: Install capnproto and clang
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends capnproto clang
-
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          env-vars: RUSTFLAGS
-          workspaces: fuzz
-          cache-on-failure: true
-
-      - name: Fuzz lexer / parser / admission
-        working-directory: fuzz
-        run: cargo +nightly fuzz run sql_parse -- -max_total_time=45 -max_len=2048
-
-      - name: Fuzz physical lowering
-        working-directory: fuzz
-        run: cargo +nightly fuzz run sql_lower -- -max_total_time=45 -max_len=2048

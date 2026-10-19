@@ -61,9 +61,17 @@ pub fn build_samples(
         return Err(Mp4Error::container("no chunk offsets"));
     }
 
+    // `stts` counts come from the file, so stop expanding once every sample has a
+    // duration: extra entries would be truncated below anyway, and a forged
+    // count of `u32::MAX` must not allocate gigabytes first. One spare entry
+    // keeps the empty-`stsz` case on its original path.
+    let duration_cap = sample_sizes.len().max(1);
     let mut durations = Vec::with_capacity(sample_sizes.len());
-    for &(count, delta) in stts {
+    'stts: for &(count, delta) in stts {
         for _ in 0..count {
+            if durations.len() == duration_cap {
+                break 'stts;
+            }
             durations.push(delta);
         }
     }
@@ -120,7 +128,9 @@ pub fn build_samples(
                 duration,
                 chunk_index: chunk_idx as u32,
             });
-            offset += u64::from(size);
+            offset = offset
+                .checked_add(u64::from(size))
+                .ok_or_else(|| Mp4Error::container("sample offset overflows u64"))?;
             cts = cts.saturating_add(u64::from(duration));
             sample_idx += 1;
         }
@@ -193,6 +203,33 @@ mod tests {
         assert_eq!(samples[1].offset, 1100);
         assert_eq!(samples[2].offset, 2000);
         assert_eq!(samples[3].start_cts, 3 * 1024);
+    }
+
+    #[test]
+    fn a_chunk_running_past_u64_max_is_refused() {
+        let stts = vec![(2, 1024)];
+        let stsc = vec![ChunkMapEntry {
+            first_chunk: 1,
+            samples_per_chunk: 2,
+            sample_description_index: 1,
+        }];
+        let err = build_samples(&stts, &stsc, &[100, 110], &[u64::MAX]).unwrap_err();
+        assert!(err.to_string().contains("overflows"), "{err}");
+    }
+
+    #[test]
+    fn forged_stts_count_does_not_expand_past_sample_count() {
+        // A `u32::MAX` count used to push four billion durations before the
+        // length check truncated them (found by the `mp4_parse` fuzz target).
+        let stts = vec![(u32::MAX, 1024)];
+        let stsc = vec![ChunkMapEntry {
+            first_chunk: 1,
+            samples_per_chunk: 2,
+            sample_description_index: 1,
+        }];
+        let samples = build_samples(&stts, &stsc, &[100, 110], &[1000]).unwrap();
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[1].start_cts, 1024);
     }
 
     #[test]

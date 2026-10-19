@@ -1,0 +1,54 @@
+# ClusterFuzzLite on pull requests: fuzz the targets under fuzz/ for a few
+# minutes when a change touches fuzzed code. In code-change mode it focuses on
+# targets whose coverage the diff touches, using the coverage report the
+# scheduled workflow publishes; without one it fuzzes every target.
+# https://google.github.io/clusterfuzzlite/running-clusterfuzzlite/github-actions/
+
+name: ClusterFuzzLite PR fuzzing
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "fuzz/**"
+      - "crates/bookclerk-mp4/**"
+      - "crates/bookclerk-plugin-abi/**"
+      - "crates/bookclerk-db-exec/**"
+      - ".clusterfuzzlite/**"
+      - ".github/workflows/cflite-*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Code-change mode downloads the batch workflow's coverage and corpus artifacts.
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr:
+    name: fuzz changed code (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: ${{ matrix.sanitizer }}
+
+      - name: Run fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: code-change
+          sanitizer: ${{ matrix.sanitizer }}

@@ -880,6 +880,12 @@ fn sea_value_to_json(v: &Value) -> JsonValue {
         Value::SmallInt(Some(n)) => JsonValue::from(*n),
         Value::Int(Some(n)) => JsonValue::from(*n),
         Value::BigInt(Some(n)) => JsonValue::from(*n),
+        // Unsigned values (SeaORM binds `LIMIT` as one) must stay integers:
+        // a NULL `LIMIT` is a SQLite "datatype mismatch".
+        Value::TinyUnsigned(Some(n)) => JsonValue::from(*n),
+        Value::SmallUnsigned(Some(n)) => JsonValue::from(*n),
+        Value::Unsigned(Some(n)) => JsonValue::from(*n),
+        Value::BigUnsigned(Some(n)) => JsonValue::from(*n),
         Value::Float(Some(n)) => JsonValue::from(f64::from(*n)),
         Value::Double(Some(n)) => JsonValue::from(*n),
         Value::String(Some(s)) => JsonValue::String(s.to_string()),
