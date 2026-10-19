@@ -442,7 +442,7 @@ fn sidecar_stems(key: &str) -> impl Iterator<Item = &str> {
 /// the job's title, when it names one), and for a Host trusted only with
 /// its owner's accounts is one of that user's; and the manifest is well
 /// formed, every key inside the title's own scope on its destination
-/// ([`UploadDestination`]) and none another title's ([`claims_another_books_key`]).
+/// ([`UploadDestination`]) and none another title's (`claims_another_books_key`).
 /// An earlier open upload of the same title by the same job is aborted.
 ///
 /// # Errors
