@@ -1743,7 +1743,10 @@ async fn a_repeated_completing_commit_gives_back_left_permits() {
     let semaphores = job_semaphores(&w.store, &job, SETTINGS.limits)
         .await
         .unwrap();
-    let holder = format!("{}/{}/left", remote_lease_owner(HOST), job_id);
+    let holder = format!(
+        "{}left",
+        job_permit_holder_prefix(&remote_lease_owner(HOST), &job_id, fence)
+    );
     assert!(matches!(
         acquire_permits(
             &w.store,
