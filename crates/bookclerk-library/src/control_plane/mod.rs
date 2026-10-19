@@ -79,9 +79,10 @@ pub use instances::{
     list_plugin_instances_for_key, load_plugin_instance, PluginInstance, PluginInstanceId,
 };
 pub use job_routing::{
-    account_semaphore, claim_routed_job, class_semaphore, instance_semaphore, job_semaphores,
-    node_can_run_job, resolve_job_requirements, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
-    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    account_semaphore, claim_routed_job, class_semaphore, instance_semaphore,
+    job_permit_holder_prefix, job_semaphores, node_can_run_job, resolve_job_requirements,
+    JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
+    ROUTED_CLAIM_CANDIDATES,
 };
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,

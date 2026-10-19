@@ -141,18 +141,23 @@ impl LibraryStore {
         Ok(out)
     }
 
-    /// Claims the pending job `job_id` for `owner` with a single CAS.
+    /// Claims the pending job `job_id` for `owner` with a single CAS, but
+    /// only while its lease generation is still `expected_generation`.
     ///
-    /// The update matches `state = 'pending'` and the lease generation read
-    /// just before it, so of several concurrent claimers on any number of
-    /// connections exactly one moves the row to `running` (and bumps the
-    /// generation that fences every later write). No transaction is needed:
-    /// a pending → running move does not change the admission count.
+    /// The update matches `state = 'pending'` and `expected_generation`, so
+    /// of several concurrent claimers on any number of connections exactly
+    /// one moves the row to `running` (and bumps the generation that fences
+    /// every later write). A successful claim therefore always runs at
+    /// `expected_generation + 1`, which lets the caller name the claim's
+    /// generation (in its permit holders, say) before claiming. No
+    /// transaction is needed: a pending → running move does not change the
+    /// admission count.
     ///
     /// # Returns
     ///
     /// The claimed record, or `None` when the row is missing, not pending,
-    /// not yet due, cancel-requested, unreadable, or another claimer won.
+    /// not yet due, cancel-requested, unreadable, no longer at
+    /// `expected_generation`, or another claimer won.
     ///
     /// # Errors
     ///
@@ -161,6 +166,7 @@ impl LibraryStore {
         &self,
         job_id: &str,
         owner: &str,
+        expected_generation: i64,
         lease_secs: u64,
     ) -> Result<Option<JobRecord>> {
         let Some(model) = jobs::Entity::find_by_id(job_id)
@@ -172,7 +178,10 @@ impl LibraryStore {
         };
         let now = Utc::now();
         let now_s = now.to_rfc3339();
-        if model.state != JobState::Pending.as_str() || parse_dt(&model.run_after) > now {
+        if model.state != JobState::Pending.as_str()
+            || model.lease_generation != expected_generation
+            || parse_dt(&model.run_after) > now
+        {
             return Ok(None);
         }
         let lease_expires =
