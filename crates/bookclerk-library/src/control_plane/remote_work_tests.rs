@@ -1579,8 +1579,8 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
     );
 }
 
-/// H-2: a node-local instance deploys only to the node that owns it and is
-/// never placed by the scheduler.
+/// H-2: a node-local instance deploys only to the node that owns it, is
+/// never placed by the scheduler, and never pins an acquire to its node.
 #[tokio::test]
 async fn a_node_local_instance_runs_only_on_its_node() {
     let _guard = master_key_test_lock_async().await;
@@ -1627,6 +1627,19 @@ async fn a_node_local_instance_runs_only_on_its_node() {
         .await
         .unwrap();
     assert_eq!(cluster.owner_node_id, None);
+    ensure_plugin_deployment(&w.store, &actor, &cluster.id, HOST, DesiredState::Present)
+        .await
+        .unwrap();
+    let bound: std::collections::BTreeSet<String> = [PLUGIN.to_string()].into();
+    let requires =
+        resolve_job_requirements(&w.store, JobKind::Acquire, &JobPayload::default(), &bound)
+            .await
+            .unwrap();
+    assert_eq!(
+        requires,
+        vec![cluster.id.to_string()],
+        "only the cluster instance binds an acquire"
+    );
 }
 
 /// A scan's rows are accepted only as the job's source plugin: a plugin
