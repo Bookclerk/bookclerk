@@ -250,8 +250,11 @@ pub async fn claim_remote_job(
                     resumed,
                 })),
                 Ok(false) => {
-                    // The lease was lost while the secrets were read; the
-                    // job is someone else's now, so only the permits go back.
+                    // The lease ran out or was lost while the secrets were
+                    // read, and nothing went out. A fence that still holds
+                    // the row gives it back unspent; the release is fenced,
+                    // so a job already claimed again is left alone.
+                    let _ = store.release_job_claim(&fence, resumed).await;
                     let _ = release_permits(store, &permits).await;
                     Ok(None)
                 }
