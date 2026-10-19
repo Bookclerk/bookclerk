@@ -1187,7 +1187,7 @@ async fn run_job<R: HostJobRunner>(
                 Arc::clone(&shared),
                 job_id.clone(),
                 fence,
-                claimed_at + grant,
+                (claimed_at, grant),
                 Arc::clone(&cancel),
                 Arc::clone(&lost),
                 resumed,
@@ -1208,20 +1208,19 @@ async fn run_job<R: HostJobRunner>(
 /// Extends a job's lease every third of it. A `lost` answer cancels the
 /// job; `cancel` from the operator asks the runner to stop.
 ///
-/// `confirmed_until` is when the lease the owner last confirmed runs out:
-/// the claim's, then each `renewed` (counted from when its renew was
+/// The lease the owner last confirmed is the claim's (`grant`, from
+/// `claimed_at`), then each `renewed` (counted from when its renew was
 /// sent) or `resumed` that lists the fence (counted from its `hello`, for
 /// the lease the resume names), whichever is newest. Renewals follow the
 /// newest lease's length, and one that is not answered before the lease
-/// runs out counts as unanswered.
-/// Once it passes without a newer confirmation, whether the host is
+/// runs out counts as unanswered. Once it passes without a newer confirmation, whether the host is
 /// disconnected or the owner leaves renewals unanswered, the job is marked
 /// lost and cancelled: the owner may already have handed it elsewhere.
 async fn renew_loop(
     shared: Arc<Shared>,
     job_id: String,
     fence: i64,
-    mut confirmed_until: tokio::time::Instant,
+    (claimed_at, grant): (tokio::time::Instant, Duration),
     cancel: Arc<AtomicBool>,
     lost: Arc<AtomicBool>,
     resumed: Arc<ResumeSlot>,
@@ -1234,13 +1233,13 @@ async fn renew_loop(
                 .max(500),
         )
     }
-    let mut every =
-        renew_every(confirmed_until.saturating_duration_since(tokio::time::Instant::now()));
-    // When the newest confirmation was made: a `resumed` replaces the
-    // lease only when its `hello` came after it, since the owner's resume
-    // renewal set the lease from then (shorter, if the owner's lease
-    // length changed while the host was away).
-    let mut confirmed_at = tokio::time::Instant::now();
+    // When the newest confirmation was made, starting with the claim: a
+    // `resumed` replaces the lease only when its `hello` came after it,
+    // since the owner's resume renewal set the lease from then (shorter,
+    // if the owner's lease length changed while the host was away).
+    let mut confirmed_at = claimed_at;
+    let mut confirmed_until = claimed_at + grant;
+    let mut every = renew_every(grant);
     loop {
         // A resume wakes the loop at once: its lease may be shorter than
         // the one it was sleeping on.
