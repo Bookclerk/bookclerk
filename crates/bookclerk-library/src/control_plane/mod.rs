@@ -105,10 +105,10 @@ pub use placement::{
     SCHEDULER_LEASE_TTL, TARGET_LABEL,
 };
 pub use remote_work::{
-    claim_remote_job, finish_remote_job, job_secret_refs, remote_job_fence, remote_lease_owner,
-    renew_remote_job, write_back_job_secret, JobSecret, JobSecretRef, RemoteClaimSettings,
-    RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack, MAX_WRITE_BACK_BYTES,
-    REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
+    claim_remote_job, finish_remote_job, job_secret_refs, release_remote_job, remote_job_fence,
+    remote_lease_owner, renew_remote_job, write_back_job_secret, JobSecret, JobSecretRef,
+    RemoteClaimSettings, RemoteFinish, RemoteJobClaim, RemoteOutcome, RemoteRenew, WriteBack,
+    MAX_WRITE_BACK_BYTES, REMOTE_LEASE_OWNER_PREFIX, SECRETS_UNAVAILABLE,
 };
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{

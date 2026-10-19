@@ -471,3 +471,126 @@ async fn an_acquire_completes_only_through_its_upload() {
         RemoteFinish::Refused("acquire_completes_on_upload")
     );
 }
+
+#[tokio::test]
+async fn write_back_accepts_only_the_secrets_handed_under_that_fence() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+    assert_eq!(claimed.secrets.len(), 1);
+
+    // A second token is created for the same account after the handoff:
+    // it is one of the account's secrets now, but the Host never got it.
+    let late = JobSecretRef {
+        name: "riley-acct.refresh".into(),
+        ..w.riley_token.clone()
+    };
+    let record = build_sealed_record(
+        b"late-v1",
+        &late.kind,
+        &late.provider,
+        secret_account_type::INTEGRATION,
+        &late.account_id,
+        &late.name,
+    )
+    .unwrap();
+    upsert_secret(w.store.db(), &record).await.unwrap();
+    assert!(job_secret_refs(&w.store, &claimed.job)
+        .await
+        .unwrap()
+        .contains(&late));
+
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &late, b"overwritten")
+            .await
+            .unwrap(),
+        WriteBack::Refused("secret_not_handed")
+    );
+    assert_eq!(read_token(&w.store, &late).await, "late-v1");
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &w.riley_token, b"riley-v2")
+            .await
+            .unwrap(),
+        WriteBack::Written
+    );
+}
+
+#[tokio::test]
+async fn a_renewal_that_is_lost_does_not_extend_the_lease() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    // The lease is close to running out, and another holder took the
+    // job's permits over.
+    let soon = chrono::Utc::now() + chrono::Duration::seconds(5);
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::LeaseExpiresAt,
+            Expr::value(Some(soon.to_rfc3339())),
+        )
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    cluster_leases::Entity::update_many()
+        .col_expr(cluster_leases::Column::Holder, Expr::value("someone-else"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, SETTINGS, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Lost
+    );
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert!(
+        job.lease_expires_at.unwrap() <= soon,
+        "a lost renewal must not push the reclaim out"
+    );
+}
+
+#[tokio::test]
+async fn a_released_claim_is_given_back_unspent() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    assert!(
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+            .await
+            .unwrap()
+    );
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(job.state, crate::models::JobState::Pending);
+    assert_eq!(job.attempt_count, 0, "no attempt is spent");
+    assert!(
+        live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the permits are given back"
+    );
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &w.riley_token, b"late")
+            .await
+            .unwrap(),
+        WriteBack::Refused("fence_not_live")
+    );
+    assert!(
+        !release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+            .await
+            .unwrap(),
+        "a released fence is not live"
+    );
+    let again = claim(&w.store).await.expect("claimable again at once");
+    assert!(again.job.lease_generation > fence);
+}
