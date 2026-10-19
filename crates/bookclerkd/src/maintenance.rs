@@ -16,10 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    load_or_create_node_identity, LeaseFence, SingletonDuty, EVENT_RETENTION_LEASE,
-    JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, SESSION_EXPIRY_LEASE,
+    current_process_incarnation, load_or_create_node_identity, LeaseFence, SingletonDuty,
+    EVENT_RETENTION_LEASE, JOB_RETENTION_LEASE, KV_EXPIRY_LEASE, SESSION_EXPIRY_LEASE,
 };
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{EventPruneStep, LibraryStore};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, warn};
 
@@ -161,9 +161,16 @@ async fn run_duty(
     match duty {
         Duty::JobRetention => library.prune_terminal_jobs(windows.job_days).await,
         Duty::EventRetention => {
-            library
-                .prune_event_deliveries(windows.event_days, windows.dead_letter_days)
-                .await
+            let mut removed = 0;
+            for (index, step) in EventPruneStep::ALL.into_iter().enumerate() {
+                if index > 0 {
+                    fence.check().await?;
+                }
+                removed += library
+                    .prune_event_step(step, windows.event_days, windows.dead_letter_days)
+                    .await?;
+            }
+            Ok(removed)
         }
         Duty::KvExpiry => library.kv_prune_expired().await,
         Duty::SessionExpiry => {
@@ -189,8 +196,14 @@ pub fn spawn_maintenance(state: Arc<AppState>) {
                 let files_dir = state.config.read().await.paths().files_dir.clone();
                 match load_or_create_node_identity(&files_dir) {
                     Ok(identity) => {
+                        // Two processes can share a files directory (and so a
+                        // node id) during an overlapping restart; the holder
+                        // must tell them apart, or the second would renew the
+                        // first's live lease with the same token.
+                        let holder =
+                            format!("{}/{}", identity.node_id, current_process_incarnation());
                         maintenance = Some(Maintenance::new(
-                            &identity.node_id,
+                            &holder,
                             MAINTENANCE_LEASE_TTL,
                             MAINTENANCE_INTERVAL,
                         ));

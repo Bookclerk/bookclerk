@@ -205,14 +205,16 @@ where
 {
     ensure_schema_migrations(db).await?;
     let state = current_schema_state(db).await?;
-    let planned =
-        crate::schema_walk::plan_schema_walk_from_state(&host_migration_plan(), &state, target);
-    if planned.map_or(true, |walk| walk.is_noop()) {
-        // Nothing to write (or a walk that cannot start): check only, without
-        // creating `cluster_leases` or taking the lease.
-        let walk = prepare_schema_change(db, target, &opts).await?;
-        apply_walk_batch(db, &walk, &mut run_batch).await?;
-        return Ok(walk);
+    let plan = host_migration_plan();
+    if let SchemaState::Frozen { version, .. } = &state {
+        verify_applied_checksums(db, &plan, *version).await?;
+    }
+    // Nothing to write (or a walk that cannot start): answer from this one
+    // read, without creating `cluster_leases` or taking the lease. Re-planning
+    // here could see another migrator's change and write outside the lease.
+    let planned = crate::schema_walk::plan_schema_walk_from_state(&plan, &state, target)?;
+    if planned.is_noop() {
+        return Ok(planned);
     }
     run_under_migration_lease(
         db,

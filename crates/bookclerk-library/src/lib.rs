@@ -141,7 +141,7 @@ pub use sql_plan::{
     wake_page_for_max_binds, AtomicSession, CompiledAtomic,
 };
 pub use store::{
-    event_outbox::{deliver_after_for, prepare_publish_domain_event},
+    event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
