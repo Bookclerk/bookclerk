@@ -24,7 +24,8 @@ use zeroize::Zeroizing;
 use crate::entities::cluster_links;
 use crate::error::{LibraryError, Result};
 use crate::secrets::{
-    build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret, upsert_secret,
+    build_sealed_record, delete_secret, get_secret, secret_account_type, secret_kind,
+    unseal_secret, upsert_secret,
 };
 use crate::store::LibraryStore;
 
@@ -199,6 +200,9 @@ pub fn decode_spki_pin(pin: &str) -> Result<[u8; 32]> {
 ///
 /// The key row is written first: a link row never exists without keys, and
 /// a key row left by a failed write is replaced by the next enrollment.
+/// When the re-enrollment minted a different node id, the earlier node's
+/// key row is deleted once the new link row is stored, so the sealed
+/// private keys of a node the owner no longer knows are not kept.
 ///
 /// # Errors
 ///
@@ -230,6 +234,7 @@ pub async fn record_cluster_link(
         &link.remote_node_id,
         CLUSTER_LINK_KEYS_NAME,
     )?;
+    let previous = load_cluster_link(store, &link.owner_cluster_id).await?;
     upsert_secret(store.db(), &record).await?;
     let row = cluster_links::ActiveModel {
         owner_cluster_id: Set(link.owner_cluster_id.clone()),
@@ -254,6 +259,17 @@ pub async fn record_cluster_link(
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    if let Some(previous) = previous.filter(|prev| prev.remote_node_id != link.remote_node_id) {
+        delete_secret(
+            store.db(),
+            secret_kind::CLUSTER_LINK,
+            Some(&link.owner_cluster_id),
+            secret_account_type::OPERATOR,
+            Some(&previous.remote_node_id),
+            CLUSTER_LINK_KEYS_NAME,
+        )
+        .await?;
+    }
     load_cluster_link(store, &link.owner_cluster_id)
         .await?
         .ok_or_else(|| LibraryError::NotFound(format!("cluster link {}", link.owner_cluster_id)))
@@ -453,6 +469,54 @@ mod tests {
         assert_eq!(again.spki_pin, None);
         let loaded = load_cluster_link_keys(&store, &again).await.unwrap();
         assert_eq!(loaded.sign_seed(), &[3; 32]);
+    }
+
+    /// True when a key row is sealed for `node_id` in `cluster-1`.
+    async fn key_row_exists(store: &LibraryStore, node_id: &str) -> bool {
+        get_secret(
+            store.db(),
+            secret_kind::CLUSTER_LINK,
+            Some("cluster-1"),
+            secret_account_type::OPERATOR,
+            Some(node_id),
+            CLUSTER_LINK_KEYS_NAME,
+        )
+        .await
+        .unwrap()
+        .is_some()
+    }
+
+    #[tokio::test]
+    async fn re_enrolling_as_another_node_deletes_the_old_node_keys() {
+        let _lock = master_key_test_lock_async().await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(dir.path()).await;
+        let first = ClusterLinkKeys::from_bytes(&[1; 32], &[2; 32]);
+        record_cluster_link(&store, &new_link(None), &first)
+            .await
+            .unwrap();
+        assert!(key_row_exists(&store, "node-1").await);
+
+        // The owner minted a new node id for the re-enrollment.
+        let mut again = new_link(None);
+        again.remote_node_id = "node-2".into();
+        let fresh = ClusterLinkKeys::from_bytes(&[3; 32], &[4; 32]);
+        let link = record_cluster_link(&store, &again, &fresh).await.unwrap();
+        assert_eq!(link.remote_node_id, "node-2");
+        assert!(key_row_exists(&store, "node-2").await);
+        assert!(
+            !key_row_exists(&store, "node-1").await,
+            "the previous node's sealed keys were left behind"
+        );
+        let loaded = load_cluster_link_keys(&store, &link).await.unwrap();
+        assert_eq!(loaded.box_secret(), &[4; 32]);
+
+        // Re-enrolling under the same node id keeps (replaces) its row.
+        let same = ClusterLinkKeys::from_bytes(&[5; 32], &[6; 32]);
+        let link = record_cluster_link(&store, &again, &same).await.unwrap();
+        assert!(key_row_exists(&store, "node-2").await);
+        let loaded = load_cluster_link_keys(&store, &link).await.unwrap();
+        assert_eq!(loaded.sign_seed(), &[5; 32]);
     }
 
     #[tokio::test]

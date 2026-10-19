@@ -1129,7 +1129,15 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   `secrets_unopenable`), a renewer extends the lease every third of it
   (`lost` cancels, `renewed {cancel}` asks the runner to stop), and the
   result is reported with `complete` or `fail`, waiting up to 10 minutes
-  for a connection. A lost fence's result is discarded. Write-back
+  for a connection. A lease the owner has not confirmed (by `work`, then
+  each `renewed`, counted from when the request was sent) by the time it
+  runs out, connected or not, marks the job lost and cancels it, so it
+  never runs on a lease the owner may have handed elsewhere. A `work`
+  that answers a claim which already timed out is failed at once as
+  `claim_abandoned` under its fence (the protocol has no release frame,
+  so this retries the job like any failure) rather than left to expire.
+  Client shutdown cancels every held job as lost, as revocation does.
+  A lost fence's result is discarded. Write-back
   (`HostJobCtx::write_back`) accepts only a ref handed with the job,
   seals the value to the live connection's owner box key with a fresh
   ephemeral key, and needs the fence still held. The daemon runs jobs

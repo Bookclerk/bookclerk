@@ -43,6 +43,11 @@ use crate::job_handler::{InProcessJobTransport, JobCommand, JobExecCtx, JobTrans
 /// Jobs a host client claims at once. Zero until host consent (step 8):
 /// nothing on a host may run an owner plugin before its operator approves
 /// it, and every job a host is trusted with runs one.
+///
+/// It must also stay zero until the local job handlers consume
+/// [`JobExecCtx::host`] and report over the owner connection: a handler
+/// that ignores it runs the job against this host's own state, not the
+/// owner's.
 pub const HOST_MAX_JOBS: usize = 0;
 
 /// Error kind for an acquire handed to a host before streamed uploads
