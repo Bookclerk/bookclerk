@@ -100,26 +100,43 @@ pub(crate) fn requirements_error(err: bookclerk_library::LibraryError) -> anyhow
     }
 }
 
+/// Takes a shared [`AppState::job_runtime`] permit, so a database swap
+/// cannot interleave with admission, waiting at most 15 seconds.
+async fn admission_permit(
+    state: &AppState,
+) -> anyhow::Result<tokio::sync::RwLockReadGuard<'_, ()>> {
+    tokio::time::timeout(Duration::from_secs(15), state.job_runtime.read())
+        .await
+        .map_err(|_| anyhow::anyhow!("job admission paused (database reload in progress)"))
+}
+
 /// Writes a job row and wakes the worker when a new row is created.
 ///
-/// Takes a shared [`AppState::job_runtime`] permit so a database swap cannot
-/// interleave with admission.
-async fn admit(state: &AppState, mut spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
-    let _permit = tokio::time::timeout(Duration::from_secs(15), state.job_runtime.read())
-        .await
-        .map_err(|_| anyhow::anyhow!("job admission paused (database reload in progress)"))?;
+/// Holds an [`admission_permit`] for the write.
+async fn admit(state: &AppState, spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
+    let _permit = admission_permit(state).await?;
     let library = state.library_snapshot().await;
+    admit_into(state, &library, spec).await
+}
+
+/// [`admit`] into `library`. The caller holds an [`admission_permit`] and
+/// took `library` under it, so the store cannot be swapped underneath.
+async fn admit_into(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    mut spec: EnqueueJobSpec,
+) -> anyhow::Result<AdmitJob> {
     if spec.payload.requires.is_empty() {
         let bound = if spec.kind == JobKind::Acquire {
             // Discovered keys plus instance keys, like the sweep: a node
             // without the `local` plugin installed must not admit an
             // acquire as claimable everywhere.
-            sweep_node_bound_output_keys(state, &library).await?
+            sweep_node_bound_output_keys(state, library).await?
         } else {
             std::collections::BTreeSet::new()
         };
         spec.payload.requires = bookclerk_library::control_plane::resolve_job_requirements(
-            &library,
+            library,
             spec.kind,
             &spec.payload,
             &bound,
@@ -286,21 +303,24 @@ pub async fn enqueue_scan(
     trigger: JobTrigger,
 ) -> anyhow::Result<Vec<AdmitJob>> {
     let (max_pending, max_attempts) = queue_limits(&state).await;
-    let plan = {
-        let library = state.library_snapshot().await;
-        bookclerk_library::control_plane::plan_scan(
-            &library,
-            requester,
-            account.as_deref(),
-            plugin_instance_id.as_deref(),
-        )
-        .await?
-    };
+    // Plan and admit against one store under one permit: a database reload
+    // between them would enqueue account ids read from the old database
+    // into the new one.
+    let _permit = admission_permit(&state).await?;
+    let library = state.library_snapshot().await;
+    let plan = bookclerk_library::control_plane::plan_scan(
+        &library,
+        requester,
+        account.as_deref(),
+        plugin_instance_id.as_deref(),
+    )
+    .await?;
     let mut admitted = Vec::with_capacity(plan.len());
     for payload in plan {
         admitted.push(
-            admit(
+            admit_into(
                 &state,
+                &library,
                 enqueue_spec(
                     JobKind::Scan,
                     payload.account,

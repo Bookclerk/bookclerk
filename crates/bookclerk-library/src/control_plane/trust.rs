@@ -257,13 +257,19 @@ fn claim_owns_job(
             .is_some_and(|expires| expires > now)
 }
 
-/// `accounts` rows with `account_id`, limited to `plugin_key` when given.
+/// `accounts` rows a job naming `needle` would touch, limited to
+/// `plugin_key` when given.
+///
+/// Matches the way the scan executor resolves an account needle
+/// (`SourceRegistry::account_needle_matches`): the account id or the label,
+/// ignoring ASCII case. A narrower match here would let a Host approve a
+/// job that the executor then runs against another user's account.
 async fn accounts_named(
     store: &LibraryStore,
-    account_id: &str,
+    needle: &str,
     plugin_key: Option<&str>,
 ) -> Result<BTreeSet<AccountKey>> {
-    let mut query = accounts::Entity::find().filter(accounts::Column::AccountId.eq(account_id));
+    let mut query = accounts::Entity::find();
     if let Some(key) = plugin_key {
         query = query.filter(accounts::Column::PluginKey.eq(key));
     }
@@ -272,6 +278,13 @@ async fn accounts_named(
         .await
         .map_err(LibraryError::Orm)?
         .into_iter()
+        .filter(|row| {
+            row.account_id.eq_ignore_ascii_case(needle)
+                || row
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.eq_ignore_ascii_case(needle))
+        })
         .map(|row| (row.plugin_key, row.account_id))
         .collect())
 }

@@ -3509,12 +3509,49 @@ struct ScanPlanResponse {
 
 /// Folds the per-account admissions of one scan into one response.
 ///
-/// A single planned job answers exactly like any other admission. Several
-/// answer 200 when any was accepted, otherwise 409 when all were already
-/// queued and 429 when the queue was full.
+/// The body is always a [`ScanPlanResponse`], so `job_ids` is present
+/// whatever the account count. A single planned job keeps the status and
+/// message of any other admission. Several answer 200 when any was
+/// accepted, otherwise 409 when all were already queued and 429 when the
+/// queue was full.
 fn scan_plan_response(admits: Vec<AdmitJob>) -> Response {
-    if admits.len() == 1 {
-        return admit_response("scan", admits.into_iter().next().expect("one admit"));
+    if let [admit] = admits.as_slice() {
+        let (status, message, job_id, error) = match admit {
+            AdmitJob::Created(id) => (
+                StatusCode::OK,
+                format!("scan job {id} accepted"),
+                id.clone(),
+                None,
+            ),
+            AdmitJob::Duplicate(id) => (
+                StatusCode::CONFLICT,
+                "scan already pending or running".to_string(),
+                id.clone(),
+                Some("conflict"),
+            ),
+            AdmitJob::QueueFull => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "job queue is full".to_string(),
+                String::new(),
+                Some("queue_full"),
+            ),
+        };
+        let job_ids = if job_id.is_empty() {
+            Vec::new()
+        } else {
+            vec![job_id.clone()]
+        };
+        return (
+            status,
+            Json(ScanPlanResponse {
+                ok: status == StatusCode::OK,
+                message,
+                job_id,
+                job_ids,
+                error: error.map(str::to_string),
+            }),
+        )
+            .into_response();
     }
     let mut created = Vec::new();
     let mut duplicates = Vec::new();

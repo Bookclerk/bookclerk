@@ -493,6 +493,32 @@ async fn scoped_trust_refuses_unowned_secrets(owner_db: LibraryStore, host_db: L
     )
     .await
     .unwrap());
+    // The executor matches an account needle by id or label, ignoring
+    // case, so Sam's `SHARED-ID` or an account labeled `shared-id` would be
+    // touched too.
+    for (id, label) in [("SHARED-ID", None), ("sam-other", Some("Shared-Id"))] {
+        add_account(&owner_db, OTHER_PLUGIN, id, true).await;
+        if let Some(label) = label {
+            accounts::Entity::update_many()
+                .col_expr(accounts::Column::Label, Expr::value(label))
+                .filter(accounts::Column::AccountId.eq(id))
+                .exec(owner_db.db())
+                .await
+                .unwrap();
+        }
+        link(&owner_db, sam, OTHER_PLUGIN, id).await;
+        assert!(
+            !job_trusted(&host_db, &trust, &job(JobKind::Scan, account("shared-id")))
+                .await
+                .unwrap(),
+            "{id} {label:?}"
+        );
+        accounts::Entity::delete_many()
+            .filter(accounts::Column::PluginKey.eq(OTHER_PLUGIN))
+            .exec(owner_db.db())
+            .await
+            .unwrap();
+    }
     let refused = [
         job(JobKind::Scan, JobPayload::default()),
         job(JobKind::Acquire, JobPayload::default()),
