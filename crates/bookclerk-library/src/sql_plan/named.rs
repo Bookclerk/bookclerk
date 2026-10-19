@@ -2110,6 +2110,7 @@ fn plan_claim_next_job(
                        AND cancel_requested = 0 \
                        AND json_valid(payload) = 1 \
                        AND IFNULL(json_extract(payload, '$.v') || '', '') = '1' \
+                       AND json_extract(payload, '$.requires') IS NULL \
                        AND kind IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
                        AND resource_class IN ('network', 'media', 'transcription', 'indexing') \
                      ORDER BY priority DESC, created_at ASC LIMIT 1\
@@ -4026,6 +4027,33 @@ mod tests {
             })
             .unwrap();
         assert_eq!(claimed, "good");
+    }
+
+    #[test]
+    fn unrouted_claim_skips_a_job_that_requires_instances() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_pending_job(
+            &conn,
+            "routed",
+            "acquire",
+            r#"{"v":1,"requires":["7d1f0f7e-4a8c-4d55-9d43-0b3a1b6f0c11"]}"#,
+            10,
+        );
+        seed_pending_job(&conn, "free", "scan", r#"{"v":1}"#, 0);
+        let result = run_plan(
+            &conn,
+            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::OK);
+        let claimed: String = conn
+            .query_row("SELECT id FROM jobs WHERE state = 'running'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(claimed, "free");
+        let (state, ..) = claim_row(&conn, "routed");
+        assert_eq!(state, "pending");
     }
 
     #[test]

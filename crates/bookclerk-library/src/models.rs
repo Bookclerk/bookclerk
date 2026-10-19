@@ -1424,6 +1424,15 @@ pub struct JobPayload {
     /// plugin's default instance on the claiming host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_instance_id: Option<String>,
+    /// Plugin instance ids the claiming node must run, with its guest up.
+    ///
+    /// Recorded at admission (the pinned instance and any node-bound
+    /// destination). Empty means any node may claim the job. The routed claim
+    /// (`control_plane::claim_routed_job`) skips a job whose instances are not
+    /// deployed and observed up on the claiming node, and the unrouted
+    /// [`crate::LibraryStore::claim_next_job`] never claims a job that has any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
     /// Admission source (`api` or `scheduler`).
     #[serde(default)]
     pub trigger: JobTrigger,
@@ -1468,6 +1477,7 @@ impl Default for JobPayload {
             account: None,
             title: None,
             plugin_instance_id: None,
+            requires: Vec::new(),
             trigger: JobTrigger::Api,
             integration_id: None,
             force: false,
@@ -1513,6 +1523,30 @@ pub enum EnqueueOutcome {
     },
     /// `pending + running` already equals `max_pending`.
     QueueFull,
+}
+
+/// Where the next page of routed-claim candidates starts (keyset paging).
+///
+/// Candidates are ordered by `priority DESC, created_at ASC, id ASC`; the
+/// cursor is the last row of the previous page, so rows that leave the
+/// pending state between pages never shift the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobClaimCursor {
+    /// Priority of the last row read.
+    pub priority: i64,
+    /// `created_at` (RFC 3339 text) of the last row read.
+    pub created_at: String,
+    /// Id of the last row read.
+    pub id: String,
+}
+
+/// One page of routed-claim candidates.
+#[derive(Debug, Clone, Default)]
+pub struct JobClaimPage {
+    /// Readable, not cancel-requested pending jobs, best first.
+    pub jobs: Vec<JobRecord>,
+    /// Where the next page starts, or `None` when no row remains.
+    pub next: Option<JobClaimCursor>,
 }
 
 /// Durable job row returned to the daemon API and worker.

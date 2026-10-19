@@ -60,7 +60,8 @@ is a plugin instance in the database: its settings come from the plugin's
 | `BOOKCLERK_JOBS_MAX_ATTEMPTS` | Claims before a job fails terminally (default 3) |
 | `BOOKCLERK_JOBS_RETENTION_DAYS` | Days to keep terminal job rows (default 7) |
 | `BOOKCLERK_JOBS_TEMP_QUOTA_BYTES` | Acquire scratch quota (default 2 GiB) |
-| `BOOKCLERK_JOBS_CONCURRENCY_NETWORK` | Network-class workers (default 1) |
+| `BOOKCLERK_JOBS_CONCURRENCY_NETWORK` | Network-class workers on this node and running network jobs cluster-wide (default 1) |
+| `BOOKCLERK_JOBS_CONCURRENCY_PLUGIN_INSTANCE` | Running jobs per required plugin instance, cluster-wide (default 1) |
 | `BOOKCLERK_MEDIA_WORKERS` | Concurrent codec jobs (`0` = one per core, capped at 8) |
 | `BOOKCLERK_MEDIA_ISOLATION` | `required` / `best-effort` / `off` |
 | `BOOKCLERK_MEDIA_WORKER` | Path to `bookclerk-media-worker` |
@@ -100,7 +101,8 @@ retention_days = 7
 # temp_quota_bytes = 2147483648
 
 [jobs.concurrency]
-network = 1
+network = 1          # workers here, and running network jobs cluster-wide
+plugin_instance = 1  # running jobs per required plugin instance, cluster-wide
 ```
 
 See [jobs.md](jobs.md) for the state machine, `409`/`429` admission, and crash
