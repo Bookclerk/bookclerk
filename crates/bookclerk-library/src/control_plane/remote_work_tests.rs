@@ -299,6 +299,42 @@ async fn a_remote_claim_hands_only_the_owners_secrets() {
     );
 }
 
+/// A job that names its account by label, or by its id in another case,
+/// is handed that account's secrets: the same accounts the executor and
+/// the trust check resolve.
+#[tokio::test]
+async fn a_job_naming_its_account_by_label_gets_its_secrets() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("Riley Main"))
+        .filter(accounts::Column::AccountId.eq("riley-acct"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    for needle in ["riley main", "RILEY-ACCT"] {
+        let job = enqueue(&w.store, JobKind::Scan, needle).await;
+        let claimed = claim(&w.store).await.expect("Riley's job is claimed");
+        assert_eq!(claimed.job.id, job, "{needle}");
+        let refs: Vec<&JobSecretRef> = claimed.secrets.iter().map(|s| &s.secret_ref).collect();
+        assert_eq!(refs, vec![&w.riley_token], "{needle}");
+        assert_eq!(
+            finish_remote_job(
+                &w.store,
+                HOST,
+                &job,
+                claimed.job.lease_generation,
+                SETTINGS.limits,
+                RemoteOutcome::Complete(None)
+            )
+            .await
+            .unwrap(),
+            RemoteFinish::Done,
+            "{needle}"
+        );
+    }
+}
+
 /// A fence reclaimed while the Host was away, presented by another node,
 /// or whose account was unlinked, is lost.
 #[tokio::test]
