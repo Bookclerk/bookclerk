@@ -675,7 +675,9 @@ async fn forgetting_an_earlier_lease_keeps_the_successors_handoffs() {
     assert!(second > first);
 
     // The first release's cleanup lands after the successor's handoff.
-    forget_handoffs(&w.store, &job_id, first).await.unwrap();
+    remote_work::forget_handoffs(&w.store, &job_id, first)
+        .await
+        .unwrap();
     assert_eq!(
         write_back_job_secret(&w.store, HOST, &job_id, second, &w.riley_token, b"riley-v2")
             .await

@@ -432,7 +432,11 @@ async fn record_handoff(
 /// Callers run this after the claim is given back, when the job may
 /// already be claimed again; a successor's lease has a higher generation,
 /// so its rows are kept.
-async fn forget_handoffs(store: &LibraryStore, job_id: &str, generation: i64) -> Result<()> {
+pub(super) async fn forget_handoffs(
+    store: &LibraryStore,
+    job_id: &str,
+    generation: i64,
+) -> Result<()> {
     job_secret_handoffs::Entity::delete_many()
         .filter(job_secret_handoffs::Column::JobId.eq(job_id))
         .filter(job_secret_handoffs::Column::LeaseGeneration.lte(generation))
