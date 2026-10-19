@@ -31,6 +31,20 @@ impl HostJobRunner for NoJobs {
     }
 }
 
+/// A runner that records the lease deadline its job was handed, then fails.
+#[derive(Clone, Default)]
+struct RecordsDeadline {
+    /// The handed deadline, once a job started.
+    deadline: Arc<Mutex<Option<std::time::SystemTime>>>,
+}
+
+impl HostJobRunner for RecordsDeadline {
+    async fn run(&self, ctx: HostJobCtx) -> Result<String, HostJobError> {
+        *lock(&self.deadline) = Some(ctx.job.lease_deadline);
+        Err(HostJobError::new("recorded", "the deadline was recorded"))
+    }
+}
+
 /// A runner that runs until its job is cancelled, and records both.
 #[derive(Clone, Default)]
 struct UntilCancelled {
@@ -529,6 +543,45 @@ async fn renewals_continue_while_a_report_waits() {
     })
     .await;
     assert!(handle.held_fences().is_empty());
+}
+
+/// The deadline handed to the runner is the lease counted from before the
+/// claim was sent, not from when the job started, so work honouring it
+/// stops before the fence can lapse.
+#[tokio::test]
+async fn the_handed_deadline_counts_from_the_claim() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = RecordsDeadline::default();
+    let before = std::time::SystemTime::now();
+    let (_handle, _stop, _exit) =
+        start_with(listener.local_addr().unwrap().port(), 1, runner.clone());
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    read_for(
+        &mut socket,
+        Duration::from_millis(1500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } | Body::Fail { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 30))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 30,
+                cancel: false,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    let deadline = lock(&runner.deadline).expect("the job ran");
+    assert!(deadline >= before + Duration::from_secs(30));
+    assert!(
+        deadline <= std::time::SystemTime::now() + Duration::from_secs(30),
+        "the deadline was counted from after the claim"
+    );
 }
 
 /// A job whose secrets do not open keeps renewing its lease while its

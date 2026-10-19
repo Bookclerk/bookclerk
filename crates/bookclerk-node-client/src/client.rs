@@ -1052,6 +1052,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
         // The owner starts the lease after this; counting from here never
         // overstates it.
         let claimed_at = tokio::time::Instant::now();
+        let claimed_wall = std::time::SystemTime::now();
         let answer = conn
             .request(Body::Claim {
                 item: ITEM_JOB.into(),
@@ -1080,6 +1081,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                     job,
                     fence,
                     lease_secs,
+                    lease_deadline: claimed_wall + Duration::from_secs(lease_secs).min(MAX_LEASE),
                     resumed,
                 };
                 tokio::spawn(run_job(
