@@ -55,10 +55,16 @@ pub async fn run_requirements_sweep(state: &AppState) -> Option<RequirementsSwee
             return None;
         }
     };
-    let bound = crate::jobs::node_bound_output_keys(state).await;
     // Hold off while a database swap is in progress, as admission does.
     let _permit = state.job_runtime.read().await;
     let library = state.library_snapshot().await;
+    let bound = match crate::jobs::node_bound_output_keys(state, &library).await {
+        Ok(bound) => bound,
+        Err(err) => {
+            warn!(error = %err, "node-bound outputs unavailable; requirements sweep skipped");
+            return None;
+        }
+    };
     match acquire_lease(
         &library,
         REQUIREMENTS_SWEEP_LEASE,
