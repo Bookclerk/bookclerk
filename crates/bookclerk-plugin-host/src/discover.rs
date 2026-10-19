@@ -167,8 +167,28 @@ pub fn first_party_database_kind(plugin: &DiscoveredPlugin) -> Option<DatabasePl
 #[must_use]
 pub fn is_first_party_local_output(plugin: &DiscoveredPlugin) -> bool {
     plugin.identity.provenance.is_verified_artifact()
-        && bookclerk_plugin_catalog::is_first_party_destination(plugin.plugin_key())
-        && plugin.plugin_key().package() == "bookclerk-plugin-destination-local"
+        && is_first_party_local_output_key(plugin.plugin_key())
+}
+
+/// True when `key` names the Bookclerk local-filesystem destination.
+///
+/// This is the key half of [`is_first_party_local_output`]: it does not see
+/// an install, so it cannot check provenance. Use it only where matching
+/// more plugins than the verified one is safe, such as routing acquires to
+/// the nodes that hold their output disks when discovery is unavailable.
+///
+/// # Arguments
+///
+/// * `key` - Durable plugin identity to classify.
+///
+/// # Returns
+///
+/// `true` for the first-party local destination package on a first-party
+/// provenance scheme.
+#[must_use]
+pub fn is_first_party_local_output_key(key: &PluginKey) -> bool {
+    bookclerk_plugin_catalog::is_first_party_destination(key)
+        && key.package() == "bookclerk-plugin-destination-local"
 }
 
 /// True when this install is the verified Bookclerk S3 destination.

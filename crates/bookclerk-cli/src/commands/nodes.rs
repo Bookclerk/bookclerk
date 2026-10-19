@@ -147,6 +147,35 @@ fn parse_ttl(raw: &str) -> anyhow::Result<std::time::Duration> {
     Ok(std::time::Duration::from_secs(total))
 }
 
+/// SPKI pin an enrollment link must carry: the self-signed node API
+/// certificate's in `self_signed` mode, none otherwise.
+///
+/// # Arguments
+///
+/// * `config` - Loaded configuration (mode and files directory).
+///
+/// # Returns
+///
+/// `Some(pin)` in `self_signed` mode, `None` in every other mode.
+///
+/// # Errors
+///
+/// Fails in `self_signed` mode while the pin cannot be read, so no link a
+/// host cannot verify is minted.
+fn invite_spki_pin(config: &Config) -> anyhow::Result<Option<String>> {
+    if config.daemon.node_api.mode != bookclerk_config::NodeApiMode::SelfSigned {
+        return Ok(None);
+    }
+    bookclerk_config::read_node_api_spki_pin(&config.paths().files_dir)
+        .map(Some)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no self-signed node API certificate yet: start bookclerkd once so it \
+                 writes the pin, then mint the invite"
+            )
+        })
+}
+
 /// Origin that enrollment links point at: `integrations.public_origin`, or
 /// this node's loopback listener when none is set.
 fn invite_origin(config: &Config) -> (String, bool) {
@@ -393,23 +422,14 @@ pub async fn run(
         NodesCommand::Invite { user, ttl, label } => {
             let ttl = parse_ttl(&ttl)?;
             let owner = resolve_user(store, &user).await?;
+            // A self-signed owner pins its certificate in the link. The daemon
+            // writes the pin when it first starts the TLS listener; without it
+            // a host cannot verify this owner, so nothing is minted.
+            let spki_pin = invite_spki_pin(config)?;
             let minted =
                 mint_enrollment_link(store, &cli_enrollment_actor(), owner.id, &label, Some(ttl))
                     .await?;
             let (origin, configured) = invite_origin(config);
-            // A self-signed owner pins its certificate in the link. The daemon
-            // writes the pin when it first starts the TLS listener.
-            let self_signed =
-                config.daemon.node_api.mode == bookclerk_config::NodeApiMode::SelfSigned;
-            let spki_pin = self_signed
-                .then(|| bookclerk_config::read_node_api_spki_pin(&config.paths().files_dir))
-                .flatten();
-            if self_signed && spki_pin.is_none() {
-                eprintln!(
-                    "note: no self-signed node API certificate yet (start bookclerkd once); \
-                     this link carries no pin, so a host cannot verify this owner"
-                );
-            }
             let url = minted.url(&origin, spki_pin.as_deref());
             let payload = json!({
                 "link": link_json(&minted.link, chrono::Utc::now()),
@@ -578,7 +598,7 @@ fn status_line(status: &NodeStatus) -> String {
 mod tests {
     use bookclerk_library::{LibraryStore, UserRole};
 
-    use super::{parse_ttl, resolve_user};
+    use super::{invite_spki_pin, parse_ttl, resolve_user};
 
     #[test]
     fn ttl_parses_units_and_refuses_others() {
@@ -589,6 +609,38 @@ mod tests {
         assert!(parse_ttl("24").is_err());
         assert!(parse_ttl("h").is_err());
         assert!(parse_ttl("1w").is_err());
+    }
+
+    #[test]
+    fn self_signed_invites_need_the_pin() {
+        let files = tempfile::tempdir().unwrap();
+        let config_path = files.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[integrations]\npublic_origin = \"https://owner.example:8443\"\n\n[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        )
+        .unwrap();
+        let load = || {
+            bookclerk_config::Config::load(
+                Some(files.path().to_path_buf()),
+                Some(config_path.clone()),
+            )
+            .unwrap()
+        };
+        let err = invite_spki_pin(&load()).unwrap_err().to_string();
+        assert!(err.contains("start bookclerkd once"), "{err}");
+
+        let dir = files
+            .path()
+            .join(bookclerk_config::NODE_API_SELF_SIGNED_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pin = "A".repeat(43);
+        std::fs::write(dir.join(bookclerk_config::NODE_API_SPKI_PIN_FILE), &pin).unwrap();
+        assert_eq!(invite_spki_pin(&load()).unwrap(), Some(pin));
+
+        // Other modes carry no pin and need none.
+        std::fs::write(&config_path, "").unwrap();
+        assert_eq!(invite_spki_pin(&load()).unwrap(), None);
     }
 
     #[tokio::test]

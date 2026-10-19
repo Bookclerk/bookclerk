@@ -603,7 +603,9 @@ async fn a_wrong_spki_pin_is_refused() {
     let host_files = tempfile::tempdir().unwrap();
     let (state, owner) = crate::node_api::tests::test_state_with(
         &owner_files,
-        "[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        // The certificate names `localhost`; the port is set once bound.
+        "[integrations]\npublic_origin = \"https://localhost\"\n\n\
+         [daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
     )
     .await;
     let cfg = state.config.read().await.clone();

@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::error::Result;
+use crate::error::{Mp4Error, Result};
 
 /// Read buffer for the sample copy.
 ///
@@ -25,6 +25,10 @@ pub struct SampleReader {
     src: BufReader<File>,
     /// Absolute file offset of the next unread byte (kept in sync after each read/seek).
     pos: u64,
+    /// File length when the reader was created, or `None` when it could not be
+    /// read. Sample sizes come from the file's own tables, so a read is checked
+    /// against this before its buffer is allocated.
+    len: Option<u64>,
 }
 
 impl SampleReader {
@@ -57,9 +61,11 @@ impl SampleReader {
     /// Buffered reader ready for [`Self::read_sample`].
     #[must_use]
     pub fn new(file: File) -> Self {
+        let len = file.metadata().ok().map(|meta| meta.len());
         Self {
             src: BufReader::with_capacity(IO_BUFFER_BYTES, file),
             pos: 0,
+            len,
         }
     }
 
@@ -77,8 +83,24 @@ impl SampleReader {
     ///
     /// # Errors
     ///
-    /// Returns an error when the underlying I/O, parse, network, or store operation fails.
+    /// Returns [`Mp4Error::Container`] when the sample would end past the end of
+    /// the file (a forged or truncated sample table), and an I/O error when the
+    /// read itself fails.
     pub fn read_sample(&mut self, offset: u64, size: usize, buf: &mut Vec<u8>) -> Result<()> {
+        if let Some(len) = self.len {
+            let end = u64::try_from(size)
+                .ok()
+                .and_then(|size| offset.checked_add(size));
+            match end {
+                Some(end) if end <= len => {}
+                _ => {
+                    return Err(Mp4Error::container(format!(
+                        "sample of {size} bytes at offset {offset} runs past the end of the \
+                         {len}-byte file"
+                    )));
+                }
+            }
+        }
         buf.resize(size, 0);
         self.seek_to(offset)?;
         self.src.read_exact(buf)?;
@@ -139,6 +161,22 @@ mod tests {
         let mut reader = SampleReader::open(&path).unwrap();
         let mut buf = Vec::new();
         assert!(reader.read_sample(2, 8, &mut buf).is_err());
+    }
+
+    #[test]
+    fn a_forged_size_is_refused_before_allocating() {
+        // A sample table can claim a 4 GiB sample in a tiny file; that used to
+        // allocate the whole buffer before the read failed (found by the
+        // `mp4_parse` fuzz target).
+        let (_dir, path) = file_of(&[1, 2, 3, 4]);
+        let mut reader = SampleReader::open(&path).unwrap();
+        let mut buf = Vec::new();
+        let err = reader
+            .read_sample(0, u32::MAX as usize, &mut buf)
+            .unwrap_err();
+        assert!(matches!(err, Mp4Error::Container(_)), "{err}");
+        assert!(buf.capacity() < 1024);
+        assert!(reader.read_sample(u64::MAX, 1, &mut buf).is_err());
     }
 
     #[test]
