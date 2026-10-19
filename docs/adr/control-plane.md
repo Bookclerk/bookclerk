@@ -787,8 +787,9 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
   database credentials or DEK. Enrollment, the transport policy, and the
   node socket handshake are built (see *Host-node enrollment and
   transport* below), and so is the owner side of the work frames (see
-  *Work frames, sealed secrets, wakes and resume* below); the host client
-  is not (see *Remaining work*). A redeemed
+  *Work frames, sealed secrets, wakes and resume* below), and so is the
+  host client (see *Host client* below; claims stay off with
+  `HOST_MAX_JOBS = 0`). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`

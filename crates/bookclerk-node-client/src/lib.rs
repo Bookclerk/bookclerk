@@ -30,7 +30,7 @@ mod jobs;
 
 pub use client::{
     ClientExit, ClientTiming, HeartbeatSource, HostClient, HostClientConfig, HostClientHandle,
-    SECRETS_UNOPENABLE,
+    MAX_LEASE, SECRETS_UNOPENABLE,
 };
 pub use endpoint::{DialError, OwnerEndpoint, OwnerIo, OwnerSocket, CONNECT_PATH, ENROLL_PATH};
 pub use enroll::{join_cluster, JoinError};

@@ -84,7 +84,7 @@ pub const CLAIM_ABANDONED: &str = "claim_abandoned";
 
 /// Longest lease this host counts on from one `work` or `renewed`; a
 /// longer grant is renewed as if it were this long.
-const MAX_LEASE: Duration = Duration::from_secs(24 * 60 * 60);
+pub const MAX_LEASE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a finished job's report keeps waiting for an owner connection.
 const REPORT_DEADLINE: Duration = Duration::from_secs(600);
@@ -175,9 +175,18 @@ struct HeldJob {
     lost: Arc<AtomicBool>,
     /// The lease length the claim granted (capped at [`MAX_LEASE`]).
     grant: Duration,
-    /// When the lease a `resumed` answer renewed runs out; the renew loop
-    /// takes it as a confirmation.
-    resumed_until: Arc<Mutex<Option<tokio::time::Instant>>>,
+    /// Where a `resumed` answer hands the job's renew loop its renewal.
+    resumed: Arc<ResumeSlot>,
+}
+
+/// A `resumed` renewal handed to a job's renew loop, which wakes for it.
+#[derive(Default)]
+struct ResumeSlot {
+    /// The `hello` the owner renewed the lease from, and that lease's
+    /// length.
+    latest: Mutex<Option<(tokio::time::Instant, Duration)>>,
+    /// Wakes the renew loop.
+    wake: tokio::sync::Notify,
 }
 
 /// One live connection's request side.
@@ -316,15 +325,23 @@ impl Shared {
 
     /// Records the job fences the owner renewed while answering a `hello`
     /// sent at `hello_at`, so their renew loops count the renewal as a
-    /// confirmation of the lease.
-    fn mark_renewed(&self, renewed: &[HeldFence], hello_at: tokio::time::Instant) {
+    /// confirmation of the lease: `lease_secs` long when the owner said
+    /// (capped at [`MAX_LEASE`]), else each job's original grant.
+    fn mark_renewed(
+        &self,
+        renewed: &[HeldFence],
+        hello_at: tokio::time::Instant,
+        lease_secs: Option<u64>,
+    ) {
+        let lease = lease_secs.map(|secs| Duration::from_secs(secs).min(MAX_LEASE));
         let held = lock(&self.held);
         for fence in renewed {
             if fence.kind != ITEM_JOB {
                 continue;
             }
             if let Some(job) = held.get(&fence.id).filter(|job| job.fence == fence.fence) {
-                *lock(&job.resumed_until) = Some(hello_at + job.grant);
+                *lock(&job.resumed.latest) = Some((hello_at, lease.unwrap_or(job.grant)));
+                job.resumed.wake.notify_one();
             }
         }
     }
@@ -709,6 +726,7 @@ impl<R: HostJobRunner> HostClient<R> {
                 renewed,
                 lost,
                 unchecked,
+                lease_secs,
             } = resumed.body
             else {
                 return Err(SessionEnd::Failed("expected resumed".into()));
@@ -722,7 +740,7 @@ impl<R: HostJobRunner> HostClient<R> {
                 "owner answered the held fences"
             );
             shared.mark_lost(&lost);
-            shared.mark_renewed(&renewed, hello_at);
+            shared.mark_renewed(&renewed, hello_at, lease_secs);
         }
         Ok((socket, owner_box_key))
     }
@@ -1123,7 +1141,7 @@ async fn run_job<R: HostJobRunner>(
     let cancel = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
     let grant = Duration::from_secs(lease_secs).min(MAX_LEASE);
-    let resumed_until = Arc::new(Mutex::new(None));
+    let resumed = Arc::new(ResumeSlot::default());
     {
         let mut held = lock(&shared.held);
         if shared.abandoned.load(Ordering::SeqCst) {
@@ -1138,7 +1156,7 @@ async fn run_job<R: HostJobRunner>(
                 cancel: Arc::clone(&cancel),
                 lost: Arc::clone(&lost),
                 grant,
-                resumed_until: Arc::clone(&resumed_until),
+                resumed: Arc::clone(&resumed),
             },
         );
     }
@@ -1172,7 +1190,7 @@ async fn run_job<R: HostJobRunner>(
                 claimed_at + grant,
                 Arc::clone(&cancel),
                 Arc::clone(&lost),
-                resumed_until,
+                resumed,
             ))]));
             runner.run(ctx).await
         }
@@ -1192,7 +1210,10 @@ async fn run_job<R: HostJobRunner>(
 ///
 /// `confirmed_until` is when the lease the owner last confirmed runs out:
 /// the claim's, then each `renewed` (counted from when its renew was
-/// sent) or `resumed` that lists the fence (counted from its `hello`).
+/// sent) or `resumed` that lists the fence (counted from its `hello`, for
+/// the lease the resume names), whichever is newest. Renewals follow the
+/// newest lease's length, and one that is not answered before the lease
+/// runs out counts as unanswered.
 /// Once it passes without a newer confirmation, whether the host is
 /// disconnected or the owner leaves renewals unanswered, the job is marked
 /// lost and cancelled: the owner may already have handed it elsewhere.
@@ -1203,43 +1224,66 @@ async fn renew_loop(
     mut confirmed_until: tokio::time::Instant,
     cancel: Arc<AtomicBool>,
     lost: Arc<AtomicBool>,
-    resumed_until: Arc<Mutex<Option<tokio::time::Instant>>>,
+    resumed: Arc<ResumeSlot>,
 ) {
-    let lease = confirmed_until.saturating_duration_since(tokio::time::Instant::now());
-    let every = Duration::from_millis(
-        u64::try_from(lease.as_millis() / 3)
-            .unwrap_or(u64::MAX)
-            .max(500),
-    );
+    /// A third of `lease`, at least 500 ms: how often it is renewed.
+    fn renew_every(lease: Duration) -> Duration {
+        Duration::from_millis(
+            u64::try_from(lease.as_millis() / 3)
+                .unwrap_or(u64::MAX)
+                .max(500),
+        )
+    }
+    let mut every =
+        renew_every(confirmed_until.saturating_duration_since(tokio::time::Instant::now()));
+    // When the newest confirmation was made: a `resumed` replaces the
+    // lease only when its `hello` came after it, since the owner's resume
+    // renewal set the lease from then (shorter, if the owner's lease
+    // length changed while the host was away).
+    let mut confirmed_at = tokio::time::Instant::now();
     loop {
-        tokio::time::sleep_until((tokio::time::Instant::now() + every).min(confirmed_until)).await;
+        // A resume wakes the loop at once: its lease may be shorter than
+        // the one it was sleeping on.
+        let woken_by_resume = tokio::select! {
+            () = tokio::time::sleep_until(
+                (tokio::time::Instant::now() + every).min(confirmed_until),
+            ) => false,
+            () = resumed.wake.notified() => true,
+        };
         if lost.load(Ordering::SeqCst) {
             return;
         }
         // Disconnected: the next hello resumes the fence, if the lease
         // still holds by then.
-        if let Some(conn) = shared.current() {
+        if let Some(conn) = shared.current().filter(|_| !woken_by_resume) {
             let sent_at = tokio::time::Instant::now();
-            let answer = conn
-                .request(Body::Renew {
+            // An answer that comes after the lease ran out is too late:
+            // the owner may already have handed the job elsewhere.
+            let answer = tokio::time::timeout_at(
+                confirmed_until,
+                conn.request(Body::Renew {
                     item: ITEM_JOB.into(),
                     job_id: job_id.clone(),
                     fence,
                     progress: None,
-                })
-                .await;
-            match answer.map(|frame| frame.body) {
-                Ok(Body::Renewed {
+                }),
+            )
+            .await;
+            match answer.map(|answer| answer.map(|frame| frame.body)) {
+                Ok(Ok(Body::Renewed {
                     lease_secs,
                     cancel: cancelled,
-                }) => {
-                    confirmed_until = sent_at + Duration::from_secs(lease_secs).min(MAX_LEASE);
+                })) => {
+                    let lease = Duration::from_secs(lease_secs).min(MAX_LEASE);
+                    confirmed_at = sent_at;
+                    confirmed_until = sent_at + lease;
+                    every = renew_every(lease);
                     if cancelled {
                         tracing::info!(%job_id, fence, "the operator cancelled the job");
                         cancel.store(true, Ordering::SeqCst);
                     }
                 }
-                Ok(Body::Lost { .. }) => {
+                Ok(Ok(Body::Lost { .. })) => {
                     tracing::warn!(%job_id, fence, "the job's fence is lost; cancelling it");
                     lost.store(true, Ordering::SeqCst);
                     cancel.store(true, Ordering::SeqCst);
@@ -1248,8 +1292,12 @@ async fn renew_loop(
                 _ => {}
             }
         }
-        if let Some(until) = lock(&resumed_until).take() {
-            confirmed_until = confirmed_until.max(until);
+        if let Some((hello_at, lease)) = lock(&resumed.latest).take() {
+            if hello_at >= confirmed_at {
+                confirmed_at = hello_at;
+                confirmed_until = hello_at + lease;
+                every = renew_every(lease);
+            }
         }
         if tokio::time::Instant::now() >= confirmed_until {
             tracing::warn!(%job_id, fence, "the owner did not confirm the job's lease before it ran out; cancelling it");
