@@ -445,6 +445,8 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Decodes a complete chunked body; `None` while incomplete.
 fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
     let mut out = Vec::new();
+    // Bytes of the whole body already behind `body`.
+    let mut consumed = 0usize;
     loop {
         let Some(line_end) = find(body, b"\r\n") else {
             return Ok(None);
@@ -456,13 +458,25 @@ fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, DialError> {
         if size == 0 {
             return Ok(Some(out));
         }
-        let Some(data) = body.get(data_start..data_start + size) else {
+        // The size is the owner's: a chunk that cannot fit in a response
+        // this client accepts is refused rather than waited for.
+        let data_end = data_start
+            .checked_add(size)
+            .filter(|end| {
+                consumed
+                    .checked_add(*end)
+                    .is_some_and(|end| end <= MAX_HTTP_RESPONSE_BYTES)
+            })
+            .ok_or(DialError::Http)?;
+        let rest_start = data_end.checked_add(2).ok_or(DialError::Http)?;
+        let Some(data) = body.get(data_start..data_end) else {
             return Ok(None);
         };
         out.extend_from_slice(data);
-        let Some(rest) = body.get(data_start + size + 2..) else {
+        let Some(rest) = body.get(rest_start..) else {
             return Ok(None);
         };
+        consumed += rest_start;
         body = rest;
     }
 }
@@ -613,5 +627,16 @@ mod tests {
         );
         assert_eq!(decode_chunked(b"4\r\nWi").unwrap(), None);
         assert!(decode_chunked(b"zz\r\n").is_err());
+        // An owner-chosen size that overflows, or that no accepted
+        // response could hold, is refused instead of waited for.
+        assert!(matches!(
+            decode_chunked(b"ffffffffffffffff\r\nab"),
+            Err(DialError::Http)
+        ));
+        let too_big = format!("{:x}\r\nab", MAX_HTTP_RESPONSE_BYTES);
+        assert!(matches!(
+            decode_chunked(too_big.as_bytes()),
+            Err(DialError::Http)
+        ));
     }
 }

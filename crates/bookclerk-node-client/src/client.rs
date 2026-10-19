@@ -14,7 +14,13 @@
 //!    (the host shows up in `node_status` like any node), pings every
 //!    [`ClientTiming::ping_interval`], an idle close after
 //!    [`ClientTiming::idle_timeout`], and every `wake` is handed to
-//!    [`HostClientHandle::subscribe_wakes`] subscribers and then acked.
+//!    [`HostClientHandle::subscribe_wakes`] subscribers and then acked. A
+//!    wake no subscriber receives is not acked: the owner keeps the
+//!    delivery and sends it again (after its lease, or on the next
+//!    connection). A heartbeat or claim the owner does not answer in
+//!    [`ClientTiming::request_timeout`] is retried with backoff from
+//!    [`ClientTiming::backoff_min`] to [`ClientTiming::backoff_max`]; those
+//!    loops end only with their connection.
 //! 5. With [`HostClientConfig::max_jobs`] above zero, a claim loop pulls
 //!    jobs, but only while [`HostClientConfig::claim_kinds`] and the
 //!    consented plugin set ([`HostClientHandle::set_consented_plugins`])
@@ -28,12 +34,18 @@
 //!    the lease every third of it; the result is reported with `complete`
 //!    or `fail` under the fence. Job tasks outlive a connection: renewals
 //!    and the final report wait for the next one, whose hello resumes the
-//!    fence.
+//!    fence. A job whose lease the owner has not confirmed (by `work` or
+//!    `renewed`) within its length is cancelled as lost, connected or
+//!    not, so it never runs past a lease the owner may have handed on. A
+//!    `work` answering a claim that already timed out is failed at once
+//!    with [`CLAIM_ABANDONED`] under its fence.
 //! 6. On disconnect the client backs off from
 //!    [`ClientTiming::backoff_min`] to [`ClientTiming::backoff_max`] with
 //!    jitter, and the backoff resets after a welcomed connection. A close
 //!    with [`CLOSE_REVOKED`] ends the client for good
-//!    ([`ClientExit::Revoked`]) and cancels every held job.
+//!    ([`ClientExit::Revoked`]) and cancels every held job. Shutdown
+//!    cancels every held job the same way, so no job task outlives the
+//!    client.
 //!
 //! Nothing secret is ever frame text: job secrets arrive sealed to this
 //! node's box key and write-backs leave sealed to the owner's per-connection
@@ -83,6 +95,15 @@ pub const KIND_NOT_RUN_HERE: &str = "kind_not_run_here";
 
 /// Largest artifact fetched from the owner (the library blob cap).
 pub const MAX_ARTIFACT_BYTES: usize = bookclerk_library::control_plane::MAX_ARTIFACT_BLOB_BYTES;
+
+/// Error kind of the `fail` a host sends for a job the owner granted to a
+/// claim that had already timed out here: nothing runs it, so the lease is
+/// handed back at once instead of being left to expire.
+pub const CLAIM_ABANDONED: &str = "claim_abandoned";
+
+/// Longest lease this host counts on from one `work` or `renewed`; a
+/// longer grant is renewed as if it were this long.
+const MAX_LEASE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a finished job's report keeps waiting for an owner connection.
 const REPORT_DEADLINE: Duration = Duration::from_secs(600);
@@ -178,6 +199,11 @@ struct HeldJob {
     /// Set when the job must be given back unrun (consent revoked); the
     /// result is discarded and `release` is sent instead.
     release: Arc<Mutex<Option<&'static str>>>,
+    /// The lease length the claim granted (capped at [`MAX_LEASE`]).
+    grant: Duration,
+    /// When the lease a `resumed` answer renewed runs out; the renew loop
+    /// takes it as a confirmation.
+    resumed_until: Arc<Mutex<Option<tokio::time::Instant>>>,
 }
 
 /// One live connection's request side.
@@ -225,6 +251,16 @@ impl Conn {
         }
         frame.ok_or(Unavailable)
     }
+
+    /// True once the writer task is gone (the connection is over).
+    fn is_closed(&self) -> bool {
+        self.outbox.is_closed()
+    }
+}
+
+/// The next retry delay after `delay`: doubled, up to `max`.
+fn next_retry(delay: Duration, max: Duration) -> Duration {
+    (delay * 2).min(max)
 }
 
 /// Locks a mutex, recovering from poisoning (every critical section is a
@@ -271,6 +307,9 @@ pub(crate) struct Shared {
     job_slots: Arc<Semaphore>,
     /// Serial of the next connection.
     next_serial: AtomicU64,
+    /// Set (under the `held` lock) once every job was abandoned; a job
+    /// starting after that is abandoned at once.
+    abandoned: AtomicBool,
 }
 
 impl Shared {
@@ -340,9 +379,27 @@ impl Shared {
         })
     }
 
-    /// Cancels every held job as lost (the node was revoked).
+    /// Records the job fences the owner renewed while answering a `hello`
+    /// sent at `hello_at`, so their renew loops count the renewal as a
+    /// confirmation of the lease.
+    fn mark_renewed(&self, renewed: &[HeldFence], hello_at: tokio::time::Instant) {
+        let held = lock(&self.held);
+        for fence in renewed {
+            if fence.kind != ITEM_JOB {
+                continue;
+            }
+            if let Some(job) = held.get(&fence.id).filter(|job| job.fence == fence.fence) {
+                *lock(&job.resumed_until) = Some(hello_at + job.grant);
+            }
+        }
+    }
+
+    /// Cancels every held job as lost (the node was revoked, or the client
+    /// is shutting down); their results are discarded.
     fn abandon_all(&self) {
-        for job in lock(&self.held).values() {
+        let held = lock(&self.held);
+        self.abandoned.store(true, Ordering::SeqCst);
+        for job in held.values() {
             job.lost.store(true, Ordering::SeqCst);
             job.cancel.store(true, Ordering::SeqCst);
         }
@@ -449,7 +506,12 @@ pub struct HostClientHandle {
 
 impl HostClientHandle {
     /// Wakes the owner forwarded (`{"type": "deployment.changed", ...}`).
-    /// Each is acked after it is handed to subscribers.
+    ///
+    /// A wake is acked once it is handed to at least one subscriber; while
+    /// there is none it stays unacked and the owner redelivers it later.
+    /// A subscriber that falls more than 64 wakes behind sees
+    /// [`broadcast::error::RecvError::Lagged`] for wakes already acked, and
+    /// must then resync the state they announce from the owner.
     #[must_use]
     pub fn subscribe_wakes(&self) -> broadcast::Receiver<serde_json::Value> {
         self.shared.wakes.subscribe()
@@ -644,6 +706,7 @@ impl<R: HostJobRunner> HostClient<R> {
             wakes,
             job_slots: Arc::new(Semaphore::new(config.max_jobs)),
             next_serial: AtomicU64::new(1),
+            abandoned: AtomicBool::new(false),
         });
         let handle = HostClientHandle {
             shared: Arc::clone(&shared),
@@ -660,7 +723,17 @@ impl<R: HostJobRunner> HostClient<R> {
 
     /// Connects, serves, and reconnects until `shutdown` turns true (or its
     /// sender is dropped) or the owner revokes this node.
-    pub async fn run(self, mut shutdown: watch::Receiver<bool>) -> ClientExit {
+    ///
+    /// Every held job is cancelled as lost before this returns, whatever
+    /// the reason, so no job task keeps running for a client that is gone.
+    pub async fn run(self, shutdown: watch::Receiver<bool>) -> ClientExit {
+        let exit = self.serve_until_exit(shutdown).await;
+        self.shared.abandon_all();
+        exit
+    }
+
+    /// The reconnect loop behind [`Self::run`].
+    async fn serve_until_exit(&self, mut shutdown: watch::Receiver<bool>) -> ClientExit {
         let timing = self.shared.timing;
         let mut backoff = timing.backoff_min;
         loop {
@@ -686,7 +759,6 @@ impl<R: HostJobRunner> HostClient<R> {
                         cluster_id = %self.shared.cluster_id,
                         "the owner revoked this host node; stopping the cluster link"
                     );
-                    self.shared.abandon_all();
                     return ClientExit::Revoked;
                 }
                 SessionEnd::Served => backoff = timing.backoff_min,
@@ -745,6 +817,7 @@ impl<R: HostJobRunner> HostClient<R> {
                 resume,
             },
         );
+        let hello_at = tokio::time::Instant::now();
         send(&mut socket, &hello).await?;
         let challenge = next_handshake_frame(&mut socket).await?;
         let Body::Challenge { nonce, cluster_id } = challenge.body else {
@@ -797,15 +870,24 @@ impl<R: HostJobRunner> HostClient<R> {
         };
         if resuming {
             let resumed = next_handshake_frame(&mut socket).await?;
-            let Body::Resumed { renewed, lost } = resumed.body else {
+            let Body::Resumed {
+                renewed,
+                lost,
+                unchecked,
+            } = resumed.body
+            else {
                 return Err(SessionEnd::Failed("expected resumed".into()));
             };
+            // An unchecked fence is neither renewed nor lost: its renew
+            // loop keeps renewing it and that answer decides.
             tracing::info!(
                 renewed = renewed.len(),
                 lost = lost.len(),
+                unchecked = unchecked.len(),
                 "owner answered the held fences"
             );
             shared.mark_lost(&lost);
+            shared.mark_renewed(&renewed, hello_at);
         }
         Ok((socket, owner_box_key))
     }
@@ -968,7 +1050,14 @@ async fn read_loop(
                                 .unwrap_or("")
                                 .to_string();
                             tracing::debug!(kind = %kind, "owner wake");
-                            let _ = shared.wakes.send(message);
+                            // Ack only a wake some handler received: an
+                            // unacked delivery stays durable on the owner,
+                            // which sends it again after its lease or on
+                            // the next connection.
+                            if shared.wakes.send(message).is_err() {
+                                tracing::debug!(kind = %kind, "no wake subscriber; leaving the wake unacked");
+                                continue;
+                            }
                             let ack = Message::Text(Frame::new(frame.id, Body::Ack {}).to_text().into());
                             if !matches!(
                                 tokio::time::timeout(timing.request_timeout, conn.outbox.send(ack)).await,
@@ -983,7 +1072,7 @@ async fn read_loop(
                             Some(answer) => {
                                 let _ = answer.send(frame);
                             }
-                            None => tracing::debug!(id = %frame.id, "unsolicited owner frame"),
+                            None => unsolicited(shared, conn, frame),
                         }
                     }
                     Message::Close(frame) => {
@@ -1008,13 +1097,53 @@ async fn read_loop(
     }
 }
 
-/// Sends a heartbeat every interval until the connection goes away.
+/// Handles an owner frame no request is waiting for. A `work` for a job
+/// answers a claim that already timed out (and was retried): nothing here
+/// runs it, so it is failed with [`CLAIM_ABANDONED`] under its fence and
+/// the owner frees the lease now instead of when it expires. Anything else
+/// is dropped.
+fn unsolicited(shared: &Arc<Shared>, conn: &Conn, frame: Frame) {
+    let Body::Work {
+        item, job, fence, ..
+    } = frame.body
+    else {
+        tracing::debug!(id = %frame.id, "unsolicited owner frame");
+        return;
+    };
+    if item != ITEM_JOB || shared.holds(&job.id, fence) {
+        tracing::debug!(id = %frame.id, "unsolicited owner work frame");
+        return;
+    }
+    tracing::warn!(job_id = %job.id, fence, "owner granted a job to a claim that timed out; handing it back");
+    let conn = conn.clone();
+    tokio::spawn(async move {
+        let answer = conn
+            .request(Body::Fail {
+                job_id: job.id.clone(),
+                fence,
+                error_kind: CLAIM_ABANDONED.into(),
+                message: "the host's claim timed out before the owner answered".into(),
+            })
+            .await;
+        if !matches!(
+            answer.map(|frame| frame.body),
+            Ok(Body::Accepted {} | Body::Lost { .. })
+        ) {
+            tracing::warn!(job_id = %job.id, fence, "the owner did not take the abandoned job back; its lease will expire");
+        }
+    });
+}
+
+/// Sends a heartbeat every interval until the connection goes away. A
+/// heartbeat the owner does not answer is retried with backoff (never
+/// slower than the interval); the loop ends only with its connection.
 async fn heartbeat_loop(
     shared: Arc<Shared>,
     conn: Conn,
     sampler: Arc<Mutex<Box<dyn HeartbeatSource>>>,
 ) {
     let interval = shared.timing.heartbeat_interval;
+    let mut retry = shared.timing.backoff_min;
     loop {
         let sampler = Arc::clone(&sampler);
         let Ok(sample) = tokio::task::spawn_blocking(move || lock(&sampler).sample()).await else {
@@ -1029,22 +1158,38 @@ async fn heartbeat_loop(
             memory_available_bytes: sample.memory_available_bytes,
             files_dir_free_bytes: sample.files_dir_free_bytes,
         };
-        match conn.request(beat).await {
-            Ok(Frame {
-                body: Body::Accepted {},
-                ..
-            }) => {}
-            Ok(_) => tracing::debug!("owner did not record the heartbeat"),
-            Err(Unavailable) => return,
-        }
-        tokio::time::sleep(interval).await;
+        let delay = match conn.request(beat).await {
+            Ok(answer) => {
+                if !matches!(answer.body, Body::Accepted {}) {
+                    tracing::debug!("owner did not record the heartbeat");
+                }
+                retry = shared.timing.backoff_min;
+                interval
+            }
+            Err(Unavailable) => {
+                if conn.is_closed() {
+                    return;
+                }
+                tracing::warn!(
+                    serial = conn.serial,
+                    "owner did not answer the heartbeat; retrying"
+                );
+                let delay = retry.min(interval);
+                retry = next_retry(retry, shared.timing.backoff_max);
+                delay
+            }
+        };
+        tokio::time::sleep(delay).await;
     }
 }
 
 /// Pulls jobs while job slots are free and the host would claim anything
-/// (some kind runs here and some plugin is consented).
+/// (some kind runs here and some plugin is consented). A claim the owner
+/// does not answer is retried with backoff; the loop ends only with its
+/// connection.
 async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: Arc<R>) {
     let mut consented = shared.consented.subscribe();
+    let mut retry = shared.timing.backoff_min;
     loop {
         let filter = match shared.claim_filter() {
             Some(filter) => filter,
@@ -1059,6 +1204,9 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
         let Ok(slot) = Arc::clone(&shared.job_slots).acquire_owned().await else {
             return;
         };
+        // The owner starts the lease after this; counting from here never
+        // overstates it.
+        let claimed_at = tokio::time::Instant::now();
         let answer = conn
             .request(Body::Claim {
                 item: ITEM_JOB.into(),
@@ -1066,6 +1214,9 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                 filter: Some(filter),
             })
             .await;
+        if answer.is_ok() {
+            retry = shared.timing.backoff_min;
+        }
         match answer {
             Ok(Frame {
                 body:
@@ -1093,6 +1244,7 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                     slot,
                     host_job,
                     sealed_secrets,
+                    claimed_at,
                 ));
             }
             Ok(Frame {
@@ -1114,7 +1266,18 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
-            Err(Unavailable) => return,
+            Err(Unavailable) => {
+                drop(slot);
+                if conn.is_closed() {
+                    return;
+                }
+                tracing::warn!(
+                    serial = conn.serial,
+                    "owner did not answer the claim; retrying"
+                );
+                tokio::time::sleep(retry).await;
+                retry = next_retry(retry, shared.timing.backoff_max);
+            }
         }
     }
 }
@@ -1138,6 +1301,7 @@ async fn run_job<R: HostJobRunner>(
     slot: OwnedSemaphorePermit,
     host_job: HostJob,
     sealed_secrets: Option<String>,
+    claimed_at: tokio::time::Instant,
 ) {
     let job_id = host_job.job.id.clone();
     let fence = host_job.fence;
@@ -1145,16 +1309,28 @@ async fn run_job<R: HostJobRunner>(
     let cancel = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
     let release = Arc::new(Mutex::new(None));
-    lock(&shared.held).insert(
-        job_id.clone(),
-        HeldJob {
-            fence,
-            plugin_keys: host_job.plugin_keys.clone(),
-            cancel: Arc::clone(&cancel),
-            lost: Arc::clone(&lost),
-            release: Arc::clone(&release),
-        },
-    );
+    let grant = Duration::from_secs(lease_secs).min(MAX_LEASE);
+    let resumed_until = Arc::new(Mutex::new(None));
+    {
+        let mut held = lock(&shared.held);
+        if shared.abandoned.load(Ordering::SeqCst) {
+            // The client stopped between the claim and here.
+            lost.store(true, Ordering::SeqCst);
+            cancel.store(true, Ordering::SeqCst);
+        }
+        held.insert(
+            job_id.clone(),
+            HeldJob {
+                fence,
+                plugin_keys: host_job.plugin_keys.clone(),
+                cancel: Arc::clone(&cancel),
+                lost: Arc::clone(&lost),
+                release: Arc::clone(&release),
+                grant,
+                resumed_until: Arc::clone(&resumed_until),
+            },
+        );
+    }
     // Checked after the job is held, so a revocation racing the claim is
     // seen either here or by `release_unconsented`.
     if !shared.claim_kinds.contains(&host_job.job.kind) {
@@ -1174,6 +1350,10 @@ async fn run_job<R: HostJobRunner>(
         None => Ok(Vec::new()),
         Some(sealed) => open_secrets(&shared.box_secret, &shared.node_id, &job_id, fence, sealed),
     };
+    // Renewals keep running through `report`, which can take up to
+    // [`REPORT_DEADLINE`]: a slow report must not let the fence lapse and
+    // throw away finished work.
+    let mut renewer = None;
     let result = match opened {
         Err(_) => {
             tracing::warn!(%job_id, fence, "job secrets do not open with this node's box key");
@@ -1189,14 +1369,15 @@ async fn run_job<R: HostJobRunner>(
                 Arc::clone(&cancel),
                 Arc::clone(&shared),
             );
-            let _renewer = AbortOnDrop(vec![tokio::spawn(renew_loop(
+            renewer = Some(AbortOnDrop(vec![tokio::spawn(renew_loop(
                 Arc::clone(&shared),
                 job_id.clone(),
                 fence,
-                lease_secs,
+                claimed_at + grant,
                 Arc::clone(&cancel),
                 Arc::clone(&lost),
-            ))]);
+                resumed_until,
+            ))]));
             runner.run(ctx).await
         }
     };
@@ -1209,6 +1390,7 @@ async fn run_job<R: HostJobRunner>(
     } else {
         report(&shared, &job_id, fence, result, &lost).await;
     }
+    drop(renewer);
     shared.release(&job_id, fence);
     drop(slot);
 }
@@ -1231,44 +1413,73 @@ async fn give_back(
 
 /// Extends a job's lease every third of it. A `lost` answer cancels the
 /// job; `cancel` from the operator asks the runner to stop.
+///
+/// `confirmed_until` is when the lease the owner last confirmed runs out:
+/// the claim's, then each `renewed` (counted from when its renew was
+/// sent) or `resumed` that lists the fence (counted from its `hello`).
+/// Once it passes without a newer confirmation, whether the host is
+/// disconnected or the owner leaves renewals unanswered, the job is marked
+/// lost and cancelled: the owner may already have handed it elsewhere.
 async fn renew_loop(
     shared: Arc<Shared>,
     job_id: String,
     fence: i64,
-    lease_secs: u64,
+    mut confirmed_until: tokio::time::Instant,
     cancel: Arc<AtomicBool>,
     lost: Arc<AtomicBool>,
+    resumed_until: Arc<Mutex<Option<tokio::time::Instant>>>,
 ) {
-    let every = Duration::from_millis((lease_secs.saturating_mul(1000) / 3).max(500));
+    let lease = confirmed_until.saturating_duration_since(tokio::time::Instant::now());
+    let every = Duration::from_millis(
+        u64::try_from(lease.as_millis() / 3)
+            .unwrap_or(u64::MAX)
+            .max(500),
+    );
     loop {
-        tokio::time::sleep(every).await;
+        tokio::time::sleep_until((tokio::time::Instant::now() + every).min(confirmed_until)).await;
         if lost.load(Ordering::SeqCst) {
             return;
         }
-        // Disconnected: the next hello resumes the fence.
-        let Some(conn) = shared.current() else {
-            continue;
-        };
-        let answer = conn
-            .request(Body::Renew {
-                item: ITEM_JOB.into(),
-                job_id: job_id.clone(),
-                fence,
-                progress: None,
-            })
-            .await;
-        match answer.map(|frame| frame.body) {
-            Ok(Body::Renewed { cancel: true, .. }) => {
-                tracing::info!(%job_id, fence, "the operator cancelled the job");
-                cancel.store(true, Ordering::SeqCst);
+        // Disconnected: the next hello resumes the fence, if the lease
+        // still holds by then.
+        if let Some(conn) = shared.current() {
+            let sent_at = tokio::time::Instant::now();
+            let answer = conn
+                .request(Body::Renew {
+                    item: ITEM_JOB.into(),
+                    job_id: job_id.clone(),
+                    fence,
+                    progress: None,
+                })
+                .await;
+            match answer.map(|frame| frame.body) {
+                Ok(Body::Renewed {
+                    lease_secs,
+                    cancel: cancelled,
+                }) => {
+                    confirmed_until = sent_at + Duration::from_secs(lease_secs).min(MAX_LEASE);
+                    if cancelled {
+                        tracing::info!(%job_id, fence, "the operator cancelled the job");
+                        cancel.store(true, Ordering::SeqCst);
+                    }
+                }
+                Ok(Body::Lost { .. }) => {
+                    tracing::warn!(%job_id, fence, "the job's fence is lost; cancelling it");
+                    lost.store(true, Ordering::SeqCst);
+                    cancel.store(true, Ordering::SeqCst);
+                    return;
+                }
+                _ => {}
             }
-            Ok(Body::Lost { .. }) => {
-                tracing::warn!(%job_id, fence, "the job's fence is lost; cancelling it");
-                lost.store(true, Ordering::SeqCst);
-                cancel.store(true, Ordering::SeqCst);
-                return;
-            }
-            _ => {}
+        }
+        if let Some(until) = lock(&resumed_until).take() {
+            confirmed_until = confirmed_until.max(until);
+        }
+        if tokio::time::Instant::now() >= confirmed_until {
+            tracing::warn!(%job_id, fence, "the owner did not confirm the job's lease before it ran out; cancelling it");
+            lost.store(true, Ordering::SeqCst);
+            cancel.store(true, Ordering::SeqCst);
+            return;
         }
     }
 }
@@ -1346,3 +1557,7 @@ async fn send_final(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod tests;

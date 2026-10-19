@@ -2,8 +2,14 @@
 //! fences lost while a Host was away stay lost, and write-back needs a
 //! live fence.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
+};
 
 use super::*;
 use crate::entities::{account_links, accounts, cluster_leases, jobs, node_credentials, nodes};
@@ -26,6 +32,7 @@ const SETTINGS: RemoteClaimSettings = RemoteClaimSettings {
     },
 };
 
+/// A store on a fresh SQLite file in `dir`, with the host schema and a master key.
 async fn store_in(dir: &std::path::Path) -> LibraryStore {
     let db = bookclerk_plugin_database_sqlite::open(&dir.join("library.db"))
         .await
@@ -35,6 +42,7 @@ async fn store_in(dir: &std::path::Path) -> LibraryStore {
     LibraryStore::from_connection(db)
 }
 
+/// Adds an `accounts` row for `account_id` under [`PLUGIN`].
 async fn add_account(store: &LibraryStore, account_id: &str) {
     let now = chrono::Utc::now().to_rfc3339();
     accounts::ActiveModel {
@@ -54,6 +62,7 @@ async fn add_account(store: &LibraryStore, account_id: &str) {
     .unwrap();
 }
 
+/// Links `account_id` to `user_id`'s local portal identity.
 async fn link(store: &LibraryStore, user_id: i64, account_id: &str) {
     let identity = store
         .ensure_local_portal_identity(user_id, None)
@@ -65,6 +74,7 @@ async fn link(store: &LibraryStore, user_id: i64, account_id: &str) {
         .unwrap();
 }
 
+/// Adds the [`HOST`] node, owned by `owner`, with a live credential.
 async fn add_host(store: &LibraryStore, owner: i64) {
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
@@ -106,6 +116,7 @@ async fn add_host(store: &LibraryStore, owner: i64) {
     .unwrap();
 }
 
+/// Seals `value` as the store token of `account_id` and names its row.
 async fn save_token(store: &LibraryStore, account_id: &str, value: &str) -> JobSecretRef {
     let name = format!("{account_id}.auth");
     let record = build_sealed_record(
@@ -126,6 +137,7 @@ async fn save_token(store: &LibraryStore, account_id: &str, value: &str) -> JobS
     }
 }
 
+/// Unseals the current value of `secret`.
 async fn read_token(store: &LibraryStore, secret: &JobSecretRef) -> String {
     let record = get_secret(
         store.db(),
@@ -141,6 +153,7 @@ async fn read_token(store: &LibraryStore, secret: &JobSecretRef) -> String {
     String::from_utf8(unseal_secret(&record).unwrap()).unwrap()
 }
 
+/// Enqueues a `kind` job for `account` and returns its id.
 async fn enqueue(store: &LibraryStore, kind: JobKind, account: &str) -> String {
     match store
         .enqueue_job(EnqueueJobSpec {
@@ -171,6 +184,7 @@ struct World {
     sam_token: JobSecretRef,
 }
 
+/// Builds the [`World`]: Riley owns the Host, Sam does not.
 async fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
@@ -200,6 +214,7 @@ async fn world() -> World {
     }
 }
 
+/// Claims the next network job as [`HOST`].
 async fn claim(store: &LibraryStore) -> Option<RemoteJobClaim> {
     claim_remote_job(store, HOST, JobResourceClass::Network, SETTINGS, None)
         .await
@@ -233,6 +248,8 @@ async fn expire_lease(store: &LibraryStore, job_id: &str) {
         .unwrap();
 }
 
+/// A Host is handed only its owner's jobs and secrets, and gives its
+/// permits back when the job ends.
 #[tokio::test]
 async fn a_remote_claim_hands_only_the_owners_secrets() {
     let _guard = master_key_test_lock_async().await;
@@ -282,6 +299,8 @@ async fn a_remote_claim_hands_only_the_owners_secrets() {
     );
 }
 
+/// A fence reclaimed while the Host was away, presented by another node,
+/// or whose account was unlinked, is lost.
 #[tokio::test]
 async fn fences_lost_while_the_host_was_away_stay_lost() {
     let _guard = master_key_test_lock_async().await;
@@ -359,6 +378,8 @@ async fn fences_lost_while_the_host_was_away_stay_lost() {
     let _ = w.riley;
 }
 
+/// Write-back needs a live fence, a secret handed under it, a valid value
+/// and a node that is still trusted.
 #[tokio::test]
 async fn write_back_needs_a_live_fence_and_a_handed_secret() {
     let _guard = master_key_test_lock_async().await;
@@ -450,6 +471,7 @@ async fn write_back_needs_a_live_fence_and_a_handed_secret() {
     assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
 }
 
+/// An acquire cannot be completed over the node API; only its upload completes it.
 #[tokio::test]
 async fn an_acquire_completes_only_through_its_upload() {
     let _guard = master_key_test_lock_async().await;
@@ -743,4 +765,393 @@ async fn remote_reads_are_scoped_to_the_nodes_own_deployments() {
     assert!(!artifact_served_to_node(&w.store, HOST, &archive)
         .await
         .unwrap());
+}
+
+/// A secret created for the account after the handoff cannot be written back.
+#[tokio::test]
+async fn write_back_accepts_only_the_secrets_handed_under_that_fence() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+    assert_eq!(claimed.secrets.len(), 1);
+
+    // A second token is created for the same account after the handoff:
+    // it is one of the account's secrets now, but the Host never got it.
+    let late = JobSecretRef {
+        name: "riley-acct.refresh".into(),
+        ..w.riley_token.clone()
+    };
+    let record = build_sealed_record(
+        b"late-v1",
+        &late.kind,
+        &late.provider,
+        secret_account_type::INTEGRATION,
+        &late.account_id,
+        &late.name,
+    )
+    .unwrap();
+    upsert_secret(w.store.db(), &record).await.unwrap();
+    assert!(job_secret_refs(&w.store, &claimed.job)
+        .await
+        .unwrap()
+        .contains(&late));
+
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &late, b"overwritten")
+            .await
+            .unwrap(),
+        WriteBack::Refused("secret_not_handed")
+    );
+    assert_eq!(read_token(&w.store, &late).await, "late-v1");
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &w.riley_token, b"riley-v2")
+            .await
+            .unwrap(),
+        WriteBack::Written
+    );
+}
+
+/// A renewal that finds a permit taken over answers `Lost` without pushing
+/// the job's reclaim out.
+#[tokio::test]
+async fn a_renewal_that_is_lost_does_not_extend_the_lease() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    // The lease is close to running out, and another holder took the
+    // job's permits over.
+    let soon = chrono::Utc::now() + chrono::Duration::seconds(5);
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::LeaseExpiresAt,
+            Expr::value(Some(soon.to_rfc3339())),
+        )
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    cluster_leases::Entity::update_many()
+        .col_expr(cluster_leases::Column::Holder, Expr::value("someone-else"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, SETTINGS, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Lost
+    );
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert!(
+        job.lease_expires_at.unwrap() <= soon,
+        "a lost renewal must not push the reclaim out"
+    );
+}
+
+/// A released claim is claimable again at once, with no attempt spent.
+#[tokio::test]
+async fn a_released_claim_is_given_back_unspent() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    assert_eq!(
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+            .await
+            .unwrap(),
+        RemoteFinish::Done
+    );
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(job.state, crate::models::JobState::Pending);
+    assert_eq!(job.attempt_count, 0, "no attempt is spent");
+    assert!(
+        live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the permits are given back"
+    );
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &w.riley_token, b"late")
+            .await
+            .unwrap(),
+        WriteBack::Refused("fence_not_live")
+    );
+    assert_eq!(
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+            .await
+            .unwrap(),
+        RemoteFinish::Lost,
+        "a released fence is not live"
+    );
+    let again = claim(&w.store).await.expect("claimable again at once");
+    assert!(again.job.lease_generation > fence);
+}
+
+/// Runs host batches on an open connection, as a guest that has no
+/// interactive transactions (D1) does, first applying `before` once: a
+/// write another node committed between the write-back's checks and its
+/// batch.
+struct RacingBatchExec {
+    /// Same file the store already migrated.
+    db: sea_orm::DatabaseConnection,
+    /// SQL run once ahead of the next batch.
+    before: Mutex<Option<&'static str>>,
+    /// How many batches were sent.
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl crate::TypedAtomicExec for RacingBatchExec {
+    async fn execute_typed(
+        &self,
+        envelope: bookclerk_db_exec::AdapterExecuteRequest,
+    ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, bookclerk_plugin_abi::PluginError>
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let before = self.before.lock().unwrap().take();
+        if let Some(sql) = before {
+            self.db
+                .execute_unprepared(sql)
+                .await
+                .map_err(|err| bookclerk_plugin_abi::PluginError::internal(err.to_string()))?;
+        }
+        bookclerk_db_exec::execute_typed_on_open_connection(
+            &self.db,
+            &envelope,
+            bookclerk_db_exec::ExecCaps::from(8u32),
+            bookclerk_db_exec::AtomicSession::from_deadline(None),
+            None,
+        )
+        .await
+        .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))
+    }
+}
+
+/// Write-back runs as one host batch with no `BEGIN`, and its guards hold
+/// inside that batch: a reclaim or a credential revocation committed after
+/// the checks but before the write leaves the token untouched.
+#[tokio::test]
+async fn write_back_is_one_guarded_batch_without_begin() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let exec = Arc::new(RacingBatchExec {
+        db: w.store.db().clone(),
+        before: Mutex::new(None),
+        calls: calls.clone(),
+    });
+    let store = w.store.clone().with_typed_exec(exec.clone());
+    crate::inject_begin_failures(8);
+    let write = |value: &'static [u8]| {
+        let store = store.clone();
+        let job_id = job_id.clone();
+        let secret = w.riley_token.clone();
+        async move {
+            write_back_job_secret(&store, HOST, &job_id, fence, &secret, value)
+                .await
+                .unwrap()
+        }
+    };
+
+    assert_eq!(write(b"riley-token-v2").await, WriteBack::Written);
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // The Host's credential is revoked just before the batch.
+    *exec.before.lock().unwrap() =
+        Some("UPDATE node_credentials SET revoked_at = '2026-01-01T00:00:00Z'");
+    assert_eq!(
+        write(b"riley-token-v3").await,
+        WriteBack::Refused("fence_not_live")
+    );
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
+    w.store
+        .db()
+        .execute_unprepared("UPDATE node_credentials SET revoked_at = NULL")
+        .await
+        .unwrap();
+
+    // The job is reclaimed just before the batch.
+    *exec.before.lock().unwrap() = Some(
+        "UPDATE jobs SET state = 'pending', lease_owner = NULL, \
+         lease_generation = lease_generation + 1",
+    );
+    assert_eq!(
+        write(b"riley-token-v4").await,
+        WriteBack::Refused("fence_not_live")
+    );
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+/// Permits taken under a higher limit are still found after the limit is
+/// lowered (or on an owner node configured lower), so the fence stays live
+/// and finishing gives them back.
+#[tokio::test]
+async fn permits_above_a_lowered_limit_are_still_held() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let semaphore = class_semaphore(JobResourceClass::Network);
+    let far = chrono::Utc::now().timestamp_millis() + 3_600_000;
+    for slot in 0..3 {
+        cluster_leases::ActiveModel {
+            name: Set(semaphore_slot_lease_name(&semaphore, slot)),
+            holder: Set("someone-else".into()),
+            token: Set(1),
+            expires_at_ms: Set(far),
+            renewed_at: Set(chrono::Utc::now().to_rfc3339()),
+        }
+        .insert(w.store.db())
+        .await
+        .unwrap();
+    }
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.expect("a free slot above the others");
+    let fence = claimed.job.lease_generation;
+
+    let lowered = RemoteClaimSettings {
+        limits: JobClaimLimits {
+            class: 1,
+            ..SETTINGS.limits
+        },
+        ..SETTINGS
+    };
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, lowered, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            lowered.limits,
+            RemoteOutcome::Complete(None)
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    let live = live_permits(&w.store, &semaphore, MAX_SEMAPHORE_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(live.len(), 3, "only the other holder's permits remain");
+    assert!(live.iter().all(|p| p.lease.holder == "someone-else"));
+}
+
+/// The current row of the semaphore slot lease `name`.
+async fn slot_lease(store: &LibraryStore, name: &str) -> ClusterLease {
+    load_lease(store, name).await.unwrap().expect("slot row")
+}
+
+/// A still-live permit left over from an earlier claim of the same job by
+/// the same Host (an older lease generation, in a low slot) is not taken for
+/// the current claim's permit (in a slot above a lowered limit): renewing
+/// extends the current permit and finishing frees its slot, while the
+/// leftover is left to expire with its own lease.
+#[tokio::test]
+async fn a_leftover_permit_of_an_earlier_generation_is_not_the_claims() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let semaphore = class_semaphore(JobResourceClass::Network);
+    let far = chrono::Utc::now().timestamp_millis() + 3_600_000;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let leftover_holder = format!(
+        "{}stale",
+        job_permit_holder_prefix(&remote_lease_owner(HOST), &job_id, 0)
+    );
+    for (slot, holder) in [(0, leftover_holder.as_str()), (1, "someone-else")] {
+        cluster_leases::ActiveModel {
+            name: Set(semaphore_slot_lease_name(&semaphore, slot)),
+            holder: Set(holder.into()),
+            token: Set(1),
+            expires_at_ms: Set(far),
+            renewed_at: Set(chrono::Utc::now().to_rfc3339()),
+        }
+        .insert(w.store.db())
+        .await
+        .unwrap();
+    }
+    let claimed = claim(&w.store).await.expect("a free slot above the others");
+    let fence = claimed.job.lease_generation;
+    assert_eq!(fence, 1, "the claim runs one generation after the leftover");
+    let current = semaphore_slot_lease_name(&semaphore, 2);
+    let row = slot_lease(&w.store, &current).await;
+    assert!(
+        row.holder.starts_with(&job_permit_holder_prefix(
+            &remote_lease_owner(HOST),
+            &job_id,
+            fence
+        )),
+        "the claim's permit is in the first free slot, bound to its generation"
+    );
+    // Bring the current permit close to expiry so a renewal is visible.
+    let soon = chrono::Utc::now().timestamp_millis() + 1_000;
+    cluster_leases::Entity::update_many()
+        .col_expr(cluster_leases::Column::ExpiresAtMs, Expr::value(soon))
+        .filter(cluster_leases::Column::Name.eq(current.as_str()))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+
+    let lowered = RemoteClaimSettings {
+        limits: JobClaimLimits {
+            class: 1,
+            ..SETTINGS.limits
+        },
+        ..SETTINGS
+    };
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, lowered, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    assert!(
+        slot_lease(&w.store, &current).await.expires_at_ms > soon + 30_000,
+        "the renewal extends the current claim's permit"
+    );
+    let leftover = slot_lease(&w.store, &semaphore_slot_lease_name(&semaphore, 0)).await;
+    assert_eq!(leftover.holder, leftover_holder);
+    assert_eq!(leftover.expires_at_ms, far, "the leftover is not renewed");
+
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            lowered.limits,
+            RemoteOutcome::Complete(None)
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    let live = live_permits(&w.store, &semaphore, MAX_SEMAPHORE_LIMIT)
+        .await
+        .unwrap();
+    let mut slots: Vec<u32> = live.iter().map(|p| p.slot).collect();
+    slots.sort_unstable();
+    assert_eq!(
+        slots,
+        vec![0, 1],
+        "finishing frees the current slot; the leftover expires on its own"
+    );
 }

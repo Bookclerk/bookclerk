@@ -100,6 +100,10 @@ pub struct AppState {
     pub tray_handoff: Mutex<Option<TrayHandoffTicket>>,
     /// Guest sessions for deployed instances. One map for the process lifetime.
     pub deployment_runtime: OnceLock<Arc<bookclerk_plugin_host::LiveDeploymentRuntime>>,
+    /// Counts database swaps: bumped after [`Self::library`] is replaced so
+    /// the cluster-link supervisor restarts its host clients on the new
+    /// store.
+    pub library_swaps: tokio::sync::watch::Sender<u64>,
 }
 
 /// In-process tray Open Bookclerk ticket: hash of a one-time code plus expiry.
@@ -1541,6 +1545,13 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
             );
             *config = new_cfg.clone();
         }
+    }
+
+    if db_plugin_changed {
+        // Host clients hold the previous store's links and keys; the
+        // cluster-link supervisor stops them and dials the new store's
+        // active links.
+        state.library_swaps.send_modify(|swaps| *swaps += 1);
     }
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
@@ -6189,6 +6200,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
 
         let app = Router::new()
@@ -6288,6 +6300,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
 
         let app = Router::new()
@@ -6440,6 +6453,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
         let scan = || {
             Request::builder()
@@ -6807,6 +6821,7 @@ mode = "deny"
             tray: RwLock::new(None),
             tray_handoff: Mutex::new(None),
             deployment_runtime: std::sync::OnceLock::new(),
+            library_swaps: tokio::sync::watch::Sender::new(0),
         });
 
         let page = super::list_books(

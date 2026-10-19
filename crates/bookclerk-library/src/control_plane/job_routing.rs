@@ -363,12 +363,31 @@ pub async fn job_semaphores(
     Ok(requests)
 }
 
+/// The holder prefix of the semaphore permits a routed claim of `job_id`
+/// by `owner` takes when the claim runs at lease `generation`:
+/// `<owner>/<job_id>/g<generation>/`.
+///
+/// Every permit of that claim's holder starts with it (a random suffix
+/// follows), and the trailing `/` keeps one generation's prefix from
+/// matching another's (`g1/` is not a prefix of `g10/`). A worker that has
+/// to find the claim's permits again by name, such as a Host renewing
+/// through another owner node, matches on this prefix, so a still-live
+/// permit left over from an earlier claim of the same job is never taken
+/// for the current one.
+pub fn job_permit_holder_prefix(owner: &str, job_id: &str, generation: i64) -> String {
+    format!("{owner}/{job_id}/g{generation}/")
+}
+
 /// Claims the best ready job this node can run, under the cluster semaphores.
 ///
 /// Reads the ready pending jobs of the class, best first; skips those the
 /// node is not trusted with ([`super::node_trust`]) or whose requirements
 /// it does not meet; takes the permits of the first one
-/// left and claims it with [`LibraryStore::claim_job_by_id`]. A lost claim
+/// left and claims it with [`LibraryStore::claim_job_by_id`] at the
+/// generation read with the candidate. The permit holder is
+/// [`job_permit_holder_prefix`] for the generation the claim runs at plus a
+/// random suffix, so permits left over from an earlier claim of the same
+/// job by the same owner never pass for this claim's. A lost claim
 /// gives the permits back and moves on. When the class semaphore itself is
 /// full, no further candidate is tried.
 ///
@@ -406,7 +425,13 @@ pub async fn claim_routed_job(
             continue;
         }
         let semaphores = job_semaphores(store, &job, request.limits).await?;
-        let holder = format!("{}/{}/{}", request.owner, job.id, Uuid::new_v4().simple());
+        // The claim below succeeds only at the generation read here, so it
+        // runs at the next one: bind the permits to that generation.
+        let holder = format!(
+            "{}{}",
+            job_permit_holder_prefix(request.owner, &job.id, job.lease_generation + 1),
+            Uuid::new_v4().simple()
+        );
         let resumed = job.payload.resume_pending;
         let permits = match acquire_permits(store, &semaphores, &holder, ttl).await? {
             PermitAcquire::Granted(permits) => permits,
@@ -414,7 +439,12 @@ pub async fn claim_routed_job(
             PermitAcquire::Blocked(_) => continue,
         };
         match store
-            .claim_job_by_id(&job.id, request.owner, request.lease_secs)
+            .claim_job_by_id(
+                &job.id,
+                request.owner,
+                job.lease_generation,
+                request.lease_secs,
+            )
             .await
         {
             Ok(Some(job)) => {
