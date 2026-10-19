@@ -52,15 +52,37 @@ async fn enroll_status(
 #[test]
 fn tls_modes_need_a_ready_gate() {
     use bookclerk_config::NodeApiMode;
-    let ready = NodeApiGate::fixed(NodeApiStatus::Ready);
-    let failed = NodeApiGate::fixed(NodeApiStatus::Failed);
     for mode in [NodeApiMode::Loopback, NodeApiMode::Proxy] {
         assert!(node_api_mounted(mode, None));
+        let started = NodeApiGate::fixed(mode, NodeApiStatus::Ready);
+        assert!(node_api_mounted(mode, Some(&started)));
     }
     for mode in [NodeApiMode::Acme, NodeApiMode::SelfSigned] {
+        let ready = NodeApiGate::fixed(mode, NodeApiStatus::Ready);
+        let failed = NodeApiGate::fixed(mode, NodeApiStatus::Failed);
         assert!(!node_api_mounted(mode, None), "no gate fails closed");
         assert!(!node_api_mounted(mode, Some(&failed)));
         assert!(node_api_mounted(mode, Some(&ready)));
+    }
+}
+
+#[test]
+fn a_reloaded_node_api_mode_stays_unmounted_until_restart() {
+    use bookclerk_config::NodeApiMode;
+    let modes = [
+        NodeApiMode::Loopback,
+        NodeApiMode::Proxy,
+        NodeApiMode::Acme,
+        NodeApiMode::SelfSigned,
+    ];
+    for started in modes {
+        let gate = NodeApiGate::fixed(started, NodeApiStatus::Ready);
+        for live in modes.into_iter().filter(|live| *live != started) {
+            assert!(
+                !node_api_mounted(live, Some(&gate)),
+                "started {started:?}, reloaded to {live:?}"
+            );
+        }
     }
 }
 
@@ -312,7 +334,7 @@ acme_directory_ca = "{ca}"
     // Pebble's order may fail once before succeeding; wait for Ready.
     tokio::time::timeout(
         Duration::from_secs(120),
-        gate.0.wait_for(|status| *status == NodeApiStatus::Ready),
+        gate.status.wait_for(|status| *status == NodeApiStatus::Ready),
     )
     .await
     .expect("Pebble issued a certificate")

@@ -68,40 +68,56 @@ pub enum NodeApiStatus {
 }
 
 /// Request extension every listener carries: whether the node API is
-/// mounted. Modes without a TLS listener are always mounted.
+/// mounted, and the `[daemon.node_api]` mode it was started for. Modes
+/// without a TLS listener are always mounted.
 #[derive(Debug, Clone)]
-pub struct NodeApiGate(watch::Receiver<NodeApiStatus>);
+pub struct NodeApiGate {
+    /// Status published by the TLS listener (or fixed at start).
+    status: watch::Receiver<NodeApiStatus>,
+    /// The mode [`start`] ran for; a reloaded config naming another mode
+    /// leaves the node API unmounted until the daemon restarts.
+    mode: NodeApiMode,
+}
 
 impl NodeApiGate {
-    /// A gate fixed at `status`.
+    /// A gate for `mode` fixed at `status`.
     #[cfg(test)]
     #[must_use]
-    pub fn fixed(status: NodeApiStatus) -> Self {
-        Self(watch::channel(status).1)
+    pub fn fixed(mode: NodeApiMode, status: NodeApiStatus) -> Self {
+        Self {
+            status: watch::channel(status).1,
+            mode,
+        }
     }
 
     /// Current status.
     #[must_use]
     pub fn status(&self) -> NodeApiStatus {
-        *self.0.borrow()
+        *self.status.borrow()
     }
 
     /// Waits until the status is no longer [`NodeApiStatus::Starting`].
     #[cfg(test)]
     pub async fn settled(&mut self) -> NodeApiStatus {
         let _ = self
-            .0
+            .status
             .wait_for(|status| *status != NodeApiStatus::Starting)
             .await;
         self.status()
     }
 }
 
-/// True when the node API may serve a request in `mode`. Modes with a TLS
-/// listener need a gate reporting [`NodeApiStatus::Ready`]; a request
-/// without a gate is refused in those modes (fail closed).
+/// True when the node API may serve a request in `mode` (the live config).
+/// Modes with a TLS listener need a gate reporting
+/// [`NodeApiStatus::Ready`]; a request without a gate is refused in those
+/// modes (fail closed). A gate started for another mode means
+/// `[daemon.node_api]` changed on reload: the listeners still match the old
+/// mode, so the node API stays unmounted until a restart.
 #[must_use]
 pub fn node_api_mounted(mode: NodeApiMode, gate: Option<&NodeApiGate>) -> bool {
+    if gate.is_some_and(|gate| gate.mode != mode) {
+        return false;
+    }
     match mode {
         NodeApiMode::Loopback | NodeApiMode::Proxy => true,
         NodeApiMode::Acme | NodeApiMode::SelfSigned => {
@@ -156,7 +172,10 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> NodeApiTls {
     let node_api = &cfg.daemon.node_api;
     let (status, receiver) = watch::channel(NodeApiStatus::Starting);
-    let gate = NodeApiGate(receiver);
+    let gate = NodeApiGate {
+        status: receiver,
+        mode: node_api.mode,
+    };
     let failed = |status: &watch::Sender<NodeApiStatus>, gate: &NodeApiGate| {
         status.send_replace(NodeApiStatus::Failed);
         NodeApiTls {
