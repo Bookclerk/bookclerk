@@ -27,8 +27,10 @@ from ci_plan.execute import (  # noqa: E402
     BUILD_ONLY_JOBS,
     NEXTEST_RUN,
     SCHEMA_VERSION,
+    Command,
     Context,
     ExecError,
+    build_only_command,
     execution_mode,
     gate,
     job_outputs,
@@ -1411,6 +1413,14 @@ class RunnerLayoutTests(unittest.TestCase):
             tests[0], ["cargo", "test", "--tests", "--workspace", "--exclude", E2E_PACKAGE, "--no-run"]
         )
         self.assertIn(["cargo", "build-app", "--release", "--platform"], [c.argv for _, c in planned_commands(art, "release", CTX)])
+
+    def test_build_only_keeps_bench_compiles(self) -> None:
+        bench = ["cargo", "bench", "-p", "bookclerk-naming", "--benches", "--no-run"]
+        kept = build_only_command(Command("bench targets build", bench))
+        self.assertIsNotNone(kept)
+        assert kept is not None
+        self.assertEqual(kept.argv, bench)
+        self.assertIsNone(build_only_command(Command("bench run", bench[:-1])))
 
     def test_pull_request_and_merge_group_are_never_build_only(self) -> None:
         art = artifact(plan("crates/bookclerk-cli/src/main.rs"))

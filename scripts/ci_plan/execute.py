@@ -802,8 +802,9 @@ def planned_commands(artifact: Mapping[str, Any], check: str, ctx: Context) -> l
 def build_only_command(cmd: Command) -> Command | None:
     """``cmd`` reduced to compiling, or ``None`` when it only runs or lints.
 
-    Builds, Clippy and installs keep running (they produce the cached
-    artifacts); test commands compile their targets with ``--no-run``;
+    Builds, Clippy, installs and ``cargo bench --no-run`` keep running (they
+    produce the cached artifacts); test commands compile their targets with
+    ``--no-run``;
     doctests, formatting, scripts and runtime assertions are dropped.
     """
     argv = cmd.argv
@@ -825,6 +826,8 @@ def build_only_command(cmd: Command) -> Command | None:
             return None
         no_run = [] if "--no-run" in cargo_args else ["--no-run"]
         return Command(cmd.label + " (build only)", ["cargo", "test", *cargo_args, *no_run], cmd.cwd, cmd.env)
+    if argv[:2] == ["cargo", "bench"] and "--no-run" in argv:
+        return cmd
     if argv[0] == "cargo" and len(argv) > 1 and argv[1] in BUILD_SUBCOMMANDS:
         return cmd
     return None
