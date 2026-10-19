@@ -232,6 +232,21 @@ pub(super) async fn upload_grant(
     let scoped = if request.book_uuid.is_empty() {
         Vec::new()
     } else {
+        // Only a title `acquire.plan` would hand out now: one whose audio
+        // is already acquired, or that the plan leaves out otherwise, is
+        // never uploaded again, whatever the host asks.
+        if let Some(book) = library.get_book_by_uuid(request.book_uuid).await? {
+            let download_episodes = host.state.config.read().await.library.download_episodes;
+            if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
+                if live_remote_job(library, &host.node_id, &job_id, fence)
+                    .await?
+                    .is_none()
+                {
+                    return Ok(lost(id, job_id, fence));
+                }
+                return Ok(error(id, "refused", "book_not_planned"));
+            }
+        }
         let destinations = match super::uploads::owner_destinations(&host.state).await {
             Ok(destinations) if !destinations.is_empty() => destinations,
             _ => return Ok(error(id, "unavailable", "no_destination")),
