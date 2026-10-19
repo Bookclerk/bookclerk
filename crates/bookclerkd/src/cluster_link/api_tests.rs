@@ -227,7 +227,8 @@ async fn the_operator_approves_narrowed_and_revokes() {
         "deny_domains": ["unasked.example"],
     }))
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert_eq!(refused["error"], "invalid_approval");
     let (status, refused) = approve(json!({
         "cluster_id": CLUSTER,
         "plugin_key": PLUGIN,
