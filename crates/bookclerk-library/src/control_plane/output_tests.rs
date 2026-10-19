@@ -84,24 +84,25 @@ fn output_seed_cover_size_is_case_insensitive() {
 }
 
 #[tokio::test]
-async fn output_first_import_rejects_an_invalid_seed() {
+async fn output_first_import_defaults_an_out_of_range_seed_field() {
     let _guard = master_key_test_lock_async().await;
     let store = memory_store().await;
-    let err = import_output_if_absent(
+    let stored = import_output_if_absent(
         &store,
         &ConfigActor::Bootstrap,
         &OutputConfig {
             split_mp3_max_mb: 0,
+            widevine: true,
             ..OutputConfig::default()
         },
-        "bad-output-seed",
+        "legacy-output-seed",
     )
     .await
-    .expect_err("invalid seed");
-    assert!(err.to_string().contains("split_mp3_max_mb"), "{err}");
-    assert!(load_output(&store).await.is_err());
-    assert_eq!(audit_count(&store, OUTPUT_NAMESPACE).await.unwrap(), 0);
-    assert_eq!(change_count(&store, OUTPUT_NAMESPACE).await.unwrap(), 0);
+    .expect("an out-of-range seed field does not stop the import");
+    let defaults = OutputConfig::default();
+    assert_eq!(stored.body.split_mp3_max_mb, defaults.split_mp3_max_mb);
+    assert!(stored.body.widevine, "valid seed values are imported");
+    assert_eq!(load_output(&store).await.unwrap().body, stored.body);
 }
 
 #[tokio::test]
@@ -285,4 +286,35 @@ async fn postgres_two_pools_share_one_output_document() {
     let _guard = master_key_test_lock_async().await;
     let (store_a, store_b) = postgres_stores().await;
     assert_two_connections_share_output(&store_a, &store_b).await;
+}
+
+#[test]
+fn a_legacy_seed_keeps_valid_values_and_defaults_out_of_range_ones() {
+    let seed = OutputConfig {
+        max_filename_length: 2048,
+        split_mp3_max_mb: 0,
+        cover_size: "huge".into(),
+        widevine: true,
+        create_cue: true,
+        ..OutputConfig::default()
+    };
+    assert!(OutputSettingsV1::from_config(&seed).is_err());
+    let (settings, replaced) = OutputSettingsV1::from_seed_lenient(&seed);
+    settings.validate().expect("a lenient seed is valid");
+    assert_eq!(
+        replaced,
+        vec!["cover_size", "split_mp3_max_mb", "max_filename_length"]
+    );
+    let defaults = OutputSettingsV1::from_config(&OutputConfig::default()).unwrap();
+    assert_eq!(settings.max_filename_length, defaults.max_filename_length);
+    assert_eq!(settings.split_mp3_max_mb, defaults.split_mp3_max_mb);
+    assert_eq!(settings.cover_size, defaults.cover_size);
+    assert!(
+        settings.widevine && settings.create_cue,
+        "valid values are kept"
+    );
+
+    let (clean, none) = OutputSettingsV1::from_seed_lenient(&OutputConfig::default());
+    assert!(none.is_empty());
+    assert_eq!(clean, defaults);
 }

@@ -179,16 +179,16 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                     Ok(enrolled) => {
                         // Bootstrap seeds the portable form (CDM path relative
                         // to the files directory); compare against the same.
-                        let seeded =
-                            bookclerk_library::control_plane::OutputSettingsV1::from_config(
+                        // Bootstrap imports a seed leniently (an out-of-range
+                        // field becomes its default), so compare the same form.
+                        let (seeded, _) =
+                            bookclerk_library::control_plane::OutputSettingsV1::from_seed_lenient(
                                 &bookclerk_library::control_plane::portable_output_seed(
                                     &cfg.output,
                                     &opts.dest_files_dir,
                                 ),
-                            )
-                            .ok();
-                        if config_accepted && seeded.as_ref() != Some(&enrolled.session.output.body)
-                        {
+                            );
+                        if config_accepted && seeded != enrolled.session.output.body {
                             summary.warnings.push(format!(
                                 "core.output already exists (revision {}); imported packaging \
                                  settings were not applied — use `bookclerk config set output.*`",

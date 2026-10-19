@@ -754,8 +754,16 @@ async fn print_events_authority(config: &Config) {
 /// The raw anyhow chain can carry parser text (serde echoes a bad stored
 /// value) and backend text (paths and connection URLs). Registered secrets
 /// and `user:password@` URL userinfo are removed. The `database unavailable`
-/// prefix stays so the failure is still recognizable.
+/// prefix stays so the failure is still recognizable. A document the
+/// database does not hold yet (`NotFound`) is not a failure, and says so.
 fn safe_events_load_error(err: &anyhow::Error) -> String {
+    if matches!(
+        err.downcast_ref::<bookclerk_library::LibraryError>(),
+        Some(bookclerk_library::LibraryError::NotFound(_))
+    ) {
+        // The database answered; the document just has not been imported.
+        return "not in the database yet; the first enrollment imports it".into();
+    }
     let mut chain = err.to_string();
     for cause in err.chain().skip(1) {
         chain.push_str(": ");
@@ -834,7 +842,8 @@ fn bare_output_body(
                 Some(bookclerk_library::LibraryError::NotFound(_))
             ) =>
         {
-            Ok(OutputSettingsV1::from_config(seed)?)
+            // What the first enrollment will store.
+            Ok(OutputSettingsV1::from_seed_lenient(seed).0)
         }
         Err(err) => Err(err),
     }
@@ -873,16 +882,19 @@ async fn print_output_authority(config: &Config) {
             let detail = safe_events_load_error(&err);
             println!("output.source = config.toml / environment ({detail})");
             let seed = portable_output_seed(&config.output, &config.paths().files_dir);
-            match OutputSettingsV1::from_config(&seed) {
-                Ok(seed) => {
-                    for key in OUTPUT_SETTING_KEYS {
-                        println!("{key} = {}", seed.get(key).unwrap_or_default());
-                    }
+            // What the first enrollment will store: an out-of-range value
+            // shows its default, marked.
+            let (seed, replaced) = OutputSettingsV1::from_seed_lenient(&seed);
+            for key in OUTPUT_SETTING_KEYS {
+                let value = seed.get(key).unwrap_or_default();
+                if replaced
+                    .iter()
+                    .any(|field| key.strip_prefix("output.") == Some(*field))
+                {
+                    println!("{key} = {value} (default; the configured value is out of range)");
+                } else {
+                    println!("{key} = {value}");
                 }
-                Err(invalid) => println!(
-                    "output.format = {:?} (other output.* omitted: {invalid})",
-                    config.output.format
-                ),
             }
         }
     }
@@ -1049,6 +1061,18 @@ mod tests {
         let body = bare_output_body(missing, &seed).expect("seed fallback");
         assert_eq!(body.get("output.widevine").as_deref(), Some("true"));
         assert_eq!(body, OutputSettingsV1::from_config(&seed).unwrap());
+    }
+
+    #[test]
+    fn a_document_not_imported_yet_is_not_reported_as_unavailable() {
+        let missing = anyhow::Error::new(bookclerk_library::LibraryError::NotFound(
+            "configuration core.output is not initialized".into(),
+        ));
+        let detail = safe_events_load_error(&missing);
+        assert!(!detail.contains("unavailable"), "{detail}");
+        assert!(detail.contains("first enrollment"), "{detail}");
+        let failed = anyhow::anyhow!("database unreachable");
+        assert!(safe_events_load_error(&failed).starts_with("database unavailable:"));
     }
 
     #[test]

@@ -268,6 +268,69 @@ impl Default for OutputSettingsV1 {
     }
 }
 
+/// Copies one bounded field from the second document onto the first.
+type CopyField = fn(&mut OutputSettingsV1, &OutputSettingsV1);
+
+/// Every field [`OutputSettingsV1::validate`] bounds, by `output.*` name,
+/// for [`OutputSettingsV1::from_seed_lenient`].
+const SEED_FIELDS: &[(&str, CopyField)] = &[
+    ("widevine_cdm", |to, from| {
+        to.widevine_cdm.clone_from(&from.widevine_cdm);
+    }),
+    ("widevine_cdm_provider", |to, from| {
+        to.widevine_cdm_provider
+            .clone_from(&from.widevine_cdm_provider);
+    }),
+    ("folder_template", |to, from| {
+        to.folder_template.clone_from(&from.folder_template);
+    }),
+    ("file_template", |to, from| {
+        to.file_template.clone_from(&from.file_template);
+    }),
+    ("chapter_file_template", |to, from| {
+        to.chapter_file_template
+            .clone_from(&from.chapter_file_template);
+    }),
+    ("chapter_title_template", |to, from| {
+        to.chapter_title_template
+            .clone_from(&from.chapter_title_template);
+    }),
+    ("cover_size", |to, from| {
+        to.cover_size.clone_from(&from.cover_size);
+    }),
+    ("chapter_layout", |to, from| {
+        to.chapter_layout.clone_from(&from.chapter_layout);
+    }),
+    ("split_mp3_max_mb", |to, from| {
+        to.split_mp3_max_mb = from.split_mp3_max_mb;
+    }),
+    ("minimum_file_duration_minutes", |to, from| {
+        to.minimum_file_duration_minutes = from.minimum_file_duration_minutes;
+    }),
+    ("max_filename_length", |to, from| {
+        to.max_filename_length = from.max_filename_length;
+    }),
+    ("lame.target", |to, from| {
+        to.lame.target.clone_from(&from.lame.target);
+    }),
+    ("lame.mode", |to, from| {
+        to.lame.mode.clone_from(&from.lame.mode);
+    }),
+    ("lame.vbr_quality", |to, from| {
+        to.lame.vbr_quality = from.lame.vbr_quality;
+    }),
+    ("lame.bitrate_kbps", |to, from| {
+        to.lame.bitrate_kbps = from.lame.bitrate_kbps;
+    }),
+    ("max_sample_rate", |to, from| {
+        to.max_sample_rate = from.max_sample_rate;
+    }),
+    ("replacement_characters", |to, from| {
+        to.replacement_characters
+            .clone_from(&from.replacement_characters);
+    }),
+];
+
 impl OutputSettingsV1 {
     /// Copies the transitional `[output]` table, rejecting values the domain forbids.
     ///
@@ -282,6 +345,44 @@ impl OutputSettingsV1 {
         let settings = Self::from_config_unchecked(config);
         settings.validate()?;
         Ok(settings)
+    }
+
+    /// Builds the document from a seed `[output]` table (TOML / environment)
+    /// for the first import, keeping every valid value and replacing each
+    /// field that fails [`Self::validate`] with its default.
+    ///
+    /// Loading `config.toml` does not apply the document's bounds, so an
+    /// install upgrading from file-based output settings can hold a value
+    /// such as `max_filename_length = 2048` that ran before. Refusing it
+    /// would stop the host from starting; the replaced fields are returned
+    /// so the caller can log each one. Not used on a stored document, which
+    /// is validated strictly.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The seed `[output]` table.
+    ///
+    /// # Returns
+    ///
+    /// The document, and the names of the fields that were replaced.
+    #[must_use]
+    pub fn from_seed_lenient(config: &OutputConfig) -> (Self, Vec<&'static str>) {
+        let seed = Self::from_config_unchecked(config);
+        let defaults = Self::from_config_unchecked(&OutputConfig::default());
+        let mut settings = seed.clone();
+        let mut replaced = Vec::new();
+        for (name, copy) in SEED_FIELDS {
+            // Each field is judged alone: the defaults are valid, so a
+            // candidate that differs from them only in this field fails
+            // validation only for this field.
+            let mut candidate = defaults.clone();
+            copy(&mut candidate, &seed);
+            if candidate.validate().is_err() {
+                copy(&mut settings, &defaults);
+                replaced.push(*name);
+            }
+        }
+        (settings, replaced)
     }
 
     /// [`Self::from_config`] without validation.
@@ -775,7 +876,9 @@ pub fn portable_output_seed(seed: &OutputConfig, files_dir: &Path) -> OutputConf
 /// # Errors
 ///
 /// Returns an error when the stored document is invalid, or when the document
-/// is absent and the seed is invalid or the actor may not import.
+/// is absent and the actor may not import. An absent document is seeded with
+/// [`OutputSettingsV1::from_seed_lenient`]: an out-of-range seed field is
+/// logged and replaced by its default rather than failing startup.
 pub async fn import_output_if_absent(
     store: &LibraryStore,
     actor: &ConfigActor,
@@ -786,17 +889,13 @@ pub async fn import_output_if_absent(
     if let Some(existing) = load_document(store, &key).await? {
         return parse_output(existing);
     }
-    let body = match OutputSettingsV1::from_config(seed) {
-        Ok(body) => body,
-        Err(err) => {
-            // A concurrent initializer may have committed while this seed was
-            // rejected. The stored document wins; the seed is not applied.
-            if let Some(existing) = load_document(store, &key).await? {
-                return parse_output(existing);
-            }
-            return Err(err);
-        }
-    };
+    let (body, replaced) = OutputSettingsV1::from_seed_lenient(seed);
+    for field in replaced {
+        tracing::warn!(
+            field = %format_args!("output.{field}"),
+            "the [output] value is out of range; core.output starts with its default instead"
+        );
+    }
     let json = to_json(&body)?;
     let stored = import_if_absent(
         store,
