@@ -1,8 +1,8 @@
 //! The client against a scripted owner on loopback: a heartbeat or claim
 //! the owner leaves unanswered is retried on the same connection, a wake is
 //! acked only once a subscriber received it, a late `work` for a timed-out
-//! claim is handed back, and a job whose lease goes unconfirmed (or whose
-//! client shuts down) is cancelled.
+//! claim is handed back, a job whose lease goes unconfirmed (or whose
+//! client shuts down) is cancelled, and a waiting report keeps renewing.
 
 use bookclerk_library::control_plane::{ClusterLinkKeys, CLUSTER_LINK_ACTIVE};
 use bookclerk_node_proto::{box_public_key, encode_nonce, SUBPROTOCOL};
@@ -466,5 +466,66 @@ async fn shutdown_cancels_held_jobs() {
         wait_for(&runner.cancelled, Duration::from_secs(1)).await,
         "the job outlived its client"
     );
+    assert!(handle.held_fences().is_empty());
+}
+
+/// A finished job whose report the owner leaves unanswered keeps renewing
+/// its lease, so a slow report does not let the fence lapse.
+#[tokio::test]
+async fn renewals_continue_while_a_report_waits() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (handle, _stop, _exit) = start_with(listener.local_addr().unwrap().port(), 1, NoJobs);
+    let mut socket = accept(&listener).await;
+
+    // Grant a one-second lease; the runner fails at once, and its report
+    // goes unanswered for longer than the lease.
+    let mut granted = false;
+    let frames = read_for(
+        &mut socket,
+        Duration::from_millis(2500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 1))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 1,
+                cancel: false,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    let first_report = frames
+        .iter()
+        .position(|frame| matches!(frame.body, Body::Fail { .. }))
+        .expect("the job was reported");
+    assert!(
+        frames[first_report..]
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Renew { .. })),
+        "the lease was not renewed while the report waited"
+    );
+    assert_eq!(
+        handle.held_fences().len(),
+        1,
+        "the job was dropped mid-report"
+    );
+
+    // The owner accepts the retried report; the job is released.
+    read_for(&mut socket, Duration::from_secs(1), |frame| {
+        match &frame.body {
+            Body::Heartbeat { .. } | Body::Fail { .. } => Some(Body::Accepted {}),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 1,
+                cancel: false,
+            }),
+            _ => None,
+        }
+    })
+    .await;
     assert!(handle.held_fences().is_empty());
 }

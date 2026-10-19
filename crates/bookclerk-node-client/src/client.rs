@@ -1146,6 +1146,10 @@ async fn run_job<R: HostJobRunner>(
         None => Ok(Vec::new()),
         Some(sealed) => open_secrets(&shared.box_secret, &shared.node_id, &job_id, fence, sealed),
     };
+    // Renewals keep running through `report`, which can take up to
+    // [`REPORT_DEADLINE`]: a slow report must not let the fence lapse and
+    // throw away finished work.
+    let mut renewer = None;
     let result = match opened {
         Err(_) => {
             tracing::warn!(%job_id, fence, "job secrets do not open with this node's box key");
@@ -1161,7 +1165,7 @@ async fn run_job<R: HostJobRunner>(
                 Arc::clone(&cancel),
                 Arc::clone(&shared),
             );
-            let _renewer = AbortOnDrop(vec![tokio::spawn(renew_loop(
+            renewer = Some(AbortOnDrop(vec![tokio::spawn(renew_loop(
                 Arc::clone(&shared),
                 job_id.clone(),
                 fence,
@@ -1169,7 +1173,7 @@ async fn run_job<R: HostJobRunner>(
                 Arc::clone(&cancel),
                 Arc::clone(&lost),
                 resumed_until,
-            ))]);
+            ))]));
             runner.run(ctx).await
         }
     };
@@ -1178,6 +1182,7 @@ async fn run_job<R: HostJobRunner>(
     } else {
         report(&shared, &job_id, fence, result, &lost).await;
     }
+    drop(renewer);
     shared.release(&job_id, fence);
     drop(slot);
 }
