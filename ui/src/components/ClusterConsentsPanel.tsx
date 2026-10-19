@@ -303,7 +303,8 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
   useEffect(() => {
     void refresh();
   }, [refresh]);
-  useLiveRefresh(["consents"], refresh, { pollMs: REFRESH_MS });
+  // Consents, and the links themselves (a join, leave or revoke).
+  useLiveRefresh(["consents", "clusters"], refresh, { pollMs: REFRESH_MS });
 
   const pending = consents.filter((row) => row.state !== "consented");
   const approved = consents.filter((row) => row.state === "consented");

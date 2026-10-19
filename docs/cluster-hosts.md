@@ -261,7 +261,7 @@ The web UI holds one WebSocket to `GET /api/live` (subprotocol
 `bookclerk-live.v1`) and re-reads a panel's ordinary routes when the daemon
 says its topic changed, instead of polling on timers. The socket carries
 topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
-`consents`, `users`), never rows, ids or secrets:
+`consents`, `clusters`, `users`), never rows, ids or secrets:
 
 ```json
 {"v":1,"type":"hello","topics":["jobs","nodes"]}
@@ -279,8 +279,10 @@ topic names only (`library`, `jobs`, `deliveries`, `nodes`, `config`,
   session is re-checked every 30 s, and a signed-out user's socket closes
   with 4401.
 - Changes are found by reading revisions from the shared database every
-  2 s (so a change made on any owner node is seen) and by in-process
-  notices for immediate updates. The client sends nothing; a binary frame
+  2 s (so a change made on any owner node, or by `bookclerk clusters
+  join|leave`, is seen) and by in-process notices for immediate updates.
+  The first read is taken before `hello`, so nothing written after the
+  client hears `hello` is missed. The client sends nothing; a binary frame
   closes the socket.
 - While the socket is down, the UI polls as it used to and reconnects with
   backoff (1 s up to 30 s, jittered). Behind a reverse proxy, forward the

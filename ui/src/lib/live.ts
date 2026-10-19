@@ -33,6 +33,7 @@ export type LiveTopic =
   | "nodes"
   | "config"
   | "consents"
+  | "clusters"
   | "users";
 
 /** Connection state of a {@link LiveClient}. */
@@ -268,7 +269,7 @@ export function liveClient(): LiveClient {
 
 /** How {@link watchLive} refreshes. */
 export interface LiveRefreshOptions {
-  /** Poll interval while the socket is not open. */
+  /** Poll interval while the socket is not open; 0 for none. */
   pollMs: number;
   /**
    * Poll interval while it is open, for what changes without a row

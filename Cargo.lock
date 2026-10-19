@@ -1471,6 +1471,7 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "libc",
  "rusqlite",
  "rust_xlsxwriter",
  "sea-orm",
@@ -1483,6 +1484,7 @@ dependencies = [
  "toml",
  "tracing",
  "ureq",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

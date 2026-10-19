@@ -1308,7 +1308,7 @@ polling"). `GET /api/live` (subprotocol `bookclerk-live.v1`) tells the SPA
 which topics changed; the SPA then re-reads its ordinary routes.
 
 - **Only topic names travel**: `library`, `jobs`, `deliveries`, `nodes`,
-  `config`, `consents`, `users`, in `{"v":1,"type":"hello"|"changed",
+  `config`, `consents`, `clusters`, `users`, in `{"v":1,"type":"hello"|"changed",
   "topics":[…]}`. No rows, ids or secrets, so the socket needs no
   authorization model of its own beyond who may hear which topic: the
   operator hears all; an Owner or Administrator hears `library`, `jobs`,
@@ -1326,9 +1326,13 @@ which topics changed; the SPA then re-reads its ordinary routes.
 - **Change detection.** Every 2 s the session reads a revision per topic
   (`live_revisions`: row count plus newest `updated_at` of `books`,
   `jobs`, `event_deliveries`, `remote_plugin_consents` and `users`, the
-  newest `node_status.heartbeat_at`, and the newest
-  `configuration_changes` id), so a change made on any owner node is
-  seen; in-process pokes (consent approve/revoke) are immediate. Rejected:
+  newest `node_status.heartbeat_at`, the newest
+  `configuration_changes` id, and for `cluster_links`, which has no
+  change stamp, a digest of its rows), so a change made on any owner node
+  or by `bookclerk clusters join|leave` is seen; in-process pokes
+  (consent approve/revoke, a link revoked by its owner) are immediate.
+  The baseline is read before `hello` is sent, so a write after the
+  client hears `hello` is never absorbed into it. Rejected:
   a table of change events or database triggers, which the SQL-v1
   contract would have to carry on every backend.
 - **SPA.** One shared client (`ui/src/lib/live.ts`) per page;
@@ -1347,22 +1351,25 @@ which topics changed; the SPA then re-reads its ordinary routes.
   `/api/config/cluster-consents` routes; a 409 shows the daemon's reason.
   There is deliberately no invite or join screen: an enrollment link is a
   secret, and secrets do not pass through the SPA.
-- **CLI.** `bookclerk clusters join` (link from stdin or a prompt, never
-  argv) and `bookclerk clusters leave [--cluster]` (marks the link `left`,
-  deletes its node keys; a running daemon stops the link's client within
-  5 s). The owner is not told of a leave.
+- **CLI.** `bookclerk clusters join` (link from stdin or a prompt with
+  echo off, never argv) and `bookclerk clusters leave [--cluster]` (marks
+  the link `left`, deletes its node keys; a running daemon stops the
+  link's client within 5 s). The owner is not told of a leave.
 - **Tests.** Daemon: Origin matching for both modes; a foreign origin or
   no session is refused before the upgrade; the operator hears job and
-  consent changes; a member hears only their topics and is closed with
-  4401 when signed out; a binary frame closes with 1003; the consent
-  routes are operator-only, approve narrowed for the reviewed version,
-  refuse another version or an unasked domain, deny the network, and
-  revoke; leaving stops a running client. CLI (real binary): list,
-  consents, approve with narrowing and refusals, revoke, leave, and join
-  refusing a link on argv, an empty stdin and a non-link without echoing
-  it; a node-local instance names its node. UI (vitest): socket URL
-  scheme, backoff and reset, topic dispatch, replay after reconnect, the
-  sign-out delay, and polling only while the socket is down.
+  consent changes, and a write made right after `hello`; a member hears
+  only their topics and is closed with 4401 when signed out; a binary
+  frame closes with 1003; the consent routes are operator-only, approve
+  narrowed for the reviewed version, refuse another version or an unasked
+  domain, deny the network, and revoke; leaving stops a running client.
+  Library: joining, a revoke and leaving each change the `clusters`
+  revision. CLI (real binary): list, consents, approve with narrowing and
+  refusals, revoke, leave, and join refusing a link on argv, an empty
+  stdin and a non-link without echoing it, and reading the link from a
+  terminal with echo off; a node-local instance names its node. UI
+  (vitest): socket URL scheme, backoff and reset, topic dispatch, replay
+  after reconnect, the sign-out delay, and polling only while the socket
+  is down.
 
 Step 11 is the operator guide, [Clusters and host nodes](../cluster-hosts.md).
 

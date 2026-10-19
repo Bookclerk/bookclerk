@@ -23,8 +23,8 @@
 //! **Topics.** The operator gets every [`LiveTopic`]. An Owner or
 //! Administrator gets `library`, `jobs`, `deliveries`, `nodes` and
 //! `users`; any other user gets `library` and `nodes` (the routes behind
-//! them are scoped to the caller). `config` and `consents` are operator
-//! only.
+//! them are scoped to the caller). `config`, `consents` and `clusters`
+//! are operator only.
 //!
 //! **Frames** (server to client, JSON text):
 //!
@@ -36,7 +36,9 @@
 //! Changes are found by reading [`live_revisions`] every
 //! [`POLL_INTERVAL`] (the library database is shared by every owner node,
 //! so this sees changes made on any of them) and by in-process pokes
-//! ([`poke`]) for immediate updates. The client sends nothing; a binary
+//! ([`poke`]) for immediate updates. The first read, the baseline, is
+//! taken before `hello` is sent, so a write made once the client has
+//! `hello` is always reported. The client sends nothing; a binary
 //! frame closes the socket (1003), and text is ignored. The session is
 //! re-checked every [`REAUTH_INTERVAL`]: a signed-out, revoked or demoted
 //! caller loses the socket (close 4401) or topics. The daemon pings every
@@ -236,14 +238,15 @@ async fn run(
     mut topics: BTreeSet<LiveTopic>,
 ) {
     let (mut tx, mut rx) = socket.split();
+    // Baseline and pokes before `hello`: a write that lands after the
+    // client hears `hello` (and stops its fallback polling) is then always
+    // reported, never absorbed into the baseline.
+    let mut pokes = POKES.subscribe();
+    let mut failing = false;
+    let mut seen = read_revisions(&state, &mut failing).await;
     if tx.send(frame("hello", &topics)).await.is_err() {
         return;
     }
-    let mut pokes = POKES.subscribe();
-    let mut failing = false;
-    let mut seen = read_revisions(&state, &mut failing)
-        .await
-        .unwrap_or_default();
     let mut poll = tokio::time::interval(POLL_INTERVAL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     poll.tick().await;
@@ -264,13 +267,12 @@ async fn run(
                 let Some(now) = read_revisions(&state, &mut failing).await else {
                     continue;
                 };
-                // The first successful read only sets the baseline.
-                let changed = if seen.is_empty() {
-                    BTreeSet::new()
-                } else {
-                    changed_topics(&seen, &now).into_iter().collect()
-                };
-                seen = now;
+                // Without a baseline (its read failed) nothing is known to
+                // be current: every topic is reported once.
+                let changed = changed_topics(seen.as_ref().unwrap_or(&Vec::new()), &now)
+                    .into_iter()
+                    .collect();
+                seen = Some(now);
                 changed
             }
             poked = pokes.recv() => match poked {

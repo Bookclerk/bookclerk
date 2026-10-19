@@ -117,17 +117,10 @@ fn link_json(link: &ClusterLink) -> serde_json::Value {
 }
 
 /// Reads the enrollment link: the first line of stdin, or a prompt on a
-/// terminal.
+/// terminal with echo off.
 fn read_link_from_stdin() -> anyhow::Result<secrecy::SecretString> {
-    use std::io::{IsTerminal, Read};
     // Zeroed on drop; the link lives on only as a secret.
-    let mut text = zeroize::Zeroizing::new(String::new());
-    if std::io::stdin().is_terminal() {
-        eprint!("enrollment link: ");
-        std::io::stdin().read_line(&mut text)?;
-    } else {
-        std::io::stdin().read_to_string(&mut text)?;
-    }
+    let text = crate::secret_input::read_secret_stdin("enrollment link: ")?;
     let link = text
         .split_once('\n')
         .map_or(text.as_str(), |(first, _)| first)

@@ -1,7 +1,8 @@
 //! `bookclerk clusters` through the real binary: the enrolled links (no
 //! key material), the consent list, approve with narrowing and the
 //! reviewed-version check, revoke, leave, and `join` refusing a link that
-//! is not one, or one on the command line.
+//! is not one, or one on the command line, and reading it from a terminal
+//! without echo.
 
 mod common;
 
@@ -271,4 +272,120 @@ async fn join_takes_the_link_only_from_stdin_and_refuses_a_non_link() {
         .await
         .unwrap()
         .is_empty());
+}
+
+/// On a terminal, `join` reads the link with echo off: the pseudo-terminal
+/// shows the prompt's side of the exchange but never the link, and the
+/// terminal's echo is back on once the command exits.
+#[cfg(unix)]
+#[test]
+#[allow(unsafe_code)]
+fn join_on_a_terminal_does_not_echo_the_link() {
+    use std::io::Read as _;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let files_dir = enrolled();
+    let files = files_dir.path();
+
+    // SAFETY: plain libc pty calls; every descriptor is owned by a `File`
+    // right after it is opened.
+    let (mut master, slave) = unsafe {
+        let fd = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        assert!(fd >= 0, "posix_openpt: {}", std::io::Error::last_os_error());
+        let master = std::fs::File::from_raw_fd(fd);
+        assert_eq!(libc::grantpt(fd), 0);
+        assert_eq!(libc::unlockpt(fd), 0);
+        let mut name = [0 as libc::c_char; 128];
+        assert_eq!(libc::ptsname_r(fd, name.as_mut_ptr(), name.len()), 0);
+        let path = std::ffi::CStr::from_ptr(name.as_ptr())
+            .to_str()
+            .unwrap()
+            .to_string();
+        let slave = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(path)
+            .expect("open the pty slave");
+        (master, slave)
+    };
+
+    let mut child = {
+        let mut command = Command::new(common::bookclerk_bin());
+        command
+            .env("BOOKCLERK_FILES_DIR", files)
+            .env_remove("BOOKCLERK_PLUGIN_DIRS")
+            .env_remove("BOOKCLERK_AUTH_PASSWORD")
+            .env_remove("BOOKCLERK_CONFIG")
+            .env_remove("BOOKCLERK_OPERATOR_TOKEN")
+            .args(["--format", "json", "clusters", "join"])
+            .stdin(Stdio::from(slave))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command.spawn().expect("spawn bookclerk")
+        // The command (and its copy of the slave) is dropped here.
+    };
+
+    // The prompt is printed once echo is off; type the link only then.
+    let mut err_pipe = child.stderr.take().unwrap();
+    let (seen_tx, seen_rx) = mpsc::channel::<()>();
+    let reader = std::thread::spawn(move || {
+        let mut all = Vec::new();
+        let mut buf = [0u8; 256];
+        let mut told = false;
+        loop {
+            let n = err_pipe.read(&mut buf).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            all.extend_from_slice(&buf[..n]);
+            if !told && String::from_utf8_lossy(&all).contains("enrollment link: ") {
+                told = true;
+                let _ = seen_tx.send(());
+            }
+        }
+        String::from_utf8_lossy(&all).into_owned()
+    });
+    seen_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the prompt appears");
+
+    let secret = "bcn1-typed-on-a-terminal-secret";
+    master
+        .write_all(format!("https://owner.example/enroll#{secret}\n").as_bytes())
+        .unwrap();
+    let status = child.wait().expect("wait for bookclerk");
+    let err = reader.join().unwrap();
+    assert!(!status.success());
+    assert!(err.contains("not an enrollment link"), "{err}");
+    assert!(!err.contains(secret), "the link is not echoed: {err}");
+
+    // What the terminal displayed: everything the slave side wrote back.
+    let fd = master.as_raw_fd();
+    // SAFETY: `fd` is the open master; termios is plain data.
+    let echo_restored = unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        let mut settings: libc::termios = std::mem::zeroed();
+        assert_eq!(libc::tcgetattr(fd, &mut settings), 0);
+        settings.c_lflag & libc::ECHO != 0
+    };
+    let mut shown = Vec::new();
+    let mut buf = [0u8; 1024];
+    // EAGAIN (nothing more) or EIO (no slave open) both end the read.
+    while let Ok(n) = master.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        shown.extend_from_slice(&buf[..n]);
+    }
+    let shown = String::from_utf8_lossy(&shown);
+    assert!(
+        !shown.contains(secret),
+        "the terminal echoed the link: {shown:?}"
+    );
+    assert!(echo_restored, "echo is back on after the command");
 }

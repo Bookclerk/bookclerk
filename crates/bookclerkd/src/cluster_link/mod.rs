@@ -243,7 +243,12 @@ pub fn spawn_cluster_links(state: Arc<AppState>) {
                         match set_cluster_link_state(&library, &cluster_id, CLUSTER_LINK_REVOKED)
                             .await
                         {
-                            Ok(_) => break,
+                            Ok(_) => {
+                                crate::live::poke(
+                                    bookclerk_library::control_plane::LiveTopic::Clusters,
+                                );
+                                break;
+                            }
                             Err(err) => {
                                 tracing::warn!(%cluster_id, error = %err, "could not mark the cluster link revoked");
                                 tokio::time::sleep(Duration::from_secs(1 << attempt)).await;

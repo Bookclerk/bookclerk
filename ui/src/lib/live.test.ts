@@ -216,4 +216,30 @@ describe("watchLive", () => {
     vi.advanceTimersByTime(1);
     expect(refresh).toHaveBeenCalledTimes(1);
   });
+
+  it("never polls with a zero interval, and refreshes on change and reconnect", () => {
+    const { client, last } = harness();
+    const refresh = vi.fn();
+    watchLive(client, ["library"], refresh, { pollMs: 0 });
+    vi.advanceTimersByTime(120_000);
+    expect(refresh).not.toHaveBeenCalled();
+    last().hello(["library", "nodes"]);
+    expect(refresh).not.toHaveBeenCalled();
+    last().changed(["library"]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    last().drop();
+    vi.advanceTimersByTime(120_000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    last().hello(["library", "nodes"]);
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes the clusters panel on cluster link changes", () => {
+    const { client, last } = harness();
+    const refresh = vi.fn();
+    watchLive(client, ["consents", "clusters"], refresh, { pollMs: 15_000 });
+    last().hello(["consents", "clusters"]);
+    last().changed(["clusters"]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
 });

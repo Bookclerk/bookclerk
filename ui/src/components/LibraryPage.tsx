@@ -39,6 +39,9 @@ import { cn, pageWidthClass } from "@/lib/utils";
 
 const PAGE_SIZE = 40;
 
+/** Most titles one request may ask for (the daemon's own cap). */
+const MAX_RELOAD = 500;
+
 const selectClassName =
   "rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
@@ -74,6 +77,13 @@ export function LibraryPage({
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef(false);
+  // Bumped by every load that replaces the list, so an older answer (an
+  // append, or a reload for a previous search) never lands on top of it.
+  const generationRef = useRef(0);
+  const loadedRef = useRef(0);
+  useEffect(() => {
+    loadedRef.current = books.length;
+  }, [books.length]);
 
   const serverStatus =
     filterKind === "status" && filterValue ? filterValue : "all";
@@ -87,6 +97,7 @@ export function LibraryPage({
     async (offset: number, append: boolean) => {
       if (loadingRef.current) return;
       loadingRef.current = true;
+      const generation = append ? generationRef.current : ++generationRef.current;
       if (append) setLoadingMore(true);
       try {
         const booksRes = await fetchBooks({
@@ -95,12 +106,14 @@ export function LibraryPage({
           limit: PAGE_SIZE,
           offset,
         });
+        if (generation !== generationRef.current) return;
         setBooks((prev) =>
           append ? [...prev, ...booksRes.books] : booksRes.books,
         );
         setTotal(booksRes.total);
         setError(null);
       } catch (err) {
+        if (generation !== generationRef.current) return;
         setError(err instanceof Error ? err.message : "Failed to load library");
       } finally {
         loadingRef.current = false;
@@ -109,6 +122,30 @@ export function LibraryPage({
     },
     [debouncedQ, serverStatus],
   );
+
+  /**
+   * Re-reads the titles already shown (at least one page) for the current
+   * search and status filter, keeping how far the list was scrolled.
+   */
+  const reloadBooks = useCallback(async () => {
+    const generation = ++generationRef.current;
+    const pages = Math.max(1, Math.ceil(loadedRef.current / PAGE_SIZE));
+    try {
+      const booksRes = await fetchBooks({
+        q: debouncedQ || undefined,
+        status: serverStatus,
+        limit: Math.min(MAX_RELOAD, pages * PAGE_SIZE),
+        offset: 0,
+      });
+      if (generation !== generationRef.current) return;
+      setBooks(booksRes.books);
+      setTotal(booksRes.total);
+      setError(null);
+    } catch (err) {
+      if (generation !== generationRef.current) return;
+      setError(err instanceof Error ? err.message : "Failed to load library");
+    }
+  }, [debouncedQ, serverStatus]);
 
   const refreshMeta = useCallback(async () => {
     if (!canAcquire) return;
@@ -140,6 +177,11 @@ export function LibraryPage({
     pollMs: 4000,
     enabled: canAcquire,
   });
+  // Titles follow the `library` topic for everyone who can browse them (a
+  // scan or acquire on any node), keeping the search, filter and scroll.
+  // While the socket is down the list is not polled, as before; the
+  // reconnect refreshes it.
+  useLiveRefresh(["library"], reloadBooks, { pollMs: 0 });
 
   useEffect(() => {
     const el = sentinelRef.current;

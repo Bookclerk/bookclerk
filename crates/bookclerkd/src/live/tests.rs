@@ -300,6 +300,48 @@ async fn the_operator_hears_job_and_consent_changes() {
     assert_eq!(closed["code"], 1003);
 }
 
+/// A write made right after `hello` arrives is reported: the baseline is
+/// read before `hello` is sent, so it cannot absorb the write.
+#[tokio::test]
+async fn a_write_right_after_hello_is_reported() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, store, addr) = served(&files).await;
+    let own = format!("http://127.0.0.1:{}", addr.port());
+    let bearer = format!("Bearer {TOKEN}");
+    for round in 0..3 {
+        let mut socket = open(addr, &own, &[("authorization", &bearer)])
+            .await
+            .expect("admitted");
+        let hello = next_frame(&mut socket, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(hello["type"], "hello");
+        // No pause: the write races the daemon's first revision read. A
+        // distinct account per round, so the job is not deduplicated.
+        store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Scan,
+                payload: JobPayload {
+                    account: Some(format!("account-{round}")),
+                    ..JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 64,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let changed = next_frame(&mut socket, POLL_INTERVAL * 3)
+            .await
+            .expect("the write is reported");
+        assert_eq!(changed["type"], "changed", "{changed}");
+        assert!(topics(&changed).contains(&"jobs".to_string()), "{changed}");
+        let _ = socket.close(None).await;
+    }
+}
+
 /// A member hears only `library` and `nodes`: a jobs poke is filtered
 /// out, a library poke comes through; signing the member out closes the
 /// socket with 4401.
