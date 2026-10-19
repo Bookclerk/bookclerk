@@ -343,7 +343,12 @@ fn rebuild_moov(
     let movie_duration = if mvhd_timescale == 0 || audio_timescale == 0 {
         media_duration
     } else {
-        media_duration * u64::from(mvhd_timescale) / u64::from(audio_timescale)
+        // Widen so a forged duration or timescale cannot overflow the product.
+        let scaled =
+            u128::from(media_duration) * u128::from(mvhd_timescale) / u128::from(audio_timescale);
+        u64::try_from(scaled).map_err(|_| {
+            Mp4Error::container(format!("movie duration {scaled} does not fit in 64 bits"))
+        })?
     };
     patch_duration_fields(&mut body, media_duration, movie_duration)?;
 

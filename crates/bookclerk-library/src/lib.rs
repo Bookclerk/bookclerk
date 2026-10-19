@@ -71,7 +71,8 @@ pub use host_schema::{
     apply_host_schema, apply_host_schema_with_batch, apply_host_schema_with_batch_opts,
     apply_host_schema_with_options, current_schema_state, current_schema_state_in,
     current_schema_version, ensure_restore_target_is_replaceable, migrate_host_schema_to,
-    migrate_host_schema_to_with_batch, require_schema_migrations, SchemaApplyOptions, SchemaBatch,
+    migrate_host_schema_to_with_batch, require_schema_migrations, schema_state_compatible,
+    SchemaApplyOptions, SchemaBatch, MIGRATION_LEASE_TTL, MIGRATION_LEASE_WAIT,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use in_process_atomic::InProcessSqliteAtomic;
@@ -88,8 +89,8 @@ pub use migrations::{
     plugin_history_session_matches, plugin_journal_has_entry, plugin_journal_select_request,
     prove_plugin_migration_sequence, require_history_prefix, sql_string_literal,
     PluginMigrationHistory, PluginMigrationSequence, ProvenPluginMigration,
-    BOOKCLERK_SCHEMA_NAMESPACE, MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS, SCHEMA_MIGRATIONS_DDL,
-    SCHEMA_VERSION,
+    BOOKCLERK_SCHEMA_NAMESPACE, CLUSTER_LEASES_DDL, MAX_PLUGIN_MIGRATION_APPLY_ATTEMPTS,
+    SCHEMA_MIGRATIONS_DDL, SCHEMA_VERSION,
 };
 pub use models::{
     catalog_subscribers_for_event, collapse_live_subscriber_nodes, content_kind_from_classic,
@@ -140,7 +141,7 @@ pub use sql_plan::{
     wake_page_for_max_binds, AtomicSession, CompiledAtomic,
 };
 pub use store::{
-    event_outbox::{deliver_after_for, prepare_publish_domain_event},
+    event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
