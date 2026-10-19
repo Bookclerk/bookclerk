@@ -421,6 +421,12 @@ struct Proc {
     pid: u32,
     ppid: u32,
     name: String,
+    /// Creation time in platform ticks, where the snapshot reports one.
+    ///
+    /// Windows keeps a process's parent pid after the parent exits, so a
+    /// recycled pid can look like the parent of an unrelated older process;
+    /// a child created before its supposed parent is not its child.
+    started: Option<u64>,
 }
 
 /// One snapshot of pid, parent, and executable name.
@@ -439,9 +445,20 @@ impl ProcessTree {
     /// Pids whose parent chain reaches `root`, excluding `root`.
     pub fn descendants(&self, root: u32) -> Vec<u32> {
         use std::collections::{HashMap, HashSet};
+        let started: HashMap<u32, u64> = self
+            .procs
+            .iter()
+            .filter_map(|proc| Some((proc.pid, proc.started?)))
+            .collect();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         for proc in &self.procs {
-            children.entry(proc.ppid).or_default().push(proc.pid);
+            let predates_parent = matches!(
+                (proc.started, started.get(&proc.ppid)),
+                (Some(child), Some(parent)) if child < *parent
+            );
+            if !predates_parent {
+                children.entry(proc.ppid).or_default().push(proc.pid);
+            }
         }
         let mut out = Vec::new();
         let mut stack = children.get(&root).cloned().unwrap_or_default();
@@ -545,6 +562,7 @@ fn capture_processes() -> Vec<Proc> {
             pid,
             ppid,
             name: linux_exe_name(pid),
+            started: None,
         });
     }
     out
@@ -594,7 +612,12 @@ fn capture_processes() -> Vec<Proc> {
             .next()
             .unwrap_or("")
             .to_string();
-        out.push(Proc { pid, ppid, name });
+        out.push(Proc {
+            pid,
+            ppid,
+            name,
+            started: None,
+        });
     }
     out
 }
@@ -606,7 +629,7 @@ fn capture_processes() -> Vec<Proc> {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-CimInstance Win32_Process | ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId,$_.ParentProcessId,$_.Name }",
+            "Get-CimInstance Win32_Process | ForEach-Object { '{0}|{1}|{2}|{3}' -f $_.ProcessId,$_.ParentProcessId,$(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().Ticks }),$_.Name }",
         ])
         .output()
     else {
@@ -615,15 +638,22 @@ fn capture_processes() -> Vec<Proc> {
     let text = String::from_utf8_lossy(&output.stdout);
     let mut out = Vec::new();
     for line in text.lines() {
-        let mut parts = line.trim().splitn(3, '|');
+        let mut parts = line.trim().splitn(4, '|');
         let Some(pid) = parts.next().and_then(|value| value.parse().ok()) else {
             continue;
         };
         let Some(ppid) = parts.next().and_then(|value| value.parse().ok()) else {
             continue;
         };
+        // Empty for processes whose creation time is not readable.
+        let started = parts.next().and_then(|value| value.parse().ok());
         let name = parts.next().unwrap_or("").to_string();
-        out.push(Proc { pid, ppid, name });
+        out.push(Proc {
+            pid,
+            ppid,
+            name,
+            started,
+        });
     }
     out
 }
