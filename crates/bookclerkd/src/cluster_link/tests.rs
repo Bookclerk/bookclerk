@@ -2826,8 +2826,8 @@ async fn a_database_swap_restarts_cluster_links_on_the_new_store() {
 }
 
 /// `bookclerk clusters leave` against a running daemon: the watcher stops
-/// the link's client once the link is no longer active, and returns on
-/// shutdown without stopping anything.
+/// the link's client once the link is no longer active, and on the store's
+/// shutdown (a database swap) stops the client too and returns.
 #[tokio::test]
 async fn leaving_stops_the_running_client() {
     let _dek = crate::auth::tests::process_dek_lock().await;
@@ -2849,7 +2849,7 @@ async fn leaving_stops_the_running_client() {
     .await
     .unwrap();
 
-    // Shutdown first: the watcher returns and stops nothing.
+    // Shutdown first: the watcher forwards it to the client and returns.
     let (stop, mut stopped) = watch::channel(false);
     let stop = Arc::new(stop);
     let (shut, shutdown) = watch::channel(false);
@@ -2864,9 +2864,11 @@ async fn leaving_stops_the_running_client() {
         .await
         .expect("the watcher returns on shutdown")
         .unwrap();
-    assert!(!*stopped.borrow_and_update());
+    assert!(*stopped.borrow_and_update(), "shutdown stops the client");
 
     // While active, nothing stops; after leaving, the client is stopped.
+    let (stop, mut stopped) = watch::channel(false);
+    let stop = Arc::new(stop);
     let (_shut, shutdown) = watch::channel(false);
     let watcher = tokio::spawn(super::stop_when_inactive(
         host.clone(),

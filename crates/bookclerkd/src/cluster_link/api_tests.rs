@@ -290,14 +290,24 @@ async fn the_operator_approves_narrowed_and_revokes() {
 async fn deny_network_turns_network_off() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
-    let (_state, _store, app) = daemon(&files).await;
+    let (_state, store, app) = daemon(&files).await;
     let bearer = format!("Bearer {TOKEN}");
+    let digest = load_remote_plugin_consent(&store, CLUSTER, PLUGIN)
+        .await
+        .unwrap()
+        .unwrap()
+        .request_digest();
     let (status, approved) = call(
         &app,
         "POST",
         "/api/config/cluster-consents/approve",
         Some(&bearer),
-        json!({ "cluster_id": CLUSTER, "plugin_key": PLUGIN, "deny_network": true }),
+        json!({
+            "cluster_id": CLUSTER,
+            "plugin_key": PLUGIN,
+            "request_digest": digest,
+            "deny_network": true,
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{approved}");
