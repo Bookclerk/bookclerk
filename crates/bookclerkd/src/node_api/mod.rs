@@ -96,6 +96,22 @@ pub(crate) struct PostNodeInvite {
 /// `POST /api/config/node-invites`: mint an enrollment link. Any user may
 /// mint one for themselves while host enrollment is on; the operator or an
 /// Owner may mint for any active user.
+///
+/// # Arguments
+///
+/// * `caller` - Who is asking; decides whose links they may mint.
+/// * `headers` - Request headers, for the effective public origin.
+/// * `body` - Owner, lifetime, and label of the new link.
+///
+/// # Returns
+///
+/// `{link, url}`; the secret appears once, in `url`.
+///
+/// # Errors
+///
+/// Returns 503 `node_api_pin_unavailable` in `self_signed` mode while the
+/// certificate's SPKI pin cannot be read (nothing is minted), and an error
+/// response when the library refuses the mint.
 pub async fn post_node_invite(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
@@ -110,6 +126,29 @@ pub async fn post_node_invite(
             )))
         }
     };
+    // A self-signed owner pins its certificate in the link; resolve the pin
+    // before minting so a link a host cannot verify is never created.
+    let (origin, spki_pin) = {
+        let cfg = state.config.read().await;
+        let pin = if cfg.daemon.node_api.mode == bookclerk_config::NodeApiMode::SelfSigned {
+            match bookclerk_config::read_node_api_spki_pin(&cfg.paths().files_dir) {
+                Some(pin) => Some(pin),
+                None => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({ "error": "node_api_pin_unavailable" })),
+                    )
+                        .into_response())
+                }
+            }
+        } else {
+            None
+        };
+        (
+            crate::origin::effective_origin_from_config(&cfg, Some(&headers)),
+            pin,
+        )
+    };
     let library = state.library_snapshot().await;
     let minted = mint_enrollment_link(
         &library,
@@ -120,17 +159,6 @@ pub async fn post_node_invite(
     )
     .await
     .map_err(events_error)?;
-    let (origin, spki_pin) = {
-        let cfg = state.config.read().await;
-        // A self-signed owner pins its certificate in the link.
-        let pin = (cfg.daemon.node_api.mode == bookclerk_config::NodeApiMode::SelfSigned)
-            .then(|| bookclerk_config::read_node_api_spki_pin(&cfg.paths().files_dir))
-            .flatten();
-        (
-            crate::origin::effective_origin_from_config(&cfg, Some(&headers)),
-            pin,
-        )
-    };
     let url = minted.url(&origin, spki_pin.as_deref());
     Ok(Json(json!({
         "link": link_json(&minted.link),
@@ -678,6 +706,58 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{revoked}");
         assert_eq!(revoked["link"]["state"], "revoked");
+    }
+
+    #[tokio::test]
+    async fn self_signed_invites_refuse_to_mint_without_a_pin() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = test_state_with(
+            &files,
+            "[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        )
+        .await;
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let operator = invite_routes(&state, UserCaller::Operator);
+
+        // No certificate yet: refused, and no unpinned link is left behind.
+        let (status, refused) = send(
+            &operator,
+            "POST",
+            "/api/config/node-invites",
+            json!({ "user_id": member.id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{refused}");
+        assert_eq!(refused["error"], "node_api_pin_unavailable");
+        let (_, listed) = send(&operator, "GET", "/api/config/node-invites", Value::Null).await;
+        assert!(listed["links"].as_array().unwrap().is_empty(), "{listed}");
+
+        // Once the pin exists, every link carries it.
+        let dir = files
+            .path()
+            .join(bookclerk_config::NODE_API_SELF_SIGNED_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pin = "A".repeat(43);
+        std::fs::write(dir.join(bookclerk_config::NODE_API_SPKI_PIN_FILE), &pin).unwrap();
+        let (status, minted) = send(
+            &operator,
+            "POST",
+            "/api/config/node-invites",
+            json!({ "user_id": member.id }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{minted}");
+        assert!(
+            minted["url"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!(".{pin}")),
+            "{minted}"
+        );
     }
 
     #[tokio::test]

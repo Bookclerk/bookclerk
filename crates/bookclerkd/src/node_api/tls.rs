@@ -48,7 +48,8 @@ use crate::api::AppState;
 /// Seconds a client has to finish its TLS handshake.
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
-/// Handshakes in flight at once.
+/// Connections in flight at once: handshaking, or finished and waiting for
+/// room in [`ACCEPT_QUEUE`]. Further connections are shed.
 const MAX_PENDING_HANDSHAKES: usize = 256;
 
 /// Finished handshakes waiting for the HTTP server.
@@ -209,7 +210,13 @@ pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> Nod
         .layer(Extension(LocalAddr(local)))
         .layer(Extension(gate.clone()));
     let (handshakes, accepted) = mpsc::channel(ACCEPT_QUEUE);
-    tokio::spawn(accept_loop(tcp, server_config, challenge, handshakes));
+    tokio::spawn(accept_loop(
+        tcp,
+        server_config,
+        challenge,
+        handshakes,
+        MAX_PENDING_HANDSHAKES,
+    ));
     tokio::spawn(async move {
         // `tap_io` gives a custom listener axum's `ConnectInfo<SocketAddr>`.
         let listener = TlsListener { accepted, local }.tap_io(|_| {});
@@ -411,14 +418,16 @@ fn self_signed(
 
 /// Accepts TCP connections and runs each TLS handshake in its own task.
 /// TLS-ALPN-01 challenge handshakes are answered and closed; finished
-/// handshakes go to the HTTP server.
+/// handshakes go to the HTTP server. At most `max_pending` connections are
+/// handshaking or waiting to be handed over at once; the rest are shed.
 async fn accept_loop(
     tcp: TcpListener,
     server_config: Arc<ServerConfig>,
     challenge: Option<Arc<ServerConfig>>,
     handshakes: mpsc::Sender<(TlsStream<TcpStream>, SocketAddr)>,
+    max_pending: usize,
 ) {
-    let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+    let pending = Arc::new(Semaphore::new(max_pending));
     loop {
         let (stream, peer) = match tcp.accept().await {
             Ok(accepted) => accepted,
@@ -448,9 +457,10 @@ async fn accept_loop(
                     start.into_stream(server_config).await.map(Some)
                 })
                 .await;
-            drop(permit);
             match handshake {
                 Ok(Ok(Some(tls))) => {
+                    // Hold the permit until the server takes the stream, so a
+                    // stalled server bounds waiters too, not just handshakes.
                     let _ = handshakes.send((tls, peer)).await;
                 }
                 Ok(Ok(None)) => tracing::debug!(%peer, "answered a TLS-ALPN-01 challenge"),
@@ -459,6 +469,7 @@ async fn accept_loop(
                 }
                 Err(_) => tracing::debug!(%peer, "node API TLS handshake timed out"),
             }
+            drop(permit);
         });
     }
 }

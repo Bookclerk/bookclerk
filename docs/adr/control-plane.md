@@ -867,10 +867,13 @@ Built in the first H-4 slice:
   node id, incarnation, 32-byte nonce, and the owner's canonical origin
   (its configured `public_origin`, so a signature relayed through another
   server fails). The owner always sends a challenge, so an unknown node and
-  a bad signature both close with 4401; a valid signature from a revoked
-  credential closes with 4403. Each refusal writes a
-  `security_audit_events` row (`node_auth_failed` / `node_auth_revoked`).
-  A welcomed node stamps `node_credentials.last_connected_at`. The session
+  a bad signature both close with 4401 and the one reason `auth_failed`
+  (the detailed reason is only in the audit row and the log); a valid
+  signature from a revoked credential closes with 4403. Each refusal writes
+  a `security_audit_events` row (`node_auth_failed` / `node_auth_revoked`).
+  A welcomed node stamps `node_credentials.last_connected_at`; the
+  connection is registered for `node.revoked` wakes before that stamp, so
+  a revoke mid-handshake still closes it. The session
   pings every 20 s, closes after 60 s idle, re-reads `revoked_at` on every
   ping tick, closes on a `node.revoked` wake with 4403, lets a newer
   connection for the same node supersede the old one (4409), and closes on
@@ -884,7 +887,8 @@ Built in the first H-4 slice:
   `$FILES/acme/` (0700). `self_signed` generates a P-256 certificate once
   under `$FILES/node-api/self-signed/` (0700, key 0600) and writes its SPKI
   pin beside it; `POST /api/config/node-invites` and `bookclerk nodes
-  invite` append the pin to links.
+  invite` append the pin to links, and refuse to mint (503
+  `node_api_pin_unavailable` / a CLI error) while the pin cannot be read.
   In both modes the node API stays unmounted on every listener (404
   `node_api_unmounted`) until the listener has a certificate, so an ACME
   failure never falls back to plain HTTP. A Pebble issuance test runs when

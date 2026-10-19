@@ -139,6 +139,70 @@ where
 }
 
 #[tokio::test]
+async fn a_stalled_server_bounds_finished_handshakes() {
+    use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio_rustls::rustls::ServerConfig;
+
+    let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert = generated.cert.der().clone();
+    let key = PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der());
+    let mut server = ServerConfig::builder_with_provider(super::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.clone()], PrivateKeyDer::Pkcs8(key))
+        .unwrap();
+    server.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let mut roots = RootCertStore::empty();
+    roots.add(cert).unwrap();
+    let client = ClientConfig::builder_with_provider(super::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+
+    // One slot in flight, one in the queue, and a server that never accepts.
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = tcp.local_addr().unwrap();
+    let (handshakes, mut accepted) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(super::accept_loop(
+        tcp,
+        Arc::new(server),
+        None,
+        handshakes,
+        1,
+    ));
+    let handshake = || async {
+        let tcp = tokio::net::TcpStream::connect(local).await.unwrap();
+        connector
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+    };
+    // Retries while the previous connection still holds the slot.
+    let handshake_eventually = || async {
+        for _ in 0..100 {
+            if let Ok(tls) = handshake().await {
+                return tls;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("handshake never succeeded");
+    };
+
+    let _queued = handshake_eventually().await;
+    let _waiting = handshake_eventually().await;
+    // The waiting connection keeps its slot: the next one is shed, not
+    // handshaken into an unbounded backlog.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(handshake().await.is_err(), "a third connection was let in");
+
+    // Once the server takes one, the waiter moves up and the slot frees.
+    let _ = accepted.recv().await.unwrap();
+    let _after = handshake_eventually().await;
+}
+
+#[tokio::test]
 async fn self_signed_serves_the_node_api_and_pins_links() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();

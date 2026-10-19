@@ -7,10 +7,14 @@
 //! 1. [`super::transport::classify_transport`], before the upgrade.
 //! 2. The client must offer the [`SUBPROTOCOL`] subprotocol.
 //! 3. hello → challenge → auth. The owner always sends a challenge, so an
-//!    unknown node id and a bad signature look the same from outside; both
-//!    close with [`CLOSE_AUTH_FAILED`]. A valid signature from a revoked
+//!    unknown node id and a bad signature look the same from outside; every
+//!    authentication failure closes with [`CLOSE_AUTH_FAILED`] and the one
+//!    reason [`AUTH_FAILED_REASON`]. A valid signature from a revoked
 //!    credential closes with [`CLOSE_REVOKED`]. Each failure writes a
-//!    `security_audit_events` row.
+//!    `security_audit_events` row and a log line with the detailed reason.
+//!    The connection is registered for `node.revoked` wakes before its
+//!    credential is stamped, so a revoke during the handshake still closes
+//!    it.
 //!
 //! After `welcome`, the session pings every [`PING_INTERVAL_SECS`], closes
 //! after [`IDLE_TIMEOUT_SECS`] without an inbound frame, re-reads the
@@ -49,6 +53,11 @@ use crate::api::AppState;
 
 /// Longest node id or incarnation a hello may carry.
 const MAX_ID_BYTES: usize = 128;
+
+/// Close reason sent for every [`CLOSE_AUTH_FAILED`]; the detailed reason
+/// stays in the audit row and the log, so a peer cannot tell an unknown node
+/// id from a bad signature.
+pub(super) const AUTH_FAILED_REASON: &str = "auth_failed";
 
 /// One live, authenticated host connection.
 struct SessionSlot {
@@ -167,6 +176,10 @@ impl Refusal {
 struct Authed {
     /// Node id the signature proved.
     node_id: String,
+    /// This connection's slot serial from [`register`].
+    serial: u64,
+    /// Close requests for this connection.
+    close: watch::Receiver<Option<u16>>,
 }
 
 /// Runs one connection: the handshake, then the session.
@@ -187,10 +200,9 @@ async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAdd
             return;
         }
     };
-    let (serial, close) = register(&authed.node_id);
     tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
-    session(&library, &mut socket, &authed.node_id, close).await;
-    unregister(&authed.node_id, serial);
+    session(&library, &mut socket, &authed.node_id, authed.close).await;
+    unregister(&authed.node_id, authed.serial);
     tracing::info!(node_id = %authed.node_id, "host node disconnected");
 }
 
@@ -228,7 +240,13 @@ async fn refuse(
     {
         tracing::warn!(error = %err, "could not record node handshake refusal");
     }
-    close_with(&mut socket, refusal.code, refusal.reason).await;
+    // The detailed reason is for the audit row and the log only.
+    let reason = if refusal.code == CLOSE_AUTH_FAILED {
+        AUTH_FAILED_REASON
+    } else {
+        refusal.reason
+    };
+    close_with(&mut socket, refusal.code, reason).await;
 }
 
 /// Sends a close frame; the peer may already be gone.
@@ -346,12 +364,7 @@ async fn handshake(
     if credential.revoked_at.is_some() {
         return Err(revoked);
     }
-    // Stamps only an unrevoked credential, so a revoke mid-handshake wins.
-    match record_node_connected(library, &node_id).await {
-        Ok(true) => {}
-        Ok(false) => return Err(revoked),
-        Err(_) => return Err(Refusal::auth("credential_unavailable", Some(&node_id))),
-    }
+    let (serial, close) = admit(&node_id, record_node_connected(library, &node_id)).await?;
     let welcome = Frame::new(
         "",
         Body::Welcome {
@@ -360,9 +373,38 @@ async fn handshake(
         },
     );
     if !send_frame(socket, &welcome).await {
+        unregister(&node_id, serial);
         return Err(Refusal::auth("closed", Some(&node_id)));
     }
-    Ok(Authed { node_id })
+    Ok(Authed {
+        node_id,
+        serial,
+        close,
+    })
+}
+
+/// Registers `node_id`'s connection, then awaits `stamp` (which records the
+/// connection against an unrevoked credential). Registering first means a
+/// `node.revoked` wake that lands while the stamp runs, or any time after
+/// it, finds this connection; a revoke committed before the stamp makes the
+/// stamp report `false`. Either way a revoked credential never keeps a
+/// session.
+async fn admit<F>(node_id: &str, stamp: F) -> Result<(u64, watch::Receiver<Option<u16>>), Refusal>
+where
+    F: std::future::Future<Output = bookclerk_library::Result<bool>>,
+{
+    let (serial, close) = register(node_id);
+    let refusal = match stamp.await {
+        Ok(true) => return Ok((serial, close)),
+        Ok(false) => Refusal {
+            code: CLOSE_REVOKED,
+            reason: "revoked",
+            node_id: Some(node_id.to_string()),
+        },
+        Err(_) => Refusal::auth("credential_unavailable", Some(node_id)),
+    };
+    unregister(node_id, serial);
+    Err(refusal)
 }
 
 /// True when the credential is gone or revoked. A failed read keeps the
@@ -451,5 +493,38 @@ async fn session(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bookclerk_node_proto::{CLOSE_REVOKED, CLOSE_SUPERSEDED};
+
+    use super::{admit, close_node_sessions, sessions, unregister};
+
+    #[tokio::test]
+    async fn a_revoke_during_the_stamp_reaches_the_admitted_connection() {
+        let node_id = "admit-revoked-mid-stamp";
+        // The wake lands while the credential is being stamped.
+        let (serial, close) = admit(node_id, async {
+            close_node_sessions(node_id, CLOSE_REVOKED);
+            Ok(true)
+        })
+        .await
+        .unwrap_or_else(|_| panic!("admitted"));
+        assert_eq!(*close.borrow(), Some(CLOSE_REVOKED));
+        unregister(node_id, serial);
+
+        // A stamp that finds the credential revoked leaves no slot behind,
+        // and the connection it would have superseded is closed.
+        let (_, older) = admit(node_id, async { Ok(true) })
+            .await
+            .unwrap_or_else(|_| panic!("admitted"));
+        let refusal = admit(node_id, async { Ok(false) })
+            .await
+            .expect_err("refused");
+        assert_eq!(refusal.code, CLOSE_REVOKED);
+        assert_eq!(*older.borrow(), Some(CLOSE_SUPERSEDED));
+        assert!(!sessions().contains_key(node_id));
     }
 }
