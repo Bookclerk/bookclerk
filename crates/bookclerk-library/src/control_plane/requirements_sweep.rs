@@ -15,9 +15,12 @@
 //!   and some node is deployed to run all of them): a new set is written at
 //!   once, and any unsettled mark is cleared.
 //! - **Unsettled** (no node runs all of them, or a recorded instance is no
-//!   longer deployed anywhere): nothing is applied yet. The first sweep that
-//!   sees it stamps [`JobPayload::requires_unsettled_since_ms`]; later sweeps
-//!   leave the job alone until it has been unsettled for the grace period
+//!   longer deployed anywhere): no recorded instance is dropped yet, but
+//!   instances the job gained are recorded at once (the recorded set becomes
+//!   the union), so the job cannot be claimed and run without a newly
+//!   deployed node-bound output while it waits. The first sweep that sees it
+//!   stamps [`JobPayload::requires_unsettled_since_ms`]; later sweeps only
+//!   record further gains until it has been unsettled for the grace period
 //!   ([`REQUIREMENTS_GRACE`]). A placement move retires the old replica and
 //!   adds the new one in separate writes, so for a moment no node may run
 //!   everything; the grace period keeps such a move from failing queued work.
@@ -92,9 +95,12 @@ impl RequirementsSweepReport {
 /// Re-resolves the requirements of every pending routed job (see the module
 /// docs for the rules).
 ///
-/// `node_bound_plugin_keys` are the plugin keys of node-bound outputs, as
-/// the daemon discovers them for admission. `grace` is normally
-/// [`REQUIREMENTS_GRACE`]; `now` is the sweep's clock.
+/// `node_bound_plugin_keys` are the plugin keys of node-bound outputs. A
+/// recorded instance whose key is missing from them is treated as no longer
+/// required, so the caller must pass a set that does not depend on what the
+/// sweeping node has installed, and must not sweep with a set it could not
+/// read. `grace` is normally [`REQUIREMENTS_GRACE`]; `now` is the sweep's
+/// clock.
 ///
 /// # Errors
 ///
@@ -181,18 +187,30 @@ async fn sweep_one(
         return Ok(());
     }
 
-    let Some(since) = since else {
+    // Inside the grace period nothing recorded is dropped, but instances the
+    // job gained are recorded at once: the old set may still be claimable,
+    // and a job run on it would skip a newly deployed node-bound output.
+    let in_grace = since.is_none_or(|since| now_ms.saturating_sub(since) < grace_ms);
+    if in_grace {
+        let held: Vec<String> = current
+            .iter()
+            .chain(desired.iter())
+            .cloned()
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect();
+        if since.is_some() && held == *current {
+            report.unsettled += 1;
+            return Ok(());
+        }
         let payload = JobPayload {
-            requires_unsettled_since_ms: Some(now_ms),
+            requires: held,
+            requires_unsettled_since_ms: Some(since.unwrap_or(now_ms)),
             ..job.payload.clone()
         };
         if write(store, job, &payload, report).await? {
             report.unsettled += 1;
         }
-        return Ok(());
-    };
-    if now_ms.saturating_sub(since) < grace_ms {
-        report.unsettled += 1;
         return Ok(());
     }
     if routable {

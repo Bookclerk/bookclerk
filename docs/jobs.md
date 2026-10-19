@@ -299,16 +299,22 @@ or retired, or the scheduler moves a replica. Each daemon runs a sweep loop
 A pass runs every 30 s, on a deployment or install wakeup on this node, and
 after a scheduler pass that moved replicas. It re-resolves the requirements
 of every pending acquire, pinned job, or job that already has requirements,
-with the node-bound output keys the daemon discovers, and:
+with the node-bound output keys the daemon discovers plus every instance
+keyed as the first-party `local` destination (so a sweeping node without
+that plugin, or whose discovery failed, never strips them; a pass that cannot
+read the instance list is skipped), and:
 
 - **applies at once** a set that is unchanged or only gains instances when
   some node is deployed to run all of them (a newly deployed `local` output
   is added to queued acquires), clearing any unsettled mark;
 - otherwise (**unsettled**: no node runs all of them, or a recorded instance
   is no longer deployed anywhere) stamps
-  `JobPayload.requires_unsettled_since_ms` on the first sweep and leaves the
-  job alone for a **10-minute grace period**, so a placement move that
-  retires the old replica before the new one is up never fails queued work;
+  `JobPayload.requires_unsettled_since_ms` on the first sweep and drops no
+  recorded instance for a **10-minute grace period**, so a placement move that
+  retires the old replica before the new one is up never fails queued work.
+  Instances the job gained are still recorded at once (the recorded set
+  becomes the union of old and new), so a job that waits cannot be claimed on
+  its old set and skip a newly deployed `local` output;
 - when the grace period has passed, writes the new set if some node can run
   it (an instance was only dropped, which is what admission would record
   now), or fails the job with `error_kind = "unroutable"` and a message naming
@@ -319,7 +325,8 @@ sweeps, because sweeps also run on wakeups and a count would expire faster
 on a busy cluster. Every write is a compare-and-swap on `state = 'pending'`
 and the lease generation, which it bumps: a job claimed meanwhile is left
 alone, and a claimer that read the row before the sweep wrote it loses its
-own CAS and re-reads. A wakeup on a node that does not hold the lease does
+own CAS (a routed claim matches the generation of the record whose
+requirements it checked) and moves on to re-read it on a later pass. A wakeup on a node that does not hold the lease does
 nothing; the holder's timer picks the change up within 30 s.
 
 The unrouted `claim_next_job` (and its guest atomic plan) never claims a job

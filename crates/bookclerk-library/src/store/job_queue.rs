@@ -154,16 +154,29 @@ impl LibraryStore {
 
     /// Claims the pending job `job_id` for `owner` with a single CAS.
     ///
-    /// The update matches `state = 'pending'` and the lease generation read
-    /// just before it, so of several concurrent claimers on any number of
-    /// connections exactly one moves the row to `running` (and bumps the
-    /// generation that fences every later write). No transaction is needed:
-    /// a pending → running move does not change the admission count.
+    /// The update matches `state = 'pending'` and `expected_generation`, the
+    /// lease generation of the record the caller routed on, so of several
+    /// concurrent claimers on any number of connections exactly one moves the
+    /// row to `running` (and bumps the generation that fences every later
+    /// write). A row whose payload was rewritten after the caller read it
+    /// ([`Self::rewrite_pending_job_payload`] bumps the generation) is not
+    /// claimed, so a job never runs on requirements its claimer did not
+    /// check. No transaction is needed: a pending → running move does not
+    /// change the admission count.
+    ///
+    /// # Arguments
+    ///
+    /// * `job_id` - The job to claim.
+    /// * `expected_generation` - `lease_generation` of the record the caller
+    ///   evaluated.
+    /// * `owner` - Worker lease owner written on the row.
+    /// * `lease_secs` - Lease length.
     ///
     /// # Returns
     ///
     /// The claimed record, or `None` when the row is missing, not pending,
-    /// not yet due, cancel-requested, unreadable, or another claimer won.
+    /// not yet due, cancel-requested, unreadable, moved past
+    /// `expected_generation`, or another claimer won.
     ///
     /// # Errors
     ///
@@ -171,6 +184,7 @@ impl LibraryStore {
     pub async fn claim_job_by_id(
         &self,
         job_id: &str,
+        expected_generation: i64,
         owner: &str,
         lease_secs: u64,
     ) -> Result<Option<JobRecord>> {
@@ -183,7 +197,10 @@ impl LibraryStore {
         };
         let now = Utc::now();
         let now_s = now.to_rfc3339();
-        if model.state != JobState::Pending.as_str() || parse_dt(&model.run_after) > now {
+        if model.state != JobState::Pending.as_str()
+            || model.lease_generation != expected_generation
+            || parse_dt(&model.run_after) > now
+        {
             return Ok(None);
         }
         let lease_expires =

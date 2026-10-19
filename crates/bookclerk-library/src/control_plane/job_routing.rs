@@ -327,9 +327,12 @@ pub async fn job_semaphores(
 /// ([`ROUTED_CLAIM_CANDIDATES`] per page); skips those whose requirements
 /// this node does not meet or whose account or instance semaphore is full;
 /// takes the permits of the first one left and claims it with
-/// [`LibraryStore::claim_job_by_id`]. A lost claim gives the permits back
-/// and moves on. It stops at the first claim, when the rows run out, or when
-/// the class semaphore itself is full (no further candidate could run).
+/// [`LibraryStore::claim_job_by_id`] at the lease generation of the record
+/// it evaluated, so a job whose requirements were rewritten after this node
+/// checked them is not claimed on the stale check. A lost claim gives the
+/// permits back and moves on. It stops at the first claim, when the rows
+/// run out, or when the class semaphore itself is full (no further
+/// candidate could run).
 ///
 /// # Returns
 ///
@@ -378,7 +381,12 @@ pub async fn claim_routed_job(
                 PermitAcquire::Blocked(_) => continue,
             };
             match store
-                .claim_job_by_id(&job.id, request.owner, request.lease_secs)
+                .claim_job_by_id(
+                    &job.id,
+                    job.lease_generation,
+                    request.owner,
+                    request.lease_secs,
+                )
                 .await
             {
                 Ok(Some(job)) => return Ok(Some(RoutedJobClaim { job, permits })),

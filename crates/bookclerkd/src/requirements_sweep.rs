@@ -3,7 +3,11 @@
 //! Admission fixes a job's required plugin instances
 //! (`control_plane::resolve_job_requirements`); this loop re-resolves them
 //! for jobs still pending after deployments change, using the node-bound
-//! output keys only the daemon can discover. The rules (apply at once when
+//! output keys only the daemon can discover
+//! (`jobs::sweep_node_bound_output_keys`: this node's discovered keys plus
+//! every instance keyed as the first-party `local` destination, so a holder
+//! without that plugin, or whose discovery failed, never strips them; a pass
+//! that cannot read them is skipped). The rules (apply at once when
 //! some node runs everything, otherwise wait out [`REQUIREMENTS_GRACE`]
 //! before dropping a retired instance or failing the job as `unroutable`)
 //! live in `control_plane::sweep_job_requirements`.
@@ -58,7 +62,7 @@ pub async fn run_requirements_sweep(state: &AppState) -> Option<RequirementsSwee
     // Hold off while a database swap is in progress, as admission does.
     let _permit = state.job_runtime.read().await;
     let library = state.library_snapshot().await;
-    let bound = match crate::jobs::node_bound_output_keys(state, &library).await {
+    let bound = match crate::jobs::sweep_node_bound_output_keys(state, &library).await {
         Ok(bound) => bound,
         Err(err) => {
             warn!(error = %err, "node-bound outputs unavailable; requirements sweep skipped");
@@ -222,5 +226,88 @@ mod tests {
         assert_eq!(pending.state, JobState::Pending);
         assert!(pending.payload.requires_unsettled_since_ms.is_some());
         assert_eq!(pending.payload.requires, vec![instance.id.to_string()]);
+    }
+
+    /// A sweeping node without the `local` plugin installed (discovery finds
+    /// none here) keeps a pending acquire's `local` requirement, even with
+    /// the grace period long expired, instead of reading its absence as a
+    /// retired output and letting any node run the acquire.
+    #[tokio::test]
+    async fn holder_without_the_local_plugin_keeps_local_requirements() {
+        const LOCAL: &str = "platform:bookclerk/bookclerk-plugin-destination-local";
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let files_path = files.path();
+        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(
+            &store,
+            files_path,
+            &files_path.join("cache"),
+            None,
+            &EventsConfig::default(),
+        )
+        .await
+        .unwrap();
+        let operator = ConfigActor::Operator {
+            id: "operator".into(),
+        };
+        let local = create_plugin_instance(&store, &operator, LOCAL, "")
+            .await
+            .unwrap();
+        ensure_plugin_deployment(
+            &store,
+            &ConfigActor::Bootstrap,
+            &local.id,
+            "node-with-disk",
+            DesiredState::Present,
+        )
+        .await
+        .unwrap();
+        let expired_since = chrono::Utc::now()
+            - chrono::Duration::from_std(super::REQUIREMENTS_GRACE).unwrap()
+            - chrono::Duration::minutes(1);
+        let job = match store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::Acquire,
+                payload: JobPayload {
+                    title: Some("one book".into()),
+                    requires: vec![local.id.to_string()],
+                    requires_unsettled_since_ms: Some(expired_since.timestamp_millis()),
+                    ..Default::default()
+                },
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 16,
+                run_after: None,
+            })
+            .await
+            .unwrap()
+        {
+            EnqueueOutcome::Created { id } => id,
+            other => panic!("{other:?}"),
+        };
+        let config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        let state = Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            config,
+        ));
+        assert_ne!(session.node.node_id, "node-with-disk");
+
+        let report = super::run_requirements_sweep(&state)
+            .await
+            .expect("holds the lease");
+        assert_eq!((report.rewritten, report.failed), (0, 0), "{report:?}");
+        let pending = store.get_job(&job).await.unwrap().unwrap();
+        assert_eq!(pending.state, JobState::Pending);
+        assert_eq!(pending.payload.requires, vec![local.id.to_string()]);
     }
 }
