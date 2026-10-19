@@ -19,6 +19,7 @@ mod node_queue;
 mod node_status;
 mod ownership;
 mod placement;
+mod requirements_sweep;
 mod routing;
 mod schemas;
 mod secret;
@@ -102,6 +103,10 @@ pub use placement::{
     PlacementWrite, PluginPlacement, Replicas, ScheduleReport, MAX_NODE_LABELS,
     MAX_PLACEMENT_CONSTRAINTS, MAX_REPLICAS, NODE_LABEL, SCHEDULER_LEASE, SCHEDULER_LEASE_TTL,
     TARGET_LABEL,
+};
+pub use requirements_sweep::{
+    sweep_job_requirements, RequirementsSweepReport, REQUIREMENTS_GRACE, REQUIREMENTS_SWEEP_LEASE,
+    REQUIREMENTS_SWEEP_LEASE_TTL, UNROUTABLE_ERROR_KIND,
 };
 pub use routing::{rank_nodes, route_ranks, RouteRank, ROUTE_DEFER_PER_RANK};
 pub use schemas::{
@@ -733,5 +738,7 @@ mod job_routing_tests;
 mod leases_tests;
 #[cfg(test)]
 mod placement_tests;
+#[cfg(test)]
+mod requirements_sweep_tests;
 #[cfg(test)]
 mod tests;

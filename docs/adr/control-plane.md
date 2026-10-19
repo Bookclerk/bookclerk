@@ -817,6 +817,15 @@ across nodes.
   larger token. Counting running `jobs` rows (as `event_deliveries` does
   for `[events.concurrency]`) was rejected because one job counts against
   several semaphores and the account a job touches is not a column.
+- **Requirements sweep** (follow-up to #267). A singleton loop under the
+  `jobs:requirements-sweep` lease re-resolves pending jobs' requirements
+  with the daemon's discovered node-bound output keys and CAS-writes the
+  payload (bumping the lease generation, so it never overwrites a claim).
+  A set that only gains instances and still has a common node applies at
+  once; anything else waits a 10-minute grace period stamped in the payload
+  (`requires_unsettled_since_ms`), then drops retired instances or fails the
+  job as `unroutable`. Rejected: counting consecutive unsettled sweeps,
+  because sweeps also run on wakeups and the count would shrink with load.
 - **Limits stay in `config.toml`.** `[jobs]` has not moved to a database
   document, so each node applies its own limits; nodes should agree.
   Lowering a limit lets held slots above it drain rather than revoking them.
@@ -1040,8 +1049,8 @@ Not in this phase, and not claimed as production HA:
   of that.
 - Job routing beyond plugin instances. Jobs now carry the instances they
   need and take cluster semaphores (*Job routing and cluster semaphores*
-  above), but requirements are fixed at admission and only name instances:
-  a pending job is not re-routed when a deployment moves, an all-accounts
+  above), and the requirements sweep re-resolves pending jobs when
+  deployments move, but requirements only name instances: an all-accounts
   scan is not split across the nodes that run each storefront, jobs are not
   ranked by headroom the way deliveries are, and acquire still writes the
   claiming node's own destinations rather than mirroring node-local outputs

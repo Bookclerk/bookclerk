@@ -287,9 +287,48 @@ permits (below) and claims that row with `claim_job_by_id`, one CAS on
 claimers on any number of connections admit one. A lost CAS gives the
 permits back and tries the next candidate. A job whose account or instance
 semaphore is full is skipped too; a full class semaphore ends the attempt.
-Requirements are fixed at admission: a deployment that moves later does not
-re-route a pending job, so a job whose required instances no longer share a
-node waits until they do or an operator cancels it.
+Requirements recorded at admission are kept current by the requirements
+sweep below.
+
+### Requirements sweep
+
+Deployments keep moving after a job is queued: a `local` output is deployed
+or retired, or the scheduler moves a replica. Each daemon runs a sweep loop
+(`bookclerkd` `requirements_sweep`, rules in
+`control_plane::sweep_job_requirements`), but only the holder of the
+`jobs:requirements-sweep` cluster lease (90 s, renewed every pass) sweeps.
+A pass runs every 30 s, on a deployment or install wakeup on this node, and
+after a scheduler pass that moved replicas. It re-resolves the requirements
+of every pending acquire, pinned job, or job that already has requirements,
+with the node-bound output keys the daemon discovers plus every instance
+keyed as the first-party `local` destination (so a sweeping node without
+that plugin, or whose discovery failed, never strips them; a pass that cannot
+read the instance list is skipped), and:
+
+- **applies at once** a set that is unchanged or only gains instances when
+  some node is deployed to run all of them (a newly deployed `local` output
+  is added to queued acquires), clearing any unsettled mark;
+- otherwise (**unsettled**: no node runs all of them, or a recorded instance
+  is no longer deployed anywhere) stamps
+  `JobPayload.requires_unsettled_since_ms` on the first sweep and drops no
+  recorded instance for a **10-minute grace period**, so a placement move that
+  retires the old replica before the new one is up never fails queued work.
+  Instances the job gained are still recorded at once (the recorded set
+  becomes the union of old and new), so a job that waits cannot be claimed on
+  its old set and skip a newly deployed `local` output;
+- when the grace period has passed, writes the new set if some node can run
+  it (an instance was only dropped, which is what admission would record
+  now), or fails the job with `error_kind = "unroutable"` and a message naming
+  the instances. A failed job frees its `max_pending` slot and dedup key.
+
+The grace period is a wall-clock stamp rather than a count of unsettled
+sweeps, because sweeps also run on wakeups and a count would expire faster
+on a busy cluster. Every write is a compare-and-swap on `state = 'pending'`
+and the lease generation, which it bumps: a job claimed meanwhile is left
+alone, and a claimer that read the row before the sweep wrote it loses its
+own CAS (a routed claim matches the generation of the record whose
+requirements it checked) and moves on to re-read it on a later pass. A wakeup on a node that does not hold the lease does
+nothing; the holder's timer picks the change up within 30 s.
 
 The unrouted `claim_next_job` (and its guest atomic plan) never claims a job
 with requirements; it remains for tests and tools that run one process. It
