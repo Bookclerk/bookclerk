@@ -23,7 +23,7 @@ use bookclerk_library::control_plane::{
     mint_enrollment_link, node_queue_name, publish_node_message, replace_instance_config,
     revoke_remote_plugin, seal_instance_secret, set_secret_ref, ClusterLink, ConfigActor,
     DeploymentStatus, DesiredState, EnrollmentActor, NodeHeartbeat, NodeMessage,
-    PluginInstanceConfigV1, PluginInstanceId, SettingValue,
+    PluginInstanceConfigV1, PluginInstanceId, RemoteApprover, SettingValue,
 };
 use bookclerk_library::secrets::{
     build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret, upsert_secret,
@@ -562,13 +562,18 @@ async fn approve_store(host: &LibraryStore, cluster_id: &str) {
             .is_some()
     })
     .await;
+    let reviewed = load_remote_plugin_consent(host, cluster_id, PLUGIN)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reviewed.requested_version, "0.1.0");
     approve_remote_request(
         host,
         cluster_id,
         PLUGIN,
-        Some("0.1.0"),
+        &reviewed.request_digest(),
         &RemoteNarrowing::default(),
-        "test",
+        RemoteApprover::Operator("test"),
     )
     .await
     .unwrap();
@@ -1150,6 +1155,79 @@ async fn an_owner_plugin_runs_only_after_host_consent() {
             );
         }
     }
+}
+
+/// A consented plugin whose archive could not be fetched (the owner's
+/// copy was gone for a moment) is retried with backoff and becomes
+/// claimable once the archive is back, with no wake or consent change.
+#[tokio::test]
+async fn a_transient_fetch_failure_is_retried() {
+    use sea_orm::ConnectionTrait as _;
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let host = host_store(host_files.path()).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+    let link = join(&owner, &host, member, &origin, None).await.unwrap();
+    let node_id = link.remote_node_id.clone();
+    let cluster_id = link.owner_cluster_id.clone();
+    let deployed = deploy_store(&owner, owner_files.path(), &node_id).await;
+    let archive_sha = bookclerk_library::control_plane::load_active_version(&owner, PLUGIN)
+        .await
+        .unwrap()
+        .unwrap()
+        .artifacts[0]
+        .archive_sha256
+        .clone();
+    let archive = bookclerk_library::control_plane::load_artifact_blob(&owner, &archive_sha)
+        .await
+        .unwrap()
+        .unwrap();
+    owner
+        .db()
+        .execute_unprepared("DELETE FROM plugin_artifacts")
+        .await
+        .unwrap();
+    let transport = EchoTransport::default();
+    let (handle, _stop) = start_client(
+        &host,
+        host_files.path(),
+        link,
+        transport.clone(),
+        Duration::from_millis(200),
+    )
+    .await;
+    connected(&handle, 1).await;
+    approve_store(&host, &cluster_id).await;
+    eventually("the host to report the failed fetch", || async {
+        observed(&owner, &deployed, &node_id)
+            .await
+            .is_some_and(|seen| {
+                seen.status == DeploymentStatus::Error
+                    && seen.detail.contains("could not be fetched")
+            })
+    })
+    .await;
+    assert!(handle.consented_plugins().is_empty());
+
+    bookclerk_library::control_plane::put_artifact_blob(&owner, &archive)
+        .await
+        .unwrap();
+    eventually("the retried fetch to make the plugin claimable", || async {
+        handle.consented_plugins().contains(PLUGIN)
+    })
+    .await;
+    let job_id = enqueue_scan(&owner).await;
+    eventually("the scan to finish on the host", || async {
+        job(&owner, &job_id).await.state == JobState::Succeeded
+    })
+    .await;
+    assert!(observed(&owner, &deployed, &node_id)
+        .await
+        .is_some_and(|seen| seen.status == DeploymentStatus::Materialized));
 }
 
 /// Revoking consent while the host runs a job (as `bookclerk clusters

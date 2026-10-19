@@ -2363,6 +2363,7 @@ dependencies = [
  "rcgen",
  "reqwest 0.13.5",
  "rustls-acme",
+ "sea-orm",
  "secrecy",
  "serde",
  "serde_json",

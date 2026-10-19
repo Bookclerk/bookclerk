@@ -116,8 +116,8 @@ pub use remote_catalog::{
 };
 pub use remote_consents::{
     approve_remote_plugin, list_remote_plugin_consents, load_remote_plugin_consent,
-    record_remote_plugin_request, revoke_remote_plugin, RemoteApproval, RemotePluginConsent,
-    REMOTE_CONSENT_PLATFORM,
+    record_remote_plugin_request, remote_request_digest, revoke_remote_plugin, RemoteApproval,
+    RemoteApprover, RemoteArtifactRef, RemotePluginConsent, REMOTE_CONSENT_PLATFORM,
 };
 pub use remote_results::{accept_scan_results, ScanAccept, MAX_SCAN_RESULT_ROWS};
 pub use remote_work::{
