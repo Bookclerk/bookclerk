@@ -1,16 +1,20 @@
-//! `bookclerk nodes`: the cluster's nodes, their placement labels, and
-//! their owners.
+//! `bookclerk nodes`: the cluster's nodes, their placement labels, their
+//! owners, and host-node enrollment links.
 //!
 //! Reads and writes the library database directly, like `plugins`. Label
 //! changes wake the cluster scheduler through every node's queue.
+//!
+//! An enrollment link's secret is printed once, inside the link's URL
+//! fragment, and never logged or written anywhere else.
 
 use std::collections::BTreeMap;
 
 use bookclerk_config::Config;
 use bookclerk_library::control_plane::{
-    effective_node_labels, list_node_statuses, list_nodes, load_node, load_node_runtime,
-    set_node_labels, set_node_owner, update_node_runtime, ConfigActor, NodeRuntimeSettingsV1,
-    NodeStatus,
+    effective_node_labels, list_enrollment_links, list_node_statuses, list_nodes, load_node,
+    load_node_runtime, mint_enrollment_link, revoke_enrollment_link, revoke_node_credential,
+    set_node_labels, set_node_owner, update_node_runtime, ConfigActor, EnrollmentActor,
+    EnrollmentLink, NodeRuntimeSettingsV1, NodeStatus,
 };
 use bookclerk_library::UserRecord;
 use clap::Subcommand;
@@ -59,8 +63,9 @@ pub enum NodesCommand {
         clear: bool,
     },
     /// Assign a node to the user who administers it, or clear its owner. The
-    /// owner (an active Host, Administrator, or Owner) may then change the
-    /// node's budgets, drain switch, and name.
+    /// owner (any active user) may then change the node's budgets, drain
+    /// switch, and name. Work the node is trusted with still follows the
+    /// owner's role.
     Owner {
         /// Node id (default: this node).
         node: Option<String>,
@@ -71,6 +76,109 @@ pub enum NodesCommand {
         #[arg(long, conflicts_with = "user")]
         clear: bool,
     },
+    /// Mint a single-use link that enrolls one host node for a user. The
+    /// link (with its secret in the URL fragment) is printed once.
+    Invite {
+        /// Login name or user id of the user who will own the host node.
+        #[arg(long, value_name = "USER")]
+        user: String,
+        /// How long the link stays valid (`30m`, `24h`, `7d`; 5m to 7d).
+        #[arg(long, default_value = "24h")]
+        ttl: String,
+        /// Label shown in `nodes invites list`.
+        #[arg(long, default_value = "")]
+        label: String,
+    },
+    /// List or revoke enrollment links.
+    Invites {
+        #[command(subcommand)]
+        /// Invites verb.
+        command: InvitesCommand,
+    },
+    /// Revoke an enrolled host node's credential. Its connection closes and
+    /// it receives no more work.
+    Revoke {
+        /// Host node id.
+        node: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+/// `bookclerk nodes invites` verbs.
+pub enum InvitesCommand {
+    /// Every enrollment link and its state. Secrets are never shown again.
+    List,
+    /// Revoke a link that was not redeemed yet.
+    Revoke {
+        /// Link id.
+        link_id: String,
+    },
+}
+
+/// Operator actor for enrollment commands.
+fn cli_enrollment_actor() -> EnrollmentActor {
+    EnrollmentActor::Operator { id: "cli".into() }
+}
+
+/// Parses `90s`, `30m`, `24h`, or `7d`.
+///
+/// # Errors
+///
+/// Returns an error for any other spelling.
+fn parse_ttl(raw: &str) -> anyhow::Result<std::time::Duration> {
+    let raw = raw.trim();
+    let split = raw
+        .find(|ch: char| !ch.is_ascii_digit())
+        .ok_or_else(|| anyhow::anyhow!("--ttl needs a unit: s, m, h, or d (e.g. 24h)"))?;
+    let (number, unit) = raw.split_at(split);
+    let number: u64 = number
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--ttl must start with a number (e.g. 24h)"))?;
+    let seconds = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => anyhow::bail!("--ttl unit must be s, m, h, or d (e.g. 24h)"),
+    };
+    let total = number
+        .checked_mul(seconds)
+        .ok_or_else(|| anyhow::anyhow!("--ttl is too long"))?;
+    Ok(std::time::Duration::from_secs(total))
+}
+
+/// Origin that enrollment links point at: `integrations.public_origin`, or
+/// this node's loopback listener when none is set.
+fn invite_origin(config: &Config) -> (String, bool) {
+    match config
+        .integrations
+        .public_origin
+        .as_deref()
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+    {
+        Some(origin) => (origin.trim_end_matches('/').to_string(), true),
+        None => (
+            format!("http://localhost:{}", config.daemon.listen.ui_port()),
+            false,
+        ),
+    }
+}
+
+/// JSON for one link; never includes the secret or its hash.
+fn link_json(link: &EnrollmentLink, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value {
+    json!({
+        "link_id": link.link_id,
+        "for_user_id": link.for_user_id,
+        "label": link.label,
+        "created_by": link.created_by,
+        "created_at": link.created_at,
+        "expires_at": link.expires_at,
+        "redeemed_at": link.redeemed_at,
+        "redeemed_node_id": link.redeemed_node_id,
+        "revoked_at": link.revoked_at,
+        "state": link.state(now),
+    })
 }
 
 /// Dispatches a nodes verb.
@@ -282,6 +390,94 @@ pub async fn run(
                 None => println!("node {} has no owner", updated.node_id),
             })
         }
+        NodesCommand::Invite { user, ttl, label } => {
+            let ttl = parse_ttl(&ttl)?;
+            let owner = resolve_user(store, &user).await?;
+            let minted =
+                mint_enrollment_link(store, &cli_enrollment_actor(), owner.id, &label, Some(ttl))
+                    .await?;
+            let (origin, configured) = invite_origin(config);
+            let url = minted.url(&origin, None);
+            let payload = json!({
+                "link": link_json(&minted.link, chrono::Utc::now()),
+                "url": url.as_str(),
+            });
+            if !configured {
+                eprintln!(
+                    "note: integrations.public_origin is not set; this link points at {origin}, \
+                     which only a host on this machine can reach"
+                );
+            }
+            emit(format, &payload, || {
+                println!("{}", url.as_str());
+                println!(
+                    "enrolls one host node for {}; expires {}; shown once",
+                    describe_user(&owner),
+                    minted.link.expires_at
+                );
+            })
+        }
+        NodesCommand::Invites { command } => match command {
+            InvitesCommand::List => {
+                let now = chrono::Utc::now();
+                let links = list_enrollment_links(store, &cli_enrollment_actor()).await?;
+                let rows: Vec<_> = links.iter().map(|link| link_json(link, now)).collect();
+                // Text output names each link's user rather than printing user ids.
+                let mut owners = BTreeMap::new();
+                for link in &links {
+                    owners.insert(
+                        link.link_id.clone(),
+                        owner_label(store, link.for_user_id).await?,
+                    );
+                }
+                emit(format, &json!({ "links": rows }), || {
+                    if links.is_empty() {
+                        println!("no enrollment links");
+                    }
+                    for link in &links {
+                        println!(
+                            "{} {} for {} expires={}{}{}",
+                            link.link_id,
+                            link.state(now),
+                            owners.get(&link.link_id).map_or("-", String::as_str),
+                            link.expires_at,
+                            link.redeemed_node_id
+                                .as_deref()
+                                .map(|node| format!(" node={node}"))
+                                .unwrap_or_default(),
+                            if link.label.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" label={}", link.label)
+                            }
+                        );
+                    }
+                })
+            }
+            InvitesCommand::Revoke { link_id } => {
+                let link =
+                    revoke_enrollment_link(store, &cli_enrollment_actor(), link_id.trim()).await?;
+                let payload = json!({ "link": link_json(&link, chrono::Utc::now()) });
+                emit(format, &payload, || {
+                    println!("enrollment link {} revoked", link.link_id);
+                })
+            }
+        },
+        NodesCommand::Revoke { node } => {
+            let credential =
+                revoke_node_credential(store, &cli_enrollment_actor(), node.trim()).await?;
+            let payload = json!({
+                "node_id": credential.node_id,
+                "revoked_at": credential.revoked_at,
+            });
+            emit(format, &payload, || {
+                println!(
+                    "host node {} revoked at {}",
+                    credential.node_id,
+                    credential.revoked_at.as_deref().unwrap_or("-")
+                );
+            })
+        }
     }
 }
 
@@ -369,7 +565,18 @@ fn status_line(status: &NodeStatus) -> String {
 mod tests {
     use bookclerk_library::{LibraryStore, UserRole};
 
-    use super::resolve_user;
+    use super::{parse_ttl, resolve_user};
+
+    #[test]
+    fn ttl_parses_units_and_refuses_others() {
+        assert_eq!(parse_ttl("24h").unwrap().as_secs(), 86_400);
+        assert_eq!(parse_ttl("30m").unwrap().as_secs(), 1_800);
+        assert_eq!(parse_ttl("7d").unwrap().as_secs(), 604_800);
+        assert_eq!(parse_ttl("90s").unwrap().as_secs(), 90);
+        assert!(parse_ttl("24").is_err());
+        assert!(parse_ttl("h").is_err());
+        assert!(parse_ttl("1w").is_err());
+    }
 
     #[tokio::test]
     async fn resolve_user_reads_logins_before_ids_and_refuses_ambiguous_numbers() {

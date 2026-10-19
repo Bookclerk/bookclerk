@@ -14,6 +14,7 @@ mod job_handler;
 mod job_worker;
 mod jobs;
 mod maintenance;
+mod node_api;
 mod node_queue;
 mod oidc;
 mod oidc_rp;
@@ -30,7 +31,6 @@ mod scheduler;
 mod totp;
 mod tray_companion;
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -253,16 +253,16 @@ async fn main() -> anyhow::Result<()> {
 
         let mut set = tokio::task::JoinSet::new();
         for listener in listeners {
-            let app = app.clone();
+            // The node API's transport policy needs both ends of each
+            // connection: the accepted socket's local address, which stays
+            // loopback for a same-machine client on a wildcard bind.
+            let app = node_api::transport::ConnAddrsMakeService::new(app.clone());
             let reload = listen_reload.clone();
             let shutdown_flag = process_shutdown.clone();
             set.spawn(async move {
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
-                .await
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(serve_shutdown(reload, shutdown_flag))
+                    .await
             });
         }
 

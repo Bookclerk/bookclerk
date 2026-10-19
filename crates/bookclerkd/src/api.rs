@@ -970,6 +970,35 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         ))
         .with_state(state.clone());
 
+    // Host enrollment links: any signed-in user acts for themselves; the
+    // library lets the operator or an Owner act for others.
+    let user_scoped = Router::new()
+        .route(
+            "/api/config/node-invites",
+            get(crate::node_api::get_node_invites).post(crate::node_api::post_node_invite),
+        )
+        .route(
+            "/api/config/node-invites/{id}",
+            delete(crate::node_api::delete_node_invite),
+        )
+        // The library lets the operator or an Owner revoke any host and
+        // anyone else only the hosts they own.
+        .route(
+            "/api/config/node-credentials/{node_id}",
+            delete(crate::node_api::delete_node_credential),
+        )
+        // Any user reads the switch; the handler lets only the operator or
+        // an active Owner change it.
+        .route(
+            "/api/config/host-enrollment",
+            get(crate::node_api::get_host_enrollment).put(crate::node_api::put_host_enrollment),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_operator_or_user_auth,
+        ))
+        .with_state(state.clone());
+
     let shared = Router::new()
         .route("/api/library/books", get(list_books))
         .route("/api/library/books/{uuid}", get(get_book))
@@ -1028,6 +1057,9 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         )
         .route("/api/auth/tray-handoff", get(auth::tray_handoff))
         .route("/api/auth/me", get(auth::me))
+        // Host-node enrollment: the link secret is the credential, and the
+        // transport policy runs first. Never behind the cookie/auth layers.
+        .route("/api/node/v1/enroll", post(crate::node_api::post_enroll))
         .route("/api/auth/elevate", post(auth::elevate))
         .route("/api/auth/bootstrap", post(auth::bootstrap))
         .route(
@@ -1050,6 +1082,7 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         .merge(operator_or_admin)
         .merge(operator_only)
         .merge(node_admin)
+        .merge(user_scoped)
         .merge(shared)
         .with_state(state.clone());
 

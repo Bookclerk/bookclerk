@@ -903,7 +903,8 @@ fn authorize_create(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         ConfigActor::Scheduler => desired.is_scheduled(),
         ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
-        | ConfigActor::NodeOwner(_) => false,
+        | ConfigActor::NodeOwner(_)
+        | ConfigActor::ClusterOwner(_) => false,
     };
     if allowed {
         Ok(())
@@ -920,7 +921,8 @@ fn authorize_replace(actor: &ConfigActor, desired: DesiredState) -> Result<()> {
         ConfigActor::Bootstrap
         | ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
-        | ConfigActor::NodeOwner(_) => false,
+        | ConfigActor::NodeOwner(_)
+        | ConfigActor::ClusterOwner(_) => false,
     };
     if allowed {
         Ok(())
@@ -940,7 +942,8 @@ fn unauthorized_state(actor: &ConfigActor, desired: DesiredState) -> LibraryErro
         }
         ConfigActor::Administrator { .. }
         | ConfigActor::Member { .. }
-        | ConfigActor::NodeOwner(_) => unauthorized(),
+        | ConfigActor::NodeOwner(_)
+        | ConfigActor::ClusterOwner(_) => unauthorized(),
     }
 }
 
