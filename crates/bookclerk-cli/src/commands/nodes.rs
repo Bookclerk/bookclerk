@@ -617,7 +617,7 @@ mod tests {
         let config_path = files.path().join("config.toml");
         std::fs::write(
             &config_path,
-            "[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+            "[integrations]\npublic_origin = \"https://owner.example:8443\"\n\n[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
         )
         .unwrap();
         let load = || {

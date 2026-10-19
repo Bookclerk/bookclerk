@@ -21,9 +21,12 @@
 //! there is no plain-HTTP fallback. `[daemon.node_api]` is bootstrap
 //! configuration: changing it needs a daemon restart.
 
+use std::future::Future as _;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::serve::ListenerExt as _;
@@ -32,8 +35,9 @@ use bookclerk_config::{Config, NodeApiMode};
 use futures::StreamExt as _;
 use rustls_acme::caches::DirCache;
 use rustls_acme::{is_tls_alpn_challenge, AcmeConfig, EventOk};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::rustls::crypto::{aws_lc_rs, CryptoProvider};
 use tokio_rustls::rustls::pki_types::pem::PemObject as _;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -54,6 +58,18 @@ const MAX_PENDING_HANDSHAKES: usize = 256;
 
 /// Finished handshakes waiting for the HTTP server.
 const ACCEPT_QUEUE: usize = 64;
+
+/// Node API connections open at once, from TCP accept until the HTTP
+/// connection closes. The HTTP server has no header-read deadline and the
+/// API timeout starts only once a request is parsed, so this bound and
+/// [`CONNECTION_IDLE_SECS`] are what keep silent or idle connections from
+/// piling up. Further connections are shed.
+const MAX_CONNECTIONS: usize = 1024;
+
+/// Seconds an open connection may pass with no bytes read or written before
+/// it is closed. Longer than the node session's idle timeout, and an open
+/// session pings well inside it, so only a stalled or idle client trips it.
+const CONNECTION_IDLE_SECS: u64 = 2 * bookclerk_node_proto::IDLE_TIMEOUT_SECS;
 
 /// Whether the node API is being served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +93,11 @@ pub struct NodeApiGate {
     /// The mode [`start`] ran for; a reloaded config naming another mode
     /// leaves the node API unmounted until the daemon restarts.
     mode: NodeApiMode,
+    /// Canonical owner origin the TLS listener was started for (`acme` and
+    /// `self_signed` only). Its certificate and the links already handed
+    /// out name it, so a reload that changes it leaves the node API
+    /// unmounted until a restart.
+    origin: Option<String>,
 }
 
 impl NodeApiGate {
@@ -87,7 +108,18 @@ impl NodeApiGate {
         Self {
             status: watch::channel(status).1,
             mode,
+            origin: None,
         }
+    }
+
+    /// True when `live` (the canonical owner origin in the current config)
+    /// is the one this gate's listener was started for, or the mode has no
+    /// TLS listener.
+    #[must_use]
+    pub fn origin_matches(&self, live: Option<&str>) -> bool {
+        self.origin
+            .as_deref()
+            .is_none_or(|started| live == Some(started))
     }
 
     /// Current status.
@@ -182,9 +214,19 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> NodeApiTls {
     let node_api = &cfg.daemon.node_api;
     let (status, receiver) = watch::channel(NodeApiStatus::Starting);
+    let origin = match node_api.mode {
+        NodeApiMode::Acme | NodeApiMode::SelfSigned => Some(
+            bookclerk_node_proto::canonical_origin(&crate::origin::effective_origin_from_config(
+                cfg, None,
+            ))
+            .unwrap_or_default(),
+        ),
+        NodeApiMode::Loopback | NodeApiMode::Proxy => None,
+    };
     let gate = NodeApiGate {
         status: receiver,
         mode: node_api.mode,
+        origin,
     };
     let failed = |status: &watch::Sender<NodeApiStatus>, gate: &NodeApiGate| {
         status.send_replace(NodeApiStatus::Failed);
@@ -245,6 +287,7 @@ pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> Nod
         challenge,
         handshakes,
         MAX_PENDING_HANDSHAKES,
+        MAX_CONNECTIONS,
     ));
     tokio::spawn(async move {
         // `tap_io` gives a custom listener axum's `ConnectInfo<SocketAddr>`.
@@ -453,10 +496,12 @@ async fn accept_loop(
     tcp: TcpListener,
     server_config: Arc<ServerConfig>,
     challenge: Option<Arc<ServerConfig>>,
-    handshakes: mpsc::Sender<(TlsStream<TcpStream>, SocketAddr)>,
+    handshakes: mpsc::Sender<(BoundedStream, SocketAddr)>,
     max_pending: usize,
+    max_connections: usize,
 ) {
     let pending = Arc::new(Semaphore::new(max_pending));
+    let connections = Arc::new(Semaphore::new(max_connections));
     loop {
         let (stream, peer) = match tcp.accept().await {
             Ok(accepted) => accepted,
@@ -465,6 +510,10 @@ async fn accept_loop(
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
+        };
+        let Ok(connection) = Arc::clone(&connections).try_acquire_owned() else {
+            // Too many open connections: shed this one.
+            continue;
         };
         let Ok(permit) = Arc::clone(&pending).try_acquire_owned() else {
             // Too many slow handshakes: shed this one.
@@ -490,7 +539,8 @@ async fn accept_loop(
                 Ok(Ok(Some(tls))) => {
                     // Hold the permit until the server takes the stream, so a
                     // stalled server bounds waiters too, not just handshakes.
-                    let _ = handshakes.send((tls, peer)).await;
+                    let stream = BoundedStream::new(tls, connection);
+                    let _ = handshakes.send((stream, peer)).await;
                 }
                 Ok(Ok(None)) => tracing::debug!(%peer, "answered a TLS-ALPN-01 challenge"),
                 Ok(Err(err)) => {
@@ -503,16 +553,140 @@ async fn accept_loop(
     }
 }
 
+/// A TLS connection that holds its [`MAX_CONNECTIONS`] permit until the
+/// HTTP server drops it, and fails once it has been idle for
+/// [`CONNECTION_IDLE_SECS`], so an idle or stalled client cannot keep its
+/// slot (and its file descriptor) indefinitely.
+struct BoundedStream {
+    /// The connection.
+    inner: TlsStream<TcpStream>,
+    /// Fires when nothing has been read or written for [`CONNECTION_IDLE_SECS`].
+    idle: Pin<Box<tokio::time::Sleep>>,
+    /// The idle limit, kept per stream so tests can shorten it.
+    idle_after: Duration,
+    /// Released when the connection closes.
+    _connection: OwnedSemaphorePermit,
+}
+
+impl BoundedStream {
+    /// Wraps a finished handshake with the default idle limit.
+    fn new(inner: TlsStream<TcpStream>, connection: OwnedSemaphorePermit) -> Self {
+        Self::with_idle(inner, connection, Duration::from_secs(CONNECTION_IDLE_SECS))
+    }
+
+    /// Wraps a finished handshake that closes after `idle_after` without traffic.
+    fn with_idle(
+        inner: TlsStream<TcpStream>,
+        connection: OwnedSemaphorePermit,
+        idle_after: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            idle: Box::pin(tokio::time::sleep(idle_after)),
+            idle_after,
+            _connection: connection,
+        }
+    }
+
+    /// Pushes the idle deadline out after traffic.
+    fn touch(&mut self) {
+        let deadline = tokio::time::Instant::now() + self.idle_after;
+        self.idle.as_mut().reset(deadline);
+    }
+
+    /// Maps a pending poll to a timeout error once the idle deadline passes.
+    fn pending_or_idle<T>(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<T>> {
+        match self.idle.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "node API connection idle",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl AsyncRead for BoundedStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                if buf.filled().len() > before {
+                    self.touch();
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
+    }
+}
+
+impl AsyncWrite for BoundedStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match Pin::new(&mut self.inner).poll_write(cx, buf) {
+            Poll::Ready(Ok(written)) => {
+                if written > 0 {
+                    self.touch();
+                }
+                Poll::Ready(Ok(written))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        match Pin::new(&mut self.inner).poll_write_vectored(cx, bufs) {
+            Poll::Ready(Ok(written)) => {
+                if written > 0 {
+                    self.touch();
+                }
+                Poll::Ready(Ok(written))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_flush(cx) {
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 /// Finished TLS connections, as an axum listener.
 struct TlsListener {
     /// Handshakes finished by [`accept_loop`].
-    accepted: mpsc::Receiver<(TlsStream<TcpStream>, SocketAddr)>,
+    accepted: mpsc::Receiver<(BoundedStream, SocketAddr)>,
     /// Bound address.
     local: SocketAddr,
 }
 
 impl axum::serve::Listener for TlsListener {
-    type Io = TlsStream<TcpStream>;
+    type Io = BoundedStream;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {

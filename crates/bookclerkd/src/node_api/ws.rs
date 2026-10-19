@@ -492,6 +492,7 @@ async fn handshake(
         return Err(Refusal::auth("closed", Some(&node_id)));
     }
     let Some(Frame {
+        id: auth_id,
         body: Body::Auth { sig },
         ..
     }) = next_handshake_frame(socket).await
@@ -529,8 +530,9 @@ async fn handshake(
         unregister(&node_id, serial);
         return Err(revoked);
     }
+    // The welcome answers the auth frame, so it echoes its id.
     let welcome = Frame::new(
-        "",
+        auth_id,
         Body::Welcome {
             node_id: node_id.clone(),
             cluster_id,
