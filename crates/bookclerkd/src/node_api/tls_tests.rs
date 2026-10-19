@@ -225,6 +225,36 @@ async fn accepted_connections_hold_a_slot_until_closed() {
     assert!(reopened, "the slot was not released");
 }
 
+#[test]
+fn a_changed_origin_reissues_the_certificate_under_the_same_pin() {
+    let files = tempfile::tempdir().unwrap();
+    let local: std::net::SocketAddr = "0.0.0.0:8443".parse().unwrap();
+    let config = |origin: &str| {
+        bookclerk_config::Config::from_toml_str(
+            &format!(
+                "[integrations]\npublic_origin = \"{origin}\"\n\n[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"0.0.0.0:8443\"\n"
+            ),
+            "test",
+        )
+        .unwrap()
+    };
+    let first =
+        super::load_or_create_self_signed(&config("https://one.example"), files.path(), local)
+            .unwrap();
+    let same =
+        super::load_or_create_self_signed(&config("https://one.example"), files.path(), local)
+            .unwrap();
+    assert_eq!(
+        same.cert, first.cert,
+        "unchanged names keep the certificate"
+    );
+    let moved =
+        super::load_or_create_self_signed(&config("https://two.example"), files.path(), local)
+            .unwrap();
+    assert_eq!(moved.pin, first.pin, "hosts keep trusting the same key");
+    assert_ne!(moved.cert, first.cert, "the certificate names the new host");
+}
+
 #[tokio::test]
 async fn an_idle_connection_is_closed() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
