@@ -21,6 +21,9 @@ pub struct HostJob {
     pub fence: i64,
     /// Lease length the owner granted.
     pub lease_secs: u64,
+    /// The claim resumed a suspended job: no attempt was spent, and the
+    /// job's checkpoint applies.
+    pub resumed: bool,
 }
 
 /// The job's secrets, opened with this node's box key. Values are
