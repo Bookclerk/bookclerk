@@ -1690,7 +1690,11 @@ async fn execute_typed_on_session_proofs(
     if guest_receipt.is_absent() {
         let caps = caps.into();
         session.check(AtomicInterruptPhase::BeforeBegin)?;
-        let budget = ExecBudget::new(session.deadline_unix_ms, caps.max_result_rows);
+        let budget = ExecBudget::with_cancel(
+            session.deadline_unix_ms,
+            caps.max_result_rows,
+            session.cancel.clone(),
+        );
         let seen_budget = Arc::clone(&budget);
         let result = with_exec_budget(Arc::clone(&budget), || {
             execute_typed_body(
@@ -1794,7 +1798,11 @@ where
 {
     let caps = caps.into();
     session.check(AtomicInterruptPhase::BeforeBegin)?;
-    let budget = ExecBudget::new(session.deadline_unix_ms, caps.max_result_rows);
+    let budget = ExecBudget::with_cancel(
+        session.deadline_unix_ms,
+        caps.max_result_rows,
+        session.cancel.clone(),
+    );
     let seen_budget = Arc::clone(&budget);
     let result = with_exec_budget(Arc::clone(&budget), || {
         execute_typed_body(
@@ -1876,7 +1884,11 @@ pub async fn execute_typed_on_txn_envelope(
         .require_proofs()
         .map_err(|err| DbErr::Custom(err.to_string()))?;
     session.check(AtomicInterruptPhase::BetweenStatements)?;
-    let budget = ExecBudget::new(session.deadline_unix_ms, caps.max_result_rows);
+    let budget = ExecBudget::with_cancel(
+        session.deadline_unix_ms,
+        caps.max_result_rows,
+        session.cancel.clone(),
+    );
     let seen_budget = Arc::clone(&budget);
     let persist = envelope.guest_receipt.clone();
     let result = with_exec_budget(Arc::clone(&budget), || {
@@ -1939,7 +1951,11 @@ where
         .require_proofs()
         .map_err(|err| DbErr::Custom(err.to_string()))?;
     session.check(AtomicInterruptPhase::BetweenStatements)?;
-    let budget = ExecBudget::new(session.deadline_unix_ms, caps.max_result_rows);
+    let budget = ExecBudget::with_cancel(
+        session.deadline_unix_ms,
+        caps.max_result_rows,
+        session.cancel.clone(),
+    );
     let seen_budget = Arc::clone(&budget);
     let persist = envelope.guest_receipt.clone();
     let result = with_exec_budget(Arc::clone(&budget), || {

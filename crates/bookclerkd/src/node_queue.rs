@@ -29,6 +29,9 @@ static DEPLOYMENT_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
 static CONFIG_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
 /// Wakes the placement scheduler (it acts only while holding the lease).
 static PLACEMENT_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
+/// Wakes the pending-job requirements sweep (it acts only while holding
+/// its lease).
+static REQUIREMENTS_WAKEUP: LazyLock<Notify> = LazyLock::new(Notify::new);
 /// This process's node id, read once from `node-identity.json`.
 static NODE_ID: OnceLock<String> = OnceLock::new();
 
@@ -47,17 +50,31 @@ pub async fn placement_wakeup() {
     PLACEMENT_WAKEUP.notified().await;
 }
 
+/// Waits until a requirements-sweep wakeup arrives.
+pub async fn requirements_wakeup() {
+    REQUIREMENTS_WAKEUP.notified().await;
+}
+
+/// Asks for a requirements sweep soon (after a deployment write that this
+/// node made or learned of).
+pub fn wake_requirements_sweep() {
+    REQUIREMENTS_WAKEUP.notify_one();
+}
+
 /// Wakes the reconcilers a message concerns. `notify_one` stores a permit,
 /// so a wakeup that lands mid-pass runs one more pass afterwards.
 pub fn wake_for(message: &NodeMessage) {
     match message {
         NodeMessage::DeploymentChanged { .. } => {
             DEPLOYMENT_WAKEUP.notify_one();
+            // Queued jobs may now need, or have lost, a common node.
+            REQUIREMENTS_WAKEUP.notify_one();
         }
         NodeMessage::InstallChanged { .. } => {
             // A new install can add or drop targets, so placements may move.
             DEPLOYMENT_WAKEUP.notify_one();
             PLACEMENT_WAKEUP.notify_one();
+            REQUIREMENTS_WAKEUP.notify_one();
         }
         NodeMessage::PlacementChanged { .. } => {
             PLACEMENT_WAKEUP.notify_one();

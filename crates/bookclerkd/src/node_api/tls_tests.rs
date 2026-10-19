@@ -52,15 +52,37 @@ async fn enroll_status(
 #[test]
 fn tls_modes_need_a_ready_gate() {
     use bookclerk_config::NodeApiMode;
-    let ready = NodeApiGate::fixed(NodeApiStatus::Ready);
-    let failed = NodeApiGate::fixed(NodeApiStatus::Failed);
     for mode in [NodeApiMode::Loopback, NodeApiMode::Proxy] {
         assert!(node_api_mounted(mode, None));
+        let started = NodeApiGate::fixed(mode, NodeApiStatus::Ready);
+        assert!(node_api_mounted(mode, Some(&started)));
     }
     for mode in [NodeApiMode::Acme, NodeApiMode::SelfSigned] {
+        let ready = NodeApiGate::fixed(mode, NodeApiStatus::Ready);
+        let failed = NodeApiGate::fixed(mode, NodeApiStatus::Failed);
         assert!(!node_api_mounted(mode, None), "no gate fails closed");
         assert!(!node_api_mounted(mode, Some(&failed)));
         assert!(node_api_mounted(mode, Some(&ready)));
+    }
+}
+
+#[test]
+fn a_reloaded_node_api_mode_stays_unmounted_until_restart() {
+    use bookclerk_config::NodeApiMode;
+    let modes = [
+        NodeApiMode::Loopback,
+        NodeApiMode::Proxy,
+        NodeApiMode::Acme,
+        NodeApiMode::SelfSigned,
+    ];
+    for started in modes {
+        let gate = NodeApiGate::fixed(started, NodeApiStatus::Ready);
+        for live in modes.into_iter().filter(|live| *live != started) {
+            assert!(
+                !node_api_mounted(live, Some(&gate)),
+                "started {started:?}, reloaded to {live:?}"
+            );
+        }
     }
 }
 
@@ -138,13 +160,162 @@ where
         .unwrap_or_else(|| panic!("no status line in {text:?}"))
 }
 
+/// A server config for `localhost` and a connector that trusts it.
+fn localhost_tls() -> (
+    tokio_rustls::rustls::ServerConfig,
+    tokio_rustls::TlsConnector,
+) {
+    use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio_rustls::rustls::ServerConfig;
+
+    let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert = generated.cert.der().clone();
+    let key = PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der());
+    let mut server = ServerConfig::builder_with_provider(super::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.clone()], PrivateKeyDer::Pkcs8(key))
+        .unwrap();
+    server.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let mut roots = RootCertStore::empty();
+    roots.add(cert).unwrap();
+    let client = ClientConfig::builder_with_provider(super::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    (server, tokio_rustls::TlsConnector::from(Arc::new(client)))
+}
+
+#[tokio::test]
+async fn accepted_connections_hold_a_slot_until_closed() {
+    let (server, connector) = localhost_tls();
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = tcp.local_addr().unwrap();
+    let (handshakes, mut accepted) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(super::accept_loop(
+        tcp,
+        Arc::new(server),
+        None,
+        handshakes,
+        4,
+        1,
+    ));
+    let handshake = || async {
+        let tcp = tokio::net::TcpStream::connect(local).await.unwrap();
+        connector
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+    };
+    let _client = handshake().await.unwrap();
+    let held = accepted.recv().await.unwrap();
+    // The server holds the only connection slot, even while idle.
+    assert!(handshake().await.is_err(), "a second connection was let in");
+    // Closing it frees the slot.
+    drop(held);
+    let mut reopened = false;
+    for _ in 0..100 {
+        if handshake().await.is_ok() {
+            reopened = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reopened, "the slot was not released");
+}
+
+#[tokio::test]
+async fn an_idle_connection_is_closed() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let (server, connector) = localhost_tls();
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = tcp.local_addr().unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+    let accept = tokio::spawn(async move {
+        let (stream, _) = tcp.accept().await.unwrap();
+        acceptor.accept(stream).await.unwrap()
+    });
+    let tcp = tokio::net::TcpStream::connect(local).await.unwrap();
+    let mut client = connector
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .unwrap();
+    let slot = Arc::new(tokio::sync::Semaphore::new(1))
+        .try_acquire_owned()
+        .unwrap();
+    let mut served =
+        super::BoundedStream::with_idle(accept.await.unwrap(), slot, Duration::from_millis(300));
+
+    // Traffic keeps it open past the limit.
+    let mut byte = [0_u8; 1];
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        client.write_all(b"x").await.unwrap();
+        client.flush().await.unwrap();
+        served.read_exact(&mut byte).await.unwrap();
+    }
+    // Silence past the limit fails the read instead of waiting forever.
+    let err = tokio::time::timeout(Duration::from_secs(5), served.read(&mut byte))
+        .await
+        .expect("the idle limit did not fire")
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[tokio::test]
+async fn a_stalled_server_bounds_finished_handshakes() {
+    let (server, connector) = localhost_tls();
+
+    // One slot in flight, one in the queue, and a server that never accepts.
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = tcp.local_addr().unwrap();
+    let (handshakes, mut accepted) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(super::accept_loop(
+        tcp,
+        Arc::new(server),
+        None,
+        handshakes,
+        1,
+        16,
+    ));
+    let handshake = || async {
+        let tcp = tokio::net::TcpStream::connect(local).await.unwrap();
+        connector
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+    };
+    // Retries while the previous connection still holds the slot.
+    let handshake_eventually = || async {
+        for _ in 0..100 {
+            if let Ok(tls) = handshake().await {
+                return tls;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("handshake never succeeded");
+    };
+
+    let _queued = handshake_eventually().await;
+    let _waiting = handshake_eventually().await;
+    // The waiting connection keeps its slot: the next one is shed, not
+    // handshaken into an unbounded backlog.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(handshake().await.is_err(), "a third connection was let in");
+
+    // Once the server takes one, the waiter moves up and the slot frees.
+    let _ = accepted.recv().await.unwrap();
+    let _after = handshake_eventually().await;
+}
+
 #[tokio::test]
 async fn self_signed_serves_the_node_api_and_pins_links() {
     let _dek = crate::auth::tests::process_dek_lock().await;
     let files = tempfile::tempdir().unwrap();
     let (state, store) = super::super::tests::test_state_with(
         &files,
-        "[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        "[integrations]\npublic_origin = \"https://owner.example:8443\"\n\n[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
     )
     .await;
     let cfg = state.config.read().await.clone();
@@ -248,7 +419,8 @@ acme_directory_ca = "{ca}"
     // Pebble's order may fail once before succeeding; wait for Ready.
     tokio::time::timeout(
         Duration::from_secs(120),
-        gate.0.wait_for(|status| *status == NodeApiStatus::Ready),
+        gate.status
+            .wait_for(|status| *status == NodeApiStatus::Ready),
     )
     .await
     .expect("Pebble issued a certificate")
@@ -274,4 +446,63 @@ acme_directory_ca = "{ca}"
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(cached, "the certificate is cached for restarts");
+}
+
+#[tokio::test]
+async fn the_node_router_times_out_a_stalled_enroll_body() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, _store) = super::super::tests::test_state_with(&files, "").await;
+    // The routes exactly as the TLS-only listener serves them.
+    let app = super::super::node_router::<()>(Arc::clone(&state))
+        .layer(axum::Extension(super::super::transport::LocalAddr(
+            "127.0.0.1:8787".parse().unwrap(),
+        )))
+        .layer(axum::extract::connect_info::MockConnectInfo(
+            "127.0.0.1:5000".parse::<SocketAddr>().unwrap(),
+        ));
+    // A body that never finishes.
+    let body = Body::from_stream(futures::stream::pending::<
+        Result<axum::body::Bytes, std::io::Error>,
+    >());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/node/v1/enroll")
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(30), app.oneshot(request))
+        .await
+        .expect("the API deadline ends the request")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+}
+
+#[test]
+fn private_writes_replace_the_whole_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cert.der");
+    super::write_private(&path, b"first, longer contents").unwrap();
+    super::write_private(&path, b"second").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"second");
+    assert!(!dir.path().join("cert.der.tmp").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+}
+
+#[test]
+fn a_reloaded_owner_origin_does_not_match_the_listener() {
+    let mut gate = NodeApiGate::fixed(
+        bookclerk_config::NodeApiMode::SelfSigned,
+        NodeApiStatus::Ready,
+    );
+    assert!(gate.origin_matches(Some("https://other.example")));
+    gate.origin = Some("https://owner.example".into());
+    assert!(gate.origin_matches(Some("https://owner.example")));
+    assert!(!gate.origin_matches(Some("https://other.example")));
+    assert!(!gate.origin_matches(None));
 }

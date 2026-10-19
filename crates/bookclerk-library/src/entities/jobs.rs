@@ -34,7 +34,8 @@ pub struct Model {
     /// Idempotency key unique among pending/running rows of the same work.
     pub dedup_key: String,
     /// Structured error kind (`queue_full` is admission-only; execution uses
-    /// `handler`, `cancelled`, `orphaned_after_restart`, `max_attempts`).
+    /// `handler`, `cancelled`, `orphaned_after_restart`, `max_attempts`, and
+    /// `unroutable` from the requirements sweep).
     pub error_kind: Option<String>,
     /// Operator-facing error text when the job failed or was cancelled.
     pub error_message: Option<String>,
