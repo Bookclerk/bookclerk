@@ -389,7 +389,7 @@ pub async fn plan_scan(
             return Ok(vec![payload(None)]);
         }
         let mut out = Vec::new();
-        for target in scan_all_targets(store, plugin_key.as_deref()).await? {
+        for target in scan_all_targets(store, plugin_key.as_deref(), |_| true).await? {
             if let Some(job) = target_payload(store, &target, &payload).await? {
                 out.push(job);
             }
@@ -414,10 +414,7 @@ pub async fn plan_scan(
         return Ok(vec![payload(Some(account))]);
     }
     let mut out = Vec::new();
-    for target in scan_all_targets(store, plugin_key.as_deref()).await? {
-        if !wholly_owned(&target.touched) {
-            continue;
-        }
+    for target in scan_all_targets(store, plugin_key.as_deref(), wholly_owned).await? {
         if let Some(job) = target_payload(store, &target, &payload).await? {
             out.push(job);
         }
@@ -474,12 +471,17 @@ fn not_your_account() -> LibraryError {
 /// shares its plugin with a scan-disabled account matching the same id is
 /// left out, since no job can reach it alone.
 ///
+/// Targets `allowed` refuses are dropped, and a target whose accounts the
+/// kept targets already cover (an id differing only in case, or another
+/// account's label) is skipped so no account is scanned twice.
+///
 /// # Errors
 ///
 /// Returns the read error when the account read fails.
 async fn scan_all_targets(
     store: &LibraryStore,
     plugin_key: Option<&str>,
+    allowed: impl Fn(&BTreeSet<AccountKey>) -> bool,
 ) -> Result<Vec<ScanTarget>> {
     let mut query = accounts::Entity::find();
     if let Some(key) = plugin_key {
@@ -497,7 +499,9 @@ async fn scan_all_targets(
     // account's label) would scan them twice, possibly at once on two nodes.
     let mut covered: BTreeSet<AccountKey> = BTreeSet::new();
     let mut push = |target: ScanTarget, out: &mut Vec<ScanTarget>| {
-        if target.touched.is_subset(&covered) {
+        // Refused targets are dropped before coalescing, so they never
+        // hide a later target the requester may run.
+        if !allowed(&target.touched) || target.touched.is_subset(&covered) {
             return;
         }
         covered.extend(target.touched.iter().cloned());

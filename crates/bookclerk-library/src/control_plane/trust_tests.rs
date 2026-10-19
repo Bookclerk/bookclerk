@@ -760,6 +760,26 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
         enqueue(pinned).await,
         EnqueueOutcome::Created { .. }
     ));
+
+    // Riley's account is labelled with Sam's account id. The job for Sam's id
+    // would touch both, so Riley's plan drops it but keeps Riley's own id.
+    let riley = user(&owner_db, UserRole::Member, "Riley").await;
+    let sam = user(&owner_db, UserRole::Member, "Sam").await;
+    add_account(&owner_db, OTHER_PLUGIN, "acct-a", true).await;
+    add_account(&owner_db, OTHER_PLUGIN, "acct-b", true).await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("acct-a"))
+        .filter(accounts::Column::AccountId.eq("acct-b"))
+        .exec(owner_db.db())
+        .await
+        .unwrap();
+    link(&owner_db, sam, OTHER_PLUGIN, "acct-a").await;
+    link(&owner_db, riley, OTHER_PLUGIN, "acct-b").await;
+    let plan = plan_scan(&host_db, ScanRequester::User(riley), None, None)
+        .await
+        .unwrap();
+    let accounts: Vec<Option<String>> = plan.into_iter().map(|p| p.account).collect();
+    assert_eq!(accounts, vec![Some("acct-b".into())]);
 }
 
 #[tokio::test]
