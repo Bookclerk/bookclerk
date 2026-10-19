@@ -74,6 +74,15 @@ pub enum NodeMessage {
         /// Revision after the write.
         revision: i64,
     },
+    /// A host node's credential was revoked. The node holding that host's
+    /// connection closes it; every claim, renew, and upload re-reads
+    /// `node_credentials.revoked_at` as well, so a lost message does not
+    /// keep the host connected to work.
+    #[serde(rename = "node.revoked", rename_all = "camelCase")]
+    NodeRevoked {
+        /// Revoked host node.
+        node_id: String,
+    },
 }
 
 impl NodeMessage {
@@ -93,6 +102,7 @@ impl NodeMessage {
                 namespace,
                 revision,
             } => format!("configuration.changed:{scope_type}:{scope_id}:{namespace}:{revision}"),
+            Self::NodeRevoked { node_id } => format!("node.revoked:{node_id}"),
             Self::PlacementChanged { subject, revision } => format!(
                 "placement.changed:{subject}:{revision}:{}",
                 uuid::Uuid::new_v4()

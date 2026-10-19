@@ -220,8 +220,15 @@ pub struct DaemonConfig {
     /// Empty (default): always use the direct TCP peer — safe behind no proxy.
     /// When the peer matches an entry, login throttling uses the leftmost
     /// `X-Forwarded-For` client address (typical single reverse-proxy layout).
+    ///
+    /// In `[daemon.node_api] mode = "proxy"`, a matching peer is also the only
+    /// one whose `X-Forwarded-Proto` the node API believes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted_proxies: Vec<String>,
+    /// Transport policy for the host-node API (`[daemon.node_api]`).
+    /// Bootstrap configuration, like [`Self::listen`].
+    #[serde(default, skip_serializing_if = "NodeApiConfig::is_default")]
+    pub node_api: NodeApiConfig,
 }
 
 impl Default for DaemonConfig {
@@ -232,6 +239,116 @@ impl Default for DaemonConfig {
             tray: true,
             auth: DaemonAuthConfig::default(),
             trusted_proxies: Vec::new(),
+            node_api: NodeApiConfig::default(),
+        }
+    }
+}
+
+/// How host nodes may reach the node API (`[daemon.node_api] mode`).
+///
+/// Plain HTTP is accepted only on loopback, in every mode.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeApiMode {
+    /// Loopback connections only (the default).
+    #[default]
+    Loopback,
+    /// A TLS-terminating reverse proxy listed in `daemon.trusted_proxies`.
+    Proxy,
+    /// The built-in TLS listener with an ACME (Let's Encrypt) certificate.
+    Acme,
+    /// The built-in TLS listener with a self-signed certificate whose SPKI
+    /// pin travels in enrollment links.
+    SelfSigned,
+}
+
+impl NodeApiMode {
+    /// Stable TOML spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Loopback => "loopback",
+            Self::Proxy => "proxy",
+            Self::Acme => "acme",
+            Self::SelfSigned => "self_signed",
+        }
+    }
+}
+
+/// `[daemon.node_api]`: transport policy for host nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct NodeApiConfig {
+    /// Which connections may reach the node API.
+    pub mode: NodeApiMode,
+    /// ACME account contact (`mailto:ops@example.com`). Required for `acme`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acme_contact: Option<String>,
+    /// Address of the built-in TLS listener (`0.0.0.0:8443`). Required for
+    /// `acme` and `self_signed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_listen: Option<String>,
+}
+
+impl NodeApiConfig {
+    /// True for the default table (skipped when writing `config.toml`).
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Checks that the mode has what it needs. An invalid table makes the
+    /// node API refuse every connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the first missing or invalid setting.
+    pub fn validate(
+        &self,
+        trusted_proxies: &[String],
+        public_origin: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        let https_origin = public_origin
+            .map(str::trim)
+            .is_some_and(|origin| origin.starts_with("https://") && origin.len() > 8);
+        let tls_listen = || match self.tls_listen.as_deref().map(str::trim) {
+            Some(addr) if addr.parse::<std::net::SocketAddr>().is_ok() => Ok(()),
+            Some(_) => Err("daemon.node_api.tls_listen must be an ip:port address".to_string()),
+            None => Err(format!(
+                "daemon.node_api.mode = \"{}\" needs daemon.node_api.tls_listen",
+                self.mode.as_str()
+            )),
+        };
+        match self.mode {
+            NodeApiMode::Loopback => Ok(()),
+            NodeApiMode::Proxy => {
+                if trusted_proxies.iter().all(|entry| entry.trim().is_empty()) {
+                    return Err(
+                        "daemon.node_api.mode = \"proxy\" needs daemon.trusted_proxies".into(),
+                    );
+                }
+                if !https_origin {
+                    return Err("daemon.node_api.mode = \"proxy\" needs an https \
+                         integrations.public_origin"
+                        .into());
+                }
+                Ok(())
+            }
+            NodeApiMode::Acme => {
+                let contact = self.acme_contact.as_deref().map(str::trim).unwrap_or("");
+                if !contact.starts_with("mailto:") || contact.len() <= "mailto:".len() {
+                    return Err("daemon.node_api.mode = \"acme\" needs \
+                         daemon.node_api.acme_contact (mailto:…)"
+                        .into());
+                }
+                if !https_origin {
+                    return Err("daemon.node_api.mode = \"acme\" needs an https \
+                         integrations.public_origin"
+                        .into());
+                }
+                tls_listen()
+            }
+            NodeApiMode::SelfSigned => tls_listen(),
         }
     }
 }
@@ -1082,6 +1199,57 @@ fn parse_bool(value: &str) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::normalize_storage_prefix;
+
+    #[test]
+    fn node_api_table_parses_and_validates() {
+        let text = r#"
+[daemon]
+trusted_proxies = ["10.0.0.2"]
+
+[daemon.node_api]
+mode = "proxy"
+"#;
+        let cfg = Config::from_toml_str(text, "test").unwrap();
+        assert_eq!(cfg.daemon.node_api.mode, NodeApiMode::Proxy);
+        let proxies = &cfg.daemon.trusted_proxies;
+        assert!(cfg
+            .daemon
+            .node_api
+            .validate(proxies, Some("https://owner.example"))
+            .is_ok());
+        assert!(cfg
+            .daemon
+            .node_api
+            .validate(proxies, Some("http://owner.example"))
+            .is_err());
+        assert!(cfg
+            .daemon
+            .node_api
+            .validate(&[], Some("https://owner.example"))
+            .is_err());
+
+        let default = Config::from_toml_str("", "test").unwrap();
+        assert_eq!(default.daemon.node_api.mode, NodeApiMode::Loopback);
+        assert!(default.daemon.node_api.validate(&[], None).is_ok());
+
+        let acme = Config::from_toml_str(
+            "[daemon.node_api]\nmode = \"acme\"\nacme_contact = \"mailto:ops@example.com\"\ntls_listen = \"0.0.0.0:8443\"\n",
+            "test",
+        )
+        .unwrap();
+        assert!(acme
+            .daemon
+            .node_api
+            .validate(&[], Some("https://owner.example"))
+            .is_ok());
+        let self_signed = NodeApiConfig {
+            mode: NodeApiMode::SelfSigned,
+            acme_contact: None,
+            tls_listen: Some("not an address".into()),
+        };
+        assert!(self_signed.validate(&[], None).is_err());
+        assert!(Config::from_toml_str("[daemon.node_api]\nmode = \"plain\"\n", "test").is_err());
+    }
 
     #[test]
     fn parse_example_toml() {
