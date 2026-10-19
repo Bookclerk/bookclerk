@@ -291,7 +291,9 @@ filename length, and the multi-destination policy). It follows the
 - The effective `[output]` table and `BOOKCLERK_OUTPUT_*` packaging variables
   (`BOOKCLERK_OUTPUT_FORMAT`, `BOOKCLERK_OUTPUT_WIDEVINE`, …) are imported
   once, when a host enrolls against a database with no `core.output`
-  document. An invalid seed fails that first enrollment and writes nothing.
+  document. A seed value outside the document's bounds (for example
+  `split_mp3_max_mb = 0`) is replaced by its default, with a warning naming
+  the `output.*` key; the other values are imported as set.
 - After that the document is the authority. Startup, reload, and later TOML
   or environment values do not change it; edit it with a compare-and-swap
   write. `bookclerk config show` prints `output.authority = database`,
