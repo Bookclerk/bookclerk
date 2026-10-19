@@ -1755,6 +1755,7 @@ dependencies = [
  "base64 0.23.1",
  "curve25519-dalek",
  "ed25519-dalek",
+ "rand 0.8.7",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

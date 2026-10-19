@@ -45,7 +45,7 @@ use bookclerk_node_proto::{
     CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_SUPERSEDED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
     MAX_FRAME_BYTES, NONCE_LEN, PING_INTERVAL_SECS, SUBPROTOCOL,
 };
-use rand::RngCore as _;
+use rand::Rng as _;
 use serde_json::json;
 use tokio::sync::watch;
 
@@ -375,8 +375,7 @@ async fn handshake(
         Ok(Some(row)) => row.cluster_id,
         Ok(None) | Err(_) => return Err(Refusal::auth("cluster_unavailable", Some(&node_id))),
     };
-    let mut nonce = [0u8; NONCE_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let nonce: [u8; NONCE_LEN] = rand::rngs::OsRng.gen();
     let challenge = Frame::new(
         hello.id,
         Body::Challenge {
