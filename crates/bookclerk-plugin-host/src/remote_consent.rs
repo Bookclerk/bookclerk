@@ -398,6 +398,41 @@ pub fn remote_row_consent_state(
     }
 }
 
+/// The one JSON view of a consent row, shared by the operator API and the
+/// CLI so both answer the same fields: the request (version, grant, the
+/// archive this host would fetch, and its `request_digest`), the approval
+/// (`approved_version`, `grant`, `approved_at`, `approved_by`), `revoked_at`,
+/// `updated_at`, and the `state` ([`remote_row_consent_state`]). A stored
+/// grant that does not parse shows as `null`.
+#[must_use]
+pub fn remote_consent_view(
+    row: &bookclerk_library::control_plane::RemotePluginConsent,
+) -> serde_json::Value {
+    let parse = |raw: Option<&str>| {
+        raw.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    serde_json::json!({
+        "cluster_id": row.owner_cluster_id,
+        "plugin_key": row.plugin_key,
+        "requested_version": row.requested_version,
+        "requested_grant": parse(Some(&row.requested_grant_json)),
+        "requested_artifact": {
+            "url": row.requested_artifact_url,
+            "archive_sha256": row.requested_artifact_sha256,
+            "payload_root_sha256": row.requested_artifact_payload_sha256,
+        },
+        "request_digest": row.request_digest(),
+        "approved_version": row.version,
+        "grant": parse(row.grant_json.as_deref()),
+        "approved_at": row.approved_at,
+        "approved_by": row.approved_by,
+        "revoked_at": row.revoked_at,
+        "updated_at": row.updated_at,
+        "state": remote_row_consent_state(row).as_str(),
+    })
+}
+
 /// True when a platform plugin's request may be approved without asking:
 /// the key is a Bookclerk platform key, this host's own install of that key
 /// is platform-bundled with the same payload digest as the owner's
@@ -418,6 +453,41 @@ pub fn remote_platform_auto_approval(
             !owner_payload_root_sha256.is_empty() && local == owner_payload_root_sha256
         })
         && crate::consent::is_platform_envelope(requested)
+}
+
+/// Why [`approve_remote_request`] refused, by cause, so a caller (the
+/// operator API) can tell "review again" from "fix the input" from "retry
+/// later".
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteApprovalError {
+    /// No request is recorded for that cluster and plugin.
+    #[error("{0}")]
+    NotRequested(String),
+    /// The recorded request is not the reviewed one (its digest differs),
+    /// or it changed between the read and the write (the store's
+    /// compare-and-swap), or an automatic approval met a revoke: review it
+    /// again.
+    #[error("{0}")]
+    Conflict(String),
+    /// The recorded request does not parse, the narrowing names something
+    /// the request does not ask for, or a field is malformed.
+    #[error("{0}")]
+    Invalid(String),
+    /// The store failed (a fault that may pass).
+    #[error("{0}")]
+    Store(String),
+}
+
+impl From<bookclerk_library::LibraryError> for RemoteApprovalError {
+    fn from(err: bookclerk_library::LibraryError) -> Self {
+        use bookclerk_library::LibraryError;
+        match err {
+            LibraryError::NotFound(detail) => Self::NotRequested(detail),
+            LibraryError::Conflict(detail) => Self::Conflict(detail),
+            LibraryError::Invalid(detail) => Self::Invalid(detail),
+            other => Self::Store(other.to_string()),
+        }
+    }
 }
 
 /// Approves the request recorded from `cluster_id` for `plugin_key`,
@@ -441,11 +511,13 @@ pub fn remote_platform_auto_approval(
 ///
 /// # Errors
 ///
-/// Returns an error when nothing is recorded, the recorded request is not
-/// the reviewed one (its digest differs), it does not parse or the
-/// narrowing names something it does not ask for, or the store refuses the
-/// write (a request that changed in between, or an automatic approval of a
-/// revoked one).
+/// Returns [`RemoteApprovalError::NotRequested`] when nothing is recorded,
+/// [`RemoteApprovalError::Conflict`] when the recorded request is not the
+/// reviewed one (its digest differs) or the store refuses the write (a
+/// request that changed in between, or an automatic approval of a revoked
+/// one), [`RemoteApprovalError::Invalid`] when it does not parse or the
+/// narrowing names something it does not ask for, and
+/// [`RemoteApprovalError::Store`] when a read or write fails.
 pub async fn approve_remote_request(
     store: &bookclerk_library::LibraryStore,
     cluster_id: &str,
@@ -453,22 +525,22 @@ pub async fn approve_remote_request(
     reviewed_digest: &str,
     narrowing: &RemoteNarrowing,
     approver: bookclerk_library::control_plane::RemoteApprover<'_>,
-) -> Result<bookclerk_library::control_plane::RemotePluginConsent> {
+) -> std::result::Result<bookclerk_library::control_plane::RemotePluginConsent, RemoteApprovalError>
+{
     use bookclerk_library::control_plane::{
         approve_remote_plugin, load_remote_plugin_consent, RemoteApproval,
     };
-    let lib = |err: bookclerk_library::LibraryError| crate::PluginError::message(err.to_string());
     let row = load_remote_plugin_consent(store, cluster_id, plugin_key)
         .await
-        .map_err(lib)?
+        .map_err(|err| RemoteApprovalError::Store(err.to_string()))?
         .ok_or_else(|| {
-            crate::PluginError::message(format!(
+            RemoteApprovalError::NotRequested(format!(
                 "cluster {cluster_id} has not asked to run {plugin_key} here"
             ))
         })?;
     let current = row.request_digest();
     if !reviewed_digest.trim().eq_ignore_ascii_case(&current) {
-        return Err(crate::PluginError::message(format!(
+        return Err(RemoteApprovalError::Conflict(format!(
             "the request for {plugin_key} changed since it was reviewed (now version {}, \
              request {current}); review it again",
             row.requested_version
@@ -477,11 +549,14 @@ pub async fn approve_remote_request(
     let requested = serde_json::from_str::<PluginGrant>(&row.requested_grant_json)
         .ok()
         .filter(|grant| grant.plugin_key == plugin_key)
-        .ok_or_else(|| crate::PluginError::message("the recorded request does not parse"))?;
-    let consent = remote_consent(&requested, narrowing)?;
+        .ok_or_else(|| {
+            RemoteApprovalError::Invalid("the recorded request does not parse".into())
+        })?;
+    let consent = remote_consent(&requested, narrowing)
+        .map_err(|err| RemoteApprovalError::Invalid(err.to_string()))?;
     let grant_json = serde_json::to_string(&consent)
-        .map_err(|err| crate::PluginError::message(err.to_string()))?;
-    approve_remote_plugin(
+        .map_err(|err| RemoteApprovalError::Invalid(err.to_string()))?;
+    Ok(approve_remote_plugin(
         store,
         &RemoteApproval {
             cluster_id,
@@ -493,8 +568,7 @@ pub async fn approve_remote_request(
             approver,
         },
     )
-    .await
-    .map_err(lib)
+    .await?)
 }
 
 #[cfg(test)]
@@ -872,6 +946,34 @@ mod tests {
                 .contains("changed since it was reviewed"),
             "{refused}"
         );
+        assert!(matches!(refused, RemoteApprovalError::Conflict(_)));
+        assert!(matches!(
+            approve_remote_request(
+                &store,
+                "cluster-b",
+                &key,
+                &seen,
+                &RemoteNarrowing::default(),
+                operator,
+            )
+            .await,
+            Err(RemoteApprovalError::NotRequested(_))
+        ));
+        assert!(matches!(
+            approve_remote_request(
+                &store,
+                "cluster-a",
+                &key,
+                &now.request_digest(),
+                &RemoteNarrowing {
+                    deny_domains: ["not.requested.example".to_string()].into(),
+                    ..RemoteNarrowing::default()
+                },
+                operator,
+            )
+            .await,
+            Err(RemoteApprovalError::Invalid(_))
+        ));
         assert!(!load_remote_plugin_consent(&store, "cluster-a", &key)
             .await
             .unwrap()

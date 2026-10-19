@@ -1191,9 +1191,12 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   through its own `JobTransport` (`TransportRunner`), with the handoff on
   `JobExecCtx::host`; an acquire is failed as `upload_unavailable` before
   it runs, since `complete` waits for its upload (step 9).
-- **Claims stay off in the daemon** until host consent (step 8, below).
-  Every job a Host is trusted with runs an owner plugin, and a Host runs
-  one only after its own operator approves it. Rejected: claiming and
+- **Claims are narrowed in the daemon** to the job kinds a Host can run
+  (`HOST_RUNNABLE_KINDS`, still empty: see "Still nothing runs" below)
+  and to the plugins its operator consented to
+  (host consent, step 8, below). Every job a Host is trusted with runs an
+  owner plugin, and a Host runs one only after its own operator approves
+  it. Rejected: claiming and
   failing what cannot run, which would spend owner attempts and starve
   owner nodes.
 - **Not decided.** How a Host's scan returns its results (book rows) to
@@ -1242,13 +1245,15 @@ operator approves it, and only with what was approved.
   covered because it keys the Host's version cache, whose hit is reused
   without a fetch: an owner that kept the approved URL and archive but
   named another cached tree would otherwise run it unreviewed. An approval whose digest is not the recorded
-  request's is refused (`409 approval_refused` from the API), so a grant
+  request's is refused (`409 approval_refused` from the API; `404` when
+  nothing is recorded, `400` for a narrowing the request does not ask for), so a grant
   the owner changed after the operator looked, even under the same
   version, is never approved unseen; the write is also a compare-and-swap
   on the recorded request. `revoke` clears the approval, keeps the
-  request, and records `revoked_at`. `bookclerk clusters list|consents`
-  and `GET /api/config/cluster-consents` show the digest, `revoked_at`,
-  and the state: `consented`,
+  request, and records `revoked_at`. `bookclerk clusters consents`
+  shows the digest and the state (its `--format json` output, like
+  `GET /api/config/cluster-consents`, also carries `revoked_at`; both
+  answer one shared view of the row). The state is one of `consented`,
   `awaiting_host_consent`, `awaiting_host_reapproval` (a new version asks
   for something outside what was reviewed: a domain, TCP target, CIDR,
   binding, flag, entrypoint, larger budget, or network at all; or the

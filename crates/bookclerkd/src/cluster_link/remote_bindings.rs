@@ -151,6 +151,16 @@ impl RemoteCatalog {
 
     /// Plugin keys whose every deployed instance here can run now: the
     /// keys a host client may claim jobs for.
+    ///
+    /// Per plugin, not per instance, on purpose: the claim filter the owner
+    /// applies is a set of plugin keys, and a handed job names its plugins,
+    /// not the instance it is pinned to. Admitting a plugin while one of
+    /// its instances is not ready would let a job pinned to that instance
+    /// be claimed and then fail ([`INSTANCE_UNAVAILABLE`]
+    /// spends an attempt). Withholding the plugin instead gives jobs held
+    /// on its ready instances back unspent; they are claimed again once
+    /// every instance is ready (a consented instance that is not ready is
+    /// retried with backoff).
     #[must_use]
     pub fn consented_keys(&self) -> BTreeSet<String> {
         let entries = self.read();
