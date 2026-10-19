@@ -640,9 +640,15 @@ async fn session_loop(
                     return None;
                 }
                 // A closing session no longer owns the catalog row; a newer
-                // connection may have registered and ended already.
-                if let Some(wakes) = wakes.as_ref().filter(|_| close.borrow().is_none()) {
-                    wakes.heartbeat(library, true).await;
+                // connection may have registered and ended already. The
+                // check runs under the gate `start_session` registers under,
+                // so a successor either has not registered yet or has
+                // already signalled this session to close.
+                if let Some(wakes) = wakes.as_ref() {
+                    let _gate = CATALOG_GATE.lock().await;
+                    if close.borrow().is_none() {
+                        wakes.heartbeat(library, true).await;
+                    }
                 }
             }
             _ = forward.tick() => {

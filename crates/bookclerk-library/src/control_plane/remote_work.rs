@@ -30,7 +30,10 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+use sea_orm::{
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
+    TransactionTrait,
+};
 use zeroize::Zeroizing;
 
 use super::job_routing::{
@@ -38,11 +41,13 @@ use super::job_routing::{
 };
 use super::semaphore::{permits_held_by, release_permits, renew_permits, SemaphorePermit};
 use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
-use crate::entities::{accounts, encrypted_secrets, job_secret_handoffs};
+use crate::entities::{
+    accounts, encrypted_secrets, job_secret_handoffs, jobs, node_credentials, nodes,
+};
 use crate::error::{LibraryError, Result};
 use crate::models::{JobFence, JobKind, JobRecord, JobResourceClass, JobState};
 use crate::secrets::{
-    build_sealed_record, get_secret, secret_account_type, unseal_secret, upsert_secret,
+    build_sealed_record, get_secret, secret_account_type, unseal_secret, upsert_secret_on,
     EncryptedSecretRecord,
 };
 use crate::store::LibraryStore;
@@ -389,17 +394,7 @@ async fn was_handed(
     fence: &JobFence,
     secret_ref: &JobSecretRef,
 ) -> Result<bool> {
-    let rows = job_secret_handoffs::Entity::find()
-        .filter(job_secret_handoffs::Column::JobId.eq(fence.job_id.as_str()))
-        .filter(job_secret_handoffs::Column::LeaseGeneration.eq(fence.generation))
-        .filter(job_secret_handoffs::Column::Kind.eq(secret_ref.kind.as_str()))
-        .filter(job_secret_handoffs::Column::Provider.eq(secret_ref.provider.as_str()))
-        .filter(job_secret_handoffs::Column::AccountId.eq(secret_ref.account_id.as_str()))
-        .filter(job_secret_handoffs::Column::Name.eq(secret_ref.name.as_str()))
-        .count(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(rows > 0)
+    handed_on(store.db(), fence, secret_ref).await
 }
 
 /// The job `fence` owns right now, if it still owns one.
@@ -613,6 +608,78 @@ pub async fn write_back_job_secret(
         &secret_ref.account_id,
         &secret_ref.name,
     )?;
-    upsert_secret(store.db(), &record).await?;
+    // The checks above read outside any transaction. The write runs in one
+    // that first takes the job row with a fenced update, so a reclaim or a
+    // claim by another node either committed before it (and the update
+    // matches nothing) or waits for it; the handoff row and the node
+    // credential are re-read behind that update.
+    let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
+    if !touch_fenced_job(&txn, &fence).await?
+        || !handed_on(&txn, &fence, secret_ref).await?
+        || !credential_live_on(&txn, node_id).await?
+    {
+        return Ok(WriteBack::Refused("fence_not_live"));
+    }
+    upsert_secret_on(&txn, &record).await?;
+    txn.commit().await.map_err(LibraryError::Orm)?;
     Ok(WriteBack::Written)
+}
+
+/// Bumps the job's `updated_at` when `fence` still owns the running
+/// generation, and says whether it did.
+async fn touch_fenced_job<C: ConnectionTrait>(db: &C, fence: &JobFence) -> Result<bool> {
+    let res = jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(Utc::now().to_rfc3339()),
+        )
+        .filter(jobs::Column::Id.eq(fence.job_id.as_str()))
+        .filter(jobs::Column::State.eq(JobState::Running.as_str()))
+        .filter(jobs::Column::LeaseOwner.eq(fence.owner.as_str()))
+        .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
+        .exec(db)
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(res.rows_affected == 1)
+}
+
+/// True when `secret_ref` was handed under `fence`, read on `db`.
+async fn handed_on<C: ConnectionTrait>(
+    db: &C,
+    fence: &JobFence,
+    secret_ref: &JobSecretRef,
+) -> Result<bool> {
+    let rows = job_secret_handoffs::Entity::find()
+        .filter(job_secret_handoffs::Column::JobId.eq(fence.job_id.as_str()))
+        .filter(job_secret_handoffs::Column::LeaseGeneration.eq(fence.generation))
+        .filter(job_secret_handoffs::Column::Kind.eq(secret_ref.kind.as_str()))
+        .filter(job_secret_handoffs::Column::Provider.eq(secret_ref.provider.as_str()))
+        .filter(job_secret_handoffs::Column::AccountId.eq(secret_ref.account_id.as_str()))
+        .filter(job_secret_handoffs::Column::Name.eq(secret_ref.name.as_str()))
+        .count(db)
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(rows > 0)
+}
+
+/// True when `node_id` is an owner node, or a host node whose credential is
+/// not revoked, read on `db`.
+async fn credential_live_on<C: ConnectionTrait>(db: &C, node_id: &str) -> Result<bool> {
+    let Some(node) = nodes::Entity::find_by_id(node_id.to_string())
+        .one(db)
+        .await
+        .map_err(LibraryError::Orm)?
+    else {
+        return Ok(false);
+    };
+    if node.kind == "owner" {
+        return Ok(true);
+    }
+    let live = node_credentials::Entity::find()
+        .filter(node_credentials::Column::NodeId.eq(node_id))
+        .filter(node_credentials::Column::RevokedAt.is_null())
+        .count(db)
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(live > 0)
 }
