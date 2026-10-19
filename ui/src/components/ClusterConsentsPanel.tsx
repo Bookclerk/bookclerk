@@ -105,8 +105,8 @@ function ConsentRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // A new request (another version, or more asked for) starts unnarrowed.
-  const requestKey = `${row.requested_version}|${JSON.stringify(requested)}`;
+  // A new request (another version or archive, or more asked for) starts unnarrowed.
+  const requestKey = `${row.request_digest}|${JSON.stringify(requested)}`;
   useEffect(() => {
     setDeniedDomains(new Set());
     setDeniedBindings(new Set());
@@ -132,7 +132,7 @@ function ConsentRow({
         onSessionExpired();
         return;
       }
-      // 409 carries the refusal's reason (a version changed, a domain not asked for).
+      // 409 carries the refusal's reason (the request changed, a domain not asked for).
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
       setBusy(false);
@@ -154,6 +154,12 @@ function ConsentRow({
           ? ` · approved ${row.approved_version}${row.approved_by ? ` by ${row.approved_by}` : ""}`
           : ""}
       </p>
+      {row.requested_artifact ? (
+        <p className="break-all text-xs text-ink/55">
+          Archive <span className="font-mono">{row.requested_artifact.url}</span> · sha256{" "}
+          <span className="font-mono">{row.requested_artifact.archive_sha256}</span>
+        </p>
+      ) : null}
 
       {row.state !== "consented" ? (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -237,7 +243,7 @@ function ConsentRow({
                 approveClusterConsent({
                   cluster_id: row.cluster_id,
                   plugin_key: row.plugin_key,
-                  version: row.requested_version,
+                  request_digest: row.request_digest,
                   deny_domains: denyNetwork ? [] : [...deniedDomains],
                   deny_bindings: [...deniedBindings],
                   deny_network: denyNetwork,

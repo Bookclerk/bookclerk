@@ -86,9 +86,10 @@ pub use instances::{
     PluginInstanceId,
 };
 pub use job_routing::{
-    account_semaphore, claim_routed_job, class_semaphore, instance_semaphore, job_plugin_keys,
-    job_semaphores, node_can_run_job, resolve_job_requirements, JobClaimFilter, JobClaimLimits,
-    JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    account_semaphore, claim_routed_job, class_semaphore, instance_semaphore,
+    job_permit_holder_prefix, job_plugin_keys, job_semaphores, job_source_plugin_key,
+    node_can_run_job, resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest,
+    RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use node_queue::{
@@ -118,8 +119,8 @@ pub use remote_catalog::{
 };
 pub use remote_consents::{
     approve_remote_plugin, list_remote_plugin_consents, load_remote_plugin_consent,
-    record_remote_plugin_request, revoke_remote_plugin, RemoteApproval, RemotePluginConsent,
-    REMOTE_CONSENT_PLATFORM,
+    record_remote_plugin_request, remote_request_digest, revoke_remote_plugin, RemoteApproval,
+    RemoteApprover, RemoteArtifactRef, RemotePluginConsent, REMOTE_CONSENT_PLATFORM,
 };
 pub use remote_results::{accept_scan_results, ScanAccept, MAX_SCAN_RESULT_ROWS};
 pub use remote_work::{
@@ -145,8 +146,9 @@ pub use trust::{
     Claimant, NodeTrust, ScanRequester,
 };
 pub use uploads::{
-    abort_upload, authorize_upload, commit_upload, grant_upload, load_upload, record_upload_file,
-    upload_fence_live, UploadCommit, UploadGrant, UploadGrantRequest, UploadSession,
+    abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
+    grant_upload, job_titles, load_upload, names_book, record_upload_file, upload_fence_live,
+    UploadCommit, UploadDestination, UploadFinish, UploadGrant, UploadGrantRequest, UploadSession,
     UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{

@@ -23,10 +23,10 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_catalog::{
-    extract_archive, fetch_artifact, host_bookclerk_target, is_platform_plugin_key,
-    payload_root_sha256, require_mutable_child, safe_join, select_target, sha256_file,
-    ArchiveFormat, ArtifactTarget, BookclerkPackageManifest, Installer, PackageCoordinate,
-    PluginKey, PluginMutationLock, RegistrySource,
+    extract_archive, fetch_artifact, fetch_owner_artifact, host_bookclerk_target,
+    is_platform_plugin_key, payload_root_sha256, require_mutable_child, safe_join, select_target,
+    sha256_file, ArchiveFormat, ArtifactTarget, BookclerkPackageManifest, Installer,
+    PackageCoordinate, PluginKey, PluginMutationLock, RegistrySource,
 };
 
 use crate::consent::PluginGrant;
@@ -408,6 +408,55 @@ pub async fn materialize_version(
     files_dir: &Path,
     version: &PluginVersion,
 ) -> Result<PathBuf> {
+    materialize_from(store, files_dir, version, ArtifactOrigin::Local).await
+}
+
+/// [`materialize_version`] for a version an owner cluster deploys to this
+/// host: a `blob:` archive is read from the library as usual (the caller
+/// fetched it over the owner link and checked its digest), and any other
+/// URL is fetched only as an owner `https:` URL
+/// ([`bookclerk_plugin_catalog::fetch_owner_artifact`]: no `file:`, no
+/// local or private hosts, every redirect hop checked the same way).
+///
+/// A tree already cached under the artifact's payload digest is reused
+/// without a fetch or an archive check, so the caller must have checked
+/// the whole artifact (URL, archive digest and payload digest) against the
+/// host operator's approval first
+/// (`RemotePluginConsent::approved_artifact_matches`).
+///
+/// # Arguments
+///
+/// * `store` - This host's library.
+/// * `files_dir` - This host's files dir.
+/// * `version` - The owner's version, with the grant this host runs it with.
+///
+/// # Errors
+///
+/// As [`materialize_version`], and when the owner's URL is refused.
+pub async fn materialize_owner_version(
+    store: &LibraryStore,
+    files_dir: &Path,
+    version: &PluginVersion,
+) -> Result<PathBuf> {
+    materialize_from(store, files_dir, version, ArtifactOrigin::Owner).await
+}
+
+/// Who chose a version's artifact URL, which decides how it is fetched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactOrigin {
+    /// This node's operator or registry ([`fetch_artifact`]).
+    Local,
+    /// An owner cluster, on a host node ([`fetch_owner_artifact`]).
+    Owner,
+}
+
+/// [`materialize_version`] with the fetch policy of `origin`.
+async fn materialize_from(
+    store: &LibraryStore,
+    files_dir: &Path,
+    version: &PluginVersion,
+    origin: ArtifactOrigin,
+) -> Result<PathBuf> {
     let artifact = host_artifact(version)?.clone();
     let cache = version_cache_path(files_dir, &artifact.payload_root_sha256);
     if cache.join("plugin.toml").is_file() {
@@ -429,7 +478,7 @@ pub async fn materialize_version(
     };
     let files = files_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        materialize_blocking(&files, &artifact, blob.as_deref(), &cache)
+        materialize_blocking(&files, &artifact, blob.as_deref(), &cache, origin)
     })
     .await
     .map_err(|err| PluginError::message(format!("materialize task: {err}")))?
@@ -448,6 +497,7 @@ fn materialize_blocking(
     artifact: &PluginArtifact,
     blob: Option<&[u8]>,
     cache: &Path,
+    origin: ArtifactOrigin,
 ) -> Result<PathBuf> {
     if cache.join("plugin.toml").is_file() {
         return Ok(cache.to_path_buf());
@@ -469,7 +519,11 @@ fn materialize_blocking(
         let archive = staging.join("archive");
         match blob {
             Some(bytes) => std::fs::write(&archive, bytes).map_err(io)?,
-            None => fetch_artifact(&artifact.url, &archive, false).map_err(cat)?,
+            None => match origin {
+                ArtifactOrigin::Local => fetch_artifact(&artifact.url, &archive, false),
+                ArtifactOrigin::Owner => fetch_owner_artifact(&artifact.url, &archive),
+            }
+            .map_err(cat)?,
         }
         let actual = sha256_file(&archive).map_err(cat)?;
         if actual != artifact.archive_sha256 {

@@ -712,6 +712,18 @@ pub async fn upsert_secret_on<C: ConnectionTrait>(
     Ok(())
 }
 
+/// Drops the cached plaintext of `record`'s row, for a caller that rewrote
+/// the row without [`upsert_secret_on`] (for example in a host batch).
+pub(crate) fn forget_cached_secret(record: &EncryptedSecretRecord) {
+    cache_invalidate_key(&cache_key_parts(
+        &record.kind,
+        record.provider.as_deref(),
+        &record.account_type,
+        record.account_id.as_deref(),
+        &record.name,
+    ));
+}
+
 /// Fetch a single secret by its composite key. Returns `None` if not found.
 ///
 /// # Errors

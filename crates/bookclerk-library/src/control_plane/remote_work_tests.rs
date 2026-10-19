@@ -2,11 +2,19 @@
 //! fences lost while a Host was away stay lost, and write-back needs a
 //! live fence.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
+};
 
 use super::*;
-use crate::entities::{account_links, accounts, cluster_leases, jobs, node_credentials, nodes};
+use crate::entities::{
+    account_links, accounts, cluster_leases, jobs, node_credentials, node_upload_sessions, nodes,
+};
 use crate::master_key::master_key_test_lock_async;
 use crate::models::UserRole;
 use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass};
@@ -26,6 +34,7 @@ const SETTINGS: RemoteClaimSettings = RemoteClaimSettings {
     },
 };
 
+/// A store on a fresh SQLite file in `dir`, with the host schema and a master key.
 async fn store_in(dir: &std::path::Path) -> LibraryStore {
     let db = bookclerk_plugin_database_sqlite::open(&dir.join("library.db"))
         .await
@@ -35,6 +44,7 @@ async fn store_in(dir: &std::path::Path) -> LibraryStore {
     LibraryStore::from_connection(db)
 }
 
+/// Adds an `accounts` row for `account_id` under [`PLUGIN`].
 async fn add_account(store: &LibraryStore, account_id: &str) {
     let now = chrono::Utc::now().to_rfc3339();
     accounts::ActiveModel {
@@ -54,6 +64,7 @@ async fn add_account(store: &LibraryStore, account_id: &str) {
     .unwrap();
 }
 
+/// Links `account_id` to `user_id`'s local portal identity.
 async fn link(store: &LibraryStore, user_id: i64, account_id: &str) {
     let identity = store
         .ensure_local_portal_identity(user_id, None)
@@ -65,6 +76,7 @@ async fn link(store: &LibraryStore, user_id: i64, account_id: &str) {
         .unwrap();
 }
 
+/// Adds the [`HOST`] node, owned by `owner`, with a live credential.
 async fn add_host(store: &LibraryStore, owner: i64) {
     let now = chrono::Utc::now().to_rfc3339();
     nodes::ActiveModel {
@@ -106,6 +118,7 @@ async fn add_host(store: &LibraryStore, owner: i64) {
     .unwrap();
 }
 
+/// Seals `value` as the store token of `account_id` and names its row.
 async fn save_token(store: &LibraryStore, account_id: &str, value: &str) -> JobSecretRef {
     let name = format!("{account_id}.auth");
     let record = build_sealed_record(
@@ -126,6 +139,7 @@ async fn save_token(store: &LibraryStore, account_id: &str, value: &str) -> JobS
     }
 }
 
+/// Unseals the current value of `secret`.
 async fn read_token(store: &LibraryStore, secret: &JobSecretRef) -> String {
     let record = get_secret(
         store.db(),
@@ -141,6 +155,7 @@ async fn read_token(store: &LibraryStore, secret: &JobSecretRef) -> String {
     String::from_utf8(unseal_secret(&record).unwrap()).unwrap()
 }
 
+/// Enqueues a `kind` job for `account` and returns its id.
 async fn enqueue(store: &LibraryStore, kind: JobKind, account: &str) -> String {
     match store
         .enqueue_job(EnqueueJobSpec {
@@ -171,6 +186,7 @@ struct World {
     sam_token: JobSecretRef,
 }
 
+/// Builds the [`World`]: Riley owns the Host, Sam does not.
 async fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path()).await;
@@ -200,6 +216,7 @@ async fn world() -> World {
     }
 }
 
+/// Claims the next network job as [`HOST`].
 async fn claim(store: &LibraryStore) -> Option<RemoteJobClaim> {
     claim_remote_job(store, HOST, JobResourceClass::Network, SETTINGS, None)
         .await
@@ -233,6 +250,8 @@ async fn expire_lease(store: &LibraryStore, job_id: &str) {
         .unwrap();
 }
 
+/// A Host is handed only its owner's jobs and secrets, and gives its
+/// permits back when the job ends.
 #[tokio::test]
 async fn a_remote_claim_hands_only_the_owners_secrets() {
     let _guard = master_key_test_lock_async().await;
@@ -282,6 +301,8 @@ async fn a_remote_claim_hands_only_the_owners_secrets() {
     );
 }
 
+/// A fence reclaimed while the Host was away, presented by another node,
+/// or whose account was unlinked, is lost.
 #[tokio::test]
 async fn fences_lost_while_the_host_was_away_stay_lost() {
     let _guard = master_key_test_lock_async().await;
@@ -359,6 +380,8 @@ async fn fences_lost_while_the_host_was_away_stay_lost() {
     let _ = w.riley;
 }
 
+/// Write-back needs a live fence, a secret handed under it, a valid value
+/// and a node that is still trusted.
 #[tokio::test]
 async fn write_back_needs_a_live_fence_and_a_handed_secret() {
     let _guard = master_key_test_lock_async().await;
@@ -450,6 +473,7 @@ async fn write_back_needs_a_live_fence_and_a_handed_secret() {
     assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
 }
 
+/// An acquire cannot be completed over the node API; only its upload completes it.
 #[tokio::test]
 async fn an_acquire_completes_only_through_its_upload() {
     let _guard = master_key_test_lock_async().await;
@@ -527,6 +551,47 @@ async fn a_host_claims_only_consented_plugins_and_kinds() {
         .expect("a consented plugin is claimed");
     assert_eq!(claimed.job.id, job_id);
     assert_eq!(claimed.plugin_keys, vec![PLUGIN.to_string()]);
+    assert_eq!(claimed.source_plugin_key.as_deref(), Some(PLUGIN));
+}
+
+/// An unpinned job whose account id exists under two plugins has no one
+/// source a Host could run, so no filter admits it, even one consenting to
+/// both plugins: it stays pending for a node that holds the database.
+#[tokio::test]
+async fn a_job_without_one_source_plugin_passes_no_filter() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    const OTHER: &str = "path:file:///tmp/other#other";
+    let now = chrono::Utc::now().to_rfc3339();
+    accounts::ActiveModel {
+        plugin_key: Set(OTHER.into()),
+        account_id: Set("riley-acct".into()),
+        marketplace: Set("us".into()),
+        label: Set(None),
+        scan_enabled: Set(1),
+        source: Set("test".into()),
+        connection_status: Set("active".into()),
+        created_at: Set(now.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(w.store.db())
+    .await
+    .unwrap();
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let record = w.store.get_job(&job_id).await.unwrap().unwrap();
+    let keys = job_plugin_keys(&w.store, &record).await.unwrap().unwrap();
+    assert_eq!(keys.len(), 2, "both plugins hold the account");
+    assert_eq!(
+        job_source_plugin_key(&w.store, &record).await.unwrap(),
+        None
+    );
+    let both = filter(&["scan"], &[PLUGIN, OTHER]);
+    assert!(!both.admits(&w.store, &record).await.unwrap());
+    assert!(claim_filtered(&w.store, &both).await.is_none());
+    let untouched = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(untouched.state, crate::models::JobState::Pending);
+    assert_eq!(untouched.attempt_count, 0, "no attempt is spent");
 }
 
 /// A scan of every account names no plugin, so no filter admits it.
@@ -933,6 +998,311 @@ async fn a_stale_fence_cannot_write_scan_rows_or_open_uploads() {
     ));
 }
 
+/// A closing upload's finish with `detail`.
+fn finish(detail: &str) -> UploadFinish<'_> {
+    UploadFinish {
+        detail,
+        download_episodes: false,
+    }
+}
+
+/// Opens the closing upload of `job_id` under `fence`.
+async fn closing_upload(store: &LibraryStore, job_id: &str, fence: i64) -> String {
+    let UploadGrant::Granted { upload_id, .. } = grant_upload(
+        store,
+        HOST,
+        job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            book_uuid: "",
+            primary_key: "",
+            pdf_key: None,
+            files: &[],
+            destinations: &[],
+        },
+    )
+    .await
+    .unwrap() else {
+        panic!("closing upload granted");
+    };
+    upload_id
+}
+
+/// The owner's one `local` destination, its title scope `folder`.
+fn local(folder: &str) -> Vec<UploadDestination> {
+    vec![UploadDestination {
+        id: "local".into(),
+        title_folders: vec![folder.into()],
+    }]
+}
+
+/// Grants, receives and commits one title's upload.
+async fn upload_title(
+    store: &LibraryStore,
+    job_id: &str,
+    fence: i64,
+    book_uuid: &str,
+    files: &[bookclerk_node_proto::UploadFile],
+) {
+    let primary_key = files[0].copies[0].key.as_str();
+    let folder = primary_key
+        .rsplit_once('/')
+        .map_or("", |(folder, _)| folder);
+    let UploadGrant::Granted { upload_id, .. } = grant_upload(
+        store,
+        HOST,
+        job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            book_uuid,
+            primary_key,
+            pdf_key: None,
+            files,
+            destinations: &local(folder),
+        },
+    )
+    .await
+    .unwrap() else {
+        panic!("granted");
+    };
+    for index in 0..files.len() {
+        assert!(record_upload_file(store, &upload_id, index).await.unwrap());
+    }
+    assert_eq!(
+        commit_upload(store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+}
+
+/// The owner decides the job's success: a closing upload is refused while
+/// a title of the job is still unacquired (the job keeps running and its
+/// permits), and completes the job once every title is.
+#[tokio::test]
+async fn the_closing_upload_waits_for_every_title() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (first, files) = riley_title(&w.store).await;
+    let second = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("riley-acct", "t2")
+        })
+        .await
+        .unwrap()
+        .uuid;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    upload_title(&w.store, &job_id, fence, &first, &files).await;
+    let early = closing_upload(&w.store, &job_id, fence).await;
+    assert_eq!(
+        commit_upload(&w.store, &early, Some(finish("all done")), SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("titles_remaining"),
+        "the host's word is not enough"
+    );
+    let running = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(running.state, crate::models::JobState::Running);
+    assert!(
+        !live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the job keeps its permits"
+    );
+    let mut second_files = files.clone();
+    second_files[0].copies[0].key = "Author/Title 2/Title 2.m4b".into();
+    upload_title(&w.store, &job_id, fence, &second, &second_files).await;
+    let closing = closing_upload(&w.store, &job_id, fence).await;
+    assert_eq!(
+        commit_upload(
+            &w.store,
+            &closing,
+            Some(finish("all done")),
+            SETTINGS.limits
+        )
+        .await
+        .unwrap(),
+        UploadCommit::Committed {
+            job_completed: true
+        }
+    );
+    assert_eq!(
+        w.store.get_job(&job_id).await.unwrap().unwrap().state,
+        crate::models::JobState::Succeeded
+    );
+}
+
+/// True when `token` opens `upload_id`.
+async fn token_opens(store: &LibraryStore, upload_id: &str, token: &str) -> bool {
+    authorize_upload(store, upload_id, token, false)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+/// Sets every upload's token to have expired.
+async fn expire_tokens(store: &LibraryStore) {
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(5))
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    node_upload_sessions::Entity::update_many()
+        .col_expr(node_upload_sessions::Column::ExpiresAt, Expr::value(past))
+        .exec(store.db())
+        .await
+        .unwrap();
+}
+
+/// An upload's token lives on while its fence does: a renewal of the
+/// job's lease and an accepted file each extend it, and once the fence is
+/// lost a renewal extends nothing.
+#[tokio::test]
+async fn a_live_fence_keeps_its_upload_token_alive() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted {
+        upload_id, token, ..
+    } = grant_upload(
+        &w.store,
+        HOST,
+        &job_id,
+        fence,
+        "owner",
+        &UploadGrantRequest {
+            book_uuid: &book_uuid,
+            primary_key: "Author/Title/Title.m4b",
+            pdf_key: None,
+            files: &files,
+            destinations: &local("Author/Title"),
+        },
+    )
+    .await
+    .unwrap()
+    else {
+        panic!("granted");
+    };
+    expire_tokens(&w.store).await;
+    assert!(
+        !token_opens(&w.store, &upload_id, &token).await,
+        "an expired token opens nothing"
+    );
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, SETTINGS, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    assert!(
+        token_opens(&w.store, &upload_id, &token).await,
+        "a renewal extends the token"
+    );
+
+    expire_tokens(&w.store).await;
+    assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+    assert!(
+        token_opens(&w.store, &upload_id, &token).await,
+        "an accepted file extends the token"
+    );
+
+    expire_tokens(&w.store).await;
+    expire_lease(&w.store, &job_id).await;
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, SETTINGS, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Lost
+    );
+    assert!(
+        !token_opens(&w.store, &upload_id, &token).await,
+        "a lost fence extends nothing"
+    );
+}
+
+/// Aborting an upload answers what it had received, so the receiving node
+/// can delete those copies; a second abort answers nothing, and a job's
+/// uploads are aborted by fence only for that node and generation.
+#[tokio::test]
+async fn an_abort_answers_the_files_it_had_received() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, mut files) = riley_title(&w.store).await;
+    files.push(bookclerk_node_proto::UploadFile {
+        copies: vec![bookclerk_node_proto::FileCopy {
+            destination: "local".into(),
+            key: "Author/Title/cover.jpg".into(),
+        }],
+        ..files[0].clone()
+    });
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let request = UploadGrantRequest {
+        book_uuid: &book_uuid,
+        primary_key: "Author/Title/Title.m4b",
+        pdf_key: None,
+        files: &files,
+        destinations: &local("Author/Title"),
+    };
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_upload(&w.store, HOST, &job_id, fence, "owner", &request)
+            .await
+            .unwrap()
+    else {
+        panic!("granted");
+    };
+    assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
+    // Re-sending the title supersedes the open upload, receipts and all.
+    let UploadGrant::Granted {
+        upload_id: again,
+        superseded,
+        ..
+    } = grant_upload(&w.store, HOST, &job_id, fence, "owner", &request)
+        .await
+        .unwrap()
+    else {
+        panic!("granted again");
+    };
+    assert_eq!(superseded.len(), 1);
+    assert_eq!(superseded[0].upload_id, upload_id);
+    assert_eq!(superseded[0].received, [0usize].into_iter().collect());
+    assert!(
+        !record_upload_file(&w.store, &upload_id, 1).await.unwrap(),
+        "an aborted upload records no more files"
+    );
+    assert!(abort_upload(&w.store, &upload_id).await.unwrap().is_none());
+
+    assert!(record_upload_file(&w.store, &again, 1).await.unwrap());
+    assert!(abort_job_uploads(&w.store, "host-other", &job_id, fence)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(abort_job_uploads(&w.store, HOST, &job_id, fence + 1)
+        .await
+        .unwrap()
+        .is_empty());
+    let aborted = abort_job_uploads(&w.store, HOST, &job_id, fence)
+        .await
+        .unwrap();
+    assert_eq!(aborted.len(), 1);
+    assert_eq!(aborted[0].upload_id, again);
+    assert_eq!(aborted[0].received, [1usize].into_iter().collect());
+    assert_eq!(
+        commit_upload(&w.store, &again, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("upload_aborted")
+    );
+}
+
 /// The title Riley's acquire uploads, with its one file declared.
 async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto::UploadFile>) {
     let book = store
@@ -956,9 +1326,10 @@ async fn riley_title(store: &LibraryStore) -> (String, Vec<bookclerk_node_proto:
 }
 
 /// An upload is granted only for a title of the job, its token opens only
-/// that upload, the commit waits for every file, and the commit marks the
-/// title acquired, publishes `book_acquired`, completes the job and gives
-/// its permits back in one step; a repeat answers the same.
+/// that upload, the commit waits for every file, and the title's commit
+/// marks the title acquired and publishes `book_acquired` but cannot
+/// finish the job; only the closing upload completes it and gives its
+/// permits back, and a repeat answers the same.
 #[tokio::test]
 async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
     let _guard = master_key_test_lock_async().await;
@@ -975,7 +1346,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         })
         .await
         .unwrap();
-    let destinations = vec!["local".to_string()];
+    let destinations = local("Author/Title");
     let sams = UploadGrantRequest {
         book_uuid: &sam_book.uuid,
         primary_key: "Author/Title/Title.m4b",
@@ -1003,7 +1374,11 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
             .unwrap(),
         UploadGrant::Refused("invalid_manifest")
     ));
-    let two = vec!["local".to_string(), "s3".to_string()];
+    let s3 = UploadDestination {
+        id: "s3".into(),
+        title_folders: vec!["Title".into()],
+    };
+    let two = vec![destinations[0].clone(), s3.clone()];
     let unwritten = UploadGrantRequest {
         destinations: &two,
         ..riley
@@ -1017,7 +1392,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         ),
         "every destination of the receiving node must be written"
     );
-    let s3_first = vec!["s3".to_string(), "local".to_string()];
+    let s3_first = vec![s3, destinations[0].clone()];
     let elsewhere = vec![bookclerk_node_proto::UploadFile {
         copies: vec![bookclerk_node_proto::FileCopy {
             destination: "s3".into(),
@@ -1075,26 +1450,57 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         .unwrap()
         .expect("the token opens its upload");
     assert_eq!(session.receiving_node_id, "owner");
-    assert_eq!(session.destinations, destinations);
+    assert_eq!(session.destinations, vec!["local".to_string()]);
     assert!(upload_fence_live(&w.store, &session).await.unwrap());
     assert_eq!(
-        commit_upload(&w.store, &upload_id, Some("1 title"), SETTINGS.limits)
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
             .await
             .unwrap(),
         UploadCommit::Refused("files_missing")
     );
     assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
     assert_eq!(
-        commit_upload(&w.store, &upload_id, Some("1 title"), SETTINGS.limits)
+        commit_upload(
+            &w.store,
+            &upload_id,
+            Some(finish("1 title")),
+            SETTINGS.limits
+        )
+        .await
+        .unwrap(),
+        UploadCommit::Refused("not_a_closing_upload"),
+        "a title's upload cannot finish the job"
+    );
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed {
+            job_completed: false
+        }
+    );
+    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
+    assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);
+    assert_eq!(book.storage_key.as_deref(), Some("Author/Title/Title.m4b"));
+    assert_eq!(
+        w.store.get_job(&job_id).await.unwrap().unwrap().state,
+        crate::models::JobState::Running
+    );
+    let closing = closing_upload(&w.store, &job_id, fence).await;
+    assert_eq!(
+        commit_upload(&w.store, &closing, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("closing_upload_must_finish")
+    );
+    assert_eq!(
+        commit_upload(&w.store, &closing, Some(finish("1 title")), SETTINGS.limits)
             .await
             .unwrap(),
         UploadCommit::Committed {
             job_completed: true
         }
     );
-    let book = w.store.get_book_by_uuid(&book_uuid).await.unwrap().unwrap();
-    assert_eq!(book.acquire_status, crate::models::AcquireStatus::Acquired);
-    assert_eq!(book.storage_key.as_deref(), Some("Author/Title/Title.m4b"));
     let done = w.store.get_job(&job_id).await.unwrap().unwrap();
     assert_eq!(done.state, crate::models::JobState::Succeeded);
     assert_eq!(done.progress.as_deref(), Some("1 title"));
@@ -1113,7 +1519,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         "permits are given back at the commit"
     );
     assert_eq!(
-        commit_upload(&w.store, &upload_id, Some("1 title"), SETTINGS.limits)
+        commit_upload(&w.store, &closing, Some(finish("1 title")), SETTINGS.limits)
             .await
             .unwrap(),
         UploadCommit::Committed {
@@ -1150,7 +1556,7 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
             primary_key: "Author/Title/Title.m4b",
             pdf_key: None,
             files: &files,
-            destinations: &["local".to_string()],
+            destinations: &local("Author/Title"),
         },
     )
     .await
@@ -1160,7 +1566,7 @@ async fn a_fence_lost_before_the_commit_writes_nothing() {
     assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
     expire_lease(&w.store, &job_id).await;
     assert_eq!(
-        commit_upload(&w.store, &upload_id, Some("done"), SETTINGS.limits)
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
             .await
             .unwrap(),
         UploadCommit::Lost
@@ -1221,4 +1627,829 @@ async fn a_node_local_instance_runs_only_on_its_node() {
         .await
         .unwrap();
     assert_eq!(cluster.owner_node_id, None);
+}
+
+/// A scan's rows are accepted only as the job's source plugin: a plugin
+/// the job merely requires (a destination or integration) is refused, even
+/// for a Host trusted with every job.
+#[tokio::test]
+async fn scan_rows_are_accepted_only_as_the_jobs_source_plugin() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    const OTHER: &str = "path:file:///tmp/dest#dest";
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    // An administrator's Host may run jobs that require other plugins.
+    let admin = w
+        .store
+        .create_user(UserRole::Administrator, Some("Admin"), None)
+        .await
+        .unwrap()
+        .id;
+    nodes::Entity::update_many()
+        .col_expr(nodes::Column::OwnerUserId, Expr::value(Some(admin)))
+        .filter(nodes::Column::NodeId.eq(HOST))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    let destination = uuid::Uuid::new_v4().hyphenated().to_string();
+    crate::entities::plugin_instances::ActiveModel {
+        plugin_instance_id: Set(destination.clone()),
+        plugin_key: Set(OTHER.into()),
+        display_name: Set(String::new()),
+        created_at: Set(chrono::Utc::now().to_rfc3339()),
+        created_by: Set("test".into()),
+        owner_node_id: Set(None),
+    }
+    .insert(w.store.db())
+    .await
+    .unwrap();
+    let mut payload = w.store.get_job(&job_id).await.unwrap().unwrap().payload;
+    payload.requires = vec![destination];
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::Payload,
+            Expr::value(serde_json::to_string(&payload).unwrap()),
+        )
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert!(
+        job_plugin_keys(&w.store, &job)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains(OTHER),
+        "the job runs the destination plugin too"
+    );
+    assert_eq!(
+        accept_scan_results(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            OTHER,
+            vec![scanned("riley-acct", "d1")]
+        )
+        .await
+        .unwrap(),
+        ScanAccept::Refused("plugin_not_in_job")
+    );
+    assert!(book_row(&w.store, "riley-acct", "d1").await.is_none());
+    assert_eq!(
+        accept_scan_results(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            PLUGIN,
+            vec![scanned("riley-acct", "d2")]
+        )
+        .await
+        .unwrap(),
+        ScanAccept::Accepted { upserted: 1 }
+    );
+}
+
+/// A repeat of the commit that completed the job gives back any permit
+/// the node still holds for it (as if the completing commit had stopped
+/// before its own release) and answers the committed result unchanged.
+#[tokio::test]
+async fn a_repeated_completing_commit_gives_back_left_permits() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    upload_title(&w.store, &job_id, fence, &book_uuid, &files).await;
+    let closing = closing_upload(&w.store, &job_id, fence).await;
+    let done = UploadCommit::Committed {
+        job_completed: true,
+    };
+    assert_eq!(
+        commit_upload(&w.store, &closing, Some(finish("done")), SETTINGS.limits)
+            .await
+            .unwrap(),
+        done
+    );
+    let network = class_semaphore(JobResourceClass::Network);
+    assert!(live_permits(&w.store, &network, 8)
+        .await
+        .unwrap()
+        .is_empty());
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    let semaphores = job_semaphores(&w.store, &job, SETTINGS.limits)
+        .await
+        .unwrap();
+    let holder = format!("{}/{}/left", remote_lease_owner(HOST), job_id);
+    assert!(matches!(
+        acquire_permits(
+            &w.store,
+            &semaphores,
+            &holder,
+            std::time::Duration::from_secs(60)
+        )
+        .await
+        .unwrap(),
+        PermitAcquire::Granted(_)
+    ));
+    assert!(!live_permits(&w.store, &network, 8)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        commit_upload(&w.store, &closing, Some(finish("done")), SETTINGS.limits)
+            .await
+            .unwrap(),
+        done,
+        "the repeat keeps the committed result"
+    );
+    assert!(
+        live_permits(&w.store, &network, 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the repeat gives the left permit back"
+    );
+    assert_eq!(
+        commit_upload(&w.store, &closing, Some(finish("done")), SETTINGS.limits)
+            .await
+            .unwrap(),
+        done,
+        "giving back is idempotent"
+    );
+    assert_eq!(
+        w.store
+            .get_job(&job_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .progress
+            .as_deref(),
+        Some("done")
+    );
+}
+
+/// Sets the recorded audio and PDF keys of the title `uuid`.
+async fn set_book_keys(store: &LibraryStore, uuid: &str, audio: &str, pdf: Option<&str>) {
+    crate::entities::books::Entity::update_many()
+        .col_expr(
+            crate::entities::books::Column::StorageKey,
+            Expr::value(Some(audio.to_string())),
+        )
+        .col_expr(
+            crate::entities::books::Column::PdfStorageKey,
+            Expr::value(pdf.map(str::to_string)),
+        )
+        .filter(crate::entities::books::Column::Uuid.eq(uuid))
+        .exec(store.db())
+        .await
+        .unwrap();
+}
+
+/// A Host can write a title only under that title's own key scope on each
+/// destination, which the owner computes: a key outside it (another
+/// title's folder, a root-level file, another destination's scope) is
+/// refused, and so is a key inside it that another title already has (its
+/// audio, its PDF, or a sidecar of its audio). Nothing is granted.
+#[tokio::test]
+async fn an_upload_is_bound_to_its_titles_key_scope() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    // Another title of the same account, already acquired: one in another
+    // folder, and one sharing this title's folder (a folder template
+    // without the title, or podcast episodes in their parent's folder).
+    let elsewhere = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("riley-acct", "t9")
+        })
+        .await
+        .unwrap();
+    set_book_keys(
+        &w.store,
+        &elsewhere.uuid,
+        "Author/Other/Other.m4b",
+        Some("Author/Other/Other.pdf"),
+    )
+    .await;
+    let neighbour = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("riley-acct", "t8")
+        })
+        .await
+        .unwrap();
+    set_book_keys(
+        &w.store,
+        &neighbour.uuid,
+        "Author/Title/Neighbour.m4b",
+        Some("Author/Title/Neighbour booklet.pdf"),
+    )
+    .await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let destinations = local("Author/Title");
+    let with_extra = |key: &str| {
+        let mut out = files.clone();
+        out.push(bookclerk_node_proto::UploadFile {
+            copies: vec![bookclerk_node_proto::FileCopy {
+                destination: "local".into(),
+                key: key.into(),
+            }],
+            sha256: "cd".repeat(32),
+            ..files[0].clone()
+        });
+        out
+    };
+    let refused = |files: Vec<bookclerk_node_proto::UploadFile>, primary: &'static str| {
+        let store = w.store.clone();
+        let job_id = job_id.clone();
+        let book_uuid = book_uuid.clone();
+        let destinations = destinations.clone();
+        async move {
+            match grant_upload(
+                &store,
+                HOST,
+                &job_id,
+                fence,
+                "owner",
+                &UploadGrantRequest {
+                    book_uuid: &book_uuid,
+                    primary_key: primary,
+                    pdf_key: None,
+                    files: &files,
+                    destinations: &destinations,
+                },
+            )
+            .await
+            .unwrap()
+            {
+                UploadGrant::Refused(reason) => reason,
+                other => panic!("expected a refusal: {other:?}"),
+            }
+        }
+    };
+    for key in [
+        "Author/Other/Other.m4b",
+        "Author/Other/cover.jpg",
+        "Author/Titles/Title.m4b",
+        "Author/Title",
+        "Title.m4b",
+        "Elsewhere/Author/Title/Title.m4b",
+    ] {
+        assert_eq!(
+            refused(with_extra(key), "Author/Title/Title.m4b").await,
+            "key_out_of_scope",
+            "{key}"
+        );
+    }
+    let mut moved = files.clone();
+    moved[0].copies[0].key = "Author/Other/Other.m4b".into();
+    assert_eq!(
+        refused(moved, "Author/Other/Other.m4b").await,
+        "key_out_of_scope",
+        "the primary key is bound too"
+    );
+    for key in [
+        "Author/Title/Neighbour.m4b",
+        "Author/Title/Neighbour.jpg",
+        "Author/Title/Neighbour.chapters.flat.json",
+        "Author/Title/Neighbour booklet.pdf",
+    ] {
+        assert_eq!(
+            refused(with_extra(key), "Author/Title/Title.m4b").await,
+            "key_of_another_book",
+            "{key}"
+        );
+    }
+    let mut overwrite = files.clone();
+    overwrite[0].copies[0].key = "Author/Title/Neighbour.m4b".into();
+    assert_eq!(
+        refused(overwrite, "Author/Title/Neighbour.m4b").await,
+        "key_of_another_book",
+        "another title's audio cannot be the primary either"
+    );
+    let unscoped = vec![UploadDestination {
+        id: "local".into(),
+        title_folders: Vec::new(),
+    }];
+    assert!(matches!(
+        grant_upload(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            "owner",
+            &UploadGrantRequest {
+                book_uuid: &book_uuid,
+                primary_key: "Author/Title/Title.m4b",
+                pdf_key: None,
+                files: &files,
+                destinations: &unscoped,
+            },
+        )
+        .await
+        .unwrap(),
+        UploadGrant::Refused("key_out_of_scope")
+    ));
+    assert!(
+        node_upload_sessions::Entity::find()
+            .all(w.store.db())
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing was granted"
+    );
+    // The title's own files and sidecars, a re-acquire of its own recorded
+    // key included, are granted.
+    set_book_keys(&w.store, &book_uuid, "Author/Title/Title.m4b", None).await;
+    let own = with_extra("Author/Title/Title.jpg");
+    assert!(matches!(
+        grant_upload(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            "owner",
+            &UploadGrantRequest {
+                book_uuid: &book_uuid,
+                primary_key: "Author/Title/Title.m4b",
+                pdf_key: None,
+                files: &own,
+                destinations: &destinations,
+            },
+        )
+        .await
+        .unwrap(),
+        UploadGrant::Granted { .. }
+    ));
+}
+
+/// A destination's title scope: below a folder, or top level for the
+/// root; never the folder itself or a sibling with the same prefix.
+#[test]
+fn a_destination_scope_admits_only_keys_below_its_folders() {
+    let folder = UploadDestination {
+        id: "local".into(),
+        title_folders: vec!["A/T".into()],
+    };
+    assert!(folder.admits("A/T/T.m4b"));
+    assert!(folder.admits("A/T/sub/c1.mp3"));
+    assert!(!folder.admits("A/T"));
+    assert!(!folder.admits("A/T2/T.m4b"));
+    assert!(!folder.admits("B/A/T/T.m4b"));
+    let root = UploadDestination {
+        id: "local".into(),
+        title_folders: vec![String::new()],
+    };
+    assert!(root.admits("T.m4b"));
+    assert!(!root.admits("A/T.m4b"));
+    let none = UploadDestination {
+        id: "local".into(),
+        title_folders: Vec::new(),
+    };
+    assert!(!none.admits("T.m4b"));
+}
+
+/// A job whose cancel was requested never succeeds on a Host's word: a
+/// scan's `complete` ends it cancelled, and an acquire's closing upload is
+/// refused (the Host's failure report then ends it cancelled).
+#[tokio::test]
+async fn a_cancelled_remote_job_never_succeeds() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let scan = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    w.store.request_job_cancel(&scan).await.unwrap();
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &scan,
+            fence,
+            SETTINGS.limits,
+            RemoteOutcome::Complete(Some("partial"))
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    assert_eq!(
+        w.store.get_job(&scan).await.unwrap().unwrap().state,
+        crate::models::JobState::Cancelled
+    );
+
+    let acquire = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    upload_title(&w.store, &acquire, fence, &book_uuid, &files).await;
+    w.store.request_job_cancel(&acquire).await.unwrap();
+    let closing = closing_upload(&w.store, &acquire, fence).await;
+    assert_eq!(
+        commit_upload(&w.store, &closing, Some(finish("done")), SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("job_cancelled")
+    );
+    assert_eq!(
+        w.store.get_job(&acquire).await.unwrap().unwrap().state,
+        crate::models::JobState::Running
+    );
+}
+
+/// A secret created for the account after the handoff cannot be written back.
+#[tokio::test]
+async fn write_back_accepts_only_the_secrets_handed_under_that_fence() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+    assert_eq!(claimed.secrets.len(), 1);
+
+    // A second token is created for the same account after the handoff:
+    // it is one of the account's secrets now, but the Host never got it.
+    let late = JobSecretRef {
+        name: "riley-acct.refresh".into(),
+        ..w.riley_token.clone()
+    };
+    let record = build_sealed_record(
+        b"late-v1",
+        &late.kind,
+        &late.provider,
+        secret_account_type::INTEGRATION,
+        &late.account_id,
+        &late.name,
+    )
+    .unwrap();
+    upsert_secret(w.store.db(), &record).await.unwrap();
+    assert!(job_secret_refs(&w.store, &claimed.job)
+        .await
+        .unwrap()
+        .contains(&late));
+
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &late, b"overwritten")
+            .await
+            .unwrap(),
+        WriteBack::Refused("secret_not_handed")
+    );
+    assert_eq!(read_token(&w.store, &late).await, "late-v1");
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &w.riley_token, b"riley-v2")
+            .await
+            .unwrap(),
+        WriteBack::Written
+    );
+}
+
+/// A renewal that finds a permit taken over answers `Lost` without pushing
+/// the job's reclaim out.
+#[tokio::test]
+async fn a_renewal_that_is_lost_does_not_extend_the_lease() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    // The lease is close to running out, and another holder took the
+    // job's permits over.
+    let soon = chrono::Utc::now() + chrono::Duration::seconds(5);
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::LeaseExpiresAt,
+            Expr::value(Some(soon.to_rfc3339())),
+        )
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    cluster_leases::Entity::update_many()
+        .col_expr(cluster_leases::Column::Holder, Expr::value("someone-else"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, SETTINGS, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Lost
+    );
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert!(
+        job.lease_expires_at.unwrap() <= soon,
+        "a lost renewal must not push the reclaim out"
+    );
+}
+
+/// A released claim is claimable again at once, with no attempt spent.
+#[tokio::test]
+async fn a_released_claim_is_given_back_unspent() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    assert_eq!(
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+            .await
+            .unwrap(),
+        RemoteFinish::Done
+    );
+    let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(job.state, crate::models::JobState::Pending);
+    assert_eq!(job.attempt_count, 0, "no attempt is spent");
+    assert!(
+        live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the permits are given back"
+    );
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, fence, &w.riley_token, b"late")
+            .await
+            .unwrap(),
+        WriteBack::Refused("fence_not_live")
+    );
+    assert_eq!(
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
+            .await
+            .unwrap(),
+        RemoteFinish::Lost,
+        "a released fence is not live"
+    );
+    let again = claim(&w.store).await.expect("claimable again at once");
+    assert!(again.job.lease_generation > fence);
+}
+
+/// Runs host batches on an open connection, as a guest that has no
+/// interactive transactions (D1) does, first applying `before` once: a
+/// write another node committed between the write-back's checks and its
+/// batch.
+struct RacingBatchExec {
+    /// Same file the store already migrated.
+    db: sea_orm::DatabaseConnection,
+    /// SQL run once ahead of the next batch.
+    before: Mutex<Option<&'static str>>,
+    /// How many batches were sent.
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl crate::TypedAtomicExec for RacingBatchExec {
+    async fn execute_typed(
+        &self,
+        envelope: bookclerk_db_exec::AdapterExecuteRequest,
+    ) -> std::result::Result<bookclerk_plugin_abi::ExecuteReply, bookclerk_plugin_abi::PluginError>
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let before = self.before.lock().unwrap().take();
+        if let Some(sql) = before {
+            self.db
+                .execute_unprepared(sql)
+                .await
+                .map_err(|err| bookclerk_plugin_abi::PluginError::internal(err.to_string()))?;
+        }
+        bookclerk_db_exec::execute_typed_on_open_connection(
+            &self.db,
+            &envelope,
+            bookclerk_db_exec::ExecCaps::from(8u32),
+            bookclerk_db_exec::AtomicSession::from_deadline(None),
+            None,
+        )
+        .await
+        .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))
+    }
+}
+
+/// Write-back runs as one host batch with no `BEGIN`, and its guards hold
+/// inside that batch: a reclaim or a credential revocation committed after
+/// the checks but before the write leaves the token untouched.
+#[tokio::test]
+async fn write_back_is_one_guarded_batch_without_begin() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let exec = Arc::new(RacingBatchExec {
+        db: w.store.db().clone(),
+        before: Mutex::new(None),
+        calls: calls.clone(),
+    });
+    let store = w.store.clone().with_typed_exec(exec.clone());
+    crate::inject_begin_failures(8);
+    let write = |value: &'static [u8]| {
+        let store = store.clone();
+        let job_id = job_id.clone();
+        let secret = w.riley_token.clone();
+        async move {
+            write_back_job_secret(&store, HOST, &job_id, fence, &secret, value)
+                .await
+                .unwrap()
+        }
+    };
+
+    assert_eq!(write(b"riley-token-v2").await, WriteBack::Written);
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // The Host's credential is revoked just before the batch.
+    *exec.before.lock().unwrap() =
+        Some("UPDATE node_credentials SET revoked_at = '2026-01-01T00:00:00Z'");
+    assert_eq!(
+        write(b"riley-token-v3").await,
+        WriteBack::Refused("fence_not_live")
+    );
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
+    w.store
+        .db()
+        .execute_unprepared("UPDATE node_credentials SET revoked_at = NULL")
+        .await
+        .unwrap();
+
+    // The job is reclaimed just before the batch.
+    *exec.before.lock().unwrap() = Some(
+        "UPDATE jobs SET state = 'pending', lease_owner = NULL, \
+         lease_generation = lease_generation + 1",
+    );
+    assert_eq!(
+        write(b"riley-token-v4").await,
+        WriteBack::Refused("fence_not_live")
+    );
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+/// Permits taken under a higher limit are still found after the limit is
+/// lowered (or on an owner node configured lower), so the fence stays live
+/// and finishing gives them back.
+#[tokio::test]
+async fn permits_above_a_lowered_limit_are_still_held() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let semaphore = class_semaphore(JobResourceClass::Network);
+    let far = chrono::Utc::now().timestamp_millis() + 3_600_000;
+    for slot in 0..3 {
+        cluster_leases::ActiveModel {
+            name: Set(semaphore_slot_lease_name(&semaphore, slot)),
+            holder: Set("someone-else".into()),
+            token: Set(1),
+            expires_at_ms: Set(far),
+            renewed_at: Set(chrono::Utc::now().to_rfc3339()),
+        }
+        .insert(w.store.db())
+        .await
+        .unwrap();
+    }
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.expect("a free slot above the others");
+    let fence = claimed.job.lease_generation;
+
+    let lowered = RemoteClaimSettings {
+        limits: JobClaimLimits {
+            class: 1,
+            ..SETTINGS.limits
+        },
+        ..SETTINGS
+    };
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, lowered, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            lowered.limits,
+            RemoteOutcome::Complete(None)
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    let live = live_permits(&w.store, &semaphore, MAX_SEMAPHORE_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(live.len(), 3, "only the other holder's permits remain");
+    assert!(live.iter().all(|p| p.lease.holder == "someone-else"));
+}
+
+/// The current row of the semaphore slot lease `name`.
+async fn slot_lease(store: &LibraryStore, name: &str) -> ClusterLease {
+    load_lease(store, name).await.unwrap().expect("slot row")
+}
+
+/// A still-live permit left over from an earlier claim of the same job by
+/// the same Host (an older lease generation, in a low slot) is not taken for
+/// the current claim's permit (in a slot above a lowered limit): renewing
+/// extends the current permit and finishing frees its slot, while the
+/// leftover is left to expire with its own lease.
+#[tokio::test]
+async fn a_leftover_permit_of_an_earlier_generation_is_not_the_claims() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let semaphore = class_semaphore(JobResourceClass::Network);
+    let far = chrono::Utc::now().timestamp_millis() + 3_600_000;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let leftover_holder = format!(
+        "{}stale",
+        job_permit_holder_prefix(&remote_lease_owner(HOST), &job_id, 0)
+    );
+    for (slot, holder) in [(0, leftover_holder.as_str()), (1, "someone-else")] {
+        cluster_leases::ActiveModel {
+            name: Set(semaphore_slot_lease_name(&semaphore, slot)),
+            holder: Set(holder.into()),
+            token: Set(1),
+            expires_at_ms: Set(far),
+            renewed_at: Set(chrono::Utc::now().to_rfc3339()),
+        }
+        .insert(w.store.db())
+        .await
+        .unwrap();
+    }
+    let claimed = claim(&w.store).await.expect("a free slot above the others");
+    let fence = claimed.job.lease_generation;
+    assert_eq!(fence, 1, "the claim runs one generation after the leftover");
+    let current = semaphore_slot_lease_name(&semaphore, 2);
+    let row = slot_lease(&w.store, &current).await;
+    assert!(
+        row.holder.starts_with(&job_permit_holder_prefix(
+            &remote_lease_owner(HOST),
+            &job_id,
+            fence
+        )),
+        "the claim's permit is in the first free slot, bound to its generation"
+    );
+    // Bring the current permit close to expiry so a renewal is visible.
+    let soon = chrono::Utc::now().timestamp_millis() + 1_000;
+    cluster_leases::Entity::update_many()
+        .col_expr(cluster_leases::Column::ExpiresAtMs, Expr::value(soon))
+        .filter(cluster_leases::Column::Name.eq(current.as_str()))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+
+    let lowered = RemoteClaimSettings {
+        limits: JobClaimLimits {
+            class: 1,
+            ..SETTINGS.limits
+        },
+        ..SETTINGS
+    };
+    assert_eq!(
+        renew_remote_job(&w.store, HOST, &job_id, fence, lowered, None)
+            .await
+            .unwrap(),
+        RemoteRenew::Renewed { cancel: false }
+    );
+    assert!(
+        slot_lease(&w.store, &current).await.expires_at_ms > soon + 30_000,
+        "the renewal extends the current claim's permit"
+    );
+    let leftover = slot_lease(&w.store, &semaphore_slot_lease_name(&semaphore, 0)).await;
+    assert_eq!(leftover.holder, leftover_holder);
+    assert_eq!(leftover.expires_at_ms, far, "the leftover is not renewed");
+
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            fence,
+            lowered.limits,
+            RemoteOutcome::Complete(None)
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    let live = live_permits(&w.store, &semaphore, MAX_SEMAPHORE_LIMIT)
+        .await
+        .unwrap();
+    let mut slots: Vec<u32> = live.iter().map(|p| p.slot).collect();
+    slots.sort_unstable();
+    assert_eq!(
+        slots,
+        vec![0, 1],
+        "finishing frees the current slot; the leftover expires on its own"
+    );
 }

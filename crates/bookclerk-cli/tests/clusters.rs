@@ -1,6 +1,6 @@
 //! `bookclerk clusters` through the real binary: the enrolled links (no
 //! key material), the consent list, approve with narrowing and the
-//! reviewed-version check, revoke, leave, and `join` refusing a link that
+//! reviewed-request check, revoke, leave, and `join` refusing a link that
 //! is not one, or one on the command line, and reading it from a terminal
 //! without echo.
 
@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 
 use bookclerk_library::control_plane::{
     load_cluster_link_keys, load_remote_plugin_consent, record_cluster_link,
-    record_remote_plugin_request, ClusterLinkKeys, NewClusterLink,
+    record_remote_plugin_request, ClusterLinkKeys, NewClusterLink, RemoteArtifactRef,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_host::PluginGrant;
@@ -87,6 +87,11 @@ async fn seed(store: &LibraryStore) {
         PLUGIN,
         "1.2.0",
         &serde_json::to_string(&grant).unwrap(),
+        RemoteArtifactRef {
+            url: "https://registry.example/store-1.2.0.tar.gz",
+            archive_sha256: &"ab".repeat(32),
+            payload_root_sha256: &"cd".repeat(32),
+        },
     )
     .await
     .expect("plugin request");
@@ -155,6 +160,7 @@ async fn list_approve_revoke_and_leave() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["state"], "awaiting_host_consent");
     assert_eq!(rows[0]["requested_version"], "1.2.0");
+    let digest = rows[0]["request_digest"].as_str().unwrap().to_string();
     let other = json_out(&run_bookclerk(
         files,
         &[
@@ -169,11 +175,17 @@ async fn list_approve_revoke_and_leave() {
     ));
     assert!(other["consents"].as_array().unwrap().is_empty());
 
-    // Another version than the one reviewed, or a domain the request does
+    // Another request than the one reviewed, or a domain the request does
     // not ask for, is refused and stores nothing.
+    let other_request = "00".repeat(32);
     for extra in [
-        &["--version", "1.1.0"][..],
-        &["--version", "1.2.0", "--deny-domain", "unasked.example"][..],
+        &["--request", other_request.as_str()][..],
+        &[
+            "--request",
+            digest.as_str(),
+            "--deny-domain",
+            "unasked.example",
+        ][..],
     ] {
         let mut args = vec!["clusters", "approve", PLUGIN];
         args.extend_from_slice(extra);
@@ -195,8 +207,8 @@ async fn list_approve_revoke_and_leave() {
             "clusters",
             "approve",
             PLUGIN,
-            "--version",
-            "1.2.0",
+            "--request",
+            &digest,
             "--deny-domain",
             "cdn.store.example",
             "--deny-binding",

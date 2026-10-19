@@ -20,7 +20,7 @@ use bookclerk_library::{
 use bookclerk_node_proto::{
     box_public_key, canonical_origin, decode_nonce, open_secrets, seal_secret_update, sign_auth,
     sign_public_key, AuthContext, Body, Frame, HeldFence, SecretRef, SigningKey, CLOSE_AUTH_FAILED,
-    CLOSE_PROTOCOL, CLOSE_REVOKED, ITEM_JOB, SUBPROTOCOL,
+    CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_SUPERSEDED, ITEM_JOB, SUBPROTOCOL,
 };
 use futures::{SinkExt as _, StreamExt as _};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
@@ -678,6 +678,8 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
         Body::Resumed {
             renewed: vec![held.clone()],
             lost: Vec::new(),
+            unchecked: Vec::new(),
+            lease_secs: Some(1),
         }
     );
 
@@ -696,6 +698,8 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
         Body::Resumed {
             renewed: Vec::new(),
             lost: vec![held.clone()],
+            unchecked: Vec::new(),
+            lease_secs: None,
         }
     );
     let complete = request(
@@ -838,4 +842,214 @@ async fn the_hosts_node_queue_is_forwarded_and_acked_by_the_host() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+}
+
+/// Links a store account with a token to `member` and queues one scan for
+/// it; returns the job id.
+async fn member_scan(store: &LibraryStore, member: i64) -> String {
+    store
+        .upsert_account(PLUGIN, "riley-acct", "us", None, true, "test")
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, PLUGIN, "riley-acct", "test")
+        .await
+        .unwrap();
+    let record = build_sealed_record(
+        b"riley-token-v1",
+        secret_kind::SOURCE_AUTH,
+        PLUGIN,
+        secret_account_type::INTEGRATION,
+        "riley-acct",
+        "riley-acct.auth",
+    )
+    .unwrap();
+    upsert_secret(store.db(), &record).await.unwrap();
+    match store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Scan,
+            payload: JobPayload {
+                account: Some("riley-acct".into()),
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 256,
+            run_after: None,
+        })
+        .await
+        .unwrap()
+    {
+        EnqueueOutcome::Created { id } => id,
+        other => panic!("expected a new job: {other:?}"),
+    }
+}
+
+/// The work-frame context of the enrolled test host on `state`.
+async fn host_context(
+    state: &Arc<crate::api::AppState>,
+    node_id: &str,
+) -> super::work::HostContext {
+    let cfg = state.config.read().await;
+    super::work::HostContext {
+        node_id: node_id.into(),
+        incarnation: "inc-1".into(),
+        box_public_key: box_public_key(&BOX_SECRET).to_vec(),
+        owner_box_secret: zeroize::Zeroizing::new([3; 32]),
+        settings: bookclerk_library::control_plane::RemoteClaimSettings {
+            lease_secs: cfg.jobs.lease_seconds,
+            limits: bookclerk_library::control_plane::JobClaimLimits {
+                class: cfg.jobs.concurrency.network.max(1),
+                plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
+            },
+        },
+        owner_node_id: "owner-node".into(),
+        state: Arc::clone(state),
+    }
+}
+
+/// A `claim` for a job.
+fn claim_frame() -> Frame {
+    Frame::new(
+        "c",
+        Body::Claim {
+            item: ITEM_JOB.into(),
+            class: None,
+            filter: None,
+        },
+    )
+}
+
+/// A job claimed on a connection that was superseded (or whose answer
+/// cannot be queued) is given back unspent, not left leased to a host that
+/// never learns of it.
+#[tokio::test]
+async fn a_job_claimed_on_a_closing_connection_is_given_back() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = super::tests::test_state(&files).await;
+    let (node_id, member) = enroll_member(&store).await;
+    let job_id = member_scan(&store, member).await;
+    let host = host_context(&state, &node_id).await;
+    let unspent = |store: LibraryStore, job_id: String| async move {
+        let job = store.get_job(&job_id).await.unwrap().unwrap();
+        job.state == bookclerk_library::JobState::Pending && job.attempt_count == 0
+    };
+
+    // Superseded while the claim was served: nothing is queued.
+    let (_closer, closing) = tokio::sync::watch::channel(Some(CLOSE_SUPERSEDED));
+    let (outbox, mut queue) = tokio::sync::mpsc::channel(4);
+    let work = super::work::answer(&store, &host, claim_frame()).await;
+    assert!(matches!(work.body, Body::Work { .. }), "{work:?}");
+    assert!(super::ws::deliver(&store, &outbox, &host, &closing, work).await);
+    assert!(queue.try_recv().is_err(), "the work frame is not sent");
+    assert!(unspent(store.clone(), job_id.clone()).await);
+
+    // Live, but the writer is gone: the answer cannot be queued.
+    let (_open, open) = tokio::sync::watch::channel(None);
+    drop(queue);
+    let work = super::work::answer(&store, &host, claim_frame()).await;
+    assert!(matches!(work.body, Body::Work { .. }), "{work:?}");
+    assert!(!super::ws::deliver(&store, &outbox, &host, &open, work).await);
+    assert!(unspent(store.clone(), job_id.clone()).await);
+
+    // Live and readable: the work goes out and the job stays claimed.
+    let (outbox, mut queue) = tokio::sync::mpsc::channel(4);
+    let work = super::work::answer(&store, &host, claim_frame()).await;
+    assert!(super::ws::deliver(&store, &outbox, &host, &open, work).await);
+    assert!(queue.try_recv().is_ok());
+    assert!(!unspent(store.clone(), job_id.clone()).await);
+}
+
+/// A superseded session that ends after its successor registered leaves
+/// the shared wake catalog row enabled; the last session disables it.
+#[tokio::test]
+async fn a_superseded_session_leaves_the_wake_catalog_enabled() {
+    let files = tempfile::tempdir().unwrap();
+    let (_state, store) = super::tests::test_state(&files).await;
+    let node_id = uuid::Uuid::new_v4().to_string();
+    let consumer = format!("node:{node_id}");
+    let enabled = |store: LibraryStore, consumer: String| async move {
+        store
+            .list_live_event_subscribers()
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.enabled && row.plugin_id == consumer)
+    };
+
+    let old = super::ws::start_session(&store, "owner-node", &node_id).await;
+    assert!(enabled(store.clone(), consumer.clone()).await);
+    let new = super::ws::start_session(&store, "owner-node", &node_id).await;
+    assert_eq!(
+        *old.close.borrow(),
+        Some(CLOSE_SUPERSEDED),
+        "the older session is asked to close"
+    );
+    super::ws::end_session(&store, &node_id, old.serial, old.wakes).await;
+    assert!(
+        enabled(store.clone(), consumer.clone()).await,
+        "the live session keeps its wakes"
+    );
+    super::ws::end_session(&store, &node_id, new.serial, new.wakes).await;
+    assert!(!enabled(store.clone(), consumer.clone()).await);
+}
+
+/// A fence whose renewal fails with a database error on resume is
+/// reported unchecked, not lost, and a later renewal keeps it.
+#[tokio::test]
+async fn a_failed_check_on_resume_is_not_a_lost_fence() {
+    use sea_orm::ConnectionTrait as _;
+
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store) = super::tests::test_state(&files).await;
+    let (node_id, member) = enroll_member(&store).await;
+    let job_id = member_scan(&store, member).await;
+    let host = host_context(&state, &node_id).await;
+    let work = super::work::answer(&store, &host, claim_frame()).await;
+    let Body::Work { fence, .. } = work.body else {
+        panic!("expected work: {work:?}");
+    };
+    let held = HeldFence {
+        kind: ITEM_JOB.into(),
+        id: job_id.clone(),
+        fence,
+    };
+
+    // The permit table is briefly unreadable.
+    store
+        .db()
+        .execute_unprepared("ALTER TABLE cluster_leases RENAME TO cluster_leases_away")
+        .await
+        .unwrap();
+    let resumed = super::work::resume(&store, &host, vec![held.clone()]).await;
+    assert_eq!(
+        resumed,
+        Body::Resumed {
+            renewed: Vec::new(),
+            lost: Vec::new(),
+            unchecked: vec![held.clone()],
+            lease_secs: None,
+        }
+    );
+    store
+        .db()
+        .execute_unprepared("ALTER TABLE cluster_leases_away RENAME TO cluster_leases")
+        .await
+        .unwrap();
+    let resumed = super::work::resume(&store, &host, vec![held.clone()]).await;
+    assert_eq!(
+        resumed,
+        Body::Resumed {
+            renewed: vec![held],
+            lost: Vec::new(),
+            unchecked: Vec::new(),
+            lease_secs: Some(host.settings.lease_secs),
+        }
+    );
 }

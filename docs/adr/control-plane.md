@@ -921,8 +921,10 @@ Built in the first H-4 slice:
   pings every 20 s, closes after 60 s idle, re-reads `revoked_at` on every
   ping tick, closes on a `node.revoked` wake with 4403, lets a newer
   connection for the same node supersede the old one (4409), and closes on
-  a binary or malformed frame (4400). Work frames are later steps; until
-  then each request frame is answered `error {code: "unsupported"}`.
+  a binary or malformed frame (4400). The owner serves the work frames
+  described in *Work frames, sealed secrets, wakes and resume* below; a
+  request frame of a type it does not serve is answered
+  `error {code: "unsupported"}`.
 - The built-in TLS listener (`node_api/tls.rs`) on `tls_listen`, serving
   only the node API routes over HTTP/1.1 and tagging requests for
   `classify_transport`. `acme` uses `rustls-acme` (TLS-ALPN-01 on the same
@@ -1015,9 +1017,22 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   lease generation; the owner rebuilds the fence from them, so no other
   node can present it. Renewals re-read trust and the credential, extend
   the job lease, and renew the job's semaphore permits, which are found
-  again by holder prefix (`permits_held_by`; an expired slot nobody took
-  over still counts). A lost lease, a taken-over permit, or lost trust
-  answers `lost`. `fail` is always accepted under a live fence;
+  again by holder prefix (`permits_held_by`, below the serving node's
+  limit and then up to `MAX_SEMAPHORE_LIMIT`, since the claim may have
+  been made under a higher limit; an expired slot nobody took over still
+  counts). A routed claim's permit holder is
+  `<lease owner>/<job id>/g<generation>/<random>`
+  (`job_permit_holder_prefix`), with the generation the claim runs at:
+  `claim_job_by_id` succeeds only at the generation read with the
+  candidate, so the claim's is known before the permits are taken. The
+  prefix searched is the presented fence's, so a still-live permit left
+  over from an earlier claim of the same job by the same node is never
+  renewed or released in place of the current one; it expires with its
+  own lease. A lost lease, a taken-over permit, or lost trust
+  answers `lost`. The permits are checked before the job lease is
+  extended, so a lost renewal never pushes the reclaim out; a permit taken
+  over between that check and its renewal cuts the just-extended lease
+  back to expire at once. `fail` is always accepted under a live fence;
   `complete` also needs trust and is refused for acquire, which completes
   only when its upload commits (step 9). Deliveries are not served yet
   (`claim {item: delivery}` answers `unsupported`).
@@ -1025,7 +1040,10 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   `integration` row of `encrypted_secrets` for that account id under the
   plugin keys holding an `accounts` row with that id, the same rows the
   trust predicate checked. Other jobs get none; instance settings and
-  secrets will travel with `instance.config` (step 7). A job whose
+  secrets will travel with `instance.config` (step 7). The refs handed
+  are recorded per lease generation in `job_secret_handoffs` (names only,
+  no secret material) before the `work` answer goes out, and dropped when
+  the job finishes, is given back, or is claimed again. A job whose
   secrets do not unseal or seal (legacy formats, oversized bundle) is
   failed with `secrets_unavailable`, so it retries with backoff and a node
   holding the database can take it, rather than looping on the Host.
@@ -1043,7 +1061,15 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   It is stored (re-sealed with the owner's DEK under the same identity)
   only when, immediately before the write, the credential is live, the
   node is still trusted with the job, the fence is the job's live
-  generation for this node, and the ref is one of the job's secrets.
+  generation for this node, the ref was recorded as handed under that
+  generation, and it is still one of the job's secrets. A secret created
+  for the account after the handoff is refused, so a Host never
+  overwrites a credential it was not given. The write is one host batch
+  (one transaction on every backend, D1 included): a fenced update of the
+  job row, then an update of the existing secret row guarded on the
+  fence, the handoff row and the credential, so a reclaim, a claim by
+  another node, or a revocation that lands after the checks leaves the
+  token untouched.
   Rejected: plaintext values inside TLS. tungstenite traces every
   received message at TRACE, and the daemon bridges `log` into tracing
   with the diagnostics ring at TRACE, so a plaintext value would land in
@@ -1056,27 +1082,45 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   and `configuration.changed` as `wake` frames; each is acked only after
   the Host's `ack`. Other messages are acked at once; unknown bodies are
   dead-lettered. On disconnect, unacked wakes are released unspent and
-  the row is disabled.
+  the row is disabled, unless a newer connection for the same Host has
+  registered. The two share the row, so registering with enabling it and
+  unregistering with disabling it run under one lock, and only the
+  connection still registered disables it.
 - **Backpressure.** Everything the owner sends goes through one queue of
   64 frames drained by a writer task. A wake is claimed only after a
-  queue slot is reserved, and at most 64 wait for acks. With the queue
+  queue slot is reserved, and at most 64 wait for acks; a wake unacked
+  for its whole lease (60 s) stops counting, since the reclaimer returns
+  its delivery for redelivery, and a late ack for it is ignored. With the queue
   full nothing is claimed, so deliveries stay pending or expire and are
   redelivered. An answer that cannot be queued within the idle timeout
-  ends the connection.
+  ends the connection; if it was `work`, the claim is given back unspent
+  (`release_remote_job`), as it is for a `work` answer produced after
+  the connection was told to close (superseded by a newer connection
+  for the same Host, or revoked), so such a job does not sit leased to a
+  Host that never learns of it until the lease expires.
 - **Resume.** A hello lists held fences; after `welcome` the owner
-  answers `resumed {renewed, lost}`, renewing each through the same path
-  as `renew`. Nothing is released on disconnect and no session keeps
-  work state, so a Host may resume on any owner node; a fence reclaimed
-  while it was away is lost, and every later frame under it is refused.
+  answers `resumed {renewed, lost, unchecked}`, renewing each through
+  the same path as `renew`. Nothing else is released on disconnect and no
+  session keeps work state, so a Host may resume on any owner node; a
+  fence reclaimed while it was away is lost, and every later frame under
+  it is refused. A fence whose renewal failed with an error (a transient
+  database fault) is `unchecked`, not lost: the Host keeps the work, and
+  its next `renew` decides.
 - **Tests.** Library: only the owner's secrets are handed; reclaimed and
   foreign fences are lost; unlinking mid-job loses the fence; write-back
   is refused without a live fence, for a ref not handed, and for a revoked
-  node; an acquire cannot complete. Daemon: over the socket, sealed
+  node; a secret created after the handoff is refused; a lost renewal
+  leaves the lease where it was; a released claim is pending again with
+  no attempt spent; an acquire cannot complete. Daemon: over the socket, sealed
   secrets open only with the enrolled key, write-back works under the
   live fence and not otherwise, resume renews a live fence and loses a
   reclaimed one, and with tracing and `log` captured at TRACE no token
   appears in the logs, plain or base64; a full send queue claims no wake
-  until the Host reads; a wake is acked only after the Host's `ack`.
+  until the Host reads; a wake is acked only after the Host's `ack`;
+  wakes whose lease ran out stop holding the forwarder back; a job
+  claimed on a closing connection is given back; a superseded session
+  ending late leaves the wake catalog enabled; a database error on
+  resume reports the fence unchecked.
 
 ### Host client
 
@@ -1109,17 +1153,36 @@ join`) and `bookclerkd/src/cluster_link.rs`.
 - **Session.** One writer task behind a 64-frame queue; requests matched
   to answers by frame id; heartbeats every 15 s from the Host's own
   `NodeSampler`; pings every 20 s; idle close after 60 s; each `wake`
-  handed to local subscribers, then acked. A close with 4403 marks the
+  handed to local subscribers, then acked. A wake no subscriber receives
+  is not acked, so the owner keeps the delivery and sends it again after
+  its lease or on the next connection. A heartbeat or claim the owner
+  does not answer within 30 s is retried with the reconnect backoff
+  (a heartbeat never waits longer than its interval); those loops end
+  only with their connection. A close with 4403 marks the
   link `revoked`, cancels held work, and stops that link for good;
   anything else reconnects with backoff from 1 s to 60 s plus up to a
   quarter of jitter, reset after each welcome.
+- **Database swap.** The daemon runs one client per active link of the
+  live library. When a config reload swaps the database, every client is
+  stopped (and awaited, so a node never dials twice) and the new store's
+  active links are started; a link enrolled while the daemon runs is
+  picked up at the next start or swap.
 - **Jobs.** A claim loop runs while job slots are free. Each job runs on
   its own task, outliving the connection: its secrets are opened with the
   enrolled box key (a bundle that does not open is failed as
   `secrets_unopenable`), a renewer extends the lease every third of it
   (`lost` cancels, `renewed {cancel}` asks the runner to stop), and the
   result is reported with `complete` or `fail`, waiting up to 10 minutes
-  for a connection. A lost fence's result is discarded. Write-back
+  for a connection. A lease the owner has not confirmed (by `work`, then
+  each `renewed`, counted from when the request was sent) by the time it
+  runs out, connected or not, marks the job lost and cancels it, so it
+  never runs on a lease the owner may have handed elsewhere. A `work`
+  that answers a claim which already timed out is failed at once as
+  `claim_abandoned` under its fence (this retries the job like any
+  failure; `release` is kept for a job this host will not run) rather
+  than left to expire.
+  Client shutdown cancels every held job as lost, as revocation does.
+  A lost fence's result is discarded. Write-back
   (`HostJobCtx::write_back`) accepts only a ref handed with the job,
   seals the value to the live connection's owner box key with a fresh
   ephemeral key, and needs the fence still held. The daemon runs jobs
@@ -1140,7 +1203,11 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   claims its owner's scan, runs it through the daemon's job transport
   with the opened token, writes a refreshed token back, completes under
   the fence, and acks a wake; with tracing and `log` at TRACE no token
-  appears in the logs, plain or base64. A fence held across a dropped
+  appears in the logs, plain or base64. A database swap stops the
+  previous store's link and connects the new store's. Against a scripted
+  owner (`client_tests.rs`), an unanswered heartbeat and claim are
+  retried on the same connection, and a wake is acked only once a
+  subscriber received it. A fence held across a dropped
   connection is resumed and the job completes under it; one reclaimed
   while the owner was unreachable is lost on reconnect and its run
   cancelled. A wrong SPKI pin fails the TLS handshake before the link is
@@ -1156,22 +1223,37 @@ operator approves it, and only with what was approved.
   target the node and should run; empty for a node trusted with nothing)
   carries each instance's plugin key, whether it is the default instance,
   and the plugin's active version: manifest, settings schema, artifacts,
-  and the cluster operator's approved grant. The Host records that grant
-  as the request in `remote_plugin_consents` (keyed by owner cluster and
+  and the cluster operator's approved grant. The Host records that grant,
+  with the URL, archive digest and payload digest of the artifact for its
+  own target, as
+  the request in `remote_plugin_consents` (keyed by owner cluster and
   plugin key). An unchanged request writes nothing; a changed one keeps
   any stored approval, which is then re-evaluated.
-- **Approval.** `bookclerk clusters approve <plugin> [--cluster]
-  [--version] [--deny-domain]… [--deny-binding]… [--deny-network]` or
-  operator-only `POST /api/config/cluster-consents/approve` stores the
-  request as reviewed plus the consent (the request minus the denials;
-  naming something the request does not ask for is refused). The write
-  is a compare-and-swap on the recorded request, so a request that
-  changed after it was read is not approved unseen. `revoke` clears the
-  approval and keeps the request. `bookclerk clusters list|consents` and
-  `GET /api/config/cluster-consents` show the state: `consented`,
+- **Approval.** `bookclerk clusters approve <plugin> --request <DIGEST>
+  [--cluster] [--deny-domain]… [--deny-binding]… [--deny-network]` or
+  operator-only `POST /api/config/cluster-consents/approve` (body
+  `request_digest`, required) stores the request as reviewed plus the
+  consent (the request minus the denials; naming something the request
+  does not ask for is refused). The digest is the `request_digest` the
+  listing shows: SHA-256 over the requested version, the owner's grant
+  exactly as recorded, and the artifact URL, archive digest and payload
+  digest (shown with it as `requested_artifact`). The payload digest is
+  covered because it keys the Host's version cache, whose hit is reused
+  without a fetch: an owner that kept the approved URL and archive but
+  named another cached tree would otherwise run it unreviewed. An approval whose digest is not the recorded
+  request's is refused (`409 approval_refused` from the API), so a grant
+  the owner changed after the operator looked, even under the same
+  version, is never approved unseen; the write is also a compare-and-swap
+  on the recorded request. `revoke` clears the approval, keeps the
+  request, and records `revoked_at`. `bookclerk clusters list|consents`
+  and `GET /api/config/cluster-consents` show the digest, `revoked_at`,
+  and the state: `consented`,
   `awaiting_host_consent`, `awaiting_host_reapproval` (a new version asks
   for something outside what was reviewed: a domain, TCP target, CIDR,
-  binding, flag, entrypoint, larger budget, or network at all), or
+  binding, flag, entrypoint, larger budget, or network at all; or the
+  artifact URL, archive digest or payload digest is not the approved one,
+  even with the
+  grant unchanged), or
   `invalid_grant`.
 - **Effective grant.** The current request intersected with the consent.
   Removed network destinations are recorded as operator denials, so the
@@ -1180,7 +1262,9 @@ operator approves it, and only with what was approved.
   Bookclerk platform key, this Host's own provenance check says its install
   of that key is platform-bundled with the same payload digest as the
   owner's artifact, and the request stays inside the platform envelope.
-  Recorded with `approved_by = "platform"`.
+  Recorded with `approved_by = "platform"`. An operator's revoke holds: a
+  row with `revoked_at` set is never approved automatically (the store
+  refuses it too), and only the operator approving again clears it.
 - **Claims.** The claim frame carries `filter {kinds, plugins}`: the kinds
   this Host runs and the plugin keys it consented to (and has fetched).
   The owner applies it after the trust predicate and before permits and
@@ -1192,7 +1276,11 @@ operator approves it, and only with what was approved.
   the attempt (unless it has a checkpoint) and frees its permits.
 - **Revoke mid-job.** The link supervisor re-reads consent rows every 5 s
   and on approve/revoke through the API, so a CLI revoke is seen without a
-  wake. Losing consent cancels the plugin's held jobs and gives them back
+  wake. A refresh that could not finish (the owner unreachable, or a
+  consented instance whose archive fetch or `instance.config` failed) is
+  retried with backoff (5 s doubling to 5 minutes; a new connection or a
+  refresh wake retries at once), so a transient failure does not leave a
+  consented plugin unclaimable. Losing consent cancels the plugin's held jobs and gives them back
   with `release`, then reports the deployment `error:
   awaiting_host_consent`.
 - **Fetch.** For a consented instance the Host materializes the version:
@@ -1203,7 +1291,21 @@ operator approves it, and only with what was approved.
   refusal is the same 404), is checked against its digest before it is
   stored in the Host's own `plugin_artifacts`, and extracted by the
   ordinary materializer, which checks the archive and payload digests.
-  `https:` archives are fetched by the materializer; `file:` is refused.
+  An `https:` archive is fetched by the materializer outside any plugin
+  jail, so it is fetched only when its URL and digest are the approved
+  ones, its host is not `localhost` or a loopback, private, link-local or
+  unspecified IP literal, and every redirect hop (at most 5, possibly to
+  another origin) passes the same check; the archive digest binds the
+  bytes. The same address policy is enforced at connect time: the fetch's
+  resolver refuses a name (IP literals included) any of whose addresses
+  is not public Internet (`is_public_internet`, plus NAT64, 6to4, Teredo,
+  IPv4-compatible and reserved forms), and the connector dials only the
+  addresses that resolver returned, so a public-looking name that resolves
+  or rebinds to a local or private address is never reached, on the first
+  hop or any redirect. The fetch ignores `HTTPS_PROXY` / `ALL_PROXY` (a
+  proxy would resolve the name itself, past that check); a Host that
+  reaches the Internet only through a proxy uses `blob:` archives.
+  `file:` is refused.
   Nothing is written to the Host's `plugin_versions`, so its own
   reconciler never runs an owner plugin.
 - **Configuration.** `instance.config` answers `CONFIG` and, only for a
@@ -1245,6 +1347,22 @@ H-4 step 9 (decisions 4 and 6). A Host runs scans and acquires
 spawned jailed under the consented grant through `bookclerk-workerd`, with
 the handed credentials only. There is no in-process fallback.
 
+- **Which jobs a Host claims.** A Host runs one source guest per job, so
+  its claim filter admits a scan or acquire only when the job names one
+  source plugin: the pinned instance's, or else the one plugin holding
+  the job's account. An unpinned job whose account id exists under several
+  plugins is never handed to a Host and stays with nodes that hold the
+  database; claiming and failing it would spend owner attempts. The `work`
+  frame names that `source_plugin_key`, and the Host selects the guest by
+  it, never by the destination plugins an acquire also lists.
+- **Cancellation.** A Host job's cancel flag (fence lost, operator cancel,
+  consent revoked) drops the running guest call within 50 ms. Dropping the
+  guest session shuts the guest down and fences its host-side authority,
+  so it stops using the handed credentials; an in-flight title upload is
+  dropped too. A cancelled run never reports success: a guest that stops
+  cooperatively and returns what it had is answered `cancelled`, and the
+  client turns a result that comes back after the cancel into a failure
+  (only the owner's own completion, by the closing commit, stands).
 - **Scan results** (decision 6). The guest's rows come back unwritten and
   go to the owner in `scan.results` batches (at most 200 rows and 768 KiB;
   a row over 32 KiB is skipped). `accept_scan_results` re-checks the fence
@@ -1253,6 +1371,8 @@ the handed credentials only. There is no in-process fallback.
   and, for a Host trusted only with its owner's accounts, be that user's;
   one bad row refuses the batch. Rows are written through the store API,
   as a local scan writes them. A Host never writes library SQL.
+- **Scan rows.** A batch is accepted only for the job's source plugin,
+  never for a destination plugin the job also requires.
 - **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
   destinations}`: the owner's pending titles the job covers and every
   output destination deployed on the answering owner node, each with an
@@ -1287,8 +1407,49 @@ the handed credentials only. There is no in-process fallback.
   an instance local to one node: deploying it elsewhere and placing it
   are refused. `bookclerk plugins instances create … --node <id>` and
   `node_id` on `POST /api/config/plugin-instances` create one. The Host
-  also keeps a best-effort copy of each title in its own deployed
-  destinations, so both sides end up with a local copy.
+  also keeps a copy of each title in its own deployed destinations (see
+  *The Host's own destinations* below), so both sides end up with a local
+  copy.
+- **Key scope.** The owner binds every key of an upload to the granted
+  title. For each destination it computes the title's folder from its own
+  row and that destination's naming options, the way a local acquire
+  would (with podcast episodes saved to the parent's folder, the
+  episode's own folder is also accepted). Each copy must lie below that
+  folder; a template with no folder admits only top-level keys. A key
+  another title already has (its recorded audio or PDF key, or a sidecar
+  of that audio) is refused too (`key_out_of_scope`,
+  `key_of_another_book`). The Host's keys never decide where a title goes.
+  Inside a folder titles share, another title's chapter or part files are
+  not recorded, so they are not protected by name.
+- **Host paths.** The Host uses the owner's job and title ids as work
+  directory names only when each is one plain segment (ASCII letters,
+  digits, `-`, `_`). Any other id fails the job before anything is
+  created or removed.
+- **The Host's own destinations.** A title is uploaded only after every
+  output destination deployed on the Host (H-2) took its copy. A failed
+  copy fails the title (copies already written for it are removed), so
+  the job fails rather than succeeding with a destination short a title.
+- **Owner-decided success.** A title's commit marks it acquired and never
+  completes the job. Only the closing upload (no title, no files) may ask
+  to finish, and the owner completes the job only when no title in the
+  job's scope is left with unacquired audio (`titles_remaining`
+  otherwise). The Host's `finish` flag is a request, not proof.
+- **Abort deletes.** Files go straight to the destinations, so an abort
+  rolls back by deleting. An upload aborted after some files arrived (its
+  fence lost before a later file or the commit, the destinations changed,
+  the title re-sent, or the job finished, was released, or lost its fence
+  without it)
+  has every received copy deleted by the receiving owner node. A file that
+  finished streaming just as its upload was aborted is deleted at once. An
+  upload received by another owner node is left to that node and logged.
+- **Token lifetime.** The upload token is accepted for an hour past its
+  latest extension. The grant, each accepted file, and each renewal of the
+  job's lease extend it. Nothing extends it after the fence is lost, and a
+  lost fence refuses every file and the commit regardless.
+- **Not done.** If a Host vanishes mid-title, so that no further file,
+  commit, renewal or finish arrives, its open upload is not swept: the
+  files it had received stay until a later attempt of the job re-sends
+  that title through the same owner node.
 - **Tests.** Library: an acquire completes only through its upload; a
   stale fence cannot write scan rows or open uploads; a commit acquires
   the title and completes the job; manifests that skip or invent a
@@ -1346,8 +1507,8 @@ which topics changed; the SPA then re-reads its ordinary routes.
 - **Consent screen.** Settings → Clusters (operator only) lists the links
   and each owner plugin's request with its state, a deny checkbox per
   requested domain and binding, a deny-network switch, Approve (sending
-  the version shown, so a changed request is refused rather than approved
-  unseen) and Revoke, over the existing
+  the `request_digest` shown, so a changed request is refused rather than
+  approved unseen) and Revoke, over the existing
   `/api/config/cluster-consents` routes; a 409 shows the daemon's reason.
   There is deliberately no invite or join screen: an enrollment link is a
   secret, and secrets do not pass through the SPA.
@@ -1393,7 +1554,7 @@ Step 11 is the operator guide, [Clusters and host nodes](../cluster-hosts.md).
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
   `nodes` gains `target`, `labels_json`, `kind`, and `owner_user_id`.
   H-4 adds `node_enrollment_links`, `node_credentials`, `cluster_links`,
-  and `remote_plugin_consents`.
+  `job_secret_handoffs`, and `remote_plugin_consents`.
   Checksum of the
   unreleased pack changes. Existing development databases fail closed until
   recreated (`cargo reset --yes` or a new database). That matches the

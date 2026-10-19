@@ -2327,6 +2327,31 @@ pub async fn planned_storage_key(library: &LibraryStore, req: &AcquireRequest) -
     planned_storage_key_for(library, req, fallback_audio_ext(&req.options)).await
 }
 
+/// The folders an acquire of `req` writes the title's files under on a
+/// destination with `req.options`: the folder of its planned audio key,
+/// which its sidecars, chapter files and parts share. When podcast
+/// episodes are saved to the parent's folder, the episode's own folder is
+/// included too, since a library without the parent's row names it so. An
+/// empty string is the destination's root (a template with no folder).
+pub async fn planned_title_folders(library: &LibraryStore, req: &AcquireRequest) -> Vec<String> {
+    /// The folder part of a storage key.
+    fn folder_of(key: &str) -> String {
+        key.rsplit_once('/')
+            .map_or_else(String::new, |(folder, _)| folder.to_string())
+    }
+    let ext = fallback_audio_ext(&req.options);
+    let mut folders = vec![folder_of(&planned_storage_key_for(library, req, ext).await)];
+    if req.options.save_podcasts_to_parent_folder {
+        let mut own = req.clone();
+        own.options.save_podcasts_to_parent_folder = false;
+        let folder = folder_of(&planned_storage_key_for(library, &own, ext).await);
+        if !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+    folders
+}
+
 /// Download and store companion PDF only (classic `acquire --pdf`).
 ///
 /// Fetches via [`ContentSource::fetch_title`]; requires `PlainFetch.pdf_url`, then HTTP GETs that URL.

@@ -1,13 +1,15 @@
 //! Handler tests for `/api/config/cluster-consents` as the daemon mounts
 //! them: operator only, the list (links without key material), approve
-//! with narrowing and the reviewed-version check, refusals, and revoke.
+//! with narrowing and the reviewed-request check, refusals, and revoke.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use bookclerk_library::control_plane::{load_remote_plugin_consent, record_remote_plugin_request};
+use bookclerk_library::control_plane::{
+    load_remote_plugin_consent, record_remote_plugin_request, RemoteArtifactRef,
+};
 use bookclerk_library::LibraryStore;
 use bookclerk_plugin_host::PluginGrant;
 use http_body_util::BodyExt as _;
@@ -64,6 +66,11 @@ async fn daemon(
         PLUGIN,
         "1.2.0",
         &serde_json::to_string(&requested()).unwrap(),
+        RemoteArtifactRef {
+            url: "https://registry.example/store-1.2.0.tar.gz",
+            archive_sha256: &"ab".repeat(32),
+            payload_root_sha256: &"cd".repeat(32),
+        },
     )
     .await
     .unwrap();
@@ -160,8 +167,8 @@ async fn consent_routes_are_operator_only() {
 }
 
 /// The operator lists the request, approves it narrowed (one domain and
-/// the secrets binding denied) for the version reviewed, is refused for
-/// another version or a domain the request does not ask for, and
+/// the secrets binding denied) for the request reviewed, is refused for
+/// another request or a domain the request does not ask for, and
 /// revokes it again.
 #[tokio::test]
 async fn the_operator_approves_narrowed_and_revokes() {
@@ -185,6 +192,7 @@ async fn the_operator_approves_narrowed_and_revokes() {
     assert_eq!(consents.len(), 1);
     assert_eq!(consents[0]["state"], "awaiting_host_consent");
     assert_eq!(consents[0]["requested_version"], "1.2.0");
+    let digest = consents[0]["request_digest"].as_str().unwrap().to_string();
     assert_eq!(
         consents[0]["requested_grant"]["domains"],
         json!(["api.store.example", "cdn.store.example"])
@@ -207,7 +215,7 @@ async fn the_operator_approves_narrowed_and_revokes() {
     let (status, refused) = approve(json!({
         "cluster_id": CLUSTER,
         "plugin_key": PLUGIN,
-        "version": "1.1.0",
+        "request_digest": "00".repeat(32),
     }))
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
@@ -215,7 +223,7 @@ async fn the_operator_approves_narrowed_and_revokes() {
     let (status, refused) = approve(json!({
         "cluster_id": CLUSTER,
         "plugin_key": PLUGIN,
-        "version": "1.2.0",
+        "request_digest": digest,
         "deny_domains": ["unasked.example"],
     }))
     .await;
@@ -243,7 +251,7 @@ async fn the_operator_approves_narrowed_and_revokes() {
     let (status, approved) = approve(json!({
         "cluster_id": CLUSTER,
         "plugin_key": PLUGIN,
-        "version": "1.2.0",
+        "request_digest": digest,
         "deny_domains": ["cdn.store.example"],
         "deny_bindings": ["secrets"],
     }))

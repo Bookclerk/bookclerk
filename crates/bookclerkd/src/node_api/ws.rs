@@ -28,7 +28,17 @@
 //! has room, and an answer that cannot be queued within
 //! [`IDLE_TIMEOUT_SECS`] (the host stopped reading) ends the connection.
 //! Nothing is released when a connection ends: job leases expire on their
-//! own unless the host resumes them.
+//! own unless the host resumes them. The one exception is a `work` answer
+//! produced after the connection was told to close (a newer connection
+//! superseded it, or the node was revoked) or that cannot be queued: the
+//! host never sees that job, so its claim is given back unspent at once.
+//!
+//! A newer connection for the same host shares the owner node's wake
+//! catalog row with the one it supersedes. Registering a connection with
+//! enabling the row, and unregistering one with disabling it, run under one
+//! lock, and only the connection still registered disables the row, so a
+//! superseded session ending late never switches off the live session's
+//! wakes.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -58,7 +68,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
 use rand::RngCore as _;
 use serde_json::json;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Mutex as AsyncMutex};
 use zeroize::Zeroizing;
 
 use super::wakes::WakeForwarder;
@@ -83,6 +93,10 @@ static SESSIONS: LazyLock<Mutex<HashMap<String, SessionSlot>>> =
 /// Serial for the next registered connection.
 static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
 
+/// Serializes registering a connection with enabling its wake catalog row,
+/// and unregistering one with disabling it (see the module docs).
+static CATALOG_GATE: AsyncMutex<()> = AsyncMutex::const_new(());
+
 /// The session table, recovering from a poisoned lock (entries stay
 /// consistent: each operation is a single insert or remove).
 fn sessions() -> std::sync::MutexGuard<'static, HashMap<String, SessionSlot>> {
@@ -99,6 +113,12 @@ pub fn close_node_sessions(node_id: &str, code: u16) {
     }
 }
 
+/// True while this owner node holds a live connection of `node_id`.
+#[cfg(test)]
+pub(crate) fn node_session_live(node_id: &str) -> bool {
+    sessions().contains_key(node_id)
+}
+
 /// Registers an authenticated connection; an older one for the same node
 /// is asked to close with [`CLOSE_SUPERSEDED`].
 fn register(node_id: &str) -> (u64, watch::Receiver<Option<u16>>) {
@@ -111,10 +131,60 @@ fn register(node_id: &str) -> (u64, watch::Receiver<Option<u16>>) {
 }
 
 /// Removes a connection's slot unless a newer connection replaced it.
-fn unregister(node_id: &str, serial: u64) {
+/// Returns `true` when the slot was this connection's.
+fn unregister(node_id: &str, serial: u64) -> bool {
     let mut table = sessions();
     if table.get(node_id).is_some_and(|slot| slot.serial == serial) {
         table.remove(node_id);
+        return true;
+    }
+    false
+}
+
+/// A registered connection: its serial, close signal, and wake forwarder.
+pub(super) struct Registered {
+    /// Serial of this connection.
+    pub serial: u64,
+    /// Close requests for this connection.
+    pub close: watch::Receiver<Option<u16>>,
+    /// Forwarder of the host's queue, when the host id names one.
+    pub wakes: Option<WakeForwarder>,
+}
+
+/// Registers an authenticated connection for `node_id` and enables this
+/// owner node's wake catalog row for it, under [`CATALOG_GATE`].
+pub(super) async fn start_session(
+    library: &LibraryStore,
+    owner_node_id: &str,
+    node_id: &str,
+) -> Registered {
+    let _gate = CATALOG_GATE.lock().await;
+    let (serial, close) = register(node_id);
+    let wakes = WakeForwarder::new(owner_node_id, node_id, serial);
+    if let Some(wakes) = wakes.as_ref() {
+        wakes.heartbeat(library, true).await;
+    }
+    Registered {
+        serial,
+        close,
+        wakes,
+    }
+}
+
+/// Unregisters connection `serial` of `node_id` and shuts its wake
+/// forwarder down under [`CATALOG_GATE`]: unacked wakes are released, and
+/// the catalog row is disabled only when no newer connection replaced this
+/// one.
+pub(super) async fn end_session(
+    library: &LibraryStore,
+    node_id: &str,
+    serial: u64,
+    wakes: Option<WakeForwarder>,
+) {
+    let _gate = CATALOG_GATE.lock().await;
+    let current = unregister(node_id, serial);
+    if let Some(wakes) = wakes {
+        wakes.shutdown(library, current).await;
     }
 }
 
@@ -225,9 +295,13 @@ async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAdd
             return;
         }
     };
-    let (serial, close) = register(&authed.node_id);
-    tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
     let owner_node_id = crate::node_queue::node_id(&files_dir).unwrap_or_default();
+    let Registered {
+        serial,
+        close,
+        mut wakes,
+    } = start_session(&library, &owner_node_id, &authed.node_id).await;
+    tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
     // Uploads are received by this node; its own identity file names it
     // (the queue's process-wide id is the consumer's, not necessarily it).
     let receiving_node_id =
@@ -243,9 +317,8 @@ async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAdd
         owner_node_id: receiving_node_id,
         state: Arc::clone(&state),
     };
-    let wakes = WakeForwarder::new(&owner_node_id, &host.node_id, serial);
-    session(&library, socket, &host, authed.resume, wakes, close).await;
-    unregister(&authed.node_id, serial);
+    session(&library, socket, &host, authed.resume, &mut wakes, close).await;
+    end_session(&library, &authed.node_id, serial, wakes).await;
     tracing::info!(node_id = %authed.node_id, "host node disconnected");
 }
 
@@ -486,14 +559,14 @@ async fn session(
     socket: WebSocket,
     host: &HostContext,
     resume: Vec<HeldFence>,
-    mut wakes: Option<WakeForwarder>,
+    wakes: &mut Option<WakeForwarder>,
     close: watch::Receiver<Option<u16>>,
 ) {
     let (sink, stream) = socket.split();
     let (outbox, queue) = mpsc::channel(SEND_QUEUE_FRAMES);
     let mut writer = tokio::spawn(writer(sink, queue));
     if let Some((code, reason)) =
-        session_loop(library, stream, &outbox, host, resume, &mut wakes, close).await
+        session_loop(library, stream, &outbox, host, resume, wakes, close).await
     {
         tracing::info!(node_id = %host.node_id, code, reason, "closing host node connection");
         let close = Message::Close(Some(CloseFrame {
@@ -509,9 +582,29 @@ async fn session(
     {
         writer.abort();
     }
-    if let Some(wakes) = wakes {
-        wakes.shutdown(library).await;
+}
+
+/// Queues `answer` for the host. A `work` answer is given back instead
+/// when the connection was already told to close (the close branch of the
+/// session loop ends it next), and when it cannot be queued, since the
+/// host would never learn of the job. Returns `false` when the host
+/// stopped reading.
+pub(super) async fn deliver(
+    library: &LibraryStore,
+    outbox: &mpsc::Sender<Message>,
+    host: &HostContext,
+    close: &watch::Receiver<Option<u16>>,
+    answer: Frame,
+) -> bool {
+    if close.borrow().is_some() {
+        work::release_unsent(library, host, &answer).await;
+        return true;
     }
+    if enqueue(outbox, text(&answer)).await {
+        return true;
+    }
+    work::release_unsent(library, host, &answer).await;
+    false
 }
 
 /// Reads and answers frames until the connection ends. Returns the close
@@ -531,9 +624,6 @@ async fn session_loop(
         if !enqueue(outbox, text(&Frame::new("resume", resumed))).await {
             return None;
         }
-    }
-    if let Some(wakes) = wakes.as_ref() {
-        wakes.heartbeat(library, true).await;
     }
     let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -563,8 +653,16 @@ async fn session_loop(
                 {
                     return None;
                 }
+                // A closing session no longer owns the catalog row; a newer
+                // connection may have registered and ended already. The
+                // check runs under the gate `start_session` registers under,
+                // so a successor either has not registered yet or has
+                // already signalled this session to close.
                 if let Some(wakes) = wakes.as_ref() {
-                    wakes.heartbeat(library, true).await;
+                    let _gate = CATALOG_GATE.lock().await;
+                    if close.borrow().is_none() {
+                        wakes.heartbeat(library, true).await;
+                    }
                 }
             }
             _ = forward.tick() => {
@@ -595,7 +693,7 @@ async fn session_loop(
                             _ => {}
                         }
                         let answer = work::answer(library, host, frame).await;
-                        if !enqueue(outbox, text(&answer)).await {
+                        if !deliver(library, outbox, host, &close, answer).await {
                             tracing::warn!(node_id, "host node stopped reading; dropping the connection");
                             return None;
                         }

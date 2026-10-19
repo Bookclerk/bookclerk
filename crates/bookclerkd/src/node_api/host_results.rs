@@ -14,13 +14,15 @@
 //! pending rows the job covers, with every destination deployed on this
 //! node and that destination's own options, so the host names each
 //! destination's files as a local acquire would), then for each title asks
-//! for an upload whose manifest gives each file's key per destination; the
+//! for an upload whose manifest gives each file's key per destination (each
+//! key must lie in the title's own scope there, which this node computes
+//! from its own row, and be no other title's file); the
 //! token is sealed to the host's box key and bound to the node, job, fence
 //! and upload, so it is never frame text.
 
 use bookclerk_library::control_plane::{
-    accept_scan_results, accounts_owned_by, grant_upload, job_plugin_keys, live_remote_job,
-    node_trust, Claimant, NodeTrust, ScanAccept, UploadGrant, UploadGrantRequest,
+    accept_scan_results, grant_upload, job_titles, live_remote_job, ScanAccept, UploadDestination,
+    UploadGrant, UploadGrantRequest,
 };
 use bookclerk_library::{JobKind, LibraryStore};
 use bookclerk_node_proto::{
@@ -125,43 +127,16 @@ pub(super) async fn acquire_plan(
     // local acquire's does.
     let options = &destinations[0].options;
     let download_episodes = host.state.config.read().await.library.download_episodes;
-    let keys = job_plugin_keys(library, &job).await?.unwrap_or_default();
-    let owned = match node_trust(library, &host.node_id, Claimant::Remote).await? {
-        NodeTrust::All => None,
-        NodeTrust::OwnedBy(user_id) => Some(accounts_owned_by(library, user_id).await?),
-        NodeTrust::Nothing => return Ok(lost(id, job_id, fence)),
+    // The same scope the closing commit checks before it completes the job.
+    let Some(books) = job_titles(library, &host.node_id, &job).await? else {
+        return Ok(lost(id, job_id, fence));
     };
-    let account = job.payload.account.as_deref().filter(|a| !a.is_empty());
-    let title = job.payload.title.as_deref().filter(|t| !t.is_empty());
     let mut targets = Vec::new();
-    for book in library.list_books(account).await? {
+    for book in books {
         if targets.len() >= MAX_PLAN_TARGETS {
             break;
         }
-        let named = title.is_none_or(|t| {
-            t.eq_ignore_ascii_case(&book.uuid)
-                || t.eq_ignore_ascii_case(&book.product_id)
-                || book
-                    .isbn
-                    .as_deref()
-                    .is_some_and(|i| t.eq_ignore_ascii_case(i))
-                || book
-                    .asin
-                    .as_deref()
-                    .is_some_and(|x| t.eq_ignore_ascii_case(x))
-        });
-        let in_scope = keys.contains(&book.plugin_key)
-            && owned.as_ref().is_none_or(|owned| {
-                owned.contains(&(book.plugin_key.clone(), book.account_id.clone()))
-            });
-        if !named
-            || !in_scope
-            || !crate::jobs::acquire_job_includes_book(
-                &book,
-                options.download_pdf,
-                download_episodes,
-            )
-        {
+        if !crate::jobs::acquire_job_includes_book(&book, options.download_pdf, download_episodes) {
             continue;
         }
         targets.push(AcquireTarget {
@@ -198,6 +173,44 @@ pub(super) async fn acquire_plan(
     Ok(frame)
 }
 
+/// This node's destinations with the key scope of the title `book_uuid`
+/// on each: the folders a local acquire of the title would write under,
+/// named with that destination's own options from this node's library row
+/// ([`bookclerk_acquire::planned_title_folders`]). A title this node does
+/// not have gets an empty scope, so nothing of it is granted.
+///
+/// # Errors
+///
+/// Returns an error when the title cannot be read.
+async fn title_destinations(
+    library: &LibraryStore,
+    host: &HostContext,
+    book_uuid: &str,
+    destinations: &[super::uploads::OwnerDestination],
+) -> bookclerk_library::Result<Vec<UploadDestination>> {
+    let book = library.get_book_by_uuid(book_uuid).await?;
+    let cfg = host.state.config.read().await.clone();
+    let mut out = Vec::with_capacity(destinations.len());
+    for destination in destinations {
+        let title_folders = match &book {
+            Some(book) => {
+                let request = crate::cluster_link::host_jobs::acquire_request(
+                    &cfg,
+                    book,
+                    &destination.options,
+                );
+                bookclerk_acquire::planned_title_folders(library, &request).await
+            }
+            None => Vec::new(),
+        };
+        out.push(UploadDestination {
+            id: destination.id.clone(),
+            title_folders,
+        });
+    }
+    Ok(out)
+}
+
 /// `upload.grant`: opens an upload of one title and seals its token to the
 /// host.
 pub(super) async fn upload_grant(
@@ -211,20 +224,20 @@ pub(super) async fn upload_grant(
     if request.files.len() > MAX_UPLOAD_FILES {
         return Ok(error(id, "refused", "invalid_manifest"));
     }
-    // The manifest must cover exactly the destinations deployed here now;
-    // the upload endpoint re-checks them for every file.
-    let ids = if request.book_uuid.is_empty() {
+    // The manifest must cover exactly the destinations deployed here now
+    // (the upload endpoint re-checks them for every file), each only under
+    // the title's own keys there, computed here from this node's row.
+    let scoped = if request.book_uuid.is_empty() {
         Vec::new()
     } else {
-        match super::uploads::owner_destinations(&host.state).await {
-            Ok(destinations) if !destinations.is_empty() => {
-                super::uploads::destination_ids(&destinations)
-            }
+        let destinations = match super::uploads::owner_destinations(&host.state).await {
+            Ok(destinations) if !destinations.is_empty() => destinations,
             _ => return Ok(error(id, "unavailable", "no_destination")),
-        }
+        };
+        title_destinations(library, host, request.book_uuid, &destinations).await?
     };
     let request = UploadGrantRequest {
-        destinations: &ids,
+        destinations: &scoped,
         ..request
     };
     let granted = grant_upload(
@@ -241,7 +254,13 @@ pub(super) async fn upload_grant(
             upload_id,
             token,
             expires_at,
+            superseded,
         } => {
+            // A re-sent title replaces its earlier upload; what that one
+            // had received is deleted before the new one takes files.
+            for session in &superseded {
+                super::uploads::discard_received(&host.state, session).await;
+            }
             let mut ephemeral = [0u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut ephemeral);
             let sealed = seal_upload_token(

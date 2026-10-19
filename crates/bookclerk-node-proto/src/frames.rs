@@ -61,8 +61,9 @@ pub enum Body {
         box_key: String,
     },
     /// Owner → host, right after [`Body::Welcome`] when the hello listed
-    /// fences: which leases the owner renewed and which are lost. The host
-    /// aborts lost work; every later frame under a lost fence is refused.
+    /// fences: which leases the owner renewed, which are lost, and which it
+    /// could not check now. The host aborts lost work; every later frame
+    /// under a lost fence is refused.
     Resumed {
         /// Leases renewed for this connection.
         #[serde(default)]
@@ -70,6 +71,17 @@ pub enum Body {
         /// Leases that expired, were taken over, or are no longer trusted.
         #[serde(default)]
         lost: Vec<HeldFence>,
+        /// Leases the owner could not check (a transient read or write
+        /// failure). They are neither renewed nor lost: the host keeps the
+        /// work and renews them as usual, and that `renew` decides.
+        #[serde(default)]
+        unchecked: Vec<HeldFence>,
+        /// The lease, in seconds, the `renewed` fences now run for, counted
+        /// from the host's `hello`. The owner's lease length may have
+        /// changed while the host was away, so the host counts this rather
+        /// than its original grant; absent when nothing was renewed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_secs: Option<u64>,
     },
     /// Either side: a request was not served. The connection stays open.
     Error {
@@ -136,6 +148,11 @@ pub enum Body {
         /// consents to every one.
         #[serde(default)]
         plugin_keys: Vec<String>,
+        /// The one plugin of `plugin_keys` whose source guest runs the
+        /// job (the others are destinations it writes); the owner hands a
+        /// host only jobs that name one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_plugin_key: Option<String>,
     },
     /// Owner → host: nothing to claim now.
     #[serde(rename = "none")]
@@ -359,7 +376,9 @@ pub enum Body {
         /// box key and bound to the node, job, fence and upload
         /// (`crate::seal_upload_token`).
         sealed_token: String,
-        /// Seconds the grant stays valid.
+        /// Seconds the token stays valid unless extended: the owner
+        /// extends it while the job's fence is live (each renewal and each
+        /// accepted file).
         expires_in_secs: u64,
     },
     /// Owner → host: a message from the host's `node.<id>` queue. The host
@@ -829,6 +848,7 @@ mod tests {
                     lease_secs: 60,
                     sealed_secrets: Some("x".into()),
                     plugin_keys: vec!["store".into()],
+                    source_plugin_key: Some("store".into()),
                 },
                 "work",
             ),
@@ -899,6 +919,8 @@ mod tests {
                         id: job_id(),
                         fence: 1,
                     }],
+                    unchecked: Vec::new(),
+                    lease_secs: None,
                 },
                 "resumed",
             ),

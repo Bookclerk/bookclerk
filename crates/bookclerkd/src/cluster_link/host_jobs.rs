@@ -27,9 +27,18 @@
 //!   to this host's own deployed destinations (H-2), and streams them to
 //!   the owner (`upload.grant`, one `PUT` per distinct file content, each
 //!   listing its key on every destination, then `commit`), which writes
-//!   them straight to its destinations. The job completes with its closing
-//!   upload's commit, never with `complete`. A host may stage; the owner
-//!   never does.
+//!   them straight to its destinations. A title is uploaded only once every
+//!   one of this host's own destinations has it; a failed copy fails the
+//!   title. The job completes with its closing upload's commit, never with
+//!   `complete`, and the owner accepts that only once every title of the
+//!   job is acquired. A host may stage; the owner never does.
+//!
+//! **Cancellation.** The job's cancel flag (its fence lost, the operator's
+//! cancel, or this host's consent revoked) stops every guest call within
+//! [`CANCEL_POLL`]: the call is dropped, which shuts its guest down and
+//! fences its host-side authority, so the guest stops using the handed
+//! credentials. A title's upload is dropped the same way, and the owner
+//! discards what that upload had written.
 //!
 //! The guest work itself sits behind [`HostGuests`], so tests can stand in
 //! a guest without spawning one; [`GuestHost`] is the daemon's.
@@ -37,6 +46,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -62,6 +72,44 @@ pub const MAX_BATCH_BYTES: usize = 768 * 1024;
 
 /// Attempts for one owner call that found the owner unavailable.
 const OWNER_ATTEMPTS: u32 = 3;
+
+/// How often a running guest call or upload checks the job's cancel flag.
+pub const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+/// Runs `work` until it ends or `cancel` turns true. On cancel the work is
+/// dropped (for the daemon's guests that shuts the guest down) and the
+/// answer is a `cancelled` error. Work that ends while `cancel` is set
+/// (a guest that stopped cooperatively, returning what it had so far) is
+/// answered `cancelled` too, never with its result.
+///
+/// # Errors
+///
+/// Returns `work`'s error, or `cancelled`.
+pub async fn until_cancelled<T>(
+    cancel: &AtomicBool,
+    work: impl Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    if cancel.load(Ordering::SeqCst) {
+        anyhow::bail!("cancelled");
+    }
+    tokio::pin!(work);
+    let mut every = tokio::time::interval(CANCEL_POLL);
+    loop {
+        tokio::select! {
+            out = &mut work => {
+                if cancel.load(Ordering::SeqCst) {
+                    anyhow::bail!("cancelled");
+                }
+                return out;
+            }
+            _ = every.tick() => {
+                if cancel.load(Ordering::SeqCst) {
+                    anyhow::bail!("cancelled");
+                }
+            }
+        }
+    }
+}
 
 /// What a host scan covers.
 #[derive(Debug, Clone, Default)]
@@ -131,6 +179,10 @@ pub struct AcquiredTitle {
 }
 
 /// The guest work a host job does; the daemon's is [`GuestHost`].
+///
+/// The transport drops a call once the job's cancel flag turns true (see
+/// [`until_cancelled`]); `cancel` is the same flag, for guests that can
+/// also stop cooperatively.
 pub trait HostGuests: Send + Sync + 'static {
     /// Runs the job's guest scan with the handed credentials and answers
     /// its rows unwritten.
@@ -138,6 +190,7 @@ pub trait HostGuests: Send + Sync + 'static {
         &self,
         bindings: &HostJobBindings,
         scan: HostScan,
+        cancel: Arc<AtomicBool>,
     ) -> impl Future<Output = anyhow::Result<Vec<ScanBook>>> + Send;
 
     /// Acquires `title` with the job's guest into `outbox`: destination
@@ -148,11 +201,20 @@ pub trait HostGuests: Send + Sync + 'static {
         bindings: &HostJobBindings,
         title: &HostTitle,
         outbox: &Path,
+        cancel: Arc<AtomicBool>,
     ) -> impl Future<Output = anyhow::Result<AcquiredTitle>> + Send;
 
     /// This host's own deployed output destinations (H-2: a host's local
-    /// outputs add to the cluster's).
-    fn local_destinations(&self) -> impl Future<Output = Vec<Box<dyn StorageBackend>>> + Send;
+    /// outputs add to the cluster's); empty when none is deployed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the deployed destinations cannot be used (two
+    /// of one kind), so no title is uploaded while this host would miss
+    /// its copy.
+    fn local_destinations(
+        &self,
+    ) -> impl Future<Output = anyhow::Result<Vec<Box<dyn StorageBackend>>>> + Send;
 
     /// Where per-job scratch lives (under this host's files dir).
     fn work_dir(&self) -> PathBuf;
@@ -203,6 +265,7 @@ impl HostGuests for GuestHost {
         &self,
         bindings: &HostJobBindings,
         scan: HostScan,
+        cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<Vec<ScanBook>> {
         let source = self.open_source(bindings).await?;
         let (import_episodes, import_plus_titles) = {
@@ -215,7 +278,7 @@ impl HostGuests for GuestHost {
                 page_size: 50,
                 import_episodes,
                 import_plus_titles,
-                cancel: None,
+                cancel: Some(cancel),
             })
             .await?)
     }
@@ -225,7 +288,11 @@ impl HostGuests for GuestHost {
         bindings: &HostJobBindings,
         title: &HostTitle,
         outbox: &Path,
+        _cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<AcquiredTitle> {
+        // The pipeline has no cancel input; the transport drops this call
+        // (and with it the guest) once the job is cancelled, and the
+        // title's scratch sits under the job dir it removes.
         let source = self.open_source(bindings).await?;
         let cfg = self.state.config.read().await.clone();
         let scratch_dir = outbox.with_extension("library");
@@ -237,19 +304,15 @@ impl HostGuests for GuestHost {
         result
     }
 
-    async fn local_destinations(&self) -> Vec<Box<dyn StorageBackend>> {
-        let cfg = self.state.config.read().await.clone();
-        match bookclerk_plugin_host::build_acquire_destinations(
-            &cfg,
-            &*self.state.destinations.read().await,
-        ) {
-            Ok(destinations) => destinations
-                .items
-                .into_iter()
-                .map(|item| item.backend)
-                .collect(),
-            Err(_) => Vec::new(),
+    async fn local_destinations(&self) -> anyhow::Result<Vec<Box<dyn StorageBackend>>> {
+        let registry = self.state.destinations.read().await;
+        let mut out = Vec::new();
+        for deployed in [registry.require_local(), registry.require_s3()] {
+            if let Some(backend) = deployed.map_err(|err| anyhow::anyhow!(err))? {
+                out.push(backend.clone_box());
+            }
         }
+        Ok(out)
     }
 
     fn work_dir(&self) -> PathBuf {
@@ -310,6 +373,35 @@ fn new_book_from(book: &BookRecord) -> NewBook {
     }
 }
 
+/// The acquire request for `book` named with `options`: what a host's
+/// acquire runs, and what the owner computes the title's key scope from
+/// (so both name the title the same way).
+#[must_use]
+pub fn acquire_request(
+    cfg: &bookclerk_config::Config,
+    book: &BookRecord,
+    options: &DownloadOptions,
+) -> bookclerk_acquire::AcquireRequest {
+    bookclerk_acquire::AcquireRequest {
+        asin: book.download_product_id().to_string(),
+        book_uuid: Some(book.uuid.clone()),
+        source: book.source.clone(),
+        account_id: book.account_id.clone(),
+        title: book.title.clone(),
+        authors: book.authors.clone(),
+        narrators: book.narrators.clone(),
+        series: book.series.clone(),
+        series_index: book.series_index.clone(),
+        options: options.clone(),
+        files_dir: cfg.paths().files_dir.clone(),
+        cache_dir: cfg.download_cache_dir(),
+        force: false,
+        write_destinations: None,
+        job_id: None,
+        temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+    }
+}
+
 /// Runs the acquire pipeline for `title` against `scratch`, writing only
 /// to `outbox`.
 async fn acquire_into(
@@ -345,25 +437,7 @@ async fn acquire_into(
         primary: primary.kind,
         multi_destination: cfg.output.multi_destination,
     };
-    let paths = cfg.paths();
-    let request = bookclerk_acquire::AcquireRequest {
-        asin: book.download_product_id().to_string(),
-        book_uuid: Some(book.uuid.clone()),
-        source: book.source.clone(),
-        account_id: book.account_id.clone(),
-        title: book.title.clone(),
-        authors: book.authors.clone(),
-        narrators: book.narrators.clone(),
-        series: book.series.clone(),
-        series_index: book.series_index.clone(),
-        options: primary.options.clone(),
-        files_dir: paths.files_dir.clone(),
-        cache_dir: cfg.download_cache_dir(),
-        force: false,
-        write_destinations: None,
-        job_id: None,
-        temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
-    };
+    let request = acquire_request(cfg, book, &primary.options);
     let result =
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
             .await?;
@@ -501,7 +575,11 @@ async fn host_scan<G: HostGuests>(
     scan: HostScan,
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
-    let rows = guests.scan(bindings, scan).await?;
+    let rows = until_cancelled(
+        &ctx.cancel,
+        guests.scan(bindings, scan, Arc::clone(&ctx.cancel)),
+    )
+    .await?;
     let mut batch = Vec::new();
     let mut batch_bytes = 0usize;
     let mut written = 0u64;
@@ -533,6 +611,11 @@ async fn host_scan<G: HostGuests>(
     if !batch.is_empty() {
         written += send(batch).await?;
     }
+    // A scan cancelled while its last batch went out did not finish: its
+    // rows so far stay written, but it never reports success.
+    if ctx.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
     tracing::info!(
         job_id = %host.job.job.id,
         fence = host.job.fence,
@@ -554,7 +637,7 @@ async fn host_acquire<G: HostGuests>(
     bindings: &HostJobBindings,
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
-    let job_dir = guests.work_dir().join(&host.job.job.id);
+    let job_dir = work_path(&guests.work_dir(), &host.job.job.id)?;
     let result = acquire_titles(guests, host, bindings, ctx, &job_dir).await;
     let _ = tokio::fs::remove_dir_all(&job_dir).await;
     let (acquired, failed) = result?;
@@ -618,16 +701,24 @@ async fn acquire_titles<G: HostGuests>(
             }
             let book: BookRecord =
                 serde_json::from_value(target.book).context("the owner's library row")?;
-            let outbox = job_dir.join(&target.book_uuid);
+            if book.uuid != target.book_uuid {
+                anyhow::bail!("the owner's library row is not the title it planned");
+            }
+            let outbox = work_path(job_dir, &target.book_uuid)?;
             let title = HostTitle {
                 book,
                 destinations: destinations.clone(),
             };
-            let outcome = guests.acquire(bindings, &title, &outbox).await;
-            let uploaded = match outcome {
-                Ok(done) => upload_title(guests, host, &title, &outbox, &done).await,
-                Err(err) => Err(err),
-            };
+            // Both the guest's acquire and the title's upload stop once the
+            // job is cancelled; a dropped upload's files are discarded by
+            // the owner (its stream breaks, or its upload is aborted).
+            let uploaded = until_cancelled(&ctx.cancel, async {
+                let done = guests
+                    .acquire(bindings, &title, &outbox, Arc::clone(&ctx.cancel))
+                    .await?;
+                upload_title(guests, host, &title, &outbox, &done).await
+            })
+            .await;
             let _ = tokio::fs::remove_dir_all(&outbox).await;
             match uploaded {
                 Ok(()) => acquired += 1,
@@ -639,6 +730,36 @@ async fn acquire_titles<G: HostGuests>(
             }
         }
     }
+}
+
+/// Longest owner-supplied id used as a path segment under the work dir.
+pub const MAX_WORK_ID_BYTES: usize = 128;
+
+/// True when `id` (a job or title id the owner sent) is safe as one path
+/// segment: non-empty, at most [`MAX_WORK_ID_BYTES`], and only ASCII
+/// letters, digits, `-` and `_`, so no separator, `.` / `..`, drive or
+/// root prefix, or other special name can come through.
+#[must_use]
+pub fn is_work_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_WORK_ID_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// `dir`'s child named by the owner-supplied `id`, refused unless `id` is
+/// one plain segment ([`is_work_id`]), so the host's job scratch (created,
+/// written and removed recursively) never leaves `dir`.
+///
+/// # Errors
+///
+/// Returns an error when `id` is not a usable segment.
+pub fn work_path(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
+    if !is_work_id(id) {
+        anyhow::bail!("the owner sent a job or title id this host cannot use as a path");
+    }
+    Ok(dir.join(id))
 }
 
 /// Size and SHA-256 of a file, read once.
@@ -758,8 +879,57 @@ pub async fn upload_manifest(
     Ok(files)
 }
 
+/// Copies one title's files (the primary destination's keys) to every one
+/// of this host's own destinations. Any failed copy fails the title: the
+/// copies already written for it are removed (best effort).
+///
+/// # Errors
+///
+/// Returns an error when the destinations cannot be used or a copy fails.
+pub async fn copy_to_local_destinations<G: HostGuests>(
+    guests: &G,
+    book_uuid: &str,
+    outbox: &Path,
+    acquired: &AcquiredTitle,
+) -> anyhow::Result<()> {
+    let local = guests
+        .local_destinations()
+        .await
+        .context("this host's own destinations")?;
+    // This host's own copy follows the owner's primary destination naming.
+    let primary = destination_outbox(outbox, 0);
+    let mut written: Vec<(&dyn StorageBackend, &str)> = Vec::new();
+    let mut failure = None;
+    'copy: for key in acquired.keys.first().into_iter().flatten() {
+        for destination in &local {
+            let meta = ObjectMeta {
+                content_type: content_type(key),
+                ..ObjectMeta::default()
+            };
+            match destination.put_file(key, &primary.join(key), meta).await {
+                Ok(_) => written.push((destination.as_ref(), key.as_str())),
+                Err(err) => {
+                    tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
+                    failure = Some(anyhow::anyhow!(
+                        "this host's own destination did not take {key:?}: {err}"
+                    ));
+                    break 'copy;
+                }
+            }
+        }
+    }
+    let Some(failure) = failure else {
+        return Ok(());
+    };
+    for (destination, key) in written {
+        let _ = destination.delete(key).await;
+    }
+    Err(failure)
+}
+
 /// Copies one title's files to this host's own destinations (H-2), then
-/// streams them to the owner and commits the title.
+/// streams them to the owner and commits the title. Nothing is uploaded
+/// unless every one of this host's destinations got the title.
 async fn upload_title<G: HostGuests>(
     guests: &G,
     host: &HostJobCtx,
@@ -769,21 +939,7 @@ async fn upload_title<G: HostGuests>(
 ) -> anyhow::Result<()> {
     let book_uuid = title.book.uuid.as_str();
     let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
-    // This host's own copy follows the owner's primary destination naming.
-    let primary = destination_outbox(outbox, 0);
-    let local = guests.local_destinations().await;
-    for key in acquired.keys.first().into_iter().flatten() {
-        for destination in &local {
-            let path = primary.join(key);
-            let meta = ObjectMeta {
-                content_type: content_type(key),
-                ..ObjectMeta::default()
-            };
-            if let Err(err) = destination.put_file(key, &path, meta).await {
-                tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
-            }
-        }
-    }
+    copy_to_local_destinations(guests, book_uuid, outbox, acquired).await?;
     let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
     let upload = with_retries(|| {
         host.grant_upload(

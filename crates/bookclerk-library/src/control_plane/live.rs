@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(changed_topics(&before, &joined), vec![LiveTopic::Clusters]);
 
         assert!(
-            set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED)
+            set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED, None)
                 .await
                 .unwrap()
         );

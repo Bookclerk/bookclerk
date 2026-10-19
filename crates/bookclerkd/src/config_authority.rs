@@ -1443,6 +1443,7 @@ pub(crate) fn control_plane_test_state(
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         deployment_runtime: OnceLock::new(),
+        library_swaps: tokio::sync::watch::Sender::new(0),
     }
 }
 

@@ -172,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
         tray: RwLock::new(None),
         tray_handoff: Mutex::new(None),
         deployment_runtime: std::sync::OnceLock::new(),
+        library_swaps: tokio::sync::watch::Sender::new(0),
     });
 
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());

@@ -1,11 +1,15 @@
 //! Operator API for host consent (H-4 design, step 8):
 //!
 //! - `GET /api/config/cluster-consents`: the owner clusters this install
-//!   is enrolled in, what each asks to run here, and how this host stands
-//!   on it (no key material: links carry ids, origin and state only);
-//! - `POST /api/config/cluster-consents/approve`: approve one request,
-//!   optionally narrowed (denied domains, bindings, or all network);
-//! - `POST /api/config/cluster-consents/revoke`: withdraw an approval.
+//!   is enrolled in (no key material: links carry ids, origin and state
+//!   only), what each asks to run here (version, grant, and the archive URL
+//!   and digest this host would fetch), and how this host stands on it;
+//! - `POST /api/config/cluster-consents/approve`: approve one request by
+//!   the `request_digest` the listing shows (refused with `409` when the
+//!   recorded request is no longer that one), optionally narrowed (denied
+//!   domains, bindings, or all network);
+//! - `POST /api/config/cluster-consents/revoke`: withdraw an approval (a
+//!   revoke holds: a platform plugin is not approved automatically again).
 //!
 //! All three are operator-only: owner plugins run under this install's
 //! jail with this install's network, so only its operator consents. A
@@ -21,7 +25,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
     list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin, ClusterLink,
-    RemotePluginConsent,
+    RemoteApprover, RemotePluginConsent,
 };
 use bookclerk_plugin_host::{approve_remote_request, RemoteNarrowing};
 use serde::Deserialize;
@@ -45,10 +49,17 @@ pub(crate) fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
         "plugin_key": row.plugin_key,
         "requested_version": row.requested_version,
         "requested_grant": parse(Some(&row.requested_grant_json)),
+        "requested_artifact": {
+            "url": row.requested_artifact_url,
+            "archive_sha256": row.requested_artifact_sha256,
+            "payload_root_sha256": row.requested_artifact_payload_sha256,
+        },
+        "request_digest": row.request_digest(),
         "approved_version": row.version,
         "grant": parse(row.grant_json.as_deref()),
         "approved_at": row.approved_at,
         "approved_by": row.approved_by,
+        "revoked_at": row.revoked_at,
         "updated_at": row.updated_at,
         "state": consent_state(row).as_str(),
     })
@@ -89,10 +100,9 @@ pub struct ApproveBody {
     cluster_id: String,
     /// Canonical plugin key.
     plugin_key: String,
-    /// The requested version the operator reviewed (refused when the
-    /// recorded request is another one).
-    #[serde(default)]
-    version: Option<String>,
+    /// The `request_digest` of the request the operator reviewed, as the
+    /// listing shows it (refused when the recorded request is another one).
+    request_digest: String,
     /// Domains to take out of the request.
     #[serde(default)]
     deny_domains: BTreeSet<String>,
@@ -114,13 +124,13 @@ pub async fn post_cluster_consent_approve(
         &library,
         body.cluster_id.trim(),
         body.plugin_key.trim(),
-        body.version.as_deref().map(str::trim),
+        &body.request_digest,
         &RemoteNarrowing {
             deny_domains: body.deny_domains,
             deny_bindings: body.deny_bindings,
             deny_network: body.deny_network,
         },
-        API_APPROVER,
+        RemoteApprover::Operator(API_APPROVER),
     )
     .await
     .map_err(|err| {

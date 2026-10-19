@@ -153,7 +153,7 @@ Branded daemon HTML (invite / 404) cannot read that row and only queries
   - **Clusters** (operator or elevated): the owner clusters this server
     joined as a host node, and each owner plugin's request to run here, with
     a deny checkbox per requested domain and binding, a deny-network switch,
-    Approve (for the version shown) and Revoke. A refused approval shows the
+    Approve (for the request shown, archive included) and Revoke. A refused approval shows the
     daemon's reason. Joining stays on the command line (`bookclerk clusters
     join`) so the enrollment link never passes through the browser. See
     [Clusters and host nodes](cluster-hosts.md).
