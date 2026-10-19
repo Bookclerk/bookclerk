@@ -35,8 +35,8 @@ const SLOW_SQL_WARN_MS: u128 = 250;
 /// commit, which under `cargo test --workspace` turns into `SQLITE_BUSY`.
 const BEGIN_BUSY_SLICE: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// How long [`SqliteProxy::begin`] and `COMMIT` keep retrying file-lock
-/// contention.
+/// How long [`SqliteProxy::begin`], `COMMIT`, and autocommit statements keep
+/// retrying file-lock contention.
 ///
 /// Attempts sleep on the async runtime so the peer transaction can be
 /// scheduled. This is the bounded busy contract for two connections on one file.
@@ -164,8 +164,9 @@ impl SqliteProxy {
     /// by this [`Connection`], which would leave statements without a deadline.
     pub fn new(conn: Connection) -> rusqlite::Result<Self> {
         // TRUNCATE journal serializes writers. Each attempt waits only
-        // [`BEGIN_BUSY_SLICE`]; [`SqliteProxy::begin`] retries on the async
-        // runtime up to [`BEGIN_CONTENTION_BUDGET`] so a peer can commit.
+        // [`BEGIN_BUSY_SLICE`]; [`SqliteProxy::begin`] and autocommit
+        // statements retry on the async runtime up to
+        // [`BEGIN_CONTENTION_BUDGET`] so a peer can commit.
         let _ = conn.busy_timeout(BEGIN_BUSY_SLICE);
         let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
         let budget = Arc::new(Mutex::new(ExecBudget::unlimited()));
@@ -267,6 +268,184 @@ impl SqliteProxy {
             }
         }
         StatementPermit::Transient(self.txn_gate.clone().lock_owned().await)
+    }
+
+    /// True when a failed autocommit statement may run again.
+    ///
+    /// Only file-lock contention outside this task's transaction qualifies.
+    /// SQLite rolls the implicit transaction back on `SQLITE_BUSY`, so nothing
+    /// took effect. A statement inside an open transaction is never repeated.
+    fn autocommit_may_retry(
+        &self,
+        permit: &StatementPermit,
+        err: &DbErr,
+        started: Instant,
+    ) -> bool {
+        matches!(permit, StatementPermit::Transient(_))
+            && is_lock_contention_db_err(err)
+            && self.begin_may_retry(started)
+    }
+
+    /// Runs one query attempt on the blocking pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbErr`] when the engine rejects the statement or a result cap is hit.
+    async fn query_attempt(
+        &self,
+        statement: Statement,
+    ) -> std::result::Result<Vec<ProxyRow>, DbErr> {
+        let conn = self.conn.clone();
+        let budget = self.connection_budget();
+        budget.reset_rows_seen();
+        tokio::task::spawn_blocking(move || {
+            let sql_summary = summarize_sql(&statement.sql);
+            let bind_count = statement.values.as_ref().map_or(0usize, |v| v.0.len());
+            let started = Instant::now();
+            let conn = conn
+                .lock()
+                .map_err(|e| DbErr::Custom(format!("sqlite mutex poisoned: {e}")))?;
+            let mut stmt = conn.conn.prepare(&statement.sql).map_err(rusqlite_db_err)?;
+            let binds = statement_binds(&statement);
+            let names: Vec<String> = (0..stmt.column_count())
+                .map(|i| stmt.column_name(i).unwrap_or("").to_string())
+                .collect();
+            let mut seen_names = HashSet::new();
+            for name in &names {
+                if !name.is_empty() && !seen_names.insert(name.as_str()) {
+                    return Err(DbErr::Custom(format!("duplicate column name `{name}`")));
+                }
+            }
+            let decltypes: Vec<Option<String>> = stmt
+                .columns()
+                .iter()
+                .map(|c| c.decl_type().map(str::to_ascii_uppercase))
+                .collect();
+            let positional: Vec<DbColumn> = names
+                .iter()
+                .zip(decltypes.iter())
+                .map(|(name, decl)| DbColumn {
+                    name: name.clone(),
+                    db_type: db_type_from_decl(decl.as_deref()),
+                })
+                .collect();
+            budget.set_positional_columns(positional.clone());
+            set_positional_result_columns(positional);
+            let mut rows = stmt
+                .query(rusqlite::params_from_iter(binds.iter()))
+                .map_err(rusqlite_db_err)?;
+            let caps = DbCapabilities::advertised_sqlite();
+            let cell_cap = usize::try_from(caps.max_cell_bytes).unwrap_or(usize::MAX);
+            let mut out = Vec::new();
+            let mut result_bytes = 0usize;
+            while let Some(row) = rows.next().map_err(rusqlite_db_err)? {
+                let mut values = BTreeMap::new();
+                for (i, name) in names.iter().enumerate() {
+                    let v: rusqlite::types::Value = row.get(i).map_err(rusqlite_db_err)?;
+                    let decl = decltypes.get(i).and_then(Option::as_deref);
+                    values.insert(name.clone(), rusqlite_to_sea(v, decl, name));
+                }
+                if caps.max_cell_bytes > 0 {
+                    for (name, value) in &values {
+                        let cell = bookclerk_db_exec::sea_value_to_json(value);
+                        let n = bookclerk_db_exec::json_cell_utf8_len(&cell);
+                        if n > cell_cap {
+                            return Err(DbErr::Custom(format!(
+                                "column `{name}` is {n} bytes; maxCellBytes is {}",
+                                caps.max_cell_bytes
+                            )));
+                        }
+                    }
+                }
+                let nbytes = bookclerk_db_exec::encoded_proxy_row_len(&values);
+                bookclerk_db_exec::note_encoded_result_bytes(
+                    &mut result_bytes,
+                    nbytes,
+                    caps.max_result_bytes,
+                )?;
+                out.push(ProxyRow { values });
+                if budget.note_row() {
+                    return Err(DbErr::Custom(format!(
+                        "query returned {} rows; maxResultRows exceeded",
+                        out.len()
+                    )));
+                }
+            }
+            let elapsed_ms = started.elapsed().as_millis();
+            if elapsed_ms >= SLOW_SQL_WARN_MS {
+                tracing::warn!(
+                    op = "query",
+                    elapsed_ms,
+                    rows = out.len(),
+                    bind_count,
+                    sql = %sql_summary,
+                    "slow sqlite query"
+                );
+            } else {
+                tracing::debug!(
+                    op = "query",
+                    elapsed_ms,
+                    rows = out.len(),
+                    bind_count,
+                    sql = %sql_summary,
+                    "sqlite query"
+                );
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|err| DbErr::Custom(format!("sqlite query task failed: {err}")))?
+    }
+
+    /// Runs one execute attempt on the blocking pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbErr`] when the engine rejects the statement.
+    async fn execute_attempt(
+        &self,
+        statement: Statement,
+    ) -> std::result::Result<ProxyExecResult, DbErr> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let sql_summary = summarize_sql(&statement.sql);
+            let bind_count = statement.values.as_ref().map_or(0usize, |v| v.0.len());
+            let started = Instant::now();
+            let conn = conn
+                .lock()
+                .map_err(|e| DbErr::Custom(format!("sqlite mutex poisoned: {e}")))?;
+            let binds = statement_binds(&statement);
+            conn.conn
+                .execute(&statement.sql, rusqlite::params_from_iter(binds.iter()))
+                .map_err(rusqlite_db_err)?;
+            let elapsed_ms = started.elapsed().as_millis();
+            let rows_affected = conn.conn.changes();
+            if elapsed_ms >= SLOW_SQL_WARN_MS {
+                tracing::warn!(
+                    op = "execute",
+                    elapsed_ms,
+                    rows_affected,
+                    bind_count,
+                    sql = %sql_summary,
+                    "slow sqlite execute"
+                );
+            } else {
+                tracing::debug!(
+                    op = "execute",
+                    elapsed_ms,
+                    rows_affected,
+                    bind_count,
+                    sql = %sql_summary,
+                    "sqlite execute"
+                );
+            }
+            Ok(ProxyExecResult {
+                last_insert_id: conn.conn.last_insert_rowid() as u64,
+                rows_affected,
+            })
+        })
+        .await
+        .map_err(|err| DbErr::Custom(format!("sqlite execute task failed: {err}")))?
     }
 }
 
@@ -440,155 +619,36 @@ impl ProxyDatabaseTrait for SqliteProxy {
         if is_txn_broken() {
             return Err(txn_broken_err());
         }
-        let _permit = self.acquire_for_statement().await;
+        let permit = self.acquire_for_statement().await;
         self.install_request_budget();
-        let conn = self.conn.clone();
-        let budget = self.connection_budget();
-        budget.reset_rows_seen();
-        tokio::task::spawn_blocking(move || {
-            let sql_summary = summarize_sql(&statement.sql);
-            let bind_count = statement.values.as_ref().map_or(0usize, |v| v.0.len());
-            let started = Instant::now();
-            let conn = conn
-                .lock()
-                .map_err(|e| DbErr::Custom(format!("sqlite mutex poisoned: {e}")))?;
-            let mut stmt = conn.conn.prepare(&statement.sql).map_err(rusqlite_db_err)?;
-            let binds = statement_binds(&statement);
-            let names: Vec<String> = (0..stmt.column_count())
-                .map(|i| stmt.column_name(i).unwrap_or("").to_string())
-                .collect();
-            let mut seen_names = HashSet::new();
-            for name in &names {
-                if !name.is_empty() && !seen_names.insert(name.as_str()) {
-                    return Err(DbErr::Custom(format!("duplicate column name `{name}`")));
+        let started = Instant::now();
+        loop {
+            match self.query_attempt(statement.clone()).await {
+                Err(err) if self.autocommit_may_retry(&permit, &err, started) => {
+                    tracing::debug!(error = %err, "sqlite query waiting for the file lock");
+                    tokio::time::sleep(self.begin_retry_pause()).await;
                 }
+                result => return result,
             }
-            let decltypes: Vec<Option<String>> = stmt
-                .columns()
-                .iter()
-                .map(|c| c.decl_type().map(str::to_ascii_uppercase))
-                .collect();
-            let positional: Vec<DbColumn> = names
-                .iter()
-                .zip(decltypes.iter())
-                .map(|(name, decl)| DbColumn {
-                    name: name.clone(),
-                    db_type: db_type_from_decl(decl.as_deref()),
-                })
-                .collect();
-            budget.set_positional_columns(positional.clone());
-            set_positional_result_columns(positional);
-            let mut rows = stmt
-                .query(rusqlite::params_from_iter(binds.iter()))
-                .map_err(rusqlite_db_err)?;
-            let caps = DbCapabilities::advertised_sqlite();
-            let cell_cap = usize::try_from(caps.max_cell_bytes).unwrap_or(usize::MAX);
-            let mut out = Vec::new();
-            let mut result_bytes = 0usize;
-            while let Some(row) = rows.next().map_err(rusqlite_db_err)? {
-                let mut values = BTreeMap::new();
-                for (i, name) in names.iter().enumerate() {
-                    let v: rusqlite::types::Value = row.get(i).map_err(rusqlite_db_err)?;
-                    let decl = decltypes.get(i).and_then(Option::as_deref);
-                    values.insert(name.clone(), rusqlite_to_sea(v, decl, name));
-                }
-                if caps.max_cell_bytes > 0 {
-                    for (name, value) in &values {
-                        let cell = bookclerk_db_exec::sea_value_to_json(value);
-                        let n = bookclerk_db_exec::json_cell_utf8_len(&cell);
-                        if n > cell_cap {
-                            return Err(DbErr::Custom(format!(
-                                "column `{name}` is {n} bytes; maxCellBytes is {}",
-                                caps.max_cell_bytes
-                            )));
-                        }
-                    }
-                }
-                let nbytes = bookclerk_db_exec::encoded_proxy_row_len(&values);
-                bookclerk_db_exec::note_encoded_result_bytes(
-                    &mut result_bytes,
-                    nbytes,
-                    caps.max_result_bytes,
-                )?;
-                out.push(ProxyRow { values });
-                if budget.note_row() {
-                    return Err(DbErr::Custom(format!(
-                        "query returned {} rows; maxResultRows exceeded",
-                        out.len()
-                    )));
-                }
-            }
-            let elapsed_ms = started.elapsed().as_millis();
-            if elapsed_ms >= SLOW_SQL_WARN_MS {
-                tracing::warn!(
-                    op = "query",
-                    elapsed_ms,
-                    rows = out.len(),
-                    bind_count,
-                    sql = %sql_summary,
-                    "slow sqlite query"
-                );
-            } else {
-                tracing::debug!(
-                    op = "query",
-                    elapsed_ms,
-                    rows = out.len(),
-                    bind_count,
-                    sql = %sql_summary,
-                    "sqlite query"
-                );
-            }
-            Ok(out)
-        })
-        .await
-        .map_err(|err| DbErr::Custom(format!("sqlite query task failed: {err}")))?
+        }
     }
 
     async fn execute(&self, statement: Statement) -> std::result::Result<ProxyExecResult, DbErr> {
         if is_txn_broken() {
             return Err(txn_broken_err());
         }
-        let _permit = self.acquire_for_statement().await;
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let sql_summary = summarize_sql(&statement.sql);
-            let bind_count = statement.values.as_ref().map_or(0usize, |v| v.0.len());
-            let started = Instant::now();
-            let conn = conn
-                .lock()
-                .map_err(|e| DbErr::Custom(format!("sqlite mutex poisoned: {e}")))?;
-            let binds = statement_binds(&statement);
-            conn.conn
-                .execute(&statement.sql, rusqlite::params_from_iter(binds.iter()))
-                .map_err(rusqlite_db_err)?;
-            let elapsed_ms = started.elapsed().as_millis();
-            let rows_affected = conn.conn.changes();
-            if elapsed_ms >= SLOW_SQL_WARN_MS {
-                tracing::warn!(
-                    op = "execute",
-                    elapsed_ms,
-                    rows_affected,
-                    bind_count,
-                    sql = %sql_summary,
-                    "slow sqlite execute"
-                );
-            } else {
-                tracing::debug!(
-                    op = "execute",
-                    elapsed_ms,
-                    rows_affected,
-                    bind_count,
-                    sql = %sql_summary,
-                    "sqlite execute"
-                );
+        let permit = self.acquire_for_statement().await;
+        self.install_request_budget();
+        let started = Instant::now();
+        loop {
+            match self.execute_attempt(statement.clone()).await {
+                Err(err) if self.autocommit_may_retry(&permit, &err, started) => {
+                    tracing::debug!(error = %err, "sqlite execute waiting for the file lock");
+                    tokio::time::sleep(self.begin_retry_pause()).await;
+                }
+                result => return result,
             }
-            Ok(ProxyExecResult {
-                last_insert_id: conn.conn.last_insert_rowid() as u64,
-                rows_affected,
-            })
-        })
-        .await
-        .map_err(|err| DbErr::Custom(format!("sqlite execute task failed: {err}")))?
+        }
     }
 
     async fn ping(&self) -> std::result::Result<(), DbErr> {
@@ -980,6 +1040,14 @@ fn format_rusqlite_error(err: &rusqlite::Error) -> String {
         }
         other => other.to_string(),
     }
+}
+
+/// True when `err` is [`rusqlite_db_err`] output for a file lock another connection holds.
+fn is_lock_contention_db_err(err: &DbErr) -> bool {
+    matches!(
+        err,
+        DbErr::Custom(msg) if msg.starts_with("SQLITE_BUSY (") || msg.starts_with("SQLITE_LOCKED (")
+    )
 }
 
 /// Wraps a rusqlite error as [`DbErr::Custom`] with a stable `SQLITE_*` prefix.
@@ -1417,6 +1485,60 @@ mod tests {
             .expect("insert");
         txn.commit().await.expect("commit waits for the reader");
         release.join().expect("reader thread");
+        let row = db
+            .query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DbBackend::Sqlite,
+                "SELECT COUNT(*) AS n FROM seen",
+            ))
+            .await
+            .expect("count")
+            .expect("row");
+        assert_eq!(row.try_get::<i64>("", "n").expect("n"), 1);
+    }
+
+    /// Autocommit statements outside a transaction get the same busy budget as
+    /// `BEGIN`. A peer that holds the file lock for longer than one busy slice
+    /// must delay a read or a write on another connection, not fail it.
+    #[tokio::test]
+    async fn autocommit_statements_wait_for_a_writer_on_another_connection() {
+        use sea_orm::ConnectionTrait;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("autocommit.db");
+        let db = super::open(&path).await.expect("open");
+        db.execute_unprepared("CREATE TABLE seen (id INTEGER PRIMARY KEY)")
+            .await
+            .expect("table");
+        let writer = rusqlite::Connection::open(&path).expect("writer");
+        let hold = std::time::Duration::from_millis(300);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (next_tx, next_rx) = std::sync::mpsc::channel::<()>();
+        let peer = std::thread::spawn(move || {
+            // EXCLUSIVE blocks readers; RESERVED (IMMEDIATE) blocks writers.
+            for begin in ["BEGIN EXCLUSIVE", "BEGIN IMMEDIATE"] {
+                writer.execute_batch(begin).expect("peer takes the lock");
+                locked_tx.send(()).expect("locked");
+                std::thread::sleep(hold);
+                writer.execute_batch("COMMIT").expect("peer releases");
+                let _ = next_rx.recv();
+            }
+        });
+        locked_rx.recv().expect("exclusive held");
+        let row = db
+            .query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DbBackend::Sqlite,
+                "SELECT COUNT(*) AS n FROM seen",
+            ))
+            .await
+            .expect("read waits for the peer")
+            .expect("row");
+        assert_eq!(row.try_get::<i64>("", "n").expect("n"), 0);
+        next_tx.send(()).expect("next phase");
+        locked_rx.recv().expect("reserved held");
+        db.execute_unprepared("INSERT INTO seen (id) VALUES (1)")
+            .await
+            .expect("write waits for the peer");
+        next_tx.send(()).expect("done");
+        peer.join().expect("peer thread");
         let row = db
             .query_one_raw(sea_orm::Statement::from_string(
                 sea_orm::DbBackend::Sqlite,
