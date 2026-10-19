@@ -139,6 +139,7 @@ fn work(job_id: &str, fence: i64, lease_secs: u64) -> Body {
         fence,
         lease_secs,
         sealed_secrets: None,
+        resumed: false,
     }
 }
 
