@@ -362,7 +362,10 @@ filename length, and the multi-destination policy). It follows the
 - After that the document is the authority. Startup, reload, and later TOML
   or environment values do not change it; edit it with a compare-and-swap
   write. `bookclerk config show` prints `output.authority = database`,
-  `output.revision`, and every `output.*` value.
+  `output.revision`, and every `output.*` value. When the stored document
+  cannot be read (unsupported version, corrupt body, unreachable database)
+  it prints `output.authority = unavailable` and `output.error` instead of
+  the TOML/environment seed, which would not be imported over the stored row.
 - Writes are validated before SQL (for example `cover_size` is `native` or
   1..=10000, `chapter_layout` is `tree` / `flat` / `both`,
   `split_mp3_max_mb` 1..=10240, templates at most 1 KiB without control

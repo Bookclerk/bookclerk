@@ -812,10 +812,7 @@ async fn print_events_authority(config: &Config) {
 /// prefix stays so the failure is still recognizable. A document the
 /// database does not hold yet (`NotFound`) is not a failure, and says so.
 fn safe_events_load_error(err: &anyhow::Error) -> String {
-    if matches!(
-        err.downcast_ref::<bookclerk_library::LibraryError>(),
-        Some(bookclerk_library::LibraryError::NotFound(_))
-    ) {
+    if document_not_imported(err) {
         // The database answered; the document just has not been imported.
         return "not in the database yet; the first enrollment imports it".into();
     }
@@ -826,6 +823,21 @@ fn safe_events_load_error(err: &anyhow::Error) -> String {
     }
     let scrubbed = redact_credential_urls(&bookclerk_config::redact_str(&chain));
     format!("database unavailable: {scrubbed}")
+}
+
+/// Whether a core-document load failed only because the row does not exist yet.
+///
+/// Only a missing document is imported from the TOML/environment seed on the
+/// next enrollment; any other load error leaves the stored row in place.
+///
+/// # Arguments
+///
+/// * `err` - The error returned by a core-document load.
+fn document_not_imported(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<bookclerk_library::LibraryError>(),
+        Some(bookclerk_library::LibraryError::NotFound(_))
+    )
 }
 
 /// Replaces `scheme://user:password@host` userinfo.
@@ -891,12 +903,7 @@ fn bare_output_body(
 ) -> anyhow::Result<OutputSettingsV1> {
     match loaded {
         Ok(doc) => Ok(doc.body),
-        Err(err)
-            if matches!(
-                err.downcast_ref::<bookclerk_library::LibraryError>(),
-                Some(bookclerk_library::LibraryError::NotFound(_))
-            ) =>
-        {
+        Err(err) if document_not_imported(&err) => {
             // What the first enrollment will store.
             Ok(OutputSettingsV1::from_seed_lenient(seed).0)
         }
@@ -931,6 +938,13 @@ async fn print_output_authority(config: &Config) {
                     _ => println!("{key} = {value}"),
                 }
             }
+        }
+        Err(err) if !document_not_imported(&err) => {
+            // A stored document that cannot be read (unsupported version,
+            // corrupt body, unreachable database) is never re-imported, so
+            // the TOML/environment seed would not apply and is not shown.
+            println!("output.authority = unavailable");
+            println!("output.error = {}", safe_events_load_error(&err));
         }
         Err(err) => {
             println!("output.authority = transitional");
@@ -1128,6 +1142,23 @@ mod tests {
         assert!(detail.contains("first enrollment"), "{detail}");
         let failed = anyhow::anyhow!("database unreachable");
         assert!(safe_events_load_error(&failed).starts_with("database unavailable:"));
+    }
+
+    #[test]
+    fn only_a_missing_document_is_treated_as_not_imported() {
+        let missing = anyhow::Error::new(bookclerk_library::LibraryError::NotFound(
+            "configuration core.output is not initialized".into(),
+        ));
+        assert!(document_not_imported(&missing));
+        // An unsupported or corrupt stored row is kept by bootstrap, so the
+        // seed must not be presented as what applies.
+        let corrupt = anyhow::Error::new(bookclerk_library::LibraryError::Invalid(
+            "invalid configuration: unsupported schema".into(),
+        ));
+        assert!(!document_not_imported(&corrupt));
+        assert!(!document_not_imported(&anyhow::anyhow!(
+            "database unreachable"
+        )));
     }
 
     #[test]
