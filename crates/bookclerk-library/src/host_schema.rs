@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bookclerk_plugin_abi::{
@@ -181,9 +182,17 @@ pub async fn migrate_host_schema_to(
 
 /// Migrates toward `target` using `run_batch` (typed `executeAtomic`) per version.
 ///
+/// A walk that writes anything (backup or DDL) runs under the
+/// [`MIGRATION_LEASE`] cluster lease, like a start that migrates: it waits
+/// up to [`MIGRATION_LEASE_WAIT`] for another migrator, renews the lease
+/// while it works, and checks it before every DDL batch. A no-op walk only
+/// checks the database and takes no lease.
+///
 /// # Errors
 ///
-/// Returns [`LibraryError`] when the walk cannot start, a backup fails, or a batch fails.
+/// Returns [`LibraryError`] when the walk cannot start, a backup fails, a
+/// batch fails, another migrator holds the lease past the wait, or the lease
+/// is lost mid-walk.
 pub async fn migrate_host_schema_to_with_batch<F, Fut>(
     db: &DatabaseConnection,
     target: i64,
@@ -194,9 +203,29 @@ where
     F: FnMut(Vec<String>) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let walk = prepare_schema_change(db, target, &opts).await?;
-    apply_walk_batch(db, &walk, &mut run_batch).await?;
-    Ok(walk)
+    ensure_schema_migrations(db).await?;
+    let state = current_schema_state(db).await?;
+    let planned =
+        crate::schema_walk::plan_schema_walk_from_state(&host_migration_plan(), &state, target);
+    if planned.map_or(true, |walk| walk.is_noop()) {
+        // Nothing to write (or a walk that cannot start): check only, without
+        // creating `cluster_leases` or taking the lease.
+        let walk = prepare_schema_change(db, target, &opts).await?;
+        apply_walk_batch(db, &walk, &mut run_batch).await?;
+        return Ok(walk);
+    }
+    run_under_migration_lease(
+        db,
+        &mut run_batch,
+        LeasedMigration::WalkTo {
+            target,
+            opts: &opts,
+        },
+    )
+    .await?
+    .ok_or_else(|| {
+        LibraryError::Schema("schema walk under the migration lease returned no walk".into())
+    })
 }
 
 /// How long a schema migration lease lasts without renewal. The migrator
@@ -271,6 +300,40 @@ where
     if !schema_needs_migration(&state) {
         return reconcile_state_once(db, opts, run_batch, state).await;
     }
+    run_under_migration_lease(db, run_batch, LeasedMigration::Reconcile(opts))
+        .await
+        .map(|_| ())
+}
+
+/// What a holder of the [`MIGRATION_LEASE`] runs.
+#[derive(Debug, Clone, Copy)]
+enum LeasedMigration<'a> {
+    /// Reconcile with this binary's schema (a start).
+    Reconcile(&'a SchemaApplyOptions),
+    /// Walk toward `target` (`bookclerk db migrate`).
+    WalkTo {
+        /// Frozen revision to walk to.
+        target: i64,
+        /// Backup options for the walk.
+        opts: &'a SchemaApplyOptions,
+    },
+}
+
+/// Creates `cluster_leases`, takes the [`MIGRATION_LEASE`] (waiting up to
+/// [`MIGRATION_LEASE_WAIT`] for another migrator), runs `what` under it, and
+/// releases it. Returns the walk for [`LeasedMigration::WalkTo`].
+///
+/// A start that waits stops waiting once the schema matches and checks it
+/// like any start; a walk keeps waiting for the lease.
+async fn run_under_migration_lease<F, Fut>(
+    db: &DatabaseConnection,
+    run_batch: &mut F,
+    what: LeasedMigration<'_>,
+) -> Result<Option<SchemaWalk>>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
     // The lease table is part of the pack being applied; create it first.
     // Concurrent `CREATE TABLE IF NOT EXISTS` can still collide on
     // PostgreSQL's catalog; the loser retries and finds the table. An
@@ -298,15 +361,19 @@ where
         if let Some(lease) =
             acquire_lease_on(db, MIGRATION_LEASE, &holder, migration_lease_ttl()).await?
         {
-            let result = migrate_under_lease(db, opts, run_batch, &lease).await;
+            let result = migrate_under_lease(db, run_batch, &lease, what).await;
             if let Err(err) = release_lease_on(db, &lease).await {
                 tracing::warn!(error = %err, "schema migration lease release failed");
             }
             return result;
         }
-        let state = current_schema_state(db).await?;
-        if !schema_needs_migration(&state) {
-            return reconcile_state_once(db, opts, run_batch, state).await;
+        if let LeasedMigration::Reconcile(opts) = what {
+            let state = current_schema_state(db).await?;
+            if !schema_needs_migration(&state) {
+                return reconcile_state_once(db, opts, run_batch, state)
+                    .await
+                    .map(|()| None);
+            }
         }
         if tokio::time::Instant::now() >= deadline {
             let current = load_lease_on(db, MIGRATION_LEASE).await?;
@@ -325,53 +392,98 @@ where
     }
 }
 
-/// Migrates while holding `lease`: re-reads the state (a previous holder may
-/// have finished), fences each DDL batch on the lease, and renews the lease
-/// in the background so a long pre-migrate backup does not lose it.
+/// Runs `what` while holding `lease`: re-reads the state (a previous holder
+/// may have finished), fences each DDL batch on the lease, and renews the
+/// lease in the background so a long pre-migrate backup or DDL batch does
+/// not lose it. Once the renewer has given the lease up as lost, the next
+/// DDL batch is refused.
 async fn migrate_under_lease<F, Fut>(
     db: &DatabaseConnection,
-    opts: &SchemaApplyOptions,
     run_batch: &mut F,
     lease: &ClusterLease,
-) -> Result<()>
+    what: LeasedMigration<'_>,
+) -> Result<Option<SchemaWalk>>
 where
     F: FnMut(Vec<String>) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
     let ttl = migration_lease_ttl();
+    let lost = AtomicBool::new(false);
     let work = async {
-        let state = current_schema_state(db).await?;
+        let lost = &lost;
         let mut fenced = |stmts: Vec<String>| {
             let fence = renew_lease_on(db, lease, ttl);
             let batch = run_batch(stmts);
             async move {
-                if fence.await?.is_none() {
+                if lost.load(Ordering::SeqCst) || fence.await?.is_none() {
                     return Err(LibraryError::Schema(format!(
                         "lost the schema migration lease (token {}) before a DDL batch; \
-                         another starter took over",
+                         another starter may have taken over",
                         lease.token
                     )));
                 }
                 batch.await
             }
         };
-        reconcile_state_once(db, opts, &mut fenced, state).await
-    };
-    let renew = async {
-        loop {
-            tokio::time::sleep(ttl / 3).await;
-            match renew_lease_on(db, lease, ttl).await {
-                Ok(Some(_)) => {}
-                // Lost or unreadable: stop renewing; the fence refuses the
-                // next batch if the lease really is gone.
-                Ok(None) | Err(_) => std::future::pending::<()>().await,
+        match what {
+            LeasedMigration::Reconcile(opts) => {
+                let state = current_schema_state(db).await?;
+                reconcile_state_once(db, opts, &mut fenced, state).await?;
+                Ok(None)
+            }
+            LeasedMigration::WalkTo { target, opts } => {
+                let walk = prepare_schema_change(db, target, opts).await?;
+                apply_walk_batch(db, &walk, &mut fenced).await?;
+                Ok(Some(walk))
             }
         }
+    };
+    let renew = async {
+        keep_migration_lease(|| renew_lease_on(db, lease, ttl), ttl, &lost).await;
+        // The lease is gone: stop renewing; the fence refuses the next batch.
+        std::future::pending::<()>().await;
     };
     tokio::select! {
         result = work => result,
         () = renew => unreachable!("renewal never completes"),
     }
+}
+
+/// Renews a migration lease every third of `ttl` until it is lost, then sets
+/// `lost` and returns.
+///
+/// A renewal error is retried on the next tick: the lease is still ours
+/// until it expires. The lease counts as lost once a renewal finds it taken
+/// or expired, or once renewals have failed for a full `ttl` since the last
+/// one that succeeded (so it may have expired and been taken over).
+async fn keep_migration_lease<R, RFut>(mut renew: R, ttl: Duration, lost: &AtomicBool)
+where
+    R: FnMut() -> RFut,
+    RFut: Future<Output = Result<Option<ClusterLease>>>,
+{
+    let mut renewed_at = tokio::time::Instant::now();
+    loop {
+        tokio::time::sleep(ttl / 3).await;
+        let attempt = tokio::time::Instant::now();
+        match renew().await {
+            Ok(Some(_)) => renewed_at = attempt,
+            Ok(None) => {
+                tracing::warn!("schema migration lease lost; refusing further DDL");
+                break;
+            }
+            Err(err) if renewed_at.elapsed() >= ttl => {
+                tracing::warn!(
+                    error = %err,
+                    "schema migration lease not renewed for a full TTL; refusing further DDL"
+                );
+                break;
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "schema migration lease renewal failed; retrying");
+            }
+        }
+    }
+    lost.store(true, Ordering::SeqCst);
 }
 
 /// The migration lease TTL ([`MIGRATION_LEASE_TTL`]).
@@ -2130,7 +2242,8 @@ mod tests {
                 run_atomic_ddl(&exec, "schema-apply", stmts).await
             }
         };
-        let err = migrate_under_lease(&a, &SchemaApplyOptions::default(), &mut run, &stale)
+        let opts = SchemaApplyOptions::default();
+        let err = migrate_under_lease(&a, &mut run, &stale, LeasedMigration::Reconcile(&opts))
             .await
             .expect_err("fenced");
         assert!(
@@ -2142,5 +2255,119 @@ mod tests {
             current_schema_state(&a).await.unwrap(),
             SchemaState::Uninitialized
         );
+    }
+
+    #[tokio::test]
+    async fn db_migrate_runs_under_the_migration_lease() {
+        static PLAN: &[HostMigrationStep] = &[HostMigrationStep {
+            version: 1,
+            steps: &[MigrationOp::Schema(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)",
+            )],
+            down: None,
+            introduced_in: "0.0.0",
+        }];
+        let _plan = crate::migrations::override_host_migration_plan(PLAN);
+        MIGRATION_LEASE_TIMING.with(|t| {
+            t.set(Some((Duration::from_secs(60), Duration::from_millis(300))));
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = two_file_connections(dir.path()).await;
+        ensure_schema_migrations(&a).await.unwrap();
+        run_atomic_ddl(&a, "lease-table", vec![CLUSTER_LEASES_DDL.to_string()])
+            .await
+            .unwrap();
+        let busy = acquire_lease_on(&a, MIGRATION_LEASE, "busy", Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let batches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let run = |db: &DatabaseConnection| {
+            let counter = batches.clone();
+            let exec = db.clone();
+            move |stmts: Vec<String>| {
+                let counter = counter.clone();
+                let exec = exec.clone();
+                async move {
+                    // `CREATE TABLE IF NOT EXISTS cluster_leases` runs before
+                    // the lease; count only the walk's own batches.
+                    if stmts != [CLUSTER_LEASES_DDL] {
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    run_atomic_ddl(&exec, "schema-migrate", stmts).await
+                }
+            }
+        };
+        // Another migrator holds the lease: the walk waits, then fails closed
+        // without a batch.
+        let err = migrate_host_schema_to_with_batch(&b, 1, SchemaApplyOptions::default(), run(&b))
+            .await
+            .expect_err("lease held elsewhere");
+        assert!(
+            err.to_string().contains("another starter is migrating"),
+            "{err}"
+        );
+        assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            current_schema_state(&b).await.unwrap(),
+            SchemaState::Uninitialized
+        );
+        // Once it is free, the walk takes the lease, applies, and releases it.
+        release_lease_on(&a, &busy).await.unwrap();
+        let walk = migrate_host_schema_to_with_batch(&b, 1, SchemaApplyOptions::default(), run(&b))
+            .await
+            .expect("walk");
+        assert_eq!(walk.stopped_at, 1);
+        assert_eq!(batches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(matches!(
+            current_schema_state(&a).await.unwrap(),
+            SchemaState::Frozen { version: 1, .. }
+        ));
+        let lease = load_lease_on(&a, MIGRATION_LEASE).await.unwrap().unwrap();
+        assert!(lease.holder.starts_with("pid"), "{lease:?}");
+        assert_eq!((lease.token, lease.expires_at_ms), (2, 0));
+        MIGRATION_LEASE_TIMING.with(|t| t.set(None));
+    }
+
+    #[tokio::test]
+    async fn the_lease_renewer_retries_errors_and_stops_only_once_the_lease_is_lost() {
+        let ttl = Duration::from_millis(300);
+        let lease = ClusterLease {
+            name: MIGRATION_LEASE.into(),
+            holder: "h".into(),
+            token: 1,
+            expires_at_ms: i64::MAX,
+        };
+        let transient = || Err(LibraryError::Other(anyhow::anyhow!("database busy")));
+        // Transient errors are retried; a renewal that finds the lease taken
+        // stops the renewer.
+        let mut script = vec![Ok(None), Ok(Some(lease.clone())), transient(), transient()];
+        let calls = std::cell::Cell::new(0_usize);
+        let lost = AtomicBool::new(false);
+        keep_migration_lease(
+            || {
+                calls.set(calls.get() + 1);
+                std::future::ready(script.pop().expect("renewed after the lease was lost"))
+            },
+            ttl,
+            &lost,
+        )
+        .await;
+        assert_eq!(calls.get(), 4);
+        assert!(lost.load(Ordering::SeqCst));
+        // Renewals that keep failing for a full TTL count as lost.
+        let calls = std::cell::Cell::new(0_usize);
+        let lost = AtomicBool::new(false);
+        keep_migration_lease(
+            || {
+                calls.set(calls.get() + 1);
+                std::future::ready(transient())
+            },
+            ttl,
+            &lost,
+        )
+        .await;
+        assert!(lost.load(Ordering::SeqCst));
+        assert!((2..=4).contains(&calls.get()), "{}", calls.get());
     }
 }

@@ -2,9 +2,10 @@
 //!
 //! A lease is one `cluster_leases` row: a holder (a node id, or a process
 //! id for schema migration), a fencing token, and an expiry in Unix
-//! milliseconds. Acquiring a free or expired lease bumps the token;
-//! renewing a held one keeps it. Every write is a compare-and-swap on
-//! `(name, holder, token)`, so two contenders never both win.
+//! milliseconds. Acquiring a free or expired lease bumps the token (even
+//! for the holder that let it expire); renewing a held one keeps it. Every
+//! write is a compare-and-swap on `(name, holder, token)`, so two
+//! contenders never both win.
 //!
 //! A lease only says who *should* act. A holder that stalls past its expiry
 //! can still be running, so destructive work checks the lease first with
@@ -77,8 +78,9 @@ fn expiry_after(ttl: Duration) -> i64 {
 /// Acquires or renews `name` for `holder` for `ttl`.
 ///
 /// Returns `None` when another holder's lease has not expired, or when a
-/// concurrent acquire won. Renewing keeps the token; taking over an expired
-/// lease bumps it.
+/// concurrent acquire won. Renewing an unexpired lease keeps the token;
+/// taking an expired (or released) lease bumps it, even when `holder` is
+/// the one that held it.
 ///
 /// # Errors
 ///
@@ -134,10 +136,13 @@ pub async fn acquire_lease_on<C: ConnectionTrait>(
             },
         };
     };
-    let token = if row.holder == holder {
-        row.token
-    } else if row.expires_at_ms <= now_ms {
+    // Every expired row is a takeover, even by the same holder string: two
+    // processes can share a holder id (a node id), and the stalled one must
+    // not pass a fence check with the token its replacement now holds.
+    let token = if row.expires_at_ms <= now_ms {
         row.token + 1
+    } else if row.holder == holder {
+        row.token
     } else {
         return Ok(None);
     };

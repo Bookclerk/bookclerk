@@ -122,10 +122,11 @@ async fn an_expired_fence_is_refused_even_before_anyone_takes_over() {
     let mut fence = duty.poll(&a).await.unwrap().unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(fence.check().await.is_err());
-    // Re-polling retakes the free lease with the same token; the duty runs
-    // since its last run never completed (`mark_ran` was not called).
+    // Re-polling retakes the expired lease as a takeover (a new token); the
+    // duty runs at once.
     let again = duty.poll(&a).await.unwrap().expect("retaken");
-    assert_eq!(again.lease().token, 1);
+    assert_eq!(again.lease().token, 2);
+    assert!(fence.check().await.is_err(), "the old token stays fenced");
     assert_eq!(
         list_leases(&a)
             .await
@@ -136,4 +137,35 @@ async fn an_expired_fence_is_refused_even_before_anyone_takes_over() {
         // The schema migration that created the database left its row too.
         vec![EVENT_RETENTION_LEASE, MIGRATION_LEASE]
     );
+}
+
+#[tokio::test]
+async fn a_replacement_with_the_same_holder_id_fences_the_stalled_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("library.db");
+    // Two daemon processes sharing one node identity.
+    let old = file_store(&db).await;
+    let new = file_store(&db).await;
+    let ttl = Duration::from_millis(100);
+    let lease = acquire_lease(&old, SESSION_EXPIRY_LEASE, "node-a", ttl)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut stalled = LeaseFence::new(&old, lease, ttl);
+    // The old process pauses past expiry; its replacement reacquires.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let taken = acquire_lease(
+        &new,
+        SESSION_EXPIRY_LEASE,
+        "node-a",
+        Duration::from_secs(60),
+    )
+    .await
+    .unwrap()
+    .expect("replacement takes the expired lease");
+    assert_eq!(taken.token, 2, "an expired lease is a takeover");
+    let refused = stalled.check().await.expect_err("stalled process fenced");
+    assert!(matches!(refused, LibraryError::Conflict(_)), "{refused}");
+    let mut current = LeaseFence::new(&new, taken, Duration::from_secs(60));
+    current.check().await.expect("replacement holds it");
 }

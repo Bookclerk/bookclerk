@@ -383,7 +383,9 @@ after 300 s. The lease row keeps the last migrator's holder and token, and
 `GET /api/cluster/status` shows it with the schema state (`cluster.schema`).
 
 `bookclerk db version|backup|restore|migrate` inspects
-state and walks frozen revisions without applying on connect. Version display
+state and walks frozen revisions without applying on connect. A `migrate`
+walk that writes (backup or DDL) takes the same `schema.migrate` lease, with
+the same wait, renewal, and per-batch check. Version display
 is `uninitialized` / `unreleased@base<n>+<checksum>` / `frozen@<version>+<checksum>`.
 With an empty frozen plan, `migrate --to` is a no-op; restore is time travel.
 
