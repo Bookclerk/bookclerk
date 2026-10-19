@@ -335,6 +335,30 @@ async fn a_job_naming_its_account_by_label_gets_its_secrets() {
     }
 }
 
+/// A handoff whose lease ran out while the secrets were read records
+/// nothing, so the secrets are not handed out.
+#[tokio::test]
+async fn a_handoff_after_the_lease_ran_out_records_nothing() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.fence().unwrap();
+    assert!(remote_work::record_handoff(&w.store, HOST, &fence, &[])
+        .await
+        .unwrap());
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::LeaseExpiresAt, Expr::value(Some(past)))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(!remote_work::record_handoff(&w.store, HOST, &fence, &[])
+        .await
+        .unwrap());
+}
+
 /// A job pinned to an instance is handed only that plugin's secrets, even
 /// when another plugin holds an account with the same id.
 #[tokio::test]

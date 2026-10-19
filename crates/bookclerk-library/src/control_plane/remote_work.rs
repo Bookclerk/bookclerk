@@ -391,15 +391,19 @@ async fn unseal_job_secrets(store: &LibraryStore, job: &JobRecord) -> Result<Vec
 /// # Errors
 ///
 /// Returns an error when the batch fails.
-async fn record_handoff(
+pub(super) async fn record_handoff(
     store: &LibraryStore,
     node_id: &str,
     fence: &JobFence,
     secrets: &[JobSecret],
 ) -> Result<bool> {
-    /// The fence still owns the running job.
+    /// The fence still owns the running job, and its lease has not run out
+    /// (compared as the reclaim compares it): secrets read for longer than
+    /// the lease are not handed out for a job that may already be claimable
+    /// again.
     const OWNED: &str = "EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = ? \
-                          AND lease_owner = ? AND lease_generation = ?)";
+                          AND lease_owner = ? AND lease_generation = ? \
+                          AND lease_expires_at > ?)";
     let now = Utc::now().to_rfc3339();
     let running = JobState::Running.as_str();
     let owned = || {
@@ -408,12 +412,14 @@ async fn record_handoff(
             text(running),
             text(&fence.owner),
             int(fence.generation),
+            text(&now),
         ]
     };
     let mut statements = vec![
         batch::exec(
             "UPDATE jobs SET updated_at = ?
-              WHERE id = ? AND state = ? AND lease_owner = ? AND lease_generation = ?",
+              WHERE id = ? AND state = ? AND lease_owner = ? AND lease_generation = ?
+                AND lease_expires_at > ?",
             [vec![text(&now)], owned()].concat(),
         ),
         batch::exec(
