@@ -292,22 +292,34 @@ impl SqliteProxy {
         if !matches!(permit, StatementPermit::Transient(_)) || !is_lock_contention_db_err(&err) {
             return Err(err);
         }
-        let budget = self.connection_budget();
-        if budget.cancelled() {
-            tracing::debug!(error = %err, "sqlite autocommit retry stopped by cancel");
-            return Err(DbErr::Custom("cancelled: atomic session cancelled".into()));
-        }
-        if budget.deadline_expired() {
-            tracing::debug!(error = %err, "sqlite autocommit retry stopped at the request deadline");
-            return Err(DbErr::Custom(
-                "deadline_exceeded: atomic deadline elapsed".into(),
-            ));
+        if let Some(stop) = self.autocommit_interrupt() {
+            tracing::debug!(error = %err, stop = %stop, "sqlite autocommit retry stopped");
+            return Err(stop);
         }
         if started.elapsed() >= BEGIN_CONTENTION_BUDGET {
             return Err(err);
         }
         tracing::debug!(error = %err, "sqlite autocommit statement waiting for the file lock");
         Ok(())
+    }
+
+    /// The error that stops an autocommit retry now, if the session was
+    /// cancelled or its request deadline has passed.
+    ///
+    /// Checked after a failed attempt and again after the pause before the
+    /// next one, so a cancel or deadline that arrives while waiting never lets
+    /// the statement run.
+    fn autocommit_interrupt(&self) -> Option<DbErr> {
+        let budget = self.connection_budget();
+        if budget.cancelled() {
+            return Some(DbErr::Custom("cancelled: atomic session cancelled".into()));
+        }
+        if budget.deadline_expired() {
+            return Some(DbErr::Custom(
+                "deadline_exceeded: atomic deadline elapsed".into(),
+            ));
+        }
+        None
     }
 
     /// Runs one query attempt on the blocking pool.
@@ -651,6 +663,9 @@ impl ProxyDatabaseTrait for SqliteProxy {
                 Err(err) => {
                     self.autocommit_retry(&permit, err, started)?;
                     tokio::time::sleep(self.begin_retry_pause()).await;
+                    if let Some(stop) = self.autocommit_interrupt() {
+                        return Err(stop);
+                    }
                 }
                 result => return result,
             }
@@ -669,6 +684,9 @@ impl ProxyDatabaseTrait for SqliteProxy {
                 Err(err) => {
                     self.autocommit_retry(&permit, err, started)?;
                     tokio::time::sleep(self.begin_retry_pause()).await;
+                    if let Some(stop) = self.autocommit_interrupt() {
+                        return Err(stop);
+                    }
                 }
                 result => return result,
             }
