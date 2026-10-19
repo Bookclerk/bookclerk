@@ -160,8 +160,11 @@ where
         .unwrap_or_else(|| panic!("no status line in {text:?}"))
 }
 
-#[tokio::test]
-async fn a_stalled_server_bounds_finished_handshakes() {
+/// A server config for `localhost` and a connector that trusts it.
+fn localhost_tls() -> (
+    tokio_rustls::rustls::ServerConfig,
+    tokio_rustls::TlsConnector,
+) {
     use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
     use tokio_rustls::rustls::ServerConfig;
 
@@ -182,7 +185,49 @@ async fn a_stalled_server_bounds_finished_handshakes() {
         .unwrap()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+    (server, tokio_rustls::TlsConnector::from(Arc::new(client)))
+}
+
+#[tokio::test]
+async fn accepted_connections_hold_a_slot_until_closed() {
+    let (server, connector) = localhost_tls();
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = tcp.local_addr().unwrap();
+    let (handshakes, mut accepted) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(super::accept_loop(
+        tcp,
+        Arc::new(server),
+        None,
+        handshakes,
+        4,
+        1,
+    ));
+    let handshake = || async {
+        let tcp = tokio::net::TcpStream::connect(local).await.unwrap();
+        connector
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+    };
+    let _client = handshake().await.unwrap();
+    let held = accepted.recv().await.unwrap();
+    // The server holds the only connection slot, even while idle.
+    assert!(handshake().await.is_err(), "a second connection was let in");
+    // Closing it frees the slot.
+    drop(held);
+    let mut reopened = false;
+    for _ in 0..100 {
+        if handshake().await.is_ok() {
+            reopened = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reopened, "the slot was not released");
+}
+
+#[tokio::test]
+async fn a_stalled_server_bounds_finished_handshakes() {
+    let (server, connector) = localhost_tls();
 
     // One slot in flight, one in the queue, and a server that never accepts.
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -194,6 +239,7 @@ async fn a_stalled_server_bounds_finished_handshakes() {
         None,
         handshakes,
         1,
+        16,
     ));
     let handshake = || async {
         let tcp = tokio::net::TcpStream::connect(local).await.unwrap();
@@ -407,4 +453,17 @@ fn private_writes_replace_the_whole_file() {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
     }
+}
+
+#[test]
+fn a_reloaded_owner_origin_does_not_match_the_listener() {
+    let mut gate = NodeApiGate::fixed(
+        bookclerk_config::NodeApiMode::SelfSigned,
+        NodeApiStatus::Ready,
+    );
+    assert!(gate.origin_matches(Some("https://other.example")));
+    gate.origin = Some("https://owner.example".into());
+    assert!(gate.origin_matches(Some("https://owner.example")));
+    assert!(!gate.origin_matches(Some("https://other.example")));
+    assert!(!gate.origin_matches(None));
 }

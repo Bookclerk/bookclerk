@@ -418,7 +418,17 @@ impl NodeApiConfig {
                 }
                 tls_listen()
             }
-            NodeApiMode::SelfSigned => tls_listen(),
+            NodeApiMode::SelfSigned => {
+                // Enrollment links carry the public origin; hosts dial it
+                // over TLS, so an http origin would mint unusable links.
+                let set = public_origin.is_some_and(|origin| !origin.trim().is_empty());
+                if set && !https_origin {
+                    return Err("daemon.node_api.mode = \"self_signed\" needs an https \
+                         integrations.public_origin when one is set"
+                        .into());
+                }
+                tls_listen()
+            }
         }
     }
 }
@@ -1338,6 +1348,17 @@ mode = "proxy"
             ..NodeApiConfig::default()
         };
         assert!(self_signed.validate(&[], None).is_err());
+        let self_signed = NodeApiConfig {
+            tls_listen: Some("0.0.0.0:8443".into()),
+            ..self_signed
+        };
+        assert!(self_signed.validate(&[], None).is_ok());
+        assert!(self_signed
+            .validate(&[], Some("https://owner.example:8443"))
+            .is_ok());
+        assert!(self_signed
+            .validate(&[], Some("http://owner.example:8443"))
+            .is_err());
         assert!(Config::from_toml_str("[daemon.node_api]\nmode = \"plain\"\n", "test").is_err());
     }
 

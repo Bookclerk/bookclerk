@@ -242,7 +242,8 @@ where
         .with_state(state)
 }
 
-/// Checks that the node API is mounted ([`tls::node_api_mounted`]), then
+/// Checks that the node API is mounted ([`tls::node_api_mounted`], and the
+/// owner origin is still the one the TLS listener started for), then
 /// runs [`classify_transport`]. Answers 404 `node_api_unmounted` while a
 /// TLS mode has no certificate, or 403 `transport_insecure` when the
 /// connection is refused.
@@ -254,10 +255,13 @@ async fn check_transport(
     let conn = connection_info(state, parts).await;
     let decision = {
         let cfg = state.config.read().await;
-        if !tls::node_api_mounted(
-            cfg.daemon.node_api.mode,
-            parts.extensions.get::<tls::NodeApiGate>(),
-        ) {
+        let gate = parts.extensions.get::<tls::NodeApiGate>();
+        let live_origin = bookclerk_node_proto::canonical_origin(
+            &crate::origin::effective_origin_from_config(&cfg, None),
+        );
+        if !tls::node_api_mounted(cfg.daemon.node_api.mode, gate)
+            || gate.is_some_and(|gate| !gate.origin_matches(live_origin.as_deref()))
+        {
             return Err((
                 StatusCode::NOT_FOUND,
                 Json(json!({ "error": "node_api_unmounted" })),
