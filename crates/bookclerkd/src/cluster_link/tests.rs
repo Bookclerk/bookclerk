@@ -3283,14 +3283,16 @@ async fn leaving_stops_the_running_client() {
     let watcher = tokio::spawn(super::stop_when_inactive(
         host.clone(),
         "cluster-leave".into(),
+        "node-leave".into(),
         Arc::clone(&stop),
         shutdown,
     ));
     shut.send(true).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), watcher)
+    let why = tokio::time::timeout(Duration::from_secs(5), watcher)
         .await
         .expect("the watcher returns on shutdown")
         .unwrap();
+    assert_eq!(why, super::LinkStop::Shutdown);
     assert!(*stopped.borrow_and_update(), "shutdown stops the client");
 
     // While active, nothing stops; after leaving, the client is stopped.
@@ -3300,6 +3302,7 @@ async fn leaving_stops_the_running_client() {
     let watcher = tokio::spawn(super::stop_when_inactive(
         host.clone(),
         "cluster-leave".into(),
+        "node-leave".into(),
         Arc::clone(&stop),
         shutdown,
     ));
@@ -3318,5 +3321,85 @@ async fn leaving_stops_the_running_client() {
         .expect("the client is stopped after leaving")
         .unwrap();
     assert!(*stopped.borrow());
-    watcher.await.unwrap();
+    assert_eq!(watcher.await.unwrap(), super::LinkStop::Inactive);
+}
+
+/// A link re-enrolled as another node (`bookclerk clusters join` again)
+/// stops the client running as the previous node, and says so.
+#[tokio::test]
+async fn a_rejoin_as_another_node_stops_the_previous_client() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let _owner = crate::node_api::tests::test_state(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let host = host_store(host_files.path()).await;
+    let enroll = |node: &str| bookclerk_library::control_plane::NewClusterLink {
+        owner_cluster_id: "cluster-rejoin".into(),
+        owner_origin: "https://owner.example".into(),
+        remote_node_id: node.into(),
+        spki_pin: None,
+    };
+    let keys = bookclerk_library::control_plane::ClusterLinkKeys::generate;
+    bookclerk_library::control_plane::record_cluster_link(&host, &enroll("node-old"), &keys())
+        .await
+        .unwrap();
+
+    let (stop, mut stopped) = watch::channel(false);
+    let (_shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "cluster-rejoin".into(),
+        "node-old".into(),
+        Arc::new(stop),
+        shutdown,
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), stopped.changed())
+            .await
+            .is_err(),
+        "the link as enrolled keeps its client"
+    );
+    bookclerk_library::control_plane::record_cluster_link(&host, &enroll("node-new"), &keys())
+        .await
+        .unwrap();
+    tokio::time::timeout(super::consent::CONSENT_POLL * 3, stopped.changed())
+        .await
+        .expect("the previous node's client is stopped")
+        .unwrap();
+    assert!(*stopped.borrow());
+    assert_eq!(watcher.await.unwrap(), super::LinkStop::Replaced);
+}
+
+/// Through the running supervisor: after the host joins the same cluster
+/// again, the client of the previous node disconnects and one for the new
+/// node connects, without a restart or a database swap.
+#[tokio::test]
+async fn a_rejoined_link_is_dialed_as_the_new_node() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+
+    let (host_state, host) = crate::node_api::tests::test_state(&host_files).await;
+    let first = join(&owner, &host, member, &origin, None).await.unwrap();
+    super::spawn_cluster_links(Arc::clone(&host_state));
+    eventually("the first node to connect", || async {
+        crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+
+    let second = join(&owner, &host, member, &origin, None).await.unwrap();
+    assert_eq!(second.owner_cluster_id, first.owner_cluster_id);
+    assert_ne!(second.remote_node_id, first.remote_node_id);
+    eventually("the new node to connect", || async {
+        crate::node_api::ws::node_session_live(&second.remote_node_id)
+    })
+    .await;
+    eventually("the previous node to disconnect", || async {
+        !crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
 }
