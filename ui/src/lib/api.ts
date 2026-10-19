@@ -1733,7 +1733,9 @@ export interface SettingsResponse {
   /**
    * `core.output` document revision the `output.*` values were read from; send it
    * as `expected_output_revision`. `effective["output.revision"]` is the revision
-   * this host has applied, which can lag the document.
+   * this host has applied, which can lag the document. Absent when the server
+   * could not read `core.output`; the `output.*` values are then missing too and
+   * must not be edited.
    */
   output_revision?: number;
 }

@@ -146,16 +146,20 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
     [baseline, values],
   );
 
+  // No revision means the server could not read `core.output`: the fields
+  // would show blanks rather than the document, so nothing is saved from them.
+  const unavailable = revision === null;
+
   async function onSave(event: FormEvent) {
     event.preventDefault();
-    if (changed.length === 0) return;
+    if (changed.length === 0 || revision === null) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
       const next = await patchSettings({
         settings: changed.map((field) => ({ key: field.key, value: values[field.key] ?? "" })),
-        ...(revision === null ? {} : { expected_output_revision: revision }),
+        expected_output_revision: revision,
       });
       apply(next);
       setNotice("Saved. Every host applies the new revision on its next wakeup.");
@@ -208,6 +212,17 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
           </p>
         ) : null}
         {notice ? <p className="text-sm text-teal">{notice}</p> : null}
+        {unavailable ? (
+          <div className="flex items-center justify-between gap-3" role="alert">
+            <p className="text-sm font-medium text-brick">
+              Output settings are unavailable: the server could not read the shared output
+              document. Editing is disabled until it can be read.
+            </p>
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => void load()}>
+              Retry
+            </Button>
+          </div>
+        ) : null}
         <div className="grid gap-4 bg-card px-3 py-3 sm:grid-cols-2">
           {selects.map((field) => (
             <div key={field.key} className="space-y-1.5">
@@ -219,6 +234,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
                   id={field.key}
                   value={values[field.key] ?? ""}
                   onChange={(e) => set(field.key, e.target.value)}
+                  disabled={unavailable}
                   className={selectClassName}
                 >
                   {field.options.some(([value]) => value === values[field.key]) ? null : (
@@ -235,6 +251,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
                   id={field.key}
                   value={values[field.key] ?? ""}
                   onChange={(e) => set(field.key, e.target.value)}
+                  disabled={unavailable}
                   spellCheck={false}
                 />
               )}
@@ -254,6 +271,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
                 className="mt-1 h-4 w-4 shrink-0 accent-teal"
                 checked={values[field.key] === "true"}
                 onChange={(e) => set(field.key, String(e.target.checked))}
+                disabled={unavailable}
               />
             </div>
           ))}
@@ -263,12 +281,12 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
         <Button
           type="button"
           variant="ghost"
-          disabled={busy || changed.length === 0}
+          disabled={busy || unavailable || changed.length === 0}
           onClick={() => setValues(baseline)}
         >
           Discard
         </Button>
-        <Button type="submit" disabled={busy || changed.length === 0}>
+        <Button type="submit" disabled={busy || unavailable || changed.length === 0}>
           {busy ? "Saving…" : "Save output settings"}
         </Button>
       </div>
