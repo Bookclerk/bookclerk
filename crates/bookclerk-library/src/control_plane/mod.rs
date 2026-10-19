@@ -46,12 +46,13 @@ pub use documents::{
 };
 pub use enrollment::{
     format_enrollment_token, list_enrollment_links, load_host_enrollment, load_node_credential,
-    mint_enrollment_link, parse_enrollment_token, redeem_enrollment_link, revoke_enrollment_link,
-    revoke_node_credential, set_host_enrollment_enabled, verify_cluster_owner, EnrolledNode,
-    EnrollmentActor, EnrollmentLink, EnrollmentSecret, EnrollmentToken, HostEnrollmentSettings,
-    HostEnrollmentSettingsV1, MintedLink, NodeCredential, RedeemRequest, DEFAULT_LINK_TTL,
-    ENROLLMENT_TOKEN_PREFIX, HOST_ENROLLMENT_NAMESPACE, HOST_ENROLLMENT_SCHEMA_VERSION,
-    MAX_LINK_LABEL_BYTES, MAX_LINK_TTL, MIN_LINK_TTL, NODE_PUBLIC_KEY_LEN,
+    mint_enrollment_link, parse_enrollment_token, record_node_connected, redeem_enrollment_link,
+    revoke_enrollment_link, revoke_node_credential, set_host_enrollment_enabled,
+    verify_cluster_owner, EnrolledNode, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
+    EnrollmentToken, HostEnrollmentSettings, HostEnrollmentSettingsV1, MintedLink, NodeCredential,
+    RedeemRequest, DEFAULT_LINK_TTL, ENROLLMENT_TOKEN_PREFIX, HOST_ENROLLMENT_NAMESPACE,
+    HOST_ENROLLMENT_SCHEMA_VERSION, MAX_LINK_LABEL_BYTES, MAX_LINK_TTL, MIN_LINK_TTL,
+    NODE_PUBLIC_KEY_LEN,
 };
 pub use identity::{
     current_process_incarnation, list_node_ids, list_nodes, load_node,

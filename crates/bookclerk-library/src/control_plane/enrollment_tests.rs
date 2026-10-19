@@ -60,8 +60,12 @@ fn redeem_request(minted: &MintedLink, seed: u8) -> RedeemRequest {
     RedeemRequest {
         link_id: minted.link.link_id.clone(),
         secret: minted.secret.clone(),
-        sign_public_key: vec![seed; NODE_PUBLIC_KEY_LEN],
-        box_public_key: vec![seed.wrapping_add(1); NODE_PUBLIC_KEY_LEN],
+        sign_public_key: bookclerk_node_proto::sign_public_key(&[seed; NODE_PUBLIC_KEY_LEN])
+            .to_vec(),
+        box_public_key: bookclerk_node_proto::box_public_key(
+            &[seed.wrapping_add(1); NODE_PUBLIC_KEY_LEN],
+        )
+        .to_vec(),
         software_version: "1.2.3".into(),
     }
 }
@@ -96,8 +100,14 @@ async fn a_link_redeems_once_into_a_host_node_owned_by_its_user() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(credential.sign_public_key, vec![7; 32]);
-    assert_eq!(credential.box_public_key, vec![8; 32]);
+    assert_eq!(
+        credential.sign_public_key,
+        bookclerk_node_proto::sign_public_key(&[7; 32])
+    );
+    assert_eq!(
+        credential.box_public_key,
+        bookclerk_node_proto::box_public_key(&[8; 32])
+    );
     assert_eq!(credential.link_id, minted.link.link_id);
     assert!(credential.revoked_at.is_none());
 
@@ -603,4 +613,51 @@ async fn postgres_concurrent_redeems_on_two_pools_create_one_node() {
         .await
         .unwrap();
     race_two_redeems([store_a, store_b], &minted).await;
+}
+
+#[tokio::test]
+async fn redeem_refuses_keys_that_are_not_prime_order_points() {
+    let _guard = master_key_test_lock_async().await;
+    let (store, _dir) = cluster().await;
+    let riley = user(&store, UserRole::Member, "Riley").await;
+    let minted = mint_enrollment_link(&store, &operator(), riley, "", None)
+        .await
+        .unwrap();
+    // The Ed25519 identity (small order), an X25519 twist point, and a
+    // short key.
+    let mut identity = [0u8; NODE_PUBLIC_KEY_LEN];
+    identity[0] = 1;
+    let mut twist = [0u8; NODE_PUBLIC_KEY_LEN];
+    twist[0] = 2;
+    let good = redeem_request(&minted, 7);
+    for (sign, boxed) in [
+        (identity.to_vec(), good.box_public_key.clone()),
+        (good.sign_public_key.clone(), twist.to_vec()),
+        (good.sign_public_key.clone(), vec![9; 31]),
+    ] {
+        let mut req = good.clone();
+        req.sign_public_key = sign;
+        req.box_public_key = boxed;
+        let err = redeem_enrollment_link(&store, &req).await.unwrap_err();
+        assert!(matches!(err, LibraryError::Invalid(_)), "{err}");
+    }
+    // Refused keys do not spend the link.
+    let enrolled = redeem_enrollment_link(&store, &good).await.unwrap();
+
+    // A connection stamps the credential until it is revoked.
+    assert!(record_node_connected(&store, &enrolled.node_id)
+        .await
+        .unwrap());
+    let stamped = load_node_credential(&store, &enrolled.node_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stamped.last_connected_at.is_some());
+    revoke_node_credential(&store, &operator(), &enrolled.node_id)
+        .await
+        .unwrap();
+    assert!(!record_node_connected(&store, &enrolled.node_id)
+        .await
+        .unwrap());
+    assert!(!record_node_connected(&store, "no-such-node").await.unwrap());
 }

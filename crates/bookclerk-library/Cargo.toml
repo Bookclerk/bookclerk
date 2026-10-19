@@ -24,6 +24,7 @@ email_address.workspace = true
 bookclerk-config.workspace = true
 bookclerk-sandbox.workspace = true
 bookclerk-db-exec.workspace = true
+bookclerk-node-proto.workspace = true
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 html-escape.workspace = true
 rand.workspace = true

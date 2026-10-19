@@ -821,13 +821,13 @@ struct RedeemReceipt {
     owner_user_id: i64,
 }
 
-/// Rejects keys of the wrong size and the all-zero key.
-fn validate_public_key(name: &str, key: &[u8]) -> Result<()> {
-    if key.len() != NODE_PUBLIC_KEY_LEN || key.iter().all(|b| *b == 0) {
-        return Err(LibraryError::Invalid(format!(
-            "{name} must be {NODE_PUBLIC_KEY_LEN} bytes"
-        )));
-    }
+/// Rejects a signing or box key that is not a canonical prime-order
+/// Curve25519 point of [`NODE_PUBLIC_KEY_LEN`] bytes.
+fn validate_public_keys(sign_public_key: &[u8], box_public_key: &[u8]) -> Result<()> {
+    bookclerk_node_proto::validate_sign_public_key(sign_public_key)
+        .map_err(|err| LibraryError::Invalid(format!("sign_pk: {err}")))?;
+    bookclerk_node_proto::validate_box_public_key(box_public_key)
+        .map_err(|err| LibraryError::Invalid(format!("box_pk: {err}")))?;
     Ok(())
 }
 
@@ -851,8 +851,7 @@ pub async fn redeem_enrollment_link(
     store: &LibraryStore,
     req: &RedeemRequest,
 ) -> Result<EnrolledNode> {
-    validate_public_key("sign_pk", &req.sign_public_key)?;
-    validate_public_key("box_pk", &req.box_public_key)?;
+    validate_public_keys(&req.sign_public_key, &req.box_public_key)?;
     let software_version = req.software_version.trim();
     if software_version.len() > MAX_SOFTWARE_VERSION_BYTES
         || software_version.chars().any(char::is_control)
@@ -1089,6 +1088,27 @@ pub async fn load_node_credential(
         .await
         .map_err(LibraryError::Orm)?
         .map(NodeCredential::from))
+}
+
+/// Stamps `last_connected_at` after a host node authenticates. Returns
+/// false (and stamps nothing) when the credential is missing or revoked,
+/// so a revoke that lands mid-handshake still refuses the connection.
+///
+/// # Errors
+///
+/// Returns an error when the update fails.
+pub async fn record_node_connected(store: &LibraryStore, node_id: &str) -> Result<bool> {
+    let updated = node_credentials::Entity::update_many()
+        .col_expr(
+            node_credentials::Column::LastConnectedAt,
+            Expr::value(stamp(Utc::now())),
+        )
+        .filter(node_credentials::Column::NodeId.eq(node_id))
+        .filter(node_credentials::Column::RevokedAt.is_null())
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(updated.rows_affected == 1)
 }
 
 /// Revokes a host node's credential and tells every node, so the node
