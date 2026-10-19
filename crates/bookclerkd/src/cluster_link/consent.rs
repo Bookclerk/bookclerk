@@ -871,6 +871,13 @@ mod tests {
             default_instance: true,
             consent: RemoteConsentState::Consented(Box::new(grant.clone())),
             root: Some(PathBuf::from("/versions/store")),
+            version: Some(
+                plugin_version(
+                    plugin_key,
+                    &remote_version(&"ab".repeat(32), &"cd".repeat(32)),
+                )
+                .unwrap(),
+            ),
             config: Some(RemoteInstanceConfig {
                 revision: 1,
                 config: serde_json::json!({}),
