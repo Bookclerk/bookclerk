@@ -132,6 +132,9 @@ pub struct RemoteJobClaim {
     pub job: JobRecord,
     /// The account secrets the job needs, unsealed.
     pub secrets: Vec<JobSecret>,
+    /// The claim resumed a suspended job ([`RoutedJobClaim::resumed`]).
+    /// Pass it back to [`release_remote_job`] if the claim is given back.
+    pub resumed: bool,
 }
 
 /// Outcome of [`renew_remote_job`].
@@ -219,15 +222,33 @@ pub async fn claim_remote_job(
     let Some(claim) = handoff_routed_job(store, &request, claim).await? else {
         return Ok(None);
     };
-    let RoutedJobClaim { job, permits, .. } = claim;
+    let RoutedJobClaim {
+        job,
+        permits,
+        resumed,
+        ..
+    } = claim;
     let Some(fence) = job.fence() else {
         let _ = release_permits(store, &permits).await;
         return Ok(None);
     };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
+            // Trust can change while the secrets are read: check it once
+            // more right before they are recorded and handed out. Every
+            // later frame under the fence checks it again.
+            let still_trusted = node_may_claim_job(store, node_id, Claimant::Remote, &job).await;
+            if !matches!(still_trusted, Ok(true)) {
+                let _ = store.release_job_claim(&fence, resumed).await;
+                let _ = release_permits(store, &permits).await;
+                return still_trusted.map(|_| None);
+            }
             match record_handoff(store, node_id, &fence, &secrets).await {
-                Ok(true) => Ok(Some(RemoteJobClaim { job, secrets })),
+                Ok(true) => Ok(Some(RemoteJobClaim {
+                    job,
+                    secrets,
+                    resumed,
+                })),
                 Ok(false) => {
                     // The lease was lost while the secrets were read; the
                     // job is someone else's now, so only the permits go back.
@@ -236,7 +257,7 @@ pub async fn claim_remote_job(
                 }
                 Err(err) => {
                     // Nothing went out; give the claim back unspent.
-                    let _ = store.release_job_claim(&fence, false).await;
+                    let _ = store.release_job_claim(&fence, resumed).await;
                     let _ = release_permits(store, &permits).await;
                     Err(err)
                 }
@@ -426,10 +447,20 @@ async fn record_handoff(
     Ok(batch::rows_affected(&reply, 0) == 1)
 }
 
-/// Drops every handoff row of `job_id`.
-async fn forget_handoffs(store: &LibraryStore, job_id: &str) -> Result<()> {
+/// Drops the handoff rows of `job_id` recorded under `generation` or an
+/// earlier lease.
+///
+/// Callers run this after the claim is given back, when the job may
+/// already be claimed again; a successor's lease has a higher generation,
+/// so its rows are kept.
+pub(super) async fn forget_handoffs(
+    store: &LibraryStore,
+    job_id: &str,
+    generation: i64,
+) -> Result<()> {
     job_secret_handoffs::Entity::delete_many()
         .filter(job_secret_handoffs::Column::JobId.eq(job_id))
+        .filter(job_secret_handoffs::Column::LeaseGeneration.lte(generation))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -582,7 +613,7 @@ pub async fn finish_remote_job(
     }
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
     release_permits(store, &permits).await?;
-    forget_handoffs(store, job_id).await?;
+    forget_handoffs(store, job_id, generation).await?;
     Ok(RemoteFinish::Done)
 }
 
@@ -591,7 +622,9 @@ pub async fn finish_remote_job(
 ///
 /// For a `work` answer that cannot reach the Host (its connection was
 /// superseded or is closing), so the job is claimable again at once instead
-/// of only after its lease expires.
+/// of only after its lease expires. `resumed` is the claim's
+/// [`RemoteJobClaim::resumed`]: a resumed claim gets its resume flag back,
+/// any other its attempt.
 ///
 /// # Returns
 ///
@@ -606,6 +639,7 @@ pub async fn release_remote_job(
     node_id: &str,
     job_id: &str,
     generation: i64,
+    resumed: bool,
     limits: JobClaimLimits,
 ) -> Result<bool> {
     let fence = remote_job_fence(node_id, job_id, generation);
@@ -613,11 +647,11 @@ pub async fn release_remote_job(
         return Ok(false);
     };
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
-    if !store.release_job_claim(&fence, false).await? {
+    if !store.release_job_claim(&fence, resumed).await? {
         return Ok(false);
     }
     release_permits(store, &permits).await?;
-    forget_handoffs(store, job_id).await?;
+    forget_handoffs(store, job_id, generation).await?;
     Ok(true)
 }
 
