@@ -11,7 +11,7 @@ import {
   type RemoteConsentView,
   type RemoteGrantView,
 } from "@/lib/api";
-import { useLiveRefresh } from "@/lib/live";
+import { backoffDelay, useLiveRefresh } from "@/lib/live";
 import { cn } from "@/lib/utils";
 
 /** Poll interval while the live socket is down. */
@@ -286,6 +286,8 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
   const [clusters, setClusters] = useState<ClusterLinkView[] | null>(null);
   const [consents, setConsents] = useState<RemoteConsentView[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Failed loads in a row; drives the retry below.
+  const [failures, setFailures] = useState(0);
   const expired = useRef(onSessionExpired);
   useEffect(() => {
     expired.current = onSessionExpired;
@@ -297,12 +299,14 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
       setClusters(body.clusters);
       setConsents(body.consents);
       setLoadError(null);
+      setFailures(0);
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         expired.current();
         return;
       }
       setLoadError(err instanceof Error ? err.message : "Failed to load clusters");
+      setFailures((n) => n + 1);
     }
   }, []);
 
@@ -311,6 +315,13 @@ export function ClusterConsentsPanel({ onSessionExpired }: ClusterConsentsPanelP
   }, [refresh]);
   // Consents, and the links themselves (a join, leave or revoke).
   useLiveRefresh(["consents", "clusters"], refresh, { pollMs: REFRESH_MS });
+  // With the socket open nothing polls, so a failed load would sit on its
+  // error until the next consent or cluster change: retry it with backoff.
+  useEffect(() => {
+    if (failures === 0) return;
+    const timer = setTimeout(() => void refresh(), backoffDelay(failures - 1, Math.random()));
+    return () => clearTimeout(timer);
+  }, [failures, refresh]);
 
   const pending = consents.filter((row) => row.state !== "consented");
   const approved = consents.filter((row) => row.state === "consented");
