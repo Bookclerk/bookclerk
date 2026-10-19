@@ -426,10 +426,16 @@ async fn record_handoff(
     Ok(batch::rows_affected(&reply, 0) == 1)
 }
 
-/// Drops every handoff row of `job_id`.
-async fn forget_handoffs(store: &LibraryStore, job_id: &str) -> Result<()> {
+/// Drops the handoff rows of `job_id` recorded under `generation` or an
+/// earlier lease.
+///
+/// Callers run this after the claim is given back, when the job may
+/// already be claimed again; a successor's lease has a higher generation,
+/// so its rows are kept.
+async fn forget_handoffs(store: &LibraryStore, job_id: &str, generation: i64) -> Result<()> {
     job_secret_handoffs::Entity::delete_many()
         .filter(job_secret_handoffs::Column::JobId.eq(job_id))
+        .filter(job_secret_handoffs::Column::LeaseGeneration.lte(generation))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -582,7 +588,7 @@ pub async fn finish_remote_job(
     }
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
     release_permits(store, &permits).await?;
-    forget_handoffs(store, job_id).await?;
+    forget_handoffs(store, job_id, generation).await?;
     Ok(RemoteFinish::Done)
 }
 
@@ -617,7 +623,7 @@ pub async fn release_remote_job(
         return Ok(false);
     }
     release_permits(store, &permits).await?;
-    forget_handoffs(store, job_id).await?;
+    forget_handoffs(store, job_id, generation).await?;
     Ok(true)
 }
 

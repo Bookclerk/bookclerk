@@ -657,6 +657,33 @@ async fn a_released_claim_is_given_back_unspent() {
     assert!(again.job.lease_generation > fence);
 }
 
+/// Forgetting an earlier lease's handoffs keeps a successor claim's: a
+/// release that runs after the job was claimed again does not cost the new
+/// Host its write-back.
+#[tokio::test]
+async fn forgetting_an_earlier_lease_keeps_the_successors_handoffs() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let first = claim(&w.store).await.unwrap().job.lease_generation;
+    assert!(
+        release_remote_job(&w.store, HOST, &job_id, first, SETTINGS.limits)
+            .await
+            .unwrap()
+    );
+    let second = claim(&w.store).await.unwrap().job.lease_generation;
+    assert!(second > first);
+
+    // The first release's cleanup lands after the successor's handoff.
+    forget_handoffs(&w.store, &job_id, first).await.unwrap();
+    assert_eq!(
+        write_back_job_secret(&w.store, HOST, &job_id, second, &w.riley_token, b"riley-v2")
+            .await
+            .unwrap(),
+        WriteBack::Written
+    );
+}
+
 /// Runs host batches on an open connection, as a guest that has no
 /// interactive transactions (D1) does, first applying `before` once: a
 /// write another node committed between the write-back's checks and its

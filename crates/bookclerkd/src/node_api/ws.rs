@@ -745,14 +745,33 @@ async fn enqueue(outbox: &mpsc::Sender<Message>, message: Message) -> bool {
 
 /// Drains the send queue into the socket until a close is sent, the queue
 /// closes, or a write fails.
-async fn writer(mut sink: SplitSink<WebSocket, Message>, mut queue: mpsc::Receiver<Message>) {
+///
+/// # Returns
+///
+/// The messages that never reached the socket: the one whose write failed
+/// and every one still queued. The queue is closed first, so a later
+/// [`enqueue`] fails and its caller gives the frame back itself.
+async fn writer(
+    mut sink: SplitSink<WebSocket, Message>,
+    mut queue: mpsc::Receiver<Message>,
+) -> Vec<Message> {
+    let mut unsent = Vec::new();
     while let Some(message) = queue.recv().await {
         let closing = matches!(message, Message::Close(_));
-        if sink.send(message).await.is_err() || closing {
+        if sink.send(message.clone()).await.is_err() {
+            unsent.push(message);
+            break;
+        }
+        if closing {
             break;
         }
     }
+    queue.close();
+    while let Ok(message) = queue.try_recv() {
+        unsent.push(message);
+    }
     let _ = sink.close().await;
+    unsent
 }
 
 /// The authenticated session: a writer task behind the bounded send queue,
@@ -779,11 +798,24 @@ async fn session(
         let _ = tokio::time::timeout(Duration::from_secs(1), outbox.send(close)).await;
     }
     drop(outbox);
-    if tokio::time::timeout(Duration::from_secs(CLOSE_FLUSH_SECS), &mut writer)
-        .await
-        .is_err()
-    {
-        writer.abort();
+    let unsent =
+        match tokio::time::timeout(Duration::from_secs(CLOSE_FLUSH_SECS), &mut writer).await {
+            Ok(Ok(unsent)) => unsent,
+            Ok(Err(_)) => Vec::new(),
+            Err(_) => {
+                writer.abort();
+                Vec::new()
+            }
+        };
+    // A `work` answer queued but never written would leave its job held
+    // until the lease expires: the host never learned of it, so it cannot
+    // resume it.
+    for message in unsent {
+        if let Message::Text(text) = message {
+            if let Ok(frame) = Frame::parse(&text) {
+                work::release_unsent(library, host, &frame).await;
+            }
+        }
     }
 }
 
