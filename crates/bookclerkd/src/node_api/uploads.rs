@@ -24,8 +24,8 @@
 //! `acquire.targets`, as a local acquire would). Files are accepted only
 //! while this node has exactly the destinations it had at grant (otherwise
 //! 422 `destinations_changed`, the upload is aborted, and the title fails
-//! on the host). While a file streams, its size and SHA-256 are checked
-//! against the manifest
+//! on the host); a title's commit re-checks the set the same way. While a
+//! file streams, its size and SHA-256 are checked against the manifest
 //! and the job's fence is re-checked about once a second. Each destination
 //! sees the end of the stream only after the whole body matched and the
 //! fence was still live; a size or digest mismatch, a lost fence, or a
@@ -735,6 +735,25 @@ pub async fn post_commit(
     let Ok(commit) = serde_json::from_slice::<UploadCommitRequest>(&bytes) else {
         return refused("invalid_body");
     };
+    // A title's files reached only the destinations it was granted for;
+    // one deployed or undeployed since its last file would be left without
+    // the title once it is marked acquired (later plans skip it). The
+    // closing upload carries no files, and an already committed title is
+    // answered as committed again.
+    if !session.book_uuid.is_empty() && session.state != "committed" {
+        match owner_destinations(&state).await {
+            Ok(destinations) if destination_ids(&destinations) == session.destinations => {}
+            Ok(destinations) if !destinations.is_empty() => {
+                tracing::warn!(upload_id = %session.upload_id, "this owner node's destinations changed before the upload's commit; aborted");
+                abort_and_discard(&state, &library, &session.upload_id).await;
+                return refused("destinations_changed");
+            }
+            Ok(_) | Err(_) => {
+                tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this owner node");
+                return unavailable();
+            }
+        }
+    }
     let detail = commit.detail.as_deref().unwrap_or("");
     let detail = if detail.len() > MAX_DETAIL_BYTES {
         let mut end = MAX_DETAIL_BYTES;

@@ -2172,6 +2172,69 @@ mod results_and_uploads {
         );
     }
 
+    /// A title whose files all arrived is still refused at its commit, and
+    /// what it received is deleted, once the receiving node's destination
+    /// set changed after its last file: the new destination never got it.
+    #[tokio::test]
+    async fn a_commit_is_refused_after_the_destinations_change() {
+        use crate::node_api::uploads::{set_test_destinations, TestDestination};
+        use bookclerk_config::{DestinationNaming, OutputBackendKind};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        let s3_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let scope = local_scope("Author/Title t1");
+        let files = vec![local_file("Author/Title t1/t1.m4b", b"audio")];
+        let (upload_id, token, _) =
+            grant_direct(&world, &job_id, fence, &book.uuid, &files, &scope).await;
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"audio").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        assert!(owner_out.path().join("Author/Title t1/t1.m4b").is_file());
+        // The node deploys an s3 destination before the commit.
+        set_test_destinations(
+            world.owner_files.path(),
+            vec![
+                TestDestination {
+                    kind: OutputBackendKind::Local,
+                    root: owner_out.path().to_path_buf(),
+                    naming: DestinationNaming::default(),
+                },
+                TestDestination {
+                    kind: OutputBackendKind::S3,
+                    root: s3_out.path().to_path_buf(),
+                    naming: DestinationNaming::default(),
+                },
+            ],
+        );
+        let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
+        assert!(committed.starts_with("HTTP/1.1 422"), "{committed}");
+        assert!(committed.contains("destinations_changed"), "{committed}");
+        let row = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            row.acquire_status,
+            bookclerk_library::AcquireStatus::Acquired
+        );
+        assert!(
+            !owner_out.path().join("Author/Title t1/t1.m4b").exists(),
+            "the refused title's received file is deleted"
+        );
+    }
+
     /// A fence lost while a file streams aborts the upload: the owner
     /// answers `lost` before the body ends, its destination keeps nothing
     /// (not even a temp file), and the upload's token no longer opens it.
