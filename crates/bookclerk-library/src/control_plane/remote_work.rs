@@ -29,25 +29,26 @@
 
 use std::time::Duration;
 
+use bookclerk_plugin_abi::{DbType, DbValue};
 use chrono::Utc;
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
-    TransactionTrait,
 };
 use zeroize::Zeroizing;
 
+use super::batch::{self, int, text};
 use super::job_routing::{
     claim_routed_job, job_semaphores, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
 };
-use super::semaphore::{permits_held_by, release_permits, renew_permits, SemaphorePermit};
-use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
-use crate::entities::{
-    accounts, encrypted_secrets, job_secret_handoffs, jobs, node_credentials, nodes,
+use super::semaphore::{
+    permits_held_by, release_permits, renew_permits, SemaphorePermit, MAX_SEMAPHORE_LIMIT,
 };
+use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
+use crate::entities::{accounts, encrypted_secrets, job_secret_handoffs};
 use crate::error::{LibraryError, Result};
 use crate::models::{JobFence, JobKind, JobRecord, JobResourceClass, JobState};
 use crate::secrets::{
-    build_sealed_record, get_secret, secret_account_type, unseal_secret, upsert_secret_on,
+    build_sealed_record, forget_cached_secret, get_secret, secret_account_type, unseal_secret,
     EncryptedSecretRecord,
 };
 use crate::store::LibraryStore;
@@ -408,6 +409,12 @@ async fn fenced_job(store: &LibraryStore, fence: &JobFence) -> Result<Option<Job
 
 /// The semaphore permits `node_id` holds for `job`, and whether every
 /// semaphore the job counts against is among them.
+///
+/// The holder prefix names the job's permits, so the slots below this
+/// node's configured limit are searched first and, when nothing is found
+/// there, every slot up to [`MAX_SEMAPHORE_LIMIT`]: the Host may have
+/// claimed through an owner node with a higher limit, or the limit may have
+/// been lowered since.
 async fn held_job_permits(
     store: &LibraryStore,
     node_id: &str,
@@ -422,7 +429,10 @@ async fn held_job_permits(
         if !seen.insert(request.name.clone()) {
             continue;
         }
-        let found = permits_held_by(store, &request.name, request.limit, &prefix).await?;
+        let mut found = permits_held_by(store, &request.name, request.limit, &prefix).await?;
+        if found.is_empty() && request.limit < MAX_SEMAPHORE_LIMIT {
+            found = permits_held_by(store, &request.name, MAX_SEMAPHORE_LIMIT, &prefix).await?;
+        }
         complete &= !found.is_empty();
         held.extend(found);
     }
@@ -608,39 +618,135 @@ pub async fn write_back_job_secret(
         &secret_ref.account_id,
         &secret_ref.name,
     )?;
-    // The checks above read outside any transaction. The write runs in one
-    // that first takes the job row with a fenced update, so a reclaim or a
-    // claim by another node either committed before it (and the update
-    // matches nothing) or waits for it; the handoff row and the node
-    // credential are re-read behind that update.
-    let txn = store.db().begin().await.map_err(LibraryError::Orm)?;
-    if !touch_fenced_job(&txn, &fence).await?
-        || !handed_on(&txn, &fence, secret_ref).await?
-        || !credential_live_on(&txn, node_id).await?
-    {
+    // The checks above read outside any transaction. The write is one
+    // host batch, which every backend runs as a single transaction (D1
+    // included, where interactive transactions are not available): it first
+    // takes the job row with a fenced update, so a reclaim or a claim by
+    // another node either committed before it (and the guards below match
+    // nothing) or waits for it, and then updates the secret only while the
+    // fence, the handoff row and the node credential are all still live.
+    if !store_guarded_write_back(store, node_id, &fence, secret_ref, &record).await? {
         return Ok(WriteBack::Refused("fence_not_live"));
     }
-    upsert_secret_on(&txn, &record).await?;
-    txn.commit().await.map_err(LibraryError::Orm)?;
     Ok(WriteBack::Written)
 }
 
-/// Bumps the job's `updated_at` when `fence` still owns the running
-/// generation, and says whether it did.
-async fn touch_fenced_job<C: ConnectionTrait>(db: &C, fence: &JobFence) -> Result<bool> {
-    let res = jobs::Entity::update_many()
-        .col_expr(
-            jobs::Column::UpdatedAt,
-            sea_orm::sea_query::Expr::value(Utc::now().to_rfc3339()),
-        )
-        .filter(jobs::Column::Id.eq(fence.job_id.as_str()))
-        .filter(jobs::Column::State.eq(JobState::Running.as_str()))
-        .filter(jobs::Column::LeaseOwner.eq(fence.owner.as_str()))
-        .filter(jobs::Column::LeaseGeneration.eq(fence.generation))
-        .exec(db)
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(res.rows_affected == 1)
+/// Overwrites the sealed value of `secret_ref` with `record` in one host
+/// batch, guarded on `fence` owning the running generation, the secret
+/// having been handed under it, and `node_id` being an owner node or a host
+/// node with an unrevoked credential.
+///
+/// Only an existing row is updated: a secret deleted since the handoff (its
+/// account unlinked or revoked) is not brought back.
+///
+/// # Returns
+///
+/// `true` when the value was written; `false` when a guard failed.
+///
+/// # Errors
+///
+/// Returns an error when the batch fails.
+async fn store_guarded_write_back(
+    store: &LibraryStore,
+    node_id: &str,
+    fence: &JobFence,
+    secret_ref: &JobSecretRef,
+    record: &EncryptedSecretRecord,
+) -> Result<bool> {
+    let now = Utc::now().to_rfc3339();
+    let running = JobState::Running.as_str();
+    let opt_text = |value: Option<&str>| value.map_or(DbValue::Null(DbType::Text), text);
+    let opt_bytes = |value: Option<&[u8]>| {
+        value.map_or(DbValue::Null(DbType::Bytes), |v| DbValue::Bytes(v.to_vec()))
+    };
+    let opt_int =
+        |value: Option<u32>| value.map_or(DbValue::Null(DbType::Int64), |v| int(i64::from(v)));
+    let operation_id = format!(
+        "write-back-{}-{}-{}",
+        fence.job_id,
+        fence.generation,
+        uuid::Uuid::new_v4()
+    );
+    let reply = batch::execute_host_batch(
+        store,
+        batch::request(
+            &operation_id,
+            vec![
+                batch::exec(
+                    "UPDATE jobs SET updated_at = ?
+                      WHERE id = ? AND state = ? AND lease_owner = ? AND lease_generation = ?",
+                    vec![
+                        text(&now),
+                        text(&fence.job_id),
+                        text(running),
+                        text(&fence.owner),
+                        int(fence.generation),
+                    ],
+                ),
+                batch::exec(
+                    "UPDATE encrypted_secrets
+                        SET format = ?, ciphertext = ?, kdf_algorithm = ?, kdf_salt = ?,
+                            kdf_m_cost = ?, kdf_t_cost = ?, kdf_p_cost = ?,
+                            cipher_algorithm = ?, cipher_nonce = ?, updated_at = ?
+                      WHERE kind = ? AND provider = ? AND account_type = ?
+                        AND account_id = ? AND name = ?
+                        AND EXISTS (
+                            SELECT 1 FROM jobs
+                             WHERE id = ? AND state = ? AND lease_owner = ?
+                               AND lease_generation = ?
+                        )
+                        AND EXISTS (
+                            SELECT 1 FROM job_secret_handoffs
+                             WHERE job_id = ? AND lease_generation = ? AND kind = ?
+                               AND provider = ? AND account_id = ? AND name = ?
+                        )
+                        AND EXISTS (
+                            SELECT 1 FROM nodes
+                             WHERE nodes.node_id = ?
+                               AND (nodes.kind = 'owner' OR EXISTS (
+                                   SELECT 1 FROM node_credentials
+                                    WHERE node_credentials.node_id = nodes.node_id
+                                      AND node_credentials.revoked_at IS NULL
+                               ))
+                        )",
+                    vec![
+                        text(&record.format),
+                        DbValue::Bytes(record.ciphertext.clone()),
+                        opt_text(record.kdf_algorithm.as_deref()),
+                        opt_bytes(record.kdf_salt.as_deref()),
+                        opt_int(record.kdf_m_cost),
+                        opt_int(record.kdf_t_cost),
+                        opt_int(record.kdf_p_cost),
+                        opt_text(record.cipher_algorithm.as_deref()),
+                        opt_bytes(record.cipher_nonce.as_deref()),
+                        text(&now),
+                        text(&secret_ref.kind),
+                        text(&secret_ref.provider),
+                        text(secret_account_type::INTEGRATION),
+                        text(&secret_ref.account_id),
+                        text(&secret_ref.name),
+                        text(&fence.job_id),
+                        text(running),
+                        text(&fence.owner),
+                        int(fence.generation),
+                        text(&fence.job_id),
+                        int(fence.generation),
+                        text(&secret_ref.kind),
+                        text(&secret_ref.provider),
+                        text(&secret_ref.account_id),
+                        text(&secret_ref.name),
+                        text(node_id),
+                    ],
+                ),
+            ],
+        ),
+    )
+    .await?;
+    let written = batch::rows_affected(&reply, 0) == 1 && batch::rows_affected(&reply, 1) > 0;
+    if written {
+        forget_cached_secret(record);
+    }
+    Ok(written)
 }
 
 /// True when `secret_ref` was handed under `fence`, read on `db`.
@@ -660,26 +766,4 @@ async fn handed_on<C: ConnectionTrait>(
         .await
         .map_err(LibraryError::Orm)?;
     Ok(rows > 0)
-}
-
-/// True when `node_id` is an owner node, or a host node whose credential is
-/// not revoked, read on `db`.
-async fn credential_live_on<C: ConnectionTrait>(db: &C, node_id: &str) -> Result<bool> {
-    let Some(node) = nodes::Entity::find_by_id(node_id.to_string())
-        .one(db)
-        .await
-        .map_err(LibraryError::Orm)?
-    else {
-        return Ok(false);
-    };
-    if node.kind == "owner" {
-        return Ok(true);
-    }
-    let live = node_credentials::Entity::find()
-        .filter(node_credentials::Column::NodeId.eq(node_id))
-        .filter(node_credentials::Column::RevokedAt.is_null())
-        .count(db)
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(live > 0)
 }

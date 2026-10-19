@@ -86,6 +86,9 @@ fn slots(limit: u32) -> u32 {
     limit.clamp(1, MAX_SEMAPHORE_LIMIT)
 }
 
+/// Slot lease names read per statement, within every backend's bind limit.
+const SLOT_READ_CHUNK: usize = bookclerk_plugin_abi::HOST_MIN_BINDS as usize;
+
 /// Current slot rows of `name` below `limit`, by slot.
 async fn load_slots(
     store: &LibraryStore,
@@ -95,11 +98,18 @@ async fn load_slots(
     let names: Vec<String> = (0..slots(limit))
         .map(|slot| semaphore_slot_lease_name(name, slot))
         .collect();
-    let rows = cluster_leases::Entity::find()
-        .filter(cluster_leases::Column::Name.is_in(names.clone()))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    // Read in chunks every backend binds in one statement (D1 caps a
+    // statement at 100 parameters; a semaphore has up to 256 slots).
+    let mut rows = Vec::new();
+    for chunk in names.chunks(SLOT_READ_CHUNK) {
+        rows.extend(
+            cluster_leases::Entity::find()
+                .filter(cluster_leases::Column::Name.is_in(chunk.to_vec()))
+                .all(store.db())
+                .await
+                .map_err(LibraryError::Orm)?,
+        );
+    }
     let mut by_slot = BTreeMap::new();
     for row in rows {
         if let Some(slot) = names.iter().position(|n| *n == row.name) {

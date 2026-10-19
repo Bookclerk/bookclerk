@@ -786,8 +786,9 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
   work. They reach an owner node over HTTPS and never hold the cluster's
   database credentials or DEK. Enrollment, the transport policy, and the
   node socket handshake are built (see *Host-node enrollment and
-  transport* below); the work frames and the host client are not (see
-  *Remaining work*). A redeemed
+  transport* below), and so is the owner side of the work frames (see
+  *Work frames, sealed secrets, wakes and resume* below); the host client
+  is not (see *Remaining work*). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -921,8 +922,10 @@ Built in the first H-4 slice:
   pings every 20 s, closes after 60 s idle, re-reads `revoked_at` on every
   ping tick, closes on a `node.revoked` wake with 4403, lets a newer
   connection for the same node supersede the old one (4409), and closes on
-  a binary or malformed frame (4400). Work frames are later steps; until
-  then each request frame is answered `error {code: "unsupported"}`.
+  a binary or malformed frame (4400). The owner serves the work frames
+  described in *Work frames, sealed secrets, wakes and resume* below; a
+  request frame of a type it does not serve is answered
+  `error {code: "unsupported"}`.
 - The built-in TLS listener (`node_api/tls.rs`) on `tls_listen`, serving
   only the node API routes over HTTP/1.1 and tagging requests for
   `classify_transport`. `acme` uses `rustls-acme` (TLS-ALPN-01 on the same
@@ -1015,8 +1018,10 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   lease generation; the owner rebuilds the fence from them, so no other
   node can present it. Renewals re-read trust and the credential, extend
   the job lease, and renew the job's semaphore permits, which are found
-  again by holder prefix (`permits_held_by`; an expired slot nobody took
-  over still counts). A lost lease, a taken-over permit, or lost trust
+  again by holder prefix (`permits_held_by`, below the serving node's
+  limit and then up to `MAX_SEMAPHORE_LIMIT`, since the claim may have
+  been made under a higher limit; an expired slot nobody took over still
+  counts). A lost lease, a taken-over permit, or lost trust
   answers `lost`. The permits are checked before the job lease is
   extended, so a lost renewal never pushes the reclaim out; a permit taken
   over between that check and its renewal cuts the just-extended lease
@@ -1052,7 +1057,12 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   generation for this node, the ref was recorded as handed under that
   generation, and it is still one of the job's secrets. A secret created
   for the account after the handoff is refused, so a Host never
-  overwrites a credential it was not given.
+  overwrites a credential it was not given. The write is one host batch
+  (one transaction on every backend, D1 included): a fenced update of the
+  job row, then an update of the existing secret row guarded on the
+  fence, the handoff row and the credential, so a reclaim, a claim by
+  another node, or a revocation that lands after the checks leaves the
+  token untouched.
   Rejected: plaintext values inside TLS. tungstenite traces every
   received message at TRACE, and the daemon bridges `log` into tracing
   with the diagnostics ring at TRACE, so a plaintext value would land in
