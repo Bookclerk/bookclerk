@@ -762,7 +762,7 @@ async fn acquire_titles<G: HostGuests>(
                 // host keeps no copy of it either, unless the fence is
                 // lost: a replacement run may own those keys by now.
                 let copies = std::mem::take(&mut *copied.lock().unwrap_or_else(|e| e.into_inner()));
-                remove_local_copies(guests, &title.book.uuid, &copies, host.is_lost()).await;
+                remove_local_copies(&title.book.uuid, &copies, host.is_lost()).await;
             }
             let _ = tokio::fs::remove_dir_all(&outbox).await;
             let _ = tokio::fs::remove_dir_all(title_cache_dir(&outbox)).await;
@@ -926,8 +926,11 @@ pub async fn upload_manifest(
 }
 
 /// One file this run wrote to one of this host's own destinations: the
-/// destination's index in [`HostGuests::local_destinations`] and the key.
-pub type LocalCopy = (usize, String);
+/// destination handle it was written through and the key. The handle is
+/// kept rather than re-read from [`HostGuests::local_destinations`], so a
+/// destination deployed or retired before cleanup cannot redirect the
+/// delete to a destination this run never wrote.
+pub type LocalCopy = (Arc<dyn StorageBackend>, String);
 
 /// Copies one title's files (the primary destination's keys) to every one
 /// of this host's own destinations. Any failed copy fails the title. Each
@@ -945,14 +948,17 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
     acquired: &AcquiredTitle,
     copied: &std::sync::Mutex<Vec<LocalCopy>>,
 ) -> anyhow::Result<()> {
-    let local = guests
+    let local: Vec<Arc<dyn StorageBackend>> = guests
         .local_destinations()
         .await
-        .context("this host's own destinations")?;
+        .context("this host's own destinations")?
+        .into_iter()
+        .map(Arc::from)
+        .collect();
     // This host's own copy follows the owner's primary destination naming.
     let primary = destination_outbox(outbox, 0);
     for key in acquired.keys.first().into_iter().flatten() {
-        for (index, destination) in local.iter().enumerate() {
+        for destination in &local {
             let meta = ObjectMeta {
                 content_type: content_type(key),
                 ..ObjectMeta::default()
@@ -964,7 +970,7 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
             copied
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .push((index, key.clone()));
+                .push((Arc::clone(destination), key.clone()));
         }
     }
     Ok(())
@@ -977,12 +983,7 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
 /// and a host-side copy carries no writer identity to tell the two apart,
 /// so a stale run's cleanup could delete the replacement's file. The
 /// stale copy is left for the replacement to overwrite.
-pub async fn remove_local_copies<G: HostGuests>(
-    guests: &G,
-    book_uuid: &str,
-    copies: &[LocalCopy],
-    fence_lost: bool,
-) {
+pub async fn remove_local_copies(book_uuid: &str, copies: &[LocalCopy], fence_lost: bool) {
     if copies.is_empty() {
         return;
     }
@@ -994,17 +995,7 @@ pub async fn remove_local_copies<G: HostGuests>(
         );
         return;
     }
-    let local = match guests.local_destinations().await {
-        Ok(local) => local,
-        Err(err) => {
-            tracing::warn!(book_uuid, error = %err, "could not open this host's own destinations to remove an uncommitted title");
-            return;
-        }
-    };
-    for (index, key) in copies {
-        let Some(destination) = local.get(*index) else {
-            continue;
-        };
+    for (destination, key) in copies {
         if let Err(err) = destination.delete(key).await {
             tracing::warn!(book_uuid, %key, error = %err, "could not remove an uncommitted title's copy from this host's own destination");
         }

@@ -3132,12 +3132,13 @@ mod results_and_uploads {
             .await
             .unwrap();
         let copies = copied.into_inner().unwrap();
-        assert_eq!(copies, vec![(0, key.clone())]);
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].1, key);
         let copy = host_local.path().join(&key);
 
-        remove_local_copies(&guests, "t1", &copies, true).await;
+        remove_local_copies("t1", &copies, true).await;
         assert!(copy.is_file(), "a lost fence leaves the copy");
-        remove_local_copies(&guests, "t1", &copies, false).await;
+        remove_local_copies("t1", &copies, false).await;
         assert!(!copy.exists(), "a held fence removes it");
     }
 }
