@@ -786,8 +786,10 @@ Decided 2026-10-14 with the owner. A cluster has two kinds of node:
   work. They reach an owner node over HTTPS and never hold the cluster's
   database credentials or DEK. Enrollment, the transport policy, and the
   node socket handshake are built (see *Host-node enrollment and
-  transport* below); the work frames and the host client are not (see
-  *Remaining work*). A redeemed
+  transport* below), and so is the owner side of the work frames (see
+  *Work frames, sealed secrets, wakes and resume* below), and so is the
+  host client (see *Host client* below; claims stay off with
+  `HOST_MAX_JOBS = 0`). A redeemed
   enrollment link records the node with `nodes.kind = host`.
 
 Who may administer a node is separate from its kind. `nodes.owner_user_id`
@@ -921,8 +923,10 @@ Built in the first H-4 slice:
   pings every 20 s, closes after 60 s idle, re-reads `revoked_at` on every
   ping tick, closes on a `node.revoked` wake with 4403, lets a newer
   connection for the same node supersede the old one (4409), and closes on
-  a binary or malformed frame (4400). Work frames are later steps; until
-  then each request frame is answered `error {code: "unsupported"}`.
+  a binary or malformed frame (4400). The owner serves the work frames
+  described in *Work frames, sealed secrets, wakes and resume* below; a
+  request frame of a type it does not serve is answered
+  `error {code: "unsupported"}`.
 - The built-in TLS listener (`node_api/tls.rs`) on `tls_listen`, serving
   only the node API routes over HTTP/1.1 and tagging requests for
   `classify_transport`. `acme` uses `rustls-acme` (TLS-ALPN-01 on the same
@@ -1015,9 +1019,22 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   lease generation; the owner rebuilds the fence from them, so no other
   node can present it. Renewals re-read trust and the credential, extend
   the job lease, and renew the job's semaphore permits, which are found
-  again by holder prefix (`permits_held_by`; an expired slot nobody took
-  over still counts). A lost lease, a taken-over permit, or lost trust
-  answers `lost`. `fail` is always accepted under a live fence;
+  again by holder prefix (`permits_held_by`, below the serving node's
+  limit and then up to `MAX_SEMAPHORE_LIMIT`, since the claim may have
+  been made under a higher limit; an expired slot nobody took over still
+  counts). A routed claim's permit holder is
+  `<lease owner>/<job id>/g<generation>/<random>`
+  (`job_permit_holder_prefix`), with the generation the claim runs at:
+  `claim_job_by_id` succeeds only at the generation read with the
+  candidate, so the claim's is known before the permits are taken. The
+  prefix searched is the presented fence's, so a still-live permit left
+  over from an earlier claim of the same job by the same node is never
+  renewed or released in place of the current one; it expires with its
+  own lease. A lost lease, a taken-over permit, or lost trust
+  answers `lost`. The permits are checked before the job lease is
+  extended, so a lost renewal never pushes the reclaim out; a permit taken
+  over between that check and its renewal cuts the just-extended lease
+  back to expire at once. `fail` is always accepted under a live fence;
   `complete` also needs trust and is refused for acquire, which completes
   only when its upload commits (step 9). Deliveries are not served yet
   (`claim {item: delivery}` answers `unsupported`).
@@ -1025,7 +1042,10 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   `integration` row of `encrypted_secrets` for that account id under the
   plugin keys holding an `accounts` row with that id, the same rows the
   trust predicate checked. Other jobs get none; instance settings and
-  secrets will travel with `instance.config` (step 7). A job whose
+  secrets will travel with `instance.config` (step 7). The refs handed
+  are recorded per lease generation in `job_secret_handoffs` (names only,
+  no secret material) before the `work` answer goes out, and dropped when
+  the job finishes, is given back, or is claimed again. A job whose
   secrets do not unseal or seal (legacy formats, oversized bundle) is
   failed with `secrets_unavailable`, so it retries with backoff and a node
   holding the database can take it, rather than looping on the Host.
@@ -1043,7 +1063,15 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   It is stored (re-sealed with the owner's DEK under the same identity)
   only when, immediately before the write, the credential is live, the
   node is still trusted with the job, the fence is the job's live
-  generation for this node, and the ref is one of the job's secrets.
+  generation for this node, the ref was recorded as handed under that
+  generation, and it is still one of the job's secrets. A secret created
+  for the account after the handoff is refused, so a Host never
+  overwrites a credential it was not given. The write is one host batch
+  (one transaction on every backend, D1 included): a fenced update of the
+  job row, then an update of the existing secret row guarded on the
+  fence, the handoff row and the credential, so a reclaim, a claim by
+  another node, or a revocation that lands after the checks leaves the
+  token untouched.
   Rejected: plaintext values inside TLS. tungstenite traces every
   received message at TRACE, and the daemon bridges `log` into tracing
   with the diagnostics ring at TRACE, so a plaintext value would land in
@@ -1056,27 +1084,45 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   and `configuration.changed` as `wake` frames; each is acked only after
   the Host's `ack`. Other messages are acked at once; unknown bodies are
   dead-lettered. On disconnect, unacked wakes are released unspent and
-  the row is disabled.
+  the row is disabled, unless a newer connection for the same Host has
+  registered. The two share the row, so registering with enabling it and
+  unregistering with disabling it run under one lock, and only the
+  connection still registered disables it.
 - **Backpressure.** Everything the owner sends goes through one queue of
   64 frames drained by a writer task. A wake is claimed only after a
-  queue slot is reserved, and at most 64 wait for acks. With the queue
+  queue slot is reserved, and at most 64 wait for acks; a wake unacked
+  for its whole lease (60 s) stops counting, since the reclaimer returns
+  its delivery for redelivery, and a late ack for it is ignored. With the queue
   full nothing is claimed, so deliveries stay pending or expire and are
   redelivered. An answer that cannot be queued within the idle timeout
-  ends the connection.
+  ends the connection; if it was `work`, the claim is given back unspent
+  (`release_remote_job`), as it is for a `work` answer produced after
+  the connection was told to close (superseded by a newer connection
+  for the same Host, or revoked), so such a job does not sit leased to a
+  Host that never learns of it until the lease expires.
 - **Resume.** A hello lists held fences; after `welcome` the owner
-  answers `resumed {renewed, lost}`, renewing each through the same path
-  as `renew`. Nothing is released on disconnect and no session keeps
-  work state, so a Host may resume on any owner node; a fence reclaimed
-  while it was away is lost, and every later frame under it is refused.
+  answers `resumed {renewed, lost, unchecked}`, renewing each through
+  the same path as `renew`. Nothing else is released on disconnect and no
+  session keeps work state, so a Host may resume on any owner node; a
+  fence reclaimed while it was away is lost, and every later frame under
+  it is refused. A fence whose renewal failed with an error (a transient
+  database fault) is `unchecked`, not lost: the Host keeps the work, and
+  its next `renew` decides.
 - **Tests.** Library: only the owner's secrets are handed; reclaimed and
   foreign fences are lost; unlinking mid-job loses the fence; write-back
   is refused without a live fence, for a ref not handed, and for a revoked
-  node; an acquire cannot complete. Daemon: over the socket, sealed
+  node; a secret created after the handoff is refused; a lost renewal
+  leaves the lease where it was; a released claim is pending again with
+  no attempt spent; an acquire cannot complete. Daemon: over the socket, sealed
   secrets open only with the enrolled key, write-back works under the
   live fence and not otherwise, resume renews a live fence and loses a
   reclaimed one, and with tracing and `log` captured at TRACE no token
   appears in the logs, plain or base64; a full send queue claims no wake
-  until the Host reads; a wake is acked only after the Host's `ack`.
+  until the Host reads; a wake is acked only after the Host's `ack`;
+  wakes whose lease ran out stop holding the forwarder back; a job
+  claimed on a closing connection is given back; a superseded session
+  ending late leaves the wake catalog enabled; a database error on
+  resume reports the fence unchecked.
 
 ### Host client
 
@@ -1109,17 +1155,36 @@ join`) and `bookclerkd/src/cluster_link.rs`.
 - **Session.** One writer task behind a 64-frame queue; requests matched
   to answers by frame id; heartbeats every 15 s from the Host's own
   `NodeSampler`; pings every 20 s; idle close after 60 s; each `wake`
-  handed to local subscribers, then acked. A close with 4403 marks the
+  handed to local subscribers, then acked. A wake no subscriber receives
+  is not acked, so the owner keeps the delivery and sends it again after
+  its lease or on the next connection. A heartbeat or claim the owner
+  does not answer within 30 s is retried with the reconnect backoff
+  (a heartbeat never waits longer than its interval); those loops end
+  only with their connection. A close with 4403 marks the
   link `revoked`, cancels held work, and stops that link for good;
   anything else reconnects with backoff from 1 s to 60 s plus up to a
   quarter of jitter, reset after each welcome.
+- **Database swap.** The daemon runs one client per active link of the
+  live library. When a config reload swaps the database, every client is
+  stopped (and awaited, so a node never dials twice) and the new store's
+  active links are started; a link enrolled while the daemon runs is
+  picked up at the next start or swap.
 - **Jobs.** A claim loop runs while job slots are free. Each job runs on
   its own task, outliving the connection: its secrets are opened with the
   enrolled box key (a bundle that does not open is failed as
   `secrets_unopenable`), a renewer extends the lease every third of it
   (`lost` cancels, `renewed {cancel}` asks the runner to stop), and the
   result is reported with `complete` or `fail`, waiting up to 10 minutes
-  for a connection. A lost fence's result is discarded. Write-back
+  for a connection. A lease the owner has not confirmed (by `work`, then
+  each `renewed`, counted from when the request was sent) by the time it
+  runs out, connected or not, marks the job lost and cancels it, so it
+  never runs on a lease the owner may have handed elsewhere. A `work`
+  that answers a claim which already timed out is failed at once as
+  `claim_abandoned` under its fence (this retries the job like any
+  failure; `release` is kept for a job this host will not run) rather
+  than left to expire.
+  Client shutdown cancels every held job as lost, as revocation does.
+  A lost fence's result is discarded. Write-back
   (`HostJobCtx::write_back`) accepts only a ref handed with the job,
   seals the value to the live connection's owner box key with a fresh
   ephemeral key, and needs the fence still held. The daemon runs jobs
@@ -1139,7 +1204,11 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   claims its owner's scan, runs it through the daemon's job transport
   with the opened token, writes a refreshed token back, completes under
   the fence, and acks a wake; with tracing and `log` at TRACE no token
-  appears in the logs, plain or base64. A fence held across a dropped
+  appears in the logs, plain or base64. A database swap stops the
+  previous store's link and connects the new store's. Against a scripted
+  owner (`client_tests.rs`), an unanswered heartbeat and claim are
+  retried on the same connection, and a wake is acked only once a
+  subscriber received it. A fence held across a dropped
   connection is resumed and the job completes under it; one reclaimed
   while the owner was unreachable is lost on reconnect and its run
   cancelled. A wrong SPKI pin fails the TLS handshake before the link is
@@ -1359,7 +1428,7 @@ staging on the owner).
   (dedup is unique per queue); `event_deliveries` gains `queue_name`;
   `nodes` gains `target`, `labels_json`, `kind`, and `owner_user_id`.
   H-4 adds `node_enrollment_links`, `node_credentials`, `cluster_links`,
-  and `remote_plugin_consents`.
+  `job_secret_handoffs`, and `remote_plugin_consents`.
   Checksum of the
   unreleased pack changes. Existing development databases fail closed until
   recreated (`cargo reset --yes` or a new database). That matches the

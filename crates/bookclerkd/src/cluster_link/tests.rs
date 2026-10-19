@@ -2,7 +2,8 @@
 //! job end to end through the daemon's job transport with the owner's
 //! sealed secret and a token write-back, ack a wake, resume a held fence
 //! after a disconnect and abandon one reclaimed while away, refuse a wrong
-//! SPKI pin, and keep every token out of TRACE logs.
+//! SPKI pin, keep every token out of TRACE logs, and follow a database
+//! swap to the new store's links.
 //!
 //! Host consent (step 8): an owner plugin deployed to the host is recorded
 //! as a request and never claimed until the host's operator approves it;
@@ -2776,4 +2777,50 @@ mod results_and_uploads {
         assert!(is_work_id(&"a".repeat(MAX_WORK_ID_BYTES)));
         assert!(!is_work_id(&"a".repeat(MAX_WORK_ID_BYTES + 1)));
     }
+}
+
+/// A database swap stops the client of the previous store's link and
+/// starts one for the new store's link.
+#[tokio::test]
+async fn a_database_swap_restarts_cluster_links_on_the_new_store() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let swapped_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+
+    // The host daemon, enrolled once into its first store.
+    let (host_state, first_store) = crate::node_api::tests::test_state(&host_files).await;
+    let first = join(&owner, &first_store, member, &origin, None)
+        .await
+        .unwrap();
+    super::spawn_cluster_links(Arc::clone(&host_state));
+    eventually("the first store's link to connect", || async {
+        crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+
+    // A config reload swaps in a store that holds another link.
+    let second_store = host_store(swapped_files.path()).await;
+    let second = join(&owner, &second_store, member, &origin, None)
+        .await
+        .unwrap();
+    *host_state.library.write().await = second_store;
+    host_state.library_swaps.send_modify(|swaps| *swaps += 1);
+    eventually("the new store's link to connect", || async {
+        crate::node_api::ws::node_session_live(&second.remote_node_id)
+    })
+    .await;
+    eventually("the previous store's link to disconnect", || async {
+        !crate::node_api::ws::node_session_live(&first.remote_node_id)
+    })
+    .await;
+    // It stays down: nothing dials the previous store's link again.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(!crate::node_api::ws::node_session_live(
+        &first.remote_node_id
+    ));
 }

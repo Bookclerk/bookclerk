@@ -26,6 +26,7 @@ pub mod event_deliveries;
 pub mod event_outbox_stats;
 pub mod event_subscriber_nodes;
 pub mod ignored_titles;
+pub mod job_secret_handoffs;
 pub mod job_temp_paths;
 pub mod jobs;
 pub mod listening_progress;

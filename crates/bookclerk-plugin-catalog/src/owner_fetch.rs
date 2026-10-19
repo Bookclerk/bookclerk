@@ -88,7 +88,7 @@ fn owner_address_allowed(ip: IpAddr) -> bool {
 /// Checks a URL an owner cluster asks this host to fetch an archive from.
 ///
 /// This is the textual half of the policy; the fetch enforces the address
-/// half again on what each name resolves to ([`PublicOnlyResolver`]).
+/// half again on what each name resolves to (`PublicOnlyResolver`).
 ///
 /// # Arguments
 ///
@@ -211,9 +211,9 @@ fn redirect_hop(current: &Url, location: &str) -> Result<Url> {
 
 /// Fetches an owner-chosen `https:` archive into `dest`, bounded by
 /// [`MAX_DOWNLOAD_BYTES`] and [`DOWNLOAD_TIMEOUT`] per request. Redirects
-/// are followed (at most [`MAX_REDIRECTS`]) only when each hop passes
+/// are followed (at most `MAX_REDIRECTS`) only when each hop passes
 /// [`check_owner_artifact_url`], and every hop connects only to addresses
-/// that pass [`owner_address_allowed`] ([`PublicOnlyResolver`]); no proxy
+/// that pass `owner_address_allowed` (`PublicOnlyResolver`); no proxy
 /// is used. The caller checks the archive digest.
 ///
 /// # Arguments
