@@ -1109,10 +1109,20 @@ join`) and `bookclerkd/src/cluster_link.rs`.
 - **Session.** One writer task behind a 64-frame queue; requests matched
   to answers by frame id; heartbeats every 15 s from the Host's own
   `NodeSampler`; pings every 20 s; idle close after 60 s; each `wake`
-  handed to local subscribers, then acked. A close with 4403 marks the
+  handed to local subscribers, then acked. A wake no subscriber receives
+  is not acked, so the owner keeps the delivery and sends it again after
+  its lease or on the next connection. A heartbeat or claim the owner
+  does not answer within 30 s is retried with the reconnect backoff
+  (a heartbeat never waits longer than its interval); those loops end
+  only with their connection. A close with 4403 marks the
   link `revoked`, cancels held work, and stops that link for good;
   anything else reconnects with backoff from 1 s to 60 s plus up to a
   quarter of jitter, reset after each welcome.
+- **Database swap.** The daemon runs one client per active link of the
+  live library. When a config reload swaps the database, every client is
+  stopped (and awaited, so a node never dials twice) and the new store's
+  active links are started; a link enrolled while the daemon runs is
+  picked up at the next start or swap.
 - **Jobs.** A claim loop runs while job slots are free. Each job runs on
   its own task, outliving the connection: its secrets are opened with the
   enrolled box key (a bundle that does not open is failed as
@@ -1129,7 +1139,9 @@ join`) and `bookclerkd/src/cluster_link.rs`.
 - **Claims stay off in the daemon** (`HOST_MAX_JOBS = 0`). Every job a
   Host is trusted with runs an owner plugin, and a Host runs one only
   after its own operator approves it (step 8). Until then the daemon
-  connects, heartbeats, acks wakes and resumes, but claims nothing; the
+  connects, heartbeats and resumes, but claims nothing, and subscribes
+  to no wakes, so the owner keeps them unacked for the handler that
+  lands with consent; the
   handoff on `JobExecCtx::host` is not yet routed to a guest's `SECRETS`
   binding. Rejected: claiming and failing what cannot run, which would
   spend owner attempts and starve owner nodes.
@@ -1141,7 +1153,11 @@ join`) and `bookclerkd/src/cluster_link.rs`.
   claims its owner's scan, runs it through the daemon's job transport
   with the opened token, writes a refreshed token back, completes under
   the fence, and acks a wake; with tracing and `log` at TRACE no token
-  appears in the logs, plain or base64. A fence held across a dropped
+  appears in the logs, plain or base64. A database swap stops the
+  previous store's link and connects the new store's. Against a scripted
+  owner (`client_tests.rs`), an unanswered heartbeat and claim are
+  retried on the same connection, and a wake is acked only once a
+  subscriber received it. A fence held across a dropped
   connection is resumed and the job completes under it; one reclaimed
   while the owner was unreachable is lost on reconnect and its run
   cancelled. A wrong SPKI pin fails the TLS handshake before the link is

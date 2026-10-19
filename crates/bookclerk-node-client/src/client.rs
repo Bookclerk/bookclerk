@@ -14,7 +14,13 @@
 //!    (the host shows up in `node_status` like any node), pings every
 //!    [`ClientTiming::ping_interval`], an idle close after
 //!    [`ClientTiming::idle_timeout`], and every `wake` is handed to
-//!    [`HostClientHandle::subscribe_wakes`] subscribers and then acked.
+//!    [`HostClientHandle::subscribe_wakes`] subscribers and then acked. A
+//!    wake no subscriber receives is not acked: the owner keeps the
+//!    delivery and sends it again (after its lease, or on the next
+//!    connection). A heartbeat or claim the owner does not answer in
+//!    [`ClientTiming::request_timeout`] is retried with backoff from
+//!    [`ClientTiming::backoff_min`] to [`ClientTiming::backoff_max`]; those
+//!    loops end only with their connection.
 //! 5. With [`HostClientConfig::max_jobs`] above zero, a claim loop pulls
 //!    jobs. Each job runs on its own task through the [`HostJobRunner`],
 //!    with its secrets opened by this node's box key; a renewer extends
@@ -199,6 +205,16 @@ impl Conn {
         }
         frame.ok_or(Unavailable)
     }
+
+    /// True once the writer task is gone (the connection is over).
+    fn is_closed(&self) -> bool {
+        self.outbox.is_closed()
+    }
+}
+
+/// The next retry delay after `delay`: doubled, up to `max`.
+fn next_retry(delay: Duration, max: Duration) -> Duration {
+    (delay * 2).min(max)
 }
 
 /// Locks a mutex, recovering from poisoning (every critical section is a
@@ -384,7 +400,12 @@ pub struct HostClientHandle {
 
 impl HostClientHandle {
     /// Wakes the owner forwarded (`{"type": "deployment.changed", ...}`).
-    /// Each is acked after it is handed to subscribers.
+    ///
+    /// A wake is acked once it is handed to at least one subscriber; while
+    /// there is none it stays unacked and the owner redelivers it later.
+    /// A subscriber that falls more than 64 wakes behind sees
+    /// [`broadcast::error::RecvError::Lagged`] for wakes already acked, and
+    /// must then resync the state they announce from the owner.
     #[must_use]
     pub fn subscribe_wakes(&self) -> broadcast::Receiver<serde_json::Value> {
         self.shared.wakes.subscribe()
@@ -803,7 +824,14 @@ async fn read_loop(
                                 .unwrap_or("")
                                 .to_string();
                             tracing::debug!(kind = %kind, "owner wake");
-                            let _ = shared.wakes.send(message);
+                            // Ack only a wake some handler received: an
+                            // unacked delivery stays durable on the owner,
+                            // which sends it again after its lease or on
+                            // the next connection.
+                            if shared.wakes.send(message).is_err() {
+                                tracing::debug!(kind = %kind, "no wake subscriber; leaving the wake unacked");
+                                continue;
+                            }
                             let ack = Message::Text(Frame::new(frame.id, Body::Ack {}).to_text().into());
                             if !matches!(
                                 tokio::time::timeout(timing.request_timeout, conn.outbox.send(ack)).await,
@@ -843,13 +871,16 @@ async fn read_loop(
     }
 }
 
-/// Sends a heartbeat every interval until the connection goes away.
+/// Sends a heartbeat every interval until the connection goes away. A
+/// heartbeat the owner does not answer is retried with backoff (never
+/// slower than the interval); the loop ends only with its connection.
 async fn heartbeat_loop(
     shared: Arc<Shared>,
     conn: Conn,
     sampler: Arc<Mutex<Box<dyn HeartbeatSource>>>,
 ) {
     let interval = shared.timing.heartbeat_interval;
+    let mut retry = shared.timing.backoff_min;
     loop {
         let sampler = Arc::clone(&sampler);
         let Ok(sample) = tokio::task::spawn_blocking(move || lock(&sampler).sample()).await else {
@@ -864,20 +895,35 @@ async fn heartbeat_loop(
             memory_available_bytes: sample.memory_available_bytes,
             files_dir_free_bytes: sample.files_dir_free_bytes,
         };
-        match conn.request(beat).await {
-            Ok(Frame {
-                body: Body::Accepted {},
-                ..
-            }) => {}
-            Ok(_) => tracing::debug!("owner did not record the heartbeat"),
-            Err(Unavailable) => return,
-        }
-        tokio::time::sleep(interval).await;
+        let delay = match conn.request(beat).await {
+            Ok(answer) => {
+                if !matches!(answer.body, Body::Accepted {}) {
+                    tracing::debug!("owner did not record the heartbeat");
+                }
+                retry = shared.timing.backoff_min;
+                interval
+            }
+            Err(Unavailable) => {
+                if conn.is_closed() {
+                    return;
+                }
+                tracing::warn!(
+                    serial = conn.serial,
+                    "owner did not answer the heartbeat; retrying"
+                );
+                let delay = retry.min(interval);
+                retry = next_retry(retry, shared.timing.backoff_max);
+                delay
+            }
+        };
+        tokio::time::sleep(delay).await;
     }
 }
 
-/// Pulls jobs while job slots are free.
+/// Pulls jobs while job slots are free. A claim the owner does not answer
+/// is retried with backoff; the loop ends only with its connection.
 async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: Arc<R>) {
+    let mut retry = shared.timing.backoff_min;
     loop {
         let Ok(slot) = Arc::clone(&shared.job_slots).acquire_owned().await else {
             return;
@@ -888,6 +934,9 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                 class: None,
             })
             .await;
+        if answer.is_ok() {
+            retry = shared.timing.backoff_min;
+        }
         match answer {
             Ok(Frame {
                 body:
@@ -929,7 +978,18 @@ async fn claim_loop<R: HostJobRunner>(shared: Arc<Shared>, conn: Conn, runner: A
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
-            Err(Unavailable) => return,
+            Err(Unavailable) => {
+                drop(slot);
+                if conn.is_closed() {
+                    return;
+                }
+                tracing::warn!(
+                    serial = conn.serial,
+                    "owner did not answer the claim; retrying"
+                );
+                tokio::time::sleep(retry).await;
+                retry = next_retry(retry, shared.timing.backoff_max);
+            }
         }
     }
 }
@@ -1109,3 +1169,7 @@ async fn report(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod tests;

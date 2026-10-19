@@ -3,9 +3,15 @@
 //! At startup, every active `cluster_links` row in this install's database
 //! gets one [`HostClient`]: it connects to the owner's node socket under
 //! the transport policy and the link's SPKI pin, authenticates with the
-//! node keys sealed at enrollment, heartbeats, acks wakes, and resumes held
-//! fences across reconnects. A link enrolled while the daemon runs is
-//! picked up at the next start.
+//! node keys sealed at enrollment, heartbeats, and resumes held fences
+//! across reconnects. A database swap on config reload stops every client
+//! and starts one per active link of the new store, so no client keeps
+//! dialing with the previous store's links and keys. A link enrolled while
+//! the daemon runs is picked up at the next start or database swap.
+//!
+//! Wakes stay unacked on the owner until a host-side handler subscribes
+//! to them (host consent, step 8): the client acks only a wake some
+//! subscriber received, so none is acknowledged and lost meanwhile.
 //!
 //! Claimed jobs run through the daemon's own job transport
 //! ([`TransportRunner`] over [`InProcessJobTransport`]), with the owner's
@@ -24,11 +30,12 @@ use bookclerk_library::control_plane::{
     current_process_incarnation, list_cluster_links, load_cluster_link_keys, remote_job_fence,
     set_cluster_link_state, NodeSampler, CLUSTER_LINK_REVOKED,
 };
-use bookclerk_library::{JobKind, JobPayload};
+use bookclerk_library::{JobKind, JobPayload, LibraryStore};
 use bookclerk_node_client::{
     ClientExit, ClientTiming, HostClient, HostClientConfig, HostJobCtx, HostJobError, HostJobRunner,
 };
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::api::AppState;
 use crate::job_handler::{InProcessJobTransport, JobCommand, JobExecCtx, JobTransport};
@@ -101,71 +108,111 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
     }
 }
 
-/// Starts one host client per active cluster link.
+/// How long a stopped host client may take to exit after a database swap
+/// before its task is aborted.
+const CLIENT_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Starts the cluster-link supervisor: one host client per active link of
+/// the live library, restarted on the new store after every database swap
+/// ([`AppState::library_swaps`]).
 pub fn spawn_cluster_links(state: Arc<AppState>) {
-    tokio::spawn(async move {
+    tokio::spawn(supervise_cluster_links(state));
+}
+
+/// Runs the clients of the live library's active links until the library
+/// is swapped, then stops them (waiting for each to exit, so the same
+/// node never dials twice) and starts the new store's set.
+async fn supervise_cluster_links(state: Arc<AppState>) {
+    let mut swaps = state.library_swaps.subscribe();
+    loop {
+        // Mark the current swap seen before reading the library, so a swap
+        // published after this read always wakes the wait below.
+        swaps.borrow_and_update();
         let library = state.library_snapshot().await;
-        let links = match list_cluster_links(&library).await {
-            Ok(links) => links,
+        let (stop, shutdown) = watch::channel(false);
+        let clients = start_clients(&state, &library, &shutdown).await;
+        let swapped = swaps.changed().await.is_ok();
+        let _ = stop.send(true);
+        for mut client in clients {
+            if tokio::time::timeout(CLIENT_STOP_TIMEOUT, &mut client)
+                .await
+                .is_err()
+            {
+                client.abort();
+            }
+        }
+        if !swapped {
+            return;
+        }
+        tracing::info!("database swapped; restarting cluster links on the new store");
+    }
+}
+
+/// Starts one host client per active link in `library`, each stopping
+/// when `shutdown` turns true.
+async fn start_clients(
+    state: &Arc<AppState>,
+    library: &LibraryStore,
+    shutdown: &watch::Receiver<bool>,
+) -> Vec<JoinHandle<()>> {
+    let links = match list_cluster_links(library).await {
+        Ok(links) => links,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not read cluster links");
+            return Vec::new();
+        }
+    };
+    let files_dir = state.config.read().await.paths().files_dir.clone();
+    let mut clients = Vec::new();
+    for link in links.into_iter().filter(|link| link.is_active()) {
+        let keys = match load_cluster_link_keys(library, &link).await {
+            Ok(keys) => keys,
             Err(err) => {
-                tracing::warn!(error = %err, "could not read cluster links");
-                return;
+                // Fail closed: without its keys the link is not dialed.
+                tracing::error!(
+                    cluster_id = %link.owner_cluster_id,
+                    error = %err,
+                    "cluster link keys unavailable; not connecting"
+                );
+                continue;
             }
         };
-        let files_dir = state.config.read().await.paths().files_dir.clone();
-        for link in links.into_iter().filter(|link| link.is_active()) {
-            let keys = match load_cluster_link_keys(&library, &link).await {
-                Ok(keys) => keys,
-                Err(err) => {
-                    // Fail closed: without its keys the link is not dialed.
-                    tracing::error!(
-                        cluster_id = %link.owner_cluster_id,
-                        error = %err,
-                        "cluster link keys unavailable; not connecting"
-                    );
-                    continue;
-                }
-            };
-            let cluster_id = link.owner_cluster_id.clone();
-            let config = HostClientConfig {
-                link,
-                keys,
-                software_version: env!("CARGO_PKG_VERSION").into(),
-                incarnation: current_process_incarnation().into(),
-                max_jobs: HOST_MAX_JOBS,
-                timing: ClientTiming::default(),
-            };
-            let runner = TransportRunner::new(InProcessJobTransport::new(Arc::clone(&state)));
-            let client = match HostClient::new(
-                config,
-                runner,
-                Box::new(NodeSampler::new(&files_dir)),
-            ) {
-                Ok((client, _handle)) => client,
-                Err(err) => {
-                    tracing::error!(%cluster_id, error = %err, "cluster link refused by the transport policy");
-                    continue;
-                }
-            };
-            let library = library.clone();
-            tokio::spawn(async move {
-                let (_stop, shutdown) = watch::channel(false);
-                if client.run(shutdown).await == ClientExit::Revoked {
-                    for attempt in 0..5u32 {
-                        match set_cluster_link_state(&library, &cluster_id, CLUSTER_LINK_REVOKED)
-                            .await
-                        {
-                            Ok(_) => break,
-                            Err(err) => {
-                                tracing::warn!(%cluster_id, error = %err, "could not mark the cluster link revoked");
-                                tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
-                            }
+        let cluster_id = link.owner_cluster_id.clone();
+        let config = HostClientConfig {
+            link,
+            keys,
+            software_version: env!("CARGO_PKG_VERSION").into(),
+            incarnation: current_process_incarnation().into(),
+            max_jobs: HOST_MAX_JOBS,
+            timing: ClientTiming::default(),
+        };
+        let runner = TransportRunner::new(InProcessJobTransport::new(Arc::clone(state)));
+        let client = match HostClient::new(config, runner, Box::new(NodeSampler::new(&files_dir))) {
+            Ok((client, _handle)) => client,
+            Err(err) => {
+                tracing::error!(%cluster_id, error = %err, "cluster link refused by the transport policy");
+                continue;
+            }
+        };
+        let library = library.clone();
+        let shutdown = shutdown.clone();
+        clients.push(tokio::spawn(async move {
+            if client.run(shutdown).await == ClientExit::Revoked {
+                // The link belongs to the store it was read from.
+                for attempt in 0..5u32 {
+                    match set_cluster_link_state(&library, &cluster_id, CLUSTER_LINK_REVOKED).await
+                    {
+                        Ok(_) => break,
+                        Err(err) => {
+                            tracing::warn!(%cluster_id, error = %err, "could not mark the cluster link revoked");
+                            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
                         }
                     }
                 }
-            });
-        }
-    });
+            }
+        }));
+    }
+    clients
 }
 
 #[cfg(test)]

@@ -99,6 +99,12 @@ pub fn close_node_sessions(node_id: &str, code: u16) {
     }
 }
 
+/// True while this owner node holds a live connection of `node_id`.
+#[cfg(test)]
+pub(crate) fn node_session_live(node_id: &str) -> bool {
+    sessions().contains_key(node_id)
+}
+
 /// Registers an authenticated connection; an older one for the same node
 /// is asked to close with [`CLOSE_SUPERSEDED`].
 fn register(node_id: &str) -> (u64, watch::Receiver<Option<u16>>) {
