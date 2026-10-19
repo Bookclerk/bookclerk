@@ -302,6 +302,19 @@ pub struct NodeApiConfig {
 /// Let's Encrypt's production ACME directory.
 pub const LETS_ENCRYPT_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 
+/// True when `directory` is a Let's Encrypt directory (production or
+/// staging), which only certifies registrable, dotted DNS names.
+fn is_public_acme(directory: &str) -> bool {
+    let host = directory
+        .strip_prefix("https://")
+        .unwrap_or(directory)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    host == "letsencrypt.org" || host.ends_with(".letsencrypt.org")
+}
+
 /// Directory under `$BOOKCLERK_FILES_DIR` holding the ACME account and
 /// certificate cache (mode 0700 on Unix).
 pub const NODE_API_ACME_DIR: &str = "acme";
@@ -408,7 +421,8 @@ impl NodeApiConfig {
                 let private_directory = self
                     .acme_directory
                     .as_deref()
-                    .is_some_and(|directory| !directory.trim().is_empty());
+                    .map(str::trim)
+                    .is_some_and(|directory| !directory.is_empty() && !is_public_acme(directory));
                 if host.is_empty()
                     || host.parse::<std::net::IpAddr>().is_ok()
                     || (!private_directory && !host.contains('.'))
@@ -1349,6 +1363,16 @@ mode = "proxy"
         // A private directory may certify a single-label internal name; the
         // public one may not.
         assert!(staging.validate(&[], Some("https://bookclerk")).is_ok());
+        for public in [
+            LETS_ENCRYPT_DIRECTORY,
+            "https://acme-staging-v02.api.letsencrypt.org/directory",
+        ] {
+            staging.acme_directory = Some(public.into());
+            assert!(
+                staging.validate(&[], Some("https://bookclerk")).is_err(),
+                "{public}"
+            );
+        }
         assert!(acme
             .daemon
             .node_api

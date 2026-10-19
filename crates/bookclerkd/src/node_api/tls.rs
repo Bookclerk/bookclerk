@@ -706,7 +706,11 @@ impl AsyncWrite for BoundedStream {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+        // Writing `close_notify` can stall on a peer that stopped reading.
+        match Pin::new(&mut self.inner).poll_shutdown(cx) {
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
     }
 }
 
