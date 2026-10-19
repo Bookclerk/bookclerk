@@ -123,10 +123,10 @@ pub use deployment::{
 pub use destinations::{build_acquire_destinations, build_storage_backend};
 pub use discover::{
     discover_plugins, first_party_database_kind, identity_matches_occupancy,
-    is_first_party_audiobookshelf, is_first_party_local_output, is_first_party_s3_output,
-    occupancy_matches_alias, occupancy_names_alias, occupancy_spec, plugin_matches_occupancy,
-    plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot, settings_table,
-    settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
+    is_first_party_audiobookshelf, is_first_party_local_output, is_first_party_local_output_key,
+    is_first_party_s3_output, occupancy_matches_alias, occupancy_names_alias, occupancy_spec,
+    plugin_matches_occupancy, plugin_search_dirs, resolve_plugin_ref, resolve_plugin_slot,
+    settings_table, settings_table_for, stamp_occupancy_plugin_key, upgrade_unique_alias_occupancy,
     DiscoveredPlugin,
 };
 pub use enrollment::{

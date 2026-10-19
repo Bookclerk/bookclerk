@@ -14,6 +14,8 @@ pub const DEFAULT_RETENTION_DAYS: u64 = 7;
 pub const DEFAULT_TEMP_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Default network-class concurrency (one-at-a-time on a small VPS).
 pub const DEFAULT_NETWORK_CONCURRENCY: u32 = 1;
+/// Default cluster-wide running jobs per required plugin instance.
+pub const DEFAULT_PLUGIN_INSTANCE_CONCURRENCY: u32 = 1;
 
 /// `[jobs]` — durable queue admission, leases, and resource-class concurrency.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,12 +35,17 @@ pub struct JobsConfig {
     pub concurrency: JobsConcurrencyConfig,
 }
 
-/// Per-resource-class worker counts.
+/// Per-resource-class worker counts and cluster-wide job semaphores.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct JobsConcurrencyConfig {
-    /// Scan / acquire / listening-sync workers (default 1).
+    /// Scan / acquire / listening-sync workers on this node (default 1),
+    /// and the cluster-wide number of running network jobs (the
+    /// `jobs:network` semaphore).
     pub network: u32,
+    /// Cluster-wide running jobs that require one plugin instance (the
+    /// `plugin-instance:<id>` semaphore; default 1).
+    pub plugin_instance: u32,
 }
 
 impl Default for JobsConfig {
@@ -58,6 +65,7 @@ impl Default for JobsConcurrencyConfig {
     fn default() -> Self {
         Self {
             network: DEFAULT_NETWORK_CONCURRENCY,
+            plugin_instance: DEFAULT_PLUGIN_INSTANCE_CONCURRENCY,
         }
     }
 }
@@ -97,6 +105,11 @@ impl JobsConfig {
                 self.concurrency.network = n.max(1);
             }
         }
+        if let Ok(v) = std::env::var("BOOKCLERK_JOBS_CONCURRENCY_PLUGIN_INSTANCE") {
+            if let Ok(n) = v.trim().parse::<u32>() {
+                self.concurrency.plugin_instance = n.max(1);
+            }
+        }
     }
 }
 
@@ -111,6 +124,7 @@ mod tests {
         assert_eq!(cfg.lease_seconds, 60);
         assert_eq!(cfg.max_attempts, 3);
         assert_eq!(cfg.concurrency.network, 1);
+        assert_eq!(cfg.concurrency.plugin_instance, 1);
         assert_eq!(cfg.temp_quota_bytes, 2 * 1024 * 1024 * 1024);
     }
 
@@ -122,7 +136,10 @@ mod tests {
             max_attempts: 2,
             retention_days: 3,
             temp_quota_bytes: 1024,
-            concurrency: JobsConcurrencyConfig { network: 1 },
+            concurrency: JobsConcurrencyConfig {
+                network: 1,
+                plugin_instance: 2,
+            },
         };
         let encoded = toml::to_string(&config).expect("serialize");
         let decoded: JobsConfig = toml::from_str(&encoded).expect("deserialize");
