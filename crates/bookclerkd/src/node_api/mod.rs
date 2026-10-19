@@ -776,7 +776,7 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let (state, store) = test_state_with(
             &files,
-            "[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+            "[integrations]\npublic_origin = \"https://owner.example:8443\"\n\n[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
         )
         .await;
         let member = store

@@ -21,6 +21,7 @@
 //! there is no plain-HTTP fallback. `[daemon.node_api]` is bootstrap
 //! configuration: changing it needs a daemon restart.
 
+use std::future::Future as _;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
@@ -60,10 +61,15 @@ const ACCEPT_QUEUE: usize = 64;
 
 /// Node API connections open at once, from TCP accept until the HTTP
 /// connection closes. The HTTP server has no header-read deadline and the
-/// API timeout starts only once a request is parsed, so this bound is what
-/// keeps silent or idle connections from piling up. Further connections
-/// are shed.
+/// API timeout starts only once a request is parsed, so this bound and
+/// [`CONNECTION_IDLE_SECS`] are what keep silent or idle connections from
+/// piling up. Further connections are shed.
 const MAX_CONNECTIONS: usize = 1024;
+
+/// Seconds an open connection may pass with no bytes read or written before
+/// it is closed. Longer than the node session's idle timeout, and an open
+/// session pings well inside it, so only a stalled or idle client trips it.
+const CONNECTION_IDLE_SECS: u64 = 2 * bookclerk_node_proto::IDLE_TIMEOUT_SECS;
 
 /// Whether the node API is being served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -533,10 +539,7 @@ async fn accept_loop(
                 Ok(Ok(Some(tls))) => {
                     // Hold the permit until the server takes the stream, so a
                     // stalled server bounds waiters too, not just handshakes.
-                    let stream = BoundedStream {
-                        inner: tls,
-                        _connection: connection,
-                    };
+                    let stream = BoundedStream::new(tls, connection);
                     let _ = handshakes.send((stream, peer)).await;
                 }
                 Ok(Ok(None)) => tracing::debug!(%peer, "answered a TLS-ALPN-01 challenge"),
@@ -551,12 +554,56 @@ async fn accept_loop(
 }
 
 /// A TLS connection that holds its [`MAX_CONNECTIONS`] permit until the
-/// HTTP server drops it.
+/// HTTP server drops it, and fails once it has been idle for
+/// [`CONNECTION_IDLE_SECS`], so an idle or stalled client cannot keep its
+/// slot (and its file descriptor) indefinitely.
 struct BoundedStream {
     /// The connection.
     inner: TlsStream<TcpStream>,
+    /// Fires when nothing has been read or written for [`CONNECTION_IDLE_SECS`].
+    idle: Pin<Box<tokio::time::Sleep>>,
+    /// The idle limit, kept per stream so tests can shorten it.
+    idle_after: Duration,
     /// Released when the connection closes.
     _connection: OwnedSemaphorePermit,
+}
+
+impl BoundedStream {
+    /// Wraps a finished handshake with the default idle limit.
+    fn new(inner: TlsStream<TcpStream>, connection: OwnedSemaphorePermit) -> Self {
+        Self::with_idle(inner, connection, Duration::from_secs(CONNECTION_IDLE_SECS))
+    }
+
+    /// Wraps a finished handshake that closes after `idle_after` without traffic.
+    fn with_idle(
+        inner: TlsStream<TcpStream>,
+        connection: OwnedSemaphorePermit,
+        idle_after: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            idle: Box::pin(tokio::time::sleep(idle_after)),
+            idle_after,
+            _connection: connection,
+        }
+    }
+
+    /// Pushes the idle deadline out after traffic.
+    fn touch(&mut self) {
+        let deadline = tokio::time::Instant::now() + self.idle_after;
+        self.idle.as_mut().reset(deadline);
+    }
+
+    /// Maps a pending poll to a timeout error once the idle deadline passes.
+    fn pending_or_idle<T>(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<T>> {
+        match self.idle.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "node API connection idle",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 impl AsyncRead for BoundedStream {
@@ -565,7 +612,17 @@ impl AsyncRead for BoundedStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_read(cx, buf)
+        let before = buf.filled().len();
+        match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                if buf.filled().len() > before {
+                    self.touch();
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
     }
 }
 
@@ -575,7 +632,16 @@ impl AsyncWrite for BoundedStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
+        match Pin::new(&mut self.inner).poll_write(cx, buf) {
+            Poll::Ready(Ok(written)) => {
+                if written > 0 {
+                    self.touch();
+                }
+                Poll::Ready(Ok(written))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
     }
 
     fn poll_write_vectored(
@@ -583,7 +649,16 @@ impl AsyncWrite for BoundedStream {
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+        match Pin::new(&mut self.inner).poll_write_vectored(cx, bufs) {
+            Poll::Ready(Ok(written)) => {
+                if written > 0 {
+                    self.touch();
+                }
+                Poll::Ready(Ok(written))
+            }
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -591,7 +666,10 @@ impl AsyncWrite for BoundedStream {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
+        match Pin::new(&mut self.inner).poll_flush(cx) {
+            Poll::Pending => self.pending_or_idle(cx),
+            ready => ready,
+        }
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {

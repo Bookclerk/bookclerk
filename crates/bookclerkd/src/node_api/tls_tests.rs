@@ -226,6 +226,45 @@ async fn accepted_connections_hold_a_slot_until_closed() {
 }
 
 #[tokio::test]
+async fn an_idle_connection_is_closed() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let (server, connector) = localhost_tls();
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = tcp.local_addr().unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+    let accept = tokio::spawn(async move {
+        let (stream, _) = tcp.accept().await.unwrap();
+        acceptor.accept(stream).await.unwrap()
+    });
+    let tcp = tokio::net::TcpStream::connect(local).await.unwrap();
+    let mut client = connector
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .unwrap();
+    let slot = Arc::new(tokio::sync::Semaphore::new(1))
+        .try_acquire_owned()
+        .unwrap();
+    let mut served =
+        super::BoundedStream::with_idle(accept.await.unwrap(), slot, Duration::from_millis(300));
+
+    // Traffic keeps it open past the limit.
+    let mut byte = [0_u8; 1];
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        client.write_all(b"x").await.unwrap();
+        client.flush().await.unwrap();
+        served.read_exact(&mut byte).await.unwrap();
+    }
+    // Silence past the limit fails the read instead of waiting forever.
+    let err = tokio::time::timeout(Duration::from_secs(5), served.read(&mut byte))
+        .await
+        .expect("the idle limit did not fire")
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[tokio::test]
 async fn a_stalled_server_bounds_finished_handshakes() {
     let (server, connector) = localhost_tls();
 
@@ -276,7 +315,7 @@ async fn self_signed_serves_the_node_api_and_pins_links() {
     let files = tempfile::tempdir().unwrap();
     let (state, store) = super::super::tests::test_state_with(
         &files,
-        "[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
+        "[integrations]\npublic_origin = \"https://owner.example:8443\"\n\n[daemon.node_api]\nmode = \"self_signed\"\ntls_listen = \"127.0.0.1:0\"\n",
     )
     .await;
     let cfg = state.config.read().await.clone();
