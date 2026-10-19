@@ -401,11 +401,17 @@ impl NodeApiConfig {
                          integrations.public_origin"
                         .into());
                 }
-                // ACME certifies a DNS name, not an address.
+                // ACME certifies a DNS name, not an address. The public
+                // directory also needs a registrable (dotted) name; a private
+                // directory may issue single-label internal names.
                 let host = public_origin.and_then(origin_host).unwrap_or("");
+                let private_directory = self
+                    .acme_directory
+                    .as_deref()
+                    .is_some_and(|directory| !directory.trim().is_empty());
                 if host.is_empty()
                     || host.parse::<std::net::IpAddr>().is_ok()
-                    || !host.contains('.')
+                    || (!private_directory && !host.contains('.'))
                 {
                     return Err("daemon.node_api.mode = \"acme\" needs a DNS name \
                          (not an IP address) in integrations.public_origin"
@@ -1340,6 +1346,14 @@ mode = "proxy"
             .validate(&[], Some("https://owner.example"))
             .is_err());
         staging.acme_directory = Some("https://pebble:14000/dir".into());
+        // A private directory may certify a single-label internal name; the
+        // public one may not.
+        assert!(staging.validate(&[], Some("https://bookclerk")).is_ok());
+        assert!(acme
+            .daemon
+            .node_api
+            .validate(&[], Some("https://bookclerk"))
+            .is_err());
         assert!(staging
             .validate(&[], Some("https://owner.example:8443/"))
             .is_ok());

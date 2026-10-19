@@ -34,7 +34,7 @@ use std::sync::Arc;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Path, Request, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
@@ -105,7 +105,6 @@ pub(crate) struct PostNodeInvite {
 /// # Arguments
 ///
 /// * `caller` - Who is asking; decides whose links they may mint.
-/// * `headers` - Request headers, for the effective public origin.
 /// * `body` - Owner, lifetime, and label of the new link.
 ///
 /// # Returns
@@ -120,7 +119,6 @@ pub(crate) struct PostNodeInvite {
 pub async fn post_node_invite(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
-    headers: HeaderMap,
     Json(body): Json<PostNodeInvite>,
 ) -> Result<Json<serde_json::Value>, Response> {
     let for_user_id = match (body.user_id, caller) {
@@ -149,10 +147,9 @@ pub async fn post_node_invite(
         } else {
             None
         };
-        (
-            crate::origin::effective_origin_from_config(&cfg, Some(&headers)),
-            pin,
-        )
+        // The same origin the socket handshake verifies against, so a link
+        // minted through any listener is signed for the origin it checks.
+        (crate::origin::effective_origin_from_config(&cfg, None), pin)
     };
     let library = state.library_snapshot().await;
     let minted = mint_enrollment_link(
