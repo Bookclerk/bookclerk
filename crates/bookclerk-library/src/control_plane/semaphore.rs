@@ -347,6 +347,52 @@ pub async fn permits_held_by(
         .collect())
 }
 
+/// Every semaphore permit whose holder starts with `holder_prefix`, across
+/// all semaphores and slots.
+///
+/// Like [`permits_held_by`], but for a holder that must renew exactly what
+/// it took, whatever the semaphores it would ask for now: an expired slot
+/// nobody took over is returned, a slot another holder took is not.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn permits_with_holder_prefix(
+    store: &LibraryStore,
+    holder_prefix: &str,
+) -> Result<Vec<SemaphorePermit>> {
+    // A coarse LIKE pre-filter, as in `load_all_slots`; the exact checks
+    // below drop the extras.
+    let pattern_prefix = holder_prefix.split('\\').next().unwrap_or_default();
+    let rows = cluster_leases::Entity::find()
+        .filter(cluster_leases::Column::Holder.like(format!("{pattern_prefix}%")))
+        .filter(cluster_leases::Column::Name.like(format!("{SEMAPHORE_LEASE_PREFIX}%")))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| row.holder.starts_with(holder_prefix))
+        .filter_map(|row| {
+            let (semaphore, slot) = row
+                .name
+                .strip_prefix(SEMAPHORE_LEASE_PREFIX)?
+                .rsplit_once('#')?;
+            let slot = slot.parse::<u32>().ok()?;
+            Some(SemaphorePermit {
+                semaphore: semaphore.to_string(),
+                slot,
+                lease: ClusterLease {
+                    name: row.name.clone(),
+                    holder: row.holder,
+                    token: row.token,
+                    expires_at_ms: row.expires_at_ms,
+                },
+            })
+        })
+        .collect())
+}
+
 /// Extends `lease` by `ttl` only while the row still carries its holder and
 /// token. Unlike [`acquire_lease`], it never takes a lease over.
 ///
