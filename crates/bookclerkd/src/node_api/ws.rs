@@ -118,16 +118,23 @@ fn register_pending(node_id: &str) -> (u64, watch::Receiver<Option<u16>>) {
 }
 
 /// Makes a welcomed connection the node's live one; an older live
-/// connection is asked to close with [`CLOSE_SUPERSEDED`]. A close request
-/// that reached the pending slot (a revoke) stays pending on the receiver.
-fn promote(node_id: &str, serial: u64) {
+/// connection is asked to close with [`CLOSE_SUPERSEDED`]. Returns `false`,
+/// leaving the live connection alone, when the pending slot is gone or
+/// already holds a close request (a revoke that landed during the
+/// handshake): a revoked connection never supersedes, so the live one keeps
+/// the revoke code it was sent.
+fn promote(node_id: &str, serial: u64) -> bool {
     let mut table = sessions();
     let Some(slot) = take_pending(&mut table, node_id, serial) else {
-        return;
+        return false;
     };
+    if slot.close.borrow().is_some() {
+        return false;
+    }
     if let Some(previous) = table.live.insert(node_id.to_string(), slot) {
         let _ = previous.close.send(Some(CLOSE_SUPERSEDED));
     }
+    true
 }
 
 /// Removes and returns the pending slot `serial` of `node_id`.
@@ -413,6 +420,11 @@ async fn handshake(
         return Err(revoked);
     }
     let (serial, close) = admit(&node_id, record_node_connected(library, &node_id)).await?;
+    if close.borrow().is_some() {
+        // Revoked while the stamp ran: no welcome.
+        unregister(&node_id, serial);
+        return Err(revoked);
+    }
     let welcome = Frame::new(
         "",
         Body::Welcome {
@@ -424,7 +436,9 @@ async fn handshake(
         unregister(&node_id, serial);
         return Err(Refusal::auth("closed", Some(&node_id)));
     }
-    promote(&node_id, serial);
+    if !promote(&node_id, serial) {
+        return Err(revoked);
+    }
     Ok(Authed {
         node_id,
         serial,
@@ -564,10 +578,35 @@ mod tests {
         .await
         .unwrap_or_else(|_| panic!("admitted"));
         assert_eq!(*close.borrow(), Some(CLOSE_REVOKED));
-        // Promotion keeps the pending close request.
-        promote(node_id, serial);
+        // A revoked connection is not promoted, and keeps its close request.
+        assert!(!promote(node_id, serial));
         assert_eq!(*close.borrow(), Some(CLOSE_REVOKED));
         unregister(node_id, serial);
+        assert!(!sessions().live.contains_key(node_id));
+        assert!(!sessions().pending.contains_key(node_id));
+    }
+
+    #[tokio::test]
+    async fn a_revoked_reconnect_does_not_supersede_the_live_connection() {
+        let node_id = "admit-revoked-reconnect";
+        let (live_serial, live) = admit(node_id, async { Ok(true) })
+            .await
+            .unwrap_or_else(|_| panic!("admitted"));
+        assert!(promote(node_id, live_serial));
+        // A reconnect is mid-handshake when the revoke wake closes both.
+        let (serial, pending) = admit(node_id, async { Ok(true) })
+            .await
+            .unwrap_or_else(|_| panic!("admitted"));
+        close_node_sessions(node_id, CLOSE_REVOKED);
+        assert!(!promote(node_id, serial));
+        assert_eq!(*pending.borrow(), Some(CLOSE_REVOKED));
+        // The live connection keeps the revoke code, not superseded.
+        assert_eq!(*live.borrow(), Some(CLOSE_REVOKED));
+        assert!(sessions()
+            .live
+            .get(node_id)
+            .is_some_and(|slot| slot.serial == live_serial));
+        unregister(node_id, live_serial);
         assert!(!sessions().live.contains_key(node_id));
     }
 
@@ -577,7 +616,7 @@ mod tests {
         let (live_serial, live) = admit(node_id, async { Ok(true) })
             .await
             .unwrap_or_else(|_| panic!("admitted"));
-        promote(node_id, live_serial);
+        assert!(promote(node_id, live_serial));
 
         // A stamp that fails, or finds the credential revoked, refuses the
         // new attempt without touching the live connection.
@@ -601,7 +640,7 @@ mod tests {
         let (serial, _) = admit(node_id, async { Ok(true) })
             .await
             .unwrap_or_else(|_| panic!("admitted"));
-        promote(node_id, serial);
+        assert!(promote(node_id, serial));
         assert_eq!(*live.borrow(), Some(CLOSE_SUPERSEDED));
         unregister(node_id, serial);
         unregister(node_id, live_serial);

@@ -334,7 +334,8 @@ acme_directory_ca = "{ca}"
     // Pebble's order may fail once before succeeding; wait for Ready.
     tokio::time::timeout(
         Duration::from_secs(120),
-        gate.status.wait_for(|status| *status == NodeApiStatus::Ready),
+        gate.status
+            .wait_for(|status| *status == NodeApiStatus::Ready),
     )
     .await
     .expect("Pebble issued a certificate")
