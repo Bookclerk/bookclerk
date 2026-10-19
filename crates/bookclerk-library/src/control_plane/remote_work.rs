@@ -31,9 +31,7 @@ use std::time::Duration;
 
 use bookclerk_plugin_abi::{DbType, DbValue};
 use chrono::Utc;
-use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
-};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use zeroize::Zeroizing;
 
 use super::batch::{self, int, text};
@@ -44,8 +42,10 @@ use super::job_routing::{
 use super::semaphore::{
     permits_held_by, release_permits, renew_permits, SemaphorePermit, MAX_SEMAPHORE_LIMIT,
 };
-use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
-use crate::entities::{accounts, encrypted_secrets, job_secret_handoffs};
+use super::trust::{
+    accounts_named, handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust,
+};
+use crate::entities::{encrypted_secrets, job_secret_handoffs};
 use crate::error::{LibraryError, Result};
 use crate::models::{JobFence, JobKind, JobRecord, JobResourceClass, JobState};
 use crate::secrets::{
@@ -226,13 +226,21 @@ pub async fn claim_remote_job(
     };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
-            if let Err(err) = record_handoff(store, node_id, &fence, &secrets).await {
-                // Nothing went out; give the claim back unspent.
-                let _ = store.release_job_claim(&fence, false).await;
-                let _ = release_permits(store, &permits).await;
-                return Err(err);
+            match record_handoff(store, node_id, &fence, &secrets).await {
+                Ok(true) => Ok(Some(RemoteJobClaim { job, secrets })),
+                Ok(false) => {
+                    // The lease was lost while the secrets were read; the
+                    // job is someone else's now, so only the permits go back.
+                    let _ = release_permits(store, &permits).await;
+                    Ok(None)
+                }
+                Err(err) => {
+                    // Nothing went out; give the claim back unspent.
+                    let _ = store.release_job_claim(&fence, false).await;
+                    let _ = release_permits(store, &permits).await;
+                    Err(err)
+                }
             }
-            Ok(Some(RemoteJobClaim { job, secrets }))
         }
         Err(err) => {
             tracing::warn!(
@@ -258,9 +266,10 @@ pub async fn claim_remote_job(
 /// The store-account secrets `job` needs on a Host.
 ///
 /// For a scan or acquire that names an account: every `integration` row of
-/// `encrypted_secrets` for that account id under any plugin key that has an
-/// `accounts` row with that id (the same rows the trust predicate checked).
-/// Every other job is handed no secrets. Sorted, without duplicates.
+/// `encrypted_secrets` for each store account the name reaches, by id or
+/// label and ignoring case, as the executor resolves it (the same accounts
+/// the trust predicate checked). Every other job is handed no secrets.
+/// Sorted, without duplicates.
 ///
 /// # Errors
 ///
@@ -284,40 +293,28 @@ async fn job_secret_records(
     let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
         return Ok(Vec::new());
     };
-    let plugin_keys: Vec<String> = accounts::Entity::find()
-        .filter(accounts::Column::AccountId.eq(account))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|row| row.plugin_key)
-        .collect();
-    if plugin_keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    let rows = encrypted_secrets::Entity::find()
-        .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
-        .filter(encrypted_secrets::Column::AccountId.eq(account))
-        .filter(encrypted_secrets::Column::Provider.is_in(plugin_keys))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        let Some(provider) = row.provider.clone() else {
-            continue;
-        };
-        if let Some(record) = get_secret(
-            store.db(),
-            &row.kind,
-            Some(&provider),
-            secret_account_type::INTEGRATION,
-            Some(account),
-            &row.name,
-        )
-        .await?
-        {
-            records.push(record);
+    let mut records = Vec::new();
+    for (provider, account_id) in accounts_named(store, account, None).await? {
+        let rows = encrypted_secrets::Entity::find()
+            .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
+            .filter(encrypted_secrets::Column::AccountId.eq(account_id.as_str()))
+            .filter(encrypted_secrets::Column::Provider.eq(provider.as_str()))
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        for row in rows {
+            if let Some(record) = get_secret(
+                store.db(),
+                &row.kind,
+                Some(&provider),
+                secret_account_type::INTEGRATION,
+                Some(&account_id),
+                &row.name,
+            )
+            .await?
+            {
+                records.push(record);
+            }
         }
     }
     records.sort_by_key(record_ref);
@@ -350,34 +347,83 @@ async fn unseal_job_secrets(store: &LibraryStore, job: &JobRecord) -> Result<Vec
 
 /// Records the refs of `secrets` as handed to `node_id` under `fence`, and
 /// drops the rows of the job's earlier generations.
+///
+/// One host batch, which every backend runs as a single transaction: it
+/// first takes the job row with a fenced update, and every later statement
+/// applies only while `fence` still owns the running job. A claim whose
+/// lease was lost while its secrets were read therefore writes nothing,
+/// and a newer claim's rows are left alone.
+///
+/// # Returns
+///
+/// `true` when the handoff was recorded; `false` when `fence` no longer
+/// owns the running job.
+///
+/// # Errors
+///
+/// Returns an error when the batch fails.
 async fn record_handoff(
     store: &LibraryStore,
     node_id: &str,
     fence: &JobFence,
     secrets: &[JobSecret],
-) -> Result<()> {
-    forget_handoffs(store, &fence.job_id).await?;
-    if secrets.is_empty() {
-        return Ok(());
+) -> Result<bool> {
+    /// The fence still owns the running job.
+    const OWNED: &str = "EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = ? \
+                          AND lease_owner = ? AND lease_generation = ?)";
+    let now = Utc::now().to_rfc3339();
+    let running = JobState::Running.as_str();
+    let owned = || {
+        vec![
+            text(&fence.job_id),
+            text(running),
+            text(&fence.owner),
+            int(fence.generation),
+        ]
+    };
+    let mut statements = vec![
+        batch::exec(
+            "UPDATE jobs SET updated_at = ?
+              WHERE id = ? AND state = ? AND lease_owner = ? AND lease_generation = ?",
+            [vec![text(&now)], owned()].concat(),
+        ),
+        batch::exec(
+            &format!("DELETE FROM job_secret_handoffs WHERE job_id = ? AND {OWNED}"),
+            [vec![text(&fence.job_id)], owned()].concat(),
+        ),
+    ];
+    for secret in secrets {
+        statements.push(batch::exec(
+            &format!(
+                "INSERT INTO job_secret_handoffs
+                    (job_id, lease_generation, kind, provider, account_id, name, node_id,
+                     handed_at)
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE {OWNED}"
+            ),
+            [
+                vec![
+                    text(&fence.job_id),
+                    int(fence.generation),
+                    text(&secret.secret_ref.kind),
+                    text(&secret.secret_ref.provider),
+                    text(&secret.secret_ref.account_id),
+                    text(&secret.secret_ref.name),
+                    text(node_id),
+                    text(&now),
+                ],
+                owned(),
+            ]
+            .concat(),
+        ));
     }
-    let handed_at = Utc::now().to_rfc3339();
-    let rows = secrets
-        .iter()
-        .map(|secret| job_secret_handoffs::ActiveModel {
-            job_id: Set(fence.job_id.clone()),
-            lease_generation: Set(fence.generation),
-            kind: Set(secret.secret_ref.kind.clone()),
-            provider: Set(secret.secret_ref.provider.clone()),
-            account_id: Set(secret.secret_ref.account_id.clone()),
-            name: Set(secret.secret_ref.name.clone()),
-            node_id: Set(node_id.to_string()),
-            handed_at: Set(handed_at.clone()),
-        });
-    job_secret_handoffs::Entity::insert_many(rows)
-        .exec_without_returning(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(())
+    let operation_id = format!(
+        "handoff-{}-{}-{}",
+        fence.job_id,
+        fence.generation,
+        uuid::Uuid::new_v4()
+    );
+    let reply = batch::execute_host_batch(store, batch::request(&operation_id, statements)).await?;
+    Ok(batch::rows_affected(&reply, 0) == 1)
 }
 
 /// Drops every handoff row of `job_id`.

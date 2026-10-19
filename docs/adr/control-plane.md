@@ -1106,12 +1106,14 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   only when its upload commits (step 9). Deliveries are not served yet
   (`claim {item: delivery}` answers `unsupported`).
 - **Which secrets.** For a scan or acquire naming an account: every
-  `integration` row of `encrypted_secrets` for that account id under the
-  plugin keys holding an `accounts` row with that id, the same rows the
-  trust predicate checked. Other jobs get none; instance settings and
+  `integration` row of `encrypted_secrets` for each store account the name
+  reaches (by id or label, ignoring case, as the executor resolves it), the
+  same accounts the trust predicate checked. Other jobs get none; instance settings and
   secrets will travel with `instance.config` (step 7). The refs handed
   are recorded per lease generation in `job_secret_handoffs` (names only,
-  no secret material) before the `work` answer goes out, and dropped when
+  no secret material) before the `work` answer goes out, in one batch
+  guarded by the claim's fence (a claim that lost its lease while its
+  secrets were read records nothing and is not answered), and dropped when
   the job finishes, is given back, or is claimed again. A job whose
   secrets do not unseal or seal (legacy formats, oversized bundle) is
   failed with `secrets_unavailable`, so it retries with backoff and a node
