@@ -369,6 +369,10 @@ fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     None
 }
 
+/// Key probes per read of [`claims_another_books_key`]: each binds once on
+/// both key columns, well under the smallest guest bind cap.
+const KEY_PROBES_PER_READ: usize = 32;
+
 /// True when a copy of `files` would land on a file another library title
 /// already has: its recorded audio or PDF key, or a sidecar of that audio
 /// (the same file stem with any further extension, such as its cover,
@@ -378,42 +382,79 @@ fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
 /// on any destination is refused, failing closed. The destination-scoped
 /// record of every file a title wrote is checked by `claim_upload_keys`.
 ///
+/// Only the other titles' keys that could match are read, so the read
+/// stays small (and under the guest's result-row cap) however many titles
+/// are acquired: a key that matches a copy exactly or as its sidecar starts
+/// with the copy's name up to its first `.` and that `.` (a `LIKE` prefix;
+/// `%` or `_` in it, or SQLite's case folding, only widen it, and storage
+/// keys carry no `\`), or equals a copy without one. The exact rules then
+/// run on what was read.
+///
 /// # Errors
 ///
-/// Returns an error when the read fails.
+/// Returns an error when a read fails.
 async fn claims_another_books_key(
     store: &LibraryStore,
     book_uuid: &str,
     files: &[UploadFile],
 ) -> Result<bool> {
-    let others: Vec<(Option<String>, Option<String>)> = books::Entity::find()
-        .select_only()
-        .column(books::Column::StorageKey)
-        .column(books::Column::PdfStorageKey)
-        .filter(books::Column::Uuid.ne(book_uuid))
-        .filter(
+    let copies: BTreeSet<&str> = files
+        .iter()
+        .flat_map(|file| &file.copies)
+        .map(|copy| copy.key.as_str())
+        .collect();
+    let mut prefixes = BTreeSet::new();
+    let mut whole = BTreeSet::new();
+    for key in &copies {
+        // Every longer stem of `key` extends its first one with a `.`, so
+        // the first stem's prefix covers them all (and `key` itself).
+        match sidecar_stems(key).next() {
+            Some(stem) => prefixes.insert(format!("{stem}.%")),
+            None => whole.insert(*key),
+        };
+    }
+    let probes: Vec<sea_orm::Condition> = prefixes
+        .into_iter()
+        .map(|prefix| {
             sea_orm::Condition::any()
-                .add(books::Column::StorageKey.is_not_null())
-                .add(books::Column::PdfStorageKey.is_not_null()),
-        )
-        .into_tuple()
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+                .add(books::Column::StorageKey.like(prefix.as_str()))
+                .add(books::Column::PdfStorageKey.like(prefix.as_str()))
+        })
+        .chain(whole.into_iter().map(|key| {
+            sea_orm::Condition::any()
+                .add(books::Column::StorageKey.eq(key))
+                .add(books::Column::PdfStorageKey.eq(key))
+        }))
+        .collect();
     let mut exact = BTreeSet::new();
     let mut stems = BTreeSet::new();
-    for (audio, pdf) in others {
-        for key in audio.into_iter().chain(pdf) {
-            if let Some(stem) = file_stem_key(&key) {
-                stems.insert(stem.to_string());
+    for chunk in probes.chunks(KEY_PROBES_PER_READ) {
+        let any = chunk
+            .iter()
+            .cloned()
+            .fold(sea_orm::Condition::any(), |all, probe| all.add(probe));
+        let others: Vec<(Option<String>, Option<String>)> = books::Entity::find()
+            .select_only()
+            .column(books::Column::StorageKey)
+            .column(books::Column::PdfStorageKey)
+            .filter(books::Column::Uuid.ne(book_uuid))
+            .filter(any)
+            .into_tuple()
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        for (audio, pdf) in others {
+            for key in audio.into_iter().chain(pdf) {
+                if let Some(stem) = file_stem_key(&key) {
+                    stems.insert(stem.to_string());
+                }
+                exact.insert(key);
             }
-            exact.insert(key);
         }
     }
-    Ok(files.iter().flat_map(|file| &file.copies).any(|copy| {
-        let key = copy.key.as_str();
-        exact.contains(key) || sidecar_stems(key).any(|stem| stems.contains(stem))
-    }))
+    Ok(copies
+        .iter()
+        .any(|key| exact.contains(*key) || sidecar_stems(key).any(|stem| stems.contains(stem))))
 }
 
 /// Claims every copy of `files` for the title `book_uuid` with `upload_id`

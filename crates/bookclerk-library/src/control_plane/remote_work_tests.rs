@@ -1985,9 +1985,18 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
         "nothing was granted"
     );
     // The title's own files and sidecars, a re-acquire of its own recorded
-    // key included, are granted.
+    // key included, are granted, and so is a name another title's key only
+    // matches as a `LIKE` pattern (its `_` is no wildcard to the check).
     set_book_keys(&w.store, &book_uuid, "Author/Title/Title.m4b", None).await;
-    let own = with_extra("Author/Title/Title.jpg");
+    let mut own = with_extra("Author/Title/Title.jpg");
+    own.push(bookclerk_node_proto::UploadFile {
+        copies: vec![bookclerk_node_proto::FileCopy {
+            destination: "local".into(),
+            key: "Author/Title/Neighbou_.jpg".into(),
+        }],
+        sha256: "ef".repeat(32),
+        ..files[0].clone()
+    });
     assert!(matches!(
         grant_upload(
             &w.store,
