@@ -15,7 +15,11 @@
 //!
 //! Lowering a limit does not revoke slots at or above the new limit; their
 //! holders keep them until they release or stop renewing, and no new permit
-//! is granted until the live count is under the new limit.
+//! is granted until the live count (every slot, including those at or above
+//! the new limit) is under the new limit. That count is read before the
+//! slot's compare-and-swap, so while old high slots are still live, racing
+//! acquirers can briefly overshoot the new limit (never the old one); once
+//! the high slots drain, the slot CAS alone enforces the new limit exactly.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -119,6 +123,38 @@ async fn load_slots(
     Ok(by_slot)
 }
 
+/// Every slot row of `name` (any slot index, including those at or above
+/// the current limit), by slot.
+async fn load_all_slots(
+    store: &LibraryStore,
+    name: &str,
+) -> Result<BTreeMap<u32, cluster_leases::Model>> {
+    let prefix = format!("{SEMAPHORE_LEASE_PREFIX}{name}#");
+    // The LIKE is a coarse pre-filter that may match more rows than the
+    // semaphore's (`%` / `_` in a name, case-insensitive engines); the exact
+    // prefix check below drops the extras. A backslash (an escape on some
+    // engines) could make it match fewer, so the pattern stops before one.
+    let pattern_prefix = prefix.split('\\').next().unwrap_or_default();
+    let rows = cluster_leases::Entity::find()
+        .filter(cluster_leases::Column::Name.like(format!("{pattern_prefix}%")))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    let mut by_slot = BTreeMap::new();
+    for row in rows {
+        let Some(slot) = row
+            .name
+            .strip_prefix(prefix.as_str())
+            .filter(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|rest| rest.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        by_slot.insert(slot, row);
+    }
+    Ok(by_slot)
+}
+
 /// Takes one permit of `name` for `holder`, valid for `ttl`.
 ///
 /// Tries the free or expired slots below `limit` in order; each attempt is
@@ -126,9 +162,13 @@ async fn load_slots(
 /// makes this one move on. `holder` should be unique per piece of work
 /// (it is also how a renewal proves ownership).
 ///
+/// Live permits other holders keep on slots at or above `limit` (left over
+/// from a higher limit) count against it, so after a limit drop no permit
+/// is granted until the live count is under the new limit.
+///
 /// # Returns
 ///
-/// The permit, or `None` when every slot is held by a live permit.
+/// The permit, or `None` when `limit` live permits are held by others.
 ///
 /// # Errors
 ///
@@ -141,7 +181,14 @@ pub async fn acquire_permit(
     ttl: Duration,
 ) -> Result<Option<SemaphorePermit>> {
     let now_ms = Utc::now().timestamp_millis();
-    let current = load_slots(store, name, limit).await?;
+    let current = load_all_slots(store, name).await?;
+    let held_by_others = current
+        .values()
+        .filter(|row| row.holder != holder && row.expires_at_ms > now_ms)
+        .count();
+    if held_by_others >= usize::try_from(slots(limit)).unwrap_or(usize::MAX) {
+        return Ok(None);
+    }
     for slot in 0..slots(limit) {
         if let Some(row) = current.get(&slot) {
             if row.holder != holder && row.expires_at_ms > now_ms {
@@ -296,6 +343,52 @@ pub async fn permits_held_by(
                 token: row.token,
                 expires_at_ms: row.expires_at_ms,
             },
+        })
+        .collect())
+}
+
+/// Every semaphore permit whose holder starts with `holder_prefix`, across
+/// all semaphores and slots.
+///
+/// Like [`permits_held_by`], but for a holder that must renew exactly what
+/// it took, whatever the semaphores it would ask for now: an expired slot
+/// nobody took over is returned, a slot another holder took is not.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+pub async fn permits_with_holder_prefix(
+    store: &LibraryStore,
+    holder_prefix: &str,
+) -> Result<Vec<SemaphorePermit>> {
+    // A coarse LIKE pre-filter, as in `load_all_slots`; the exact checks
+    // below drop the extras.
+    let pattern_prefix = holder_prefix.split('\\').next().unwrap_or_default();
+    let rows = cluster_leases::Entity::find()
+        .filter(cluster_leases::Column::Holder.like(format!("{pattern_prefix}%")))
+        .filter(cluster_leases::Column::Name.like(format!("{SEMAPHORE_LEASE_PREFIX}%")))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| row.holder.starts_with(holder_prefix))
+        .filter_map(|row| {
+            let (semaphore, slot) = row
+                .name
+                .strip_prefix(SEMAPHORE_LEASE_PREFIX)?
+                .rsplit_once('#')?;
+            let slot = slot.parse::<u32>().ok()?;
+            Some(SemaphorePermit {
+                semaphore: semaphore.to_string(),
+                slot,
+                lease: ClusterLease {
+                    name: row.name.clone(),
+                    holder: row.holder,
+                    token: row.token,
+                    expires_at_ms: row.expires_at_ms,
+                },
+            })
         })
         .collect())
 }

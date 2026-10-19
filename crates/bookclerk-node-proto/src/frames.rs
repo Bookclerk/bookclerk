@@ -153,6 +153,10 @@ pub enum Body {
         /// host only jobs that name one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_plugin_key: Option<String>,
+        /// The claim resumed a suspended job: no attempt was spent, and the
+        /// job's checkpoint applies.
+        #[serde(default)]
+        resumed: bool,
     },
     /// Owner → host: nothing to claim now.
     #[serde(rename = "none")]
@@ -227,6 +231,10 @@ pub enum Body {
         /// Stable reason (`awaiting_host_consent`, ...), for the log.
         #[serde(default)]
         reason: String,
+        /// The `resumed` flag of the job's `work` frame, so a resumed
+        /// claim is given back resumable.
+        #[serde(default)]
+        resumed: bool,
     },
     /// Host → owner: the deployments that target this host and should run.
     /// Answered with [`Body::Deployments`].
@@ -867,6 +875,7 @@ mod tests {
                     sealed_secrets: Some("x".into()),
                     plugin_keys: vec!["store".into()],
                     source_plugin_key: Some("store".into()),
+                    resumed: false,
                 },
                 "work",
             ),
@@ -886,6 +895,7 @@ mod tests {
                     job_id: job_id(),
                     fence: 2,
                     reason: "awaiting_host_consent".into(),
+                    resumed: false,
                 },
                 "release",
             ),

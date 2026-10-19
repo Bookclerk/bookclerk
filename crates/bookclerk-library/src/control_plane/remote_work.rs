@@ -34,21 +34,22 @@ use std::time::Duration;
 
 use bookclerk_plugin_abi::{DbType, DbValue};
 use chrono::Utc;
-use sea_orm::{
-    ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
-};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use zeroize::Zeroizing;
 
 use super::batch::{self, int, text};
 use super::job_routing::{
     claim_routed_job, job_permit_holder_prefix, job_plugin_keys, job_semaphores,
-    job_source_plugin_key, JobClaimFilter, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
+    job_source_plugin_key, pinned_plugin_key, JobClaimFilter, JobClaimLimits, JobClaimRequest,
+    RoutedJobClaim,
 };
 use super::semaphore::{
-    permits_held_by, release_permits, renew_permits, SemaphorePermit, MAX_SEMAPHORE_LIMIT,
+    permits_with_holder_prefix, release_permits, renew_permits, SemaphorePermit,
 };
-use super::trust::{handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust};
-use crate::entities::{accounts, encrypted_secrets, job_secret_handoffs};
+use super::trust::{
+    accounts_named, handoff_routed_job, node_may_claim_job, node_trust, Claimant, NodeTrust,
+};
+use crate::entities::{encrypted_secrets, job_secret_handoffs};
 use crate::error::{LibraryError, Result};
 use crate::models::{JobFence, JobKind, JobRecord, JobResourceClass, JobState};
 use crate::secrets::{
@@ -141,6 +142,9 @@ pub struct RemoteJobClaim {
     /// The one plugin whose source guest runs the job
     /// ([`job_source_plugin_key`]); always set under a claim filter.
     pub source_plugin_key: Option<String>,
+    /// The claim resumed a suspended job ([`RoutedJobClaim::resumed`]).
+    /// Pass it back to [`release_remote_job`] if the claim is given back.
+    pub resumed: bool,
 }
 
 /// Outcome of [`renew_remote_job`].
@@ -239,6 +243,7 @@ pub async fn claim_remote_job(
         job,
         permits,
         resumed,
+        ..
     } = claim;
     let Some(fence) = job.fence() else {
         let _ = release_permits(store, &permits).await;
@@ -264,17 +269,36 @@ pub async fn claim_remote_job(
     };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
-            if let Err(err) = record_handoff(store, node_id, &fence, &secrets).await {
-                // Nothing went out; give the claim back unspent.
+            // Trust can change while the secrets are read: check it once
+            // more right before they are recorded and handed out. Every
+            // later frame under the fence checks it again.
+            let still_trusted = node_may_claim_job(store, node_id, Claimant::Remote, &job).await;
+            if !matches!(still_trusted, Ok(true)) {
                 give_back_claim(store, &fence, &permits, resumed).await;
-                return Err(err);
+                return still_trusted.map(|_| None);
             }
-            Ok(Some(RemoteJobClaim {
-                job,
-                secrets,
-                plugin_keys,
-                source_plugin_key,
-            }))
+            match record_handoff(store, node_id, &fence, &secrets).await {
+                Ok(true) => Ok(Some(RemoteJobClaim {
+                    job,
+                    secrets,
+                    plugin_keys,
+                    source_plugin_key,
+                    resumed,
+                })),
+                Ok(false) => {
+                    // The lease ran out or was lost while the secrets were
+                    // read, and nothing went out. A fence that still holds
+                    // the row gives it back unspent; the release is fenced,
+                    // so a job already claimed again is left alone.
+                    give_back_claim(store, &fence, &permits, resumed).await;
+                    Ok(None)
+                }
+                Err(err) => {
+                    // Nothing went out; give the claim back unspent.
+                    give_back_claim(store, &fence, &permits, resumed).await;
+                    Err(err)
+                }
+            }
         }
         Err(err) => {
             tracing::warn!(
@@ -331,9 +355,11 @@ async fn give_back_claim(
 /// The store-account secrets `job` needs on a Host.
 ///
 /// For a scan or acquire that names an account: every `integration` row of
-/// `encrypted_secrets` for that account id under any plugin key that has an
-/// `accounts` row with that id (the same rows the trust predicate checked).
-/// Every other job is handed no secrets. Sorted, without duplicates.
+/// `encrypted_secrets` for each store account the name reaches, by id or
+/// label and ignoring case, as the executor resolves it (the same accounts
+/// the trust predicate checked), limited to the pinned instance's plugin
+/// when the job is pinned to one. Every other job is handed no secrets.
+/// Sorted, without duplicates.
 ///
 /// # Errors
 ///
@@ -357,40 +383,35 @@ async fn job_secret_records(
     let Some(account) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
         return Ok(Vec::new());
     };
-    let plugin_keys: Vec<String> = accounts::Entity::find()
-        .filter(accounts::Column::AccountId.eq(account))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|row| row.plugin_key)
-        .collect();
-    if plugin_keys.is_empty() {
+    // A job pinned to an instance runs only on that instance's plugin, so
+    // it is handed only that plugin's accounts; a pin that names no
+    // instance gets none.
+    let pinned_key = pinned_plugin_key(store, job).await?;
+    if job.payload.plugin_instance_id.is_some() && pinned_key.is_none() {
         return Ok(Vec::new());
     }
-    let rows = encrypted_secrets::Entity::find()
-        .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
-        .filter(encrypted_secrets::Column::AccountId.eq(account))
-        .filter(encrypted_secrets::Column::Provider.is_in(plugin_keys))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        let Some(provider) = row.provider.clone() else {
-            continue;
-        };
-        if let Some(record) = get_secret(
-            store.db(),
-            &row.kind,
-            Some(&provider),
-            secret_account_type::INTEGRATION,
-            Some(account),
-            &row.name,
-        )
-        .await?
-        {
-            records.push(record);
+    let mut records = Vec::new();
+    for (provider, account_id) in accounts_named(store, account, pinned_key.as_deref()).await? {
+        let rows = encrypted_secrets::Entity::find()
+            .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
+            .filter(encrypted_secrets::Column::AccountId.eq(account_id.as_str()))
+            .filter(encrypted_secrets::Column::Provider.eq(provider.as_str()))
+            .all(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        for row in rows {
+            if let Some(record) = get_secret(
+                store.db(),
+                &row.kind,
+                Some(&provider),
+                secret_account_type::INTEGRATION,
+                Some(&account_id),
+                &row.name,
+            )
+            .await?
+            {
+                records.push(record);
+            }
         }
     }
     records.sort_by_key(record_ref);
@@ -423,40 +444,105 @@ async fn unseal_job_secrets(store: &LibraryStore, job: &JobRecord) -> Result<Vec
 
 /// Records the refs of `secrets` as handed to `node_id` under `fence`, and
 /// drops the rows of the job's earlier generations.
-async fn record_handoff(
+///
+/// One host batch, which every backend runs as a single transaction: it
+/// first takes the job row with a fenced update, and every later statement
+/// applies only while `fence` still owns the running job. A claim whose
+/// lease was lost while its secrets were read therefore writes nothing,
+/// and a newer claim's rows are left alone.
+///
+/// # Returns
+///
+/// `true` when the handoff was recorded; `false` when `fence` no longer
+/// owns the running job.
+///
+/// # Errors
+///
+/// Returns an error when the batch fails.
+pub(super) async fn record_handoff(
     store: &LibraryStore,
     node_id: &str,
     fence: &JobFence,
     secrets: &[JobSecret],
-) -> Result<()> {
-    forget_handoffs(store, &fence.job_id).await?;
-    if secrets.is_empty() {
-        return Ok(());
+) -> Result<bool> {
+    /// The fence still owns the running job, and its lease has not run out
+    /// (compared as the reclaim compares it): secrets read for longer than
+    /// the lease are not handed out for a job that may already be claimable
+    /// again.
+    const OWNED: &str = "EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = ? \
+                          AND lease_owner = ? AND lease_generation = ? \
+                          AND lease_expires_at > ?)";
+    let now = Utc::now().to_rfc3339();
+    let running = JobState::Running.as_str();
+    let owned = || {
+        vec![
+            text(&fence.job_id),
+            text(running),
+            text(&fence.owner),
+            int(fence.generation),
+            text(&now),
+        ]
+    };
+    let mut statements = vec![
+        batch::exec(
+            "UPDATE jobs SET updated_at = ?
+              WHERE id = ? AND state = ? AND lease_owner = ? AND lease_generation = ?
+                AND lease_expires_at > ?",
+            [vec![text(&now)], owned()].concat(),
+        ),
+        batch::exec(
+            &format!("DELETE FROM job_secret_handoffs WHERE job_id = ? AND {OWNED}"),
+            [vec![text(&fence.job_id)], owned()].concat(),
+        ),
+    ];
+    for secret in secrets {
+        statements.push(batch::exec(
+            &format!(
+                "INSERT INTO job_secret_handoffs
+                    (job_id, lease_generation, kind, provider, account_id, name, node_id,
+                     handed_at)
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE {OWNED}"
+            ),
+            [
+                vec![
+                    text(&fence.job_id),
+                    int(fence.generation),
+                    text(&secret.secret_ref.kind),
+                    text(&secret.secret_ref.provider),
+                    text(&secret.secret_ref.account_id),
+                    text(&secret.secret_ref.name),
+                    text(node_id),
+                    text(&now),
+                ],
+                owned(),
+            ]
+            .concat(),
+        ));
     }
-    let handed_at = Utc::now().to_rfc3339();
-    let rows = secrets
-        .iter()
-        .map(|secret| job_secret_handoffs::ActiveModel {
-            job_id: Set(fence.job_id.clone()),
-            lease_generation: Set(fence.generation),
-            kind: Set(secret.secret_ref.kind.clone()),
-            provider: Set(secret.secret_ref.provider.clone()),
-            account_id: Set(secret.secret_ref.account_id.clone()),
-            name: Set(secret.secret_ref.name.clone()),
-            node_id: Set(node_id.to_string()),
-            handed_at: Set(handed_at.clone()),
-        });
-    job_secret_handoffs::Entity::insert_many(rows)
-        .exec_without_returning(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    Ok(())
+    let operation_id = format!(
+        "handoff-{}-{}-{}",
+        fence.job_id,
+        fence.generation,
+        uuid::Uuid::new_v4()
+    );
+    let reply = batch::execute_host_batch(store, batch::request(&operation_id, statements)).await?;
+    Ok(batch::rows_affected(&reply, 0) == 1)
 }
 
-/// Drops every handoff row of `job_id`.
-async fn forget_handoffs(store: &LibraryStore, job_id: &str) -> Result<()> {
+/// Drops the handoff rows of `job_id` recorded under `generation` or an
+/// earlier lease.
+///
+/// Callers run this after the claim is given back, when the job may
+/// already be claimed again; a successor's lease has a higher generation,
+/// so its rows are kept.
+pub(super) async fn forget_handoffs(
+    store: &LibraryStore,
+    job_id: &str,
+    generation: i64,
+) -> Result<()> {
     job_secret_handoffs::Entity::delete_many()
         .filter(job_secret_handoffs::Column::JobId.eq(job_id))
+        .filter(job_secret_handoffs::Column::LeaseGeneration.lte(generation))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -487,14 +573,14 @@ pub(super) async fn fenced_job(
 /// The semaphore permits `node_id` holds for `job`, and whether every
 /// semaphore the job counts against is among them.
 ///
-/// The holder prefix ([`job_permit_holder_prefix`]) names the permits of
-/// the job's current claim, generation included: a permit left over from an
-/// earlier claim of the same job by this node never matches, and expires
-/// with its own lease. The slots below this
-/// node's configured limit are searched first and, when nothing is found
-/// there, every slot up to [`MAX_SEMAPHORE_LIMIT`]: the Host may have
-/// claimed through an owner node with a higher limit, or the limit may have
-/// been lowered since.
+/// The permits are found by holder: the prefix ([`job_permit_holder_prefix`])
+/// names the job's current claim, generation included, so a permit left
+/// over from an earlier claim of the same job by this node never matches
+/// and expires with its own lease. Every permit the claim still holds is
+/// returned, in any slot and whatever the semaphores the job would ask for
+/// now: an account relabelled while the job runs keeps the permit the claim
+/// took renewed. A semaphore the job counts against now but the claim does
+/// not hold makes the set incomplete.
 pub(super) async fn held_job_permits(
     store: &LibraryStore,
     node_id: &str,
@@ -503,20 +589,11 @@ pub(super) async fn held_job_permits(
 ) -> Result<(Vec<SemaphorePermit>, bool)> {
     let prefix =
         job_permit_holder_prefix(&remote_lease_owner(node_id), &job.id, job.lease_generation);
-    let mut held = Vec::new();
-    let mut complete = true;
-    let mut seen = std::collections::BTreeSet::new();
-    for request in job_semaphores(store, job, limits).await? {
-        if !seen.insert(request.name.clone()) {
-            continue;
-        }
-        let mut found = permits_held_by(store, &request.name, request.limit, &prefix).await?;
-        if found.is_empty() && request.limit < MAX_SEMAPHORE_LIMIT {
-            found = permits_held_by(store, &request.name, MAX_SEMAPHORE_LIMIT, &prefix).await?;
-        }
-        complete &= !found.is_empty();
-        held.extend(found);
-    }
+    let held = permits_with_holder_prefix(store, &prefix).await?;
+    let complete = job_semaphores(store, job, limits)
+        .await?
+        .iter()
+        .all(|request| held.iter().any(|permit| permit.semaphore == request.name));
     Ok((held, complete))
 }
 
@@ -624,7 +701,7 @@ pub async fn finish_remote_job(
     }
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
     release_permits(store, &permits).await?;
-    forget_handoffs(store, job_id).await?;
+    forget_handoffs(store, job_id, generation).await?;
     Ok(RemoteFinish::Done)
 }
 
@@ -635,7 +712,9 @@ pub async fn finish_remote_job(
 /// For a Host whose operator no longer consents to the job's plugin, and
 /// for a `work` answer that cannot reach the Host (its connection was
 /// superseded or is closing), so the job is claimable again at once instead
-/// of only after its lease expires.
+/// of only after its lease expires. `resumed` is the claim's
+/// [`RemoteJobClaim::resumed`]: a resumed claim gets its resume flag back,
+/// any other its attempt.
 ///
 /// The attempt is not spent, unless the job carries a checkpoint (it may
 /// have resumed, which spent none, or saved progress under this claim), in
@@ -657,6 +736,7 @@ pub async fn release_remote_job(
     node_id: &str,
     job_id: &str,
     generation: i64,
+    resumed: bool,
     limits: JobClaimLimits,
 ) -> Result<RemoteFinish> {
     let fence = remote_job_fence(node_id, job_id, generation);
@@ -665,11 +745,16 @@ pub async fn release_remote_job(
     };
     let keep_spent = job.payload.checkpoint.is_some();
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
-    if !store.release_job_claim(&fence, keep_spent).await? {
+    // A checkpointed job keeps its attempt spent and resumes from the
+    // checkpoint, as a resumed claim does.
+    if !store
+        .release_job_claim(&fence, resumed || keep_spent)
+        .await?
+    {
         return Ok(RemoteFinish::Lost);
     }
     release_permits(store, &permits).await?;
-    forget_handoffs(store, job_id).await?;
+    forget_handoffs(store, job_id, generation).await?;
     Ok(RemoteFinish::Done)
 }
 

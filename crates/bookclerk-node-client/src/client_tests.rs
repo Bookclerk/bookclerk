@@ -34,6 +34,20 @@ impl HostJobRunner for NoJobs {
     }
 }
 
+/// A runner that records the lease deadline its job was handed, then fails.
+#[derive(Clone, Default)]
+struct RecordsDeadline {
+    /// The handed deadline, once a job started.
+    deadline: Arc<Mutex<Option<std::time::SystemTime>>>,
+}
+
+impl HostJobRunner for RecordsDeadline {
+    async fn run(&self, ctx: HostJobCtx) -> Result<String, HostJobError> {
+        *lock(&self.deadline) = Some(ctx.job.lease_deadline);
+        Err(HostJobError::new("recorded", "the deadline was recorded"))
+    }
+}
+
 /// A runner that runs until its job is cancelled, and records both.
 #[derive(Clone, Default)]
 struct UntilCancelled {
@@ -147,6 +161,7 @@ fn work(job_id: &str, fence: i64, lease_secs: u64) -> Body {
         sealed_secrets: None,
         plugin_keys: vec![PLUGIN.into()],
         source_plugin_key: Some(PLUGIN.into()),
+        resumed: false,
     }
 }
 
@@ -536,6 +551,112 @@ async fn renewals_continue_while_a_report_waits() {
     })
     .await;
     assert!(handle.held_fences().is_empty());
+}
+
+/// The deadline handed to the runner is the lease counted from before the
+/// claim was sent, not from when the job started, so work honouring it
+/// stops before the fence can lapse.
+#[tokio::test]
+async fn the_handed_deadline_counts_from_the_claim() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = RecordsDeadline::default();
+    let before = std::time::SystemTime::now();
+    let (_handle, _stop, _exit) =
+        start_with(listener.local_addr().unwrap().port(), 1, runner.clone());
+    let mut socket = accept(&listener).await;
+    let mut granted = false;
+    read_for(
+        &mut socket,
+        Duration::from_millis(1500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } | Body::Fail { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 30))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 30,
+                cancel: false,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    let deadline = lock(&runner.deadline).expect("the job ran");
+    assert!(deadline >= before + Duration::from_secs(30));
+    assert!(
+        deadline <= std::time::SystemTime::now() + Duration::from_secs(30),
+        "the deadline was counted from after the claim"
+    );
+}
+
+/// A job whose secrets do not open keeps renewing its lease while its
+/// fail report goes unanswered, so the fail is not lost to a reclaim.
+#[tokio::test]
+async fn renewals_continue_while_an_unopenable_fail_waits() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (handle, _stop, _exit) = start_with(listener.local_addr().unwrap().port(), 1, NoJobs);
+    let mut socket = accept(&listener).await;
+
+    let mut granted = false;
+    let frames = read_for(
+        &mut socket,
+        Duration::from_millis(2500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                let Body::Work {
+                    item,
+                    job,
+                    fence,
+                    lease_secs,
+                    resumed,
+                    plugin_keys,
+                    ..
+                } = work("job-1", 3, 1)
+                else {
+                    unreachable!("work() builds a work frame");
+                };
+                Some(Body::Work {
+                    item,
+                    job,
+                    fence,
+                    lease_secs,
+                    sealed_secrets: Some("not-a-sealed-box".into()),
+                    resumed,
+                    plugin_keys,
+                })
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 1,
+                cancel: false,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    let first_report = frames
+        .iter()
+        .position(|frame| {
+            matches!(&frame.body, Body::Fail { error_kind, .. } if error_kind == SECRETS_UNOPENABLE)
+        })
+        .expect("the unopenable job was reported");
+    assert!(
+        frames[first_report..]
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Renew { .. })),
+        "the lease was not renewed while the fail waited"
+    );
+    assert_eq!(
+        handle.held_fences().len(),
+        1,
+        "the job was dropped mid-report"
+    );
 }
 
 /// A resume renews a held job for the lease the owner names, not the
