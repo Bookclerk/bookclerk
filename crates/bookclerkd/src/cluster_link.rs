@@ -227,6 +227,7 @@ async fn start_clients(
             }
         };
         let cluster_id = link.owner_cluster_id.clone();
+        let node_id = link.remote_node_id.clone();
         let config = HostClientConfig {
             link,
             keys,
@@ -248,11 +249,23 @@ async fn start_clients(
         let shutdown = shutdown.clone();
         clients.push(tokio::spawn(async move {
             if client.run(shutdown).await == ClientExit::Revoked {
-                // The link belongs to the store it was read from.
+                // The link belongs to the store it was read from. Only the
+                // enrollment this client ran as is revoked: a re-enrollment
+                // recorded meanwhile keeps its new link.
                 for attempt in 0..5u32 {
-                    match set_cluster_link_state(&library, &cluster_id, CLUSTER_LINK_REVOKED).await
+                    match set_cluster_link_state(
+                        &library,
+                        &cluster_id,
+                        CLUSTER_LINK_REVOKED,
+                        Some(&node_id),
+                    )
+                    .await
                     {
-                        Ok(_) => break,
+                        Ok(true) => break,
+                        Ok(false) => {
+                            tracing::info!(%cluster_id, %node_id, "revoked enrollment was already replaced; keeping the new link");
+                            break;
+                        }
                         Err(err) => {
                             tracing::warn!(%cluster_id, error = %err, "could not mark the cluster link revoked");
                             tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
