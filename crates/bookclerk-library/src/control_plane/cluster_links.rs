@@ -17,7 +17,7 @@
 use chrono::{SecondsFormat, Utc};
 use rand::RngCore as _;
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QueryTrait};
 use serde::Serialize;
 use zeroize::Zeroizing;
 
@@ -370,6 +370,16 @@ pub async fn load_cluster_link_keys(
 
 /// Sets a link's state. Answers false when no such link exists.
 ///
+/// # Arguments
+///
+/// * `store` - Library store holding the link.
+/// * `owner_cluster_id` - Owner cluster the link joins.
+/// * `state` - One of [`CLUSTER_LINK_ACTIVE`], [`CLUSTER_LINK_REVOKED`] or
+///   [`CLUSTER_LINK_LEFT`].
+/// * `remote_node_id` - When set, only a link still enrolled as this node is
+///   changed, so a client running under an earlier enrollment cannot touch the
+///   link that replaced it. `None` changes the link whatever its node.
+///
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] for an unknown state, and the write
@@ -378,6 +388,7 @@ pub async fn set_cluster_link_state(
     store: &LibraryStore,
     owner_cluster_id: &str,
     state: &str,
+    remote_node_id: Option<&str>,
 ) -> Result<bool> {
     if ![CLUSTER_LINK_ACTIVE, CLUSTER_LINK_REVOKED, CLUSTER_LINK_LEFT].contains(&state) {
         return Err(LibraryError::Invalid(format!(
@@ -387,6 +398,9 @@ pub async fn set_cluster_link_state(
     let updated = cluster_links::Entity::update_many()
         .col_expr(cluster_links::Column::State, Expr::value(state))
         .filter(cluster_links::Column::OwnerClusterId.eq(owner_cluster_id))
+        .apply_if(remote_node_id, |query, node| {
+            query.filter(cluster_links::Column::RemoteNodeId.eq(node))
+        })
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
@@ -456,7 +470,7 @@ mod tests {
             .any(|w| w == [1; 32] || w == [2; 32]));
 
         assert!(
-            set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED)
+            set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED, None)
                 .await
                 .unwrap()
         );
@@ -468,7 +482,7 @@ mod tests {
             load_cluster_link_keys(&store, &revoked).await,
             Err(LibraryError::Forbidden(_))
         ));
-        assert!(set_cluster_link_state(&store, "cluster-1", "bogus")
+        assert!(set_cluster_link_state(&store, "cluster-1", "bogus", None)
             .await
             .is_err());
 
@@ -519,6 +533,21 @@ mod tests {
         assert!(
             !key_row_exists(&store, "node-1").await,
             "the previous node's sealed keys were left behind"
+        );
+
+        // A client still running as node-1 cannot revoke node-2's link.
+        assert!(
+            !set_cluster_link_state(&store, "cluster-1", CLUSTER_LINK_REVOKED, Some("node-1"))
+                .await
+                .unwrap()
+        );
+        let still = load_cluster_link(&store, "cluster-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            still.is_active(),
+            "an old client revoked the replacement link"
         );
         let loaded = load_cluster_link_keys(&store, &link).await.unwrap();
         assert_eq!(loaded.box_secret(), &[4; 32]);
