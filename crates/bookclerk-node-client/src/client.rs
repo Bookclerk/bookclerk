@@ -705,12 +705,20 @@ impl<R: HostJobRunner> HostClient<R> {
         };
         if resuming {
             let resumed = next_handshake_frame(&mut socket).await?;
-            let Body::Resumed { renewed, lost } = resumed.body else {
+            let Body::Resumed {
+                renewed,
+                lost,
+                unchecked,
+            } = resumed.body
+            else {
                 return Err(SessionEnd::Failed("expected resumed".into()));
             };
+            // An unchecked fence is neither renewed nor lost: its renew
+            // loop keeps renewing it and that answer decides.
             tracing::info!(
                 renewed = renewed.len(),
                 lost = lost.len(),
+                unchecked = unchecked.len(),
                 "owner answered the held fences"
             );
             shared.mark_lost(&lost);
