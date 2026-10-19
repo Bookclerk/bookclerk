@@ -121,9 +121,10 @@ pub fn is_output_setting_key(key: &str) -> bool {
 
 /// Typed `core.output` document, schema version 1.
 ///
-/// Field meanings match [`OutputConfig`]. Unknown fields are rejected so a
-/// document written by a newer binary under the same schema version fails
-/// closed instead of being silently truncated on the next write.
+/// Field meanings match [`OutputConfig`]. Unknown fields are rejected, inside
+/// the nested `lame` and `replacement_characters` objects too, so a document
+/// written by a newer binary under the same schema version fails closed
+/// instead of being silently truncated on the next write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputSettingsV1 {
@@ -188,6 +189,7 @@ pub struct OutputSettingsV1 {
     /// Fetch speed cap in KB/s (`0` = unlimited).
     pub download_speed_limit_kbps: u32,
     /// LAME encoder knobs.
+    #[serde(deserialize_with = "deserialize_lame")]
     pub lame: LameConfig,
     /// Optional output sample-rate ceiling in Hz.
     pub max_sample_rate: Option<u32>,
@@ -198,9 +200,66 @@ pub struct OutputSettingsV1 {
     /// Sanitization profile used when no explicit rules are set.
     pub path_sanitization: PathSanitizationMode,
     /// Explicit find/replace rules for path segments.
+    #[serde(deserialize_with = "deserialize_replacement_rules")]
     pub replacement_characters: Vec<ReplacementRule>,
     /// Max length per path segment (`0` disables truncation).
     pub max_filename_length: u32,
+}
+
+/// Fails when `object` carries a key outside `known`.
+///
+/// # Errors
+///
+/// Returns a message naming the first unknown key under `what`.
+fn reject_unknown_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    known: &[&str],
+    what: &str,
+) -> std::result::Result<(), String> {
+    match object.keys().find(|key| !known.contains(&key.as_str())) {
+        Some(key) => Err(format!("unknown field `{key}` in {what}")),
+        None => Ok(()),
+    }
+}
+
+/// Deserializes [`OutputSettingsV1::lame`], rejecting keys [`LameConfig`]
+/// does not define (it ignores them itself, for `config.toml`).
+fn deserialize_lame<'de, D>(deserializer: D) -> std::result::Result<LameConfig, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if let serde_json::Value::Object(object) = &value {
+        let defaults = serde_json::to_value(LameConfig::default()).map_err(D::Error::custom)?;
+        let known: Vec<&str> = defaults
+            .as_object()
+            .map(|fields| fields.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        reject_unknown_keys(object, &known, "lame").map_err(D::Error::custom)?;
+    }
+    serde_json::from_value(value).map_err(D::Error::custom)
+}
+
+/// Deserializes [`OutputSettingsV1::replacement_characters`], rejecting
+/// keys a [`ReplacementRule`] does not define.
+fn deserialize_replacement_rules<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<ReplacementRule>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if let serde_json::Value::Array(rules) = &value {
+        for rule in rules {
+            if let serde_json::Value::Object(object) = rule {
+                reject_unknown_keys(object, &["find", "replace"], "replacement_characters")
+                    .map_err(D::Error::custom)?;
+            }
+        }
+    }
+    serde_json::from_value(value).map_err(D::Error::custom)
 }
 
 impl Default for OutputSettingsV1 {
@@ -920,6 +979,28 @@ mod tests {
         let mut value = serde_json::to_value(OutputSettingsV1::default()).unwrap();
         value["in_progress"] = serde_json::json!("/scratch");
         assert!(serde_json::from_value::<OutputSettingsV1>(value).is_err());
+    }
+
+    #[test]
+    fn unknown_nested_fields_fail_closed() {
+        let base = serde_json::to_value(OutputSettingsV1::default()).unwrap();
+        let mut lame = base.clone();
+        lame["lame"]["future_knob"] = serde_json::json!(1);
+        let err = serde_json::from_value::<OutputSettingsV1>(lame).unwrap_err();
+        assert!(err.to_string().contains("future_knob"), "{err}");
+
+        let mut rules = base.clone();
+        rules["replacement_characters"] =
+            serde_json::json!([{ "find": ":", "replace": "_", "regex": true }]);
+        let err = serde_json::from_value::<OutputSettingsV1>(rules).unwrap_err();
+        assert!(err.to_string().contains("regex"), "{err}");
+
+        // A partial `lame` object still takes defaults for the rest.
+        let mut partial = base;
+        partial["lame"] = serde_json::json!({ "vbr_quality": 4 });
+        let back = serde_json::from_value::<OutputSettingsV1>(partial).unwrap();
+        assert_eq!(back.lame.vbr_quality, 4);
+        assert_eq!(back.lame.target, LameConfig::default().target);
     }
 
     #[test]
