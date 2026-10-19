@@ -749,20 +749,46 @@ async fn acquire_titles<G: HostGuests>(
             // job is cancelled; a dropped upload's files are discarded by
             // the owner (its stream breaks, or its upload is aborted).
             let copied = std::sync::Mutex::new(Vec::new());
+            let commit_unsettled = AtomicBool::new(false);
             let uploaded = until_cancelled(&ctx.cancel, async {
                 let done = guests
                     .acquire(bindings, &title, &outbox, Arc::clone(&ctx.cancel))
                     .await?;
-                upload_title(guests, host, &title, &outbox, &done, &copied).await
+                upload_title(
+                    guests,
+                    host,
+                    &title,
+                    &outbox,
+                    &done,
+                    &copied,
+                    &commit_unsettled,
+                )
+                .await
             })
             .await;
             if uploaded.is_err() {
-                // The owner never committed the title (its grant, a file,
-                // or the commit failed, or the job was cancelled), so this
-                // host keeps no copy of it either, unless the fence is
-                // lost: a replacement run may own those keys by now.
                 let copies = std::mem::take(&mut *copied.lock().unwrap_or_else(|e| e.into_inner()));
-                remove_local_copies(&title.book.uuid, &copies, host.is_lost()).await;
+                if commit_unsettled.load(Ordering::SeqCst) {
+                    // The commit was sent but never definitively answered
+                    // (its answer was lost, the owner went away, or the job
+                    // was cancelled meanwhile): the owner may have marked
+                    // the title acquired, and a later plan would then skip
+                    // it, so its copies here stay.
+                    if !copies.is_empty() {
+                        tracing::warn!(
+                            job_id = %host.job.job.id,
+                            book_uuid = %title.book.uuid,
+                            files = copies.len(),
+                            "the owner's answer to a title's commit is unknown; keeping its copies on this host's own destinations"
+                        );
+                    }
+                } else {
+                    // The owner never committed the title (its grant or a
+                    // file failed, or it refused the commit), so this host
+                    // keeps no copy of it either, unless the fence is lost:
+                    // a replacement run may own those keys by now.
+                    remove_local_copies(&title.book.uuid, &copies, host.is_lost()).await;
+                }
             }
             let _ = tokio::fs::remove_dir_all(&outbox).await;
             let _ = tokio::fs::remove_dir_all(title_cache_dir(&outbox)).await;
@@ -1007,7 +1033,10 @@ pub async fn remove_local_copies(book_uuid: &str, copies: &[LocalCopy], fence_lo
 /// unless every one of this host's destinations got the title. Each copy
 /// is put in `copied` as it is written, so the caller can remove them when
 /// the owner does not commit the title ([`remove_local_copies`]), whether
-/// this fails or is dropped.
+/// this fails or is dropped. `commit_unsettled` turns true as the commit is
+/// first sent and back to false only when the owner definitively refuses
+/// it, so a caller seeing an error with it still true cannot tell whether
+/// the owner committed the title and must keep the copies.
 ///
 /// # Errors
 ///
@@ -1020,6 +1049,7 @@ async fn upload_title<G: HostGuests>(
     outbox: &Path,
     acquired: &AcquiredTitle,
     copied: &std::sync::Mutex<Vec<LocalCopy>>,
+    commit_unsettled: &AtomicBool,
 ) -> anyhow::Result<()> {
     let book_uuid = title.book.uuid.as_str();
     let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
@@ -1045,9 +1075,23 @@ async fn upload_title<G: HostGuests>(
         .await
         .map_err(|err| owner_error("an uploaded file", &err))?;
     }
-    with_retries(|| host.commit_upload(&upload, None))
-        .await
-        .map_err(|err| owner_error("the title's commit", &err))?;
+    // An attempt that got no usable answer may still have committed the
+    // title; a refusal after it then only answers the retry, so it does not
+    // settle the outcome either.
+    let ambiguous = AtomicBool::new(false);
+    commit_unsettled.store(true, Ordering::SeqCst);
+    let committed = with_retries(|| async {
+        let out = host.commit_upload(&upload, None).await;
+        if matches!(out, Err(OwnerCallError::Unavailable)) {
+            ambiguous.store(true, Ordering::SeqCst);
+        }
+        out
+    })
+    .await;
+    if matches!(committed, Err(OwnerCallError::Refused(_))) && !ambiguous.load(Ordering::SeqCst) {
+        commit_unsettled.store(false, Ordering::SeqCst);
+    }
+    committed.map_err(|err| owner_error("the title's commit", &err))?;
     tracing::info!(
         job_id = %host.job.job.id,
         book_uuid,
