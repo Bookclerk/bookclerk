@@ -153,9 +153,15 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Writes `contents` to `path`, readable only by this user.
+/// Writes `contents` to `path`, readable only by this user. The bytes go to
+/// a temporary sibling that is synced and then renamed over `path`, so a
+/// crash leaves either the old file or the complete new one, never a
+/// truncated certificate or key that would fail every later start.
 fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -163,7 +169,11 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(contents)
+    let mut file = options.open(&tmp)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, path)
 }
 
 /// Starts the TLS listener the configured mode needs. Never fails: a mode

@@ -10,11 +10,17 @@
 //!    unknown node id and a bad signature look the same from outside; every
 //!    authentication failure closes with [`CLOSE_AUTH_FAILED`] and the one
 //!    reason [`AUTH_FAILED_REASON`]. A valid signature from a revoked
-//!    credential closes with [`CLOSE_REVOKED`]. Each failure writes a
-//!    `security_audit_events` row and a log line with the detailed reason.
+//!    credential closes with [`CLOSE_REVOKED`]. Each failure writes a log
+//!    line with the detailed reason and a `security_audit_events` row, at
+//!    most [`AUDIT_ROWS_PER_KEY`] per peer, claimed node and reason, and
+//!    [`AUDIT_ROWS_PER_WINDOW`] in all, per [`AUDIT_WINDOW`], so
+//!    unauthenticated peers cannot grow the table without bound.
 //!    The connection is registered for `node.revoked` wakes before its
 //!    credential is stamped, so a revoke during the handshake still closes
 //!    it.
+//! 4. At most [`MAX_PENDING_HANDSHAKES`] upgraded connections may be in the
+//!    handshake at once; each holds a permit until `welcome` or refusal,
+//!    and an upgrade beyond that answers 503 `handshakes_busy`.
 //!
 //! After `welcome`, the session pings every [`PING_INTERVAL_SECS`], closes
 //! after [`IDLE_TIMEOUT_SECS`] without an inbound frame, re-reads the
@@ -25,7 +31,7 @@
 //! frame is answered with `error {code: "unsupported"}`.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -47,9 +53,76 @@ use bookclerk_node_proto::{
 };
 use rand::Rng as _;
 use serde_json::json;
-use tokio::sync::watch;
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 
 use crate::api::AppState;
+
+/// Upgraded connections allowed in the handshake at once, across all
+/// peers. TLS acceptance and the API timeout both end at the upgrade, so
+/// without this bound peers that never authenticate could hold sockets and
+/// tasks faster than the per-frame timeout frees them.
+const MAX_PENDING_HANDSHAKES: usize = 128;
+
+/// Handshake refusal audit rows written per [`AUDIT_WINDOW`], across all
+/// peers. Refusals past the budget are logged but not stored.
+const AUDIT_ROWS_PER_WINDOW: u32 = 60;
+
+/// Handshake refusal audit rows written per [`AUDIT_WINDOW`] for one peer,
+/// claimed node id and reason.
+const AUDIT_ROWS_PER_KEY: u32 = 5;
+
+/// Window over which [`AUDIT_ROWS_PER_WINDOW`] and [`AUDIT_ROWS_PER_KEY`]
+/// apply.
+const AUDIT_WINDOW: Duration = Duration::from_secs(60);
+
+/// Permits for connections still in the handshake.
+static HANDSHAKES: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES)));
+
+/// Decides which handshake refusals get an audit row.
+#[derive(Default)]
+struct AuditLimiter {
+    /// Start of the current window; `None` before the first refusal.
+    window_start: Option<Instant>,
+    /// Rows written in the current window.
+    written: u32,
+    /// Rows written in the current window per peer, claimed node id and
+    /// reason.
+    seen: HashMap<AuditKey, u32>,
+}
+
+/// What [`AuditLimiter`] counts refusals by: peer address, claimed node id,
+/// and reason.
+type AuditKey = (Option<IpAddr>, Option<String>, &'static str);
+
+impl AuditLimiter {
+    /// True when a refusal with `key` at `now` should be stored. `seen`
+    /// holds at most [`AUDIT_ROWS_PER_WINDOW`] entries.
+    fn allow(&mut self, now: Instant, key: AuditKey) -> bool {
+        if self
+            .window_start
+            .is_none_or(|start| now.duration_since(start) >= AUDIT_WINDOW)
+        {
+            self.window_start = Some(now);
+            self.written = 0;
+            self.seen.clear();
+        }
+        if self.written >= AUDIT_ROWS_PER_WINDOW {
+            return false;
+        }
+        let count = self.seen.entry(key).or_default();
+        if *count >= AUDIT_ROWS_PER_KEY {
+            return false;
+        }
+        *count += 1;
+        self.written += 1;
+        true
+    }
+}
+
+/// Audit budget for handshake refusals on this node.
+static AUDIT_LIMITER: LazyLock<Mutex<AuditLimiter>> =
+    LazyLock::new(|| Mutex::new(AuditLimiter::default()));
 
 /// Longest node id or incarnation a hello may carry.
 const MAX_ID_BYTES: usize = 128;
@@ -199,11 +272,23 @@ pub async fn get_connect(State(state): State<Arc<AppState>>, request: Request) -
         Ok(upgrade) => upgrade,
         Err(rejection) => return rejection.into_response(),
     };
+    let Ok(permit) = Arc::clone(&HANDSHAKES).try_acquire_owned() else {
+        tracing::warn!(
+            ?peer,
+            "node API upgrade refused: too many handshakes in flight"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "10")],
+            Json(json!({ "error": "handshakes_busy" })),
+        )
+            .into_response();
+    };
     upgrade
         .protocols([SUBPROTOCOL])
         .max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| run(state, socket, peer))
+        .on_upgrade(move |socket| run(state, socket, peer, permit))
 }
 
 /// A refused handshake.
@@ -237,8 +322,14 @@ struct Authed {
     close: watch::Receiver<Option<u16>>,
 }
 
-/// Runs one connection: the handshake, then the session.
-async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAddr>) {
+/// Runs one connection: the handshake, then the session. `permit` is held
+/// until the handshake ends.
+async fn run(
+    state: Arc<AppState>,
+    mut socket: WebSocket,
+    peer: Option<SocketAddr>,
+    permit: OwnedSemaphorePermit,
+) {
     let library = state.library_snapshot().await;
     let owner_origin = {
         let cfg = state.config.read().await;
@@ -255,6 +346,7 @@ async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAdd
             return;
         }
     };
+    drop(permit);
     tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
     session(&library, &mut socket, &authed.node_id, authed.close).await;
     unregister(&authed.node_id, authed.serial);
@@ -289,7 +381,20 @@ async fn refuse(
         "peer": peer.map(|addr| addr.ip().to_string()),
     })
     .to_string();
-    if let Err(err) = library
+    let store = AUDIT_LIMITER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .allow(
+            Instant::now(),
+            (
+                peer.map(|addr| addr.ip()),
+                refusal.node_id.clone(),
+                refusal.reason,
+            ),
+        );
+    if !store {
+        tracing::debug!("node handshake refusal not stored: audit budget spent");
+    } else if let Err(err) = library
         .insert_security_audit_event(&actor, action, Some(&detail))
         .await
     {
@@ -564,7 +669,38 @@ async fn session(
 mod tests {
     use bookclerk_node_proto::{CLOSE_REVOKED, CLOSE_SUPERSEDED};
 
-    use super::{admit, close_node_sessions, promote, sessions, unregister};
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::Instant;
+
+    use super::{
+        admit, close_node_sessions, promote, sessions, unregister, AuditLimiter,
+        AUDIT_ROWS_PER_KEY, AUDIT_ROWS_PER_WINDOW, AUDIT_WINDOW,
+    };
+
+    #[test]
+    fn handshake_refusal_audit_rows_are_bounded() {
+        let mut limiter = AuditLimiter::default();
+        let start = Instant::now();
+        let peer = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        let key = |node: &str, reason| (peer, Some(node.to_string()), reason);
+        // One peer, node and reason is stored a few times per window.
+        for _ in 0..AUDIT_ROWS_PER_KEY {
+            assert!(limiter.allow(start, key("node", "bad_signature")));
+        }
+        assert!(!limiter.allow(start, key("node", "bad_signature")));
+        assert!(limiter.allow(start, key("node", "revoked")));
+        // Across peers the window has a fixed budget.
+        let mut stored = AUDIT_ROWS_PER_KEY + 1;
+        for n in 0..=u8::MAX {
+            let other = Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, n)));
+            if limiter.allow(start, (other, None, "malformed_hello")) {
+                stored += 1;
+            }
+        }
+        assert_eq!(stored, AUDIT_ROWS_PER_WINDOW);
+        // A new window starts over.
+        assert!(limiter.allow(start + AUDIT_WINDOW, key("node", "bad_signature")));
+    }
 
     #[tokio::test]
     async fn a_revoke_during_the_stamp_reaches_the_admitted_connection() {

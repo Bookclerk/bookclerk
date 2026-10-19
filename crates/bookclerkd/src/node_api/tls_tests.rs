@@ -392,3 +392,19 @@ async fn the_node_router_times_out_a_stalled_enroll_body() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
 }
+
+#[test]
+fn private_writes_replace_the_whole_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cert.der");
+    super::write_private(&path, b"first, longer contents").unwrap();
+    super::write_private(&path, b"second").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"second");
+    assert!(!dir.path().join("cert.der.tmp").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+}
