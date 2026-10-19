@@ -614,7 +614,7 @@ mod tests {
                 },
                 headers: vec![],
                 trusted: vec![],
-                origin: None,
+                origin: https,
                 want: Allowed(A::SelfSigned),
             },
             Case {
