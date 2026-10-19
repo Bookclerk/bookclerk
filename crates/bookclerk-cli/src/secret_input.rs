@@ -53,7 +53,10 @@ pub fn read_secret_stdin(prompt: &str) -> io::Result<Zeroizing<String>> {
 /// then lets the default handling go on: on Unix it reinstates the previous
 /// disposition and re-raises the signal (the exit status stays, for
 /// example, 130 for SIGINT); on Windows it returns `FALSE` so the next
-/// handler (by default `ExitProcess`) runs. Drop removes the handler again.
+/// handler (by default `ExitProcess`) runs. A stop from the terminal
+/// (Ctrl+Z, `SIGTSTP`) restores echo too before the process stops, and
+/// turns it off again once the shell resumes it, so the shell is never left
+/// without echo. Drop removes the handler again.
 ///
 /// One `EchoOff` exists at a time: the CLI reads one secret at a time, from
 /// one thread, and `new` refuses a second one rather than corrupt the saved
@@ -118,22 +121,34 @@ mod platform {
         }
     }
 
-    /// Signals that would end the process with echo still off.
-    const SIGNALS: [libc::c_int; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+    /// Signals that would end or stop the process with echo still off.
+    const SIGNALS: [libc::c_int; 5] = [
+        libc::SIGINT,
+        libc::SIGTERM,
+        libc::SIGHUP,
+        libc::SIGQUIT,
+        libc::SIGTSTP,
+    ];
 
     /// The terminal settings to restore.
     static TERMIOS: Saved<libc::termios> = Saved::new();
+    /// The settings with echo off, applied again after a stop.
+    static QUIET: Saved<libc::termios> = Saved::new();
     /// The dispositions in place before ours, one per [`SIGNALS`] entry.
-    static PREVIOUS: Saved<[libc::sigaction; 4]> = Saved::new();
+    static PREVIOUS: Saved<[libc::sigaction; 5]> = Saved::new();
     /// Which [`SIGNALS`] entries got our handler (an ignored signal keeps
     /// being ignored).
-    static INSTALLED: Saved<[bool; 4]> = Saved::new();
+    static INSTALLED: Saved<[bool; 5]> = Saved::new();
 
-    /// Restores echo, reinstates the previous disposition and re-raises.
+    /// Restores echo, then either stops the process and turns echo off
+    /// again once it is resumed (`SIGTSTP`), or reinstates the previous
+    /// disposition and re-raises (every other signal).
     ///
     /// Calls only async-signal-safe functions (`tcsetattr`, `sigaction`,
-    /// `raise`). The signal is blocked while this runs, so the re-raised
-    /// one is delivered to the previous disposition once it returns.
+    /// `raise`). The signal is blocked while this runs, so a re-raised one
+    /// is delivered to the previous disposition once it returns. A stop
+    /// uses `SIGSTOP`, which cannot be blocked, so the process stops inside
+    /// the handler and carries on here after `SIGCONT`.
     #[allow(unsafe_code)]
     extern "C" fn on_signal(signal: libc::c_int) {
         if !ARMED.load(Ordering::Acquire) {
@@ -142,6 +157,11 @@ mod platform {
         // SAFETY: armed, so the saved state is complete and unchanging.
         unsafe {
             libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, TERMIOS.ptr());
+            if signal == libc::SIGTSTP {
+                libc::raise(libc::SIGSTOP);
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, QUIET.ptr());
+                return;
+            }
             if let Some(i) = SIGNALS.iter().position(|s| *s == signal) {
                 libc::sigaction(signal, &(*PREVIOUS.ptr())[i], std::ptr::null_mut());
             }
@@ -160,6 +180,9 @@ mod platform {
             if libc::tcgetattr(libc::STDIN_FILENO, TERMIOS.ptr()) != 0 {
                 return Err(io::Error::last_os_error());
             }
+            let mut quiet = *TERMIOS.ptr();
+            quiet.c_lflag &= !(libc::ECHO | libc::ECHOE | libc::ECHOK | libc::ECHONL);
+            QUIET.ptr().write(quiet);
             let previous = &mut *PREVIOUS.ptr();
             let installed = &mut *INSTALLED.ptr();
             for (i, signal) in SIGNALS.iter().enumerate() {
@@ -183,9 +206,7 @@ mod platform {
                 }
                 installed[i] = true;
             }
-            let mut quiet = *TERMIOS.ptr();
-            quiet.c_lflag &= !(libc::ECHO | libc::ECHOE | libc::ECHOK | libc::ECHONL);
-            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &quiet) != 0 {
+            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, QUIET.ptr()) != 0 {
                 let err = io::Error::last_os_error();
                 disarm();
                 return Err(err);
