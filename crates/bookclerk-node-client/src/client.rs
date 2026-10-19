@@ -567,13 +567,19 @@ impl HostClientHandle {
     /// Sets the plugin keys this host's operator consents to. Claims carry
     /// them as their filter from the next claim on; a held job that runs a
     /// plugin outside them is cancelled and given back unrun.
+    ///
+    /// The new set is published before the held jobs are scanned: a job
+    /// that is being started concurrently is either already held (and
+    /// caught by the scan) or checks consent after it is held and so reads
+    /// the new set. Scanning first would leave a gap where a job inserted
+    /// after the scan still read the old set and ran.
     pub fn set_consented_plugins(&self, plugins: BTreeSet<String>) {
-        self.shared.release_unconsented(&plugins);
         self.shared.consented.send_if_modified(|current| {
             let changed = *current != plugins;
-            *current = plugins;
+            current.clone_from(&plugins);
             changed
         });
+        self.shared.release_unconsented(&plugins);
     }
 
     /// The plugin keys consented to now.

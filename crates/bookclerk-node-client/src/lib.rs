@@ -21,10 +21,11 @@
 //! - claims narrowed to the job kinds this host runs and the plugins its
 //!   operator consented to ([`HostClientHandle::set_consented_plugins`]);
 //!   a job whose consent is revoked is cancelled and given back unspent;
-//! - the owner reads a host acts on after a wake
+//! - after a wake, the host requests its deployment list and instance
+//!   configuration from the owner and sends its observations back
 //!   ([`HostClientHandle::request`] for `deployments.list`,
-//!   `instance.config` and `observation`; [`HostClientHandle::fetch_artifact`]
-//!   for a stored archive, signed with the node key).
+//!   `instance.config` and `observation`), and fetches a stored archive
+//!   with [`HostClientHandle::fetch_artifact`], signed with the node key.
 //!
 //! The consent decisions themselves (which plugins, which grant) are the
 //! daemon's; streamed uploads (step 9) are not here.
