@@ -114,6 +114,9 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
     // --- Settings.json → config.toml ---
     let mut config = Config::default();
     let mut plugin_settings = ClassicPluginSettings::default();
+    // True once the imported settings replace this destination's config;
+    // a refused overwrite (no `--force`) must not seed `core.output` either.
+    let mut config_accepted = false;
     if let Some(settings_path) = &source.settings_json {
         let patch = load_settings_json(settings_path)?;
         plugin_settings = apply_settings_json(&mut config, &patch);
@@ -127,6 +130,7 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                 ));
             } else {
                 config.write_toml_file(&dest)?;
+                config_accepted = true;
             }
         }
     } else {
@@ -163,9 +167,10 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                     opts.dest_files_dir.clone(),
                 ));
                 // The imported Settings.json packaging seeds `core.output`
-                // when this database has no output document yet. The scratch
-                // directory is host-local and stays this host's.
-                if summary.settings_imported {
+                // when this database has no output document yet, unless the
+                // config overwrite was refused. The scratch directory is
+                // host-local and stays this host's.
+                if config_accepted {
                     let in_progress = cfg.output.in_progress.clone();
                     cfg.output = config.output.clone();
                     cfg.output.in_progress = in_progress;
@@ -182,8 +187,7 @@ pub async fn migrate(opts: MigrateOptions) -> Result<MigrateSummary> {
                                 ),
                             )
                             .ok();
-                        if summary.settings_imported
-                            && seeded.as_ref() != Some(&enrolled.session.output.body)
+                        if config_accepted && seeded.as_ref() != Some(&enrolled.session.output.body)
                         {
                             summary.warnings.push(format!(
                                 "core.output already exists (revision {}); imported packaging \
