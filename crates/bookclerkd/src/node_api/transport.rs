@@ -14,20 +14,29 @@
 //!   exactly one `X-Forwarded-Proto: https`, with an https
 //!   `integrations.public_origin` (`mode = "proxy"`).
 //! - `loopback`: both ends are loopback and no forwarding header is present.
-//!   Allowed in every mode: the traffic never leaves the machine.
+//!   Allowed in every mode: the traffic never leaves the machine. In proxy
+//!   mode a trusted proxy's connection is always checked as proxied, so a
+//!   same-host proxy cannot relay a request as loopback.
 //!
 //! Everything else is refused with 403 `transport_insecure`. Forwarding
 //! headers from a peer that is not a trusted proxy are never believed, and
 //! plain HTTP from any non-loopback peer (a private RFC 1918 address
 //! included) is refused.
 
+use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
+use std::task::{Context, Poll};
 
+use axum::extract::connect_info::ConnectInfo;
+use axum::extract::Request;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::serve::IncomingStream;
+use axum::{Json, Router};
 use bookclerk_config::{NodeApiConfig, NodeApiMode};
 use serde_json::json;
+use tokio::net::TcpListener;
+use tower_service::Service;
 
 /// Which listener accepted the connection. The built-in TLS listener
 /// ([`super::tls`]) attaches its kind as a request extension; a request
@@ -43,17 +52,96 @@ pub enum ListenerKind {
     SelfSignedTls,
 }
 
-/// The local address of the listener a request arrived on, attached as a
-/// request extension per listener.
+/// The local address of the connection a request arrived on, attached as a
+/// request extension by [`ConnAddrsMakeService`].
+///
+/// This is the accepted socket's own address, not the listener's bind
+/// address: on a wildcard bind (`0.0.0.0` / `[::]`) a same-machine client
+/// still shows a loopback local address here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocalAddr(pub SocketAddr);
+
+/// Make-service for `axum::serve` that records both ends of each accepted
+/// TCP connection: the peer as `ConnectInfo<SocketAddr>` (as
+/// `into_make_service_with_connect_info` would) and the socket's local
+/// address as [`LocalAddr`].
+#[derive(Clone)]
+pub struct ConnAddrsMakeService {
+    /// Router served on every connection.
+    app: Router,
+}
+
+impl ConnAddrsMakeService {
+    /// Wraps `app` so every connection's addresses reach its handlers.
+    ///
+    /// # Arguments
+    ///
+    /// * `app` - The router to serve.
+    ///
+    /// # Returns
+    ///
+    /// The make-service to hand to `axum::serve`.
+    #[must_use]
+    pub fn new(app: Router) -> Self {
+        Self { app }
+    }
+}
+
+impl Service<IncomingStream<'_, TcpListener>> for ConnAddrsMakeService {
+    type Response = ConnAddrsService;
+    type Error = Infallible;
+    type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, stream: IncomingStream<'_, TcpListener>) -> Self::Future {
+        std::future::ready(Ok(ConnAddrsService {
+            app: self.app.clone(),
+            peer: *stream.remote_addr(),
+            // The accepted socket's address, never the wildcard bind.
+            local: stream.io().local_addr().ok(),
+        }))
+    }
+}
+
+/// Per-connection service built by [`ConnAddrsMakeService`].
+#[derive(Clone)]
+pub struct ConnAddrsService {
+    /// Router serving the request.
+    app: Router,
+    /// Remote peer of the connection.
+    peer: SocketAddr,
+    /// Local address of the connection, when the socket reported one.
+    local: Option<SocketAddr>,
+}
+
+impl Service<Request> for ConnAddrsService {
+    type Response = Response;
+    type Error = Infallible;
+    type Future = <Router as Service<Request>>::Future;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Service::<Request>::poll_ready(&mut self.app, cx)
+    }
+
+    fn call(&mut self, mut request: Request) -> Self::Future {
+        let extensions = request.extensions_mut();
+        extensions.insert(ConnectInfo(self.peer));
+        if let Some(local) = self.local {
+            extensions.insert(LocalAddr(local));
+        }
+        Service::<Request>::call(&mut self.app, request)
+    }
+}
 
 /// What is known about one connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnInfo {
     /// Remote peer, when the server recorded it.
     pub peer: Option<SocketAddr>,
-    /// Local listener address, when the server recorded it.
+    /// Local address of the connection, when the server recorded it.
     pub local: Option<SocketAddr>,
     /// Listener that accepted the connection.
     pub listener: ListenerKind,
@@ -184,10 +272,11 @@ pub fn classify_transport(
     };
     let forwarded = has_forwarding_headers(headers);
     let peer_ip = peer.ip().to_canonical();
-    if forwarded
-        && mode == NodeApiMode::Proxy
-        && crate::auth::peer_is_trusted(peer_ip, cfg.trusted_proxies)
-    {
+    // In proxy mode a trusted proxy's connection is always treated as
+    // proxied, even without forwarding headers: a same-host proxy connects
+    // from loopback, and a request it relays without headers must not pass
+    // as local traffic.
+    if mode == NodeApiMode::Proxy && crate::auth::peer_is_trusted(peer_ip, cfg.trusted_proxies) {
         return classify_proxied(headers, cfg.public_origin);
     }
     if is_loopback(peer_ip) && is_loopback(local.ip().to_canonical()) {
@@ -437,6 +526,24 @@ mod tests {
                 want: Refused(R::ProxyProtoNotHttps),
             },
             Case {
+                name: "a trusted loopback proxy without forwarding headers is refused",
+                mode: M::Proxy,
+                conn: plain("127.0.0.1:5000", "127.0.0.1:8787"),
+                headers: vec![],
+                trusted: vec!["127.0.0.1"],
+                origin: https,
+                want: Refused(R::ProxyProtoMissing),
+            },
+            Case {
+                name: "a trusted loopback proxy forwarding https is allowed",
+                mode: M::Proxy,
+                conn: plain("127.0.0.1:5000", "127.0.0.1:8787"),
+                headers: vec![("x-forwarded-proto", "https")],
+                trusted: vec!["127.0.0.1"],
+                origin: https,
+                want: Allowed(A::Proxy),
+            },
+            Case {
                 name: "trusted proxy without forwarded-proto is refused",
                 mode: M::Proxy,
                 conn: plain(proxy, listen),
@@ -572,6 +679,59 @@ mod tests {
         assert_eq!(
             classify_transport(&conn, &HeaderMap::new(), &cfg),
             TransportDecision::Refused(RefusalReason::Misconfigured)
+        );
+    }
+
+    #[tokio::test]
+    async fn wildcard_bind_records_the_connections_loopback_local_addr() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        async fn echo(
+            ConnectInfo(peer): ConnectInfo<SocketAddr>,
+            axum::Extension(LocalAddr(local)): axum::Extension<LocalAddr>,
+        ) -> String {
+            let conn = ConnInfo {
+                peer: Some(peer),
+                local: Some(local),
+                listener: ListenerKind::Plain,
+            };
+            let node_api = node_api(NodeApiMode::Loopback);
+            let cfg = TransportConfig {
+                node_api: &node_api,
+                trusted_proxies: &[],
+                public_origin: None,
+            };
+            format!(
+                "{} {:?}",
+                local.ip(),
+                classify_transport(&conn, &HeaderMap::new(), &cfg)
+            )
+        }
+
+        let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route("/", axum::routing::get(echo));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, ConnAddrsMakeService::new(app))
+                .await
+                .unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        server.abort();
+
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(
+            response.ends_with("127.0.0.1 Allowed(Loopback)"),
+            "a localhost client on a wildcard bind is loopback: {response}"
         );
     }
 }

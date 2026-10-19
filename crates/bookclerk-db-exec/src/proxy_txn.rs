@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::ThreadId;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -78,17 +78,37 @@ pub struct ExecBudget {
     query_rows_seen: AtomicUsize,
     /// Engine column metadata for the in-flight query (crosses `spawn_blocking`).
     positional_columns: Mutex<Option<Vec<DbColumn>>>,
+    /// Host cancel flag of the owning atomic session, when it has one.
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl ExecBudget {
     /// Builds a budget for one atomic attempt.
     #[must_use]
     pub fn new(deadline_unix_ms: Option<u64>, query_row_cap: u32) -> Arc<Self> {
+        Self::with_cancel(deadline_unix_ms, query_row_cap, None)
+    }
+
+    /// Builds a budget for one atomic attempt that also carries the session's
+    /// host cancel flag, so engine retry loops can stop when it is raised.
+    ///
+    /// # Arguments
+    ///
+    /// * `deadline_unix_ms` - Guest-visible deadline (`None` = none).
+    /// * `query_row_cap` - Advertised query row cap (`0` = unlimited).
+    /// * `cancel` - Host cancel flag of the atomic session, if any.
+    #[must_use]
+    pub fn with_cancel(
+        deadline_unix_ms: Option<u64>,
+        query_row_cap: u32,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             deadline_unix_ms: AtomicU64::new(deadline_unix_ms.unwrap_or(0)),
             query_row_cap: AtomicUsize::new(usize::try_from(query_row_cap).unwrap_or(0)),
             query_rows_seen: AtomicUsize::new(0),
             positional_columns: Mutex::new(None),
+            cancel,
         })
     }
 
@@ -103,6 +123,14 @@ impl ExecBudget {
     pub fn deadline_expired(&self) -> bool {
         let dl = self.deadline_unix_ms.load(Ordering::SeqCst);
         dl > 0 && unix_now_ms() >= dl
+    }
+
+    /// True when the owning session's host cancel flag is raised.
+    #[must_use]
+    pub fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::SeqCst))
     }
 
     /// Remaining milliseconds until the armed deadline (`None` if unlimited).

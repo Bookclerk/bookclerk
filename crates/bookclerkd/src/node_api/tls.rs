@@ -48,7 +48,8 @@ use crate::api::AppState;
 /// Seconds a client has to finish its TLS handshake.
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
-/// Handshakes in flight at once.
+/// Connections in flight at once: handshaking, or finished and waiting for
+/// room in [`ACCEPT_QUEUE`]. Further connections are shed.
 const MAX_PENDING_HANDSHAKES: usize = 256;
 
 /// Finished handshakes waiting for the HTTP server.
@@ -67,40 +68,56 @@ pub enum NodeApiStatus {
 }
 
 /// Request extension every listener carries: whether the node API is
-/// mounted. Modes without a TLS listener are always mounted.
+/// mounted, and the `[daemon.node_api]` mode it was started for. Modes
+/// without a TLS listener are always mounted.
 #[derive(Debug, Clone)]
-pub struct NodeApiGate(watch::Receiver<NodeApiStatus>);
+pub struct NodeApiGate {
+    /// Status published by the TLS listener (or fixed at start).
+    status: watch::Receiver<NodeApiStatus>,
+    /// The mode [`start`] ran for; a reloaded config naming another mode
+    /// leaves the node API unmounted until the daemon restarts.
+    mode: NodeApiMode,
+}
 
 impl NodeApiGate {
-    /// A gate fixed at `status`.
+    /// A gate for `mode` fixed at `status`.
     #[cfg(test)]
     #[must_use]
-    pub fn fixed(status: NodeApiStatus) -> Self {
-        Self(watch::channel(status).1)
+    pub fn fixed(mode: NodeApiMode, status: NodeApiStatus) -> Self {
+        Self {
+            status: watch::channel(status).1,
+            mode,
+        }
     }
 
     /// Current status.
     #[must_use]
     pub fn status(&self) -> NodeApiStatus {
-        *self.0.borrow()
+        *self.status.borrow()
     }
 
     /// Waits until the status is no longer [`NodeApiStatus::Starting`].
     #[cfg(test)]
     pub async fn settled(&mut self) -> NodeApiStatus {
         let _ = self
-            .0
+            .status
             .wait_for(|status| *status != NodeApiStatus::Starting)
             .await;
         self.status()
     }
 }
 
-/// True when the node API may serve a request in `mode`. Modes with a TLS
-/// listener need a gate reporting [`NodeApiStatus::Ready`]; a request
-/// without a gate is refused in those modes (fail closed).
+/// True when the node API may serve a request in `mode` (the live config).
+/// Modes with a TLS listener need a gate reporting
+/// [`NodeApiStatus::Ready`]; a request without a gate is refused in those
+/// modes (fail closed). A gate started for another mode means
+/// `[daemon.node_api]` changed on reload: the listeners still match the old
+/// mode, so the node API stays unmounted until a restart.
 #[must_use]
 pub fn node_api_mounted(mode: NodeApiMode, gate: Option<&NodeApiGate>) -> bool {
+    if gate.is_some_and(|gate| gate.mode != mode) {
+        return false;
+    }
     match mode {
         NodeApiMode::Loopback | NodeApiMode::Proxy => true,
         NodeApiMode::Acme | NodeApiMode::SelfSigned => {
@@ -155,7 +172,10 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> NodeApiTls {
     let node_api = &cfg.daemon.node_api;
     let (status, receiver) = watch::channel(NodeApiStatus::Starting);
-    let gate = NodeApiGate(receiver);
+    let gate = NodeApiGate {
+        status: receiver,
+        mode: node_api.mode,
+    };
     let failed = |status: &watch::Sender<NodeApiStatus>, gate: &NodeApiGate| {
         status.send_replace(NodeApiStatus::Failed);
         NodeApiTls {
@@ -209,7 +229,13 @@ pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> Nod
         .layer(Extension(LocalAddr(local)))
         .layer(Extension(gate.clone()));
     let (handshakes, accepted) = mpsc::channel(ACCEPT_QUEUE);
-    tokio::spawn(accept_loop(tcp, server_config, challenge, handshakes));
+    tokio::spawn(accept_loop(
+        tcp,
+        server_config,
+        challenge,
+        handshakes,
+        MAX_PENDING_HANDSHAKES,
+    ));
     tokio::spawn(async move {
         // `tap_io` gives a custom listener axum's `ConnectInfo<SocketAddr>`.
         let listener = TlsListener { accepted, local }.tap_io(|_| {});
@@ -411,14 +437,16 @@ fn self_signed(
 
 /// Accepts TCP connections and runs each TLS handshake in its own task.
 /// TLS-ALPN-01 challenge handshakes are answered and closed; finished
-/// handshakes go to the HTTP server.
+/// handshakes go to the HTTP server. At most `max_pending` connections are
+/// handshaking or waiting to be handed over at once; the rest are shed.
 async fn accept_loop(
     tcp: TcpListener,
     server_config: Arc<ServerConfig>,
     challenge: Option<Arc<ServerConfig>>,
     handshakes: mpsc::Sender<(TlsStream<TcpStream>, SocketAddr)>,
+    max_pending: usize,
 ) {
-    let pending = Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+    let pending = Arc::new(Semaphore::new(max_pending));
     loop {
         let (stream, peer) = match tcp.accept().await {
             Ok(accepted) => accepted,
@@ -448,9 +476,10 @@ async fn accept_loop(
                     start.into_stream(server_config).await.map(Some)
                 })
                 .await;
-            drop(permit);
             match handshake {
                 Ok(Ok(Some(tls))) => {
+                    // Hold the permit until the server takes the stream, so a
+                    // stalled server bounds waiters too, not just handshakes.
                     let _ = handshakes.send((tls, peer)).await;
                 }
                 Ok(Ok(None)) => tracing::debug!(%peer, "answered a TLS-ALPN-01 challenge"),
@@ -459,6 +488,7 @@ async fn accept_loop(
                 }
                 Err(_) => tracing::debug!(%peer, "node API TLS handshake timed out"),
             }
+            drop(permit);
         });
     }
 }

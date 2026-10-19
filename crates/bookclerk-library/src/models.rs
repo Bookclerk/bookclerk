@@ -1465,6 +1465,16 @@ pub struct JobPayload {
     /// retryable failure must not keep later claims in the resume path.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume_pending: bool,
+    /// Unix milliseconds when the requirements sweep first found this pending
+    /// job's [`Self::requires`] unsettled: no node runs all of them, or one of
+    /// them is no longer deployed anywhere.
+    ///
+    /// Cleared when they settle again. The sweep fails the job (or, when only
+    /// a dropped instance is involved, rewrites it) once it has been unsettled
+    /// for its grace period, so a placement move that briefly leaves no common
+    /// node does not fail queued work (`control_plane::sweep_job_requirements`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_unsettled_since_ms: Option<i64>,
 }
 
 /// Default envelope version for missing `v` on well-formed legacy rows.
@@ -1489,6 +1499,7 @@ impl Default for JobPayload {
             checkpoint: None,
             invocation_sequence: None,
             resume_pending: false,
+            requires_unsettled_since_ms: None,
         }
     }
 }
@@ -1525,6 +1536,30 @@ pub enum EnqueueOutcome {
     },
     /// `pending + running` already equals `max_pending`.
     QueueFull,
+}
+
+/// Where the next page of routed-claim candidates starts (keyset paging).
+///
+/// Candidates are ordered by `priority DESC, created_at ASC, id ASC`; the
+/// cursor is the last row of the previous page, so rows that leave the
+/// pending state between pages never shift the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobClaimCursor {
+    /// Priority of the last row read.
+    pub priority: i64,
+    /// `created_at` (RFC 3339 text) of the last row read.
+    pub created_at: String,
+    /// Id of the last row read.
+    pub id: String,
+}
+
+/// One page of routed-claim candidates.
+#[derive(Debug, Clone, Default)]
+pub struct JobClaimPage {
+    /// Readable, not cancel-requested pending jobs, best first.
+    pub jobs: Vec<JobRecord>,
+    /// Where the next page starts, or `None` when no row remains.
+    pub next: Option<JobClaimCursor>,
 }
 
 /// Durable job row returned to the daemon API and worker.

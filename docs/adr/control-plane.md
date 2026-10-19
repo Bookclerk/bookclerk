@@ -247,7 +247,11 @@ be a distinct host.
 ### Schema compatibility
 
 Library schema behavior is unchanged: unreleased checksum, fail closed on
-mismatch, `SCHEMA_VERSION = 0`. A host heartbeats only when
+mismatch, `SCHEMA_VERSION = 0`. A database newer than the binary (a frozen
+version past its plan, or an unreleased pack with another checksum) is
+refused, never migrated. A start that has DDL to apply does it under the
+`schema.migrate` cluster lease (see *Singleton maintenance and the
+migration lease* below), so concurrent starters produce one migrator. A host heartbeats only when
 `current_schema_state` is the unreleased pack this binary applies. Document
 schema versions are per namespace and start at 1. A document this binary does
 not understand is not applied and is not rewritten.
@@ -662,6 +666,49 @@ section is the record.
   the token; takeover after expiry bumps it. Deployment writes stay
   compare-and-swap, so a holder whose lease lapsed mid-pass can at worst
   add one replica that the next pass removes.
+- **Singleton maintenance and the migration lease (#192).** The lease
+  code moved out of the scheduler into `control_plane::leases`: acquire
+  and renew (compare-and-swap on holder and token), a fencing renew that
+  also requires the lease to be unexpired, release, a list for status, a
+  `LeaseFence` that destructive work checks before each step, and
+  `SingletonDuty` ("one live node runs this every interval"). Cluster
+  cleanup that every daemon used to run on its own now runs under one lease
+  per duty: `maintenance.jobs` (terminal jobs; previously pruned on every
+  job-claim loop), `maintenance.events` (delivery and event retention,
+  stale catalog rows), `maintenance.kv` (expired KV rows), and
+  `maintenance.sessions` (expired operator sessions, OIDC RP states,
+  WebAuthn challenges). Every daemon polls every 60 s; the holder renews on
+  each poll and runs a duty when it takes the lease and hourly after. The
+  lease TTL is 180 s, so a dead holder is replaced within three minutes.
+  Fencing is check-then-act, not transactional (D1 has no interactive
+  transactions); the residual window is one idempotent delete. Expiry uses
+  each node's wall clock. Login, OIDC, and receipt paths still prune
+  opportunistically inline; that is bounded and idempotent.
+  Schema migration runs under `schema.migrate`. A start whose database
+  already matches only reads the state and takes no lease. One that needs
+  DDL (uninitialized, or a frozen step pending) first creates
+  `cluster_leases` (the same `IF NOT EXISTS` statement as in the pack),
+  then takes the lease with a per-attempt holder (`pid<pid>-<nonce>`; the
+  node id does not exist yet at that point), re-reads the state, renews the
+  lease every 40 s, and checks it before every DDL batch. Other starters
+  poll until the schema matches, take over when the migrator's 120 s lease
+  expires, and fail closed after 300 s. The released row keeps the last
+  migrator's holder and token. `GET /api/cluster/status` reports every
+  lease (`cluster.leases`) and the database schema state with whether this
+  binary matches it (`cluster.schema`). There is no drain-then-migrate
+  flow: a starter does not stop other nodes before it migrates, which is
+  safe today only because unreleased schema changes require a new
+  database.
+- **Backups have no periodic duty.** Recovery points are taken by `bookclerk
+  db backup` and automatically before a schema migration, which already
+  runs under the migration lease. No daemon schedules backups, so there is
+  no backup lease; a scheduled backup would be a `SingletonDuty`.
+- **PostgreSQL reconnect.** An ignored test
+  (`postgres_connection_killed_mid_commit_replays_once_after_reconnect`)
+  stalls a configuration write inside `COMMIT` with a deferred constraint
+  trigger, terminates its backend from a second pool, and retries the same
+  operation id on the reconnected pool: the killed commit left nothing, the
+  retry applies once, and a further retry replays the receipt.
 - **Hand-managed versus placed (step 5).** A placed instance refuses
   per-node `deploy`/`undeploy` and the deployment API (409), enrollment
   writes a new node's row `unplaced` for it, and `plugins deploy --manual`
@@ -770,6 +817,15 @@ across nodes.
   larger token. Counting running `jobs` rows (as `event_deliveries` does
   for `[events.concurrency]`) was rejected because one job counts against
   several semaphores and the account a job touches is not a column.
+- **Requirements sweep** (follow-up to #267). A singleton loop under the
+  `jobs:requirements-sweep` lease re-resolves pending jobs' requirements
+  with the daemon's discovered node-bound output keys and CAS-writes the
+  payload (bumping the lease generation, so it never overwrites a claim).
+  A set that only gains instances and still has a common node applies at
+  once; anything else waits a 10-minute grace period stamped in the payload
+  (`requires_unsettled_since_ms`), then drops retired instances or fails the
+  job as `unroutable`. Rejected: counting consecutive unsettled sweeps,
+  because sweeps also run on wakeups and the count would shrink with load.
 - **Limits stay in `config.toml`.** `[jobs]` has not moved to a database
   document, so each node applies its own limits; nodes should agree.
   Lowering a limit lets held slots above it drain rather than revoking them.
@@ -880,7 +936,9 @@ Built in the first H-4 slice:
 - Mint, list, and revoke links (`bookclerk nodes invite --user <id|login>
   [--ttl 24h]`, `bookclerk nodes invites list|revoke`, and
   `POST|GET /api/config/node-invites`, `DELETE …/{id}` for any signed-in
-  user). A link is `https://<public_origin>/enroll#bcn1.<link_id>.<secret>`;
+  user). Revoke an enrolled host with `bookclerk nodes revoke <node_id>` or
+  `DELETE /api/config/node-credentials/{node_id}` (the operator or an Owner
+  for any host, anyone else for their own). A link is `https://<public_origin>/enroll#bcn1.<link_id>.<secret>`;
   the 32-byte secret sits in the fragment, is printed once, and is never
   logged. Links live 24 h by default, 5 minutes to 7 days.
 - Redeem is one canonical batch: the claim `UPDATE` re-checks the hash,
@@ -914,13 +972,17 @@ Built in the first H-4 slice:
   node id, incarnation, 32-byte nonce, and the owner's canonical origin
   (its configured `public_origin`, so a signature relayed through another
   server fails). The owner always sends a challenge, so an unknown node and
-  a bad signature both close with 4401; a valid signature from a revoked
-  credential closes with 4403. Each refusal writes a
-  `security_audit_events` row (`node_auth_failed` / `node_auth_revoked`).
-  A welcomed node stamps `node_credentials.last_connected_at`. The session
+  a bad signature both close with 4401 and the one reason `auth_failed`
+  (the detailed reason is only in the audit row and the log); a valid
+  signature from a revoked credential closes with 4403. Each refusal writes
+  a `security_audit_events` row (`node_auth_failed` / `node_auth_revoked`).
+  A welcomed node stamps `node_credentials.last_connected_at`; the
+  connection is registered for `node.revoked` wakes before that stamp, so
+  a revoke mid-handshake still closes it. The session
   pings every 20 s, closes after 60 s idle, re-reads `revoked_at` on every
   ping tick, closes on a `node.revoked` wake with 4403, lets a newer
-  connection for the same node supersede the old one (4409), and closes on
+  connection for the same node supersede the old one (4409) once the newer
+  one is welcomed (a reconnect refused earlier leaves it up), and closes on
   a binary or malformed frame (4400). Work frames are later steps; until
   then each request frame is answered `error {code: "unsupported"}`.
 - The built-in TLS listener (`node_api/tls.rs`) on `tls_listen`, serving
@@ -931,7 +993,8 @@ Built in the first H-4 slice:
   `$FILES/acme/` (0700). `self_signed` generates a P-256 certificate once
   under `$FILES/node-api/self-signed/` (0700, key 0600) and writes its SPKI
   pin beside it; `POST /api/config/node-invites` and `bookclerk nodes
-  invite` append the pin to links.
+  invite` append the pin to links, and refuse to mint (503
+  `node_api_pin_unavailable` / a CLI error) while the pin cannot be read.
   In both modes the node API stays unmounted on every listener (404
   `node_api_unmounted`) until the listener has a certificate, so an ACME
   failure never falls back to plain HTTP. A Pebble issuance test runs when
@@ -1056,20 +1119,24 @@ Not in this phase, and not claimed as production HA:
   of that.
 - Job routing beyond plugin instances. Jobs now carry the instances they
   need and take cluster semaphores (*Job routing and cluster semaphores*
-  above), but requirements are fixed at admission and only name instances:
-  a pending job is not re-routed when a deployment moves, an all-accounts
+  above), and the requirements sweep re-resolves pending jobs when
+  deployments move, but requirements only name instances: an all-accounts
   scan is not split across the nodes that run each storefront, jobs are not
   ranked by headroom the way deliveries are, and acquire still writes the
   claiming node's own destinations rather than mirroring node-local outputs
   across nodes. `[jobs]` limits are read from each node's `config.toml`.
+- Singleton maintenance and schema migration run under `cluster_leases`
+  (see the implementation notes); other work is not leased.
 - Synchronous calls (HTTP API, portal, CLI) run on the host that receives
   them; only queued deliveries reach the best host.
 - Per-guest measured usage is not sampled. Reservations are jail ceilings,
   so a guest that idles well below its ceiling still occupies it in the
   scheduler's view. Free disk is reported but not placed on.
-- Memory and measured use are read on Linux only. On macOS and Windows a
-  heartbeat carries the CPU count, so those hosts are ranked by CPU alone
-  and not held to a memory budget.
+- Measured use is whole-machine on every platform (Linux `/proc` and the
+  cgroup, macOS Mach host statistics, Windows `GlobalMemoryStatusEx` /
+  `GetSystemTimes`). Only Linux reads a container ceiling (cgroup v2); a
+  daemon inside a Windows Job Object or another platform's resource limit
+  is ranked against the whole machine.
 - Rollouts: activating a version updates every placed node on its next
   wakeup at once; there is no staged or health-gated rollout across
   replicas. Placement does not read health: a replica on a host whose guest
@@ -1091,7 +1158,13 @@ Not in this phase, and not claimed as production HA:
   planner are built. Settings has no
   enrollment switch or invite screen yet (CLI and HTTP only).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
-  Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).
+  Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`), but there
+  is no drain-then-migrate flow: the migration lease serializes migrators,
+  it does not stop older binaries on other nodes from using the database
+  while a frozen step applies. That matters from the first release cut.
+- Scheduled backups. Backups are operator commands plus the automatic
+  pre-migrate recovery point; a scheduled backup would run as a
+  `SingletonDuty` under its own lease.
 - Schema pinning compares package versions, not schema contents: a newer
   package that only renames a key still drops the operator's value for the
   old name. A declared per-key migration in `[[settings]]` is a possible

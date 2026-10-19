@@ -52,15 +52,37 @@ async fn enroll_status(
 #[test]
 fn tls_modes_need_a_ready_gate() {
     use bookclerk_config::NodeApiMode;
-    let ready = NodeApiGate::fixed(NodeApiStatus::Ready);
-    let failed = NodeApiGate::fixed(NodeApiStatus::Failed);
     for mode in [NodeApiMode::Loopback, NodeApiMode::Proxy] {
         assert!(node_api_mounted(mode, None));
+        let started = NodeApiGate::fixed(mode, NodeApiStatus::Ready);
+        assert!(node_api_mounted(mode, Some(&started)));
     }
     for mode in [NodeApiMode::Acme, NodeApiMode::SelfSigned] {
+        let ready = NodeApiGate::fixed(mode, NodeApiStatus::Ready);
+        let failed = NodeApiGate::fixed(mode, NodeApiStatus::Failed);
         assert!(!node_api_mounted(mode, None), "no gate fails closed");
         assert!(!node_api_mounted(mode, Some(&failed)));
         assert!(node_api_mounted(mode, Some(&ready)));
+    }
+}
+
+#[test]
+fn a_reloaded_node_api_mode_stays_unmounted_until_restart() {
+    use bookclerk_config::NodeApiMode;
+    let modes = [
+        NodeApiMode::Loopback,
+        NodeApiMode::Proxy,
+        NodeApiMode::Acme,
+        NodeApiMode::SelfSigned,
+    ];
+    for started in modes {
+        let gate = NodeApiGate::fixed(started, NodeApiStatus::Ready);
+        for live in modes.into_iter().filter(|live| *live != started) {
+            assert!(
+                !node_api_mounted(live, Some(&gate)),
+                "started {started:?}, reloaded to {live:?}"
+            );
+        }
     }
 }
 
@@ -136,6 +158,70 @@ where
         .nth(1)
         .and_then(|code| code.parse().ok())
         .unwrap_or_else(|| panic!("no status line in {text:?}"))
+}
+
+#[tokio::test]
+async fn a_stalled_server_bounds_finished_handshakes() {
+    use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio_rustls::rustls::ServerConfig;
+
+    let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert = generated.cert.der().clone();
+    let key = PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der());
+    let mut server = ServerConfig::builder_with_provider(super::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.clone()], PrivateKeyDer::Pkcs8(key))
+        .unwrap();
+    server.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let mut roots = RootCertStore::empty();
+    roots.add(cert).unwrap();
+    let client = ClientConfig::builder_with_provider(super::provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+
+    // One slot in flight, one in the queue, and a server that never accepts.
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = tcp.local_addr().unwrap();
+    let (handshakes, mut accepted) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(super::accept_loop(
+        tcp,
+        Arc::new(server),
+        None,
+        handshakes,
+        1,
+    ));
+    let handshake = || async {
+        let tcp = tokio::net::TcpStream::connect(local).await.unwrap();
+        connector
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+    };
+    // Retries while the previous connection still holds the slot.
+    let handshake_eventually = || async {
+        for _ in 0..100 {
+            if let Ok(tls) = handshake().await {
+                return tls;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("handshake never succeeded");
+    };
+
+    let _queued = handshake_eventually().await;
+    let _waiting = handshake_eventually().await;
+    // The waiting connection keeps its slot: the next one is shed, not
+    // handshaken into an unbounded backlog.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(handshake().await.is_err(), "a third connection was let in");
+
+    // Once the server takes one, the waiter moves up and the slot frees.
+    let _ = accepted.recv().await.unwrap();
+    let _after = handshake_eventually().await;
 }
 
 #[tokio::test]
@@ -248,7 +334,8 @@ acme_directory_ca = "{ca}"
     // Pebble's order may fail once before succeeding; wait for Ready.
     tokio::time::timeout(
         Duration::from_secs(120),
-        gate.0.wait_for(|status| *status == NodeApiStatus::Ready),
+        gate.status
+            .wait_for(|status| *status == NodeApiStatus::Ready),
     )
     .await
     .expect("Pebble issued a certificate")
@@ -274,4 +361,34 @@ acme_directory_ca = "{ca}"
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(cached, "the certificate is cached for restarts");
+}
+
+#[tokio::test]
+async fn the_node_router_times_out_a_stalled_enroll_body() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, _store) = super::super::tests::test_state_with(&files, "").await;
+    // The routes exactly as the TLS-only listener serves them.
+    let app = super::super::node_router::<()>(Arc::clone(&state))
+        .layer(axum::Extension(super::super::transport::LocalAddr(
+            "127.0.0.1:8787".parse().unwrap(),
+        )))
+        .layer(axum::extract::connect_info::MockConnectInfo(
+            "127.0.0.1:5000".parse::<SocketAddr>().unwrap(),
+        ));
+    // A body that never finishes.
+    let body = Body::from_stream(futures::stream::pending::<
+        Result<axum::body::Bytes, std::io::Error>,
+    >());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/node/v1/enroll")
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(30), app.oneshot(request))
+        .await
+        .expect("the API deadline ends the request")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
 }

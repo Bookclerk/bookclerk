@@ -44,7 +44,6 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
     let reclaimed = library.reclaim_expired_leases().await?;
     let orphans = library.reconcile_orphaned_acquire_rows().await?;
     let cfg = state.config.read().await.clone();
-    let pruned = library.prune_terminal_jobs(cfg.jobs.retention_days).await?;
     let cache = cfg.download_cache_dir();
     let swept = sweep_orphan_temp_dirs(&library, &cache).await?;
     let stale_before = (chrono::Utc::now()
@@ -55,7 +54,7 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
         .await?;
     info!(
         reclaimed,
-        orphans, pruned, swept, scans, "job queue reconciled at startup"
+        orphans, swept, scans, "job queue reconciled at startup"
     );
     Ok(())
 }
@@ -153,7 +152,6 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
                 warn!(error = %err, "lease reclaim failed");
             }
             let cfg = state.config.read().await.clone();
-            let _ = library.prune_terminal_jobs(cfg.jobs.retention_days).await;
             match library
                 .storage_scan_reclaim_terminal_page(scan_reclaim_after.as_deref(), 32)
                 .await

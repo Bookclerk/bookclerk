@@ -25,7 +25,7 @@
 //! trusted with, and [`super::handoff_routed_job`] repeats that check before
 //! the job's secrets would be handed over.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -41,13 +41,14 @@ use super::semaphore::{
 use super::trust::{job_trusted, node_trust, Claimant, NodeTrust};
 use crate::entities::accounts;
 use crate::error::{LibraryError, Result};
-use crate::models::{JobKind, JobPayload, JobRecord, JobResourceClass};
+use crate::models::{JobClaimCursor, JobKind, JobPayload, JobRecord, JobResourceClass};
 use crate::store::LibraryStore;
 
 /// Permits an account semaphore grants: one job per store account at a time.
 pub const ACCOUNT_SEMAPHORE_LIMIT: u32 = 1;
 
-/// Pending candidates read per routed claim attempt.
+/// Pending candidates read per page of a routed claim attempt (the claim
+/// pages on until it claims a job or the ready rows run out).
 pub const ROUTED_CLAIM_CANDIDATES: u64 = 16;
 
 /// Name of the cluster semaphore for one resource class.
@@ -118,10 +119,34 @@ pub struct RoutedJobClaim {
 /// run somewhere is added: the acquire writes to that output, so it must run
 /// where the output's disk is.
 ///
+/// The required instances must share at least one node where all of them
+/// are deployed to run; otherwise no node could ever claim the job, so it
+/// is refused here instead of being left pending. Required instances are
+/// never dropped to make a node fit: an acquire must write to every
+/// deployed node-bound output.
+///
 /// # Errors
 ///
-/// Returns an error when a read fails.
+/// Returns [`LibraryError::Conflict`] when the required instances have no
+/// common deployment node, or an error when a read fails.
 pub async fn resolve_job_requirements(
+    store: &LibraryStore,
+    kind: JobKind,
+    payload: &JobPayload,
+    node_bound_plugin_keys: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    let requires = desired_requirements(store, kind, payload, node_bound_plugin_keys).await?;
+    if !requirements_routable(store, &requires).await? {
+        return Err(LibraryError::Conflict(no_common_node_message(
+            kind, &requires,
+        )));
+    }
+    Ok(requires)
+}
+
+/// The requirement set [`resolve_job_requirements`] would record now,
+/// without the common-node check.
+pub(super) async fn desired_requirements(
     store: &LibraryStore,
     kind: JobKind,
     payload: &JobPayload,
@@ -147,6 +172,58 @@ pub async fn resolve_job_requirements(
         }
     }
     Ok(requires.into_iter().collect())
+}
+
+/// True when some node is deployed to run every instance in `requires`
+/// (always true for zero or one instance: [`desired_requirements`] keeps
+/// only deployed instances).
+pub(super) async fn requirements_routable(
+    store: &LibraryStore,
+    requires: &[String],
+) -> Result<bool> {
+    Ok(requires.len() <= 1 || !common_deployment_nodes(store, requires).await?.is_empty())
+}
+
+/// Operator-facing reason for requirements no node can meet.
+pub(super) fn no_common_node_message(kind: JobKind, requires: &[String]) -> String {
+    format!(
+        "no node runs all of the plugin instances this {} job requires ({}); \
+         deploy them to a common node",
+        kind.as_str(),
+        requires.join(", ")
+    )
+}
+
+/// Nodes where every instance in `requires` has a deployment that should run.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn common_deployment_nodes(
+    store: &LibraryStore,
+    requires: &[String],
+) -> Result<BTreeSet<String>> {
+    let mut common: Option<BTreeSet<String>> = None;
+    for raw in requires {
+        let Ok(instance) = PluginInstanceId::parse(raw) else {
+            return Ok(BTreeSet::new());
+        };
+        let nodes: BTreeSet<String> = list_deployments_for_instance(store, &instance)
+            .await?
+            .into_iter()
+            .filter(|deployment| deployment.desired.runs())
+            .map(|deployment| deployment.node_id)
+            .collect();
+        let next = match common {
+            Some(prev) => prev.intersection(&nodes).cloned().collect(),
+            None => nodes,
+        };
+        if next.is_empty() {
+            return Ok(next);
+        }
+        common = Some(next);
+    }
+    Ok(common.unwrap_or_default())
 }
 
 /// True when some node has a deployment of `instance` that should run.
@@ -258,12 +335,17 @@ pub async fn job_semaphores(
 
 /// Claims the best ready job this node can run, under the cluster semaphores.
 ///
-/// Reads the ready pending jobs of the class, best first; skips those the
-/// node is not trusted with ([`super::node_trust`]) or whose requirements
-/// it does not meet; takes the permits of the first one
-/// left and claims it with [`LibraryStore::claim_job_by_id`]. A lost claim
-/// gives the permits back and moves on. When the class semaphore itself is
-/// full, no further candidate is tried.
+/// Pages through the ready pending jobs of the class, best first
+/// ([`ROUTED_CLAIM_CANDIDATES`] per page); skips those the node is not
+/// trusted with ([`super::node_trust`]), those whose requirements this node
+/// does not meet, and those whose account or instance semaphore is full;
+/// takes the permits of the first one left and claims it with
+/// [`LibraryStore::claim_job_by_id`] at the lease generation of the record
+/// it evaluated, so a job whose requirements were rewritten after this node
+/// checked them is not claimed on the stale check. A lost claim gives the
+/// permits back and moves on. It stops at the first claim, when the rows
+/// run out, or when the class semaphore itself is full (no further
+/// candidate could run).
 ///
 /// # Returns
 ///
@@ -277,47 +359,74 @@ pub async fn claim_routed_job(
     store: &LibraryStore,
     request: &JobClaimRequest<'_>,
 ) -> Result<Option<RoutedJobClaim>> {
-    let candidates = store
-        .list_job_claim_candidates(request.resource_class, ROUTED_CLAIM_CANDIDATES)
-        .await?;
     let class = class_semaphore(request.resource_class);
     let ttl = Duration::from_secs(request.lease_secs);
     let trust = node_trust(store, request.node_id, request.claimant).await?;
     if trust == NodeTrust::Nothing {
         return Ok(None);
     }
-    for job in candidates {
-        if !job_trusted(store, &trust, &job).await? {
-            continue;
-        }
-        if !node_can_run_job(store, request.node_id, &job.payload.requires).await? {
-            continue;
-        }
-        let semaphores = job_semaphores(store, &job, request.limits).await?;
-        let holder = format!("{}/{}/{}", request.owner, job.id, Uuid::new_v4().simple());
-        let resumed = job.payload.resume_pending;
-        let permits = match acquire_permits(store, &semaphores, &holder, ttl).await? {
-            PermitAcquire::Granted(permits) => permits,
-            PermitAcquire::Blocked(name) if name == class => return Ok(None),
-            PermitAcquire::Blocked(_) => continue,
-        };
-        match store
-            .claim_job_by_id(&job.id, request.owner, request.lease_secs)
-            .await
-        {
-            Ok(Some(job)) => {
-                return Ok(Some(RoutedJobClaim {
-                    job,
-                    permits,
-                    resumed,
-                }))
+    // Many queued jobs share one requirement set (every acquire bound to the
+    // same outputs), so each set is checked against this node once per call.
+    let mut runnable: BTreeMap<Vec<String>, bool> = BTreeMap::new();
+    let mut after: Option<JobClaimCursor> = None;
+    loop {
+        let page = store
+            .list_job_claim_candidates(
+                request.resource_class,
+                after.as_ref(),
+                ROUTED_CLAIM_CANDIDATES,
+            )
+            .await?;
+        for job in page.jobs {
+            if !job_trusted(store, &trust, &job).await? {
+                continue;
             }
-            Ok(None) => release_permits(store, &permits).await?,
-            Err(err) => {
-                let _ = release_permits(store, &permits).await;
-                return Err(err);
+            let can_run = match runnable.get(&job.payload.requires) {
+                Some(known) => *known,
+                None => {
+                    let known =
+                        node_can_run_job(store, request.node_id, &job.payload.requires).await?;
+                    runnable.insert(job.payload.requires.clone(), known);
+                    known
+                }
+            };
+            if !can_run {
+                continue;
             }
+            let semaphores = job_semaphores(store, &job, request.limits).await?;
+            let holder = format!("{}/{}/{}", request.owner, job.id, Uuid::new_v4().simple());
+            let resumed = job.payload.resume_pending;
+            let permits = match acquire_permits(store, &semaphores, &holder, ttl).await? {
+                PermitAcquire::Granted(permits) => permits,
+                PermitAcquire::Blocked(name) if name == class => return Ok(None),
+                PermitAcquire::Blocked(_) => continue,
+            };
+            match store
+                .claim_job_by_id(
+                    &job.id,
+                    job.lease_generation,
+                    request.owner,
+                    request.lease_secs,
+                )
+                .await
+            {
+                Ok(Some(job)) => {
+                    return Ok(Some(RoutedJobClaim {
+                        job,
+                        permits,
+                        resumed,
+                    }))
+                }
+                Ok(None) => release_permits(store, &permits).await?,
+                Err(err) => {
+                    let _ = release_permits(store, &permits).await;
+                    return Err(err);
+                }
+            }
+        }
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return Ok(None),
         }
     }
-    Ok(None)
 }

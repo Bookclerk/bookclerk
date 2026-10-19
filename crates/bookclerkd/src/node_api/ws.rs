@@ -7,10 +7,14 @@
 //! 1. [`super::transport::classify_transport`], before the upgrade.
 //! 2. The client must offer the [`SUBPROTOCOL`] subprotocol.
 //! 3. hello → challenge → auth. The owner always sends a challenge, so an
-//!    unknown node id and a bad signature look the same from outside; both
-//!    close with [`CLOSE_AUTH_FAILED`]. A valid signature from a revoked
+//!    unknown node id and a bad signature look the same from outside; every
+//!    authentication failure closes with [`CLOSE_AUTH_FAILED`] and the one
+//!    reason [`AUTH_FAILED_REASON`]. A valid signature from a revoked
 //!    credential closes with [`CLOSE_REVOKED`]. Each failure writes a
-//!    `security_audit_events` row.
+//!    `security_audit_events` row and a log line with the detailed reason.
+//!    The connection is registered for `node.revoked` wakes before its
+//!    credential is stamped, so a revoke during the handshake still closes
+//!    it.
 //!
 //! After `welcome`, the session pings every [`PING_INTERVAL_SECS`], closes
 //! after [`IDLE_TIMEOUT_SECS`] without an inbound frame, re-reads the
@@ -41,7 +45,7 @@ use bookclerk_node_proto::{
     CLOSE_PROTOCOL, CLOSE_REVOKED, CLOSE_SUPERSEDED, HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS,
     MAX_FRAME_BYTES, NONCE_LEN, PING_INTERVAL_SECS, SUBPROTOCOL,
 };
-use rand::RngCore as _;
+use rand::Rng as _;
 use serde_json::json;
 use tokio::sync::watch;
 
@@ -49,6 +53,11 @@ use crate::api::AppState;
 
 /// Longest node id or incarnation a hello may carry.
 const MAX_ID_BYTES: usize = 128;
+
+/// Close reason sent for every [`CLOSE_AUTH_FAILED`]; the detailed reason
+/// stays in the audit row and the log, so a peer cannot tell an unknown node
+/// id from a bad signature.
+pub(super) const AUTH_FAILED_REASON: &str = "auth_failed";
 
 /// One live, authenticated host connection.
 struct SessionSlot {
@@ -58,45 +67,100 @@ struct SessionSlot {
     close: watch::Sender<Option<u16>>,
 }
 
-/// Live host connections on this owner node, by node id.
-static SESSIONS: LazyLock<Mutex<HashMap<String, SessionSlot>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Host connections on this owner node, by node id.
+#[derive(Default)]
+struct SessionTable {
+    /// The live connection of each node: it has been welcomed.
+    live: HashMap<String, SessionSlot>,
+    /// Connections still finishing the handshake. They receive
+    /// `node.revoked` wakes but do not replace the live connection until
+    /// they are welcomed, so a reconnect that fails late leaves it up.
+    pending: HashMap<String, Vec<SessionSlot>>,
+}
+
+/// Host connections on this owner node.
+static SESSIONS: LazyLock<Mutex<SessionTable>> =
+    LazyLock::new(|| Mutex::new(SessionTable::default()));
 
 /// Serial for the next registered connection.
 static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 /// The session table, recovering from a poisoned lock (entries stay
-/// consistent: each operation is a single insert or remove).
-fn sessions() -> std::sync::MutexGuard<'static, HashMap<String, SessionSlot>> {
+/// consistent: each operation is a single insert, move, or remove).
+fn sessions() -> std::sync::MutexGuard<'static, SessionTable> {
     SESSIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Asks the live connection of `node_id`, if this node holds one, to close
-/// with `code`. Called for `node.revoked` wakes.
+/// Asks every connection of `node_id` on this node, live or still in the
+/// handshake, to close with `code`. Called for `node.revoked` wakes.
 pub fn close_node_sessions(node_id: &str, code: u16) {
-    if let Some(slot) = sessions().get(node_id) {
+    let table = sessions();
+    let live = table.live.get(node_id).into_iter();
+    let pending = table.pending.get(node_id).into_iter().flatten();
+    for slot in live.chain(pending) {
         let _ = slot.close.send(Some(code));
     }
 }
 
-/// Registers an authenticated connection; an older one for the same node
-/// is asked to close with [`CLOSE_SUPERSEDED`].
-fn register(node_id: &str) -> (u64, watch::Receiver<Option<u16>>) {
+/// Registers a connection that is still in the handshake. It does not
+/// replace the node's live connection; see [`promote`].
+fn register_pending(node_id: &str) -> (u64, watch::Receiver<Option<u16>>) {
     let serial = NEXT_SERIAL.fetch_add(1, Ordering::Relaxed);
     let (close, receiver) = watch::channel(None);
-    if let Some(previous) = sessions().insert(node_id.to_string(), SessionSlot { serial, close }) {
-        let _ = previous.close.send(Some(CLOSE_SUPERSEDED));
-    }
+    sessions()
+        .pending
+        .entry(node_id.to_string())
+        .or_default()
+        .push(SessionSlot { serial, close });
     (serial, receiver)
 }
 
-/// Removes a connection's slot unless a newer connection replaced it.
+/// Makes a welcomed connection the node's live one; an older live
+/// connection is asked to close with [`CLOSE_SUPERSEDED`]. Returns `false`,
+/// leaving the live connection alone, when the pending slot is gone or
+/// already holds a close request (a revoke that landed during the
+/// handshake): a revoked connection never supersedes, so the live one keeps
+/// the revoke code it was sent.
+fn promote(node_id: &str, serial: u64) -> bool {
+    let mut table = sessions();
+    let Some(slot) = take_pending(&mut table, node_id, serial) else {
+        return false;
+    };
+    if slot.close.borrow().is_some() {
+        return false;
+    }
+    if let Some(previous) = table.live.insert(node_id.to_string(), slot) {
+        let _ = previous.close.send(Some(CLOSE_SUPERSEDED));
+    }
+    true
+}
+
+/// Removes and returns the pending slot `serial` of `node_id`.
+fn take_pending(table: &mut SessionTable, node_id: &str, serial: u64) -> Option<SessionSlot> {
+    let slots = table.pending.get_mut(node_id)?;
+    let index = slots.iter().position(|slot| slot.serial == serial)?;
+    let slot = slots.swap_remove(index);
+    if slots.is_empty() {
+        table.pending.remove(node_id);
+    }
+    Some(slot)
+}
+
+/// Removes a connection's slot, pending or live, unless a newer connection
+/// replaced it.
 fn unregister(node_id: &str, serial: u64) {
     let mut table = sessions();
-    if table.get(node_id).is_some_and(|slot| slot.serial == serial) {
-        table.remove(node_id);
+    if take_pending(&mut table, node_id, serial).is_some() {
+        return;
+    }
+    if table
+        .live
+        .get(node_id)
+        .is_some_and(|slot| slot.serial == serial)
+    {
+        table.live.remove(node_id);
     }
 }
 
@@ -167,6 +231,10 @@ impl Refusal {
 struct Authed {
     /// Node id the signature proved.
     node_id: String,
+    /// This connection's slot serial from [`register_pending`].
+    serial: u64,
+    /// Close requests for this connection.
+    close: watch::Receiver<Option<u16>>,
 }
 
 /// Runs one connection: the handshake, then the session.
@@ -187,10 +255,9 @@ async fn run(state: Arc<AppState>, mut socket: WebSocket, peer: Option<SocketAdd
             return;
         }
     };
-    let (serial, close) = register(&authed.node_id);
     tracing::info!(node_id = %authed.node_id, ?peer, "host node connected");
-    session(&library, &mut socket, &authed.node_id, close).await;
-    unregister(&authed.node_id, serial);
+    session(&library, &mut socket, &authed.node_id, authed.close).await;
+    unregister(&authed.node_id, authed.serial);
     tracing::info!(node_id = %authed.node_id, "host node disconnected");
 }
 
@@ -228,7 +295,13 @@ async fn refuse(
     {
         tracing::warn!(error = %err, "could not record node handshake refusal");
     }
-    close_with(&mut socket, refusal.code, refusal.reason).await;
+    // The detailed reason is for the audit row and the log only.
+    let reason = if refusal.code == CLOSE_AUTH_FAILED {
+        AUTH_FAILED_REASON
+    } else {
+        refusal.reason
+    };
+    close_with(&mut socket, refusal.code, reason).await;
 }
 
 /// Sends a close frame; the peer may already be gone.
@@ -302,8 +375,7 @@ async fn handshake(
         Ok(Some(row)) => row.cluster_id,
         Ok(None) | Err(_) => return Err(Refusal::auth("cluster_unavailable", Some(&node_id))),
     };
-    let mut nonce = [0u8; NONCE_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let nonce: [u8; NONCE_LEN] = rand::rngs::OsRng.gen();
     let challenge = Frame::new(
         hello.id,
         Body::Challenge {
@@ -346,11 +418,11 @@ async fn handshake(
     if credential.revoked_at.is_some() {
         return Err(revoked);
     }
-    // Stamps only an unrevoked credential, so a revoke mid-handshake wins.
-    match record_node_connected(library, &node_id).await {
-        Ok(true) => {}
-        Ok(false) => return Err(revoked),
-        Err(_) => return Err(Refusal::auth("credential_unavailable", Some(&node_id))),
+    let (serial, close) = admit(&node_id, record_node_connected(library, &node_id)).await?;
+    if close.borrow().is_some() {
+        // Revoked while the stamp ran: no welcome.
+        unregister(&node_id, serial);
+        return Err(revoked);
     }
     let welcome = Frame::new(
         "",
@@ -360,9 +432,43 @@ async fn handshake(
         },
     );
     if !send_frame(socket, &welcome).await {
+        unregister(&node_id, serial);
         return Err(Refusal::auth("closed", Some(&node_id)));
     }
-    Ok(Authed { node_id })
+    if !promote(&node_id, serial) {
+        return Err(revoked);
+    }
+    Ok(Authed {
+        node_id,
+        serial,
+        close,
+    })
+}
+
+/// Registers `node_id`'s connection as pending, then awaits `stamp` (which
+/// records the connection against an unrevoked credential). Registering
+/// first means a `node.revoked` wake that lands while the stamp runs, or any
+/// time after it, finds this connection; a revoke committed before the
+/// stamp makes the stamp report `false`. Either way a revoked credential
+/// never keeps a session. The node's live connection is replaced only by
+/// [`promote`], after the welcome is sent, so a refused attempt leaves it
+/// up.
+async fn admit<F>(node_id: &str, stamp: F) -> Result<(u64, watch::Receiver<Option<u16>>), Refusal>
+where
+    F: std::future::Future<Output = bookclerk_library::Result<bool>>,
+{
+    let (serial, close) = register_pending(node_id);
+    let refusal = match stamp.await {
+        Ok(true) => return Ok((serial, close)),
+        Ok(false) => Refusal {
+            code: CLOSE_REVOKED,
+            reason: "revoked",
+            node_id: Some(node_id.to_string()),
+        },
+        Err(_) => Refusal::auth("credential_unavailable", Some(node_id)),
+    };
+    unregister(node_id, serial);
+    Err(refusal)
 }
 
 /// True when the credential is gone or revoked. A failed read keeps the
@@ -451,5 +557,92 @@ async fn session(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bookclerk_node_proto::{CLOSE_REVOKED, CLOSE_SUPERSEDED};
+
+    use super::{admit, close_node_sessions, promote, sessions, unregister};
+
+    #[tokio::test]
+    async fn a_revoke_during_the_stamp_reaches_the_admitted_connection() {
+        let node_id = "admit-revoked-mid-stamp";
+        // The wake lands while the credential is being stamped.
+        let (serial, close) = admit(node_id, async {
+            close_node_sessions(node_id, CLOSE_REVOKED);
+            Ok(true)
+        })
+        .await
+        .unwrap_or_else(|_| panic!("admitted"));
+        assert_eq!(*close.borrow(), Some(CLOSE_REVOKED));
+        // A revoked connection is not promoted, and keeps its close request.
+        assert!(!promote(node_id, serial));
+        assert_eq!(*close.borrow(), Some(CLOSE_REVOKED));
+        unregister(node_id, serial);
+        assert!(!sessions().live.contains_key(node_id));
+        assert!(!sessions().pending.contains_key(node_id));
+    }
+
+    #[tokio::test]
+    async fn a_revoked_reconnect_does_not_supersede_the_live_connection() {
+        let node_id = "admit-revoked-reconnect";
+        let (live_serial, live) = admit(node_id, async { Ok(true) })
+            .await
+            .unwrap_or_else(|_| panic!("admitted"));
+        assert!(promote(node_id, live_serial));
+        // A reconnect is mid-handshake when the revoke wake closes both.
+        let (serial, pending) = admit(node_id, async { Ok(true) })
+            .await
+            .unwrap_or_else(|_| panic!("admitted"));
+        close_node_sessions(node_id, CLOSE_REVOKED);
+        assert!(!promote(node_id, serial));
+        assert_eq!(*pending.borrow(), Some(CLOSE_REVOKED));
+        // The live connection keeps the revoke code, not superseded.
+        assert_eq!(*live.borrow(), Some(CLOSE_REVOKED));
+        assert!(sessions()
+            .live
+            .get(node_id)
+            .is_some_and(|slot| slot.serial == live_serial));
+        unregister(node_id, live_serial);
+        assert!(!sessions().live.contains_key(node_id));
+    }
+
+    #[tokio::test]
+    async fn a_refused_reconnect_leaves_the_live_connection_up() {
+        let node_id = "admit-refused-reconnect";
+        let (live_serial, live) = admit(node_id, async { Ok(true) })
+            .await
+            .unwrap_or_else(|_| panic!("admitted"));
+        assert!(promote(node_id, live_serial));
+
+        // A stamp that fails, or finds the credential revoked, refuses the
+        // new attempt without touching the live connection.
+        for stamp in [
+            Ok(false),
+            Err(bookclerk_library::LibraryError::Unavailable("db".into())),
+        ] {
+            let refusal = admit(node_id, async { stamp }).await.expect_err("refused");
+            assert_ne!(refusal.code, CLOSE_SUPERSEDED);
+            assert_eq!(*live.borrow(), None);
+        }
+        // So does a welcome that cannot be sent.
+        let (serial, _) = admit(node_id, async { Ok(true) })
+            .await
+            .unwrap_or_else(|_| panic!("admitted"));
+        unregister(node_id, serial);
+        assert_eq!(*live.borrow(), None);
+        assert!(!sessions().pending.contains_key(node_id));
+
+        // A welcomed reconnect supersedes it.
+        let (serial, _) = admit(node_id, async { Ok(true) })
+            .await
+            .unwrap_or_else(|_| panic!("admitted"));
+        assert!(promote(node_id, serial));
+        assert_eq!(*live.borrow(), Some(CLOSE_SUPERSEDED));
+        unregister(node_id, serial);
+        unregister(node_id, live_serial);
+        assert!(!sessions().live.contains_key(node_id));
     }
 }
