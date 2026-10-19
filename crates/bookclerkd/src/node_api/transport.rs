@@ -14,7 +14,9 @@
 //!   exactly one `X-Forwarded-Proto: https`, with an https
 //!   `integrations.public_origin` (`mode = "proxy"`).
 //! - `loopback`: both ends are loopback and no forwarding header is present.
-//!   Allowed in every mode: the traffic never leaves the machine.
+//!   Allowed in every mode: the traffic never leaves the machine. In proxy
+//!   mode a trusted proxy's connection is always checked as proxied, so a
+//!   same-host proxy cannot relay a request as loopback.
 //!
 //! Everything else is refused with 403 `transport_insecure`. Forwarding
 //! headers from a peer that is not a trusted proxy are never believed, and
@@ -270,10 +272,11 @@ pub fn classify_transport(
     };
     let forwarded = has_forwarding_headers(headers);
     let peer_ip = peer.ip().to_canonical();
-    if forwarded
-        && mode == NodeApiMode::Proxy
-        && crate::auth::peer_is_trusted(peer_ip, cfg.trusted_proxies)
-    {
+    // In proxy mode a trusted proxy's connection is always treated as
+    // proxied, even without forwarding headers: a same-host proxy connects
+    // from loopback, and a request it relays without headers must not pass
+    // as local traffic.
+    if mode == NodeApiMode::Proxy && crate::auth::peer_is_trusted(peer_ip, cfg.trusted_proxies) {
         return classify_proxied(headers, cfg.public_origin);
     }
     if is_loopback(peer_ip) && is_loopback(local.ip().to_canonical()) {
@@ -521,6 +524,24 @@ mod tests {
                 trusted: vec!["10.0.0.2"],
                 origin: https,
                 want: Refused(R::ProxyProtoNotHttps),
+            },
+            Case {
+                name: "a trusted loopback proxy without forwarding headers is refused",
+                mode: M::Proxy,
+                conn: plain("127.0.0.1:5000", "127.0.0.1:8787"),
+                headers: vec![],
+                trusted: vec!["127.0.0.1"],
+                origin: https,
+                want: Refused(R::ProxyProtoMissing),
+            },
+            Case {
+                name: "a trusted loopback proxy forwarding https is allowed",
+                mode: M::Proxy,
+                conn: plain("127.0.0.1:5000", "127.0.0.1:8787"),
+                headers: vec![("x-forwarded-proto", "https")],
+                trusted: vec!["127.0.0.1"],
+                origin: https,
+                want: Allowed(A::Proxy),
             },
             Case {
                 name: "trusted proxy without forwarded-proto is refused",

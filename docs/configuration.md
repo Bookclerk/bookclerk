@@ -60,7 +60,8 @@ is a plugin instance in the database: its settings come from the plugin's
 | `BOOKCLERK_JOBS_MAX_ATTEMPTS` | Claims before a job fails terminally (default 3) |
 | `BOOKCLERK_JOBS_RETENTION_DAYS` | Days to keep terminal job rows (default 7) |
 | `BOOKCLERK_JOBS_TEMP_QUOTA_BYTES` | Acquire scratch quota (default 2 GiB) |
-| `BOOKCLERK_JOBS_CONCURRENCY_NETWORK` | Network-class workers (default 1) |
+| `BOOKCLERK_JOBS_CONCURRENCY_NETWORK` | Network-class workers on this node and running network jobs cluster-wide (default 1) |
+| `BOOKCLERK_JOBS_CONCURRENCY_PLUGIN_INSTANCE` | Running jobs per required plugin instance, cluster-wide (default 1) |
 | `BOOKCLERK_MEDIA_WORKERS` | Concurrent codec jobs (`0` = one per core, capped at 8) |
 | `BOOKCLERK_MEDIA_ISOLATION` | `required` / `best-effort` / `off` |
 | `BOOKCLERK_MEDIA_WORKER` | Path to `bookclerk-media-worker` |
@@ -98,7 +99,8 @@ retention_days = 7
 # temp_quota_bytes = 2147483648
 
 [jobs.concurrency]
-network = 1
+network = 1          # workers here, and running network jobs cluster-wide
+plugin_instance = 1  # running jobs per required plugin instance, cluster-wide
 ```
 
 See [jobs.md](jobs.md) for the state machine, `409`/`429` admission, and crash
@@ -211,6 +213,10 @@ bookclerk nodes invites revoke <link_id>
 bookclerk nodes revoke <node_id>                # revoke an enrolled host
 ```
 
+Any signed-in user may also revoke a host they own with
+`DELETE /api/config/node-credentials/<node_id>`; the operator or an Owner
+may revoke any host.
+
 The link is `<public_origin>/enroll#bcn1.<link_id>.<secret>[.<spki_pin>]`
 (the pin only in `self_signed` mode, below). The secret is in
 the URL fragment, so proxies and access logs never see it; the database keeps
@@ -240,7 +246,7 @@ mode = "loopback"                # loopback | proxy | acme | self_signed
 | Mode | Allowed |
 | --- | --- |
 | `loopback` (default) | Only connections where both ends are loopback and no forwarding header is present. Loopback is allowed in every mode, including on a wildcard `daemon.listen` (`0.0.0.0` / `[::]`): the check reads each connection's own local address, not the bind address. |
-| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. |
+| `proxy` | Plain HTTP from a `daemon.trusted_proxies` peer that sends exactly one `X-Forwarded-Proto: https`. Requires an https `integrations.public_origin` and at least one trusted proxy. Every connection from a trusted proxy is checked this way, even one with no forwarding headers, so with a same-host proxy (`127.0.0.1` trusted) loopback enrollment goes through the proxy too. |
 | `acme` | The built-in TLS listener on `tls_listen` with a certificate for `integrations.public_origin`'s DNS name, issued over TLS-ALPN-01 (forward port 443 of that name to `tls_listen`). Account and certificate are cached under `$BOOKCLERK_FILES_DIR/acme/` (mode 0700) and renewed automatically. Requires `acme_contact` and an https `public_origin` with a DNS name. |
 | `self_signed` | The built-in TLS listener on `tls_listen` with a P-256 certificate generated once under `$BOOKCLERK_FILES_DIR/node-api/self-signed/` (mode 0700). Its SPKI pin (`spki-pin` there) is appended to every enrollment link, and the host trusts exactly that key; until the daemon has written it, minting an invite fails rather than produce an unpinned link. For a private network without ACME or a proxy. |
 

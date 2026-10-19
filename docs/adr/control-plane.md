@@ -247,7 +247,11 @@ be a distinct host.
 ### Schema compatibility
 
 Library schema behavior is unchanged: unreleased checksum, fail closed on
-mismatch, `SCHEMA_VERSION = 0`. A host heartbeats only when
+mismatch, `SCHEMA_VERSION = 0`. A database newer than the binary (a frozen
+version past its plan, or an unreleased pack with another checksum) is
+refused, never migrated. A start that has DDL to apply does it under the
+`schema.migrate` cluster lease (see *Singleton maintenance and the
+migration lease* below), so concurrent starters produce one migrator. A host heartbeats only when
 `current_schema_state` is the unreleased pack this binary applies. Document
 schema versions are per namespace and start at 1. A document this binary does
 not understand is not applied and is not rewritten.
@@ -662,11 +666,58 @@ section is the record.
   the token; takeover after expiry bumps it. Deployment writes stay
   compare-and-swap, so a holder whose lease lapsed mid-pass can at worst
   add one replica that the next pass removes.
+- **Singleton maintenance and the migration lease (#192).** The lease
+  code moved out of the scheduler into `control_plane::leases`: acquire
+  and renew (compare-and-swap on holder and token), a fencing renew that
+  also requires the lease to be unexpired, release, a list for status, a
+  `LeaseFence` that destructive work checks before each step, and
+  `SingletonDuty` ("one live node runs this every interval"). Cluster
+  cleanup that every daemon used to run on its own now runs under one lease
+  per duty: `maintenance.jobs` (terminal jobs; previously pruned on every
+  job-claim loop), `maintenance.events` (delivery and event retention,
+  stale catalog rows), `maintenance.kv` (expired KV rows), and
+  `maintenance.sessions` (expired operator sessions, OIDC RP states,
+  WebAuthn challenges). Every daemon polls every 60 s; the holder renews on
+  each poll and runs a duty when it takes the lease and hourly after. The
+  lease TTL is 180 s, so a dead holder is replaced within three minutes.
+  Fencing is check-then-act, not transactional (D1 has no interactive
+  transactions); the residual window is one idempotent delete. Expiry uses
+  each node's wall clock. Login, OIDC, and receipt paths still prune
+  opportunistically inline; that is bounded and idempotent.
+  Schema migration runs under `schema.migrate`. A start whose database
+  already matches only reads the state and takes no lease. One that needs
+  DDL (uninitialized, or a frozen step pending) first creates
+  `cluster_leases` (the same `IF NOT EXISTS` statement as in the pack),
+  then takes the lease with a per-attempt holder (`pid<pid>-<nonce>`; the
+  node id does not exist yet at that point), re-reads the state, renews the
+  lease every 40 s, and checks it before every DDL batch. Other starters
+  poll until the schema matches, take over when the migrator's 120 s lease
+  expires, and fail closed after 300 s. The released row keeps the last
+  migrator's holder and token. `GET /api/cluster/status` reports every
+  lease (`cluster.leases`) and the database schema state with whether this
+  binary matches it (`cluster.schema`). There is no drain-then-migrate
+  flow: a starter does not stop other nodes before it migrates, which is
+  safe today only because unreleased schema changes require a new
+  database.
+- **Backups have no periodic duty.** Recovery points are taken by `bookclerk
+  db backup` and automatically before a schema migration, which already
+  runs under the migration lease. No daemon schedules backups, so there is
+  no backup lease; a scheduled backup would be a `SingletonDuty`.
+- **PostgreSQL reconnect.** An ignored test
+  (`postgres_connection_killed_mid_commit_replays_once_after_reconnect`)
+  stalls a configuration write inside `COMMIT` with a deferred constraint
+  trigger, terminates its backend from a second pool, and retries the same
+  operation id on the reconnected pool: the killed commit left nothing, the
+  retry applies once, and a further retry replays the receipt.
 - **Hand-managed versus placed (step 5).** A placed instance refuses
   per-node `deploy`/`undeploy` and the deployment API (409), enrollment
   writes a new node's row `unplaced` for it, and `plugins deploy --manual`
   hands the deployments back unchanged (`placed` → `present`, `unplaced` →
   `absent`). Uninstalling a plugin drops its placements first.
+- **Jobs (after step 5).** Durable jobs record the instances they need and
+  are claimed only by a node that runs them, under counted cluster
+  semaphores built from `cluster_leases` slot rows. See *Job routing and
+  cluster semaphores* below.
 
 ### Resource-aware scheduling and routing
 
@@ -728,6 +779,47 @@ running a plugin. Nodes still only share the database.
   Rejected: stamping a target node on each delivery at dispatch (the
   dispatcher would have to choose, and a dead target needs reassignment
   logic) and forwarding between nodes (they cannot connect).
+
+### Job routing and cluster semaphores
+
+Built 2026-10-15 (#192 Phase 3). Durable jobs were claimed by whichever
+daemon got to the row first, which ran them with its own sources and
+destinations, and the per-process `[jobs.concurrency]` limits added up
+across nodes.
+
+- **Requirements, recorded at admission.** `JobPayload.requires` lists the
+  plugin instance ids the claiming node must run: the pinned instance (when
+  some node deploys it) and, for acquire, every deployed instance of a
+  node-bound output (the first-party `local` destination). No new state:
+  the claim reads `plugin_deployments` (desired `present` or `placed` on
+  this node) and `plugin_deployment_observations` (this node reports the
+  guest `running` or `healthy`), as delivery routing does. A job with no
+  requirements stays claimable anywhere. Rejected: stamping a target node
+  at admission (a dead target would need reassignment, as for deliveries).
+- **Routed claim.** `claim_routed_job` reads ready candidates, filters them
+  host-side, takes the permits, and claims one row with a single CAS on
+  `state = 'pending'` and the lease generation (`claim_job_by_id`). That
+  CAS needs no interactive transaction or job-queue slot lock, so it runs
+  the same on every adapter through SeaORM. The unrouted `claim_next_job`
+  and its guest atomic plan skip any job with requirements. A lost-response
+  replay can leave a claimed row unexecuted; it expires and is reclaimed,
+  which is the fallback the unrouted claim already documented.
+- **Counted semaphores on `cluster_leases`.** A semaphore of limit `N` is
+  `N` slot rows `sem:<name>#<i>` of the existing lease table, each a fenced
+  lease; taking a permit is taking a free or expired slot below the limit.
+  No table was added and the singleton scheduler lease is the `N = 1` case.
+  Job claims take `jobs:<class>` (`[jobs.concurrency].network`, which is now
+  also the cluster-wide count), `plugin-instance:<id>`
+  (`[jobs.concurrency].plugin_instance`, default 1), and
+  `account:<plugin_key>:<account_id>` (1). Permits are renewed with the job
+  heartbeat (a failed renewal is fence loss) and released after
+  finalization; a crashed holder's slot expires and is taken over with a
+  larger token. Counting running `jobs` rows (as `event_deliveries` does
+  for `[events.concurrency]`) was rejected because one job counts against
+  several semaphores and the account a job touches is not a column.
+- **Limits stay in `config.toml`.** `[jobs]` has not moved to a database
+  document, so each node applies its own limits; nodes should agree.
+  Lowering a limit lets held slots above it drain rather than revoking them.
 
 ### Node kinds, ownership, and the Host role
 
@@ -833,7 +925,9 @@ Built in the first H-4 slice:
 - Mint, list, and revoke links (`bookclerk nodes invite --user <id|login>
   [--ttl 24h]`, `bookclerk nodes invites list|revoke`, and
   `POST|GET /api/config/node-invites`, `DELETE …/{id}` for any signed-in
-  user). A link is `https://<public_origin>/enroll#bcn1.<link_id>.<secret>`;
+  user). Revoke an enrolled host with `bookclerk nodes revoke <node_id>` or
+  `DELETE /api/config/node-credentials/{node_id}` (the operator or an Owner
+  for any host, anyone else for their own). A link is `https://<public_origin>/enroll#bcn1.<link_id>.<secret>`;
   the 32-byte secret sits in the fragment, is printed once, and is never
   logged. Links live 24 h by default, 5 minutes to 7 days.
 - Redeem is one canonical batch: the claim `UPDATE` re-checks the hash,
@@ -944,21 +1038,26 @@ Not in this phase, and not claimed as production HA:
 - Moving the rest of `config.toml` (library, jobs, media, plugins,
   diagnostics, discovery, OIDC). `daemon.listen` moving off bootstrap is part
   of that.
-- Job routing and cluster semaphores. Jobs (scan, acquire) carry no host
-  or plugin target: whichever daemon claims one runs it with its own
-  sources and destinations, so a host that cannot reach a store or
-  destination may take the job. Deliveries are routed (above); jobs are
-  not. Do not run two daemons against one database and expect safe
-  active/active acquire. `cluster_leases` exists now (the scheduler uses
-  it) and is the place for further singleton maintenance work.
+- Job routing beyond plugin instances. Jobs now carry the instances they
+  need and take cluster semaphores (*Job routing and cluster semaphores*
+  above), but requirements are fixed at admission and only name instances:
+  a pending job is not re-routed when a deployment moves, an all-accounts
+  scan is not split across the nodes that run each storefront, jobs are not
+  ranked by headroom the way deliveries are, and acquire still writes the
+  claiming node's own destinations rather than mirroring node-local outputs
+  across nodes. `[jobs]` limits are read from each node's `config.toml`.
+- Singleton maintenance and schema migration run under `cluster_leases`
+  (see the implementation notes); other work is not leased.
 - Synchronous calls (HTTP API, portal, CLI) run on the host that receives
   them; only queued deliveries reach the best host.
 - Per-guest measured usage is not sampled. Reservations are jail ceilings,
   so a guest that idles well below its ceiling still occupies it in the
   scheduler's view. Free disk is reported but not placed on.
-- Memory and measured use are read on Linux only. On macOS and Windows a
-  heartbeat carries the CPU count, so those hosts are ranked by CPU alone
-  and not held to a memory budget.
+- Measured use is whole-machine on every platform (Linux `/proc` and the
+  cgroup, macOS Mach host statistics, Windows `GlobalMemoryStatusEx` /
+  `GetSystemTimes`). Only Linux reads a container ceiling (cgroup v2); a
+  daemon inside a Windows Job Object or another platform's resource limit
+  is ranked against the whole machine.
 - Rollouts: activating a version updates every placed node on its next
   wakeup at once; there is no staged or health-gated rollout across
   replicas. Placement does not read health: a replica on a host whose guest
@@ -978,7 +1077,13 @@ Not in this phase, and not claimed as production HA:
   ACME and self-signed TLS listeners are built. Settings has no
   enrollment switch or invite screen yet (CLI and HTTP only).
 - Rolling upgrades and a cluster dashboard beyond the Status page and
-  Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`).
+  Settings → Nodes (Phase 5). Drain exists (`nodes set --drain`), but there
+  is no drain-then-migrate flow: the migration lease serializes migrators,
+  it does not stop older binaries on other nodes from using the database
+  while a frozen step applies. That matters from the first release cut.
+- Scheduled backups. Backups are operator commands plus the automatic
+  pre-migrate recovery point; a scheduled backup would run as a
+  `SingletonDuty` under its own lease.
 - Schema pinning compares package versions, not schema contents: a newer
   package that only renames a key still drops the operator's value for the
   old name. A declared per-key migration in `[[settings]]` is a possible

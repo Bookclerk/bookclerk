@@ -964,6 +964,12 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/node-invites/{id}",
             delete(crate::node_api::delete_node_invite),
         )
+        // The library lets the operator or an Owner revoke any host and
+        // anyone else only the hosts they own.
+        .route(
+            "/api/config/node-credentials/{node_id}",
+            delete(crate::node_api::delete_node_credential),
+        )
         // Any user reads the switch; the handler lets only the operator or
         // an active Owner change it.
         .route(
@@ -3516,19 +3522,21 @@ fn admit_response(kind: &str, admit: AdmitJob) -> Response {
     }
 }
 
-/// Returns HTTP 503 when admission is paused, otherwise 500.
+/// Maps an admission error onto an HTTP response with `ActionResponse`.
+///
+/// A job no node could claim ([`crate::jobs::JobUnroutable`]) is HTTP 409
+/// `unroutable` and logged as a warning; paused admission is HTTP 503
+/// `admission_paused`; anything else is HTTP 500 `internal_error`.
 fn enqueue_error_response(err: anyhow::Error) -> Response {
-    tracing::error!(error = %err, "job enqueue failed");
-    let paused = err.to_string().contains("admission paused");
-    let status = if paused {
-        StatusCode::SERVICE_UNAVAILABLE
+    let (status, error) = if err.downcast_ref::<crate::jobs::JobUnroutable>().is_some() {
+        tracing::warn!(error = %err, "job refused: no node can run it");
+        (StatusCode::CONFLICT, "unroutable")
+    } else if err.to_string().contains("admission paused") {
+        tracing::warn!(error = %err, "job enqueue paused");
+        (StatusCode::SERVICE_UNAVAILABLE, "admission_paused")
     } else {
-        StatusCode::INTERNAL_SERVER_ERROR
-    };
-    let error = if paused {
-        "admission_paused"
-    } else {
-        "internal_error"
+        tracing::error!(error = %err, "job enqueue failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     };
     (
         status,
@@ -5181,6 +5189,61 @@ mod tests {
         InviteLinkError, PluginGrantOverride,
     };
     use bookclerk_config::{Config, ListenAddrs};
+
+    /// An acquire whose `local` outputs share no node is a 409 `unroutable`
+    /// refusal, not a 500; other admission failures keep their codes.
+    #[tokio::test]
+    async fn unroutable_acquire_is_conflict_not_internal_error() {
+        use axum::http::StatusCode;
+        use bookclerk_library::control_plane::{
+            create_plugin_instance, ensure_plugin_deployment, resolve_job_requirements,
+            ConfigActor, DesiredState,
+        };
+        use bookclerk_library::{JobKind, JobPayload, LibraryStore};
+
+        const LOCAL: &str = "platform:bookclerk/bookclerk-plugin-destination-local";
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let operator = ConfigActor::Operator {
+            id: "operator".into(),
+        };
+        for (name, node) in [("", "node-a"), ("second", "node-b")] {
+            let instance = create_plugin_instance(&store, &operator, LOCAL, name)
+                .await
+                .unwrap();
+            ensure_plugin_deployment(
+                &store,
+                &ConfigActor::Bootstrap,
+                &instance.id,
+                node,
+                DesiredState::Present,
+            )
+            .await
+            .unwrap();
+        }
+        let bound = std::collections::BTreeSet::from([LOCAL.to_string()]);
+        let err =
+            resolve_job_requirements(&store, JobKind::Acquire, &JobPayload::default(), &bound)
+                .await
+                .expect_err("no node runs both outputs");
+
+        let response = super::enqueue_error_response(crate::jobs::requirements_error(err));
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "unroutable", "{body}");
+        assert_eq!(body["ok"], false, "{body}");
+
+        let other = super::enqueue_error_response(crate::jobs::requirements_error(
+            bookclerk_library::LibraryError::Invalid("bad row".into()),
+        ));
+        assert_eq!(other.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
 
     #[test]
     fn invite_link_error_classifies_missing_invalid_expired_redeemed() {
