@@ -2,7 +2,9 @@
 
 Bookclerk’s GitHub Actions workflow (`.github/workflows/ci.yml`) uses a
 **dependency-aware planner** so pull requests can skip unrelated work, while
-`merge_group` and pushes to `main` always run the full suite.
+`merge_group` always runs the full suite. A push to `main` (which only
+advances through the merge queue) compiles the full suite to refresh the
+dependency caches and runs no tests.
 
 ## Selective CI
 
@@ -10,16 +12,69 @@ Bookclerk’s GitHub Actions workflow (`.github/workflows/ci.yml`) uses a
 
 | Mode | When | What runs |
 | --- | --- | --- |
-| `full` | `main` push, `merge_group`, or any fail-closed trigger | Every job and check at full scope |
+| `full` | `main` push, `merge_group`, or any fail-closed trigger | Every job and check at full scope (build only on a `main` push, see below) |
 | `shadow` | `SELECTIVE_CI != "1"` | Every job at full scope; the selective prediction is recorded in the plan summary for audit |
 | `selective` | `SELECTIVE_CI == "1"` on a PR | Only the predicted checks, each with its prerequisites |
 
-Full-suite runs on `main` (and `merge_group` once a queue exists) are the
-audit for missed selective coverage: a check that fails there but was skipped
-on the PR is a planner bug. Until the repository is organization-owned and a
-merge queue is required, **`push` to `main` is the full-suite safety net** —
-a planner miss can land before `main` CI catches it, so keep planner and
-workflow changes small and reviewable.
+Full-suite `merge_group` runs are the audit for missed selective coverage: a
+check that fails there but was skipped on the PR is a planner bug, and it
+keeps the PR out of `main`.
+
+### Build-only `main` pushes
+
+`main` only advances through the merge queue, and the queue's run already
+tested that exact commit. The push run resolves with `--build-only`
+(`build_only: true` in the artifact):
+
+- Only the jobs that save caches run: `check`, `test`, `native-gateway` and
+  `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`). The gate
+  expects every other job to be skipped.
+- Builds, Clippy and installs run as usual; `cargo test` and the nextest run
+  become `cargo test … --no-run`; doctests, formatting, scripts, staging and
+  runtime assertions are dropped.
+
+Caches are saved only on `main` (merge-group refs cannot share theirs), so
+this run is what keeps pull-request and queue runs warm.
+
+### Test runner and retries
+
+`rust_test` runs under [cargo-nextest](https://nexte.st/) (installed pinned in
+the `test` job). Tests from every binary share one parallel pool instead of
+`cargo test` running binaries one after another, and each test runs in its own
+process. In a `merge_group` run a failed test is retried once
+(`MERGE_GROUP_TEST_RETRIES`); nextest marks a pass on retry `FLAKY` in its
+summary, and a test that fails twice fails the job. Pull requests never retry,
+so a flaky test still shows up red where it can be fixed. File an issue for
+every `FLAKY` line.
+
+A merge group only needs to know whether it can land, so it fails fast: nextest
+stops at the first test that fails its retry, and the `merge-queue-fail-fast`
+job cancels the rest of the run as soon as any job fails, so `CI Gate` reports
+at once and the queue ejects the group without waiting for the slowest job.
+That job runs no repository code and is the only one with `actions: write`.
+Pull requests run every test and every job (`--no-fail-fast`), so one round
+shows every failure to fix.
+
+Test targets with `harness = false` whose `main` does not answer libtest's
+`--list` protocol would list zero tests under nextest. They are excluded from
+the nextest run and run with `cargo test --test` (`CUSTOM_HARNESS_TESTS`);
+`scripts/tests/test_ci_contract.py` fails when a new one is not listed.
+Locally, `cargo test --workspace` still runs everything; install nextest
+(`cargo install cargo-nextest --locked`) to reproduce `ci-exec.py run
+rust_test`.
+
+### Caches
+
+Rust dependency caches use three shared keys, each saved by one job on
+`main` and restored by the others: `lint` (`check`), `debug` (`test` on
+Linux, `native-gateway` on macOS and Windows; restored by `e2e`,
+`confinement`, `tray`, `postgres` and `windows-cluster`) and `release`
+(`release`, restored by `envelope`). Fewer entries keep the repository under
+the Actions cache limit so jobs stop missing their cache. CI builds dev and
+test profiles with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, which keeps
+file and line in panics while cutting link time and cache size. A failing test prints its
+panic backtrace (`RUST_BACKTRACE=1`); `RUST_LIB_BACKTRACE=0` keeps error
+libraries such as `anyhow` from capturing one for every error they build.
 
 ### Plan → execution contract
 
@@ -182,7 +237,9 @@ when a step matches no test. Name such tests `postgres_*`.
 | Job | Runs when | Checks |
 | --- | --- | --- |
 | `plan` | Always | Planner/executor/contract/guardrail tests, DB isolation + docs lints, `resolve`, `ci-plan` artifact |
-| `fmt / clippy / test` | Any check below is selected | `ui`, `plugin_sdk_abi`, `python_sdk`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free`, `rust_test`, `e2e` — related Rust checks share one compile |
+| `fmt / clippy / docs` | Any check below is selected | `ui`, `plugin_sdk_abi`, `python_sdk`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
+| `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (workspace on the full suite), custom-harness targets, feature test runs, bench/example builds |
+| `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then `bookclerk-plugin-e2e` staged targets |
 | `release build` | A shipped binary (hosts, helpers, platform guests) is compiled-affected | `affected`: `cargo build --release -p <affected shipped>`; `full` (packaging inputs: `bookclerk-dev`, workerd pins, platform manifests; or full suite): `build-app --release --platform` + helper layout assertions |
 | `sandbox + jailed tiers` (3 OS) | sandbox / jail / media / media-worker affected | Clippy + enforcement tests (Windows `--test-threads=1`) |
 | `native-behind-workerd gateway` (3 OS) | A `[native_gateway].packages` member (plugin-host, workerd, plugin-sdk, sandbox, jail, the e2e crate) is in the Cargo-compiled closure, a `[native_gateway].paths` smoke input changed, or the full suite | `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint` on every OS (see below); Windows adds clippy workerd, sdk `http`, host `--lib`, workerd lib tests (inherited `handle:` `SOCKET_PROXY`), and the lifecycle churn test alone before that suite; macOS adds workerd lib tests |
@@ -358,10 +415,12 @@ has fallen behind `main` until it is rebased. Either:
 | Change | Jobs after `plan` | Notes |
 | --- | --- | --- |
 | `docs/**` only | none | `CI Gate` passes with every job skipped |
-| `ui/**` only | `fmt / clippy / test` (UI + UI API docs) | no Rust toolchain checks |
-| `crates/bookclerk-cli/src/**` | check (`-p bookclerk-cli --tests`), release (`bookclerk-cli`) | no postgres, no E2E |
-| `crates/bookclerk-plugin-host/src/**` | check (host + dependents, runtime-smoke E2E), release (hosts), native gateway (3 OS), postgres (`rpc_like` only) | no sandbox matrix |
-| One optional guest (e.g. Libro) | check (guest tests, E2E `libro` only) | other storefronts are neither built nor staged |
-| `packages/plugin-sdk/embed/**` | check (workerd tests, workerd-runtime E2E subset, SDK ABI), release (launcher), native gateway (3 OS) | not the full installation |
+| `README.md`, `AGENTS.md`, other top-level prose, `config/config.example.toml`, `scripts/tests/**` | none | the plan job runs the planner and lint tests on every event |
+| `ui/**` only | `fmt / clippy / docs` (UI + UI API docs) | no Rust toolchain checks |
+| `crates/bookclerk-cli/src/**` | check, test (`-p bookclerk-cli`), release (`bookclerk-cli`) | no postgres, no E2E |
+| `crates/bookclerk-plugin-host/src/**` | check, test (host + dependents), e2e (runtime smoke), release (hosts), native gateway (3 OS), postgres (`rpc_like` only) | no sandbox matrix |
+| One optional guest (e.g. Libro) | check, test (guest tests), e2e (`libro` only) | other storefronts are neither built nor staged |
+| `packages/plugin-sdk/embed/**` | check (SDK ABI), test (workerd tests), e2e (workerd-runtime subset), release (launcher), native gateway (3 OS) | not the full installation |
 
-For `merge_group` / `main`, `--force-full` runs every job and check.
+For `merge_group`, `--force-full` runs every job and check; a `main` push
+adds `--build-only`.
