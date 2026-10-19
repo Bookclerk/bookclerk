@@ -78,7 +78,7 @@ fn resolve_client_ip_key(
 }
 
 /// Whether the peer IP matches a trusted-proxy entry (exact address or CIDR).
-fn peer_is_trusted(peer: IpAddr, trusted_proxies: &[String]) -> bool {
+pub(crate) fn peer_is_trusted(peer: IpAddr, trusted_proxies: &[String]) -> bool {
     trusted_proxies.iter().any(|entry| {
         let entry = entry.trim();
         if entry.is_empty() {
@@ -1232,23 +1232,39 @@ pub async fn require_operator_or_owner_auth(
 pub enum NodeAdminCaller {
     /// Operator token or session, or auth disabled: every node.
     Operator,
-    /// A portal user whose role administers the nodes it owns (Host,
-    /// Administrator, Owner). Sees and edits only those nodes.
+    /// A portal user who owns nodes, or whose role (Host, Administrator,
+    /// Owner) reaches node administration. Sees and edits only owned nodes.
     NodeOwner {
         /// Calling user.
         user_id: i64,
     },
 }
 
-/// True when a session role may administer the nodes its user owns.
-fn role_administers_owned_nodes(role: &str) -> bool {
-    UserRole::parse(role).is_some_and(UserRole::can_administer_owned_nodes)
+/// True when a user may use the node administration routes: their role
+/// always may (Host, Administrator, Owner), or they own at least one node.
+/// A lookup failure fails closed.
+async fn user_administers_nodes(
+    library: &bookclerk_library::LibraryStore,
+    role: &str,
+    user_id: i64,
+) -> bool {
+    if UserRole::parse(role).is_some_and(UserRole::can_administer_owned_nodes) {
+        return true;
+    }
+    matches!(
+        timeout(
+            AUTH_DB_TIMEOUT,
+            bookclerk_library::control_plane::nodes_owned_by(library, user_id),
+        )
+        .await,
+        Ok(Ok(nodes)) if !nodes.is_empty()
+    )
 }
 
 /// Operator token/session **or** a portal user who may administer the nodes
 /// they own. Puts a [`NodeAdminCaller`] in the request extensions; handlers
 /// scope what they read and write by it. Impersonating a user acts as that
-/// user. Members are refused.
+/// user. A Member who owns no node is refused.
 pub async fn require_operator_or_node_owner_auth(
     State(state): State<Arc<AppState>>,
     mut req: Request,
@@ -1263,7 +1279,7 @@ pub async fn require_operator_or_node_owner_auth(
         if let Some(target_id) = op.impersonating_user_id {
             let library = state.library_snapshot().await;
             let (role, _, _, _) = impersonation_caller_identity(&library, target_id).await;
-            if !role_administers_owned_nodes(&role) {
+            if !user_administers_nodes(&library, &role, target_id).await {
                 return Err(StatusCode::FORBIDDEN);
             }
             if let Some(denied) =
@@ -1288,7 +1304,7 @@ pub async fn require_operator_or_node_owner_auth(
         let Some(user_id) = identity.user_id else {
             return Err(StatusCode::FORBIDDEN);
         };
-        if !role_administers_owned_nodes(&role) {
+        if !user_administers_nodes(&library, &role, user_id).await {
             return Err(StatusCode::FORBIDDEN);
         }
         if let Some(denied) =
@@ -1298,6 +1314,68 @@ pub async fn require_operator_or_node_owner_auth(
         }
         req.extensions_mut()
             .insert(NodeAdminCaller::NodeOwner { user_id });
+        return Ok(next.run(req).await);
+    }
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+/// Who is calling a route that acts for a user (host enrollment links).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserCaller {
+    /// Operator token or session, or auth disabled.
+    Operator,
+    /// A signed-in portal user (or the user an operator impersonates). The
+    /// library reads the user's role and status before acting.
+    User {
+        /// Calling user.
+        user_id: i64,
+    },
+}
+
+/// Operator token/session **or** any signed-in portal user with a user
+/// account. Puts a [`UserCaller`] in the request extensions; handlers pass it
+/// to the library, which decides from the stored role what the user may do.
+/// Impersonating a user acts as that user.
+pub async fn require_operator_or_user_auth(
+    State(state): State<Arc<AppState>>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth = state.auth_snapshot().await;
+    if !auth.enabled {
+        req.extensions_mut().insert(UserCaller::Operator);
+        return Ok(next.run(req).await);
+    }
+    if let Some(op) = resolve_operator_session(&state, &auth, req.headers()).await {
+        if let Some(target_id) = op.impersonating_user_id {
+            let library = state.library_snapshot().await;
+            if let Some(denied) =
+                reject_if_enrollment_required(&state, &library, target_id, req.uri().path()).await
+            {
+                return Ok(denied);
+            }
+            req.extensions_mut()
+                .insert(UserCaller::User { user_id: target_id });
+            return Ok(next.run(req).await);
+        }
+        req.extensions_mut().insert(UserCaller::Operator);
+        return Ok(next.run(req).await);
+    }
+    if authorize_operator_bearer_only(&auth, req.headers()) {
+        req.extensions_mut().insert(UserCaller::Operator);
+        return Ok(next.run(req).await);
+    }
+    let library = state.library_snapshot().await;
+    if let Some(identity) = timed_portal_identity_from_headers(&library, req.headers()).await {
+        let Some(user_id) = identity.user_id else {
+            return Err(StatusCode::FORBIDDEN);
+        };
+        if let Some(denied) =
+            reject_if_enrollment_required(&state, &library, user_id, req.uri().path()).await
+        {
+            return Ok(denied);
+        }
+        req.extensions_mut().insert(UserCaller::User { user_id });
         return Ok(next.run(req).await);
     }
     Err(StatusCode::UNAUTHORIZED)

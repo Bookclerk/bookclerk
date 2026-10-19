@@ -358,9 +358,6 @@ interface NodesPanelProps {
   onSessionExpired: () => void;
 }
 
-/** Roles whose owner may administer a node; mirrors `UserRole::can_administer_owned_nodes`. */
-const NODE_OWNER_ROLES = new Set(["host", "administrator", "owner"]);
-
 /**
  * Cluster nodes as their heartbeats report them, with each node's budget
  * and drain switch. The scheduler places plugins by this headroom, and
@@ -400,16 +397,14 @@ export function NodesPanel({ onSessionExpired }: NodesPanelProps) {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  // Only an operator assigns owners. It picks from active users whose role
-  // may administer a node; the API refuses anyone else.
+  // Only an operator assigns owners. Any active user may own a node (trust
+  // still follows the user's role); the API refuses a disabled user.
   const canAssignOwner = capabilities?.can_assign_owner ?? false;
   useEffect(() => {
     if (!canAssignOwner) return;
     listUsers()
       .then((all) =>
-        setUsers(
-          all.filter((user) => user.status === "active" && NODE_OWNER_ROLES.has(user.role)),
-        ),
+        setUsers(all.filter((user) => user.status === "active")),
       )
       .catch(() => setUsers([]));
   }, [canAssignOwner]);
