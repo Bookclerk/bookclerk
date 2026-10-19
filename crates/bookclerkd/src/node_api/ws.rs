@@ -746,32 +746,34 @@ async fn enqueue(outbox: &mpsc::Sender<Message>, message: Message) -> bool {
 /// Drains the send queue into the socket until a close is sent, the queue
 /// closes, or a write fails.
 ///
+/// The queue stays locked while the writer runs. When it ends, or is
+/// aborted, the lock is released and the session takes back what is still
+/// queued.
+///
 /// # Returns
 ///
-/// The messages that never reached the socket: the one whose write failed
-/// and every one still queued. The queue is closed first, so a later
-/// [`enqueue`] fails and its caller gives the frame back itself.
+/// The message whose write failed, if one did.
 async fn writer(
     mut sink: SplitSink<WebSocket, Message>,
-    mut queue: mpsc::Receiver<Message>,
-) -> Vec<Message> {
-    let mut unsent = Vec::new();
+    queue: Arc<AsyncMutex<mpsc::Receiver<Message>>>,
+) -> Option<Message> {
+    let mut queue = queue.lock().await;
+    let mut failed = None;
     while let Some(message) = queue.recv().await {
         let closing = matches!(message, Message::Close(_));
         if sink.send(message.clone()).await.is_err() {
-            unsent.push(message);
+            failed = Some(message);
             break;
         }
         if closing {
             break;
         }
     }
+    // A later [`enqueue`] now fails, and its caller gives the frame back.
     queue.close();
-    while let Ok(message) = queue.try_recv() {
-        unsent.push(message);
-    }
+    drop(queue);
     let _ = sink.close().await;
-    unsent
+    failed
 }
 
 /// The authenticated session: a writer task behind the bounded send queue,
@@ -786,7 +788,8 @@ async fn session(
 ) {
     let (sink, stream) = socket.split();
     let (outbox, queue) = mpsc::channel(SEND_QUEUE_FRAMES);
-    let mut writer = tokio::spawn(writer(sink, queue));
+    let queue = Arc::new(AsyncMutex::new(queue));
+    let mut writer = tokio::spawn(writer(sink, Arc::clone(&queue)));
     if let Some((code, reason)) =
         session_loop(library, stream, &outbox, host, resume, wakes, close).await
     {
@@ -798,15 +801,24 @@ async fn session(
         let _ = tokio::time::timeout(Duration::from_secs(1), outbox.send(close)).await;
     }
     drop(outbox);
-    let unsent =
-        match tokio::time::timeout(Duration::from_secs(CLOSE_FLUSH_SECS), &mut writer).await {
-            Ok(Ok(unsent)) => unsent,
-            Ok(Err(_)) => Vec::new(),
-            Err(_) => {
-                writer.abort();
-                Vec::new()
-            }
-        };
+    let mut unsent = Vec::new();
+    match tokio::time::timeout(Duration::from_secs(CLOSE_FLUSH_SECS), &mut writer).await {
+        Ok(Ok(failed)) => unsent.extend(failed),
+        Ok(Err(_)) => {}
+        Err(_) => {
+            // The socket stopped taking writes. Aborting drops the
+            // writer's lock on the queue; the frame it was writing is lost.
+            writer.abort();
+            let _ = writer.await;
+        }
+    }
+    {
+        let mut queue = queue.lock().await;
+        queue.close();
+        while let Ok(message) = queue.try_recv() {
+            unsent.push(message);
+        }
+    }
     // A `work` answer queued but never written would leave its job held
     // until the lease expires: the host never learned of it, so it cannot
     // resume it.
