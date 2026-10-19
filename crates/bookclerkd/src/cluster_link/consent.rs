@@ -24,7 +24,12 @@
 //! - every [`CONSENT_POLL`] and whenever [`notify_consent_changed`] is
 //!   called (the API's approve and revoke) it re-reads the consent rows, so
 //!   an approval or a revoke from the CLI takes effect without a wake.
-//!   Losing consent cancels the plugin's held jobs and gives them back;
+//!   Losing consent cancels the plugin's held jobs and gives them back. A
+//!   change notified while a refresh runs is not lost (it is a generation
+//!   counter, not a one-shot wake-up), and a refresh re-reads the consent
+//!   rows after its slow steps (fetch, `instance.config`) and before it
+//!   publishes, so a revoke that lands mid-refresh is never overwritten by
+//!   the state the refresh read when it started;
 //! - a refresh that could not finish (the owner unreachable, or a consented
 //!   instance whose archive or `instance.config` failed) is retried with
 //!   backoff ([`RETRY_MIN`] doubling to [`RETRY_MAX`]) until it does, so a
@@ -46,11 +51,11 @@ use bookclerk_library::LibraryStore;
 use bookclerk_node_client::{HostClientHandle, AWAITING_HOST_CONSENT};
 use bookclerk_node_proto::{Body, RemoteDeployment, RemoteVersion};
 use bookclerk_plugin_host::{
-    approve_remote_request, host_artifact, materialize_owner_version,
+    approve_remote_request, host_artifact, is_sha256_hex, materialize_owner_version,
     remote_platform_auto_approval, remote_row_consent_state, PluginGrant, RemoteConsentState,
     RemoteNarrowing,
 };
-use tokio::sync::{watch, Notify};
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 use super::remote_bindings::{RemoteCatalog, RemoteInstanceConfig, RemoteInstanceEntry};
@@ -72,12 +77,23 @@ const REFRESH_WAKES: &[&str] = &[
     "configuration.changed",
 ];
 
-/// Notified when this daemon's API approves or revokes a consent.
-static CONSENT_CHANGED: LazyLock<Notify> = LazyLock::new(Notify::new);
+/// Bumped when this daemon's API approves or revokes a consent.
+///
+/// A `watch` generation rather than a `Notify`: a supervisor that is busy
+/// in a refresh when the change lands still sees it (`changed()` is ready
+/// on its next turn), where `Notify::notify_waiters` would wake only the
+/// tasks already waiting and drop the change for everyone else.
+static CONSENT_GENERATION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::Sender::new(0));
 
 /// Tells every link supervisor in this process to re-read consent now.
 pub fn notify_consent_changed() {
-    CONSENT_CHANGED.notify_waiters();
+    CONSENT_GENERATION.send_modify(|generation| *generation = generation.wrapping_add(1));
+}
+
+/// A receiver of [`notify_consent_changed`], marked as having seen every
+/// change so far.
+fn consent_changes() -> watch::Receiver<u64> {
+    CONSENT_GENERATION.subscribe()
 }
 
 /// How a refresh ended.
@@ -159,6 +175,7 @@ impl LinkSupervisor {
     /// Runs until `shutdown` turns true.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
         let mut connections = self.handle.connections();
+        let mut consent_changes = consent_changes();
         let mut wakes = self.handle.subscribe_wakes();
         let mut poll = tokio::time::interval(CONSENT_POLL);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -196,7 +213,7 @@ impl LinkSupervisor {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
-                () = CONSENT_CHANGED.notified() => {
+                Ok(()) = consent_changes.changed() => {
                     if let Some(outcome) = self.reevaluate().await {
                         stale = backoff.record(outcome, Instant::now());
                     }
@@ -291,8 +308,8 @@ impl LinkSupervisor {
         };
         let mut entries = BTreeMap::new();
         let mut outcome = Refreshed::Settled;
-        for item in items {
-            let (entry, evaluated) = self.evaluate(&item).await;
+        for item in &items {
+            let (entry, evaluated) = self.evaluate(item).await;
             if evaluated == Refreshed::Unfinished {
                 tracing::debug!(
                     cluster_id = self.cluster_id(),
@@ -301,12 +318,57 @@ impl LinkSupervisor {
                 );
                 outcome = Refreshed::Unfinished;
             }
-            self.observe(&item, &entry).await;
             entries.insert(entry.instance_id.clone(), entry);
         }
-        self.catalog.replace(entries);
+        // Each entry's consent was read before its fetch and
+        // `instance.config`; an operator may have revoked (or changed) it
+        // since. Re-read the rows now, right before publishing, so a stale
+        // `Consented` never replaces the revoke `reevaluate` already
+        // published. A revoke after this read bumps the consent generation
+        // and is applied by the loop as soon as this refresh returns.
+        if self.reconcile(&mut entries).await {
+            outcome = Refreshed::Unfinished;
+        }
+        self.catalog.replace(entries.clone());
         self.publish();
+        for item in &items {
+            let Some(entry) = entries.get(&item.instance_id) else {
+                continue;
+            };
+            if !self.observe(item, entry).await {
+                // Retried with the refresh's backoff, so the owner does not
+                // keep a stale or missing observation until an unrelated
+                // wake.
+                outcome = Refreshed::Unfinished;
+            }
+        }
         outcome
+    }
+
+    /// Brings each of `entries` up to the consent rows as they stand now
+    /// ([`reconcile_consent`]). Answers true when anything changed (the
+    /// refresh then counts as unfinished, so a changed grant is fetched
+    /// again and the owner is told the new state).
+    ///
+    /// Fails closed: when the rows cannot be read, every entry is marked
+    /// not ready, so nothing is published as claimable on a stale read.
+    async fn reconcile(&self, entries: &mut BTreeMap<String, RemoteInstanceEntry>) -> bool {
+        match list_remote_plugin_consents(&self.library, Some(self.cluster_id())).await {
+            Ok(rows) => {
+                let fresh: BTreeMap<String, RemoteConsentState> = rows
+                    .iter()
+                    .map(|row| (row.plugin_key.clone(), consent_state(row)))
+                    .collect();
+                reconcile_consent(entries, &fresh)
+            }
+            Err(err) => {
+                tracing::warn!(cluster_id = self.cluster_id(), error = %err, "consent rows unreadable");
+                for entry in entries.values_mut() {
+                    entry.problem = Some("this host's consent rows could not be read".into());
+                }
+                true
+            }
+        }
     }
 
     /// One deployment's catalog entry: its consent, and when consented its
@@ -525,8 +587,9 @@ impl LinkSupervisor {
         }
     }
 
-    /// Reports one deployment's state to the owner.
-    async fn observe(&self, item: &RemoteDeployment, entry: &RemoteInstanceEntry) {
+    /// Reports one deployment's state to the owner; answers whether the
+    /// owner accepted the observation.
+    async fn observe(&self, item: &RemoteDeployment, entry: &RemoteInstanceEntry) -> bool {
         let (status, detail) = if entry.is_ready() {
             ("materialized", String::new())
         } else if let Some(problem) = &entry.problem {
@@ -545,13 +608,51 @@ impl LinkSupervisor {
                 applied_config_revision: entry.config.as_ref().map(|config| config.revision),
             })
             .await;
-        if !matches!(answer, Some(ref frame) if matches!(frame.body, Body::Accepted {})) {
+        let accepted = matches!(answer, Some(ref frame) if matches!(frame.body, Body::Accepted {}));
+        if !accepted {
             tracing::debug!(
                 deployment_id = %item.deployment_id,
                 "owner did not accept the observation"
             );
         }
+        accepted
     }
+}
+
+/// Applies the consent states read now (`fresh`, by plugin key; a key
+/// without a row is [`RemoteConsentState::Pending`]) to `entries` that were
+/// evaluated as consented against an earlier read.
+///
+/// A consented entry whose consent changed since (revoked, or approved
+/// again with another grant) takes the fresh state and drops its
+/// materialized tree and bindings: those were fetched under the old grant
+/// (or none should be held at all), so the entry is not ready until a
+/// refresh fetches them under the new one. An entry that was not evaluated
+/// as consented is left alone: it is not claimable either way, its state
+/// may come from the owner's version rather than the row (no active or
+/// approved version), and a new approval reaches it through
+/// `reevaluate`. Answers true when any entry changed.
+pub(crate) fn reconcile_consent(
+    entries: &mut BTreeMap<String, RemoteInstanceEntry>,
+    fresh: &BTreeMap<String, RemoteConsentState>,
+) -> bool {
+    let mut changed = false;
+    for entry in entries
+        .values_mut()
+        .filter(|entry| matches!(entry.consent, RemoteConsentState::Consented(_)))
+    {
+        let now = fresh
+            .get(&entry.plugin_key)
+            .cloned()
+            .unwrap_or(RemoteConsentState::Pending);
+        if now != entry.consent {
+            entry.consent = now;
+            entry.root = None;
+            entry.config = None;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// True when a row may be approved automatically at all: not approved yet
@@ -590,7 +691,23 @@ pub(crate) fn owner_artifact_allowed(
 }
 
 /// The owner's version as this host's materializer reads it.
+///
+/// Every artifact's archive and payload digests must be canonical SHA-256
+/// ([`is_sha256_hex`]) before anything else reads them: the payload digest
+/// names this host's version-cache directory, so an owner-chosen `..` or
+/// absolute value must never reach a path (the materializer refuses it
+/// too).
+///
+/// # Errors
+///
+/// Returns the problem to report when the settings schema does not parse
+/// or a digest is not 64 lowercase hex digits.
 fn plugin_version(plugin_key: &str, remote: &RemoteVersion) -> Result<PluginVersion, String> {
+    if remote.artifacts.iter().any(|artifact| {
+        !is_sha256_hex(&artifact.archive_sha256) || !is_sha256_hex(&artifact.payload_root_sha256)
+    }) {
+        return Err("the owner's archive digests are not 64 lowercase hex digits".into());
+    }
     let settings = serde_json::from_value(remote.settings.clone())
         .map_err(|_| "the owner's settings schema does not parse".to_string())?;
     Ok(PluginVersion {
@@ -685,6 +802,157 @@ mod tests {
             revoked_at: None,
             updated_at: "2026-10-01T00:00:00Z".into(),
         }
+    }
+
+    /// An owner version whose one artifact has these digests.
+    fn remote_version(archive_sha256: &str, payload_root_sha256: &str) -> RemoteVersion {
+        RemoteVersion {
+            version: "1.0.0".into(),
+            manifest_id: "store".into(),
+            manifest_toml: String::new(),
+            settings: serde_json::to_value(bookclerk_plugin_abi::SettingsSchema::default())
+                .unwrap(),
+            artifacts: vec![bookclerk_node_proto::RemoteArtifact {
+                target: bookclerk_plugin_host::host_bookclerk_target().to_string(),
+                url: "https://registry.example/store.tar.gz".into(),
+                format: "tar.gz".into(),
+                archive_root: ".".into(),
+                archive_sha256: archive_sha256.into(),
+                payload_root_sha256: payload_root_sha256.into(),
+                executable: "guest".into(),
+            }],
+            grant_json: "{}".into(),
+            publisher_verified: false,
+        }
+    }
+
+    /// An owner's digest that is not canonical SHA-256 (a `..` or absolute
+    /// path, uppercase, empty) is refused before it can name a path.
+    #[test]
+    fn an_owner_digest_must_be_canonical_sha256() {
+        let good = "ab".repeat(32);
+        assert!(plugin_version("store", &remote_version(&good, &good)).is_ok());
+        for bad in [
+            "..",
+            "../../etc",
+            "/etc",
+            "",
+            &"AB".repeat(32),
+            &"ab".repeat(33),
+        ] {
+            for version in [remote_version(bad, &good), remote_version(&good, bad)] {
+                let problem = plugin_version("store", &version).unwrap_err();
+                assert!(problem.contains("64 lowercase hex"), "{bad}: {problem}");
+            }
+        }
+    }
+
+    /// A ready entry of `plugin_key` consented with `grant`.
+    fn ready_entry(
+        instance_id: &str,
+        plugin_key: &str,
+        grant: &PluginGrant,
+    ) -> RemoteInstanceEntry {
+        RemoteInstanceEntry {
+            instance_id: instance_id.into(),
+            plugin_key: plugin_key.into(),
+            default_instance: true,
+            consent: RemoteConsentState::Consented(Box::new(grant.clone())),
+            root: Some(PathBuf::from("/versions/store")),
+            config: Some(RemoteInstanceConfig {
+                revision: 1,
+                config: serde_json::json!({}),
+                secrets: None,
+                secrets_withheld: false,
+            }),
+            problem: None,
+        }
+    }
+
+    /// A revoke that lands while a refresh fetches is applied before the
+    /// refresh publishes: the entry it evaluated as consented is not ready,
+    /// so the plugin is not claimable, and an unchanged plugin is kept.
+    #[test]
+    fn a_revoke_during_refresh_is_not_overwritten() {
+        let grant = PluginGrant {
+            plugin_key: "store".into(),
+            plugin_id: "store".into(),
+            ..PluginGrant::empty()
+        };
+        let mut entries: BTreeMap<String, RemoteInstanceEntry> = [
+            ("a".to_string(), ready_entry("a", "store", &grant)),
+            ("b".to_string(), ready_entry("b", "other", &grant)),
+        ]
+        .into();
+        let consented = RemoteConsentState::Consented(Box::new(grant.clone()));
+        let unchanged: BTreeMap<String, RemoteConsentState> = [
+            ("store".to_string(), consented.clone()),
+            ("other".to_string(), consented.clone()),
+        ]
+        .into();
+        assert!(!reconcile_consent(&mut entries, &unchanged));
+        assert!(entries.values().all(RemoteInstanceEntry::is_ready));
+
+        // `store` was revoked (its row reads as pending) mid-refresh.
+        let revoked: BTreeMap<String, RemoteConsentState> = [
+            ("store".to_string(), RemoteConsentState::Pending),
+            ("other".to_string(), consented),
+        ]
+        .into();
+        assert!(reconcile_consent(&mut entries, &revoked));
+        let catalog = RemoteCatalog::default();
+        catalog.replace(entries.clone());
+        assert_eq!(
+            catalog.consented_keys(),
+            BTreeSet::from(["other".to_string()]),
+            "the revoked plugin is not published as claimable"
+        );
+        assert!(entries["a"].config.is_none() && entries["a"].root.is_none());
+
+        // A changed grant is not run with what the old one fetched.
+        let mut entries: BTreeMap<String, RemoteInstanceEntry> =
+            [("a".to_string(), ready_entry("a", "store", &grant))].into();
+        let wider = PluginGrant {
+            network_mode: "outbound".into(),
+            ..grant.clone()
+        };
+        let regranted: BTreeMap<String, RemoteConsentState> = [(
+            "store".to_string(),
+            RemoteConsentState::Consented(Box::new(wider)),
+        )]
+        .into();
+        assert!(reconcile_consent(&mut entries, &regranted));
+        assert!(!entries["a"].is_ready());
+
+        // Only a consented entry is downgraded: one evaluated as pending
+        // (no approved version yet) is not made consented by its row.
+        let mut entries: BTreeMap<String, RemoteInstanceEntry> = [(
+            "a".to_string(),
+            RemoteInstanceEntry {
+                consent: RemoteConsentState::Pending,
+                root: None,
+                config: None,
+                problem: Some("the owner has no active version of this plugin".into()),
+                ..ready_entry("a", "store", &grant)
+            },
+        )]
+        .into();
+        assert!(!reconcile_consent(&mut entries, &unchanged));
+        assert_eq!(entries["a"].consent, RemoteConsentState::Pending);
+    }
+
+    /// A consent change notified while no supervisor waits (one busy in a
+    /// refresh) is still seen on its next turn.
+    #[tokio::test]
+    async fn a_consent_change_notified_mid_refresh_is_not_lost() {
+        // Other tests in this process may notify too; only "seen" matters.
+        let mut changes = consent_changes();
+        notify_consent_changed();
+        assert!(changes.has_changed().unwrap());
+        tokio::time::timeout(Duration::from_secs(1), changes.changed())
+            .await
+            .expect("the change is pending")
+            .unwrap();
     }
 
     #[test]

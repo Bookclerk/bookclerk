@@ -45,10 +45,31 @@ pub fn version_cache_root(files_dir: &Path) -> PathBuf {
     files_dir.join("plugins").join(VERSION_CACHE_DIR)
 }
 
-/// Cached tree of one payload-root digest.
+/// True for a canonical SHA-256 digest: exactly 64 lowercase hex digits.
+///
+/// Every digest that names a path (the version cache) or is compared
+/// against a computed digest is held to this form, so an owner- or
+/// registry-supplied value such as `..`, an absolute path, or one with a
+/// separator can never select a directory outside the cache.
 #[must_use]
-pub fn version_cache_path(files_dir: &Path, payload_root_sha256: &str) -> PathBuf {
-    version_cache_root(files_dir).join(payload_root_sha256)
+pub fn is_sha256_hex(raw: &str) -> bool {
+    raw.len() == 64 && raw.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Cached tree of one payload-root digest.
+///
+/// # Errors
+///
+/// Returns an error when `payload_root_sha256` is not a canonical SHA-256
+/// ([`is_sha256_hex`]): it is joined onto the cache root, so anything else
+/// could name a directory outside it.
+pub fn version_cache_path(files_dir: &Path, payload_root_sha256: &str) -> Result<PathBuf> {
+    if !is_sha256_hex(payload_root_sha256) {
+        return Err(PluginError::message(
+            "a version payload digest is not 64 lowercase hex digits",
+        ));
+    }
+    Ok(version_cache_root(files_dir).join(payload_root_sha256))
 }
 
 /// When installing moves the active pointer.
@@ -401,8 +422,10 @@ pub fn host_artifact(version: &PluginVersion) -> Result<&PluginArtifact> {
 ///
 /// # Errors
 ///
-/// Returns an error when the version has no artifact for this host, the
-/// artifact cannot be fetched, or a digest does not match.
+/// Returns an error when the version has no artifact for this host, a
+/// digest is not 64 lowercase hex digits ([`is_sha256_hex`]; checked before
+/// any path is formed or a cached tree reused), the artifact cannot be
+/// fetched, or a digest does not match.
 pub async fn materialize_version(
     store: &LibraryStore,
     files_dir: &Path,
@@ -458,7 +481,15 @@ async fn materialize_from(
     origin: ArtifactOrigin,
 ) -> Result<PathBuf> {
     let artifact = host_artifact(version)?.clone();
-    let cache = version_cache_path(files_dir, &artifact.payload_root_sha256);
+    // Both digests are checked before either names a path or the cached
+    // tree is reused: a reused tree is trusted by its digest alone.
+    if !is_sha256_hex(&artifact.archive_sha256) {
+        return Err(PluginError::message(format!(
+            "version {} {} archive digest is not 64 lowercase hex digits",
+            version.plugin_key, version.version
+        )));
+    }
+    let cache = version_cache_path(files_dir, &artifact.payload_root_sha256)?;
     if cache.join("plugin.toml").is_file() {
         return Ok(cache);
     }
