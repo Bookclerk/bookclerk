@@ -42,6 +42,9 @@ const PAGE_SIZE = 40;
 /** Most titles one request may ask for (the daemon's own cap). */
 const MAX_RELOAD = 500;
 
+/** What a title load does; see `loadBooks` in {@link LibraryPage}. */
+type LoadKind = "replace" | "reload" | "append";
+
 const selectClassName =
   "rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
 
@@ -76,14 +79,22 @@ export function LibraryPage({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // One title load runs at a time; a request made meanwhile waits in
+  // `pendingRef` and runs when it finishes (see `loadBooks`).
   const loadingRef = useRef(false);
-  // Bumped by every load that replaces the list, so an older answer (an
-  // append, or a reload for a previous search) never lands on top of it.
+  const pendingRef = useRef<"replace" | "reload" | null>(null);
+  // Bumped by every load that replaces the list, so an answer for a
+  // previous search or filter never lands on top of it.
   const generationRef = useRef(0);
+  // Titles in `books`, kept in step with every write so the next load's
+  // offset is right before React re-renders.
   const loadedRef = useRef(0);
-  useEffect(() => {
-    loadedRef.current = books.length;
-  }, [books.length]);
+  const loadBooksRef = useRef<(kind: LoadKind) => Promise<void>>(
+    async () => {},
+  );
+  // Bumped after each successful load so the scroll sentinel checks again
+  // whether it is still in view (the list may not have grown).
+  const [sentinelCheck, setSentinelCheck] = useState(0);
 
   const serverStatus =
     filterKind === "status" && filterValue ? filterValue : "all";
@@ -93,59 +104,86 @@ export function LibraryPage({
     return () => window.clearTimeout(t);
   }, [q]);
 
-  const loadPage = useCallback(
-    async (offset: number, append: boolean) => {
-      if (loadingRef.current) return;
+  /**
+   * Loads titles for the current search and status filter.
+   *
+   * `replace` reads the first page (a new search or filter, or an explicit
+   * refresh) and supersedes a load in flight. `reload` re-reads the titles
+   * already shown (at least one page), keeping how far the list was
+   * scrolled; it waits for a load in flight instead of discarding it.
+   * `append` reads the next page and is dropped while another load runs
+   * (the sentinel asks again afterwards).
+   */
+  const loadBooks = useCallback(
+    async (kind: LoadKind) => {
+      if (loadingRef.current) {
+        if (kind === "replace") {
+          ++generationRef.current;
+          pendingRef.current = "replace";
+        } else if (kind === "reload" && pendingRef.current === null) {
+          pendingRef.current = "reload";
+        }
+        return;
+      }
       loadingRef.current = true;
-      const generation = append ? generationRef.current : ++generationRef.current;
-      if (append) setLoadingMore(true);
+      const generation =
+        kind === "append" ? generationRef.current : ++generationRef.current;
+      const offset = kind === "append" ? loadedRef.current : 0;
+      const limit =
+        kind === "reload"
+          ? Math.min(
+              MAX_RELOAD,
+              Math.max(1, Math.ceil(loadedRef.current / PAGE_SIZE)) *
+                PAGE_SIZE,
+            )
+          : PAGE_SIZE;
+      if (kind === "append") setLoadingMore(true);
+      let succeeded = false;
       try {
         const booksRes = await fetchBooks({
           q: debouncedQ || undefined,
           status: serverStatus,
-          limit: PAGE_SIZE,
+          limit,
           offset,
         });
         if (generation !== generationRef.current) return;
-        setBooks((prev) =>
-          append ? [...prev, ...booksRes.books] : booksRes.books,
-        );
+        if (kind === "append") {
+          loadedRef.current += booksRes.books.length;
+          setBooks((prev) => [...prev, ...booksRes.books]);
+        } else {
+          loadedRef.current = booksRes.books.length;
+          setBooks(booksRes.books);
+        }
         setTotal(booksRes.total);
         setError(null);
+        succeeded = true;
       } catch (err) {
         if (generation !== generationRef.current) return;
         setError(err instanceof Error ? err.message : "Failed to load library");
       } finally {
         loadingRef.current = false;
         setLoadingMore(false);
+        const next = pendingRef.current;
+        pendingRef.current = null;
+        if (next) {
+          // The latest search and filter (a replace may have been asked
+          // for by a newer render).
+          void loadBooksRef.current(next);
+        } else if (succeeded) {
+          // Not after a failure, which would retry in a loop.
+          setSentinelCheck((n) => n + 1);
+        }
       }
     },
     [debouncedQ, serverStatus],
   );
+  // Declared before the effects that load, so a queued load runs the
+  // version for the current search and filter.
+  useEffect(() => {
+    loadBooksRef.current = loadBooks;
+  }, [loadBooks]);
 
-  /**
-   * Re-reads the titles already shown (at least one page) for the current
-   * search and status filter, keeping how far the list was scrolled.
-   */
-  const reloadBooks = useCallback(async () => {
-    const generation = ++generationRef.current;
-    const pages = Math.max(1, Math.ceil(loadedRef.current / PAGE_SIZE));
-    try {
-      const booksRes = await fetchBooks({
-        q: debouncedQ || undefined,
-        status: serverStatus,
-        limit: Math.min(MAX_RELOAD, pages * PAGE_SIZE),
-        offset: 0,
-      });
-      if (generation !== generationRef.current) return;
-      setBooks(booksRes.books);
-      setTotal(booksRes.total);
-      setError(null);
-    } catch (err) {
-      if (generation !== generationRef.current) return;
-      setError(err instanceof Error ? err.message : "Failed to load library");
-    }
-  }, [debouncedQ, serverStatus]);
+  const reloadBooks = useCallback(() => loadBooks("reload"), [loadBooks]);
 
   const refreshMeta = useCallback(async () => {
     if (!canAcquire) return;
@@ -164,8 +202,8 @@ export function LibraryPage({
   }, [canAcquire]);
 
   const refresh = useCallback(async () => {
-    await Promise.all([loadPage(0, false), refreshMeta()]);
-  }, [loadPage, refreshMeta]);
+    await Promise.all([loadBooks("replace"), refreshMeta()]);
+  }, [loadBooks, refreshMeta]);
 
   useEffect(() => {
     void refresh();
@@ -190,14 +228,16 @@ export function LibraryPage({
       (entries) => {
         const hit = entries.some((e) => e.isIntersecting);
         if (!hit) return;
-        if (books.length >= total) return;
-        void loadPage(books.length, true);
+        if (loadedRef.current >= total) return;
+        void loadBooks("append");
       },
       { root: null, rootMargin: "200px", threshold: 0 },
     );
+    // A new observer reports whether the sentinel is in view right away,
+    // so re-creating it after each load keeps pagination going.
     obs.observe(el);
     return () => obs.disconnect();
-  }, [books.length, total, loadPage]);
+  }, [books.length, total, loadBooks, sentinelCheck]);
 
   const filterValueOptions = useMemo(
     () => filterValuesForKind(books, filterKind),
