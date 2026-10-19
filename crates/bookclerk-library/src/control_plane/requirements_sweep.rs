@@ -40,6 +40,7 @@
 //! The daemon runs the sweep under the [`REQUIREMENTS_SWEEP_LEASE`] cluster
 //! lease so one node sweeps at a time.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -113,6 +114,7 @@ pub async fn sweep_job_requirements(
     now: DateTime<Utc>,
 ) -> Result<RequirementsSweepReport> {
     let mut report = RequirementsSweepReport::default();
+    let mut resolved = ResolvedCache::new();
     let now_ms = now.timestamp_millis();
     let grace_ms = i64::try_from(grace.as_millis()).unwrap_or(i64::MAX);
     let mut after: Option<String> = None;
@@ -131,6 +133,7 @@ pub async fn sweep_job_requirements(
                 node_bound_plugin_keys,
                 now_ms,
                 grace_ms,
+                &mut resolved,
                 &mut report,
             )
             .await?;
@@ -152,6 +155,13 @@ fn sweepable(job: &JobRecord) -> bool {
             || job.payload.requires_unsettled_since_ms.is_some())
 }
 
+/// Desired requirement sets and their routability, resolved once per pass.
+///
+/// Both depend only on the job kind, its pinned instance and the pass's
+/// node-bound key set (fixed for the pass), so every unpinned acquire shares
+/// one entry instead of re-reading the instance and deployment tables.
+type ResolvedCache = BTreeMap<(&'static str, Option<String>), (Vec<String>, bool)>;
+
 /// Re-resolves one pending job and writes, holds, or fails it.
 async fn sweep_one(
     store: &LibraryStore,
@@ -159,11 +169,19 @@ async fn sweep_one(
     keys: &BTreeSet<String>,
     now_ms: i64,
     grace_ms: i64,
+    resolved: &mut ResolvedCache,
     report: &mut RequirementsSweepReport,
 ) -> Result<()> {
     let current = &job.payload.requires;
-    let desired = desired_requirements(store, job.kind, &job.payload, keys).await?;
-    let routable = requirements_routable(store, &desired).await?;
+    let cache_key = (job.kind.as_str(), job.payload.plugin_instance_id.clone());
+    let (desired, routable) = if let Some(hit) = resolved.get(&cache_key) {
+        hit.clone()
+    } else {
+        let desired = desired_requirements(store, job.kind, &job.payload, keys).await?;
+        let routable = requirements_routable(store, &desired).await?;
+        resolved.insert(cache_key, (desired.clone(), routable));
+        (desired, routable)
+    };
     let drops = current.iter().any(|id| !desired.contains(id));
     let since = job.payload.requires_unsettled_since_ms;
 

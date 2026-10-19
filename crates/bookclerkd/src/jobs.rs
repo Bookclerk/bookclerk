@@ -110,7 +110,10 @@ async fn admit(state: &AppState, mut spec: EnqueueJobSpec) -> anyhow::Result<Adm
     let library = state.library_snapshot().await;
     if spec.payload.requires.is_empty() {
         let bound = if spec.kind == JobKind::Acquire {
-            node_bound_output_keys(state, &library).await?
+            // Discovered keys plus instance keys, like the sweep: a node
+            // without the `local` plugin installed must not admit an
+            // acquire as claimable everywhere.
+            sweep_node_bound_output_keys(state, &library).await?
         } else {
             std::collections::BTreeSet::new()
         };
@@ -206,9 +209,12 @@ async fn local_output_keys_from_instances(
         .collect())
 }
 
-/// Node-bound output keys for the cluster-wide requirements sweep.
+/// Node-bound output keys for acquire admission and the cluster-wide
+/// requirements sweep.
 ///
-/// The sweep runs on whichever node holds its lease, and it drops recorded
+/// Admission and the sweep must agree, or an acquire admitted on a node
+/// without the `local` plugin would be claimable by any node until the next
+/// sweep. The sweep runs on whichever node holds its lease, and it drops recorded
 /// requirements that its keys no longer cover, so a sweeping node that
 /// lacks the `local` plugin, or whose discovery failed, must not read as
 /// "no node-bound outputs". The result is this node's discovered keys
