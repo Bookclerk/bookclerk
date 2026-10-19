@@ -1615,6 +1615,7 @@ async fn run_job<R: HostJobRunner>(
                 host_job,
                 HandedSecrets::new(entries),
                 Arc::clone(&cancel),
+                Arc::clone(&lost),
                 Arc::clone(&finished),
                 Arc::clone(&shared),
             );

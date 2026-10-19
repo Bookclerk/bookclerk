@@ -3073,6 +3073,60 @@ mod results_and_uploads {
         );
         assert!(files_under(owner_out.path()).is_empty());
     }
+
+    /// A title's pipeline scratch is its own, inside the job dir the host
+    /// removes when a job ends or is dropped, never the host-wide cache.
+    #[test]
+    fn a_titles_pipeline_scratch_sits_in_the_job_dir() {
+        use super::super::host_jobs::{title_cache_dir, work_path};
+
+        let job_dir = work_path(Path::new("/files/cluster-work"), "job-1").unwrap();
+        let outbox = work_path(&job_dir, "t1").unwrap();
+        let cache = title_cache_dir(&outbox);
+        assert!(cache.starts_with(&job_dir), "{cache:?}");
+        assert_ne!(cache, outbox);
+        assert_ne!(cache, outbox.with_extension("library"));
+        assert_ne!(cache, title_cache_dir(&work_path(&job_dir, "t2").unwrap()));
+    }
+
+    /// Each copy to this host's own destination is recorded as it is
+    /// written, and an uncommitted title's copies are removed only while
+    /// the fence is held: once it is lost, a replacement run may own them.
+    #[tokio::test]
+    async fn local_copies_are_removed_only_under_a_held_fence() {
+        use super::super::host_jobs::{copy_to_local_destinations, remove_local_copies};
+
+        let host_local = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let guests = StubGuests {
+            local: Some(host_local.path().to_path_buf()),
+            ..StubGuests::default()
+        };
+        let outbox = work.path().join("t1");
+        let key = "Author/Title/Title.m4b".to_string();
+        let source = destination_outbox(&outbox, 0).join(&key);
+        tokio::fs::create_dir_all(source.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&source, b"audio").await.unwrap();
+        let acquired = AcquiredTitle {
+            primary_key: key.clone(),
+            pdf_key: None,
+            keys: vec![vec![key.clone()]],
+        };
+        let copied = Mutex::new(Vec::new());
+        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+            .await
+            .unwrap();
+        let copies = copied.into_inner().unwrap();
+        assert_eq!(copies, vec![(0, key.clone())]);
+        let copy = host_local.path().join(&key);
+
+        remove_local_copies(&guests, "t1", &copies, true).await;
+        assert!(copy.is_file(), "a lost fence leaves the copy");
+        remove_local_copies(&guests, "t1", &copies, false).await;
+        assert!(!copy.exists(), "a held fence removes it");
+    }
 }
 
 /// A database swap stops the client of the previous store's link and

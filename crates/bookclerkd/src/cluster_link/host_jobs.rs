@@ -293,14 +293,23 @@ impl HostGuests for GuestHost {
         _cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<AcquiredTitle> {
         // The pipeline has no cancel input; the transport drops this call
-        // (and with it the guest) once the job is cancelled, and the
-        // title's scratch sits under the job dir it removes.
+        // (and with it the guest) once the job is cancelled, and all of the
+        // title's scratch (its library, and the pipeline's download and
+        // packaging dirs) sits under the job dir it removes.
         let source = self.open_source(bindings).await?;
         let cfg = self.state.config.read().await.clone();
         let scratch_dir = outbox.with_extension("library");
         tokio::fs::create_dir_all(&scratch_dir).await?;
         let scratch = scratch_library(&cfg, &scratch_dir).await?;
-        let result = acquire_into(&scratch.store, &cfg, &source, title, outbox).await;
+        let result = acquire_into(
+            &scratch.store,
+            &cfg,
+            &source,
+            title,
+            outbox,
+            &title_cache_dir(outbox),
+        )
+        .await;
         drop(scratch);
         let _ = tokio::fs::remove_dir_all(&scratch_dir).await;
         result
@@ -404,14 +413,26 @@ pub fn acquire_request(
     }
 }
 
+/// Where the acquire pipeline downloads and packages a title fetched into
+/// `outbox`: beside its scratch library, inside the job dir, so a dropped
+/// acquire (a cancel, a lost fence) leaves nothing once the job dir is
+/// removed, and no other run (this host's own jobs, or a retry of the
+/// title) shares it. Only this daemon touches it; the guest fetches into
+/// its own plugin `tmp`.
+#[must_use]
+pub fn title_cache_dir(outbox: &Path) -> PathBuf {
+    outbox.with_extension("cache")
+}
+
 /// Runs the acquire pipeline for `title` against `scratch`, writing only
-/// to `outbox`.
+/// to `outbox`, with its scratch under `cache_dir`.
 async fn acquire_into(
     scratch: &LibraryStore,
     cfg: &bookclerk_config::Config,
     source: &bookclerk_plugin_host::ExternalSource,
     title: &HostTitle,
     outbox: &Path,
+    cache_dir: &Path,
 ) -> anyhow::Result<AcquiredTitle> {
     let book = &title.book;
     scratch
@@ -439,7 +460,10 @@ async fn acquire_into(
         primary: primary.kind,
         multi_destination: cfg.output.multi_destination,
     };
-    let request = acquire_request(cfg, book, &primary.options);
+    // The owner names keys from the same request; the scratch dir does not
+    // enter a key.
+    let mut request = acquire_request(cfg, book, &primary.options);
+    request.cache_dir = cache_dir.to_path_buf();
     let result =
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
             .await?;
@@ -725,11 +749,13 @@ async fn acquire_titles<G: HostGuests>(
             if uploaded.is_err() {
                 // The owner never committed the title (its grant, a file,
                 // or the commit failed, or the job was cancelled), so this
-                // host keeps no copy of it either.
-                let keys = std::mem::take(&mut *copied.lock().unwrap_or_else(|e| e.into_inner()));
-                remove_local_copies(guests, &title.book.uuid, &keys).await;
+                // host keeps no copy of it either, unless the fence is
+                // lost: a replacement run may own those keys by now.
+                let copies = std::mem::take(&mut *copied.lock().unwrap_or_else(|e| e.into_inner()));
+                remove_local_copies(guests, &title.book.uuid, &copies, host.is_lost()).await;
             }
             let _ = tokio::fs::remove_dir_all(&outbox).await;
+            let _ = tokio::fs::remove_dir_all(title_cache_dir(&outbox)).await;
             match uploaded {
                 Ok(()) => acquired += 1,
                 Err(err) if ctx.is_cancelled() => return Err(err),
@@ -889,9 +915,15 @@ pub async fn upload_manifest(
     Ok(files)
 }
 
+/// One file this run wrote to one of this host's own destinations: the
+/// destination's index in [`HostGuests::local_destinations`] and the key.
+pub type LocalCopy = (usize, String);
+
 /// Copies one title's files (the primary destination's keys) to every one
-/// of this host's own destinations. Any failed copy fails the title: the
-/// copies already written for it are removed (best effort).
+/// of this host's own destinations. Any failed copy fails the title. Each
+/// copy is put in `copied` as soon as it is written, so the caller removes
+/// exactly what this run wrote ([`remove_local_copies`]) whether this
+/// fails or is dropped mid-copy.
 ///
 /// # Errors
 ///
@@ -901,6 +933,7 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
     book_uuid: &str,
     outbox: &Path,
     acquired: &AcquiredTitle,
+    copied: &std::sync::Mutex<Vec<LocalCopy>>,
 ) -> anyhow::Result<()> {
     let local = guests
         .local_destinations()
@@ -908,40 +941,47 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
         .context("this host's own destinations")?;
     // This host's own copy follows the owner's primary destination naming.
     let primary = destination_outbox(outbox, 0);
-    let mut written: Vec<(&dyn StorageBackend, &str)> = Vec::new();
-    let mut failure = None;
-    'copy: for key in acquired.keys.first().into_iter().flatten() {
-        for destination in &local {
+    for key in acquired.keys.first().into_iter().flatten() {
+        for (index, destination) in local.iter().enumerate() {
             let meta = ObjectMeta {
                 content_type: content_type(key),
                 ..ObjectMeta::default()
             };
-            match destination.put_file(key, &primary.join(key), meta).await {
-                Ok(_) => written.push((destination.as_ref(), key.as_str())),
-                Err(err) => {
-                    tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
-                    failure = Some(anyhow::anyhow!(
-                        "this host's own destination did not take {key:?}: {err}"
-                    ));
-                    break 'copy;
-                }
+            if let Err(err) = destination.put_file(key, &primary.join(key), meta).await {
+                tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
+                anyhow::bail!("this host's own destination did not take {key:?}: {err}");
             }
+            copied
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((index, key.clone()));
         }
     }
-    let Some(failure) = failure else {
-        return Ok(());
-    };
-    for (destination, key) in written {
-        let _ = destination.delete(key).await;
-    }
-    Err(failure)
+    Ok(())
 }
 
-/// Deletes `keys` (one title's files) from every one of this host's own
-/// destinations, best effort: a title the owner did not commit keeps no
-/// copy here.
-pub async fn remove_local_copies<G: HostGuests>(guests: &G, book_uuid: &str, keys: &[String]) {
-    if keys.is_empty() {
+/// Deletes `copies` (the files one run wrote for a title) from this host's
+/// own destinations, best effort: a title the owner did not commit keeps
+/// no copy here. Skipped when `fence_lost`: the owner may have handed the
+/// job to a replacement run, here or elsewhere, that writes the same keys,
+/// and a host-side copy carries no writer identity to tell the two apart,
+/// so a stale run's cleanup could delete the replacement's file. The
+/// stale copy is left for the replacement to overwrite.
+pub async fn remove_local_copies<G: HostGuests>(
+    guests: &G,
+    book_uuid: &str,
+    copies: &[LocalCopy],
+    fence_lost: bool,
+) {
+    if copies.is_empty() {
+        return;
+    }
+    if fence_lost {
+        tracing::warn!(
+            book_uuid,
+            files = copies.len(),
+            "the job's fence is lost; leaving an uncommitted title's copies on this host's own destinations to the run that holds it now"
+        );
         return;
     }
     let local = match guests.local_destinations().await {
@@ -951,21 +991,22 @@ pub async fn remove_local_copies<G: HostGuests>(guests: &G, book_uuid: &str, key
             return;
         }
     };
-    for destination in &local {
-        for key in keys {
-            if let Err(err) = destination.delete(key).await {
-                tracing::warn!(book_uuid, %key, error = %err, "could not remove an uncommitted title's copy from this host's own destination");
-            }
+    for (index, key) in copies {
+        let Some(destination) = local.get(*index) else {
+            continue;
+        };
+        if let Err(err) = destination.delete(key).await {
+            tracing::warn!(book_uuid, %key, error = %err, "could not remove an uncommitted title's copy from this host's own destination");
         }
     }
 }
 
 /// Copies one title's files to this host's own destinations (H-2), then
 /// streams them to the owner and commits the title. Nothing is uploaded
-/// unless every one of this host's destinations got the title. Once the
-/// copies are written, their keys are put in `copied`, so the caller can
-/// remove them when the owner does not commit the title
-/// ([`remove_local_copies`]), whether this fails or is dropped.
+/// unless every one of this host's destinations got the title. Each copy
+/// is put in `copied` as it is written, so the caller can remove them when
+/// the owner does not commit the title ([`remove_local_copies`]), whether
+/// this fails or is dropped.
 ///
 /// # Errors
 ///
@@ -977,13 +1018,11 @@ async fn upload_title<G: HostGuests>(
     title: &HostTitle,
     outbox: &Path,
     acquired: &AcquiredTitle,
-    copied: &std::sync::Mutex<Vec<String>>,
+    copied: &std::sync::Mutex<Vec<LocalCopy>>,
 ) -> anyhow::Result<()> {
     let book_uuid = title.book.uuid.as_str();
     let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
-    copy_to_local_destinations(guests, book_uuid, outbox, acquired).await?;
-    *copied.lock().unwrap_or_else(|e| e.into_inner()) =
-        acquired.keys.first().cloned().unwrap_or_default();
+    copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied).await?;
     let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
     let upload = with_retries(|| {
         host.grant_upload(
