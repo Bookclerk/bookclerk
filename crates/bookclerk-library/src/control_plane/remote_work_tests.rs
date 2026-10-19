@@ -896,6 +896,132 @@ async fn a_released_claim_is_given_back_unspent() {
     assert!(again.job.lease_generation > fence);
 }
 
+/// A claim whose plugin keys cannot be read is given back unspent, with
+/// its permits, rather than left `running` until its lease expires.
+#[tokio::test]
+async fn a_claim_whose_plugin_keys_cannot_be_read_is_given_back() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    // Only a privileged owner's Host may take a job that requires an
+    // instance, the one input of the plugin-key lookup that the claim
+    // itself never reads.
+    w.store
+        .set_user_role(w.riley, UserRole::Administrator)
+        .await
+        .unwrap();
+    let actor = ConfigActor::Operator { id: "test".into() };
+    let url = put_artifact_blob(&w.store, b"archive bytes").await.unwrap();
+    let archive = url.strip_prefix("blob:sha256:").unwrap().to_string();
+    add_plugin_version(
+        &w.store,
+        &actor,
+        PluginVersion {
+            plugin_key: PLUGIN.into(),
+            version: "1.0.0".into(),
+            manifest_id: "store".into(),
+            manifest_toml: String::new(),
+            settings: Default::default(),
+            artifacts: vec![PluginArtifact {
+                target: "any".into(),
+                url,
+                format: "tar.gz".into(),
+                archive_root: ".".into(),
+                archive_sha256: archive,
+                payload_root_sha256: "ab".repeat(32),
+                executable: "guest".into(),
+            }],
+            publisher_verified: false,
+            grant_json: String::new(),
+            coordinate: String::new(),
+            installed_at: String::new(),
+            installed_by: String::new(),
+        },
+    )
+    .await
+    .unwrap();
+    activate_version(&w.store, &actor, PLUGIN, "1.0.0", HOST)
+        .await
+        .unwrap();
+    let instance = create_plugin_instance(&w.store, &actor, PLUGIN, "")
+        .await
+        .unwrap();
+    let deployment =
+        ensure_plugin_deployment(&w.store, &actor, &instance.id, HOST, DesiredState::Present)
+            .await
+            .unwrap();
+    upsert_observation(
+        &w.store,
+        &DeploymentObservation {
+            deployment_id: deployment.deployment_id.clone(),
+            node_id: HOST.into(),
+            incarnation: "inc".into(),
+            status: DeploymentStatus::Running,
+            detail: String::new(),
+            applied_config_revision: None,
+            observed_at: chrono::Utc::now().to_rfc3339(),
+        },
+    )
+    .await
+    .unwrap();
+    let job_id = match w
+        .store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Scan,
+            payload: JobPayload {
+                account: Some("riley-acct".into()),
+                requires: vec![instance.id.as_str().to_string()],
+                ..Default::default()
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 256,
+            run_after: None,
+        })
+        .await
+        .unwrap()
+    {
+        EnqueueOutcome::Created { id } => id,
+        other => panic!("expected a new job: {other:?}"),
+    };
+    // The instance row no longer decodes (a value that is not UTF-8 text),
+    // so reading the job's plugin keys fails after the claim was taken.
+    let corrupt = format!(
+        "UPDATE plugin_instances SET display_name = X'FF' WHERE plugin_instance_id = '{}'",
+        instance.id.as_str()
+    );
+    w.store.db().execute_unprepared(&corrupt).await.unwrap();
+
+    claim_remote_job(&w.store, HOST, JobResourceClass::Network, SETTINGS, None)
+        .await
+        .expect_err("the plugin-key lookup fails");
+    let back = w.store.get_job(&job_id).await.unwrap().unwrap();
+    assert_eq!(back.state, crate::models::JobState::Pending, "given back");
+    assert_eq!(back.attempt_count, 0, "no attempt is spent");
+    assert!(
+        live_permits(&w.store, &class_semaphore(JobResourceClass::Network), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the permits are given back"
+    );
+    assert!(
+        live_permits(&w.store, &instance_semaphore(instance.id.as_str()), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the instance permit is given back"
+    );
+
+    let repair = format!(
+        "UPDATE plugin_instances SET display_name = '' WHERE plugin_instance_id = '{}'",
+        instance.id.as_str()
+    );
+    w.store.db().execute_unprepared(&repair).await.unwrap();
+    let again = claim(&w.store).await.expect("claimable again at once");
+    assert_eq!(again.job.id, job_id);
+    assert_eq!(again.plugin_keys, vec![PLUGIN.to_string()]);
+}
+
 /// Runs host batches on an open connection, as a guest that has no
 /// interactive transactions (D1) does, first applying `before` once: a
 /// write another node committed between the write-back's checks and its
