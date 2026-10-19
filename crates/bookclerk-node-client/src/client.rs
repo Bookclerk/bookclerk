@@ -1087,8 +1087,13 @@ async fn read_loop(
                         }
                         let waiting = lock(&conn.pending).remove(&frame.id);
                         match waiting {
+                            // A request that timed out as its answer came
+                            // in dropped its receiver: the answer is then
+                            // unsolicited (a late `work` is handed back).
                             Some(answer) => {
-                                let _ = answer.send(frame);
+                                if let Err(frame) = answer.send(frame) {
+                                    unsolicited(shared, conn, frame);
+                                }
                             }
                             None => unsolicited(shared, conn, frame),
                         }
@@ -1332,9 +1337,10 @@ async fn run_job<R: HostJobRunner>(
     {
         let mut held = lock(&shared.held);
         if shared.abandoned.load(Ordering::SeqCst) {
-            // The client stopped between the claim and here.
-            lost.store(true, Ordering::SeqCst);
-            cancel.store(true, Ordering::SeqCst);
+            // The client stopped between the claim and here: the job is
+            // never started, and its lease runs out on the owner.
+            tracing::warn!(%job_id, fence, "the client stopped before the job started; dropping it");
+            return;
         }
         held.insert(
             job_id.clone(),
@@ -1373,6 +1379,12 @@ async fn run_job<R: HostJobRunner>(
     // throw away finished work.
     let mut renewer = None;
     let result = match opened {
+        // Abandoned (shutdown, revocation) since it was held: never start
+        // the runner under a fence whose result is discarded.
+        _ if lost.load(Ordering::SeqCst) => Err(HostJobError::new(
+            "cancelled",
+            "the client stopped before the job started",
+        )),
         Err(_) => {
             tracing::warn!(%job_id, fence, "job secrets do not open with this node's box key");
             Err(HostJobError::new(
