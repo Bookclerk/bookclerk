@@ -47,7 +47,8 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{JobKind, JobPayload, LibraryStore};
 use bookclerk_node_client::{
-    ClientExit, ClientTiming, HostClient, HostClientConfig, HostJobCtx, HostJobError, HostJobRunner,
+    ClientExit, ClientTiming, HostClient, HostClientConfig, HostJobCtx, HostJobError,
+    HostJobRunner, MAX_LEASE,
 };
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -105,7 +106,10 @@ impl<T: JobTransport + 'static> HostJobRunner for TransportRunner<T> {
             JobCommand::from_parts(kind, payload).map_err(|err| invalid(&err.to_string()))?;
         // Fail closed: no consented, fetched instance, no run.
         let bindings = Arc::new(host_job_bindings(&self.catalog, &ctx)?);
-        let lease = chrono::Duration::seconds(i64::try_from(ctx.job.lease_secs).unwrap_or(60));
+        // The owner's grant is capped as the client caps it, so an extreme
+        // `lease_secs` cannot overflow the duration or `now + lease`.
+        let lease_secs = ctx.job.lease_secs.min(MAX_LEASE.as_secs());
+        let lease = chrono::Duration::seconds(i64::try_from(lease_secs).unwrap_or(60));
         let exec = JobExecCtx {
             fence: remote_job_fence(&ctx.job.node_id, &ctx.job.job.id, ctx.job.fence),
             cancel: ctx.cancel_flag(),

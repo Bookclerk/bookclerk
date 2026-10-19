@@ -678,8 +678,8 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
         Body::Resumed {
             renewed: vec![held.clone()],
             lost: Vec::new(),
-
             unchecked: Vec::new(),
+            lease_secs: Some(1),
         }
     );
 
@@ -698,8 +698,8 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
         Body::Resumed {
             renewed: Vec::new(),
             lost: vec![held.clone()],
-
             unchecked: Vec::new(),
+            lease_secs: None,
         }
     );
     let complete = request(
@@ -1032,6 +1032,7 @@ async fn a_failed_check_on_resume_is_not_a_lost_fence() {
             renewed: Vec::new(),
             lost: Vec::new(),
             unchecked: vec![held.clone()],
+            lease_secs: None,
         }
     );
     store
@@ -1046,6 +1047,7 @@ async fn a_failed_check_on_resume_is_not_a_lost_fence() {
             renewed: vec![held],
             lost: Vec::new(),
             unchecked: Vec::new(),
+            lease_secs: Some(host.settings.lease_secs),
         }
     );
 }

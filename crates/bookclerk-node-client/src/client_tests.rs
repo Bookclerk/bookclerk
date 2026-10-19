@@ -535,3 +535,64 @@ async fn renewals_continue_while_a_report_waits() {
     .await;
     assert!(handle.held_fences().is_empty());
 }
+
+/// A resume renews a held job for the lease the owner names, not the
+/// job's original grant: an owner whose lease got shorter while the host
+/// was away, and that then leaves renewals unanswered, gets the job
+/// cancelled once that shorter lease runs out.
+#[tokio::test]
+async fn a_resume_counts_the_lease_the_owner_names() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runner = UntilCancelled::default();
+    let (handle, _stop, _exit) =
+        start_with(listener.local_addr().unwrap().port(), 1, runner.clone());
+    let mut socket = accept(&listener).await;
+
+    // Grant a one-hour lease, then drop the connection.
+    let mut granted = false;
+    read_for(
+        &mut socket,
+        Duration::from_millis(500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                Some(work("job-1", 3, 3600))
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    assert!(wait_for(&runner.started, Duration::from_secs(1)).await);
+    drop(socket);
+
+    // The host resumes; the owner renews the fence for one second only
+    // and then leaves every renewal unanswered.
+    let mut socket = accept(&listener).await;
+    send_frame(
+        &mut socket,
+        "resumed",
+        Body::Resumed {
+            renewed: vec![HeldFence {
+                kind: ITEM_JOB.into(),
+                id: "job-1".into(),
+                fence: 3,
+            }],
+            lost: Vec::new(),
+            unchecked: Vec::new(),
+            lease_secs: Some(1),
+        },
+    )
+    .await;
+    read_for(&mut socket, Duration::from_secs(3), |frame| {
+        matches!(frame.body, Body::Heartbeat { .. }).then_some(Body::Accepted {})
+    })
+    .await;
+    assert!(
+        runner.cancelled.load(Ordering::SeqCst),
+        "the job ran past the lease its resume named"
+    );
+    assert!(handle.held_fences().is_empty());
+}
