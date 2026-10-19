@@ -39,6 +39,7 @@ fn enrolled() -> tempfile::TempDir {
     files_dir
 }
 
+/// Opens the files directory's `library.db` with its minted master key.
 async fn open_store(files: &Path) -> LibraryStore {
     bookclerk_library::configure_master_key(files).expect("load the minted master key");
     let db = bookclerk_plugin_database_sqlite::open(&files.join("library.db"))
@@ -97,6 +98,7 @@ async fn seed(store: &LibraryStore) {
     .expect("plugin request");
 }
 
+/// Asserts that the command succeeded and parses its stdout as JSON.
 fn json_out(output: &std::process::Output) -> Value {
     assert!(output.status.success(), "{}", stderr(output));
     serde_json::from_str(&stdout(output))
@@ -126,6 +128,9 @@ fn join_with_stdin(files: &Path, input: &str) -> std::process::Output {
     child.wait_with_output().expect("wait for bookclerk")
 }
 
+/// `list` shows the link without key material, `approve` checks the
+/// reviewed request and narrows the grant, `revoke` clears it, and `leave`
+/// marks the link left and deletes its keys.
 #[tokio::test]
 async fn list_approve_revoke_and_leave() {
     let files_dir = enrolled();
@@ -328,6 +333,8 @@ async fn leave_defaults_to_the_only_active_link() {
     );
 }
 
+/// `join` refuses a link on argv, empty stdin and a non-link, and never
+/// prints the secret.
 #[tokio::test]
 async fn join_takes_the_link_only_from_stdin_and_refuses_a_non_link() {
     let files_dir = enrolled();
