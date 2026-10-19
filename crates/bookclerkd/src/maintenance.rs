@@ -258,7 +258,10 @@ mod tests {
         let db_path = shared.path().join("library.db");
         let (store, state_a) = state_on(&db_path, files_a.path()).await;
         let (_, state_b) = state_on(&db_path, files_b.path()).await;
-        let ttl = Duration::from_millis(300);
+        // Each pass must finish well inside the TTL, or a lease lapses mid
+        // test and the other node legitimately takes it; slow CI runners
+        // need seconds, not milliseconds, here.
+        let ttl = Duration::from_secs(3);
         let hour = Duration::from_secs(3600);
         let mut a = Maintenance::new("node-a", ttl, hour);
         let mut b = Maintenance::new("node-b", ttl, hour);
@@ -275,7 +278,7 @@ mod tests {
 
         // Node A stops ticking; once its leases expire node B takes every
         // duty with a larger token and runs it at once.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(ttl + Duration::from_millis(500)).await;
         assert_eq!(b.pass(&state_b).await, Duty::ALL.to_vec());
         assert!(a.pass(&state_a).await.is_empty());
         for duty in Duty::ALL {
