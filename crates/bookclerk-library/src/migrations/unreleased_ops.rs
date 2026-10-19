@@ -1142,4 +1142,21 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
     ),
+    // Every file key a title's acquire or host upload wrote, per output
+    // destination, so an upload is never granted another title's file in a
+    // folder titles share. `writer` is the host upload id that claimed the
+    // key last, or `acquire` for an acquire run on the node itself.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS title_files (
+        destination TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        book_uuid TEXT NOT NULL,
+        writer TEXT NOT NULL,
+        written_at TEXT NOT NULL,
+        PRIMARY KEY (destination, storage_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_title_files_book ON title_files(book_uuid)",
+    ),
 ];

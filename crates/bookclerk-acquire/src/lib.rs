@@ -14,11 +14,12 @@ mod match_storage;
 mod naming;
 mod pipeline;
 mod reconcile;
+mod record;
 mod split;
 
 pub use convert::{convert_book, ConvertRequest, ConvertSummary};
 mod storage_scan;
-pub use destinations::{AcquireDestination, AcquireDestinations};
+pub use destinations::{destination_id, AcquireDestination, AcquireDestinations};
 pub use error::{AcquireError, Result};
 pub use match_storage::{
     match_storage_to_library, match_storage_using_index, MatchStorageOptions, MatchStorageSummary,

@@ -1366,7 +1366,10 @@ staging on the owner).
   client turns a result that comes back after the cancel into a failure
   (only the owner's own completion, by the closing commit, stands).
 - **Scan rows.** A batch is accepted only for the job's source plugin,
-  never for a destination plugin the job also requires.
+  never for a destination plugin the job also requires. The fence and the
+  node's trust (with its owner's accounts) are confirmed again before each
+  row is written, so a lease lost or trust withdrawn mid-batch stops the
+  rows not yet written.
 - **Key scope.** The owner binds every key of an upload to the granted
   title. For each destination it computes the title's folder from its own
   row and that destination's naming options, the way a local acquire
@@ -1376,8 +1379,15 @@ staging on the owner).
   another title already has (its recorded audio or PDF key, or a sidecar
   of that audio) is refused too (`key_out_of_scope`,
   `key_of_another_book`). The Host's keys never decide where a title goes.
-  Inside a folder titles share, another title's chapter or part files are
-  not recorded, so they are not protected by name.
+  Every file a title writes is recorded per destination in `title_files`:
+  an acquire on a node records each key (audio, chapter or part files,
+  sidecars, PDF) just before writing it, and a grant claims every key of
+  its manifest for the title. A key recorded for another library title on
+  that destination is refused (`key_of_another_book`), so a folder several
+  titles share (a template without the title, podcast episodes in the
+  parent's folder, a flat layout) never lets one title overwrite another's
+  files. The claim is one conditional write per key, so of two uploads of
+  different titles racing for one key only one is granted.
 - **Host paths.** The Host uses the owner's job and title ids as work
   directory names only when each is one plain segment (ASCII letters,
   digits, `-`, `_`). Any other id fails the job before anything is
@@ -1386,19 +1396,35 @@ staging on the owner).
   output destination deployed on the Host (H-2) took its copy. A failed
   copy fails the title (copies already written for it are removed), so
   the job fails rather than succeeding with a destination short a title.
+  A title whose upload then fails (the grant, a file, the commit, or a
+  cancel) has its copies removed from the Host's destinations too.
 - **Owner-decided success.** A title's commit marks it acquired and never
   completes the job. Only the closing upload (no title, no files) may ask
   to finish, and the owner completes the job only when no title in the
   job's scope is left with unacquired audio (`titles_remaining`
   otherwise). The Host's `finish` flag is a request, not proof.
+  `acquire.plan` hands out exactly those titles: one whose audio is
+  acquired but whose companion PDF is missing is left to an acquire on a
+  node holding the library, since a Host would fetch and upload the audio
+  again and a missing PDF is a soft failure that never keeps a job open.
+  The commit's gate also carries the node's trust (an owner node, or an
+  active owning user who is privileged or still linked to the title's
+  account), so a user disabled or an account unlinked after the preflight
+  commits nothing.
 - **Abort deletes.** Files go straight to the destinations, so an abort
   rolls back by deleting. An upload aborted after some files arrived (its
   fence lost before a later file or the commit, the destinations changed,
   the title re-sent, or the job finished, was released, or lost its fence
   without it)
-  has every received copy deleted by the receiving owner node. A file that
-  finished streaming just as its upload was aborted is deleted at once. An
-  upload received by another owner node is left to that node and logged.
+  has every received copy deleted by the receiving owner node, and so has
+  an upload left open when the closing commit completes the job. A failed
+  or released run's uploads are deleted before the job ends and its
+  permits are given back. A copy is deleted only while `title_files` still
+  names that upload as the key's latest writer, so a cleanup that runs
+  late (after a lost fence) leaves alone a file a later upload or acquire
+  wrote. A file that finished streaming just as its upload was aborted is
+  deleted at once. An upload received by another owner node is left to
+  that node and logged.
 - **Token lifetime.** The upload token is accepted for an hour past its
   latest extension. The grant, each accepted file, and each renewal of the
   job's lease extend it. Nothing extends it after the fence is lost, and a

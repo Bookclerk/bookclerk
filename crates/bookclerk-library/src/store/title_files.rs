@@ -1,0 +1,161 @@
+//! Every file key a title wrote, per output destination (`title_files`).
+//!
+//! Library rows record only a title's primary audio and PDF keys, but an
+//! acquire also writes chapter or part files and sidecars, and a naming
+//! template may put several titles in one folder. This table records each
+//! of those keys against the title that wrote it, so a host upload can be
+//! refused a key another title holds on that destination, and an aborted
+//! upload's copy is deleted only while the key is still that upload's.
+//!
+//! An acquire run on this node records each key just before it writes the
+//! file ([`LibraryStore::record_title_file`]; the file is the title's from
+//! then on, whichever title had it before). A host upload claims every key
+//! of its manifest when it is granted ([`LibraryStore::claim_title_file`]),
+//! and only keys no other library title holds.
+
+use sea_orm::sea_query::{OnConflict, Query};
+use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter};
+
+use super::{now_str, LibraryStore};
+use crate::entities::{books, title_files};
+use crate::error::{LibraryError, Result};
+
+/// The `writer` of a key an acquire run on this node wrote.
+pub const ACQUIRE_WRITER: &str = "acquire";
+
+/// Who holds a recorded file key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleFile {
+    /// Library id of the title the file belongs to.
+    pub book_uuid: String,
+    /// The host upload id that claimed the key last, or [`ACQUIRE_WRITER`].
+    pub writer: String,
+}
+
+impl LibraryStore {
+    /// Records that the title `book_uuid` writes `key` on `destination`
+    /// (an acquire run on this node, just before the write).
+    ///
+    /// The record is replaced unconditionally: the file is this title's
+    /// once written, whichever title held the key before.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    pub async fn record_title_file(
+        &self,
+        destination: &str,
+        key: &str,
+        book_uuid: &str,
+    ) -> Result<()> {
+        title_files::Entity::insert(title_files::ActiveModel {
+            destination: Set(destination.to_string()),
+            storage_key: Set(key.to_string()),
+            book_uuid: Set(book_uuid.to_string()),
+            writer: Set(ACQUIRE_WRITER.to_string()),
+            written_at: Set(now_str()),
+        })
+        .on_conflict(
+            OnConflict::columns([
+                title_files::Column::Destination,
+                title_files::Column::StorageKey,
+            ])
+            .update_columns([
+                title_files::Column::BookUuid,
+                title_files::Column::Writer,
+                title_files::Column::WrittenAt,
+            ])
+            .to_owned(),
+        )
+        .exec_without_returning(self.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// Claims `key` on `destination` for the title `book_uuid`, with
+    /// `writer` (a host upload id) as its latest writer.
+    ///
+    /// The claim succeeds when the key is unrecorded, already the title's,
+    /// or recorded for a title no longer in the library; answers false,
+    /// changing nothing, when another library title holds it. Each claim is
+    /// one conditional write, so of two uploads of different titles racing
+    /// for one key only one wins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a write fails.
+    pub async fn claim_title_file(
+        &self,
+        destination: &str,
+        key: &str,
+        book_uuid: &str,
+        writer: &str,
+    ) -> Result<bool> {
+        let now = now_str();
+        title_files::Entity::insert(title_files::ActiveModel {
+            destination: Set(destination.to_string()),
+            storage_key: Set(key.to_string()),
+            book_uuid: Set(book_uuid.to_string()),
+            writer: Set(writer.to_string()),
+            written_at: Set(now.clone()),
+        })
+        .on_conflict(
+            OnConflict::columns([
+                title_files::Column::Destination,
+                title_files::Column::StorageKey,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .exec_without_returning(self.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+        let library_titles = Query::select()
+            .column(books::Column::Uuid)
+            .from(books::Entity)
+            .to_owned();
+        let claimed = title_files::Entity::update_many()
+            .col_expr(
+                title_files::Column::BookUuid,
+                sea_orm::sea_query::Expr::value(book_uuid),
+            )
+            .col_expr(
+                title_files::Column::Writer,
+                sea_orm::sea_query::Expr::value(writer),
+            )
+            .col_expr(
+                title_files::Column::WrittenAt,
+                sea_orm::sea_query::Expr::value(now),
+            )
+            .filter(title_files::Column::Destination.eq(destination))
+            .filter(title_files::Column::StorageKey.eq(key))
+            .filter(
+                Condition::any()
+                    .add(title_files::Column::BookUuid.eq(book_uuid))
+                    .add(title_files::Column::BookUuid.not_in_subquery(library_titles)),
+            )
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(claimed.rows_affected == 1)
+    }
+
+    /// Who holds `key` on `destination`; `None` when it is unrecorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn title_file(&self, destination: &str, key: &str) -> Result<Option<TitleFile>> {
+        Ok(
+            title_files::Entity::find_by_id((destination.to_string(), key.to_string()))
+                .one(self.db())
+                .await
+                .map_err(LibraryError::Orm)?
+                .map(|row| TitleFile {
+                    book_uuid: row.book_uuid,
+                    writer: row.writer,
+                }),
+        )
+    }
+}

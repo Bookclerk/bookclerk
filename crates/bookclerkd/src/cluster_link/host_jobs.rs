@@ -29,7 +29,9 @@
 //!   listing its key on every destination, then `commit`), which writes
 //!   them straight to its destinations. A title is uploaded only once every
 //!   one of this host's own destinations has it; a failed copy fails the
-//!   title. The job completes with its closing upload's commit, never with
+//!   title, and so does any failure of its upload after the copies were
+//!   written (the grant, a file, the commit, or a cancel), which removes
+//!   those copies again. The job completes with its closing upload's commit, never with
 //!   `complete`, and the owner accepts that only once every title of the
 //!   job is acquired. A host may stage; the owner never does.
 //!
@@ -712,13 +714,21 @@ async fn acquire_titles<G: HostGuests>(
             // Both the guest's acquire and the title's upload stop once the
             // job is cancelled; a dropped upload's files are discarded by
             // the owner (its stream breaks, or its upload is aborted).
+            let copied = std::sync::Mutex::new(Vec::new());
             let uploaded = until_cancelled(&ctx.cancel, async {
                 let done = guests
                     .acquire(bindings, &title, &outbox, Arc::clone(&ctx.cancel))
                     .await?;
-                upload_title(guests, host, &title, &outbox, &done).await
+                upload_title(guests, host, &title, &outbox, &done, &copied).await
             })
             .await;
+            if uploaded.is_err() {
+                // The owner never committed the title (its grant, a file,
+                // or the commit failed, or the job was cancelled), so this
+                // host keeps no copy of it either.
+                let keys = std::mem::take(&mut *copied.lock().unwrap_or_else(|e| e.into_inner()));
+                remove_local_copies(guests, &title.book.uuid, &keys).await;
+            }
             let _ = tokio::fs::remove_dir_all(&outbox).await;
             match uploaded {
                 Ok(()) => acquired += 1,
@@ -927,19 +937,53 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
     Err(failure)
 }
 
+/// Deletes `keys` (one title's files) from every one of this host's own
+/// destinations, best effort: a title the owner did not commit keeps no
+/// copy here.
+pub async fn remove_local_copies<G: HostGuests>(guests: &G, book_uuid: &str, keys: &[String]) {
+    if keys.is_empty() {
+        return;
+    }
+    let local = match guests.local_destinations().await {
+        Ok(local) => local,
+        Err(err) => {
+            tracing::warn!(book_uuid, error = %err, "could not open this host's own destinations to remove an uncommitted title");
+            return;
+        }
+    };
+    for destination in &local {
+        for key in keys {
+            if let Err(err) = destination.delete(key).await {
+                tracing::warn!(book_uuid, %key, error = %err, "could not remove an uncommitted title's copy from this host's own destination");
+            }
+        }
+    }
+}
+
 /// Copies one title's files to this host's own destinations (H-2), then
 /// streams them to the owner and commits the title. Nothing is uploaded
-/// unless every one of this host's destinations got the title.
+/// unless every one of this host's destinations got the title. Once the
+/// copies are written, their keys are put in `copied`, so the caller can
+/// remove them when the owner does not commit the title
+/// ([`remove_local_copies`]), whether this fails or is dropped.
+///
+/// # Errors
+///
+/// Returns an error when the manifest, a local copy, the grant, a file or
+/// the commit fails.
 async fn upload_title<G: HostGuests>(
     guests: &G,
     host: &HostJobCtx,
     title: &HostTitle,
     outbox: &Path,
     acquired: &AcquiredTitle,
+    copied: &std::sync::Mutex<Vec<String>>,
 ) -> anyhow::Result<()> {
     let book_uuid = title.book.uuid.as_str();
     let manifest = upload_manifest(&title.destinations, outbox, acquired).await?;
     copy_to_local_destinations(guests, book_uuid, outbox, acquired).await?;
+    *copied.lock().unwrap_or_else(|e| e.into_inner()) =
+        acquired.keys.first().cloned().unwrap_or_default();
     let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
     let upload = with_retries(|| {
         host.grant_upload(

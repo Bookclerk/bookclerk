@@ -38,9 +38,13 @@
 //!
 //! An upload aborted after some of its files arrived (its fence lost, its
 //! commit refused for a lost fence, the destinations changed, a re-sent
-//! title superseding it, or the job finished without it) has every copy
-//! this node received deleted again ([`discard_received`]); a file that
-//! finished streaming just as its upload was aborted is deleted at once.
+//! title superseding it, or the job finished without it, its closing
+//! commit included) has every copy this node received deleted again
+//! ([`discard_received`]); a file that finished streaming just as its
+//! upload was aborted is deleted at once. A copy is deleted only while its
+//! key is still recorded as that upload's (`title_files`): a later upload
+//! of the title or an acquire that wrote the key since keeps its file,
+//! however late the stale cleanup runs.
 //! Files go straight to the destinations, so deletion is the rollback. An
 //! upload received by another owner node is that node's to clean: this
 //! node only logs it.
@@ -65,8 +69,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bookclerk_library::control_plane::{
     abort_job_uploads, abort_upload, authorize_upload, commit_upload, load_or_create_node_identity,
-    record_upload_file, upload_fence_live, JobClaimLimits, UploadCommit, UploadFinish,
-    UploadSession,
+    record_upload_file, upload_fence_live, upload_owns_key, JobClaimLimits, UploadCommit,
+    UploadFinish, UploadSession,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{UploadAnswer, UploadCommitRequest, UPLOAD_AUTH_SCHEME};
@@ -105,11 +109,7 @@ pub(crate) struct OwnerDestination {
 /// The id of the destination of `kind`: its lowercase kind name (a node
 /// deploys at most one destination per kind).
 pub(crate) fn destination_id(kind: bookclerk_config::OutputBackendKind) -> String {
-    match kind {
-        bookclerk_config::OutputBackendKind::Local => "local",
-        bookclerk_config::OutputBackendKind::S3 => "s3",
-    }
-    .to_string()
+    bookclerk_acquire::destination_id(kind).to_string()
 }
 
 #[cfg(test)]
@@ -264,9 +264,42 @@ fn this_node(state_files: &std::path::Path) -> Option<String> {
         .map(|identity| identity.node_id)
 }
 
+/// Deletes `key` from `destination` for the aborted `session`, but only
+/// while the key is still that upload's own ([`upload_owns_key`]): a later
+/// upload of the title, an acquire on this node, or another title may have
+/// written it since (a stale cleanup running after the job's permits were
+/// given back), and that file is left alone. Best effort; a failure is
+/// logged, and an unreadable record keeps the file.
+async fn discard_copy(
+    library: &LibraryStore,
+    session: &UploadSession,
+    destination: &OwnerDestination,
+    key: &str,
+) {
+    match upload_owns_key(library, session, &destination.id, key).await {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::info!(upload_id = %session.upload_id, destination = %destination.id, "an aborted upload's file was written again since; left in place");
+            return;
+        }
+        Err(err) => {
+            tracing::warn!(upload_id = %session.upload_id, destination = %destination.id, error = %err, "could not check who wrote an aborted upload's file; left in place");
+            return;
+        }
+    }
+    if let Err(err) = destination.backend.delete(key).await {
+        tracing::warn!(upload_id = %session.upload_id, destination = %destination.id, error = %err, "could not delete an aborted upload's file");
+    }
+}
+
 /// Deletes the copies of declared file `index` of `session` from
-/// `destinations` (best effort; a failure is logged).
-async fn discard_file(destinations: &[OwnerDestination], session: &UploadSession, index: usize) {
+/// `destinations` that are still the upload's own ([`discard_copy`]).
+async fn discard_file(
+    library: &LibraryStore,
+    destinations: &[OwnerDestination],
+    session: &UploadSession,
+    index: usize,
+) {
     let Some(file) = session.files.get(index) else {
         return;
     };
@@ -274,16 +307,19 @@ async fn discard_file(destinations: &[OwnerDestination], session: &UploadSession
         let Some(destination) = destinations.iter().find(|d| d.id == copy.destination) else {
             continue;
         };
-        if let Err(err) = destination.backend.delete(&copy.key).await {
-            tracing::warn!(upload_id = %session.upload_id, index, destination = %copy.destination, error = %err, "could not delete an aborted upload's file");
-        }
+        discard_copy(library, session, destination, &copy.key).await;
     }
 }
 
 /// Deletes every copy an aborted upload had received from this node's
-/// destinations, so an abort leaves no partial title behind. An upload
+/// destinations, so an abort leaves no partial title behind; a copy whose
+/// key was written again since is left alone ([`discard_copy`]). An upload
 /// another owner node received is left to that node (logged).
-pub(crate) async fn discard_received(state: &AppState, session: &UploadSession) {
+pub(crate) async fn discard_received(
+    state: &AppState,
+    library: &LibraryStore,
+    session: &UploadSession,
+) {
     if session.received.is_empty() {
         return;
     }
@@ -305,7 +341,7 @@ pub(crate) async fn discard_received(state: &AppState, session: &UploadSession) 
         }
     };
     for index in &session.received {
-        discard_file(&destinations, session, *index).await;
+        discard_file(library, &destinations, session, *index).await;
     }
     tracing::info!(
         upload_id = %session.upload_id,
@@ -318,7 +354,7 @@ pub(crate) async fn discard_received(state: &AppState, session: &UploadSession) 
 /// Aborts `upload_id` and deletes what it had received.
 async fn abort_and_discard(state: &AppState, library: &LibraryStore, upload_id: &str) {
     match abort_upload(library, upload_id).await {
-        Ok(Some(session)) => discard_received(state, &session).await,
+        Ok(Some(session)) => discard_received(state, library, &session).await,
         Ok(None) => {}
         Err(err) => {
             tracing::warn!(upload_id, error = %err, "could not abort an upload");
@@ -339,7 +375,7 @@ pub(crate) async fn discard_job_uploads(
     match abort_job_uploads(library, node_id, job_id, generation).await {
         Ok(sessions) => {
             for session in &sessions {
-                discard_received(state, session).await;
+                discard_received(state, library, session).await;
             }
         }
         Err(err) => {
@@ -566,9 +602,10 @@ async fn tee(
     match failure {
         None => Ok(()),
         Some(failure) => {
-            // A destination that already finished keeps no partial title.
+            // A destination that already finished keeps no partial title,
+            // unless the key was claimed again meanwhile.
             for (destination, key) in written {
-                let _ = destination.backend.delete(&key).await;
+                discard_copy(library, session, &destination, &key).await;
             }
             Err(failure)
         }
@@ -654,7 +691,7 @@ pub async fn put_file(
                 tracing::warn!(upload_id = %session.upload_id, index, "the upload was aborted while a file streamed; deleting it");
                 match owner_destinations(&state).await {
                     Ok(destinations) if destination_ids(&destinations) == ids => {
-                        discard_file(&destinations, &session, index).await;
+                        discard_file(&library, &destinations, &session, index).await;
                     }
                     _ => {
                         tracing::warn!(upload_id = %session.upload_id, index, "could not reopen this node's destinations to delete an aborted file")
@@ -726,6 +763,19 @@ pub async fn post_commit(
     });
     match commit_upload(&library, &session.upload_id, finish, limits).await {
         Ok(UploadCommit::Committed { job_completed }) => {
+            if job_completed {
+                // The job is finished: an upload of it still open (a title
+                // re-sent but never committed) can no longer commit, so it
+                // is aborted and what it received is deleted.
+                discard_job_uploads(
+                    &state,
+                    &library,
+                    &session.node_id,
+                    &session.job_id,
+                    session.generation,
+                )
+                .await;
+            }
             answer(StatusCode::OK, "committed", None, job_completed)
         }
         Ok(UploadCommit::Lost) => {

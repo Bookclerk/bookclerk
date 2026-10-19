@@ -429,7 +429,7 @@ backups are never auto-pruned; automatic pre-migrate recovery points keep
 the last five, then reachability GC deletes unreferenced objects.
 
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. Tables include
-`accounts`, `books`, `ignored_titles`, `saved_filters`, `users`,
+`accounts`, `books`, `title_files`, `ignored_titles`, `saved_filters`, `users`,
 `portal_identities`, `claim_tickets`, `portal_sessions`, `operator_sessions`,
 `account_links`, `works`, `work_editions`, `listening_progress`,
 `title_requests`, `title_request_sources`, `embeddings`, `user_preferences`,
