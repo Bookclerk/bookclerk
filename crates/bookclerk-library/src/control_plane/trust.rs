@@ -153,24 +153,44 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
     match trust {
         NodeTrust::All => Ok(true),
         NodeTrust::Nothing => Ok(false),
-        NodeTrust::OwnedBy(user_id) => {
-            if !matches!(job.kind, JobKind::Scan | JobKind::Acquire)
-                || job.payload.plugin_instance_id.is_some()
-                || !job.payload.requires.is_empty()
-            {
-                return Ok(false);
-            }
-            let Some(account) = job.payload.account.as_deref() else {
-                return Ok(false);
-            };
-            let touched = accounts_named(store, account, None).await?;
-            if touched.is_empty() {
-                return Ok(false);
-            }
-            let owned = accounts_owned_by(store, *user_id).await?;
-            Ok(touched.iter().all(|key| owned.contains(key)))
-        }
+        NodeTrust::OwnedBy(user_id) => match owned_job_account(job) {
+            Some(account) => account_owned(store, *user_id, account).await,
+            None => Ok(false),
+        },
     }
+}
+
+/// The account a [`NodeTrust::OwnedBy`] node must own to receive `job`.
+///
+/// `None` when the job's shape alone refuses it: a kind other than scan or
+/// acquire, an instance pin, requirements, or no named account.
+pub(super) fn owned_job_account(job: &JobRecord) -> Option<&str> {
+    if !matches!(job.kind, JobKind::Scan | JobKind::Acquire)
+        || job.payload.plugin_instance_id.is_some()
+        || !job.payload.requires.is_empty()
+    {
+        return None;
+    }
+    job.payload.account.as_deref()
+}
+
+/// True when `account` names at least one store account and every account
+/// it names (by id or label) is linked to `user_id`.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub(super) async fn account_owned(
+    store: &LibraryStore,
+    user_id: i64,
+    account: &str,
+) -> Result<bool> {
+    let touched = accounts_named(store, account, None).await?;
+    if touched.is_empty() {
+        return Ok(false);
+    }
+    let owned = accounts_owned_by(store, user_id).await?;
+    Ok(touched.iter().all(|key| owned.contains(key)))
 }
 
 /// True when `node_id` may claim `job` right now.
@@ -199,6 +219,9 @@ pub async fn node_may_claim_job(
 ///   reclaimed, finished, released, or left to expire is not handed over;
 /// - the node is still trusted with the job ([`node_may_claim_job`]).
 ///
+/// Ownership is checked again after the trust reads, so a lease lost while
+/// they ran is refused too.
+///
 /// Otherwise `None` is returned, so nothing is unsealed. When the claim was
 /// taken by `request.owner`, the job goes back to `pending` without spending
 /// an attempt if the claim's fence still owns the row (a row another fence
@@ -223,7 +246,17 @@ pub async fn handoff_routed_job(
         _ => false,
     };
     if trusted {
-        return Ok(Some(claim));
+        // The trust reads take time; a claim that lost its lease meanwhile
+        // must not be handed over on the earlier snapshot. Secrets are
+        // unsealed after this returns, so the fence on every later write
+        // still covers a loss after this point.
+        let still = store.get_job(&claim.job.id).await?;
+        if still
+            .as_ref()
+            .is_some_and(|job| claim_owns_job(&claim.job, job, request.owner, Utc::now()))
+        {
+            return Ok(Some(claim));
+        }
     }
     // A claim taken under another worker's lease owner is not this
     // request's to release.
@@ -473,7 +506,10 @@ fn not_your_account() -> LibraryError {
 ///
 /// Targets `allowed` refuses are dropped, and a target whose accounts the
 /// kept targets already cover (an id differing only in case, or another
-/// account's label) is skipped so no account is scanned twice.
+/// account's label) is skipped so no account is scanned twice. Targets that
+/// reach more accounts are kept first, so a needle that only reaches part
+/// of another's accounts is the one skipped. A chain of labels that each
+/// name another account's id can still scan its middle account twice.
 ///
 /// # Errors
 ///
@@ -493,20 +529,7 @@ async fn scan_all_targets(
         .filter(|row| row.scan_enabled != 0)
         .map(|row| row.account_id.as_str())
         .collect();
-    let mut out: Vec<ScanTarget> = Vec::new();
-    // Accounts some earlier job already touches. A later id whose accounts
-    // are all among them (an id that differs only in case, or another
-    // account's label) would scan them twice, possibly at once on two nodes.
-    let mut covered: BTreeSet<AccountKey> = BTreeSet::new();
-    let mut push = |target: ScanTarget, out: &mut Vec<ScanTarget>| {
-        // Refused targets are dropped before coalescing, so they never
-        // hide a later target the requester may run.
-        if !allowed(&target.touched) || target.touched.is_subset(&covered) {
-            return;
-        }
-        covered.extend(target.touched.iter().cloned());
-        out.push(target);
-    };
+    let mut candidates: Vec<ScanTarget> = Vec::new();
     for id in ids {
         let matching: Vec<&accounts::Model> = rows
             .iter()
@@ -524,14 +547,11 @@ async fn scan_all_targets(
                 .collect()
         };
         if matching.iter().all(|row| row.scan_enabled != 0) {
-            push(
-                ScanTarget {
-                    account_id: id.to_string(),
-                    plugin_key: None,
-                    touched: keys(&matching),
-                },
-                &mut out,
-            );
+            candidates.push(ScanTarget {
+                account_id: id.to_string(),
+                plugin_key: None,
+                touched: keys(&matching),
+            });
             continue;
         }
         let plugins: BTreeSet<&str> = matching
@@ -546,16 +566,39 @@ async fn scan_all_targets(
                 .filter(|row| row.plugin_key == key)
                 .collect();
             if on_plugin.iter().all(|row| row.scan_enabled != 0) {
-                push(
-                    ScanTarget {
-                        account_id: id.to_string(),
-                        plugin_key: Some(key.to_string()),
-                        touched: keys(&on_plugin),
-                    },
-                    &mut out,
-                );
+                candidates.push(ScanTarget {
+                    account_id: id.to_string(),
+                    plugin_key: Some(key.to_string()),
+                    touched: keys(&on_plugin),
+                });
             }
         }
     }
+    // Wider targets are decided first: when another account's label equals
+    // an id, the needle that reaches both is kept and the one that reaches
+    // only one is then covered. Kept targets still come out in id order.
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    order.sort_by_key(|&index| std::cmp::Reverse(candidates[index].touched.len()));
+    // Accounts some kept target already touches. A target whose accounts
+    // are all among them (an id that differs only in case, or another
+    // account's label) would scan them twice, possibly at once on two
+    // nodes.
+    let mut covered: BTreeSet<AccountKey> = BTreeSet::new();
+    let mut keep = vec![false; candidates.len()];
+    for index in order {
+        let touched = &candidates[index].touched;
+        // Refused targets are dropped before coalescing, so they never
+        // hide a later target the requester may run.
+        if !allowed(touched) || touched.is_subset(&covered) {
+            continue;
+        }
+        covered.extend(touched.iter().cloned());
+        keep[index] = true;
+    }
+    let out: Vec<ScanTarget> = candidates
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(target, kept)| kept.then_some(target))
+        .collect();
     Ok(out)
 }

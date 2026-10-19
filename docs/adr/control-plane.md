@@ -1245,8 +1245,7 @@ Not in this phase, and not claimed as production HA:
 - Job routing beyond plugin instances. Jobs now carry the instances they
   need and take cluster semaphores (*Job routing and cluster semaphores*
   above), and the requirements sweep re-resolves pending jobs when
-  deployments move, but requirements only name instances: an all-accounts
-  scan is not split across the nodes that run each storefront, jobs are not
+  deployments move, but requirements only name instances: jobs are not
   ranked by headroom the way deliveries are, and acquire still writes the
   claiming node's own destinations rather than mirroring node-local outputs
   across nodes. `[jobs]` limits are read from each node's `config.toml`.
