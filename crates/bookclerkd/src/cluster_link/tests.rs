@@ -1411,6 +1411,8 @@ mod results_and_uploads {
         work: PathBuf,
         /// Account ids of the credentials each run was handed.
         credentials: Arc<Mutex<Vec<Vec<String>>>>,
+        /// Each scan's `(import_episodes, import_plus_titles)`.
+        scans: Arc<Mutex<Vec<(bool, bool)>>>,
         /// A scan never ends on its own (it ignores its cancel flag, so
         /// only the transport can stop it).
         block_scan: bool,
@@ -1445,10 +1447,14 @@ mod results_and_uploads {
         async fn scan(
             &self,
             bindings: &HostJobBindings,
-            _scan: HostScan,
+            scan: HostScan,
             _cancel: Arc<AtomicBool>,
         ) -> anyhow::Result<Vec<ScanBook>> {
             self.note(bindings);
+            self.scans
+                .lock()
+                .unwrap()
+                .push((scan.import_episodes, scan.import_plus_titles));
             if self.block_scan {
                 let _flag = DropFlag(Arc::clone(&self.dropped));
                 self.entered.store(true, Ordering::SeqCst);
@@ -1627,12 +1633,18 @@ mod results_and_uploads {
 
     /// A member's host scans with the guest and returns its rows in fenced
     /// batches; the rows land in the owner's library under the store
-    /// plugin, the guest got only the job's account's credentials, and a
-    /// batch sent afterwards under the finished job's fence is refused.
+    /// plugin, the guest got only the job's account's credentials and the
+    /// owner's import settings (not the host's defaults), and a batch sent
+    /// afterwards under the finished job's fence is refused.
     #[tokio::test]
     async fn a_host_scan_returns_rows_that_land_in_the_owners_library() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         let world = linked().await;
+        {
+            let mut cfg = world.state.config.write().await;
+            cfg.library.import_episodes = false;
+            cfg.library.import_plus_titles = true;
+        }
         let guests = StubGuests {
             rows: vec![row("riley-acct", "p1"), row("riley-acct", "p2")],
             work: world.host_files.path().join("cluster-work"),
@@ -1666,6 +1678,7 @@ mod results_and_uploads {
             guests.credentials.lock().unwrap().as_slice(),
             &[vec!["riley-acct".to_string()]]
         );
+        assert_eq!(guests.scans.lock().unwrap().as_slice(), &[(false, true)]);
 
         let answer = handle
             .request(Body::ScanResults {

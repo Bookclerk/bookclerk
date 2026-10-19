@@ -118,6 +118,10 @@ pub async fn until_cancelled<T>(
 pub struct HostScan {
     /// Account ids; empty means every handed account.
     pub accounts: Vec<String>,
+    /// Import podcast episodes (the owner's setting).
+    pub import_episodes: bool,
+    /// Import subscription (Plus) titles (the owner's setting).
+    pub import_plus_titles: bool,
 }
 
 /// One output destination of the owner node an acquire was planned with.
@@ -270,16 +274,14 @@ impl HostGuests for GuestHost {
         cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<Vec<ScanBook>> {
         let source = self.open_source(bindings).await?;
-        let (import_episodes, import_plus_titles) = {
-            let cfg = self.state.config.read().await;
-            (cfg.library.import_episodes, cfg.library.import_plus_titles)
-        };
+        // The owner's import settings, not this host's: the owner writes
+        // every row into its library.
         Ok(source
             .scan_handed(bookclerk_source::ScanOptions {
                 accounts: scan.accounts,
                 page_size: 50,
-                import_episodes,
-                import_plus_titles,
+                import_episodes: scan.import_episodes,
+                import_plus_titles: scan.import_plus_titles,
                 cancel: Some(cancel),
             })
             .await?)
@@ -555,8 +557,16 @@ impl<G: HostGuests> JobTransport for HostJobTransport<G> {
         }
         match cmd.kind {
             JobKind::Scan => {
+                // The owner writes every row, so the scan imports what the
+                // owner's library does; an owner that did not say is
+                // refused rather than scanned with this host's settings.
+                let Some(import) = host.job.job.scan_import else {
+                    anyhow::bail!("the owner sent no import settings for the scan");
+                };
                 let scan = HostScan {
                     accounts: cmd.payload.account.clone().into_iter().collect(),
+                    import_episodes: import.import_episodes,
+                    import_plus_titles: import.import_plus_titles,
                 };
                 host_scan(&self.guests, &host, &bindings, scan, &ctx).await
             }

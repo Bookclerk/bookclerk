@@ -48,8 +48,8 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::{JobResourceClass, LibraryStore};
 use bookclerk_node_proto::{
     open_secret_update, seal_instance_secrets, seal_secrets, Body, ClaimFilter, Frame, HeldFence,
-    RemoteArtifact, RemoteDeployment, RemoteVersion, SecretEntry, SecretRef, SecretValue, WorkJob,
-    ITEM_JOB, MAX_FRAME_BYTES,
+    RemoteArtifact, RemoteDeployment, RemoteVersion, ScanImport, SecretEntry, SecretRef,
+    SecretValue, WorkJob, ITEM_JOB, MAX_FRAME_BYTES,
 };
 use rand::RngCore as _;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -425,6 +425,19 @@ fn claim_filter(filter: ClaimFilter) -> Result<JobClaimFilter, ()> {
     })
 }
 
+/// For a scan job, this owner's library import settings: the host scans
+/// with them, since the owner writes every row it returns.
+async fn scan_import(host: &HostContext, kind: bookclerk_library::JobKind) -> Option<ScanImport> {
+    if kind != bookclerk_library::JobKind::Scan {
+        return None;
+    }
+    let cfg = host.state.config.read().await;
+    Some(ScanImport {
+        import_episodes: cfg.library.import_episodes,
+        import_plus_titles: cfg.library.import_plus_titles,
+    })
+}
+
 /// `claim`: the next trusted job, its fence, and its sealed secrets.
 async fn claim(
     library: &LibraryStore,
@@ -480,6 +493,7 @@ async fn claim(
         sealed.map(Some)
     };
     drop(secrets);
+    let scan_import = scan_import(host, job.kind).await;
     let work = sealed.ok().map(|sealed_secrets| {
         Frame::new(
             id.clone(),
@@ -490,6 +504,7 @@ async fn claim(
                     kind: job.kind.as_str().into(),
                     payload: serde_json::to_value(&job.payload).unwrap_or_default(),
                     attempt: job.attempt_count,
+                    scan_import,
                 },
                 fence,
                 lease_secs: host.settings.lease_secs,

@@ -1354,6 +1354,12 @@ batches; a Host acquire streams each title's files to an owner node,
 which writes them straight to its output destinations (decision 4, no
 staging on the owner).
 
+- **Whose import settings a scan uses.** The owner writes every row a
+  Host scan returns, so a scan's `work` job carries the owner's
+  `library.import_episodes` / `import_plus_titles` (`scan_import`) and the
+  Host scans with those, never its own; a scan handed without them is
+  refused.
+
 - **Which jobs a Host claims.** A Host runs one source guest per job, so
   its claim filter admits a scan or acquire only when the job names one
   source plugin: the pinned instance's, or else the one plugin holding
