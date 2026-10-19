@@ -1174,8 +1174,18 @@ async fn run_job<R: HostJobRunner>(
     };
     // Renewals keep running through `report`, which can take up to
     // [`REPORT_DEADLINE`]: a slow report must not let the fence lapse and
-    // throw away finished work.
-    let mut renewer = None;
+    // throw away finished work, nor a fail for secrets that do not open.
+    let renewer = (!lost.load(Ordering::SeqCst)).then(|| {
+        AbortOnDrop(vec![tokio::spawn(renew_loop(
+            Arc::clone(&shared),
+            job_id.clone(),
+            fence,
+            (claimed_at, grant),
+            Arc::clone(&cancel),
+            Arc::clone(&lost),
+            resumed,
+        ))])
+    });
     let result = match opened {
         // Abandoned (shutdown, revocation) since it was held: never start
         // the runner under a fence whose result is discarded.
@@ -1197,15 +1207,6 @@ async fn run_job<R: HostJobRunner>(
                 Arc::clone(&cancel),
                 Arc::clone(&shared),
             );
-            renewer = Some(AbortOnDrop(vec![tokio::spawn(renew_loop(
-                Arc::clone(&shared),
-                job_id.clone(),
-                fence,
-                (claimed_at, grant),
-                Arc::clone(&cancel),
-                Arc::clone(&lost),
-                resumed,
-            ))]));
             runner.run(ctx).await
         }
     };

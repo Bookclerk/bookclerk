@@ -531,6 +531,71 @@ async fn renewals_continue_while_a_report_waits() {
     assert!(handle.held_fences().is_empty());
 }
 
+/// A job whose secrets do not open keeps renewing its lease while its
+/// fail report goes unanswered, so the fail is not lost to a reclaim.
+#[tokio::test]
+async fn renewals_continue_while_an_unopenable_fail_waits() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (handle, _stop, _exit) = start_with(listener.local_addr().unwrap().port(), 1, NoJobs);
+    let mut socket = accept(&listener).await;
+
+    let mut granted = false;
+    let frames = read_for(
+        &mut socket,
+        Duration::from_millis(2500),
+        |frame| match &frame.body {
+            Body::Heartbeat { .. } => Some(Body::Accepted {}),
+            Body::Claim { .. } if !std::mem::replace(&mut granted, true) => {
+                let Body::Work {
+                    item,
+                    job,
+                    fence,
+                    lease_secs,
+                    resumed,
+                    ..
+                } = work("job-1", 3, 1)
+                else {
+                    unreachable!("work() builds a work frame");
+                };
+                Some(Body::Work {
+                    item,
+                    job,
+                    fence,
+                    lease_secs,
+                    sealed_secrets: Some("not-a-sealed-box".into()),
+                    resumed,
+                })
+            }
+            Body::Claim { .. } => Some(Body::NoWork {
+                retry_after_secs: 300,
+            }),
+            Body::Renew { .. } => Some(Body::Renewed {
+                lease_secs: 1,
+                cancel: false,
+            }),
+            _ => None,
+        },
+    )
+    .await;
+    let first_report = frames
+        .iter()
+        .position(|frame| {
+            matches!(&frame.body, Body::Fail { error_kind, .. } if error_kind == SECRETS_UNOPENABLE)
+        })
+        .expect("the unopenable job was reported");
+    assert!(
+        frames[first_report..]
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Renew { .. })),
+        "the lease was not renewed while the fail waited"
+    );
+    assert_eq!(
+        handle.held_fences().len(),
+        1,
+        "the job was dropped mid-report"
+    );
+}
+
 /// A resume renews a held job for the lease the owner names, not the
 /// job's original grant: an owner whose lease got shorter while the host
 /// was away, and that then leaves renewals unanswered, gets the job
