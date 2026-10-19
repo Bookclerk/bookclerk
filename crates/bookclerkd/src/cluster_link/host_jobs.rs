@@ -673,7 +673,7 @@ async fn host_acquire<G: HostGuests>(
     bindings: &HostJobBindings,
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
-    let job_dir = work_path(&guests.work_dir(), &host.job.job.id)?;
+    let job_dir = job_work_path(&guests.work_dir(), &host.job.job.id, host.job.fence)?;
     let result = acquire_titles(guests, host, bindings, ctx, &job_dir).await;
     let _ = tokio::fs::remove_dir_all(&job_dir).await;
     let (acquired, failed) = result?;
@@ -832,6 +832,23 @@ pub fn work_path(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
         anyhow::bail!("the owner sent a job or title id this host cannot use as a path");
     }
     Ok(dir.join(id))
+}
+
+/// The scratch dir of one fence generation of job `job_id` under `dir`:
+/// `<job_id>-g<fence>`, one plain segment. A stale run still unwinding
+/// after its lease expired and the replacement generation this host
+/// claimed never share it, so the stale run's cleanup removes only its own
+/// scratch. The name is unambiguous because `fence` is all digits: it is
+/// whatever follows the last `-g`.
+///
+/// # Errors
+///
+/// Returns an error when `job_id` is not a usable segment ([`is_work_id`]).
+pub fn job_work_path(dir: &Path, job_id: &str, fence: i64) -> anyhow::Result<PathBuf> {
+    let job_dir = work_path(dir, job_id)?;
+    let mut name = job_dir.into_os_string();
+    name.push(format!("-g{fence}"));
+    Ok(PathBuf::from(name))
 }
 
 /// Size and SHA-256 of a file, read once.

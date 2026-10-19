@@ -3150,6 +3150,23 @@ mod results_and_uploads {
         assert!(files_under(owner_out.path()).is_empty());
     }
 
+    /// Each fence generation of a job has its own scratch dir, so a stale
+    /// run unwinding after its lease expired removes only its own
+    /// generation's scratch, never the replacement run's on the same host.
+    #[test]
+    fn each_fence_generation_has_its_own_job_dir() {
+        use super::super::host_jobs::job_work_path;
+
+        let root = Path::new("/files/cluster-work");
+        let stale = job_work_path(root, "job-1", 3).unwrap();
+        let fresh = job_work_path(root, "job-1", 4).unwrap();
+        assert_eq!(stale, root.join("job-1-g3"));
+        assert_ne!(stale, fresh);
+        assert!(!fresh.starts_with(&stale) && !stale.starts_with(&fresh));
+        assert_eq!(fresh.parent(), Some(root));
+        assert!(job_work_path(root, "../escape", 1).is_err());
+    }
+
     /// A title's pipeline scratch is its own, inside the job dir the host
     /// removes when a job ends or is dropped, never the host-wide cache.
     #[test]
