@@ -1156,7 +1156,8 @@ operator approves it, and only with what was approved.
   carries each instance's plugin key, whether it is the default instance,
   and the plugin's active version: manifest, settings schema, artifacts,
   and the cluster operator's approved grant. The Host records that grant,
-  with the URL and archive digest of the artifact for its own target, as
+  with the URL, archive digest and payload digest of the artifact for its
+  own target, as
   the request in `remote_plugin_consents` (keyed by owner cluster and
   plugin key). An unchanged request writes nothing; a changed one keeps
   any stored approval, which is then re-evaluated.
@@ -1167,8 +1168,11 @@ operator approves it, and only with what was approved.
   consent (the request minus the denials; naming something the request
   does not ask for is refused). The digest is the `request_digest` the
   listing shows: SHA-256 over the requested version, the owner's grant
-  exactly as recorded, and the artifact URL and archive digest (shown with
-  it as `requested_artifact`). An approval whose digest is not the recorded
+  exactly as recorded, and the artifact URL, archive digest and payload
+  digest (shown with it as `requested_artifact`). The payload digest is
+  covered because it keys the Host's version cache, whose hit is reused
+  without a fetch: an owner that kept the approved URL and archive but
+  named another cached tree would otherwise run it unreviewed. An approval whose digest is not the recorded
   request's is refused (`409 approval_refused` from the API), so a grant
   the owner changed after the operator looked, even under the same
   version, is never approved unseen; the write is also a compare-and-swap
@@ -1179,7 +1183,8 @@ operator approves it, and only with what was approved.
   `awaiting_host_consent`, `awaiting_host_reapproval` (a new version asks
   for something outside what was reviewed: a domain, TCP target, CIDR,
   binding, flag, entrypoint, larger budget, or network at all; or the
-  artifact URL or archive digest is not the approved one, even with the
+  artifact URL, archive digest or payload digest is not the approved one,
+  even with the
   grant unchanged), or
   `invalid_grant`.
 - **Effective grant.** The current request intersected with the consent.
@@ -1223,7 +1228,16 @@ operator approves it, and only with what was approved.
   ones, its host is not `localhost` or a loopback, private, link-local or
   unspecified IP literal, and every redirect hop (at most 5, possibly to
   another origin) passes the same check; the archive digest binds the
-  bytes. `file:` is refused.
+  bytes. The same address policy is enforced at connect time: the fetch's
+  resolver refuses a name (IP literals included) any of whose addresses
+  is not public Internet (`is_public_internet`, plus NAT64, 6to4, Teredo,
+  IPv4-compatible and reserved forms), and the connector dials only the
+  addresses that resolver returned, so a public-looking name that resolves
+  or rebinds to a local or private address is never reached, on the first
+  hop or any redirect. The fetch ignores `HTTPS_PROXY` / `ALL_PROXY` (a
+  proxy would resolve the name itself, past that check); a Host that
+  reaches the Internet only through a proxy uses `blob:` archives.
+  `file:` is refused.
   Nothing is written to the Host's `plugin_versions`, so its own
   reconciler never runs an owner plugin.
 - **Configuration.** `instance.config` answers `CONFIG` and, only for a

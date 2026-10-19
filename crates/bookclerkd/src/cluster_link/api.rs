@@ -50,6 +50,7 @@ pub(crate) fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
         "requested_artifact": {
             "url": row.requested_artifact_url,
             "archive_sha256": row.requested_artifact_sha256,
+            "payload_root_sha256": row.requested_artifact_payload_sha256,
         },
         "request_digest": row.request_digest(),
         "approved_version": row.version,

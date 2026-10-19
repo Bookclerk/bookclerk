@@ -369,10 +369,7 @@ impl LinkSupervisor {
             &item.plugin_key,
             &remote.version,
             &remote.grant_json,
-            RemoteArtifactRef {
-                url: &artifact.url,
-                archive_sha256: &artifact.archive_sha256,
-            },
+            RemoteArtifactRef::of(artifact),
         )
         .await
         {
@@ -578,10 +575,7 @@ pub(crate) fn owner_artifact_allowed(
     row: &RemotePluginConsent,
     artifact: &PluginArtifact,
 ) -> Result<(), String> {
-    if !row.approved_artifact_matches(RemoteArtifactRef {
-        url: &artifact.url,
-        archive_sha256: &artifact.archive_sha256,
-    }) {
+    if !row.approved_artifact_matches(RemoteArtifactRef::of(artifact)) {
         return Err("the owner's archive is not the one this host's operator approved".into());
     }
     if artifact.url.starts_with(ARTIFACT_BLOB_SCHEME) {
@@ -679,10 +673,12 @@ mod tests {
             requested_grant_json: "{}".into(),
             requested_artifact_url: "https://registry.example/sqlite.tar.gz".into(),
             requested_artifact_sha256: "ab".repeat(32),
+            requested_artifact_payload_sha256: "cd".repeat(32),
             version: None,
             approved_request_json: None,
             approved_artifact_url: None,
             approved_artifact_sha256: None,
+            approved_artifact_payload_sha256: None,
             grant_json: None,
             approved_at: None,
             approved_by: None,
@@ -710,7 +706,8 @@ mod tests {
         assert!(!platform_auto_approval_allowed(&approved));
     }
 
-    /// `row()` approved for `url` (digest `ab…`), and that archive.
+    /// `row()` approved for `url` (archive digest `ab…`, payload digest
+    /// `cd…`), and that archive.
     fn approved_for(url: &str) -> (RemotePluginConsent, PluginArtifact) {
         let row = RemotePluginConsent {
             requested_artifact_url: url.into(),
@@ -718,6 +715,7 @@ mod tests {
             approved_request_json: Some("{}".into()),
             approved_artifact_url: Some(url.into()),
             approved_artifact_sha256: Some("ab".repeat(32)),
+            approved_artifact_payload_sha256: Some("cd".repeat(32)),
             grant_json: Some("{}".into()),
             approved_at: Some("2026-10-02T00:00:00Z".into()),
             approved_by: Some("operator".into()),
@@ -752,6 +750,13 @@ mod tests {
         let (row, mut changed) = approved_for("https://registry.example/sqlite.tar.gz");
         changed.archive_sha256 = "ef".repeat(32);
         assert!(owner_artifact_allowed(&row, &changed).is_err());
+        // Same URL and archive, but the payload digest names another tree
+        // in the version cache, which would be reused without a fetch.
+        let (row, mut swapped) = approved_for("https://registry.example/sqlite.tar.gz");
+        swapped.payload_root_sha256 = "ef".repeat(32);
+        assert!(owner_artifact_allowed(&row, &swapped)
+            .unwrap_err()
+            .contains("not the one"));
         let unapproved = RemotePluginConsent {
             requested_artifact_url: artifact.url.clone(),
             ..super::tests::row()

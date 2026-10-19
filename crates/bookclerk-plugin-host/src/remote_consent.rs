@@ -742,6 +742,7 @@ mod tests {
         bookclerk_library::control_plane::RemoteArtifactRef {
             url: "https://registry.example/store-1.0.0.tar.gz",
             archive_sha256: "ab",
+            payload_root_sha256: "ef",
         };
 
     async fn memory_store() -> bookclerk_library::LibraryStore {
@@ -788,6 +789,12 @@ mod tests {
             },
             RemoteArtifactRef {
                 archive_sha256: "cd",
+                ..ARTIFACT
+            },
+            // The payload digest keys the version cache, whose hit skips the
+            // fetch: pointing it at another cached tree needs approval too.
+            RemoteArtifactRef {
+                payload_root_sha256: "cd",
                 ..ARTIFACT
             },
         ] {
