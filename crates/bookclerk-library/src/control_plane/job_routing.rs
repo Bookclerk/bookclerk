@@ -307,17 +307,7 @@ pub async fn job_semaphores(
         ));
     }
     if matches!(job.kind, JobKind::Scan | JobKind::Acquire) {
-        let pinned_key = match job
-            .payload
-            .plugin_instance_id
-            .as_deref()
-            .and_then(|id| PluginInstanceId::parse(id).ok())
-        {
-            Some(id) => load_plugin_instance(store, &id)
-                .await?
-                .map(|instance| instance.plugin_key),
-            None => None,
-        };
+        let pinned_key = pinned_plugin_key(store, job).await?;
         // The accounts the job touches, by id or label as trust and the
         // secret handoff resolve them, so two jobs naming one account
         // differently still share its permit.
@@ -348,6 +338,29 @@ pub async fn job_semaphores(
         }
     }
     Ok(requests)
+}
+
+/// The plugin key of the instance `job` is pinned to, when it names one
+/// that exists.
+///
+/// # Errors
+///
+/// Returns an error when the instance read fails.
+pub(super) async fn pinned_plugin_key(
+    store: &LibraryStore,
+    job: &JobRecord,
+) -> Result<Option<String>> {
+    match job
+        .payload
+        .plugin_instance_id
+        .as_deref()
+        .and_then(|id| PluginInstanceId::parse(id).ok())
+    {
+        Some(id) => Ok(load_plugin_instance(store, &id)
+            .await?
+            .map(|instance| instance.plugin_key)),
+        None => Ok(None),
+    }
 }
 
 /// The holder prefix of the semaphore permits a routed claim of `job_id`

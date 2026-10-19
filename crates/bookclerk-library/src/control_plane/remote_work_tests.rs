@@ -335,6 +335,84 @@ async fn a_job_naming_its_account_by_label_gets_its_secrets() {
     }
 }
 
+/// A job pinned to an instance is handed only that plugin's secrets, even
+/// when another plugin holds an account with the same id.
+#[tokio::test]
+async fn a_pinned_job_gets_only_its_plugins_secrets() {
+    const OTHER: &str = "path:file:///tmp/other#other";
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let now = chrono::Utc::now().to_rfc3339();
+    accounts::ActiveModel {
+        plugin_key: Set(OTHER.into()),
+        account_id: Set("riley-acct".into()),
+        marketplace: Set("us".into()),
+        label: Set(None),
+        scan_enabled: Set(1),
+        source: Set("test".into()),
+        connection_status: Set("active".into()),
+        created_at: Set(now.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(w.store.db())
+    .await
+    .unwrap();
+    let other = build_sealed_record(
+        b"other-token",
+        secret_kind::SOURCE_AUTH,
+        OTHER,
+        secret_account_type::INTEGRATION,
+        "riley-acct",
+        "riley-acct.auth",
+    )
+    .unwrap();
+    upsert_secret(w.store.db(), &other).await.unwrap();
+    let operator = ConfigActor::Operator {
+        id: "operator".into(),
+    };
+    let instance = super::instances::create_plugin_instance(&w.store, &operator, PLUGIN, "")
+        .await
+        .unwrap();
+
+    let job_for = |instance_id: Option<String>| {
+        let store = w.store.clone();
+        async move {
+            let outcome = store
+                .enqueue_job(EnqueueJobSpec {
+                    kind: JobKind::Scan,
+                    payload: JobPayload {
+                        account: Some("riley-acct".into()),
+                        plugin_instance_id: instance_id,
+                        ..Default::default()
+                    },
+                    priority: 0,
+                    max_attempts: 3,
+                    max_pending: 256,
+                    run_after: None,
+                })
+                .await
+                .unwrap();
+            let EnqueueOutcome::Created { id } = outcome else {
+                panic!("expected a new job: {outcome:?}");
+            };
+            store.get_job(&id).await.unwrap().unwrap()
+        }
+    };
+    let unpinned = job_for(None).await;
+    assert_eq!(job_secret_refs(&w.store, &unpinned).await.unwrap().len(), 2);
+    let pinned = job_for(Some(instance.id.to_string())).await;
+    assert_eq!(
+        job_secret_refs(&w.store, &pinned).await.unwrap(),
+        vec![w.riley_token.clone()]
+    );
+    let dangling = job_for(Some("pi_missing".into())).await;
+    assert!(job_secret_refs(&w.store, &dangling)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 /// Jobs naming one account by id and by label share its permit: the
 /// second is not claimed while the first runs.
 #[tokio::test]
