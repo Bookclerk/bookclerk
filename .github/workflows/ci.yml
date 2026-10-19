@@ -23,6 +23,11 @@ env:
   # Line tables keep file:line in panics and backtraces at a fraction of the
   # link time and cache size of full debuginfo (dev and test profiles only).
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # A failing test's panic prints its backtrace. Library backtraces stay off:
+  # with RUST_BACKTRACE alone, every error built by an error library such as
+  # anyhow would capture a backtrace, slowing tests that create many errors.
+  RUST_BACKTRACE: "1"
+  RUST_LIB_BACKTRACE: "0"
   # Selective PR CI (#157). "0" = shadow: every job runs at full scope and the
   # selective prediction is recorded in the plan summary for audit. "1" = jobs
   # and checks follow the prediction. merge_group / main always --force-full.

@@ -64,7 +64,9 @@ Linux, `native-gateway` on macOS and Windows; restored by `e2e`,
 (`release`, restored by `envelope`). Fewer entries keep the repository under
 the Actions cache limit so jobs stop missing their cache. CI builds dev and
 test profiles with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, which keeps
-file and line in panics while cutting link time and cache size.
+file and line in panics while cutting link time and cache size. A failing test prints its
+panic backtrace (`RUST_BACKTRACE=1`); `RUST_LIB_BACKTRACE=0` keeps error
+libraries such as `anyhow` from capturing one for every error they build.
 
 ### Plan → execution contract
 
