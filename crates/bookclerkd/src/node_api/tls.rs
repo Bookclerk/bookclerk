@@ -248,6 +248,12 @@ pub async fn start(state: &Arc<AppState>, cfg: &Config, files_dir: &Path) -> Nod
         tracing::error!(error = %err, "node API unmounted: invalid [daemon.node_api]");
         return failed(&status, &gate);
     }
+    if gate.origin.as_deref().is_none_or(str::is_empty) {
+        // Hosts sign over the canonical origin; without one no handshake
+        // could verify, so refuse to serve rather than mount a dead API.
+        tracing::error!("node API unmounted: integrations.public_origin is not a valid URL");
+        return failed(&status, &gate);
+    }
     let Some(listen) = node_api
         .tls_listen
         .as_deref()
@@ -425,17 +431,51 @@ fn load_or_create_self_signed(
     let cert_path = dir.join("cert.der");
     let key_path = dir.join("key.der");
     let pin_path = dir.join(bookclerk_config::NODE_API_SPKI_PIN_FILE);
+    let names_path = dir.join("names");
+    let names = self_signed_names(cfg, local);
+    let listed = names.join("\n");
     if let (Ok(cert), Ok(key)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
         let key_pair = rcgen::KeyPair::try_from(key.as_slice())?;
         let pin = spki_pin(&key_pair);
         // The pin file is what the CLI reads; keep it in step with the key.
         write_private(&pin_path, pin.as_bytes())?;
+        if std::fs::read_to_string(&names_path).is_ok_and(|stored| stored == listed) {
+            return Ok(SelfSigned {
+                cert: CertificateDer::from(cert),
+                key: PrivatePkcs8KeyDer::from(key),
+                pin,
+            });
+        }
+        // The origin (or bound address) changed: re-issue for the new names
+        // under the same key, so the pin hosts already trust still holds.
+        let cert = rcgen::CertificateParams::new(names)?.self_signed(&key_pair)?;
+        write_private(&cert_path, cert.der())?;
+        write_private(&names_path, listed.as_bytes())?;
+        tracing::info!(%pin, "re-issued the self-signed node API certificate for new names");
         return Ok(SelfSigned {
-            cert: CertificateDer::from(cert),
+            cert: cert.der().clone(),
             key: PrivatePkcs8KeyDer::from(key),
             pin,
         });
     }
+    let generated = rcgen::generate_simple_self_signed(names)?;
+    let pin = spki_pin(&generated.key_pair);
+    let key = generated.key_pair.serialize_der();
+    write_private(&key_path, &key)?;
+    write_private(&cert_path, generated.cert.der())?;
+    write_private(&names_path, listed.as_bytes())?;
+    write_private(&pin_path, pin.as_bytes())?;
+    tracing::info!(%pin, "generated the self-signed node API certificate");
+    Ok(SelfSigned {
+        cert: generated.cert.der().clone(),
+        key: PrivatePkcs8KeyDer::from(key),
+        pin,
+    })
+}
+
+/// Subject names for the self-signed certificate: loopback, the public
+/// origin's host, and a specific bound address, sorted and deduplicated.
+fn self_signed_names(cfg: &Config, local: SocketAddr) -> Vec<String> {
     let mut names = vec![
         "localhost".to_string(),
         "127.0.0.1".to_string(),
@@ -458,18 +498,7 @@ fn load_or_create_self_signed(
     }
     names.sort();
     names.dedup();
-    let generated = rcgen::generate_simple_self_signed(names)?;
-    let pin = spki_pin(&generated.key_pair);
-    let key = generated.key_pair.serialize_der();
-    write_private(&key_path, &key)?;
-    write_private(&cert_path, generated.cert.der())?;
-    write_private(&pin_path, pin.as_bytes())?;
-    tracing::info!(%pin, "generated the self-signed node API certificate");
-    Ok(SelfSigned {
-        cert: generated.cert.der().clone(),
-        key: PrivatePkcs8KeyDer::from(key),
-        pin,
-    })
+    names
 }
 
 /// Server config for the self-signed certificate.
@@ -511,10 +540,6 @@ async fn accept_loop(
                 continue;
             }
         };
-        let Ok(connection) = Arc::clone(&connections).try_acquire_owned() else {
-            // Too many open connections: shed this one.
-            continue;
-        };
         let Ok(permit) = Arc::clone(&pending).try_acquire_owned() else {
             // Too many slow handshakes: shed this one.
             continue;
@@ -522,21 +547,29 @@ async fn accept_loop(
         let server_config = Arc::clone(&server_config);
         let challenge = challenge.clone();
         let handshakes = handshakes.clone();
+        let connections = Arc::clone(&connections);
         tokio::spawn(async move {
             let handshake =
                 tokio::time::timeout(Duration::from_secs(HANDSHAKE_TIMEOUT_SECS), async move {
                     let start = LazyConfigAcceptor::new(Acceptor::default(), stream).await?;
                     if let Some(challenge) = challenge {
                         if is_tls_alpn_challenge(&start.client_hello()) {
+                            // Challenges never take a connection slot, so a
+                            // full cap cannot block certificate renewal.
                             start.into_stream(challenge).await?;
                             return Ok::<_, std::io::Error>(None);
                         }
                     }
-                    start.into_stream(server_config).await.map(Some)
+                    let Ok(connection) = connections.try_acquire_owned() else {
+                        // Too many open connections: shed this one.
+                        return Err(std::io::Error::other("node API connection cap reached"));
+                    };
+                    let tls = start.into_stream(server_config).await?;
+                    Ok(Some((tls, connection)))
                 })
                 .await;
             match handshake {
-                Ok(Ok(Some(tls))) => {
+                Ok(Ok(Some((tls, connection)))) => {
                     // Hold the permit until the server takes the stream, so a
                     // stalled server bounds waiters too, not just handshakes.
                     let stream = BoundedStream::new(tls, connection);
