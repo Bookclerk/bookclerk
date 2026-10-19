@@ -88,6 +88,7 @@ fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
         "requested_artifact": {
             "url": row.requested_artifact_url,
             "archive_sha256": row.requested_artifact_sha256,
+            "payload_root_sha256": row.requested_artifact_payload_sha256,
         },
         "request_digest": row.request_digest(),
         "approved_version": row.version,
@@ -165,14 +166,15 @@ pub async fn run(
                 || {
                     for row in &rows {
                         println!(
-                            "{} {} {} {} request={} artifact={} sha256={}",
+                            "{} {} {} {} request={} artifact={} sha256={} payload={}",
                             row.owner_cluster_id,
                             row.plugin_key,
                             row.requested_version,
                             state(row),
                             row.request_digest(),
                             row.requested_artifact_url,
-                            row.requested_artifact_sha256
+                            row.requested_artifact_sha256,
+                            row.requested_artifact_payload_sha256
                         );
                     }
                 },

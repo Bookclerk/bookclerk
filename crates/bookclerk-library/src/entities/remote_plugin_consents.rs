@@ -23,6 +23,9 @@ pub struct Model {
     pub requested_artifact_url: String,
     /// SHA-256 of that archive, as the owner states it.
     pub requested_artifact_sha256: String,
+    /// Payload-root digest of the tree that archive unpacks to, as the
+    /// owner states it (the `plugins/.versions/<digest>` cache key).
+    pub requested_artifact_payload_sha256: String,
     /// Version this install's operator approved; `None` until approved.
     pub version: Option<String>,
     /// The owner's grant as it stood when the operator approved; a later
@@ -33,6 +36,8 @@ pub struct Model {
     pub approved_artifact_url: Option<String>,
     /// The archive SHA-256 as it stood when the operator approved.
     pub approved_artifact_sha256: Option<String>,
+    /// The payload-root digest as it stood when the operator approved.
+    pub approved_artifact_payload_sha256: Option<String>,
     /// The grant this install's operator consented to (JSON), never wider
     /// than `approved_request_json`.
     pub grant_json: Option<String>,

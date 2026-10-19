@@ -418,6 +418,12 @@ pub async fn materialize_version(
 /// ([`bookclerk_plugin_catalog::fetch_owner_artifact`]: no `file:`, no
 /// local or private hosts, every redirect hop checked the same way).
 ///
+/// A tree already cached under the artifact's payload digest is reused
+/// without a fetch or an archive check, so the caller must have checked
+/// the whole artifact (URL, archive digest and payload digest) against the
+/// host operator's approval first
+/// (`RemotePluginConsent::approved_artifact_matches`).
+///
 /// # Arguments
 ///
 /// * `store` - This host's library.

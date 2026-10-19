@@ -1301,8 +1301,10 @@ node can materialize it. A larger local archive is referenced in place as a
 `file://` URL, which only nodes that see that path (shared storage) can
 materialize; the others record an `error` observation. A host node of
 another cluster fetches an owner's `https:` artifact only when its host
-operator approved that exact URL and digest (they are part of the reviewed
-request) and neither its host nor any redirect hop's is local or private; see [Host consent](adr/control-plane.md#host-consent).
+operator approved that exact URL, archive digest and payload digest (they
+are part of the reviewed request) and neither its host nor any redirect
+hop's is, or resolves to, a local or private address (checked on the
+addresses actually dialed; no proxy); see [Host consent](adr/control-plane.md#host-consent).
 
 **The active version.** Each PluginKey has at most one active version. The
 first installed version becomes active; a later one becomes active with
