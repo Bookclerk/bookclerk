@@ -226,6 +226,15 @@ pub async fn claim_remote_job(
     };
     match unseal_job_secrets(store, &job).await {
         Ok(secrets) => {
+            // Trust can change while the secrets are read: check it once
+            // more right before they are recorded and handed out. Every
+            // later frame under the fence checks it again.
+            let still_trusted = node_may_claim_job(store, node_id, Claimant::Remote, &job).await;
+            if !matches!(still_trusted, Ok(true)) {
+                let _ = store.release_job_claim(&fence, false).await;
+                let _ = release_permits(store, &permits).await;
+                return still_trusted.map(|_| None);
+            }
             match record_handoff(store, node_id, &fence, &secrets).await {
                 Ok(true) => Ok(Some(RemoteJobClaim { job, secrets })),
                 Ok(false) => {
