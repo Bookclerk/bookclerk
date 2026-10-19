@@ -300,15 +300,26 @@ impl Resolved {
 
 /// Resolves `actor` against the stored user row; a disabled or unknown user
 /// is refused.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Forbidden`] when the user is unknown or
+/// disabled, and the store error unchanged when the lookup itself fails, so
+/// an outage is not reported as a denial.
 async fn resolve(store: &LibraryStore, actor: &EnrollmentActor) -> Result<Resolved> {
     match actor {
         EnrollmentActor::Operator { id } => Ok(Resolved::Admin {
             audit: format!("operator:{id}"),
         }),
         EnrollmentActor::User { user_id } => {
-            let user = active_user(store, *user_id).await.map_err(|_| {
-                LibraryError::Forbidden(format!("user {user_id} is not an active user"))
-            })?;
+            let user = active_user(store, *user_id)
+                .await
+                .map_err(|err| match err {
+                    LibraryError::NotFound(_) | LibraryError::Invalid(_) => {
+                        LibraryError::Forbidden(format!("user {user_id} is not an active user"))
+                    }
+                    other => other,
+                })?;
             if user.role == UserRole::Owner {
                 Ok(Resolved::Admin {
                     audit: format!("owner:{user_id}"),

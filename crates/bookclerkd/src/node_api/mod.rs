@@ -5,6 +5,10 @@
 //! link's secret appears once, in the `url` fragment of the mint response;
 //! it is never logged.
 //!
+//! `DELETE /api/config/node-credentials/{node_id}` revokes an enrolled
+//! host's credential: the operator or an Owner for any host, anyone else
+//! for the hosts they own.
+//!
 //! `/api/config/host-enrollment` reads and toggles the cluster's
 //! host-enrollment switch (`core.host_enrollment`). Any signed-in user may
 //! read it; only the operator or an active Owner may change it.
@@ -26,8 +30,9 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use bookclerk_library::control_plane::{
     list_enrollment_links, load_host_enrollment, mint_enrollment_link, redeem_enrollment_link,
-    revoke_enrollment_link, set_host_enrollment_enabled, verify_cluster_owner, ConfigActor,
-    EnrollmentActor, EnrollmentLink, EnrollmentSecret, RedeemRequest,
+    revoke_enrollment_link, revoke_node_credential, set_host_enrollment_enabled,
+    verify_cluster_owner, ConfigActor, EnrollmentActor, EnrollmentLink, EnrollmentSecret,
+    NodeCredential, RedeemRequest,
 };
 use bookclerk_library::LibraryError;
 use serde::Deserialize;
@@ -148,6 +153,48 @@ pub async fn delete_node_invite(
         .await
         .map_err(events_error)?;
     Ok(Json(json!({ "link": link_json(&link) })))
+}
+
+/// JSON for one host credential; public keys only.
+fn credential_json(credential: &NodeCredential) -> serde_json::Value {
+    json!({
+        "node_id": credential.node_id,
+        "link_id": credential.link_id,
+        "enrolled_at": credential.enrolled_at,
+        "revoked_at": credential.revoked_at,
+        "last_connected_at": credential.last_connected_at,
+    })
+}
+
+/// `DELETE /api/config/node-credentials/{node_id}`: revoke an enrolled
+/// host's credential so it can no longer connect.
+///
+/// # Arguments
+///
+/// * `caller` - Who is asking; the operator or an Owner may revoke any host,
+///   any other active user only the hosts they own.
+/// * `node_id` - The host node to revoke.
+///
+/// # Returns
+///
+/// `{credential}` with `revoked_at` set; revoking twice keeps the first
+/// time.
+///
+/// # Errors
+///
+/// Returns 404 when the node is unknown or not the caller's, 400 when the
+/// node has no host credential, 403 for a disabled user, and an error
+/// response when the write fails.
+pub async fn delete_node_credential(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<UserCaller>,
+    Path(node_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let library = state.library_snapshot().await;
+    let credential = revoke_node_credential(&library, &actor(caller), node_id.trim())
+        .await
+        .map_err(events_error)?;
+    Ok(Json(json!({ "credential": credential_json(&credential) })))
 }
 
 /// `PUT /api/config/host-enrollment` body.
@@ -476,6 +523,10 @@ mod tests {
                 "/api/config/node-invites/{id}",
                 delete(super::delete_node_invite),
             )
+            .route(
+                "/api/config/node-credentials/{node_id}",
+                delete(super::delete_node_credential),
+            )
             .layer(axum::Extension(caller))
             .with_state(Arc::clone(state))
     }
@@ -590,6 +641,58 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{revoked}");
         assert_eq!(revoked["link"]["state"], "revoked");
+    }
+
+    #[tokio::test]
+    async fn a_user_revokes_only_the_hosts_they_own() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = test_state(&files).await;
+        let member = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        let other = store
+            .create_user(bookclerk_library::UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap();
+        let minted = bookclerk_library::control_plane::mint_enrollment_link(
+            &store,
+            &bookclerk_library::control_plane::EnrollmentActor::User { user_id: member.id },
+            member.id,
+            "",
+            None,
+        )
+        .await
+        .unwrap();
+        let local = enroll_route(&state, "127.0.0.1:5000", "127.0.0.1:8787");
+        let (status, enrolled) = send(
+            &local,
+            "POST",
+            "/api/node/v1/enroll",
+            json!({
+                "link_id": minted.link.link_id,
+                "secret": minted.secret.expose(),
+                "sign_pk": key(4),
+                "box_pk": key(5),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{enrolled}");
+        let uri = format!(
+            "/api/config/node-credentials/{}",
+            enrolled["node_id"].as_str().unwrap()
+        );
+
+        let as_other = invite_routes(&state, UserCaller::User { user_id: other.id });
+        let (status, _) = send(&as_other, "DELETE", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let as_member = invite_routes(&state, UserCaller::User { user_id: member.id });
+        let (status, revoked) = send(&as_member, "DELETE", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{revoked}");
+        assert!(revoked["credential"]["revoked_at"].is_string(), "{revoked}");
+        assert!(revoked["credential"].get("sign_public_key").is_none());
     }
 
     #[tokio::test]

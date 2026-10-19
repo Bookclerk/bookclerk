@@ -964,6 +964,12 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
             "/api/config/node-invites/{id}",
             delete(crate::node_api::delete_node_invite),
         )
+        // The library lets the operator or an Owner revoke any host and
+        // anyone else only the hosts they own.
+        .route(
+            "/api/config/node-credentials/{node_id}",
+            delete(crate::node_api::delete_node_credential),
+        )
         // Any user reads the switch; the handler lets only the operator or
         // an active Owner change it.
         .route(

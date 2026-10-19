@@ -211,6 +211,10 @@ bookclerk nodes invites revoke <link_id>
 bookclerk nodes revoke <node_id>                # revoke an enrolled host
 ```
 
+Any signed-in user may also revoke a host they own with
+`DELETE /api/config/node-credentials/<node_id>`; the operator or an Owner
+may revoke any host.
+
 The link is `<public_origin>/enroll#bcn1.<link_id>.<secret>`. The secret is in
 the URL fragment, so proxies and access logs never see it; the database keeps
 only its hash. Set `integrations.public_origin` so the link points somewhere a

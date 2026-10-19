@@ -832,7 +832,9 @@ Built in the first H-4 slice:
 - Mint, list, and revoke links (`bookclerk nodes invite --user <id|login>
   [--ttl 24h]`, `bookclerk nodes invites list|revoke`, and
   `POST|GET /api/config/node-invites`, `DELETE …/{id}` for any signed-in
-  user). A link is `https://<public_origin>/enroll#bcn1.<link_id>.<secret>`;
+  user). Revoke an enrolled host with `bookclerk nodes revoke <node_id>` or
+  `DELETE /api/config/node-credentials/{node_id}` (the operator or an Owner
+  for any host, anyone else for their own). A link is `https://<public_origin>/enroll#bcn1.<link_id>.<secret>`;
   the 32-byte secret sits in the fragment, is printed once, and is never
   logged. Links live 24 h by default, 5 minutes to 7 days.
 - Redeem is one canonical batch: the claim `UPDATE` re-checks the hash,
