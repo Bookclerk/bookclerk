@@ -1240,11 +1240,12 @@ operator approves it, and only with what was approved.
   `SECRETS` only under a consented `secrets` binding, and the store
   credentials of the job's accounts. They live in memory only, redact
   their `Debug`, and are zeroized on drop.
-- **Still nothing runs.** No job kind runs on a Host yet
-  (`HOST_RUNNABLE_KINDS` is empty): a scan's results have no way back
-  (not decided), and an acquire waits for streamed uploads (step 9). The
-  in-process job transport refuses a handed job outright, since it would
-  run against the Host's own library.
+- **Nothing ran yet (historical).** When step 8 landed no job kind ran on
+  a Host (`HOST_RUNNABLE_KINDS` was empty): a scan's results had no way
+  back and an acquire waited for streamed uploads. Step 9 ([Host scans and
+  streamed uploads](#host-scans-and-streamed-uploads)) enables `scan` and
+  `acquire`. The in-process job transport still refuses a handed job
+  outright, since it would run against the Host's own library.
 - **Tests** (`cluster_link/tests.rs`): an Administrator's Host records the
   request, reports `awaiting_host_consent`, fetches nothing and never
   claims the queued scan; unsigned, malformed and forged artifact requests
@@ -1277,7 +1278,27 @@ staging on the owner).
   consent revoked) drops the running guest call within 50 ms. Dropping the
   guest session shuts the guest down and fences its host-side authority,
   so it stops using the handed credentials; an in-flight title upload is
-  dropped too.
+  dropped too. A cancelled run never reports success: a guest that stops
+  cooperatively and returns what it had is answered `cancelled`, and the
+  client turns a result that comes back after the cancel into a failure
+  (only the owner's own completion, by the closing commit, stands).
+- **Scan rows.** A batch is accepted only for the job's source plugin,
+  never for a destination plugin the job also requires.
+- **Key scope.** The owner binds every key of an upload to the granted
+  title. For each destination it computes the title's folder from its own
+  row and that destination's naming options, the way a local acquire
+  would (with podcast episodes saved to the parent's folder, the
+  episode's own folder is also accepted). Each copy must lie below that
+  folder; a template with no folder admits only top-level keys. A key
+  another title already has (its recorded audio or PDF key, or a sidecar
+  of that audio) is refused too (`key_out_of_scope`,
+  `key_of_another_book`). The Host's keys never decide where a title goes.
+  Inside a folder titles share, another title's chapter or part files are
+  not recorded, so they are not protected by name.
+- **Host paths.** The Host uses the owner's job and title ids as work
+  directory names only when each is one plain segment (ASCII letters,
+  digits, `-`, `_`). Any other id fails the job before anything is
+  created or removed.
 - **The Host's own destinations.** A title is uploaded only after every
   output destination deployed on the Host (H-2) took its copy. A failed
   copy fails the title (copies already written for it are removed), so
@@ -1290,7 +1311,8 @@ staging on the owner).
 - **Abort deletes.** Files go straight to the destinations, so an abort
   rolls back by deleting. An upload aborted after some files arrived (its
   fence lost before a later file or the commit, the destinations changed,
-  the title re-sent, or the job finished or lost its fence without it)
+  the title re-sent, or the job finished, was released, or lost its fence
+  without it)
   has every received copy deleted by the receiving owner node. A file that
   finished streaming just as its upload was aborted is deleted at once. An
   upload received by another owner node is left to that node and logged.

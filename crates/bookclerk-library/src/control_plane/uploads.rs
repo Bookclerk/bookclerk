@@ -38,7 +38,7 @@ use base64::Engine as _;
 use bookclerk_node_proto::{UploadFile, MAX_UPLOAD_FILES};
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore as _;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QuerySelect};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -81,6 +81,40 @@ struct Manifest {
     pdf_key: Option<String>,
 }
 
+/// One output destination of the receiving owner node an upload is
+/// granted for, with where the title may be written there.
+///
+/// The owner computes `title_folders` itself, from its own library row of
+/// the granted title and that destination's naming options, exactly as a
+/// local acquire would name the title; the Host's keys are never trusted to
+/// say where a title belongs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadDestination {
+    /// The destination's id (`local`, `s3`).
+    pub id: String,
+    /// The folders the title's files may be written under on this
+    /// destination: a key must lie below one of them. An empty folder is
+    /// the destination's root and admits only top-level keys. Empty means
+    /// nothing may be written there.
+    pub title_folders: Vec<String>,
+}
+
+impl UploadDestination {
+    /// True when `key` lies in this destination's scope for the title.
+    #[must_use]
+    pub fn admits(&self, key: &str) -> bool {
+        self.title_folders.iter().any(|folder| {
+            if folder.is_empty() {
+                !key.contains('/')
+            } else {
+                key.strip_prefix(folder.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .is_some_and(|rest| !rest.is_empty())
+            }
+        })
+    }
+}
+
 /// What a Host asks to upload for one title.
 #[derive(Debug, Clone, Copy)]
 pub struct UploadGrantRequest<'a> {
@@ -95,11 +129,12 @@ pub struct UploadGrantRequest<'a> {
     pub pdf_key: Option<&'a str>,
     /// Every file, in upload order.
     pub files: &'a [UploadFile],
-    /// The receiving owner node's output destination ids, the primary
-    /// first. Each must receive at least one file and every copy must name
-    /// one of them, so each destination is written under the keys its own
-    /// naming options give (a closing upload passes none).
-    pub destinations: &'a [String],
+    /// The receiving owner node's output destinations, the primary first,
+    /// each with the title's key scope there. Each must receive at least
+    /// one file and every copy must name one of them and lie in its scope,
+    /// so each destination is written only under the title's own keys (a
+    /// closing upload passes none).
+    pub destinations: &'a [UploadDestination],
 }
 
 /// Outcome of [`grant_upload`].
@@ -287,8 +322,9 @@ async fn job_titles_remaining(
 }
 
 /// Checks the declared files: well formed, every copy on one of the
-/// receiving node's destinations, unique keys per destination, every
-/// destination written, and the primary (and PDF) among the primary
+/// receiving node's destinations and inside the granted title's key scope
+/// there ([`UploadDestination::admits`]), unique keys per destination,
+/// every destination written, and the primary (and PDF) among the primary
 /// destination's copies. A closing upload (no title) declares none.
 fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     if req.book_uuid.is_empty() {
@@ -300,18 +336,22 @@ fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     let Some(primary) = req.destinations.first() else {
         return Some("no_destination");
     };
-    let known: BTreeSet<&str> = req.destinations.iter().map(String::as_str).collect();
+    let known: BTreeSet<&str> = req.destinations.iter().map(|d| d.id.as_str()).collect();
     if known.len() != req.destinations.len() {
         return Some("invalid_manifest");
     }
+    let scope = |id: &str| req.destinations.iter().find(|d| d.id == id);
     let mut keys = BTreeSet::new();
     for file in req.files {
         if !file.is_well_formed() {
             return Some("invalid_manifest");
         }
         for copy in &file.copies {
-            if !known.contains(copy.destination.as_str()) {
+            let Some(destination) = scope(copy.destination.as_str()) else {
                 return Some("destinations_changed");
+            };
+            if !destination.admits(&copy.key) {
+                return Some("key_out_of_scope");
             }
             if !keys.insert((copy.destination.as_str(), copy.key.as_str())) {
                 return Some("invalid_manifest");
@@ -322,11 +362,75 @@ fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
     if written != known {
         return Some("destinations_changed");
     }
-    let on_primary = |key: &str| keys.contains(&(primary.as_str(), key));
+    let on_primary = |key: &str| keys.contains(&(primary.id.as_str(), key));
     if !on_primary(req.primary_key) || req.pdf_key.is_some_and(|key| !on_primary(key)) {
         return Some("invalid_manifest");
     }
     None
+}
+
+/// True when a copy of `files` would land on a file another library title
+/// already has: its recorded audio or PDF key, or a sidecar of that audio
+/// (the same file stem with any further extension, such as its cover,
+/// `.cue` or chapter JSON). Every copy is checked, on every destination.
+///
+/// # Errors
+///
+/// Returns an error when the read fails.
+async fn claims_another_books_key(
+    store: &LibraryStore,
+    book_uuid: &str,
+    files: &[UploadFile],
+) -> Result<bool> {
+    let others: Vec<(Option<String>, Option<String>)> = books::Entity::find()
+        .select_only()
+        .column(books::Column::StorageKey)
+        .column(books::Column::PdfStorageKey)
+        .filter(books::Column::Uuid.ne(book_uuid))
+        .filter(
+            sea_orm::Condition::any()
+                .add(books::Column::StorageKey.is_not_null())
+                .add(books::Column::PdfStorageKey.is_not_null()),
+        )
+        .into_tuple()
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    let mut exact = BTreeSet::new();
+    let mut stems = BTreeSet::new();
+    for (audio, pdf) in others {
+        for key in audio.into_iter().chain(pdf) {
+            if let Some(stem) = file_stem_key(&key) {
+                stems.insert(stem.to_string());
+            }
+            exact.insert(key);
+        }
+    }
+    Ok(files.iter().flat_map(|file| &file.copies).any(|copy| {
+        let key = copy.key.as_str();
+        exact.contains(key) || sidecar_stems(key).any(|stem| stems.contains(stem))
+    }))
+}
+
+/// `key` without its file name's last extension (`A/T/T.m4b` → `A/T/T`);
+/// `None` when the file name has none.
+fn file_stem_key(key: &str) -> Option<&str> {
+    let name_at = key.rfind('/').map_or(0, |at| at + 1);
+    key[name_at..]
+        .rfind('.')
+        .filter(|&dot| dot > 0)
+        .map(|dot| &key[..name_at + dot])
+}
+
+/// Every audio stem `key` would be a sidecar of: `key` cut at each `.` of
+/// its file name (`A/T/T.chapters.flat.json` → `A/T/T`, `A/T/T.chapters`,
+/// `A/T/T.chapters.flat`).
+fn sidecar_stems(key: &str) -> impl Iterator<Item = &str> {
+    let name_at = key.rfind('/').map_or(0, |at| at + 1);
+    key[name_at..]
+        .match_indices('.')
+        .filter(|&(dot, _)| dot > 0)
+        .map(move |(dot, _)| &key[..name_at + dot])
 }
 
 /// Opens an upload of one title of the acquire job `node_id` holds at
@@ -337,8 +441,9 @@ fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static str> {
 /// acquire; the title exists, is one of the job's plugins and accounts (and
 /// the job's title, when it names one), and for a Host trusted only with
 /// its owner's accounts is one of that user's; and the manifest is well
-/// formed. An earlier open upload of the same title by the same job is
-/// aborted.
+/// formed, every key inside the title's own scope on its destination
+/// ([`UploadDestination`]) and none another title's ([`claims_another_books_key`]).
+/// An earlier open upload of the same title by the same job is aborted.
 ///
 /// # Errors
 ///
@@ -394,12 +499,15 @@ pub async fn grant_upload(
             }
             NodeTrust::Nothing => return Ok(UploadGrant::Lost),
         }
+        if claims_another_books_key(store, &book.uuid, req.files).await? {
+            return Ok(UploadGrant::Refused("key_of_another_book"));
+        }
     }
     let manifest = serde_json::to_string(&Manifest {
         destinations: if req.book_uuid.is_empty() {
             Vec::new()
         } else {
-            req.destinations.to_vec()
+            req.destinations.iter().map(|d| d.id.clone()).collect()
         },
         files: req.files.to_vec(),
         pdf_key: req.pdf_key.map(str::to_string),
@@ -704,12 +812,38 @@ pub async fn extend_job_uploads(
     Ok(updated.rows_affected)
 }
 
-/// True when the job finished successfully.
-async fn job_done(store: &LibraryStore, job_id: &str) -> Result<bool> {
-    Ok(store
+/// The answer to a commit of an upload already committed (a repeat, or a
+/// concurrent identical commit that landed first), keeping that result.
+///
+/// When the job is finished, any semaphore permit `node_id` still holds
+/// for it is given back: the commit that completed it may have failed
+/// before its own release, and a repeat must not leave the slots held
+/// until they expire. Releasing is idempotent (a permit already given back
+/// matches no row).
+///
+/// # Errors
+///
+/// Returns an error when a read or a release fails.
+async fn already_committed(
+    store: &LibraryStore,
+    node_id: &str,
+    job_id: &str,
+    limits: JobClaimLimits,
+) -> Result<UploadCommit> {
+    let Some(job) = store
         .get_job(job_id)
         .await?
-        .is_some_and(|job| job.state == JobState::Succeeded))
+        .filter(|job| job.state == JobState::Succeeded)
+    else {
+        return Ok(UploadCommit::Committed {
+            job_completed: false,
+        });
+    };
+    let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
+    release_permits(store, &permits).await?;
+    Ok(UploadCommit::Committed {
+        job_completed: true,
+    })
 }
 
 /// Commits an upload whose every file was received.
@@ -719,8 +853,9 @@ async fn job_done(store: &LibraryStore, job_id: &str) -> Result<bool> {
 /// completes the job, so `finish` must be `None`. The job's closing upload
 /// (no title) must carry `finish`, and completes the job with its detail
 /// as progress and gives its semaphore permits back, but only when no
-/// title of the job is left unacquired; otherwise it is refused
-/// (`titles_remaining`) and nothing is written.
+/// title of the job is left unacquired and the job's cancel was not
+/// requested; otherwise it is refused (`titles_remaining`,
+/// `job_cancelled`) and nothing is written.
 ///
 /// One canonical batch, every statement gated on the upload still being
 /// open, the job still running under this upload's fence, and the node's
@@ -741,9 +876,7 @@ pub async fn commit_upload(
         return Ok(UploadCommit::Refused("unknown_upload"));
     };
     if session.state == STATE_COMMITTED {
-        return Ok(UploadCommit::Committed {
-            job_completed: job_done(store, &session.job_id).await?,
-        });
+        return already_committed(store, &session.node_id, &session.job_id, limits).await;
     }
     if session.state != STATE_OPEN {
         return Ok(UploadCommit::Refused("upload_aborted"));
@@ -762,6 +895,11 @@ pub async fn commit_upload(
     match (session.book_uuid.is_empty(), finish) {
         (false, Some(_)) => return Ok(UploadCommit::Refused("not_a_closing_upload")),
         (true, None) => return Ok(UploadCommit::Refused("closing_upload_must_finish")),
+        (true, Some(_)) if job.cancel_requested => {
+            // A cancelled job never succeeds; the Host's failure report
+            // then ends it cancelled.
+            return Ok(UploadCommit::Refused("job_cancelled"));
+        }
         (true, Some(finish)) => {
             if job_titles_remaining(store, &session.node_id, &job, finish.download_episodes).await?
             {
@@ -877,7 +1015,7 @@ pub async fn commit_upload(
                 "UPDATE jobs SET state = 'succeeded', lease_owner = NULL, \
                    lease_expires_at = NULL, finished_at = ?, updated_at = ?, progress = ? \
                   WHERE id = ? AND state = 'running' AND lease_owner = ? \
-                    AND lease_generation = ? AND {gate_sql}"
+                    AND lease_generation = ? AND cancel_requested = 0 AND {gate_sql}"
             ),
             binds,
         ));
@@ -891,12 +1029,12 @@ pub async fn commit_upload(
     if batch::rows_affected(&reply, 0) != 1 {
         // A concurrent identical commit may have landed in between.
         let again = load_upload(store, upload_id).await?;
-        return Ok(match again {
-            Some(row) if row.state == STATE_COMMITTED => UploadCommit::Committed {
-                job_completed: job_done(store, &row.job_id).await?,
-            },
-            _ => UploadCommit::Lost,
-        });
+        return match again {
+            Some(row) if row.state == STATE_COMMITTED => {
+                already_committed(store, &row.node_id, &row.job_id, limits).await
+            }
+            _ => Ok(UploadCommit::Lost),
+        };
     }
     let job_completed = job_index.is_some_and(|index| batch::rows_affected(&reply, index) == 1);
     if job_completed {

@@ -78,7 +78,9 @@ pub const CANCEL_POLL: Duration = Duration::from_millis(50);
 
 /// Runs `work` until it ends or `cancel` turns true. On cancel the work is
 /// dropped (for the daemon's guests that shuts the guest down) and the
-/// answer is a `cancelled` error.
+/// answer is a `cancelled` error. Work that ends while `cancel` is set
+/// (a guest that stopped cooperatively, returning what it had so far) is
+/// answered `cancelled` too, never with its result.
 ///
 /// # Errors
 ///
@@ -94,7 +96,12 @@ pub async fn until_cancelled<T>(
     let mut every = tokio::time::interval(CANCEL_POLL);
     loop {
         tokio::select! {
-            out = &mut work => return out,
+            out = &mut work => {
+                if cancel.load(Ordering::SeqCst) {
+                    anyhow::bail!("cancelled");
+                }
+                return out;
+            }
             _ = every.tick() => {
                 if cancel.load(Ordering::SeqCst) {
                     anyhow::bail!("cancelled");
@@ -366,6 +373,35 @@ fn new_book_from(book: &BookRecord) -> NewBook {
     }
 }
 
+/// The acquire request for `book` named with `options`: what a host's
+/// acquire runs, and what the owner computes the title's key scope from
+/// (so both name the title the same way).
+#[must_use]
+pub fn acquire_request(
+    cfg: &bookclerk_config::Config,
+    book: &BookRecord,
+    options: &DownloadOptions,
+) -> bookclerk_acquire::AcquireRequest {
+    bookclerk_acquire::AcquireRequest {
+        asin: book.download_product_id().to_string(),
+        book_uuid: Some(book.uuid.clone()),
+        source: book.source.clone(),
+        account_id: book.account_id.clone(),
+        title: book.title.clone(),
+        authors: book.authors.clone(),
+        narrators: book.narrators.clone(),
+        series: book.series.clone(),
+        series_index: book.series_index.clone(),
+        options: options.clone(),
+        files_dir: cfg.paths().files_dir.clone(),
+        cache_dir: cfg.download_cache_dir(),
+        force: false,
+        write_destinations: None,
+        job_id: None,
+        temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+    }
+}
+
 /// Runs the acquire pipeline for `title` against `scratch`, writing only
 /// to `outbox`.
 async fn acquire_into(
@@ -401,25 +437,7 @@ async fn acquire_into(
         primary: primary.kind,
         multi_destination: cfg.output.multi_destination,
     };
-    let paths = cfg.paths();
-    let request = bookclerk_acquire::AcquireRequest {
-        asin: book.download_product_id().to_string(),
-        book_uuid: Some(book.uuid.clone()),
-        source: book.source.clone(),
-        account_id: book.account_id.clone(),
-        title: book.title.clone(),
-        authors: book.authors.clone(),
-        narrators: book.narrators.clone(),
-        series: book.series.clone(),
-        series_index: book.series_index.clone(),
-        options: primary.options.clone(),
-        files_dir: paths.files_dir.clone(),
-        cache_dir: cfg.download_cache_dir(),
-        force: false,
-        write_destinations: None,
-        job_id: None,
-        temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
-    };
+    let request = acquire_request(cfg, book, &primary.options);
     let result =
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
             .await?;
@@ -593,6 +611,11 @@ async fn host_scan<G: HostGuests>(
     if !batch.is_empty() {
         written += send(batch).await?;
     }
+    // A scan cancelled while its last batch went out did not finish: its
+    // rows so far stay written, but it never reports success.
+    if ctx.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
     tracing::info!(
         job_id = %host.job.job.id,
         fence = host.job.fence,
@@ -614,7 +637,7 @@ async fn host_acquire<G: HostGuests>(
     bindings: &HostJobBindings,
     ctx: &JobExecCtx,
 ) -> anyhow::Result<String> {
-    let job_dir = guests.work_dir().join(&host.job.job.id);
+    let job_dir = work_path(&guests.work_dir(), &host.job.job.id)?;
     let result = acquire_titles(guests, host, bindings, ctx, &job_dir).await;
     let _ = tokio::fs::remove_dir_all(&job_dir).await;
     let (acquired, failed) = result?;
@@ -678,7 +701,10 @@ async fn acquire_titles<G: HostGuests>(
             }
             let book: BookRecord =
                 serde_json::from_value(target.book).context("the owner's library row")?;
-            let outbox = job_dir.join(&target.book_uuid);
+            if book.uuid != target.book_uuid {
+                anyhow::bail!("the owner's library row is not the title it planned");
+            }
+            let outbox = work_path(job_dir, &target.book_uuid)?;
             let title = HostTitle {
                 book,
                 destinations: destinations.clone(),
@@ -704,6 +730,36 @@ async fn acquire_titles<G: HostGuests>(
             }
         }
     }
+}
+
+/// Longest owner-supplied id used as a path segment under the work dir.
+pub const MAX_WORK_ID_BYTES: usize = 128;
+
+/// True when `id` (a job or title id the owner sent) is safe as one path
+/// segment: non-empty, at most [`MAX_WORK_ID_BYTES`], and only ASCII
+/// letters, digits, `-` and `_`, so no separator, `.` / `..`, drive or
+/// root prefix, or other special name can come through.
+#[must_use]
+pub fn is_work_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_WORK_ID_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// `dir`'s child named by the owner-supplied `id`, refused unless `id` is
+/// one plain segment ([`is_work_id`]), so the host's job scratch (created,
+/// written and removed recursively) never leaves `dir`.
+///
+/// # Errors
+///
+/// Returns an error when `id` is not a usable segment.
+pub fn work_path(dir: &Path, id: &str) -> anyhow::Result<PathBuf> {
+    if !is_work_id(id) {
+        anyhow::bail!("the owner sent a job or title id this host cannot use as a path");
+    }
+    Ok(dir.join(id))
 }
 
 /// Size and SHA-256 of a file, read once.

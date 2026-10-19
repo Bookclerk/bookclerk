@@ -145,7 +145,7 @@ pub use trust::{
 pub use uploads::{
     abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
     grant_upload, job_titles, load_upload, names_book, record_upload_file, upload_fence_live,
-    UploadCommit, UploadFinish, UploadGrant, UploadGrantRequest, UploadSession,
+    UploadCommit, UploadDestination, UploadFinish, UploadGrant, UploadGrantRequest, UploadSession,
     UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{

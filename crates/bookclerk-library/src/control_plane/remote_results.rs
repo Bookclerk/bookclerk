@@ -9,7 +9,8 @@
 //! - the fence is the job's live lease for this node, and the node is still
 //!   trusted with the job ([`node_may_claim_job`]), so a demotion, an
 //!   unlinked account or a revoked credential stops the next batch;
-//! - the job is a scan, and the rows' plugin is one the job runs;
+//! - the job is a scan, and the rows' plugin is the job's source plugin
+//!   ([`job_source_plugin_key`]), never a destination it also requires;
 //! - every row names a store account that exists under that plugin, is the
 //!   job's account when the job names one, and, for a Host trusted only
 //!   with its owner's accounts, is one of that user's accounts.
@@ -19,7 +20,7 @@
 
 use std::collections::BTreeSet;
 
-use super::job_routing::job_plugin_keys;
+use super::job_routing::job_source_plugin_key;
 use super::remote_work::{fenced_job, remote_job_fence};
 use super::trust::{accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust};
 use crate::error::Result;
@@ -76,8 +77,9 @@ pub async fn accept_scan_results(
     if job.kind != JobKind::Scan {
         return Ok(ScanAccept::Refused("not_a_scan"));
     }
-    let keys = job_plugin_keys(store, &job).await?.unwrap_or_default();
-    if !keys.contains(plugin_key) {
+    // Only the job's source plugin scans; a destination or integration
+    // plugin the job also requires never produces library rows.
+    if job_source_plugin_key(store, &job).await?.as_deref() != Some(plugin_key) {
         return Ok(ScanAccept::Refused("plugin_not_in_job"));
     }
     let owned = match node_trust(store, node_id, Claimant::Remote).await? {

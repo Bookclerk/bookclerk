@@ -578,6 +578,10 @@ async fn finish(
 }
 
 /// `release`: the job goes back to pending unspent.
+///
+/// A released run (a consent revoke, a host shutting down) commits none of
+/// its open uploads, so they are aborted and what they had received is
+/// deleted, as for `complete` / `fail`.
 async fn finish_release(
     library: &LibraryStore,
     host: &HostContext,
@@ -585,15 +589,17 @@ async fn finish_release(
     job_id: String,
     fence: i64,
 ) -> bookclerk_library::Result<Frame> {
-    Ok(
-        match release_remote_job(library, &host.node_id, &job_id, fence, host.settings.limits)
-            .await?
-        {
-            RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
-            RemoteFinish::Lost => lost(id, job_id, fence),
-            RemoteFinish::Refused(reason) => error(id, "refused", reason),
-        },
-    )
+    let released =
+        release_remote_job(library, &host.node_id, &job_id, fence, host.settings.limits).await?;
+    if matches!(released, RemoteFinish::Done | RemoteFinish::Lost) {
+        super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence)
+            .await;
+    }
+    Ok(match released {
+        RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
+        RemoteFinish::Lost => lost(id, job_id, fence),
+        RemoteFinish::Refused(reason) => error(id, "refused", reason),
+    })
 }
 
 /// A version as a host receives it.

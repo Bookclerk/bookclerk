@@ -1413,6 +1413,15 @@ async fn run_job<R: HostJobRunner>(
             runner.run(ctx).await
         }
     };
+    // A run that stopped because it was cancelled (the operator's cancel,
+    // a lost fence) never reports success, even when the runner returned
+    // what it had so far; only the owner's own completion stands.
+    let result = match result {
+        Ok(_) if cancel.load(Ordering::SeqCst) && !finished.load(Ordering::SeqCst) => Err(
+            HostJobError::new("cancelled", "the job was cancelled before it finished"),
+        ),
+        other => other,
+    };
     let given_back = *lock(&release);
     if lost.load(Ordering::SeqCst) {
         tracing::warn!(%job_id, fence, "discarding the result of a job whose fence was lost");

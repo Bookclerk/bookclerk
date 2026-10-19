@@ -462,7 +462,15 @@ pub async fn finish_remote_job(
             if !node_may_claim_job(store, node_id, Claimant::Remote, &job).await? {
                 return Ok(RemoteFinish::Lost);
             }
-            store.complete_job(&fence, detail).await?
+            if job.cancel_requested {
+                // A cancelled job never succeeds, whatever the Host
+                // reports; it ends cancelled.
+                store
+                    .fail_job(&fence, "cancelled", "cancelled by operator")
+                    .await?
+            } else {
+                store.complete_job(&fence, detail).await?
+            }
         }
         RemoteOutcome::Fail { kind, message } => store.fail_job(&fence, kind, message).await?,
     };
