@@ -224,7 +224,7 @@ impl Refusal {
 struct Authed {
     /// Node id the signature proved.
     node_id: String,
-    /// This connection's slot serial from [`register`].
+    /// This connection's slot serial from [`register_pending`].
     serial: u64,
     /// Close requests for this connection.
     close: watch::Receiver<Option<u16>>,
