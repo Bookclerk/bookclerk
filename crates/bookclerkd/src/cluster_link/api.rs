@@ -1,7 +1,8 @@
 //! Operator API for host consent (H-4 design, step 8):
 //!
 //! - `GET /api/config/cluster-consents`: what each owner cluster asks to
-//!   run here and how this host stands on it;
+//!   run here (version, grant, and the archive URL and digest this host
+//!   would fetch) and how this host stands on it;
 //! - `POST /api/config/cluster-consents/approve`: approve one request by
 //!   the `request_digest` the listing shows (refused with `409` when the
 //!   recorded request is no longer that one), optionally narrowed (denied
@@ -46,6 +47,10 @@ pub(crate) fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
         "plugin_key": row.plugin_key,
         "requested_version": row.requested_version,
         "requested_grant": parse(Some(&row.requested_grant_json)),
+        "requested_artifact": {
+            "url": row.requested_artifact_url,
+            "archive_sha256": row.requested_artifact_sha256,
+        },
         "request_digest": row.request_digest(),
         "approved_version": row.version,
         "grant": parse(row.grant_json.as_deref()),

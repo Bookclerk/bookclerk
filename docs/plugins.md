@@ -1299,7 +1299,10 @@ an alias another plugin's active version answers to.
 archive up to 1 MiB is stored in the database (`blob:sha256:<hex>`) so every
 node can materialize it. A larger local archive is referenced in place as a
 `file://` URL, which only nodes that see that path (shared storage) can
-materialize; the others record an `error` observation.
+materialize; the others record an `error` observation. A host node of
+another cluster fetches an owner's `https:` artifact only when its host
+operator approved that exact URL and digest (they are part of the reviewed
+request) and neither its host nor any redirect hop's is local or private; see [Host consent](adr/control-plane.md#host-consent).
 
 **The active version.** Each PluginKey has at most one active version. The
 first installed version becomes active; a later one becomes active with

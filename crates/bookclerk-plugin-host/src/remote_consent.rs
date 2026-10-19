@@ -302,7 +302,8 @@ pub enum RemoteConsentState {
     Consented(Box<PluginGrant>),
     /// Never approved (or revoked): waiting for the host's operator.
     Pending,
-    /// Approved once, but the request now asks for more than was reviewed.
+    /// Approved once, but the request now asks for more than was reviewed
+    /// or names another archive.
     NeedsReapproval,
     /// The request or the stored approval does not parse; nothing runs.
     Invalid,
@@ -367,6 +368,34 @@ pub fn remote_consent_state(
         return RemoteConsentState::NeedsReapproval;
     }
     RemoteConsentState::Consented(Box::new(narrow_remote_grant(&requested, &consent)))
+}
+
+/// Evaluates a stored consent row: [`remote_consent_state`] over its
+/// grants, except that an approval of another archive (the owner changed
+/// the artifact URL or digest since the operator approved) needs approval
+/// again, whatever the grant.
+///
+/// # Arguments
+///
+/// * `row` - The consent row as stored.
+#[must_use]
+pub fn remote_row_consent_state(
+    row: &bookclerk_library::control_plane::RemotePluginConsent,
+) -> RemoteConsentState {
+    let state = remote_consent_state(
+        &row.plugin_key,
+        &row.requested_grant_json,
+        row.approved_request_json.as_deref(),
+        row.grant_json.as_deref(),
+    );
+    match state {
+        RemoteConsentState::Consented(_)
+            if !row.approved_artifact_matches(row.requested_artifact()) =>
+        {
+            RemoteConsentState::NeedsReapproval
+        }
+        other => other,
+    }
 }
 
 /// True when a platform plugin's request may be approved without asking:
@@ -459,6 +488,7 @@ pub async fn approve_remote_request(
             plugin_key,
             version: &row.requested_version,
             reviewed_request_json: &row.requested_grant_json,
+            reviewed_artifact: row.requested_artifact(),
             grant_json: &grant_json,
             approver,
         },
@@ -707,32 +737,116 @@ mod tests {
         const { assert!(WorkerdLimits::DEFAULT_CPU_MS > 10) };
     }
 
+    /// The archive the owner deploys in these tests.
+    const ARTIFACT: bookclerk_library::control_plane::RemoteArtifactRef<'static> =
+        bookclerk_library::control_plane::RemoteArtifactRef {
+            url: "https://registry.example/store-1.0.0.tar.gz",
+            archive_sha256: "ab",
+        };
+
+    async fn memory_store() -> bookclerk_library::LibraryStore {
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        bookclerk_library::LibraryStore::from_connection(db)
+    }
+
+    #[tokio::test]
+    async fn another_archive_needs_approval_again() {
+        use bookclerk_library::control_plane::{
+            record_remote_plugin_request, RemoteApprover, RemoteArtifactRef,
+        };
+        let store = memory_store().await;
+        let grant = json(&requested());
+        let key = requested().plugin_key;
+        let recorded =
+            record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &grant, ARTIFACT)
+                .await
+                .unwrap();
+        let approved = approve_remote_request(
+            &store,
+            "cluster-a",
+            &key,
+            &recorded.request_digest(),
+            &RemoteNarrowing::default(),
+            RemoteApprover::Operator("operator"),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            remote_row_consent_state(&approved),
+            RemoteConsentState::Consented(_)
+        ));
+
+        // The owner keeps the version and grant but points the download
+        // elsewhere: the approval no longer holds.
+        for moved in [
+            RemoteArtifactRef {
+                url: "https://10.0.0.5/store.tar.gz",
+                ..ARTIFACT
+            },
+            RemoteArtifactRef {
+                archive_sha256: "cd",
+                ..ARTIFACT
+            },
+        ] {
+            let now =
+                record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &grant, moved)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                remote_row_consent_state(&now),
+                RemoteConsentState::NeedsReapproval
+            );
+            assert_ne!(now.request_digest(), recorded.request_digest());
+        }
+        // Pointing it back restores what was approved.
+        let back =
+            record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &grant, ARTIFACT)
+                .await
+                .unwrap();
+        assert!(matches!(
+            remote_row_consent_state(&back),
+            RemoteConsentState::Consented(_)
+        ));
+    }
+
     #[tokio::test]
     async fn an_approval_names_the_exact_request_it_reviewed() {
         use bookclerk_library::control_plane::{
             load_remote_plugin_consent, record_remote_plugin_request, revoke_remote_plugin,
             RemoteApprover,
         };
-        let db = bookclerk_plugin_database_sqlite::open_memory()
-            .await
-            .unwrap();
-        bookclerk_library::apply_host_schema(&db).await.unwrap();
-        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let store = memory_store().await;
         let reviewed = requested();
         let key = reviewed.plugin_key.clone();
-        let seen =
-            record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &json(&reviewed))
-                .await
-                .unwrap()
-                .request_digest();
+        let seen = record_remote_plugin_request(
+            &store,
+            "cluster-a",
+            &key,
+            "1.0.0",
+            &json(&reviewed),
+            ARTIFACT,
+        )
+        .await
+        .unwrap()
+        .request_digest();
 
         // The owner widens the grant under the same version after the
         // operator looked: the reviewed digest no longer matches.
         let mut changed = reviewed.clone();
         changed.domains.insert("tracker.example".into());
-        let now = record_remote_plugin_request(&store, "cluster-a", &key, "1.0.0", &json(&changed))
-            .await
-            .unwrap();
+        let now = record_remote_plugin_request(
+            &store,
+            "cluster-a",
+            &key,
+            "1.0.0",
+            &json(&changed),
+            ARTIFACT,
+        )
+        .await
+        .unwrap();
         assert_ne!(now.request_digest(), seen);
         let operator = RemoteApprover::Operator("operator");
         let refused = approve_remote_request(

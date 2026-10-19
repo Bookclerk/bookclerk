@@ -1155,8 +1155,9 @@ operator approves it, and only with what was approved.
   target the node and should run; empty for a node trusted with nothing)
   carries each instance's plugin key, whether it is the default instance,
   and the plugin's active version: manifest, settings schema, artifacts,
-  and the cluster operator's approved grant. The Host records that grant
-  as the request in `remote_plugin_consents` (keyed by owner cluster and
+  and the cluster operator's approved grant. The Host records that grant,
+  with the URL and archive digest of the artifact for its own target, as
+  the request in `remote_plugin_consents` (keyed by owner cluster and
   plugin key). An unchanged request writes nothing; a changed one keeps
   any stored approval, which is then re-evaluated.
 - **Approval.** `bookclerk clusters approve <plugin> --request <DIGEST>
@@ -1165,8 +1166,9 @@ operator approves it, and only with what was approved.
   `request_digest`, required) stores the request as reviewed plus the
   consent (the request minus the denials; naming something the request
   does not ask for is refused). The digest is the `request_digest` the
-  listing shows: SHA-256 over the requested version and the owner's grant
-  exactly as recorded. An approval whose digest is not the recorded
+  listing shows: SHA-256 over the requested version, the owner's grant
+  exactly as recorded, and the artifact URL and archive digest (shown with
+  it as `requested_artifact`). An approval whose digest is not the recorded
   request's is refused (`409 approval_refused` from the API), so a grant
   the owner changed after the operator looked, even under the same
   version, is never approved unseen; the write is also a compare-and-swap
@@ -1176,7 +1178,9 @@ operator approves it, and only with what was approved.
   and the state: `consented`,
   `awaiting_host_consent`, `awaiting_host_reapproval` (a new version asks
   for something outside what was reviewed: a domain, TCP target, CIDR,
-  binding, flag, entrypoint, larger budget, or network at all), or
+  binding, flag, entrypoint, larger budget, or network at all; or the
+  artifact URL or archive digest is not the approved one, even with the
+  grant unchanged), or
   `invalid_grant`.
 - **Effective grant.** The current request intersected with the consent.
   Removed network destinations are recorded as operator denials, so the
@@ -1214,7 +1218,12 @@ operator approves it, and only with what was approved.
   refusal is the same 404), is checked against its digest before it is
   stored in the Host's own `plugin_artifacts`, and extracted by the
   ordinary materializer, which checks the archive and payload digests.
-  `https:` archives are fetched by the materializer; `file:` is refused.
+  An `https:` archive is fetched by the materializer outside any plugin
+  jail, so it is fetched only when its URL and digest are the approved
+  ones, its host is not `localhost` or a loopback, private, link-local or
+  unspecified IP literal, and every redirect hop (at most 5, possibly to
+  another origin) passes the same check; the archive digest binds the
+  bytes. `file:` is refused.
   Nothing is written to the Host's `plugin_versions`, so its own
   reconciler never runs an owner plugin.
 - **Configuration.** `instance.config` answers `CONFIG` and, only for a

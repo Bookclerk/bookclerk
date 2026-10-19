@@ -113,7 +113,7 @@ pub use remote_catalog::{
 pub use remote_consents::{
     approve_remote_plugin, list_remote_plugin_consents, load_remote_plugin_consent,
     record_remote_plugin_request, remote_request_digest, revoke_remote_plugin, RemoteApproval,
-    RemoteApprover, RemotePluginConsent, REMOTE_CONSENT_PLATFORM,
+    RemoteApprover, RemoteArtifactRef, RemotePluginConsent, REMOTE_CONSENT_PLATFORM,
 };
 pub use remote_work::{
     claim_remote_job, finish_remote_job, job_secret_refs, release_remote_job, remote_job_fence,

@@ -10,6 +10,10 @@
 //! - `approved_request_json`: the owner's grant as the operator saw it.
 //!   A later request that asks for anything outside it (a new version with
 //!   a wider grant) needs approval again.
+//! - `approved_artifact_url` / `approved_artifact_sha256`: the archive this
+//!   host fetches, as the operator saw it. Any other URL or digest needs
+//!   approval again ([`RemotePluginConsent::approved_artifact_matches`]),
+//!   so an owner cannot point an approved plugin at another download.
 //! - `grant_json`: what the operator consented to, never wider than that
 //!   request. The grant a guest runs with is the owner's current request
 //!   intersected with it, so the host can narrow but never widen.
@@ -44,27 +48,52 @@ const MAX_TEXT_BYTES: usize = 512;
 /// Largest grant document stored.
 const MAX_GRANT_BYTES: usize = 256 * 1024;
 
+/// Longest artifact URL stored.
+const MAX_URL_BYTES: usize = 8 * 1024;
+
 /// Domain separator of [`remote_request_digest`].
-const REQUEST_DIGEST_DOMAIN: &[u8] = b"bookclerk.remote-plugin-request.v1\0";
+const REQUEST_DIGEST_DOMAIN: &[u8] = b"bookclerk.remote-plugin-request.v2\0";
+
+/// The archive an owner asks this host to fetch: the version's artifact for
+/// this host's target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteArtifactRef<'a> {
+    /// Where the archive is fetched from (`blob:sha256:` over the owner
+    /// link, or `https:`).
+    pub url: &'a str,
+    /// SHA-256 (lowercase hex) of the archive.
+    pub archive_sha256: &'a str,
+}
 
 /// The digest an operator approves a request by: SHA-256 (lowercase hex)
-/// over the requested version and the owner's grant exactly as recorded,
-/// each length-prefixed, so any change to either gives another digest.
+/// over the requested version, the owner's grant exactly as recorded and
+/// the archive's URL and digest, each length-prefixed, so any change to
+/// any of them gives another digest.
 ///
 /// # Arguments
 ///
 /// * `version` - The requested version.
 /// * `requested_grant_json` - The owner's grant as recorded.
+/// * `artifact` - The archive this host would fetch.
 ///
 /// # Returns
 ///
 /// 64 lowercase hex characters.
 #[must_use]
-pub fn remote_request_digest(version: &str, requested_grant_json: &str) -> String {
+pub fn remote_request_digest(
+    version: &str,
+    requested_grant_json: &str,
+    artifact: RemoteArtifactRef<'_>,
+) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(REQUEST_DIGEST_DOMAIN);
-    for part in [version, requested_grant_json] {
+    for part in [
+        version,
+        requested_grant_json,
+        artifact.url,
+        artifact.archive_sha256,
+    ] {
         hasher.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_be_bytes());
         hasher.update(part.as_bytes());
     }
@@ -82,10 +111,18 @@ pub struct RemotePluginConsent {
     pub requested_version: String,
     /// The owner's approved grant for that version (JSON).
     pub requested_grant_json: String,
+    /// URL of the archive the owner deploys to this host.
+    pub requested_artifact_url: String,
+    /// SHA-256 of that archive.
+    pub requested_artifact_sha256: String,
     /// Version this install's operator approved.
     pub version: Option<String>,
     /// The owner's grant when the operator approved (JSON).
     pub approved_request_json: Option<String>,
+    /// The archive URL when the operator approved.
+    pub approved_artifact_url: Option<String>,
+    /// The archive SHA-256 when the operator approved.
+    pub approved_artifact_sha256: Option<String>,
     /// The grant the operator consented to (JSON).
     pub grant_json: Option<String>,
     /// RFC 3339 approval time.
@@ -120,7 +157,34 @@ impl RemotePluginConsent {
     /// approval must name it.
     #[must_use]
     pub fn request_digest(&self) -> String {
-        remote_request_digest(&self.requested_version, &self.requested_grant_json)
+        remote_request_digest(
+            &self.requested_version,
+            &self.requested_grant_json,
+            self.requested_artifact(),
+        )
+    }
+
+    /// The archive the current request asks this host to fetch.
+    #[must_use]
+    pub fn requested_artifact(&self) -> RemoteArtifactRef<'_> {
+        RemoteArtifactRef {
+            url: &self.requested_artifact_url,
+            archive_sha256: &self.requested_artifact_sha256,
+        }
+    }
+
+    /// True when an approval is stored for exactly `artifact` (URL and
+    /// digest). The current request's archive must pass this before it is
+    /// fetched; an owner that changed either needs approval again.
+    ///
+    /// # Arguments
+    ///
+    /// * `artifact` - The archive about to be fetched.
+    #[must_use]
+    pub fn approved_artifact_matches(&self, artifact: RemoteArtifactRef<'_>) -> bool {
+        self.is_approved()
+            && self.approved_artifact_url.as_deref() == Some(artifact.url)
+            && self.approved_artifact_sha256.as_deref() == Some(artifact.archive_sha256)
     }
 }
 
@@ -131,8 +195,12 @@ impl From<remote_plugin_consents::Model> for RemotePluginConsent {
             plugin_key: row.plugin_key,
             requested_version: row.requested_version,
             requested_grant_json: row.requested_grant_json,
+            requested_artifact_url: row.requested_artifact_url,
+            requested_artifact_sha256: row.requested_artifact_sha256,
             version: row.version,
             approved_request_json: row.approved_request_json,
+            approved_artifact_url: row.approved_artifact_url,
+            approved_artifact_sha256: row.approved_artifact_sha256,
             grant_json: row.grant_json,
             approved_at: row.approved_at,
             approved_by: row.approved_by,
@@ -216,9 +284,11 @@ pub async fn list_remote_plugin_consents(
 }
 
 /// Records what the owner asks to run here: `version` of `plugin_key` with
-/// the owner's approved grant. A stored approval is kept; whether it still
-/// covers the new request is decided when the grant is evaluated. Writes
-/// nothing when the request is unchanged.
+/// the owner's approved grant, fetched from `artifact`. A stored approval
+/// is kept; whether it still covers the new request is decided when the
+/// grant is evaluated (and an approval of another archive never does,
+/// [`RemotePluginConsent::approved_artifact_matches`]). Writes nothing
+/// when the request is unchanged.
 ///
 /// # Errors
 ///
@@ -230,14 +300,18 @@ pub async fn record_remote_plugin_request(
     plugin_key: &str,
     version: &str,
     requested_grant_json: &str,
+    artifact: RemoteArtifactRef<'_>,
 ) -> Result<RemotePluginConsent> {
     bounded("cluster id", cluster_id, MAX_TEXT_BYTES)?;
     bounded("plugin key", plugin_key, MAX_TEXT_BYTES)?;
     bounded("version", version, MAX_TEXT_BYTES)?;
     grant_document("requested grant", requested_grant_json)?;
+    bounded("artifact url", artifact.url, MAX_URL_BYTES)?;
+    bounded("artifact digest", artifact.archive_sha256, MAX_TEXT_BYTES)?;
     if let Some(existing) = load_remote_plugin_consent(store, cluster_id, plugin_key).await? {
         if existing.requested_version == version
             && existing.requested_grant_json == requested_grant_json
+            && existing.requested_artifact() == artifact
         {
             return Ok(existing);
         }
@@ -247,8 +321,12 @@ pub async fn record_remote_plugin_request(
         plugin_key: Set(plugin_key.to_string()),
         requested_version: Set(version.to_string()),
         requested_grant_json: Set(requested_grant_json.to_string()),
+        requested_artifact_url: Set(artifact.url.to_string()),
+        requested_artifact_sha256: Set(artifact.archive_sha256.to_string()),
         version: Set(None),
         approved_request_json: Set(None),
+        approved_artifact_url: Set(None),
+        approved_artifact_sha256: Set(None),
         grant_json: Set(None),
         approved_at: Set(None),
         approved_by: Set(None),
@@ -264,6 +342,8 @@ pub async fn record_remote_plugin_request(
             .update_columns([
                 remote_plugin_consents::Column::RequestedVersion,
                 remote_plugin_consents::Column::RequestedGrantJson,
+                remote_plugin_consents::Column::RequestedArtifactUrl,
+                remote_plugin_consents::Column::RequestedArtifactSha256,
                 remote_plugin_consents::Column::UpdatedAt,
             ])
             .to_owned(),
@@ -309,6 +389,8 @@ pub struct RemoteApproval<'a> {
     pub version: &'a str,
     /// The owner's grant the operator reviewed, exactly as recorded.
     pub reviewed_request_json: &'a str,
+    /// The archive the operator reviewed, exactly as recorded.
+    pub reviewed_artifact: RemoteArtifactRef<'a>,
     /// The grant consented to (already checked to be no wider than the
     /// reviewed request).
     pub grant_json: &'a str,
@@ -318,7 +400,7 @@ pub struct RemoteApproval<'a> {
 
 /// Stores an approval, but only when the recorded request is still the
 /// one the operator reviewed: a request that changed in between (a new
-/// version, a wider grant) answers [`LibraryError::Conflict`] and nothing
+/// version, a wider grant, another archive) answers [`LibraryError::Conflict`] and nothing
 /// is written. An automatic approval ([`RemoteApprover::Platform`]) is
 /// likewise refused while a revoke is recorded; an operator approval
 /// clears it.
@@ -368,6 +450,16 @@ pub async fn approve_remote_plugin(
             sea_orm::sea_query::Expr::value(Some(approval.reviewed_request_json.to_string())),
         )
         .col_expr(
+            remote_plugin_consents::Column::ApprovedArtifactUrl,
+            sea_orm::sea_query::Expr::value(Some(approval.reviewed_artifact.url.to_string())),
+        )
+        .col_expr(
+            remote_plugin_consents::Column::ApprovedArtifactSha256,
+            sea_orm::sea_query::Expr::value(Some(
+                approval.reviewed_artifact.archive_sha256.to_string(),
+            )),
+        )
+        .col_expr(
             remote_plugin_consents::Column::GrantJson,
             sea_orm::sea_query::Expr::value(Some(approval.grant_json.to_string())),
         )
@@ -392,6 +484,13 @@ pub async fn approve_remote_plugin(
         .filter(remote_plugin_consents::Column::RequestedVersion.eq(approval.version))
         .filter(
             remote_plugin_consents::Column::RequestedGrantJson.eq(approval.reviewed_request_json),
+        )
+        .filter(
+            remote_plugin_consents::Column::RequestedArtifactUrl.eq(approval.reviewed_artifact.url),
+        )
+        .filter(
+            remote_plugin_consents::Column::RequestedArtifactSha256
+                .eq(approval.reviewed_artifact.archive_sha256),
         );
     if automatic {
         // A revoke that lands after the read above still wins.
@@ -434,6 +533,14 @@ pub async fn revoke_remote_plugin(
             sea_orm::sea_query::Expr::value(Option::<String>::None),
         )
         .col_expr(
+            remote_plugin_consents::Column::ApprovedArtifactUrl,
+            sea_orm::sea_query::Expr::value(Option::<String>::None),
+        )
+        .col_expr(
+            remote_plugin_consents::Column::ApprovedArtifactSha256,
+            sea_orm::sea_query::Expr::value(Option::<String>::None),
+        )
+        .col_expr(
             remote_plugin_consents::Column::GrantJson,
             sea_orm::sea_query::Expr::value(Option::<String>::None),
         )
@@ -473,12 +580,18 @@ mod tests {
         LibraryStore::from_connection(db)
     }
 
+    const ARTIFACT: RemoteArtifactRef<'static> = RemoteArtifactRef {
+        url: "https://registry.example/store-1.0.0.tar.gz",
+        archive_sha256: "ab",
+    };
+
     fn approval<'a>(version: &'a str, reviewed: &'a str, grant: &'a str) -> RemoteApproval<'a> {
         RemoteApproval {
             cluster_id: "cluster-a",
             plugin_key: "store",
             version,
             reviewed_request_json: reviewed,
+            reviewed_artifact: ARTIFACT,
             grant_json: grant,
             approver: RemoteApprover::Operator("operator"),
         }
@@ -488,14 +601,28 @@ mod tests {
     async fn requests_approvals_and_revocation() {
         let store = store().await;
         let requested = r#"{"domains":["a.example"]}"#;
-        let first = record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested)
-            .await
-            .unwrap();
+        let first = record_remote_plugin_request(
+            &store,
+            "cluster-a",
+            "store",
+            "1.0.0",
+            requested,
+            ARTIFACT,
+        )
+        .await
+        .unwrap();
         assert!(!first.is_approved());
         // An unchanged request writes nothing.
-        let again = record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested)
-            .await
-            .unwrap();
+        let again = record_remote_plugin_request(
+            &store,
+            "cluster-a",
+            "store",
+            "1.0.0",
+            requested,
+            ARTIFACT,
+        )
+        .await
+        .unwrap();
         assert_eq!(again.updated_at, first.updated_at);
 
         // Approval must name the request as reviewed.
@@ -520,9 +647,10 @@ mod tests {
 
         // A new request keeps the approval for the grant algebra to judge.
         let wider = r#"{"domains":["a.example","b.example"]}"#;
-        let moved = record_remote_plugin_request(&store, "cluster-a", "store", "1.1.0", wider)
-            .await
-            .unwrap();
+        let moved =
+            record_remote_plugin_request(&store, "cluster-a", "store", "1.1.0", wider, ARTIFACT)
+                .await
+                .unwrap();
         assert!(moved.is_approved());
         assert_eq!(moved.requested_version, "1.1.0");
         assert_eq!(moved.approved_request_json.as_deref(), Some(requested));
@@ -558,33 +686,118 @@ mod tests {
     }
 
     #[test]
-    fn the_request_digest_covers_version_and_grant() {
-        let base = remote_request_digest("1.0.0", r#"{"domains":["a.example"]}"#);
+    fn the_request_digest_covers_version_grant_and_artifact() {
+        let grant = r#"{"domains":["a.example"]}"#;
+        let base = remote_request_digest("1.0.0", grant, ARTIFACT);
         assert_eq!(base.len(), 64);
+        assert_eq!(base, remote_request_digest("1.0.0", grant, ARTIFACT));
+        assert_ne!(
+            base,
+            remote_request_digest("1.0.0", r#"{"domains":["b.example"]}"#, ARTIFACT)
+        );
+        assert_ne!(base, remote_request_digest("1.0.1", grant, ARTIFACT));
+        assert_ne!(
+            base,
+            remote_request_digest(
+                "1.0.0",
+                grant,
+                RemoteArtifactRef {
+                    url: "https://10.0.0.1/store.tar.gz",
+                    ..ARTIFACT
+                }
+            )
+        );
+        assert_ne!(
+            base,
+            remote_request_digest(
+                "1.0.0",
+                grant,
+                RemoteArtifactRef {
+                    archive_sha256: "cd",
+                    ..ARTIFACT
+                }
+            )
+        );
+        // Length prefixes keep the split between the parts unambiguous.
+        assert_ne!(
+            remote_request_digest("1.0.0{", "}", ARTIFACT),
+            remote_request_digest("1.0.0", "{}", ARTIFACT)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_artifact_is_not_covered_by_the_approval() {
+        let store = store().await;
+        let requested = r#"{"domains":["a.example"]}"#;
+        let first = record_remote_plugin_request(
+            &store,
+            "cluster-a",
+            "store",
+            "1.0.0",
+            requested,
+            ARTIFACT,
+        )
+        .await
+        .unwrap();
+        let approved = approve_remote_plugin(&store, &approval("1.0.0", requested, "{}"))
+            .await
+            .unwrap();
+        assert!(approved.approved_artifact_matches(approved.requested_artifact()));
         assert_eq!(
-            base,
-            remote_request_digest("1.0.0", r#"{"domains":["a.example"]}"#)
+            approved.approved_artifact_url.as_deref(),
+            Some(ARTIFACT.url)
         );
-        assert_ne!(
-            base,
-            remote_request_digest("1.0.0", r#"{"domains":["b.example"]}"#)
-        );
-        assert_ne!(
-            base,
-            remote_request_digest("1.0.1", r#"{"domains":["a.example"]}"#)
-        );
-        // Length prefixes keep the split between the two unambiguous.
-        assert_ne!(
-            remote_request_digest("1.0.0{", "}"),
-            remote_request_digest("1.0.0", "{}")
-        );
+
+        // Same version and grant, another download: the request is a new one
+        // and the stored approval does not cover its archive.
+        let moved = RemoteArtifactRef {
+            url: "https://169.254.169.254/latest/meta-data",
+            ..ARTIFACT
+        };
+        let now =
+            record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested, moved)
+                .await
+                .unwrap();
+        assert_eq!(now.requested_artifact(), moved);
+        assert_ne!(now.request_digest(), first.request_digest());
+        assert!(now.is_approved());
+        assert!(!now.approved_artifact_matches(now.requested_artifact()));
+        assert!(now.approved_artifact_matches(ARTIFACT));
+        // An approval of what was reviewed before no longer applies.
+        assert!(matches!(
+            approve_remote_plugin(&store, &approval("1.0.0", requested, "{}")).await,
+            Err(LibraryError::Conflict(_))
+        ));
+        assert!(matches!(
+            record_remote_plugin_request(
+                &store,
+                "cluster-a",
+                "store",
+                "1.0.0",
+                requested,
+                RemoteArtifactRef {
+                    url: "",
+                    ..ARTIFACT
+                }
+            )
+            .await,
+            Err(LibraryError::Invalid(_))
+        ));
+
+        // A revoke clears the approved archive too.
+        let revoked = revoke_remote_plugin(&store, "cluster-a", "store")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(revoked.approved_artifact_url.is_none());
+        assert!(!revoked.approved_artifact_matches(ARTIFACT));
     }
 
     #[tokio::test]
     async fn an_operator_revoke_holds_against_automatic_approval() {
         let store = store().await;
         let requested = r"{}";
-        record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested)
+        record_remote_plugin_request(&store, "cluster-a", "store", "1.0.0", requested, ARTIFACT)
             .await
             .unwrap();
         let platform = RemoteApproval {
@@ -608,9 +821,16 @@ mod tests {
             Err(LibraryError::Conflict(_))
         ));
         // The revoke survives a new request from the owner.
-        let moved = record_remote_plugin_request(&store, "cluster-a", "store", "1.1.0", requested)
-            .await
-            .unwrap();
+        let moved = record_remote_plugin_request(
+            &store,
+            "cluster-a",
+            "store",
+            "1.1.0",
+            requested,
+            ARTIFACT,
+        )
+        .await
+        .unwrap();
         assert!(moved.is_revoked());
         assert!(matches!(
             approve_remote_plugin(

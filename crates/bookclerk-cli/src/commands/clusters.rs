@@ -14,7 +14,7 @@ use bookclerk_library::control_plane::{
     list_cluster_links, list_remote_plugin_consents, revoke_remote_plugin, RemoteApprover,
     RemotePluginConsent,
 };
-use bookclerk_plugin_host::{approve_remote_request, remote_consent_state, RemoteNarrowing};
+use bookclerk_plugin_host::{approve_remote_request, remote_row_consent_state, RemoteNarrowing};
 use clap::Subcommand;
 use serde_json::json;
 
@@ -36,7 +36,8 @@ pub enum ClustersCommand {
     },
     /// Approve an owner plugin's request to run here, optionally narrowed.
     /// Name the request you reviewed by the digest `clusters consents`
-    /// shows; it is refused when the cluster has changed the request since.
+    /// shows (it covers the version, the grant and the archive URL and
+    /// digest); it is refused when the cluster has changed the request since.
     /// Only what the request asks for can be approved; a later version that
     /// asks for more needs approval again.
     Approve {
@@ -84,6 +85,10 @@ fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
         "plugin_key": row.plugin_key,
         "requested_version": row.requested_version,
         "requested_grant": parse(Some(&row.requested_grant_json)),
+        "requested_artifact": {
+            "url": row.requested_artifact_url,
+            "archive_sha256": row.requested_artifact_sha256,
+        },
         "request_digest": row.request_digest(),
         "approved_version": row.version,
         "grant": parse(row.grant_json.as_deref()),
@@ -96,13 +101,7 @@ fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
 
 /// A row's consent state.
 fn state(row: &RemotePluginConsent) -> &'static str {
-    remote_consent_state(
-        &row.plugin_key,
-        &row.requested_grant_json,
-        row.approved_request_json.as_deref(),
-        row.grant_json.as_deref(),
-    )
-    .as_str()
+    remote_row_consent_state(row).as_str()
 }
 
 /// The cluster a command acts on: the named one, or the only enrolled one.
@@ -166,12 +165,14 @@ pub async fn run(
                 || {
                     for row in &rows {
                         println!(
-                            "{} {} {} {} request={}",
+                            "{} {} {} {} request={} artifact={} sha256={}",
                             row.owner_cluster_id,
                             row.plugin_key,
                             row.requested_version,
                             state(row),
-                            row.request_digest()
+                            row.request_digest(),
+                            row.requested_artifact_url,
+                            row.requested_artifact_sha256
                         );
                     }
                 },

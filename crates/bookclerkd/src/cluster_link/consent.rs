@@ -7,14 +7,16 @@
 //! - on every connection and on each `deployment.changed`,
 //!   `install.changed`, `placement.changed` and `configuration.changed`
 //!   wake it re-reads `deployments.list`, records what the owner asks to
-//!   run (`remote_plugin_consents`, the owner's approved grant as the
-//!   request), auto-approves a Bookclerk platform plugin only when this
+//!   run (`remote_plugin_consents`, the owner's approved grant and the
+//!   archive URL and digest for this host as the request), auto-approves a Bookclerk platform plugin only when this
 //!   host's own provenance check says the owner's artifact is the bundled
 //!   one, and evaluates consent;
 //! - for each consented instance it materializes the version (an owner
 //!   `blob:` archive comes over the signed artifact endpoint and is checked
-//!   against its digest before it is stored; `https:` archives are fetched
-//!   by the materializer itself; `file:` URLs are refused) and reads the
+//!   against its digest before it is stored; an `https:` archive is fetched
+//!   by the materializer itself, only when its URL and digest are the ones
+//!   this host's operator approved and its host (and every redirect
+//!   hop's) is not local or private; `file:` URLs are refused) and reads the
 //!   instance's `CONFIG` and `SECRETS` with `instance.config`;
 //! - it reports each deployment as `materialized`, or `error` with the
 //!   consent state (`awaiting_host_consent`, `awaiting_host_reapproval`,
@@ -37,15 +39,16 @@ use std::time::Duration;
 
 use bookclerk_library::control_plane::{
     list_remote_plugin_consents, load_artifact_blob, put_artifact_blob,
-    record_remote_plugin_request, PluginArtifact, PluginVersion, RemoteApprover,
+    record_remote_plugin_request, PluginArtifact, PluginVersion, RemoteApprover, RemoteArtifactRef,
     RemotePluginConsent, ARTIFACT_BLOB_SCHEME,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_client::{HostClientHandle, AWAITING_HOST_CONSENT};
 use bookclerk_node_proto::{Body, RemoteDeployment, RemoteVersion};
 use bookclerk_plugin_host::{
-    approve_remote_request, host_artifact, materialize_version, remote_consent_state,
-    remote_platform_auto_approval, PluginGrant, RemoteConsentState, RemoteNarrowing,
+    approve_remote_request, host_artifact, materialize_owner_version,
+    remote_platform_auto_approval, remote_row_consent_state, PluginGrant, RemoteConsentState,
+    RemoteNarrowing,
 };
 use tokio::sync::{watch, Notify};
 use tokio::time::Instant;
@@ -343,12 +346,33 @@ impl LinkSupervisor {
             entry.problem = Some("the owner's operator has not approved this version".into());
             return (entry, false);
         }
+        let version = match plugin_version(&item.plugin_key, remote) {
+            Ok(version) => version,
+            Err(problem) => {
+                entry.consent = RemoteConsentState::Invalid;
+                entry.problem = Some(problem);
+                return (entry, false);
+            }
+        };
+        // The archive this host would fetch is part of what its operator
+        // reviews, so another URL or digest needs approval again.
+        let artifact = match host_artifact(&version) {
+            Ok(artifact) => artifact,
+            Err(err) => {
+                entry.problem = Some(err.to_string());
+                return (entry, false);
+            }
+        };
         let row = match record_remote_plugin_request(
             &self.library,
             self.cluster_id(),
             &item.plugin_key,
             &remote.version,
             &remote.grant_json,
+            RemoteArtifactRef {
+                url: &artifact.url,
+                archive_sha256: &artifact.archive_sha256,
+            },
         )
         .await
         {
@@ -359,20 +383,12 @@ impl LinkSupervisor {
                 return (entry, true);
             }
         };
-        let version = match plugin_version(&item.plugin_key, remote) {
-            Ok(version) => version,
-            Err(problem) => {
-                entry.consent = RemoteConsentState::Invalid;
-                entry.problem = Some(problem);
-                return (entry, false);
-            }
-        };
         let row = self.auto_approve_platform(row, &version).await;
         entry.consent = consent_state(&row);
         let RemoteConsentState::Consented(grant) = &entry.consent else {
             return (entry, false);
         };
-        match self.materialize(&version, grant).await {
+        match self.materialize(&version, grant, &row).await {
             Ok(root) => entry.root = Some(root),
             Err(problem) => {
                 entry.problem = Some(problem);
@@ -430,13 +446,16 @@ impl LinkSupervisor {
         }
     }
 
-    /// Materializes `version` into this host's version cache.
+    /// Materializes `version` into this host's version cache, but only the
+    /// archive `row`'s approval names ([`owner_artifact_allowed`]).
     async fn materialize(
         &self,
         version: &PluginVersion,
         grant: &PluginGrant,
+        row: &RemotePluginConsent,
     ) -> Result<PathBuf, String> {
         let artifact = host_artifact(version).map_err(|err| err.to_string())?;
+        owner_artifact_allowed(row, artifact)?;
         if let Some(sha) = artifact.url.strip_prefix(ARTIFACT_BLOB_SCHEME) {
             let present = load_artifact_blob(&self.library, sha)
                 .await
@@ -462,12 +481,10 @@ impl LinkSupervisor {
                     .await
                     .map_err(|err| err.to_string())?;
             }
-        } else if !artifact.url.starts_with("https:") {
-            return Err("only blob: and https: archives are fetched from an owner".into());
         }
         let mut local = version.clone();
         local.grant_json = serde_json::to_string(grant).map_err(|err| err.to_string())?;
-        materialize_version(&self.library, &self.files_dir, &local)
+        materialize_owner_version(&self.library, &self.files_dir, &local)
             .await
             .map_err(|err| format!("the plugin could not be materialized: {err}"))
     }
@@ -549,12 +566,33 @@ pub(crate) fn platform_auto_approval_allowed(row: &RemotePluginConsent) -> bool 
 
 /// A consent row's state.
 pub(crate) fn consent_state(row: &RemotePluginConsent) -> RemoteConsentState {
-    remote_consent_state(
-        &row.plugin_key,
-        &row.requested_grant_json,
-        row.approved_request_json.as_deref(),
-        row.grant_json.as_deref(),
-    )
+    remote_row_consent_state(row)
+}
+
+/// Whether this host may fetch `artifact` for an owner: its URL and digest
+/// must be the ones `row`'s approval names (the owner cannot repoint an
+/// approved plugin), and it must be a `blob:` archive from the owner link
+/// or an `https:` URL to a host that is not local or private
+/// ([`bookclerk_plugin_catalog::check_owner_artifact_url`]).
+pub(crate) fn owner_artifact_allowed(
+    row: &RemotePluginConsent,
+    artifact: &PluginArtifact,
+) -> Result<(), String> {
+    if !row.approved_artifact_matches(RemoteArtifactRef {
+        url: &artifact.url,
+        archive_sha256: &artifact.archive_sha256,
+    }) {
+        return Err("the owner's archive is not the one this host's operator approved".into());
+    }
+    if artifact.url.starts_with(ARTIFACT_BLOB_SCHEME) {
+        return Ok(());
+    }
+    if !artifact.url.starts_with("https:") {
+        return Err("only blob: and https: archives are fetched from an owner".into());
+    }
+    bookclerk_plugin_catalog::check_owner_artifact_url(&artifact.url)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
 }
 
 /// The owner's version as this host's materializer reads it.
@@ -639,8 +677,12 @@ mod tests {
             plugin_key: "platform:bookclerk/bookclerk-plugin-database-sqlite".into(),
             requested_version: "1.0.0".into(),
             requested_grant_json: "{}".into(),
+            requested_artifact_url: "https://registry.example/sqlite.tar.gz".into(),
+            requested_artifact_sha256: "ab".repeat(32),
             version: None,
             approved_request_json: None,
+            approved_artifact_url: None,
+            approved_artifact_sha256: None,
             grant_json: None,
             approved_at: None,
             approved_by: None,
@@ -666,5 +708,68 @@ mod tests {
             ..row()
         };
         assert!(!platform_auto_approval_allowed(&approved));
+    }
+
+    /// `row()` approved for `url` (digest `ab…`), and that archive.
+    fn approved_for(url: &str) -> (RemotePluginConsent, PluginArtifact) {
+        let row = RemotePluginConsent {
+            requested_artifact_url: url.into(),
+            version: Some("1.0.0".into()),
+            approved_request_json: Some("{}".into()),
+            approved_artifact_url: Some(url.into()),
+            approved_artifact_sha256: Some("ab".repeat(32)),
+            grant_json: Some("{}".into()),
+            approved_at: Some("2026-10-02T00:00:00Z".into()),
+            approved_by: Some("operator".into()),
+            ..row()
+        };
+        let artifact = PluginArtifact {
+            target: bookclerk_plugin_host::host_bookclerk_target().to_string(),
+            url: url.into(),
+            format: "tar.gz".into(),
+            archive_root: ".".into(),
+            archive_sha256: "ab".repeat(32),
+            payload_root_sha256: "cd".repeat(32),
+            executable: "guest".into(),
+        };
+        (row, artifact)
+    }
+
+    #[test]
+    fn only_the_approved_archive_on_a_public_host_is_fetched() {
+        let (row, artifact) = approved_for("https://registry.example/sqlite.tar.gz");
+        assert_eq!(owner_artifact_allowed(&row, &artifact), Ok(()));
+        let blob = format!("{ARTIFACT_BLOB_SCHEME}{}", "ab".repeat(32));
+        let (row, artifact) = approved_for(&blob);
+        assert_eq!(owner_artifact_allowed(&row, &artifact), Ok(()));
+
+        // The owner repoints the approved plugin at another download.
+        let (row, _) = approved_for("https://registry.example/sqlite.tar.gz");
+        let (_, moved) = approved_for("https://registry.example/other.tar.gz");
+        assert!(owner_artifact_allowed(&row, &moved)
+            .unwrap_err()
+            .contains("not the one"));
+        let (row, mut changed) = approved_for("https://registry.example/sqlite.tar.gz");
+        changed.archive_sha256 = "ef".repeat(32);
+        assert!(owner_artifact_allowed(&row, &changed).is_err());
+        let unapproved = RemotePluginConsent {
+            requested_artifact_url: artifact.url.clone(),
+            ..super::tests::row()
+        };
+        assert!(owner_artifact_allowed(&unapproved, &artifact).is_err());
+
+        // Even an approved URL is refused on a local or private host.
+        for url in [
+            "https://127.0.0.1/sqlite.tar.gz",
+            "https://localhost:8787/sqlite.tar.gz",
+            "https://169.254.169.254/latest/meta-data",
+            "https://[::1]/sqlite.tar.gz",
+            "https://192.168.0.10/sqlite.tar.gz",
+            "http://registry.example/sqlite.tar.gz",
+            "file:///etc/passwd",
+        ] {
+            let (row, artifact) = approved_for(url);
+            assert!(owner_artifact_allowed(&row, &artifact).is_err(), "{url}");
+        }
     }
 }
