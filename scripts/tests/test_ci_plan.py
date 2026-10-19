@@ -177,7 +177,7 @@ class ScenarioTests(unittest.TestCase):
     def test_cli_only_binary_package_uses_tests_target_selection(self) -> None:
         p = plan("crates/bookclerk-cli/src/main.rs")
         self.assertEqual(p.lint_packages(), ["bookclerk-cli"])
-        self.assertEqual(check_argv(p, "rust_test"), [[*NEXTEST_RUN, "-p", "bookclerk-cli"]])
+        self.assertEqual(check_argv(p, "rust_test"), [[*NEXTEST_RUN, "--no-fail-fast", "-p", "bookclerk-cli"]])
         self.assertNotIn("--lib", sum(check_argv(p, "rust_test"), []))
         self.assertFalse(p.selected("doctest"))
         self.assertFalse(p.selected("postgres"))
@@ -299,7 +299,7 @@ class ScenarioTests(unittest.TestCase):
         p = plan("crates/bookclerk-plugin-host/tests/guest_jail.rs")
         self.assertEqual(p.lint_packages(), ["bookclerk-plugin-host"])
         self.assertFalse(p.packages["bookclerk-plugin-host"].compiled)
-        self.assertEqual(check_argv(p, "rust_test"), [[*NEXTEST_RUN, "-p", "bookclerk-plugin-host"]])
+        self.assertEqual(check_argv(p, "rust_test"), [[*NEXTEST_RUN, "--no-fail-fast", "-p", "bookclerk-plugin-host"]])
         self.assertFalse(p.selected("doctest"))
         self.assertFalse(p.selected("postgres"))
         self.assertFalse(p.selected("native_gateway"))
@@ -497,6 +497,7 @@ class FullSuiteTests(unittest.TestCase):
             check_argv(p, "rust_test")[0],
             [
                 *NEXTEST_RUN,
+                "--no-fail-fast",
                 "--workspace",
                 "--exclude",
                 E2E_PACKAGE,
@@ -511,7 +512,7 @@ class FullSuiteTests(unittest.TestCase):
         )
         self.assertIn(["cargo", "build", "-p", "bookclerk-mp4", "--examples"], check_argv(p, "rust_test"))
         self.assertIn(
-            [*NEXTEST_RUN, "-p", "bookclerk-plugin-database-sqlite", "--features", "host-helpers"],
+            [*NEXTEST_RUN, "--no-fail-fast", "-p", "bookclerk-plugin-database-sqlite", "--features", "host-helpers"],
             check_argv(p, "rust_test"),
         )
         self.assertEqual(check_argv(p, "release")[0], ["cargo", "build-app", "--release", "--platform"])
@@ -1343,15 +1344,17 @@ class EnvelopeTests(unittest.TestCase):
 class RunnerLayoutTests(unittest.TestCase):
     """Test runner, retries, build-only main pushes and docs-only paths."""
 
-    def test_merge_group_retries_failed_tests_once(self) -> None:
+    def test_merge_group_retries_once_and_fails_fast(self) -> None:
         p = plan("crates/bookclerk-cli/src/main.rs")
-        for event, want in (("merge_group", True), ("pull_request", False), ("push", False)):
+        for event, merge_group in (("merge_group", True), ("pull_request", False), ("push", False)):
             with self.subTest(event=event):
                 art = dict(artifact(p), event=event)
                 argv = [c.argv for key, c in planned_commands(art, "rust_test", CTX) if not key][0]
                 self.assertEqual(argv[:3], ["cargo", "nextest", "run"])
-                self.assertEqual("--retries" in argv, want)
-                if want:
+                self.assertEqual("--retries" in argv, merge_group)
+                self.assertEqual("--fail-fast" in argv, merge_group)
+                self.assertEqual("--no-fail-fast" in argv, not merge_group)
+                if merge_group:
                     self.assertEqual(argv[argv.index("--retries") + 1], "1")
 
     def test_custom_harness_target_runs_with_cargo_test(self) -> None:

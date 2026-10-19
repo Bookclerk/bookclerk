@@ -47,6 +47,14 @@ summary, and a test that fails twice fails the job. Pull requests never retry,
 so a flaky test still shows up red where it can be fixed. File an issue for
 every `FLAKY` line.
 
+A merge group only needs to know whether it can land, so it fails fast: nextest
+stops at the first test that fails its retry, and the `merge-queue-fail-fast`
+job cancels the rest of the run as soon as any job fails, so `CI Gate` reports
+at once and the queue ejects the group without waiting for the slowest job.
+That job runs no repository code and is the only one with `actions: write`.
+Pull requests run every test and every job (`--no-fail-fast`), so one round
+shows every failure to fix.
+
 Test targets with `harness = false` whose `main` does not answer libtest's
 `--list` protocol would list zero tests under nextest. They are excluded from
 the nextest run and run with `cargo test --test` (`CUSTOM_HARNESS_TESTS`);

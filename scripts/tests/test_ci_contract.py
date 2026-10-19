@@ -31,6 +31,8 @@ from ci_plan.plan import CHECK_JOB, JOB_CHECKS  # noqa: E402
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 OUTPUT_REF = re.compile(r"needs\.plan\.outputs\.([A-Za-z0-9_]+)")
 RUN_CHECK = re.compile(r"ci-exec\.py run ([a-z0-9_]+)\b")
+# Watches a merge-group run and cancels it on the first failed job.
+FAIL_FAST_JOB = "merge-queue-fail-fast"
 
 
 def _load() -> dict:
@@ -91,7 +93,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(_emitted_keys() - used, {"mode"})
 
     def test_jobs_match_planner(self) -> None:
-        gated = [j for j in self.jobs if j not in ("plan", "ci-gate")]
+        gated = [j for j in self.jobs if j not in ("plan", "ci-gate", FAIL_FAST_JOB)]
         self.assertEqual(set(gated), set(JOB_CHECKS))
         for job in gated:
             self.assertEqual(
@@ -115,7 +117,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_every_downstream_job_downloads_and_validates_first(self) -> None:
         for name, job in self.jobs.items():
-            if name == "plan":
+            if name in ("plan", FAIL_FAST_JOB):
                 continue
             steps = job["steps"]
             download = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/download-artifact@")]
@@ -240,6 +242,20 @@ class WorkflowContractTests(unittest.TestCase):
                         self.assertIn("refs/heads/main", step["with"]["save-if"])
                         savers.add(name)
         self.assertEqual(savers, set(BUILD_ONLY_JOBS))
+
+    def test_fail_fast_job_is_merge_group_only_and_alone_can_cancel(self) -> None:
+        job = self.jobs[FAIL_FAST_JOB]
+        self.assertEqual(job["if"], "github.event_name == 'merge_group'")
+        self.assertEqual(job["permissions"], {"actions": "write"})
+        self.assertNotIn("needs", job, "must watch from the start of the run")
+        for step in job["steps"]:
+            self.assertNotIn("uses", step, "must not check out or run repository code")
+        self.assertIn('gh run cancel "$RUN_ID"', job["steps"][0]["run"])
+        self.assertNotIn(FAIL_FAST_JOB, self.jobs["ci-gate"]["needs"])
+        for name, other in self.jobs.items():
+            if name != FAIL_FAST_JOB:
+                self.assertNotIn("permissions", other, name)
+        self.assertEqual(self.wf["permissions"], {"contents": "read"})
 
     def test_test_job_installs_pinned_nextest(self) -> None:
         steps = self.jobs["test"]["steps"]

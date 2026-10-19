@@ -80,7 +80,6 @@ NEXTEST_RUN = (
     "nextest",
     "run",
     "--tests",
-    "--no-fail-fast",
     "--failure-output",
     "immediate-final",
     "--no-tests",
@@ -89,6 +88,19 @@ NEXTEST_RUN = (
 # Merge-group runs retry a failed test once; nextest reports a pass on retry
 # as FLAKY in the summary, and a test that fails twice still fails the job.
 MERGE_GROUP_TEST_RETRIES = 1
+
+
+def _nextest_mode(event: str) -> list[str]:
+    """Failure handling for one nextest run, by the event the plan was resolved for.
+
+    A merge group only needs to know whether it can land, so it retries once and
+    stops at the first test that still fails. Pull requests run every test, so
+    one round of CI shows every failure to fix.
+    """
+    if event == "merge_group":
+        return ["--retries", str(MERGE_GROUP_TEST_RETRIES), "--fail-fast"]
+    return ["--no-fail-fast"]
+
 # `harness = false` test targets whose `main` does not answer libtest's
 # `--list` protocol: nextest would list zero tests in them, so they are
 # excluded from nextest and run with `cargo test --test`.
@@ -528,7 +540,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> 
         if os.environ.get("BOOKCLERK_SKIP_WORKERD"):
             raise ExecError("CI must run the workerd contract (do not set BOOKCLERK_SKIP_WORKERD)")
         env = {**runtime_env, "BOOKCLERK_REQUIRE_TEST_GUESTS": "1"}
-        retries = ["--retries", str(MERGE_GROUP_TEST_RETRIES)] if event == "merge_group" else []
+        failure_mode = _nextest_mode(event)
         cmds: list[Command] = []
         if params.get("workspace"):
             scope = ["--workspace"]
@@ -536,14 +548,14 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> 
                 scope += ["--exclude", ex]
             custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] not in params.get("exclude", [])]
             cmds.append(
-                Command("unit + integration tests (workspace)", [*NEXTEST_RUN, *retries, *scope, *_nextest_filter(custom)], env=env)
+                Command("unit + integration tests (workspace)", [*NEXTEST_RUN, *failure_mode, *scope, *_nextest_filter(custom)], env=env)
             )
         elif params.get("packages"):
             custom = [t for t in CUSTOM_HARNESS_TESTS if t[0] in params["packages"]]
             cmds.append(
                 Command(
                     "unit + integration tests",
-                    [*NEXTEST_RUN, *retries, *_pkg_args(params["packages"]), *_nextest_filter(custom)],
+                    [*NEXTEST_RUN, *failure_mode, *_pkg_args(params["packages"]), *_nextest_filter(custom)],
                     env=env,
                 )
             )
@@ -558,7 +570,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "") -> 
                     f"{ft['package']} tests with {','.join(ft['features'])}",
                     [
                         *NEXTEST_RUN,
-                        *retries,
+                        *failure_mode,
                         "-p",
                         ft["package"],
                         "--features",
@@ -816,7 +828,7 @@ def build_only_command(cmd: Command) -> Command | None:
             if argv[i] in ("--failure-output", "--no-tests", "--retries", "-E"):
                 i += 2
                 continue
-            if argv[i] != "--no-fail-fast":
+            if argv[i] not in ("--no-fail-fast", "--fail-fast"):
                 scope.append(argv[i])
             i += 1
         return Command(cmd.label + " (build only)", ["cargo", "test", *scope, "--no-run"], cmd.cwd, cmd.env)
