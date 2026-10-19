@@ -503,8 +503,19 @@ impl OutputSettingsV1 {
         let v = value.trim();
         match key {
             "output.format" => {
-                self.format = OutputFormat::parse(v)
-                    .ok_or_else(|| invalid("output.format is not a known format"))?;
+                // The classic `DecryptToLossy` alias maps here and takes a
+                // boolean: true re-encodes to MP3, false keeps the M4B.
+                self.format = match OutputFormat::parse(v) {
+                    Some(format) => format,
+                    None if v.eq_ignore_ascii_case("mp3") || v.eq_ignore_ascii_case("lossy") => {
+                        OutputFormat::SingleMp3
+                    }
+                    None => match bool_value(key, v) {
+                        Ok(true) => OutputFormat::SingleMp3,
+                        Ok(false) => OutputFormat::EnrichedM4b,
+                        Err(_) => return Err(invalid("output.format is not a known format")),
+                    },
+                };
             }
             "output.widevine" => self.widevine = bool_value(key, v)?,
             "output.xhe_aac" => self.xhe_aac = bool_value(key, v)?,
@@ -960,6 +971,21 @@ mod tests {
             let portable = portable_output_seed(&seed, files_dir);
             assert_eq!(portable.widevine_cdm.as_deref(), Some(Path::new(kept)));
         }
+    }
+
+    #[test]
+    fn format_accepts_the_classic_lossy_booleans() {
+        let mut body = OutputSettingsV1::default();
+        for (value, format) in [
+            ("true", OutputFormat::SingleMp3),
+            ("false", OutputFormat::EnrichedM4b),
+            ("mp3", OutputFormat::SingleMp3),
+            ("lossy", OutputFormat::SingleMp3),
+        ] {
+            body.set("output.format", value).unwrap();
+            assert_eq!(body.format, format, "{value}");
+        }
+        assert!(body.set("output.format", "wav-ish").is_err());
     }
 
     #[test]

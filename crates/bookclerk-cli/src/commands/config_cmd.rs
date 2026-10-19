@@ -6,9 +6,9 @@ use bookclerk_config::{
     NamingProfile,
 };
 use bookclerk_library::control_plane::{
-    bootstrap_control_plane, is_output_setting_key, load_events, load_output, replace_events,
-    replace_output, ConfigActor, EventsReplace, EventsSettingsV1, OutputReplace, OutputSettingsV1,
-    OUTPUT_SETTING_KEYS,
+    bootstrap_control_plane, is_output_setting_key, load_events, load_output, portable_output_seed,
+    replace_events, replace_output, ConfigActor, EventsReplace, EventsSettingsV1, OutputReplace,
+    OutputSettingsV1, OUTPUT_SETTING_KEYS,
 };
 use bookclerk_library::{
     inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
@@ -138,14 +138,16 @@ pub async fn run(
         ConfigCommand::Get { key, bare } => {
             if bare {
                 // `output.*` reads the database document, like `config get`.
-                let output =
-                    match bare_output_body(load_output_for_show(config).await, &config.output) {
-                        Ok(body) => Some(body),
-                        Err(err) => {
-                            eprintln!("output.* omitted: {}", safe_events_load_error(&err));
-                            None
-                        }
-                    };
+                let output = match bare_output_body(
+                    load_output_for_show(config).await,
+                    &portable_output_seed(&config.output, &config.paths().files_dir),
+                ) {
+                    Ok(body) => Some(body),
+                    Err(err) => {
+                        eprintln!("output.* omitted: {}", safe_events_load_error(&err));
+                        None
+                    }
+                };
                 for (classic, dotted) in classic_key_aliases() {
                     let value = if is_output_setting_key(dotted) {
                         output.as_ref().and_then(|body| body.get(dotted))
@@ -870,7 +872,8 @@ async fn print_output_authority(config: &Config) {
             println!("output.authority = transitional");
             let detail = safe_events_load_error(&err);
             println!("output.source = config.toml / environment ({detail})");
-            match OutputSettingsV1::from_config(&config.output) {
+            let seed = portable_output_seed(&config.output, &config.paths().files_dir);
+            match OutputSettingsV1::from_config(&seed) {
                 Ok(seed) => {
                     for key in OUTPUT_SETTING_KEYS {
                         println!("{key} = {}", seed.get(key).unwrap_or_default());
